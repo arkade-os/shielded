@@ -42,7 +42,7 @@ interface Internal {noteTree:Tree;spentTree:Tree;historyTree:Tree;anchor?:Anchor
 class Kernel implements ProtocolKernel {
  private noteTree:Tree; private spentTree:Tree; private historyTree:Tree;
  private state:ProtocolState; private wallets:Record<Owner,Wallet>; private log:EncryptedRecord[]=[]; private nfs:string[]=[];
- private anchors:Anchor[]=[]; private receipts:unknown[]=[]; private internals=new WeakMap<PreparedSettlement,Internal>();
+ private anchors:Anchor[]=[]; private receipts:unknown[]=[]; private internals=new WeakMap<PreparedSettlement,Internal>(); private committed=new WeakSet<PreparedSettlement>();
  private vkeys:Record<string,any>;
  constructor(private poseidon:any,private baby:any){
   this.noteTree=new Tree(this.hash);this.spentTree=new Tree(this.hash);this.historyTree=new Tree(this.hash);
@@ -148,11 +148,15 @@ class Kernel implements ProtocolKernel {
  }
  async commit(prepared:PreparedSettlement,receipt:unknown){
   const internal=this.internals.get(prepared);if(!internal)throw new Error('Unknown prepared settlement.');
+  if(this.committed.has(prepared))return this.snapshot();
   if(JSON.stringify(prepared.oldState)!==JSON.stringify(this.state))throw new Error('Stale settlement: regenerate the public-state proof; private intent remains reusable.');
   if(!await this.verify(prepared))throw new Error('Proof verification failed.');
-  this.noteTree=internal.noteTree;this.spentTree=internal.spentTree;this.historyTree=internal.historyTree;this.state=clone(prepared.newState);
-  this.log.push(...clone(internal.records));if(prepared.intentSignals[2]!=='0')this.nfs.push(prepared.intentSignals[2]);if(internal.anchor)this.anchors.push(internal.anchor);
-  this.receipts.push(clone(receipt));return this.snapshot();
+  if(this.committed.has(prepared))return this.snapshot();
+  if(JSON.stringify(prepared.oldState)!==JSON.stringify(this.state))throw new Error('Stale settlement: regenerate the public-state proof; private intent remains reusable.');
+  const nextState=clone(prepared.newState),records=clone(internal.records),savedReceipt=clone(receipt);
+  this.noteTree=internal.noteTree;this.spentTree=internal.spentTree;this.historyTree=internal.historyTree;this.state=nextState;
+  this.log.push(...records);if(prepared.intentSignals[2]!=='0')this.nfs.push(prepared.intentSignals[2]);if(internal.anchor)this.anchors.push(internal.anchor);
+  this.receipts.push(savedReceipt);this.committed.add(prepared);return this.snapshot();
  }
 }
 export async function createProtocol():Promise<ProtocolKernel>{

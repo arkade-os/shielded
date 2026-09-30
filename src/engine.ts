@@ -11,6 +11,9 @@ const assets: Asset[] = ['BTC', 'DEMO'];
 const owners: Owner[] = ['alice', 'bob'];
 type Input = Record<string, unknown>;
 type Activity = Record<string, unknown>;
+type WithdrawalProjection = { owner: Owner; asset: Asset; amount: number };
+type PendingCompletion = { prepared: PreparedSettlement; receipt: NativeReceipt; summary: string;
+  withdrawal?: WithdrawalProjection; completed: boolean };
 export interface DemoEngine {
   snapshot(): Record<string, unknown>;
   action(action: string, body: Input): Promise<unknown>;
@@ -23,6 +26,7 @@ export async function createDemoEngine(): Promise<DemoEngine> {
   let activities: Activity[] = [];
   let lastSpend: PreparedSettlement | undefined;
   let publicBalances: Record<Owner, Record<Asset, number>> = { alice: { BTC: 0, DEMO: 0 }, bob: { BTC: 0, DEMO: 0 } };
+  let pendingCompletion: PendingCompletion | undefined;
   let busy = false;
   let closed = false;
   const initialize = async () => {
@@ -59,11 +63,13 @@ export async function createDemoEngine(): Promise<DemoEngine> {
     return value;
   };
   const add = (entry: Activity) => { activities.push({ id: `${Date.now()}-${activities.length}`, timestamp: new Date().toISOString(), ...entry }); };
-  const execute = async (prepared: PreparedSettlement, summary: string): Promise<NativeReceipt> => {
-    if (!await kernel.verify(prepared)) throw new Error('Groth16 proof verification failed');
-    const receipt = await native.settle(prepared);
-    await kernel.commit(prepared, receipt);
+  const complete = async (pending: PendingCompletion) => {
+    await kernel.commit(pending.prepared, pending.receipt);
+    if (pending.completed) { pendingCompletion = undefined; return; }
+    pending.completed = true;
+    const { prepared, receipt, summary, withdrawal } = pending;
     if (prepared.intentSignals[2] !== '0') lastSpend = prepared;
+    if (withdrawal) publicBalances[withdrawal.owner][withdrawal.asset] += withdrawal.amount;
     add({ type: prepared.operation, status: 'accepted', summary, txid: receipt.txid,
       proofMs: prepared.proofTimes.intentMs + prepared.proofTimes.transitionMs, vmMs: receipt.vmMs,
       inputCount: receipt.native.nativeInputs, outputCount: receipt.native.nativeOutputs,
@@ -77,6 +83,19 @@ export async function createDemoEngine(): Promise<DemoEngine> {
       nativeTx: receipt.native, backend: receipt.backend, boundary: prepared.boundary,
       finality: 'Emulator co-signed; synthetic local genesis; no arkd/Bitcoin settlement',
     });
+    pendingCompletion = undefined;
+  };
+  const retryCompletion = async (pending: PendingCompletion) => {
+    try { await complete(pending); }
+    catch { await complete(pending); }
+  };
+  const execute = async (prepared: PreparedSettlement, summary: string,
+    withdrawal?: WithdrawalProjection): Promise<NativeReceipt> => {
+    if (!await kernel.verify(prepared)) throw new Error('Groth16 proof verification failed');
+    const receipt = await native.settle(prepared);
+    const pending = { prepared, receipt, summary, withdrawal, completed: false };
+    pendingCompletion = pending;
+    await retryCompletion(pending);
     return receipt;
   };
   const snapshot = () => {
@@ -90,7 +109,8 @@ export async function createDemoEngine(): Promise<DemoEngine> {
     }));
     return { status: { ready: !closed, mode: 'local-emulator', network: 'Local emulator · synthetic genesis',
       compiler: 'arkadec → Program', proof: 'Groth16 / BN254', vm: 'Arkade Service.SubmitTx', sdk: '@arkade-os/sdk 0.4.77 + OP_PUT',
-      message: busy ? 'Generating proofs and executing compiled covenants…' : 'Real proofs and emulator co-signing; local demonstration funding' },
+      message: pendingCompletion ? 'A native transaction was accepted; local completion will retry before the next action' :
+        busy ? 'Generating proofs and executing compiled covenants…' : 'Real proofs and emulator co-signing; local demonstration funding' },
       wallets: [...wallets, { id: 'faucet', name: 'Demo funding', address: '', notes: [],
         publicBalance: { BTC: nativeState.gateFunding.BTC, TOKEN: nativeState.gateFunding.DEMO } }],
       reserves: assets.map(asset => ({ asset: asset === 'DEMO' ? 'TOKEN' : asset,
@@ -112,12 +132,13 @@ export async function createDemoEngine(): Promise<DemoEngine> {
       if (busy) throw new Error('Another action is already in progress');
       busy = true;
       try {
+        if (action !== 'reset' && pendingCompletion) await retryCompletion(pendingCompletion);
         const from = owner(body.from, 'alice');
         const to = owner(body.to, from === 'alice' ? 'bob' : 'alice');
         const asset = selectedAsset(body.asset);
         switch (action) {
           case 'reset':
-            await native.close(); await initialize(); activities = []; lastSpend = undefined;
+            pendingCompletion = undefined; await native.close(); await initialize(); activities = []; lastSpend = undefined;
             publicBalances = { alice: { BTC: 0, DEMO: 0 }, bob: { BTC: 0, DEMO: 0 } };
             artifacts = await artifactView(); return { reset: true };
           case 'shield': return await execute(await kernel.prepareShield(from, asset, amount(body.amount)), `${from} received backed ${asset} notes; waiting for a seal`);
@@ -127,9 +148,8 @@ export async function createDemoEngine(): Promise<DemoEngine> {
             return await execute(await kernel.prepareTransfer(from, to, asset, amount(body.amount)), `${from} → ${to}; private ${asset} payment, reserve vault untouched`);
           case 'withdraw': {
             const quantity = amount(body.amount);
-            const receipt = await execute(await kernel.prepareWithdraw(from, asset, quantity, native.destination(from)), `${from} received the exact authorized native ${asset} payout`);
-            publicBalances[from][asset] += quantity;
-            return receipt;
+            return await execute(await kernel.prepareWithdraw(from, asset, quantity, native.destination(from)),
+              `${from} received the exact authorized native ${asset} payout`, { owner: from, asset, amount: quantity });
           }
           case 'recover': {
             const notes = kernel.recover(from).filter(note => !note.spent);
