@@ -1,0 +1,9 @@
+build/
+__pycache__/
+*.pyc
+.env
+.env.*
+*.key
+*.zkey
+*.wtns
+node_modules/
