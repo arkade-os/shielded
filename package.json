@@ -1,0 +1,49 @@
+{
+  "name": "@arkade-os/shielded-poc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "postinstall": "node tools/patch-sdk.mjs",
+    "dev": "concurrently -k \"npm:server\" \"npm:app\"",
+    "server": "node --import tsx src/server.ts",
+    "app": "vite --config app/vite.config.ts --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build --config app/vite.config.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:e2e": "node --import tsx tests/e2e.ts",
+    "test:primitives": "node --import tsx circuits/smoke.ts",
+    "vm:build": "node --import tsx tools/build-vm.ts",
+    "compile": "node --import tsx tools/compile.ts",
+    "setup": "node --import tsx tools/setup.ts",
+    "demo": "node --import tsx tools/demo.ts"
+  },
+  "dependencies": {
+    "@arkade-os/sdk": "0.4.77",
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.0.1",
+    "@scure/base": "2.0.0",
+    "@scure/btc-signer": "2.0.1",
+    "circomlib": "2.0.5",
+    "circomlibjs": "0.1.7",
+    "express": "5.1.0",
+    "ffjavascript": "^0.3.1",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "snarkjs": "0.7.6"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.3",
+    "@types/node": "24.3.0",
+    "@types/react": "19.1.12",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "5.0.2",
+    "circom2": "0.2.23",
+    "concurrently": "9.2.1",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vite": "7.1.4"
+  }
+}

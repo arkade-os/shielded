@@ -1,0 +1,16 @@
+pragma arkade ^0.1.0;
+import "./wire.ark";
+library Resource {
+    function leader(bytes32 gateProgram, bytes32 applyClosure, bytes32 sealClosure) {
+        require(tx.inputs[0].scriptPubKey == gateProgram, "leader lock");
+        int operation = Wire.operation();
+        if (operation == 0) { require(tx.inputs[0].arkadeScriptHash == applyClosure, "apply closure"); }
+        else { require(operation == 1, "operation"); require(tx.inputs[0].arkadeScriptHash == sealClosure, "seal closure"); }
+    }
+    function continueIdentity(AssetId identity, int index) {
+        require(this.activeInputIndex == index, "resource position");
+        require(tx.inputs[index].assets.lookup(identity.txid, identity.gidx) == 1, "input identity");
+        require(tx.outputs[index].assets.lookup(identity.txid, identity.gidx) == 1, "output identity");
+        require(tx.outputs[index].scriptPubKey == tx.inputs[index].scriptPubKey, "resource continuation");
+    }
+}

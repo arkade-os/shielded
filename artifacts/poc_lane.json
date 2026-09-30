@@ -1,0 +1,180 @@
+{
+  "formatVersion": 1,
+  "contractName": "PocLane",
+  "constructorInputs": [
+    {
+      "name": "gateProgram",
+      "type": "bytes32"
+    },
+    {
+      "name": "applyClosure",
+      "type": "bytes32"
+    },
+    {
+      "name": "sealClosure",
+      "type": "bytes32"
+    },
+    {
+      "name": "identity",
+      "type": "AssetId"
+    }
+  ],
+  "functions": [
+    {
+      "name": "advance",
+      "arkade": {
+        "inputs": [],
+        "asm": [
+          "<identity.gidx>",
+          "<identity.txid>",
+          "<sealClosure>",
+          "<applyClosure>",
+          "<gateProgram>",
+          "0",
+          "OP_INSPECTINPUTSCRIPTPUBKEY",
+          "OP_DROP",
+          "OP_OVER",
+          "OP_EQUALVERIFY",
+          "130",
+          "OP_INSPECTPACKET",
+          "OP_1",
+          "OP_EQUALVERIFY",
+          "0",
+          "0x010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430",
+          "0x00",
+          "OP_CAT",
+          "OP_BIN2NUM",
+          "OP_2",
+          "OP_PICK",
+          "OP_ROT",
+          "32",
+          "OP_SUBSTR",
+          "0x00",
+          "OP_CAT",
+          "OP_BIN2NUM",
+          "OP_DUP",
+          "OP_ROT",
+          "OP_LESSTHAN",
+          "OP_VERIFY",
+          "OP_NIP",
+          "OP_DUP",
+          "0",
+          "OP_EQUAL",
+          "OP_IF",
+          "0",
+          "OP_INSPECTINPUTARKADESCRIPTHASH",
+          "OP_3",
+          "OP_PICK",
+          "OP_EQUALVERIFY",
+          "OP_ELSE",
+          "OP_DUP",
+          "1",
+          "OP_EQUALVERIFY",
+          "0",
+          "OP_INSPECTINPUTARKADESCRIPTHASH",
+          "OP_4",
+          "OP_PICK",
+          "OP_EQUALVERIFY",
+          "OP_ENDIF",
+          "OP_DROP",
+          "OP_4",
+          "OP_PICK",
+          "OP_4",
+          "OP_PICK",
+          "1",
+          "OP_PUSHCURRENTINPUTINDEX",
+          "OP_OVER",
+          "OP_EQUALVERIFY",
+          "OP_DUP",
+          "OP_2",
+          "OP_PICK",
+          "OP_4",
+          "OP_PICK",
+          "OP_INSPECTINASSETLOOKUP",
+          "OP_VERIFY",
+          "1",
+          "OP_EQUALVERIFY",
+          "OP_DUP",
+          "OP_ROT",
+          "OP_3",
+          "OP_ROLL",
+          "OP_INSPECTOUTASSETLOOKUP",
+          "OP_VERIFY",
+          "1",
+          "OP_EQUALVERIFY",
+          "OP_DUP",
+          "OP_INSPECTOUTPUTSCRIPTPUBKEY",
+          "OP_DROP",
+          "OP_SWAP",
+          "OP_INSPECTINPUTSCRIPTPUBKEY",
+          "OP_DROP",
+          "OP_EQUALVERIFY",
+          "1",
+          "OP_INSPECTOUTPUTVALUE",
+          "1",
+          "OP_INSPECTINPUTVALUE",
+          "OP_EQUALVERIFY",
+          "1",
+          "OP_INSPECTINASSETCOUNT",
+          "1",
+          "OP_EQUAL",
+          "OP_IF",
+          "1",
+          "OP_INSPECTOUTASSETCOUNT",
+          "1",
+          "OP_EQUAL",
+          "OP_ELSE",
+          "OP_0",
+          "OP_ENDIF",
+          "OP_NIP",
+          "OP_NIP",
+          "OP_NIP",
+          "OP_NIP",
+          "OP_NIP"
+        ]
+      },
+      "leaves": [
+        {
+          "name": "advance",
+          "witness": [
+            {
+              "name": "serverSig",
+              "type": "signature",
+              "encoding": "schnorr-64",
+              "injected": true
+            },
+            {
+              "name": "emulatorSig",
+              "type": "signature",
+              "encoding": "schnorr-64",
+              "injected": true
+            }
+          ],
+          "asm": [
+            "<SERVER_KEY>",
+            "OP_CHECKSIGVERIFY",
+            "<EMULATOR_KEY:advance>",
+            "OP_CHECKSIG"
+          ]
+        }
+      ]
+    }
+  ],
+  "source": {
+    "entry": "lane.ark",
+    "files": {
+      "lane.ark": "pragma arkade ^0.1.0;\nimport \"./resource.ark\";\ncontract PocLane(bytes32 gateProgram, bytes32 applyClosure, bytes32 sealClosure, AssetId identity) {\n    function advance() {\n        Resource.leader(gateProgram, applyClosure, sealClosure);\n        Resource.continueIdentity(identity, 1);\n        require(tx.outputs[1].value == tx.inputs[1].value, \"lane carrier\");\n        require(tx.inputs[1].assets.length == 1 && tx.outputs[1].assets.length == 1);\n    }\n}\n",
+      "resource.ark": "pragma arkade ^0.1.0;\nimport \"./wire.ark\";\nlibrary Resource {\n    function leader(bytes32 gateProgram, bytes32 applyClosure, bytes32 sealClosure) {\n        require(tx.inputs[0].scriptPubKey == gateProgram, \"leader lock\");\n        int operation = Wire.operation();\n        if (operation == 0) { require(tx.inputs[0].arkadeScriptHash == applyClosure, \"apply closure\"); }\n        else { require(operation == 1, \"operation\"); require(tx.inputs[0].arkadeScriptHash == sealClosure, \"seal closure\"); }\n    }\n    function continueIdentity(AssetId identity, int index) {\n        require(this.activeInputIndex == index, \"resource position\");\n        require(tx.inputs[index].assets.lookup(identity.txid, identity.gidx) == 1, \"input identity\");\n        require(tx.outputs[index].assets.lookup(identity.txid, identity.gidx) == 1, \"output identity\");\n        require(tx.outputs[index].scriptPubKey == tx.inputs[index].scriptPubKey, \"resource continuation\");\n    }\n}\n",
+      "wire.ark": "pragma arkade ^0.1.0;\nlibrary Wire {\n    const int PUBLIC_A = 128;\n    const int PUBLIC_B = 129;\n    const int TRANSITION = 130;\n    const int STATE = 131;\n    const bytes FR = 0x010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430;\n    function scalar(bytes data, int offset, int modulus) int {\n        bytes positive = substr(data, offset, 32) + 0x00;\n        int result = bin2num(positive);\n        require(result < modulus, \"noncanonical field\");\n        return result;\n    }\n    function destination(bytes program) int {\n        require(size(program) == 32, \"payout program width\");\n        bytes digest = sha256(program) + 0x00;\n        int message = bin2num(digest);\n        bytes modulusBytes = FR + 0x00;\n        int modulus = bin2num(modulusBytes);\n        return modExp(message, 1, modulus);\n    }\n    function modulus() int {\n        bytes encoded = FR + 0x00;\n        return bin2num(encoded);\n    }\n    function operation() int {\n        bytes data = tx.packet(TRANSITION);\n        return scalar(data, 0, modulus());\n    }\n    function publicData() int[36] {\n        int fieldModulus = modulus();\n        bytes first = tx.packet(PUBLIC_A);\n        bytes second = tx.packet(PUBLIC_B);\n        bytes transition = tx.packet(TRANSITION);\n        require(size(first) == 416, \"intent packet A width\");\n        require(size(second) == 384, \"intent packet B width\");\n        require(size(transition) == 352, \"transition packet width\");\n        return [\n            scalar(first, 0, fieldModulus),\n            scalar(first, 32, fieldModulus),\n            scalar(first, 64, fieldModulus),\n            scalar(first, 96, fieldModulus),\n            scalar(first, 128, fieldModulus),\n            scalar(first, 160, fieldModulus),\n            scalar(first, 192, fieldModulus),\n            scalar(first, 224, fieldModulus),\n            scalar(first, 256, fieldModulus),\n            scalar(first, 288, fieldModulus),\n            scalar(first, 320, fieldModulus),\n            scalar(first, 352, fieldModulus),\n            scalar(first, 384, fieldModulus),\n            scalar(second, 0, fieldModulus),\n            scalar(second, 32, fieldModulus),\n            scalar(second, 64, fieldModulus),\n            scalar(second, 96, fieldModulus),\n            scalar(second, 128, fieldModulus),\n            scalar(second, 160, fieldModulus),\n            scalar(second, 192, fieldModulus),\n            scalar(second, 224, fieldModulus),\n            scalar(second, 256, fieldModulus),\n            scalar(second, 288, fieldModulus),\n            scalar(second, 320, fieldModulus),\n            scalar(second, 352, fieldModulus),\n            scalar(transition, 0, fieldModulus),\n            scalar(transition, 32, fieldModulus),\n            scalar(transition, 64, fieldModulus),\n            scalar(transition, 96, fieldModulus),\n            scalar(transition, 128, fieldModulus),\n            scalar(transition, 160, fieldModulus),\n            scalar(transition, 192, fieldModulus),\n            scalar(transition, 224, fieldModulus),\n            scalar(transition, 256, fieldModulus),\n            scalar(transition, 288, fieldModulus),\n            scalar(transition, 320, fieldModulus)\n        ];\n    }\n    function state(int[36] data) {\n        int fieldModulus = modulus();\n        bytes previous = tx.inputs[1].packet(STATE);\n        bytes next = tx.packet(STATE);\n        require(size(previous) == 160 && size(next) == 160, \"lane state width\");\n        require(scalar(previous, 0, fieldModulus) == data[26], \"old state field\");\n        require(scalar(next, 0, fieldModulus) == data[27], \"new state field\");\n        require(scalar(previous, 32, fieldModulus) == data[28], \"old state field\");\n        require(scalar(next, 32, fieldModulus) == data[29], \"new state field\");\n        require(scalar(previous, 64, fieldModulus) == data[30], \"old state field\");\n        require(scalar(next, 64, fieldModulus) == data[31], \"new state field\");\n        require(scalar(previous, 96, fieldModulus) == data[32], \"old state field\");\n        require(scalar(next, 96, fieldModulus) == data[33], \"new state field\");\n        require(scalar(previous, 128, fieldModulus) == data[34], \"old state field\");\n        require(scalar(next, 128, fieldModulus) == data[35], \"new state field\");\n    }\n}\n"
+    }
+  },
+  "compiler": {
+    "name": "arkadec",
+    "version": "0.1.0",
+    "options": {
+      "optimize": true
+    }
+  },
+  "updatedAt": "2026-09-30T17:24:46.033358900+00:00",
+  "fingerprint": "sha256:71ae3c0c150a1f28f9b48ff1fe22933fd5167badfe1aa199124a1dade29d7c2b"
+}

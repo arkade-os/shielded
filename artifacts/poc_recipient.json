@@ -1,0 +1,93 @@
+{
+  "formatVersion": 1,
+  "contractName": "PocRecipient",
+  "constructorInputs": [
+    {
+      "name": "owner",
+      "type": "pubkey"
+    },
+    {
+      "name": "exitDelay",
+      "type": "int"
+    }
+  ],
+  "functions": [
+    {
+      "name": "spend",
+      "arkade": {
+        "inputs": [
+          {
+            "name": "ownerSig",
+            "type": "signature"
+          }
+        ],
+        "asm": [
+          "<owner>",
+          "OP_CHECKSIG"
+        ]
+      },
+      "leaves": [
+        {
+          "name": "spend",
+          "witness": [
+            {
+              "name": "serverSig",
+              "type": "signature",
+              "encoding": "schnorr-64",
+              "injected": true
+            },
+            {
+              "name": "emulatorSig",
+              "type": "signature",
+              "encoding": "schnorr-64",
+              "injected": true
+            }
+          ],
+          "asm": [
+            "<SERVER_KEY>",
+            "OP_CHECKSIGVERIFY",
+            "<EMULATOR_KEY:spend>",
+            "OP_CHECKSIG"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unilateral",
+      "leaves": [
+        {
+          "name": "unilateral",
+          "witness": [
+            {
+              "name": "ownerSig",
+              "type": "signature",
+              "encoding": "schnorr-64"
+            }
+          ],
+          "asm": [
+            "<exitDelay>",
+            "OP_CHECKSEQUENCEVERIFY",
+            "OP_DROP",
+            "<owner>",
+            "OP_CHECKSIG"
+          ]
+        }
+      ]
+    }
+  ],
+  "source": {
+    "entry": "recipient.ark",
+    "files": {
+      "recipient.ark": "pragma arkade ^0.1.0;\n// Ordinary holder-controlled native payout used after authorized unshielding.\ncontract PocRecipient(pubkey owner, int exitDelay) {\n    function spend(signature ownerSig) {\n        require(checkSig(ownerSig, owner), \"holder signature\");\n    }\n    function unilateral(signature ownerSig) tapscript {\n        require(older(exitDelay));\n        require(checkSig(ownerSig, owner));\n    }\n}\n"
+    }
+  },
+  "compiler": {
+    "name": "arkadec",
+    "version": "0.1.0",
+    "options": {
+      "optimize": true
+    }
+  },
+  "updatedAt": "2026-09-30T17:24:46.095418700+00:00",
+  "fingerprint": "sha256:3e1f72f430b8ec1c254330fe935c332649b2fff8a918c8ba535427c46da3640b"
+}

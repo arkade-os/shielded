@@ -1,0 +1,55 @@
+diff --git a/packages/ts-sdk/src/arkade/opcodes.ts b/packages/ts-sdk/src/arkade/opcodes.ts
+index 835b31d..b3f42fa 100644
+--- a/packages/ts-sdk/src/arkade/opcodes.ts
++++ b/packages/ts-sdk/src/arkade/opcodes.ts
+@@ -1,7 +1,7 @@
+ /**
+  * Arkade Script Opcodes
+  *
+- * This module defines ONLY Arkade-specific opcodes (0xb3, 0xc3-0xf8).
++ * This module defines ONLY Arkade-specific opcodes (0xb3, 0xbb, 0xc3-0xf8).
+  * Standard Bitcoin opcodes are imported from @scure/btc-signer.
+  *
+  * Reference: arkade-os/emulator pkg/arkade/opcode.go.
+@@ -15,6 +15,9 @@ export const ARKADE_OP = {
+     // Merkle Branch Verification (0xb3 — repurposed NOP4 slot)
+     MERKLEBRANCHVERIFY: 0xb3,
+ 
++    // Replace a stack element at an index (compiler variable assignment).
++    PUT: 0xbb,
++
+     // Digest (0xc3)
+     DIGEST: 0xc3,
+ 
+diff --git a/packages/ts-sdk/test/arkade-put.test.ts b/packages/ts-sdk/test/arkade-put.test.ts
+new file mode 100644
+index 0000000..d130b98
+--- /dev/null
++++ b/packages/ts-sdk/test/arkade-put.test.ts
+@@ -0,0 +1,26 @@
++import { describe, expect, it } from "vitest";
++import { arkade } from "../src";
++
++describe("compiler variable assignment opcode", () => {
++    it("encodes, decodes and imports OP_PUT at the emulator's existing byte", () => {
++        expect(arkade.ARKADE_OP.PUT).toBe(0xbb);
++        const bytes = arkade.ArkadeScript.encode(["OP_1", "OP_0", "PUT"]);
++        expect(Array.from(bytes)).toEqual([0x51, 0x00, 0xbb]);
++        expect(arkade.ArkadeScript.decode(bytes)).toEqual([1, 0, "PUT"]);
++
++        const program = arkade.programFromArtifact({
++            contractName: "Assignment",
++            constructorInputs: [],
++            functions: [{
++                name: "advance",
++                arkade: { inputs: [], asm: ["OP_1", "OP_0", "OP_PUT", "OP_1"] },
++                leaves: [{
++                    name: "advance",
++                    asm: ["<SERVER_KEY>", "OP_CHECKSIGVERIFY", "<EMULATOR_KEY:advance>", "OP_CHECKSIG"],
++                }],
++            }],
++        });
++        expect(program.functions.advance.arkadeScript?.asm).toEqual(["OP_1", "OP_0", "PUT", "OP_1"]);
++        expect(arkade.resolveAsm(program.functions.advance.arkadeScript!.asm, {})).toEqual(new Uint8Array([0x51, 0x00, 0xbb, 0x51]));
++    });
++});

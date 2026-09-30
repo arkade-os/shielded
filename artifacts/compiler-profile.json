@@ -1,0 +1,13 @@
+{
+  "compiler": "arkadec",
+  "upstream": "https://github.com/arkade-os/compiler",
+  "featurePullRequest": "https://github.com/arkade-os/compiler/pull/124",
+  "recordedCheckoutCommit": "22ee412b91388a9e6c9256d08a6c35e3dbb8c9a3",
+  "binarySha256": "0597ab5f9739ef7092492df968f295ae32c393ab11ab8e58844bddff5c44e3dd",
+  "requiredFeatures": [
+    "ecPairingProduct",
+    "OP_PUT"
+  ],
+  "binaryPlatform": "windows-amd64",
+  "rebuild": "Build arkadec from compiler PR124; set ARKADEC_PATH to your binary and run npm run compile."
+}

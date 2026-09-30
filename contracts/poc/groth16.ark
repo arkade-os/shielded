@@ -1,0 +1,559 @@
+pragma arkade ^0.1.0;
+import "./types.ark";
+library Groth16 {
+    function coordinate(bytes32 digestValue, int value) bytes32 {
+        return sha256(digestValue + num2bin(value, 32));
+    }
+    function intentKeyHash(IntentKey key) bytes32 {
+        bytes32 result = sha256("ArkShieldPocVk:Intent:v1");
+        result = coordinate(result, key.alpha.x);
+        result = coordinate(result, key.alpha.y);
+        result = coordinate(result, key.betaNeg.xc1);
+        result = coordinate(result, key.betaNeg.xc0);
+        result = coordinate(result, key.betaNeg.yc1);
+        result = coordinate(result, key.betaNeg.yc0);
+        result = coordinate(result, key.gammaNeg.xc1);
+        result = coordinate(result, key.gammaNeg.xc0);
+        result = coordinate(result, key.gammaNeg.yc1);
+        result = coordinate(result, key.gammaNeg.yc0);
+        result = coordinate(result, key.deltaNeg.xc1);
+        result = coordinate(result, key.deltaNeg.xc0);
+        result = coordinate(result, key.deltaNeg.yc1);
+        result = coordinate(result, key.deltaNeg.yc0);
+        for (index, value) in key.icX { result = coordinate(result, value); }
+        for (index, value) in key.icY { result = coordinate(result, value); }
+        return result;
+    }
+    function transitionKeyHash(TransitionKey key) bytes32 {
+        bytes32 result = sha256("ArkShieldPocVk:Transition:v1");
+        result = coordinate(result, key.alpha.x);
+        result = coordinate(result, key.alpha.y);
+        result = coordinate(result, key.betaNeg.xc1);
+        result = coordinate(result, key.betaNeg.xc0);
+        result = coordinate(result, key.betaNeg.yc1);
+        result = coordinate(result, key.betaNeg.yc0);
+        result = coordinate(result, key.gammaNeg.xc1);
+        result = coordinate(result, key.gammaNeg.xc0);
+        result = coordinate(result, key.gammaNeg.yc1);
+        result = coordinate(result, key.gammaNeg.yc0);
+        result = coordinate(result, key.deltaNeg.xc1);
+        result = coordinate(result, key.deltaNeg.xc0);
+        result = coordinate(result, key.deltaNeg.yc1);
+        result = coordinate(result, key.deltaNeg.yc0);
+        for (index, value) in key.icX { result = coordinate(result, value); }
+        for (index, value) in key.icY { result = coordinate(result, value); }
+        return result;
+    }
+
+    function verifyIntent(IntentKey key, int[25] signals, Proof proof) {
+        int accumulatorX = key.icX[0];
+        int accumulatorY = key.icY[0];
+        // Deployment folds fixed domain IC1 * domain into IC0; begin() checks domain.
+        // Literal indices keep the verifier bounded without runtime array selection.
+        if (signals[1] > 0) {
+            int baseX1 = key.icX[2];
+            int baseY1 = key.icY[2];
+            int scalar1 = signals[1];
+            ECPoint product1 = ecMul(baseX1, baseY1, scalar1, 2);
+            ECPoint sum1 = ecAdd(accumulatorX, accumulatorY, product1.x, product1.y, 2);
+            accumulatorX = sum1.x;
+            accumulatorY = sum1.y;
+        } else { require(true); }
+        if (signals[2] > 0) {
+            int baseX2 = key.icX[3];
+            int baseY2 = key.icY[3];
+            int scalar2 = signals[2];
+            ECPoint product2 = ecMul(baseX2, baseY2, scalar2, 2);
+            ECPoint sum2 = ecAdd(accumulatorX, accumulatorY, product2.x, product2.y, 2);
+            accumulatorX = sum2.x;
+            accumulatorY = sum2.y;
+        } else { require(true); }
+        if (signals[3] > 0) {
+            int baseX3 = key.icX[4];
+            int baseY3 = key.icY[4];
+            int scalar3 = signals[3];
+            ECPoint product3 = ecMul(baseX3, baseY3, scalar3, 2);
+            ECPoint sum3 = ecAdd(accumulatorX, accumulatorY, product3.x, product3.y, 2);
+            accumulatorX = sum3.x;
+            accumulatorY = sum3.y;
+        } else { require(true); }
+        if (signals[4] > 0) {
+            int baseX4 = key.icX[5];
+            int baseY4 = key.icY[5];
+            int scalar4 = signals[4];
+            ECPoint product4 = ecMul(baseX4, baseY4, scalar4, 2);
+            ECPoint sum4 = ecAdd(accumulatorX, accumulatorY, product4.x, product4.y, 2);
+            accumulatorX = sum4.x;
+            accumulatorY = sum4.y;
+        } else { require(true); }
+        if (signals[5] > 0) {
+            int baseX5 = key.icX[6];
+            int baseY5 = key.icY[6];
+            int scalar5 = signals[5];
+            ECPoint product5 = ecMul(baseX5, baseY5, scalar5, 2);
+            ECPoint sum5 = ecAdd(accumulatorX, accumulatorY, product5.x, product5.y, 2);
+            accumulatorX = sum5.x;
+            accumulatorY = sum5.y;
+        } else { require(true); }
+        if (signals[6] > 0) {
+            int baseX6 = key.icX[7];
+            int baseY6 = key.icY[7];
+            int scalar6 = signals[6];
+            ECPoint product6 = ecMul(baseX6, baseY6, scalar6, 2);
+            ECPoint sum6 = ecAdd(accumulatorX, accumulatorY, product6.x, product6.y, 2);
+            accumulatorX = sum6.x;
+            accumulatorY = sum6.y;
+        } else { require(true); }
+        if (signals[7] > 0) {
+            int baseX7 = key.icX[8];
+            int baseY7 = key.icY[8];
+            int scalar7 = signals[7];
+            ECPoint product7 = ecMul(baseX7, baseY7, scalar7, 2);
+            ECPoint sum7 = ecAdd(accumulatorX, accumulatorY, product7.x, product7.y, 2);
+            accumulatorX = sum7.x;
+            accumulatorY = sum7.y;
+        } else { require(true); }
+        if (signals[8] > 0) {
+            int baseX8 = key.icX[9];
+            int baseY8 = key.icY[9];
+            int scalar8 = signals[8];
+            ECPoint product8 = ecMul(baseX8, baseY8, scalar8, 2);
+            ECPoint sum8 = ecAdd(accumulatorX, accumulatorY, product8.x, product8.y, 2);
+            accumulatorX = sum8.x;
+            accumulatorY = sum8.y;
+        } else { require(true); }
+        if (signals[9] > 0) {
+            int baseX9 = key.icX[10];
+            int baseY9 = key.icY[10];
+            int scalar9 = signals[9];
+            ECPoint product9 = ecMul(baseX9, baseY9, scalar9, 2);
+            ECPoint sum9 = ecAdd(accumulatorX, accumulatorY, product9.x, product9.y, 2);
+            accumulatorX = sum9.x;
+            accumulatorY = sum9.y;
+        } else { require(true); }
+        if (signals[10] > 0) {
+            int baseX10 = key.icX[11];
+            int baseY10 = key.icY[11];
+            int scalar10 = signals[10];
+            ECPoint product10 = ecMul(baseX10, baseY10, scalar10, 2);
+            ECPoint sum10 = ecAdd(accumulatorX, accumulatorY, product10.x, product10.y, 2);
+            accumulatorX = sum10.x;
+            accumulatorY = sum10.y;
+        } else { require(true); }
+        if (signals[11] > 0) {
+            int baseX11 = key.icX[12];
+            int baseY11 = key.icY[12];
+            int scalar11 = signals[11];
+            ECPoint product11 = ecMul(baseX11, baseY11, scalar11, 2);
+            ECPoint sum11 = ecAdd(accumulatorX, accumulatorY, product11.x, product11.y, 2);
+            accumulatorX = sum11.x;
+            accumulatorY = sum11.y;
+        } else { require(true); }
+        if (signals[12] > 0) {
+            int baseX12 = key.icX[13];
+            int baseY12 = key.icY[13];
+            int scalar12 = signals[12];
+            ECPoint product12 = ecMul(baseX12, baseY12, scalar12, 2);
+            ECPoint sum12 = ecAdd(accumulatorX, accumulatorY, product12.x, product12.y, 2);
+            accumulatorX = sum12.x;
+            accumulatorY = sum12.y;
+        } else { require(true); }
+        if (signals[13] > 0) {
+            int baseX13 = key.icX[14];
+            int baseY13 = key.icY[14];
+            int scalar13 = signals[13];
+            ECPoint product13 = ecMul(baseX13, baseY13, scalar13, 2);
+            ECPoint sum13 = ecAdd(accumulatorX, accumulatorY, product13.x, product13.y, 2);
+            accumulatorX = sum13.x;
+            accumulatorY = sum13.y;
+        } else { require(true); }
+        if (signals[14] > 0) {
+            int baseX14 = key.icX[15];
+            int baseY14 = key.icY[15];
+            int scalar14 = signals[14];
+            ECPoint product14 = ecMul(baseX14, baseY14, scalar14, 2);
+            ECPoint sum14 = ecAdd(accumulatorX, accumulatorY, product14.x, product14.y, 2);
+            accumulatorX = sum14.x;
+            accumulatorY = sum14.y;
+        } else { require(true); }
+        if (signals[15] > 0) {
+            int baseX15 = key.icX[16];
+            int baseY15 = key.icY[16];
+            int scalar15 = signals[15];
+            ECPoint product15 = ecMul(baseX15, baseY15, scalar15, 2);
+            ECPoint sum15 = ecAdd(accumulatorX, accumulatorY, product15.x, product15.y, 2);
+            accumulatorX = sum15.x;
+            accumulatorY = sum15.y;
+        } else { require(true); }
+        if (signals[16] > 0) {
+            int baseX16 = key.icX[17];
+            int baseY16 = key.icY[17];
+            int scalar16 = signals[16];
+            ECPoint product16 = ecMul(baseX16, baseY16, scalar16, 2);
+            ECPoint sum16 = ecAdd(accumulatorX, accumulatorY, product16.x, product16.y, 2);
+            accumulatorX = sum16.x;
+            accumulatorY = sum16.y;
+        } else { require(true); }
+        if (signals[17] > 0) {
+            int baseX17 = key.icX[18];
+            int baseY17 = key.icY[18];
+            int scalar17 = signals[17];
+            ECPoint product17 = ecMul(baseX17, baseY17, scalar17, 2);
+            ECPoint sum17 = ecAdd(accumulatorX, accumulatorY, product17.x, product17.y, 2);
+            accumulatorX = sum17.x;
+            accumulatorY = sum17.y;
+        } else { require(true); }
+        if (signals[18] > 0) {
+            int baseX18 = key.icX[19];
+            int baseY18 = key.icY[19];
+            int scalar18 = signals[18];
+            ECPoint product18 = ecMul(baseX18, baseY18, scalar18, 2);
+            ECPoint sum18 = ecAdd(accumulatorX, accumulatorY, product18.x, product18.y, 2);
+            accumulatorX = sum18.x;
+            accumulatorY = sum18.y;
+        } else { require(true); }
+        if (signals[19] > 0) {
+            int baseX19 = key.icX[20];
+            int baseY19 = key.icY[20];
+            int scalar19 = signals[19];
+            ECPoint product19 = ecMul(baseX19, baseY19, scalar19, 2);
+            ECPoint sum19 = ecAdd(accumulatorX, accumulatorY, product19.x, product19.y, 2);
+            accumulatorX = sum19.x;
+            accumulatorY = sum19.y;
+        } else { require(true); }
+        if (signals[20] > 0) {
+            int baseX20 = key.icX[21];
+            int baseY20 = key.icY[21];
+            int scalar20 = signals[20];
+            ECPoint product20 = ecMul(baseX20, baseY20, scalar20, 2);
+            ECPoint sum20 = ecAdd(accumulatorX, accumulatorY, product20.x, product20.y, 2);
+            accumulatorX = sum20.x;
+            accumulatorY = sum20.y;
+        } else { require(true); }
+        if (signals[21] > 0) {
+            int baseX21 = key.icX[22];
+            int baseY21 = key.icY[22];
+            int scalar21 = signals[21];
+            ECPoint product21 = ecMul(baseX21, baseY21, scalar21, 2);
+            ECPoint sum21 = ecAdd(accumulatorX, accumulatorY, product21.x, product21.y, 2);
+            accumulatorX = sum21.x;
+            accumulatorY = sum21.y;
+        } else { require(true); }
+        if (signals[22] > 0) {
+            int baseX22 = key.icX[23];
+            int baseY22 = key.icY[23];
+            int scalar22 = signals[22];
+            ECPoint product22 = ecMul(baseX22, baseY22, scalar22, 2);
+            ECPoint sum22 = ecAdd(accumulatorX, accumulatorY, product22.x, product22.y, 2);
+            accumulatorX = sum22.x;
+            accumulatorY = sum22.y;
+        } else { require(true); }
+        if (signals[23] > 0) {
+            int baseX23 = key.icX[24];
+            int baseY23 = key.icY[24];
+            int scalar23 = signals[23];
+            ECPoint product23 = ecMul(baseX23, baseY23, scalar23, 2);
+            ECPoint sum23 = ecAdd(accumulatorX, accumulatorY, product23.x, product23.y, 2);
+            accumulatorX = sum23.x;
+            accumulatorY = sum23.y;
+        } else { require(true); }
+        if (signals[24] > 0) {
+            int baseX24 = key.icX[25];
+            int baseY24 = key.icY[25];
+            int scalar24 = signals[24];
+            ECPoint product24 = ecMul(baseX24, baseY24, scalar24, 2);
+            ECPoint sum24 = ecAdd(accumulatorX, accumulatorY, product24.x, product24.y, 2);
+            accumulatorX = sum24.x;
+            accumulatorY = sum24.y;
+        } else { require(true); }
+        int[24] coordinates = [
+            proof.a.x, proof.a.y,
+            proof.b.xc1, proof.b.xc0, proof.b.yc1, proof.b.yc0,
+            proof.c.x, proof.c.y,
+            key.deltaNeg.xc1, key.deltaNeg.xc0, key.deltaNeg.yc1, key.deltaNeg.yc0,
+            accumulatorX, accumulatorY,
+            key.gammaNeg.xc1, key.gammaNeg.xc0, key.gammaNeg.yc1, key.gammaNeg.yc0,
+            key.alpha.x, key.alpha.y,
+            key.betaNeg.xc1, key.betaNeg.xc0, key.betaNeg.yc1, key.betaNeg.yc0
+        ];
+        require(ecPairingProduct(coordinates, 2), "invalid intent proof");
+    }
+    function verifyTransition(TransitionKey key, int[30] signals, Proof proof) {
+        int accumulatorX = key.icX[0];
+        int accumulatorY = key.icY[0];
+        // Deployment folds fixed domain IC1 * domain into IC0; begin() checks domain.
+        // Literal indices keep the verifier bounded without runtime array selection.
+        if (signals[1] > 0) {
+            int baseX1 = key.icX[2];
+            int baseY1 = key.icY[2];
+            int scalar1 = signals[1];
+            ECPoint product1 = ecMul(baseX1, baseY1, scalar1, 2);
+            ECPoint sum1 = ecAdd(accumulatorX, accumulatorY, product1.x, product1.y, 2);
+            accumulatorX = sum1.x;
+            accumulatorY = sum1.y;
+        } else { require(true); }
+        if (signals[2] > 0) {
+            int baseX2 = key.icX[3];
+            int baseY2 = key.icY[3];
+            int scalar2 = signals[2];
+            ECPoint product2 = ecMul(baseX2, baseY2, scalar2, 2);
+            ECPoint sum2 = ecAdd(accumulatorX, accumulatorY, product2.x, product2.y, 2);
+            accumulatorX = sum2.x;
+            accumulatorY = sum2.y;
+        } else { require(true); }
+        if (signals[3] > 0) {
+            int baseX3 = key.icX[4];
+            int baseY3 = key.icY[4];
+            int scalar3 = signals[3];
+            ECPoint product3 = ecMul(baseX3, baseY3, scalar3, 2);
+            ECPoint sum3 = ecAdd(accumulatorX, accumulatorY, product3.x, product3.y, 2);
+            accumulatorX = sum3.x;
+            accumulatorY = sum3.y;
+        } else { require(true); }
+        if (signals[4] > 0) {
+            int baseX4 = key.icX[5];
+            int baseY4 = key.icY[5];
+            int scalar4 = signals[4];
+            ECPoint product4 = ecMul(baseX4, baseY4, scalar4, 2);
+            ECPoint sum4 = ecAdd(accumulatorX, accumulatorY, product4.x, product4.y, 2);
+            accumulatorX = sum4.x;
+            accumulatorY = sum4.y;
+        } else { require(true); }
+        if (signals[5] > 0) {
+            int baseX5 = key.icX[6];
+            int baseY5 = key.icY[6];
+            int scalar5 = signals[5];
+            ECPoint product5 = ecMul(baseX5, baseY5, scalar5, 2);
+            ECPoint sum5 = ecAdd(accumulatorX, accumulatorY, product5.x, product5.y, 2);
+            accumulatorX = sum5.x;
+            accumulatorY = sum5.y;
+        } else { require(true); }
+        if (signals[6] > 0) {
+            int baseX6 = key.icX[7];
+            int baseY6 = key.icY[7];
+            int scalar6 = signals[6];
+            ECPoint product6 = ecMul(baseX6, baseY6, scalar6, 2);
+            ECPoint sum6 = ecAdd(accumulatorX, accumulatorY, product6.x, product6.y, 2);
+            accumulatorX = sum6.x;
+            accumulatorY = sum6.y;
+        } else { require(true); }
+        if (signals[7] > 0) {
+            int baseX7 = key.icX[8];
+            int baseY7 = key.icY[8];
+            int scalar7 = signals[7];
+            ECPoint product7 = ecMul(baseX7, baseY7, scalar7, 2);
+            ECPoint sum7 = ecAdd(accumulatorX, accumulatorY, product7.x, product7.y, 2);
+            accumulatorX = sum7.x;
+            accumulatorY = sum7.y;
+        } else { require(true); }
+        if (signals[8] > 0) {
+            int baseX8 = key.icX[9];
+            int baseY8 = key.icY[9];
+            int scalar8 = signals[8];
+            ECPoint product8 = ecMul(baseX8, baseY8, scalar8, 2);
+            ECPoint sum8 = ecAdd(accumulatorX, accumulatorY, product8.x, product8.y, 2);
+            accumulatorX = sum8.x;
+            accumulatorY = sum8.y;
+        } else { require(true); }
+        if (signals[9] > 0) {
+            int baseX9 = key.icX[10];
+            int baseY9 = key.icY[10];
+            int scalar9 = signals[9];
+            ECPoint product9 = ecMul(baseX9, baseY9, scalar9, 2);
+            ECPoint sum9 = ecAdd(accumulatorX, accumulatorY, product9.x, product9.y, 2);
+            accumulatorX = sum9.x;
+            accumulatorY = sum9.y;
+        } else { require(true); }
+        if (signals[10] > 0) {
+            int baseX10 = key.icX[11];
+            int baseY10 = key.icY[11];
+            int scalar10 = signals[10];
+            ECPoint product10 = ecMul(baseX10, baseY10, scalar10, 2);
+            ECPoint sum10 = ecAdd(accumulatorX, accumulatorY, product10.x, product10.y, 2);
+            accumulatorX = sum10.x;
+            accumulatorY = sum10.y;
+        } else { require(true); }
+        if (signals[11] > 0) {
+            int baseX11 = key.icX[12];
+            int baseY11 = key.icY[12];
+            int scalar11 = signals[11];
+            ECPoint product11 = ecMul(baseX11, baseY11, scalar11, 2);
+            ECPoint sum11 = ecAdd(accumulatorX, accumulatorY, product11.x, product11.y, 2);
+            accumulatorX = sum11.x;
+            accumulatorY = sum11.y;
+        } else { require(true); }
+        if (signals[12] > 0) {
+            int baseX12 = key.icX[13];
+            int baseY12 = key.icY[13];
+            int scalar12 = signals[12];
+            ECPoint product12 = ecMul(baseX12, baseY12, scalar12, 2);
+            ECPoint sum12 = ecAdd(accumulatorX, accumulatorY, product12.x, product12.y, 2);
+            accumulatorX = sum12.x;
+            accumulatorY = sum12.y;
+        } else { require(true); }
+        if (signals[13] > 0) {
+            int baseX13 = key.icX[14];
+            int baseY13 = key.icY[14];
+            int scalar13 = signals[13];
+            ECPoint product13 = ecMul(baseX13, baseY13, scalar13, 2);
+            ECPoint sum13 = ecAdd(accumulatorX, accumulatorY, product13.x, product13.y, 2);
+            accumulatorX = sum13.x;
+            accumulatorY = sum13.y;
+        } else { require(true); }
+        if (signals[14] > 0) {
+            int baseX14 = key.icX[15];
+            int baseY14 = key.icY[15];
+            int scalar14 = signals[14];
+            ECPoint product14 = ecMul(baseX14, baseY14, scalar14, 2);
+            ECPoint sum14 = ecAdd(accumulatorX, accumulatorY, product14.x, product14.y, 2);
+            accumulatorX = sum14.x;
+            accumulatorY = sum14.y;
+        } else { require(true); }
+        if (signals[15] > 0) {
+            int baseX15 = key.icX[16];
+            int baseY15 = key.icY[16];
+            int scalar15 = signals[15];
+            ECPoint product15 = ecMul(baseX15, baseY15, scalar15, 2);
+            ECPoint sum15 = ecAdd(accumulatorX, accumulatorY, product15.x, product15.y, 2);
+            accumulatorX = sum15.x;
+            accumulatorY = sum15.y;
+        } else { require(true); }
+        if (signals[16] > 0) {
+            int baseX16 = key.icX[17];
+            int baseY16 = key.icY[17];
+            int scalar16 = signals[16];
+            ECPoint product16 = ecMul(baseX16, baseY16, scalar16, 2);
+            ECPoint sum16 = ecAdd(accumulatorX, accumulatorY, product16.x, product16.y, 2);
+            accumulatorX = sum16.x;
+            accumulatorY = sum16.y;
+        } else { require(true); }
+        if (signals[17] > 0) {
+            int baseX17 = key.icX[18];
+            int baseY17 = key.icY[18];
+            int scalar17 = signals[17];
+            ECPoint product17 = ecMul(baseX17, baseY17, scalar17, 2);
+            ECPoint sum17 = ecAdd(accumulatorX, accumulatorY, product17.x, product17.y, 2);
+            accumulatorX = sum17.x;
+            accumulatorY = sum17.y;
+        } else { require(true); }
+        if (signals[18] > 0) {
+            int baseX18 = key.icX[19];
+            int baseY18 = key.icY[19];
+            int scalar18 = signals[18];
+            ECPoint product18 = ecMul(baseX18, baseY18, scalar18, 2);
+            ECPoint sum18 = ecAdd(accumulatorX, accumulatorY, product18.x, product18.y, 2);
+            accumulatorX = sum18.x;
+            accumulatorY = sum18.y;
+        } else { require(true); }
+        if (signals[19] > 0) {
+            int baseX19 = key.icX[20];
+            int baseY19 = key.icY[20];
+            int scalar19 = signals[19];
+            ECPoint product19 = ecMul(baseX19, baseY19, scalar19, 2);
+            ECPoint sum19 = ecAdd(accumulatorX, accumulatorY, product19.x, product19.y, 2);
+            accumulatorX = sum19.x;
+            accumulatorY = sum19.y;
+        } else { require(true); }
+        if (signals[20] > 0) {
+            int baseX20 = key.icX[21];
+            int baseY20 = key.icY[21];
+            int scalar20 = signals[20];
+            ECPoint product20 = ecMul(baseX20, baseY20, scalar20, 2);
+            ECPoint sum20 = ecAdd(accumulatorX, accumulatorY, product20.x, product20.y, 2);
+            accumulatorX = sum20.x;
+            accumulatorY = sum20.y;
+        } else { require(true); }
+        if (signals[21] > 0) {
+            int baseX21 = key.icX[22];
+            int baseY21 = key.icY[22];
+            int scalar21 = signals[21];
+            ECPoint product21 = ecMul(baseX21, baseY21, scalar21, 2);
+            ECPoint sum21 = ecAdd(accumulatorX, accumulatorY, product21.x, product21.y, 2);
+            accumulatorX = sum21.x;
+            accumulatorY = sum21.y;
+        } else { require(true); }
+        if (signals[22] > 0) {
+            int baseX22 = key.icX[23];
+            int baseY22 = key.icY[23];
+            int scalar22 = signals[22];
+            ECPoint product22 = ecMul(baseX22, baseY22, scalar22, 2);
+            ECPoint sum22 = ecAdd(accumulatorX, accumulatorY, product22.x, product22.y, 2);
+            accumulatorX = sum22.x;
+            accumulatorY = sum22.y;
+        } else { require(true); }
+        if (signals[23] > 0) {
+            int baseX23 = key.icX[24];
+            int baseY23 = key.icY[24];
+            int scalar23 = signals[23];
+            ECPoint product23 = ecMul(baseX23, baseY23, scalar23, 2);
+            ECPoint sum23 = ecAdd(accumulatorX, accumulatorY, product23.x, product23.y, 2);
+            accumulatorX = sum23.x;
+            accumulatorY = sum23.y;
+        } else { require(true); }
+        if (signals[24] > 0) {
+            int baseX24 = key.icX[25];
+            int baseY24 = key.icY[25];
+            int scalar24 = signals[24];
+            ECPoint product24 = ecMul(baseX24, baseY24, scalar24, 2);
+            ECPoint sum24 = ecAdd(accumulatorX, accumulatorY, product24.x, product24.y, 2);
+            accumulatorX = sum24.x;
+            accumulatorY = sum24.y;
+        } else { require(true); }
+        if (signals[25] > 0) {
+            int baseX25 = key.icX[26];
+            int baseY25 = key.icY[26];
+            int scalar25 = signals[25];
+            ECPoint product25 = ecMul(baseX25, baseY25, scalar25, 2);
+            ECPoint sum25 = ecAdd(accumulatorX, accumulatorY, product25.x, product25.y, 2);
+            accumulatorX = sum25.x;
+            accumulatorY = sum25.y;
+        } else { require(true); }
+        if (signals[26] > 0) {
+            int baseX26 = key.icX[27];
+            int baseY26 = key.icY[27];
+            int scalar26 = signals[26];
+            ECPoint product26 = ecMul(baseX26, baseY26, scalar26, 2);
+            ECPoint sum26 = ecAdd(accumulatorX, accumulatorY, product26.x, product26.y, 2);
+            accumulatorX = sum26.x;
+            accumulatorY = sum26.y;
+        } else { require(true); }
+        if (signals[27] > 0) {
+            int baseX27 = key.icX[28];
+            int baseY27 = key.icY[28];
+            int scalar27 = signals[27];
+            ECPoint product27 = ecMul(baseX27, baseY27, scalar27, 2);
+            ECPoint sum27 = ecAdd(accumulatorX, accumulatorY, product27.x, product27.y, 2);
+            accumulatorX = sum27.x;
+            accumulatorY = sum27.y;
+        } else { require(true); }
+        if (signals[28] > 0) {
+            int baseX28 = key.icX[29];
+            int baseY28 = key.icY[29];
+            int scalar28 = signals[28];
+            ECPoint product28 = ecMul(baseX28, baseY28, scalar28, 2);
+            ECPoint sum28 = ecAdd(accumulatorX, accumulatorY, product28.x, product28.y, 2);
+            accumulatorX = sum28.x;
+            accumulatorY = sum28.y;
+        } else { require(true); }
+        if (signals[29] > 0) {
+            int baseX29 = key.icX[30];
+            int baseY29 = key.icY[30];
+            int scalar29 = signals[29];
+            ECPoint product29 = ecMul(baseX29, baseY29, scalar29, 2);
+            ECPoint sum29 = ecAdd(accumulatorX, accumulatorY, product29.x, product29.y, 2);
+            accumulatorX = sum29.x;
+            accumulatorY = sum29.y;
+        } else { require(true); }
+        int[24] coordinates = [
+            proof.a.x, proof.a.y,
+            proof.b.xc1, proof.b.xc0, proof.b.yc1, proof.b.yc0,
+            proof.c.x, proof.c.y,
+            key.deltaNeg.xc1, key.deltaNeg.xc0, key.deltaNeg.yc1, key.deltaNeg.yc0,
+            accumulatorX, accumulatorY,
+            key.gammaNeg.xc1, key.gammaNeg.xc0, key.gammaNeg.yc1, key.gammaNeg.yc0,
+            key.alpha.x, key.alpha.y,
+            key.betaNeg.xc1, key.betaNeg.xc0, key.betaNeg.yc1, key.betaNeg.yc0
+        ];
+        require(ecPairingProduct(coordinates, 2), "invalid transition proof");
+    }
+}

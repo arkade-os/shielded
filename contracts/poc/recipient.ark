@@ -1,0 +1,11 @@
+pragma arkade ^0.1.0;
+// Ordinary holder-controlled native payout used after authorized unshielding.
+contract PocRecipient(pubkey owner, int exitDelay) {
+    function spend(signature ownerSig) {
+        require(checkSig(ownerSig, owner), "holder signature");
+    }
+    function unilateral(signature ownerSig) tapscript {
+        require(older(exitDelay));
+        require(checkSig(ownerSig, owner));
+    }
+}

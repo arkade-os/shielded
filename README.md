@@ -1,49 +1,35 @@
-# Arkade shielded protocol — private research workspace
+# Shielded Arkade PoC
 
-**Experimental. Do not deploy or fund these contracts.**
+This private, experimental workspace contains a runnable local proof of concept. The current showcase compiles the `.ark` contracts in `contracts/poc/`, generates Groth16 proofs, builds transactions with the Arkade SDK, then submits them to the Go emulator's real `Service.SubmitTx` VM. It covers BTC and a demonstration token through **shield → seal → private transfer → seal → withdraw**. It is not deployable software; see [the PoC profile](spec/POC-PROFILE.md) for its bounded design and security limits.
 
-This workspace separates private multi-asset notes, sharded spend-state VTXOs,
-and native BTC/asset reserve vaults. It contains a design, a transparent reference
-model, and a fail-closed `.ark` scaffold — not a working private payment system.
+## Run on Windows
 
-## Review branches
-
-- `feat/protocol-design`: architecture, security boundaries, circuit requirements,
-  and transparent state-machine model. Review against `main`.
-- `feat/covenant-scaffold`: packet-backed lane/vault contracts, statement encoding,
-  and wire tests. Review against `feat/protocol-design`.
-
-## Dependencies
-
-Generic upstream work is separate from the private application:
-
-- https://github.com/arkade-os/compiler/pull/124 — pairing-product source interface.
-- https://github.com/arkade-os/emulator/pull/164 — pairing-product budget regressions.
-
-The scaffold compiles with upstream compiler snapshot
-`df116dd98baec0530f3a872755d6d3ffa2fa6c7e` because its pairing adapter deliberately
-rejects all calls. Merging the compiler PR does not make this application deployable.
-
-## Local checks
+Install Node.js 24 or newer and Go 1.26.6 or newer. From this directory:
 
 ```sh
-python model/reference_model.py
-python -m unittest discover -s tests -v
-python scripts/check_contracts.py --compiler /path/to/arkadec
+npm ci
+npm run vm:build
+npm run build
+npm run server
 ```
 
-Compilation checks cover both optimization settings. They are not VM execution,
-proof verification, or an audit. The transparent model proves no cryptographic
-security property. Generated artifacts go to `build/` and are not committed.
+Open <http://127.0.0.1:8787>. This serves the built app and API on loopback. For app hot reload, use `npm run dev` by itself; it starts both the API on port 8787 and Vite at <http://127.0.0.1:5173>.
 
-## Still required
+`npm ci` applies the pinned SDK PUT-opcode compatibility patch. `npm run vm:build` builds the platform-specific VM binary from Go; binaries are local build outputs and are not committed. The compiled Programs and proving artifacts are included for normal runs. To recompile the PoC contracts on either platform, set `ARKADEC_PATH` or `ARKADEC` to a compiler you built from the pairing-product branch used by compiler PR 124; the compiler checkout under `.deps/` is local-only and is not included.
 
-Actual private-intent and native-transition circuits; setup/verification keys;
-complete authentic native-asset provenance and checkpoint adapter; executable VM
-integration; packet allocation; data-availability/recovery services; refresh and
-expiry handling; emergency-exit analysis; and independent review.
+## Validate
 
-The note/UTXO architecture is in `spec/protocol-design.md`. The compiler-specific
-packet-state adaptation is described in `spec/IMPLEMENTATION.md`. Earlier
-brainstorms are not normative. Keep protocol-specific source and discussion in
-this private workspace until explicitly approved for publication.
+```sh
+npm test
+npm run build
+npm run test:primitives
+npm run test:e2e
+```
+
+The unit suite covers SDK covenant construction and rejection cases. The primitive smoke flow makes real proofs and exercises stale-state rejection and rebase. The end-to-end report in [validation/e2e.json](validation/e2e.json) records the actual compiler → SDK Program → proof → emulator path, including accepted transactions, withdrawal, replay/tamper rejection, and key omission from the API. To run the Go bridge checks independently, use `cd tools/vm` then `go test ./...`.
+
+## Limits and older design
+
+The showcase uses synthetic genesis/funding, deterministic test signing keys, and single-party test proving keys. Do not fund these programs or treat emulator signatures as Bitcoin confirmations. The observer view is a display filter, and wallet state is local to one process. The profile is limited to one lane, bounded note/history trees, and one asset boundary per settlement; it does not provide live arkd/Bitcoin settlement, durable recovery, refresh/expiry handling, emergency exits, or independent production security review. See [spec/POC-PROFILE.md](spec/POC-PROFILE.md), [tools/vm/README.md](tools/vm/README.md), and [HANDOFF.md](HANDOFF.md) before extending it.
+
+The earlier research design and fail-closed contract scaffold remain in [spec/protocol-design.md](spec/protocol-design.md) and `contracts/`. They are distinct from the runnable bounded profile under `contracts/poc/` and are not used by this showcase. Keep protocol-specific work private unless publication is explicitly approved.

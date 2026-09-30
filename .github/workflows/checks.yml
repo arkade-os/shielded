@@ -14,3 +14,21 @@ jobs:
           python-version: '3.12'
       - run: python model/reference_model.py
       - run: python -m unittest discover -s tests -v
+  executable-poc:
+    runs-on: ubuntu-latest
+    container: node:24-bookworm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: tools/vm/go.sum
+      - run: npm ci
+      - run: npm run vm:build
+      - run: go test ./...
+        working-directory: tools/vm
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:e2e

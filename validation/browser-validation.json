@@ -1,0 +1,122 @@
+{
+  "passed": true,
+  "url": "http://127.0.0.1:8787",
+  "nativeAccepted": 10,
+  "browserChecks": [
+    "BTC shield/seal/transfer/seal/withdraw",
+    "TOKEN shield/seal/transfer/seal/withdraw in the same session",
+    "Bob and withdrawal amounts preserved through second seal",
+    "Only supported wallets selectable",
+    "Actual public synthetic funding displayed",
+    "Replay rejected",
+    "Tampered effects rejected by actual VM",
+    "Primitives and verified withdrawal inspector"
+  ],
+  "reserves": [
+    {
+      "asset": "BTC",
+      "reserve": 90000,
+      "liabilities": 90000
+    },
+    {
+      "asset": "TOKEN",
+      "reserve": 900,
+      "liabilities": 900
+    }
+  ],
+  "publicPayouts": {
+    "BTC": 10000,
+    "TOKEN": 100
+  },
+  "transactions": [
+    {
+      "type": "shield",
+      "txid": "18432bea41886235d033428b983b6d849e0a08f9e8bb87f7b128bac19c8264b9",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 6
+    },
+    {
+      "type": "seal",
+      "txid": "60a797f60569132516db1cde2e07e56b9ee2cd0784acec9ce614db8bcff00216",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 4
+    },
+    {
+      "type": "transfer",
+      "txid": "0d5b70ca3fa572bda944dd03d77d7393bf6686db7a1ff6ae17909c6562e91014",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 4
+    },
+    {
+      "type": "seal",
+      "txid": "6acdfd877042ea1547729c8a35d82475d9be2065a1d581252c4fe4a3e9048404",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 4
+    },
+    {
+      "type": "withdraw",
+      "txid": "ccb121d17581e67f7b0066f0b72fd07d39dfbe09f95a3fb63f1889c08dc700f3",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 6
+    },
+    {
+      "type": "shield",
+      "txid": "3b2462e6e34763f882871b8a25fb3f4ac0d5ee1ff897d44eaf5ce8df7cf75c32",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 6
+    },
+    {
+      "type": "seal",
+      "txid": "08b0c361459f1089016f2e577310dbcb0f3e39b0f96d47123165019371a8c964",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 4
+    },
+    {
+      "type": "transfer",
+      "txid": "5c77d1466e5079ab07b5416f23ce9f720c0386fa471114523013fbbde8f93a08",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 4
+    },
+    {
+      "type": "seal",
+      "txid": "792998f7a0b6a13234dda245f7ef82e81fe5ef522dc44c57cdc436044d65c71c",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 4
+    },
+    {
+      "type": "withdraw",
+      "txid": "3559ea3ecd8a52d492eb0beb2a2346f8916c728d18449d3ff75c8d0ee0725056",
+      "proofVerified": true,
+      "vmVerified": true,
+      "signatureCount": 6
+    }
+  ],
+  "rejected": [
+    {
+      "type": "replay",
+      "status": "rejected",
+      "summary": "The current nullifier dictionary rejected a second spend",
+      "rejectedAt": "public-state proof preparation",
+      "error": "Nullifier already spent."
+    },
+    {
+      "type": "tamper",
+      "status": "rejected",
+      "summary": "Compiled covenant rejected substituted output commitment",
+      "rejectedAt": "actual emulator VM",
+      "error": "failed to execute arkade script: failed to execute arkade script: OP_VERIFY failed vin=0"
+    }
+  ],
+  "compilerCommit": "22ee412b91388a9e6c9256d08a6c35e3dbb8c9a3",
+  "screenshot": "validation/showcase.jpg",
+  "finality": "Local emulator co-signing; synthetic genesis; no live arkd/Bitcoin settlement"
+}

@@ -1,0 +1,172 @@
+pragma arkade ^0.1.0;
+import "./types.ark";
+import "./wire.ark";
+import "./groth16.ark";
+contract PocGate(int domain, AssetId laneIdentity, AssetId btcIdentity, AssetId tokenIdentity, AssetId tokenAsset, bytes32 intentKeyHash, bytes32 transitionKeyHash) {
+    private function identityAt(AssetId identity, int index) {
+        require(tx.inputs[index].assets.lookup(identity.txid, identity.gidx) == 1, "input identity");
+        require(tx.outputs[index].assets.lookup(identity.txid, identity.gidx) == 1, "output identity");
+        require(tx.outputs[index].scriptPubKey == tx.inputs[index].scriptPubKey, "resource continuation");
+    }
+    private function tokenInput(int index) int {
+        int amount = 0;
+        if (tx.inputs[index].assets.has(tokenAsset.txid, tokenAsset.gidx)) {
+            amount = tx.inputs[index].assets.lookup(tokenAsset.txid, tokenAsset.gidx);
+        } else { require(true); }
+        return amount;
+    }
+    private function tokenOutput(int index) int {
+        int amount = 0;
+        if (tx.outputs[index].assets.has(tokenAsset.txid, tokenAsset.gidx)) {
+            amount = tx.outputs[index].assets.lookup(tokenAsset.txid, tokenAsset.gidx);
+        } else { require(true); }
+        return amount;
+    }
+    private function carrier(int index) {
+        require(tx.outputs[index].value == tx.inputs[index].value, "carrier drained");
+    }
+    private function begin(int[36] data) {
+        require(this.activeInputIndex == 0, "leader position");
+        require(!tx.intent.has("type"), "native transaction required");
+        require(domain > 0 && data[0] == domain, "domain");
+        require(tx.outputs[0].scriptPubKey == tx.inputs[0].scriptPubKey, "verifier continuation");
+        identityAt(laneIdentity, 1);
+        carrier(1);
+        require(tx.inputs[1].assets.length == 1 && tx.outputs[1].assets.length == 1, "lane assets");
+        Wire.state(data);
+    }
+    private function transition(int[36] data, TransitionKey transitionKey, Proof proof) {
+        int[30] signals = [
+            data[0],
+            data[1],
+            data[2],
+            data[3],
+            data[4],
+            data[5],
+            data[6],
+            data[7],
+            data[8],
+            data[9],
+            data[10],
+            data[11],
+            data[12],
+            data[13],
+            data[14],
+            data[15],
+            data[16],
+            data[17],
+            data[18],
+            data[25],
+            data[26],
+            data[27],
+            data[28],
+            data[29],
+            data[30],
+            data[31],
+            data[32],
+            data[33],
+            data[34],
+            data[35]
+        ];
+        Groth16.verifyTransition(transitionKey, signals, proof);
+    }
+    private function end(int regularOutputs) {
+        require(tx.numOutputs == regularOutputs + 2, "output shape");
+        require(tx.outputs[regularOutputs].value == 0 && tx.outputs[regularOutputs].assets.length == 0, "extension contents");
+        int anchorIndex = regularOutputs + 1;
+        require(tx.outputs[anchorIndex].value == 0 && tx.outputs[anchorIndex].assets.length == 0, "anchor contents");
+    }
+    function apply(IntentKey intentKey, TransitionKey transitionKey, Proof intentProof, Proof transitionProof) {
+        require(Groth16.intentKeyHash(intentKey) == intentKeyHash, "intent verification key");
+        require(Groth16.transitionKeyHash(transitionKey) == transitionKeyHash, "transition verification key");
+        int[36] data = Wire.publicData();
+        require(data[25] == 0, "apply operation");
+        begin(data);
+        int[25] signals = [
+            data[0],
+            data[1],
+            data[2],
+            data[3],
+            data[4],
+            data[5],
+            data[6],
+            data[7],
+            data[8],
+            data[9],
+            data[10],
+            data[11],
+            data[12],
+            data[13],
+            data[14],
+            data[15],
+            data[16],
+            data[17],
+            data[18],
+            data[19],
+            data[20],
+            data[21],
+            data[22],
+            data[23],
+            data[24]
+        ];
+        Groth16.verifyIntent(intentKey, signals, intentProof);
+        transition(data, transitionKey, transitionProof);
+        int depositBtc = data[19];
+        int depositToken = data[20];
+        int withdrawalBtc = data[21];
+        int withdrawalToken = data[22];
+        require(depositBtc + withdrawalBtc == 0 || depositToken + withdrawalToken == 0, "one boundary asset");
+        require(depositBtc + depositToken == 0 || withdrawalBtc + withdrawalToken == 0, "one boundary direction");
+        int treasuryBefore = tokenInput(0);
+        int treasuryAfter = tokenOutput(0);
+        require(treasuryBefore == treasuryAfter + depositToken, "deposit token source");
+        require(tx.inputs[0].assets.length == 0 || (tx.inputs[0].assets.length == 1 && treasuryBefore > 0), "treasury input assets");
+        require(tx.outputs[0].assets.length == 0 || (tx.outputs[0].assets.length == 1 && treasuryAfter > 0), "treasury output assets");
+        int tokenCarrier = 0;
+        if (withdrawalToken > 0) { tokenCarrier = 330; require(true); } else { require(true); }
+        require(tx.inputs[0].value == tx.outputs[0].value + depositBtc + tokenCarrier, "BTC source");
+        int regularOutputs = 2;
+        if (depositBtc + depositToken + withdrawalBtc + withdrawalToken > 0) {
+            require(tx.numInputs == 3, "boundary inputs");
+            regularOutputs = 3;
+            if (depositBtc + withdrawalBtc > 0) {
+                identityAt(btcIdentity, 2);
+                require(tx.inputs[2].assets.length == 1 && tx.outputs[2].assets.length == 1, "BTC reserve assets");
+                require(tx.inputs[2].value + depositBtc == tx.outputs[2].value + withdrawalBtc, "BTC reserve delta");
+            } else {
+                identityAt(tokenIdentity, 2);
+                carrier(2);
+                int reserveBefore = tokenInput(2);
+                int reserveAfter = tokenOutput(2);
+                require(reserveBefore + depositToken == reserveAfter + withdrawalToken, "token reserve delta");
+                require(tx.inputs[2].assets.length == 1 || (tx.inputs[2].assets.length == 2 && reserveBefore > 0), "token reserve input assets");
+                require(tx.outputs[2].assets.length == 1 || (tx.outputs[2].assets.length == 2 && reserveAfter > 0), "token reserve output assets");
+            }
+            if (withdrawalBtc + withdrawalToken > 0) {
+                regularOutputs = 4;
+                require(Wire.destination(tx.outputs[3].scriptPubKey) == data[23], "withdrawal destination");
+                require(tx.outputs[3].value == withdrawalBtc + tokenCarrier, "withdrawal BTC");
+                require(tokenOutput(3) == withdrawalToken, "withdrawal token");
+                require(tx.outputs[3].assets.length == 0 || (tx.outputs[3].assets.length == 1 && withdrawalToken > 0), "withdrawal assets");
+            } else { require(data[23] == 0, "deposit destination"); }
+        } else {
+            require(tx.numInputs == 2, "transfer inputs");
+            require(data[23] == 0, "transfer destination");
+        }
+        end(regularOutputs);
+    }
+    function seal(TransitionKey transitionKey, Proof transitionProof) {
+        require(Groth16.transitionKeyHash(transitionKey) == transitionKeyHash, "transition verification key");
+        int[36] data = Wire.publicData();
+        require(data[25] == 1, "seal operation");
+        begin(data);
+        require(tx.numInputs == 2, "seal inputs");
+        int index = 1;
+        for (24) { require(data[index] == 0, "seal user intent"); index = index + 1; }
+        carrier(0);
+        require(tokenInput(0) == tokenOutput(0), "seal treasury assets");
+        require(tx.inputs[0].assets.length == tx.outputs[0].assets.length, "seal assets");
+        transition(data, transitionKey, transitionProof);
+        end(2);
+    }
+}

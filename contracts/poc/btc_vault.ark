@@ -1,0 +1,9 @@
+pragma arkade ^0.1.0;
+import "./resource.ark";
+contract PocBtcVault(bytes32 gateProgram, bytes32 applyClosure, bytes32 sealClosure, AssetId identity) {
+    function advance() {
+        Resource.leader(gateProgram, applyClosure, sealClosure);
+        Resource.continueIdentity(identity, 2);
+        require(tx.inputs[2].assets.length == 1 && tx.outputs[2].assets.length == 1);
+    }
+}
