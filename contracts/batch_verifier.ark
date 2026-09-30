@@ -1,0 +1,30 @@
+pragma arkade ^0.1.0;
+import "./types.ark";
+import "./envelope.ark";
+import "./statements.ark";
+import "./groth16.ark";
+
+// A transaction-local proof gate funded by a relayer. NOT a global shared head.
+// Each concurrent batch uses its own input instance.
+contract ShieldedBatchVerifier(
+    Deployment cfg, Groth16Key intentKey, Groth16Key transitionKey
+) {
+    function apply(Groth16Proof intentProof, Groth16Proof transitionProof) {
+        require(this.activeInputIndex == 0, "verifier input position");
+        require(!tx.intent.has("type"), "not an Arkade intent proof");
+        int mode = Envelope.mode(Envelope.plan(cfg));
+        require(mode == Envelope.TRANSFER || mode == Envelope.BOUNDARY, "apply mode");
+        Groth16.verify(intentKey, Statements.intent(cfg), intentProof);
+        Groth16.verify(transitionKey, Statements.transition(cfg), transitionProof);
+    }
+
+    function seal(Groth16Proof transitionProof) {
+        require(this.activeInputIndex == 0, "verifier input position");
+        require(!tx.intent.has("type"), "not an Arkade intent proof");
+        require(Envelope.mode(Envelope.plan(cfg)) == Envelope.SEAL, "seal mode");
+        require(size(tx.packet(cfg.intentPacketType)) == 0, "seal has user intent");
+        Groth16.verify(transitionKey, Statements.transition(cfg), transitionProof);
+    }
+    // No standalone admin recovery path. The proof gate owns no shared reserves.
+    // The compiler synthesizes the server+emulator leaves for apply and seal.
+}

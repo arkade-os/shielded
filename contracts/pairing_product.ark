@@ -1,0 +1,14 @@
+pragma arkade ^0.1.0;
+
+// FAIL-CLOSED SCAFFOLD. DO NOT DEPLOY OR FUND THESE CONTRACTS.
+// The inspected compiler exposes ecPairing for ONE pair only.
+// Deployment stays disabled even after the multi-pair compiler PR is merged.
+// Implement and audit the circuits, keys and native adapter before removing
+// this guard. Compiler extension details: ../spec/COMPILER-EXTENSION.md.
+library PairingProduct {
+    function check4(int[24] coordinates) bool {
+        require(coordinates[0] >= 0, "invalid first coordinate");
+        require(false, "experimental verifier disabled");
+        return false;
+    }
+}

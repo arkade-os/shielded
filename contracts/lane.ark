@@ -1,0 +1,22 @@
+pragma arkade ^0.1.0;
+import "./types.ark";
+import "./encoding.ark";
+import "./envelope.ark";
+import "./resource_guard.ark";
+
+contract ShieldedLane(Deployment cfg, GatePins gate, AssetId identity, int laneId) {
+    function advance() {
+        ResourceChange change = ResourceGuard.consume(cfg, gate, identity, Envelope.LANE);
+        int inputIndex = change.inputIndex;
+        int outputIndex = change.outputIndex;
+        require(change.deposit == 0 && change.withdrawal == 0);
+        require(Encoding.readU(change.beforeState, 1, 4) == laneId, "old lane id");
+        require(Encoding.readU(change.afterState, 1, 4) == laneId, "new lane id");
+        require(tx.outputs[outputIndex].value == tx.inputs[inputIndex].value,
+                "lane carrier drained");
+        require(tx.inputs[inputIndex].assets.length == 1);
+        require(tx.outputs[outputIndex].assets.length == 1);
+    }
+    // Deliberately NO owner-only or dissolution tapscript on shared state.
+    // Native batch refresh is not implemented by this source sketch.
+}

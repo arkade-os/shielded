@@ -1,0 +1,44 @@
+pragma arkade ^0.1.0;
+
+// Immutable deployment configuration. Packet type numbers must be allocated,
+// not guessed from the old brainstorming documents.
+struct Deployment {
+    bytes32 domain;
+    bytes32 parametersHash;
+    int planPacketType;
+    int statePacketType;
+    int intentPacketType;
+}
+
+// These are the ACTUAL instantiated verifier's output key and Arkade closure
+// hashes, not hashes chosen by a spender. Populate them during deployment.
+struct GatePins {
+    bytes32 program;
+    bytes32 applyScriptHash;
+    bytes32 sealScriptHash;
+}
+
+struct ResourceChange {
+    int inputIndex;
+    int outputIndex;
+    int mode;
+    bytes beforeState;
+    bytes afterState;
+    int deposit;
+    int withdrawal;
+}
+
+struct G1 { int x; int y; }
+struct G2 { int xc1; int xc0; int yc1; int yc0; }
+struct Groth16Proof { G1 a; G2 b; G1 c; }
+
+// Fixed to eight public inputs: eight unsigned 32-bit digest limbs.
+// The trusted deployment pins these values through the verifier's script.
+struct Groth16Key {
+    G1 alpha;
+    G2 betaNeg;
+    G2 gammaNeg;
+    G2 deltaNeg;
+    int[9] icX;
+    int[9] icY;
+}

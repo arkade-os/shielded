@@ -1,0 +1,35 @@
+pragma arkade ^0.1.0;
+import "./types.ark";
+import "./encoding.ark";
+import "./pairing_product.ark";
+
+library Groth16 {
+    function verify(Groth16Key key, bytes32 statementDigest, Groth16Proof proof) {
+        int[8] publicInputs = Encoding.digestLimbs(statementDigest);
+        int accumulatorX = key.icX[0];
+        int accumulatorY = key.icY[0];
+        for (index, scalar) in publicInputs {
+            int icIndex = index + 1;
+            int baseX = key.icX[icIndex];
+            int baseY = key.icY[icIndex];
+            ECPoint product = ecMul(baseX, baseY, scalar, 2);
+            ECPoint sum = ecAdd(accumulatorX, accumulatorY, product.x, product.y, 2);
+            accumulatorX = sum.x;
+            accumulatorY = sum.y;
+        }
+
+        // e(A,B) e(C,-delta) e(vk_x,-gamma) e(alpha,-beta) == 1.
+        // Six BigNums per pair. G2 coordinate order is c1 BEFORE c0.
+        int[24] coordinates = [
+            proof.a.x, proof.a.y,
+            proof.b.xc1, proof.b.xc0, proof.b.yc1, proof.b.yc0,
+            proof.c.x, proof.c.y,
+            key.deltaNeg.xc1, key.deltaNeg.xc0, key.deltaNeg.yc1, key.deltaNeg.yc0,
+            accumulatorX, accumulatorY,
+            key.gammaNeg.xc1, key.gammaNeg.xc0, key.gammaNeg.yc1, key.gammaNeg.yc0,
+            key.alpha.x, key.alpha.y,
+            key.betaNeg.xc1, key.betaNeg.xc0, key.betaNeg.yc1, key.betaNeg.yc0
+        ];
+        require(PairingProduct.check4(coordinates), "invalid Groth16 proof");
+    }
+}

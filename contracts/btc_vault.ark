@@ -1,0 +1,24 @@
+pragma arkade ^0.1.0;
+import "./types.ark";
+import "./envelope.ark";
+import "./resource_guard.ark";
+
+contract ShieldedBTCVault(
+    Deployment cfg, GatePins gate, AssetId identity, int carrierFloor
+) {
+    function advance() {
+        ResourceChange change = ResourceGuard.consume(cfg, gate, identity, Envelope.BTC_VAULT);
+        int inputIndex = change.inputIndex;
+        int outputIndex = change.outputIndex;
+        require(change.mode == Envelope.BOUNDARY, "vault only at boundary");
+        require(carrierFloor >= 0);
+        require(tx.inputs[inputIndex].value >= carrierFloor);
+        require(tx.outputs[outputIndex].value >= carrierFloor);
+        // carrierFloor is bootstrap overhead, NOT shielded BTC backing.
+        require(tx.inputs[inputIndex].value + change.deposit ==
+                tx.outputs[outputIndex].value + change.withdrawal,
+                "BTC reserve delta");
+        require(tx.inputs[inputIndex].assets.length == 1);
+        require(tx.outputs[outputIndex].assets.length == 1);
+    }
+}
