@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createLiveRuntime, type LiveCheckpoint } from "./live.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 // @ts-ignore ffjavascript does not ship declarations.
 import { buildBn128 } from "ffjavascript";
@@ -11,6 +12,7 @@ import {
   asset,
   ASSET_CARRIER_SATS,
   CSVMultisigTapscript,
+  Extension,
   SingleKey,
   Transaction,
 } from "@arkade-os/sdk";
@@ -66,6 +68,36 @@ export interface NativeReceipt {
   signedArkTx: string;
   signedCheckpoints: string[];
   proofTimes: PreparedSettlement["proofTimes"];
+  network?: "local-emulator" | "mutinynet";
+  finality?: "emulator-only" | "operator-preconfirmed";
+}
+
+export interface NativeCheckpoint {
+  version: 1;
+  network: "local-emulator" | "mutinynet";
+  domain: string;
+  state: ProtocolState;
+  serverKey: string;
+  emulatorKey: string;
+  aliceSecret: string;
+  bobSecret: string;
+  checkpointScript: string;
+  identities: Record<string, string>;
+  issuanceRaw: string;
+  genesisRaw: string;
+  heads: Record<string, { txid: string; vout: number; value: number; sourceTx: string }>;
+  funding: { BTC: string; DEMO: string };
+  receipts: NativeReceipt[];
+  live?: LiveCheckpoint;
+}
+
+export interface NativeSubmission {
+  txid: string;
+  request: VmBridgeRequest;
+  native: ReturnType<typeof spendSummary>;
+  nextState: ProtocolState;
+  nextGateFunding: { BTC: string; DEMO: string };
+  selectedVault?: "btcVault" | "tokenVault";
 }
 
 export interface SdkRuntimeOptions {
@@ -75,6 +107,13 @@ export interface SdkRuntimeOptions {
   artifactsDirectory?: string;
   vmBinary?: string;
   execute?: (request: VmBridgeRequest) => Promise<NativeVmResult>;
+  checkpoint?: NativeCheckpoint;
+  network?: "local-emulator" | "mutinynet";
+  arkUrl?: string;
+  emulatorUrl?: string;
+  onSubmission?: (prepared: PreparedSettlement, submission: NativeSubmission) => Promise<void>;
+  onCheckpoint?: (checkpoint: NativeCheckpoint) => Promise<void>;
+  recoverSubmission?: (submission: NativeSubmission) => Promise<NativeVmResult | undefined>;
 }
 
 export interface SdkRuntime {
@@ -83,6 +122,10 @@ export interface SdkRuntime {
   snapshot(): Record<string, unknown>;
   compiledArtifacts(): Record<string, unknown>;
   close(): Promise<void>;
+  exportState(): NativeCheckpoint;
+  reconcile(prepared: PreparedSettlement, submission: NativeSubmission): Promise<NativeReceipt | undefined>;
+  bootstrap?(): Promise<void>;
+  refreshFunding?(): Promise<void>;
 }
 
 interface VkJson {
@@ -112,7 +155,7 @@ function littleEndian(bytes: Uint8Array): bigint {
   return bytes.reduceRight((value, byte) => (value << 8n) + BigInt(byte), 0n);
 }
 
-function statePacket(state: ProtocolState): PacketData {
+export function statePacket(state: ProtocolState): PacketData {
   return { type: 0x83, data: encodeFields([
     state.noteRoot, state.spentRoot, state.historyRoot, state.noteCount, state.historyCount,
   ]) };
@@ -226,20 +269,31 @@ export function executeVmBinary(binary: string, request: VmBridgeRequest): Promi
 }
 
 export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkRuntime> {
+  if ((options.network ?? options.checkpoint?.network) === "mutinynet" && !options.execute) {
+    return createLiveRuntime(options);
+  }
+  const restored = options.checkpoint;
+  if (restored && ((options.network && options.network !== restored.network) || (options.domain !== undefined && BigInt(options.domain).toString() !== restored.domain))) {
+    throw new Error("Cannot change the native checkpoint network or deployment domain");
+  }
+  if (restored && (restored.version !== 1 || !sameState(restored.state, options.initialState))) {
+    throw new Error("Native checkpoint does not match the protocol state");
+  }
   const directory = resolve(options.artifactsDirectory ?? "artifacts");
   const artifactFiles = { gate: "poc_gate.json", lane: "poc_lane.json", btcVault: "poc_btc_vault.json", tokenVault: "poc_token_vault.json", recipient: "poc_recipient.json" };
   const artifacts = Object.fromEntries(await Promise.all(Object.entries(artifactFiles).map(async ([name, file]) =>
     [name, JSON.parse(await readFile(resolve(directory, file), "utf8")) as arkade.ContractArtifact])));
 
-  // These are public fixture identities, provisioned with the SDK. They do not
-  // come from user wallets and are never used in the live regtest adapter.
+  // Only local mode uses these public signing fixtures.
   const server = SingleKey.fromHex("01".repeat(32));
   const emulator = SingleKey.fromHex("02".repeat(32));
-  const alice = SingleKey.fromHex("03".repeat(32));
-  const bob = SingleKey.fromHex("04".repeat(32));
-  const serverKey = await server.xOnlyPublicKey();
-  const keys = { serverKey, emulatorKey: await emulator.compressedPublicKey() };
-  const checkpoint = CSVMultisigTapscript.encode({ timelock: { type: "blocks", value: 144n }, pubkeys: [serverKey] });
+  const aliceSecret = restored?.aliceSecret ?? "03".repeat(32);
+  const bobSecret = restored?.bobSecret ?? "04".repeat(32);
+  const alice = SingleKey.fromHex(aliceSecret);
+  const bob = SingleKey.fromHex(bobSecret);
+  const serverKey = restored ? hex.decode(restored.serverKey) : await server.xOnlyPublicKey();
+  const keys = { serverKey, emulatorKey: restored ? hex.decode(restored.emulatorKey) : await emulator.compressedPublicKey() };
+  const checkpoint = restored ? CSVMultisigTapscript.decode(hex.decode(restored.checkpointScript)) : CSVMultisigTapscript.encode({ timelock: { type: "blocks", value: 144n }, pubkeys: [serverKey] });
   const recipients = {
     alice: instantiateArtifact(artifacts.recipient, { owner: await alice.xOnlyPublicKey(), exitDelay: 144n }, { ...keys, userKey: await alice.xOnlyPublicKey() }),
     bob: instantiateArtifact(artifacts.recipient, { owner: await bob.xOnlyPublicKey(), exitDelay: 144n }, { ...keys, userKey: await bob.xOnlyPublicKey() }),
@@ -257,18 +311,18 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
   // Issue first, then bind the resulting identities into the Programs. This
   // avoids committing an asset's own issuance transaction ID into itself.
   const initialTokenReserve = BigInt(options.initialState.reserves.DEMO);
-  const issuance = offlineNativeFixture(
+  const issuance = restored?.issuanceRaw ? Transaction.fromRaw(hex.decode(restored.issuanceRaw)) : offlineNativeFixture(
     [{ script: payoutScripts.alice, amount: INITIAL_FUNDING + 3n * CARRIER + BigInt(options.initialState.reserves.BTC) }],
     [asset.Packet.create([1n, 1n, 1n, INITIAL_FUNDING + initialTokenReserve].map((quantity) =>
       asset.AssetGroup.create(null, null, [], [asset.AssetOutput.create(0, quantity)], [])))],
   );
-  const identities = {
+  const identities = restored ? Object.fromEntries(Object.entries(restored.identities).map(([name, id]) => [name, asset.AssetId.fromString(id)])) as Record<"lane" | "btcVault" | "tokenVault" | "token", ReturnType<typeof asset.AssetId.create>> : {
     lane: asset.AssetId.create(issuance.id, 0),
     btcVault: asset.AssetId.create(issuance.id, 1),
     tokenVault: asset.AssetId.create(issuance.id, 2),
     token: asset.AssetId.create(issuance.id, 3),
   };
-  const domain = BigInt(options.domain ?? 20260930001n);
+  const domain = BigInt(restored?.domain ?? options.domain ?? 20260930001n);
   const intentKey = await foldVerificationKeyDomain(chooseKey(options.verificationKeys, "intent"), domain);
   const transitionKey = await foldVerificationKeyDomain(chooseKey(options.verificationKeys, "transition"), domain);
   const intentKeyWitness = verificationKeyWitness(intentKey, "intent");
@@ -300,8 +354,8 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
   };
   const contracts = { gate, lane: resource(artifacts.lane, identities.lane), btcVault: resource(artifacts.btcVault, identities.btcVault), tokenVault: resource(artifacts.tokenVault, identities.tokenVault, true) };
   let state = structuredClone(options.initialState);
-  let gateFundingBtc = INITIAL_FUNDING;
-  let gateFundingToken = INITIAL_FUNDING;
+  let gateFundingBtc = BigInt(restored?.funding.BTC ?? INITIAL_FUNDING);
+  let gateFundingToken = BigInt(restored?.funding.DEMO ?? INITIAL_FUNDING);
   let closed = false;
   let busy = false;
   const genesisAssetPacket = transferAssetPacket([
@@ -313,39 +367,96 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
       ...(initialTokenReserve ? [{ vout: 3, amount: initialTokenReserve }] : []),
     ] },
   ]);
-  const genesis = offlineNativeFixture([
+  const genesis = restored?.genesisRaw ? Transaction.fromRaw(hex.decode(restored.genesisRaw)) : offlineNativeFixture([
     { script: gate.script.pkScript, amount: gateFundingBtc },
     { script: contracts.lane.script.pkScript, amount: CARRIER },
     { script: contracts.btcVault.script.pkScript, amount: CARRIER + BigInt(state.reserves.BTC) },
     { script: contracts.tokenVault.script.pkScript, amount: CARRIER },
   ], [genesisAssetPacket, opaquePacket(statePacket(state))], { txid: issuance.id, vout: 0 });
-  const heads: Record<string, ResourceCoin> = {
+  const heads: Record<string, ResourceCoin> = restored ? Object.fromEntries(Object.entries(restored.heads).map(([name, coin]) => [name, { ...coin, sourceTx: hex.decode(coin.sourceTx) }])) : {
     gate: coinFromTransaction(genesis, 0), lane: coinFromTransaction(genesis, 1),
     btcVault: coinFromTransaction(genesis, 2), tokenVault: coinFromTransaction(genesis, 3),
   };
-  const receipts: NativeReceipt[] = [];
+  if (restored && (restored.network === "local-emulator" || restored.live?.phase === "ready")) {
+    for (const name of ["gate", "lane", "btcVault", "tokenVault"] as const) {
+      const coin = heads[name];
+      if (!coin?.sourceTx) throw new Error(`Native checkpoint lacks ${name} creating transaction`);
+      const source = Transaction.fromRaw(coin.sourceTx);
+      const output = source.getOutput(coin.vout);
+      if (source.id !== coin.txid || output.amount !== BigInt(coin.value) || hex.encode(output.script!) !== hex.encode(contracts[name].script.pkScript)) throw new Error(`Native checkpoint ${name} ancestry or lock mismatch`);
+      const expectedValue = name === "gate" ? gateFundingBtc : name === "btcVault" ? CARRIER + BigInt(state.reserves.BTC) : CARRIER;
+      if (output.amount !== expectedValue) throw new Error(`Native checkpoint ${name} backing mismatch`);
+    }
+    const packet = Extension.fromTx(Transaction.fromRaw(heads.gate.sourceTx!)).getPackets().find((entry) => entry.type() === 0x83);
+    if (!packet || hex.encode(packet.serialize()) !== hex.encode(statePacket(state).data)) throw new Error("Native checkpoint gate state root mismatch");
+  }
+  const receipts: NativeReceipt[] = structuredClone(restored?.receipts ?? []);
   const execute = options.execute ?? ((request) => executeVmBinary(options.vmBinary ?? DEFAULT_VM_BINARY, request));
+  const exportState = (): NativeCheckpoint => ({
+    version: 1, network: restored?.network ?? "local-emulator", domain: domain.toString(), state: structuredClone(state),
+    serverKey: hex.encode(serverKey), emulatorKey: hex.encode(keys.emulatorKey), aliceSecret, bobSecret,
+    checkpointScript: hex.encode(checkpoint.script), identities: Object.fromEntries(Object.entries(identities).map(([name, id]) => [name, id.toString()])),
+    issuanceRaw: hex.encode(issuance.toBytes()), genesisRaw: hex.encode(genesis.toBytes()),
+    heads: Object.fromEntries(Object.entries(heads).map(([name, coin]) => [name, { ...coin, sourceTx: hex.encode(coin.sourceTx!) }])),
+    funding: { BTC: gateFundingBtc.toString(), DEMO: gateFundingToken.toString() }, receipts: structuredClone(receipts),
+    ...(restored?.live ? { live: structuredClone(restored.live) } : {}),
+  });
+
+  const accept = (prepared: PreparedSettlement, submission: NativeSubmission, result: NativeVmResult): NativeReceipt => {
+    if (!result.ok) throw new Error(result.error ?? "Arkade emulator rejected transaction");
+    if (!result.arkTx || !result.checkpoints || !result.txid) throw new Error("Incomplete emulator receipt");
+    const signed = Transaction.fromPSBT(base64.decode(result.arkTx));
+    const requested = Transaction.fromPSBT(base64.decode(submission.request.arkTx));
+    if (signed.id !== requested.id || result.txid !== signed.id || signed.id !== submission.txid || hex.encode(signed.unsignedTx) !== hex.encode(requested.unsignedTx)) throw new Error("Emulator returned a different transaction");
+    const receipt: NativeReceipt = {
+      id: prepared.id, operation: prepared.operation, txid: signed.id,
+      backend: result.backend, executedInputs: result.executedInputs ?? 0, signatureCount: result.signatureCount ?? 0,
+      vmMs: result.durationMs, native: submission.native, publicSignalCounts: { intent: 25, transition: 30 },
+      signedArkTx: result.arkTx, signedCheckpoints: result.checkpoints, proofTimes: prepared.proofTimes,
+      network: restored?.network ?? "local-emulator", finality: restored?.network === "mutinynet" ? "operator-preconfirmed" : "emulator-only",
+    };
+    heads.gate = coinFromTransaction(signed, 0);
+    heads.lane = coinFromTransaction(signed, 1);
+    if (submission.selectedVault) heads[submission.selectedVault] = coinFromTransaction(signed, 2);
+    gateFundingBtc = BigInt(submission.nextGateFunding.BTC);
+    gateFundingToken = BigInt(submission.nextGateFunding.DEMO);
+    state = structuredClone(submission.nextState);
+    receipts.push(receipt);
+    return receipt;
+  };
 
   const compiledArtifacts = () => Object.fromEntries(Object.entries({ ...contracts, aliceRecipient: recipients.alice, bobRecipient: recipients.bob }).map(([name, contract]) => [name, {
     contractName: contract.program.name,
     source: `contracts/poc/${name.endsWith("Recipient") ? "recipient" : name === "btcVault" ? "btc_vault" : name === "tokenVault" ? "token_vault" : name}.ark`,
     program: JSON.parse(arkade.stringifyArtifact(contract.program)),
     pkScript: hex.encode(contract.script.pkScript),
+    tapTree: hex.encode(contract.script.encode()),
     functions: contract.script.compiled.map((fn) => ({ name: fn.name, scriptBytes: fn.arkadeScript?.length ?? 0, tapleafBytes: fn.leafScript.length })),
   }]));
 
   return {
     destination: (owner) => destinations[owner],
     compiledArtifacts,
+    exportState,
+    reconcile: async (prepared, submission) => {
+      const receipt = receipts.find((entry) => entry.id === prepared.id && entry.txid === submission.txid);
+      if (receipt) return structuredClone(receipt);
+      if (!sameState(state, prepared.oldState)) return undefined;
+      if (restored?.network === "mutinynet") {
+        const result = await options.recoverSubmission?.(submission);
+        return result && accept(prepared, submission, result);
+      }
+      return undefined;
+    },
     snapshot: () => ({
-      mode: "offline-emulator",
+      mode: restored?.network === "mutinynet" ? "mutinynet" : "offline-emulator",
       nativeAssets: Object.fromEntries(Object.entries(identities).map(([name, id]) => [name, id.toString()])),
       gateFunding: { BTC: gateFundingBtc.toString(), DEMO: gateFundingToken.toString() },
       reserves: { ...state.reserves },
       heads: Object.fromEntries(Object.entries(heads).map(([name, coin]) => [name, { txid: coin.txid, vout: coin.vout, value: coin.value }])),
       destinations,
       destinationFields,
-      genesis: { issuanceTxid: issuance.id, resourceTxid: genesis.id, syntheticFunding: true },
+      genesis: { issuanceTxid: issuance.id, resourceTxid: genesis.id, syntheticFunding: restored?.network !== "mutinynet" },
       artifacts: compiledArtifacts(),
       receipts: receipts.map(({ signedArkTx: _ark, signedCheckpoints: _cps, ...receipt }) => receipt),
     }),
@@ -379,7 +490,7 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
         const tokenPayoutCarrier = withdrawToken ? BigInt(ASSET_CARRIER_SATS) : 0n;
         const nextGateBtc = gateFundingBtc - depositBtc - tokenPayoutCarrier;
         const nextGateToken = gateFundingToken - depositToken;
-        if (nextGateBtc < 0n || nextGateToken < 0n) throw new Error("Offline funding resource exhausted");
+        if (nextGateBtc < 0n || nextGateToken < 0n) throw new Error("Pool funding resource exhausted");
         const outputs: NativeOutput[] = [
           { script: gate.script.pkScript, amount: nextGateBtc },
           { script: contracts.lane.script.pkScript, amount: CARRIER },
@@ -407,26 +518,11 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
           statePacket(prepared.newState),
         ];
         const spend = await buildCovenantSpend({ inputs, outputs, checkpoint, packets, assets: assetAllocations });
-        const result = await execute(bridgeRequest(spend));
-        if (!result.ok) throw new Error(result.error ?? "Arkade emulator rejected transaction");
-        if (!result.arkTx || !result.checkpoints || !result.txid) throw new Error("Incomplete emulator receipt");
-        const signed = Transaction.fromPSBT(base64.decode(result.arkTx));
-        if (signed.id !== spend.arkTx.id || result.txid !== signed.id) throw new Error("Emulator returned a different transaction");
-        const receipt: NativeReceipt = {
-          id: prepared.id, operation: prepared.operation, txid: signed.id,
-          backend: result.backend, executedInputs: result.executedInputs ?? 0, signatureCount: result.signatureCount ?? 0,
-          vmMs: result.durationMs, native: spendSummary(spend), publicSignalCounts: { intent: 25, transition: 30 },
-          signedArkTx: result.arkTx, signedCheckpoints: result.checkpoints, proofTimes: prepared.proofTimes,
-        };
-        // Mutate native heads only after all VM checks and response binding pass.
-        heads.gate = coinFromTransaction(signed, 0);
-        heads.lane = coinFromTransaction(signed, 1);
-        if (selectedVault) heads[selectedVault] = coinFromTransaction(signed, 2);
-        gateFundingBtc = nextGateBtc;
-        gateFundingToken = nextGateToken;
-        state = structuredClone(prepared.newState);
-        receipts.push(receipt);
-        return receipt;
+        const submission: NativeSubmission = { txid: spend.arkTx.id, request: bridgeRequest(spend), native: spendSummary(spend), nextState: prepared.newState,
+          nextGateFunding: { BTC: nextGateBtc.toString(), DEMO: nextGateToken.toString() }, selectedVault };
+        await options.onSubmission?.(prepared, submission);
+        const result = await execute(submission.request);
+        return accept(prepared, submission, result);
       } finally { busy = false; }
     },
   };

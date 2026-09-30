@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 .env.*
+!.env.example
 *.key
 *.zkey
 *.wtns
@@ -12,6 +13,11 @@ bin/
 .recovery/
 app/dist/
 validation/demo-run.*
+data/
+backups/
+private-backups/
+*.sqlite
+*.sqlite-*
 
 !circuits/build/
 circuits/build/*

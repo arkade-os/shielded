@@ -13,6 +13,7 @@
     "app": "vite --config app/vite.config.ts --host 127.0.0.1",
     "build": "tsc --noEmit && vite build --config app/vite.config.ts",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:deployment": "node --import tsx tools/deployment-smoke.ts",
     "test:e2e": "node --import tsx tests/e2e.ts",
     "test:primitives": "node --import tsx circuits/smoke.ts",
     "vm:build": "node --import tsx tools/build-vm.ts",

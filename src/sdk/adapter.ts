@@ -7,6 +7,7 @@ import {
   CSVMultisigTapscript,
   Extension,
   EmulatorPacket,
+  getArkPsbtFields,
   networks,
   P2A,
   PrevArkTxField,
@@ -22,6 +23,7 @@ import {
 } from "@arkade-os/sdk";
 import { base64, hex } from "@scure/base";
 import { RawWitness } from "@scure/btc-signer";
+import { TaprootControlBlock } from "@scure/btc-signer/psbt.js";
 
 // The SDK's bundled declarations currently expose some namespace type aliases
 // as values. Derive these types from its public runtime API until that upstream
@@ -291,6 +293,17 @@ export function bridgeRequest(spend: BuiltCovenantSpend): VmBridgeRequest {
 }
 
 export function spendSummary(spend: BuiltCovenantSpend) {
+  const weighted = Transaction.fromPSBT(spend.arkTx.toPSBT());
+  for (const [vin, input] of spend.inputs.entries()) {
+    const fn = input.contract.script.compiled.find((entry) => entry.name === input.functionName)!;
+    const leaf = weighted.getInput(vin).tapLeafScript![0];
+    const signatureCount = fn.signerKeys.length + (fn.def.tapscript.emulator === null ? 0 : 1);
+    weighted.updateInput(vin, { finalScriptWitness: [
+      ...Array.from({ length: signatureCount }, () => new Uint8Array(64)),
+      ...getArkPsbtFields(weighted, vin, ConditionWitness).flat(),
+      leaf[1].subarray(0, -1), TaprootControlBlock.encode(leaf[0]),
+    ] });
+  }
   return {
     txid: spend.arkTx.id,
     nativeInputs: spend.arkTx.inputsLength,
@@ -299,6 +312,7 @@ export function spendSummary(spend: BuiltCovenantSpend) {
     extensionIndex: spend.extensionIndex,
     anchorIndex: spend.anchorIndex,
     txBytes: spend.arkTx.toBytes().length,
+    estimatedSignedWeight: weighted.toBytes(true, true).length + 3 * weighted.toBytes(false, false).length,
     psbtBytes: spend.arkTx.toPSBT().length,
     extensionBytes: spend.arkTx.getOutput(spend.extensionIndex).script!.length,
     covenantBytes: spend.emulatorEntries.map((entry) => entry.script.length),

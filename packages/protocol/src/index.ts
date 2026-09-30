@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildPoseidon, buildBabyjub } from 'circomlibjs';
 // @ts-ignore snarkjs has no bundled declarations.
 import * as snarkjs from 'snarkjs';
-import type {Asset, Owner, Groth16Proof, ProtocolState, EncryptedRecord, PreparedSettlement, OwnedNote, ProtocolSnapshot, ProtocolKernel} from './types.js';
+import type {Asset, Owner, Groth16Proof, ProtocolState, EncryptedRecord, PreparedSettlement, OwnedNote, ProtocolSnapshot, ProtocolKernel, ProtocolCheckpoint} from './types.js';
 export * from './types.js';
 export const FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 export const DOMAIN = 20260930001n;
@@ -21,6 +21,7 @@ const str=(n:bigint|number|string)=>String(n);
 function freeze<T>(value:T):T { if(value && typeof value==='object') { Object.freeze(value); for(const child of Object.values(value)) freeze(child); } return value; }
 const rand=()=>{for(;;){const n=BigInt('0x'+randomBytes(32).toString('hex'));if(n>0n&&n<FIELD)return n;}};
 const bits=(n:number)=>Array.from({length:8},(_,i)=>(n>>i)&1);
+function fieldValue(v:unknown):bigint { if(typeof v!=='string'||! /^(0|[1-9][0-9]*)$/.test(v))throw new Error('Non-canonical field encoding.');const n=BigInt(v);if(n>=FIELD)throw new Error('Field element out of range.');return n; }
 export function destinationField(destination:string|Uint8Array):string {
  const value = typeof destination==='string' ? Buffer.from(destination.replace(/^0x/,''),'hex') : Buffer.from(destination);
  if(value.length!==32) throw new Error('Withdrawal destination must be the exact 32-byte native Taproot witness program, in hex.');
@@ -42,14 +43,15 @@ interface Internal {noteTree:Tree;spentTree:Tree;historyTree:Tree;anchor?:Anchor
 class Kernel implements ProtocolKernel {
  private noteTree:Tree; private spentTree:Tree; private historyTree:Tree;
  private state:ProtocolState; private wallets:Record<Owner,Wallet>; private log:EncryptedRecord[]=[]; private nfs:string[]=[];
- private anchors:Anchor[]=[]; private receipts:unknown[]=[]; private internals=new WeakMap<PreparedSettlement,Internal>(); private committed=new WeakSet<PreparedSettlement>();
+ private anchors:Anchor[]=[]; private receipts:unknown[]=[]; private internals=new WeakMap<PreparedSettlement,Internal>(); private committed=new WeakSet<PreparedSettlement>(); private committedIds:Record<string,string>={};
  private vkeys:Record<string,any>;
- constructor(private poseidon:any,private baby:any){
+ constructor(private poseidon:any,private baby:any,secureKeys=false){
   this.noteTree=new Tree(this.hash);this.spentTree=new Tree(this.hash);this.historyTree=new Tree(this.hash);
   this.state={noteRoot:str(this.noteTree.root()),spentRoot:str(this.spentTree.root()),historyRoot:str(this.historyTree.root()),noteCount:0,historyCount:0,revision:0,reserves:{BTC:0,DEMO:0}};
   this.wallets=Object.fromEntries((['alice','bob'] as Owner[]).map(name=>{
    const derive=(tag:string)=>BigInt('0x'+createHash('sha256').update(`SHIELDED-POC-INSECURE-DEMO-KEY:${name}:${tag}`).digest('hex'))%this.baby.subOrder||1n;
-   const spend=derive('spend'),view=derive('view');const publicKey=this.baby.mulPointEscalar(this.baby.Base8,view).map((x:any)=>BigInt(this.baby.F.toObject(x)));
+   const randomScalar=()=>BigInt('0x'+randomBytes(32).toString('hex'))%this.baby.subOrder||1n;
+   const spend=secureKeys?randomScalar():derive('spend'),view=secureKeys?randomScalar():derive('view');const publicKey=this.baby.mulPointEscalar(this.baby.Base8,view).map((x:any)=>BigInt(this.baby.F.toObject(x)));
    return [name,{spend,view,publicKey,owner:this.hash([DOMAIN,spend])}];
   })) as Record<Owner,Wallet>;
   this.vkeys=Object.fromEntries(['intent','transition'].map(name=>[name,JSON.parse(readFileSync(path.join(BUILD,`${name}.vkey.json`),'utf8'))]));
@@ -89,6 +91,34 @@ class Kernel implements ProtocolKernel {
   })) as ProtocolSnapshot['wallets'];
   return {state:clone(this.state),wallets,encryptedLog:clone(this.log),nullifiers:this.nfs.slice(),anchors:this.anchors.map(a=>a.root),profile:{treeDepth:8,noteCapacity:256,nullifierCapacity:256,intentPublicSignals:25,transitionPublicSignals:30},receipts:clone(this.receipts)};
  }
+ private profileFingerprint(){return createHash('sha256').update(JSON.stringify({domain:str(DOMAIN),treeDepth:8,noteCapacity:256,nullifierCapacity:256,intentSignals:25,transitionSignals:30,vkeys:this.vkeys})).digest('hex');}
+ exportState():ProtocolCheckpoint{return {version:1,domain:str(DOMAIN),profile:this.profileFingerprint(),state:clone(this.state),wallets:{alice:{spend:str(this.wallets.alice.spend),view:str(this.wallets.alice.view)},bob:{spend:str(this.wallets.bob.spend),view:str(this.wallets.bob.view)}},trees:{notes:this.noteTree.leaves.map(str),spent:this.spentTree.leaves.map(str),history:this.historyTree.leaves.map(str)},encryptedLog:clone(this.log),nullifiers:this.nfs.slice(),anchors:this.anchors.map(a=>({root:a.root,count:a.count,leaves:a.tree.leaves.map(str)})),receipts:clone(this.receipts),committed:{...this.committedIds}};}
+ private fingerprint(p:PreparedSettlement){return createHash('sha256').update(JSON.stringify(p)).digest('hex');}
+ restoreCheckpoint(c:ProtocolCheckpoint){this.loadCheckpoint(c);}
+ private loadCheckpoint(c:ProtocolCheckpoint){
+  const fail=(s:string):never=>{throw new Error(`Invalid protocol checkpoint: ${s}`);};
+  if(!c||c.version!==1||c.domain!==str(DOMAIN)||c.profile!==this.profileFingerprint())fail('version, domain, or proof profile mismatch.');
+  const field=(v:unknown):bigint=>{try{return fieldValue(v);}catch{return fail('non-canonical or out-of-range field encoding.');}};
+  const leaves=(a:unknown):bigint[]=>{if(!Array.isArray(a)||a.length!==256)fail('tree leaf count mismatch.');return (a as unknown[]).map(field);};
+  if(!c.state||!Number.isSafeInteger(c.state.noteCount)||c.state.noteCount<0||c.state.noteCount>256||!Number.isSafeInteger(c.state.historyCount)||c.state.historyCount<0||c.state.historyCount>256||!Number.isSafeInteger(c.state.revision)||c.state.revision!==c.state.noteCount/2+c.state.historyCount)fail('invalid state counts.');
+  for(const n of [c.state.reserves?.BTC,c.state.reserves?.DEMO])if(!Number.isSafeInteger(n)||n<0)fail('invalid reserve.');
+  const noteLeaves=leaves(c.trees?.notes),spentLeaves=leaves(c.trees?.spent),historyLeaves=leaves(c.trees?.history);
+  this.noteTree=new Tree(this.hash,noteLeaves);this.spentTree=new Tree(this.hash,spentLeaves);this.historyTree=new Tree(this.hash,historyLeaves);
+  this.state=clone(c.state);
+  if(this.state.noteRoot!==str(this.noteTree.root())||this.state.spentRoot!==str(this.spentTree.root())||this.state.historyRoot!==str(this.historyTree.root()))fail('tree root mismatch.');
+  if(this.state.noteCount%2!==0||!Array.isArray(c.encryptedLog)||c.encryptedLog.length!==this.state.noteCount||c.encryptedLog.some((r,i)=>!r||r.index!==i||r.createdRevision<1||r.createdRevision>this.state.revision||r.createdRevision<(i?c.encryptedLog[i-1].createdRevision:1)||(i%2===1&&r.createdRevision!==c.encryptedLog[i-1].createdRevision)||r.ciphertext?.length!==7||r.commitment!==str(field(r.commitment))||r.ciphertext.some(x=>x!==str(field(x)))||r.leaf!==str(this.hash([field(r.commitment),...r.ciphertext.map(field)]))))fail('encrypted record log mismatch.');
+  this.log=clone(c.encryptedLog);
+  if(noteLeaves.some((v,i)=>v!==(i<this.log.length?BigInt(this.log[i].leaf):0n)))fail('note tree does not match encrypted log.');
+  if(!Array.isArray(c.nullifiers)||c.nullifiers.some(n=>n!==str(field(n))||n==='0')||new Set(c.nullifiers).size!==c.nullifiers.length)fail('invalid nullifier list.');
+  this.nfs=c.nullifiers.slice();const expectedSpent=Array(256).fill(0n);for(const nf of this.nfs){const slot=Number(BigInt(nf)&255n);if(expectedSpent[slot]!==0n)fail('nullifier slot collision.');expectedSpent[slot]=BigInt(nf);}if(expectedSpent.some((n,i)=>n!==spentLeaves[i]))fail('nullifier tree/list mismatch.');
+  if(!Array.isArray(c.anchors)||c.anchors.length!==this.state.historyCount)fail('anchor count mismatch.');
+  this.anchors=c.anchors.map((a,i)=>{if(!a||!Number.isSafeInteger(a.count)||a.count<0||a.count>this.state.noteCount||a.root!==str(field(a.root)))fail('invalid anchor.');const historical=leaves(a.leaves);const tree=new Tree(this.hash,historical);if(tree.root()!==BigInt(a.root))fail('anchor root mismatch.');for(let j=0;j<256;j++){const expected=j<a.count?BigInt(this.log[j]?.leaf??'0'):0n;if(historical[j]!==expected)fail('anchor leaves do not match log prefix.');}if(historyLeaves[i]!==this.hash([DOMAIN,BigInt(a.root)]))fail('anchor history leaf mismatch.');return {root:a.root,tree,count:a.count};});
+  if(!Array.isArray(c.receipts)||c.receipts.length!==c.state.revision)fail('receipt count mismatch.');this.receipts=clone(c.receipts);
+  if(!c.wallets||!c.committed||typeof c.committed!=='object')fail('missing wallet or commit data.');
+  this.wallets=Object.fromEntries((['alice','bob'] as Owner[]).map(name=>{const keys=c.wallets[name];if(!keys)fail('missing wallet key.');const spend=field(keys.spend),view=field(keys.view);if(spend<=0n||spend>=this.baby.subOrder||view<=0n||view>=this.baby.subOrder)fail('wallet scalar outside subgroup order.');const publicKey=this.baby.mulPointEscalar(this.baby.Base8,view).map((x:any)=>BigInt(this.baby.F.toObject(x)));if(!this.baby.inSubgroup(this.point(publicKey)))fail('wallet view key is invalid.');return [name,{spend,view,publicKey,owner:this.hash([DOMAIN,spend])}];})) as Record<Owner,Wallet>;
+  const knownNullifiers=new Set<string>();for(const record of this.log)if(this.anchors.some(a=>record.index<a.count)){for(const owner of ['alice','bob'] as Owner[]){const note=this.decrypt(owner,record);if(note&&note.amount>0)knownNullifiers.add(str(this.hash([DOMAIN,this.wallets[owner].spend,BigInt(note.rho)])));}}if(this.nfs.some(nf=>!knownNullifiers.has(nf)))fail('nullifier has no recoverable sealed note.');
+  for(const [id,fp] of Object.entries(c.committed))if(!/^[0-9a-f]{24}$/.test(id)||!/^[0-9a-f]{64}$/.test(fp))fail('invalid committed settlement index.');if(Object.keys(c.committed).length!==c.receipts.length)fail('committed settlement count mismatch.');this.committedIds={...c.committed};
+ }
  verificationKeys(){return clone(this.vkeys);}
  private validateAmount(amount:number){if(!Number.isSafeInteger(amount)||amount<=0||amount>=2**48)throw new Error('Amount must be a positive bounded 48-bit integer.');}
  private async prove(name:'intent'|'transition',witness:Record<string,unknown>){
@@ -119,7 +149,7 @@ class Kernel implements ProtocolKernel {
   const intent=await this.prove('intent',witness);
   return this.prepareApplication({operation,intentProof:intent.proof,intentSignals:intent.signals,ciphertextRecords:records,boundary:{deposit,withdrawal,destination},intentMs:intent.ms,intentWitness:witness});
  }
- private async prepareApplication(args:{operation:PreparedSettlement['operation'];intentProof?:Groth16Proof;intentSignals:string[];ciphertextRecords:EncryptedRecord[];boundary:PreparedSettlement['boundary'];intentMs:number;intentWitness?:Record<string,unknown>}){
+ private planApplication(args:{operation:PreparedSettlement['operation'];intentProof?:Groth16Proof;intentSignals:string[];ciphertextRecords:EncryptedRecord[];boundary:PreparedSettlement['boundary'];intentMs:number;intentWitness?:Record<string,unknown>}){
   const oldState=clone(this.state),notes=this.noteTree.clone(),spent=this.spentTree.clone(),history=this.historyTree.clone();
   const seal=args.operation==='seal',data=args.intentSignals.slice(0,19),nf=BigInt(data[2]);
   let appendPaths=[Array(8).fill('0'),Array(8).fill('0')],spentPath=Array(8).fill('0'),historyPath=Array(8).fill('0'),sealPath=Array(8).fill('0'),historyIndex=0;
@@ -133,10 +163,27 @@ class Kernel implements ProtocolKernel {
   const newState={...oldState,noteRoot:str(notes.root()),spentRoot:str(spent.root()),historyRoot:str(history.root()),noteCount:oldState.noteCount+(seal?0:2),historyCount:oldState.historyCount+(seal?1:0),revision:oldState.revision+1,reserves:{BTC:oldState.reserves.BTC+args.boundary.deposit.BTC-args.boundary.withdrawal.BTC,DEMO:oldState.reserves.DEMO+args.boundary.deposit.DEMO-args.boundary.withdrawal.DEMO}};
   if(newState.reserves.BTC<0||newState.reserves.DEMO<0)throw new Error('Insufficient native backing.');
   const transitionData=[...data,str(seal?1:0),oldState.noteRoot,newState.noteRoot,oldState.spentRoot,newState.spentRoot,oldState.historyRoot,newState.historyRoot,str(oldState.noteCount),str(newState.noteCount),str(oldState.historyCount),str(newState.historyCount)];
-  const proof=await this.prove('transition',{data:transitionData,appendPaths,spentPath,historyPath,historyIndex,sealPath});
-  const prepared:PreparedSettlement={id:randomBytes(12).toString('hex'),operation:args.operation,intentProof:args.intentProof,transitionProof:proof.proof,intentSignals:args.intentSignals,transitionSignals:proof.signals,oldState,newState,ciphertextRecords:records,boundary:args.boundary,proofTimes:{intentMs:args.intentMs,transitionMs:proof.ms}};
-  this.internals.set(prepared,{noteTree:notes,spentTree:spent,historyTree:history,anchor:seal?{root:oldState.noteRoot,tree:this.noteTree.clone(),count:oldState.noteCount}:undefined,records,intentWitness:args.intentWitness});
+  return {oldState,newState,transitionData,proofInput:{data:transitionData,appendPaths,spentPath,historyPath,historyIndex,sealPath},internal:{noteTree:notes,spentTree:spent,historyTree:history,anchor:seal?{root:oldState.noteRoot,tree:this.noteTree.clone(),count:oldState.noteCount}:undefined,records,intentWitness:args.intentWitness}};
+ }
+ private async prepareApplication(args:{operation:PreparedSettlement['operation'];intentProof?:Groth16Proof;intentSignals:string[];ciphertextRecords:EncryptedRecord[];boundary:PreparedSettlement['boundary'];intentMs:number;intentWitness?:Record<string,unknown>}){
+  const plan=this.planApplication(args),proof=await this.prove('transition',plan.proofInput);
+  const prepared:PreparedSettlement={id:randomBytes(12).toString('hex'),operation:args.operation,intentProof:args.intentProof,transitionProof:proof.proof,intentSignals:args.intentSignals,transitionSignals:proof.signals,oldState:plan.oldState,newState:plan.newState,ciphertextRecords:plan.internal.records,boundary:args.boundary,proofTimes:{intentMs:args.intentMs,transitionMs:proof.ms}};
+  this.internals.set(prepared,plan.internal);
   return freeze(prepared);
+ }
+ async restorePrepared(input:PreparedSettlement){
+  if(!input||typeof input.id!=='string'||! /^[0-9a-f]{24}$/.test(input.id)||!['shield','transfer','withdraw','seal'].includes(input.operation))throw new Error('Invalid prepared settlement.');
+  const prepared=freeze(clone(input)),args={operation:prepared.operation,intentProof:prepared.intentProof,intentSignals:prepared.intentSignals,ciphertextRecords:prepared.ciphertextRecords,boundary:prepared.boundary,intentMs:prepared.proofTimes?.intentMs??0};
+  if(!Array.isArray(args.intentSignals)||args.intentSignals.length!==25||!Array.isArray(args.ciphertextRecords)||!args.boundary||!prepared.proofTimes)throw new Error('Invalid prepared settlement payload.');
+  if(!Number.isFinite(prepared.proofTimes.intentMs)||prepared.proofTimes.intentMs<0||!Number.isFinite(prepared.proofTimes.transitionMs)||prepared.proofTimes.transitionMs<0||!['BTC','DEMO'].every(a=>Number.isSafeInteger(args.boundary.deposit[a as Asset])&&args.boundary.deposit[a as Asset]>=0&&args.boundary.deposit[a as Asset]<2**48&&Number.isSafeInteger(args.boundary.withdrawal[a as Asset])&&args.boundary.withdrawal[a as Asset]>=0&&args.boundary.withdrawal[a as Asset]<2**48)||typeof args.boundary.destination!=='string')throw new Error('Invalid prepared settlement metadata.');fieldValue(args.boundary.destination);
+  const expectedIndex=prepared.oldState?.noteCount,expectedRevision=(prepared.oldState?.revision??-1)+1;
+  if(prepared.ciphertextRecords.some((r,i)=>r.index!==expectedIndex+i||r.createdRevision!==expectedRevision||r.ciphertext?.length!==7||r.commitment!==str(fieldValue(r.commitment))||r.ciphertext.some(v=>v!==str(fieldValue(v)))||r.leaf!==str(this.hash([fieldValue(r.commitment),...r.ciphertext.map(fieldValue)]))))throw new Error('Prepared settlement contains inconsistent encrypted records.');
+  const plan=this.planApplication(args),expectedIntent=prepared.operation==='seal'?[str(DOMAIN),...Array(24).fill('0')]:[str(DOMAIN),prepared.intentSignals[1],prepared.intentSignals[2],...prepared.ciphertextRecords.map(r=>r.commitment),...prepared.ciphertextRecords.flatMap(r=>r.ciphertext),str(args.boundary.deposit.BTC),str(args.boundary.deposit.DEMO),str(args.boundary.withdrawal.BTC),str(args.boundary.withdrawal.DEMO),args.boundary.destination,prepared.intentSignals[24]];
+  if(JSON.stringify(plan.oldState)!==JSON.stringify(prepared.oldState)||JSON.stringify(plan.newState)!==JSON.stringify(prepared.newState)||JSON.stringify(plan.transitionData)!==JSON.stringify(prepared.transitionSignals)||JSON.stringify(expectedIntent)!==JSON.stringify(prepared.intentSignals))throw new Error('Prepared settlement does not match the restored protocol state.');
+  if(prepared.operation==='seal'&&(prepared.intentProof!==undefined||prepared.ciphertextRecords.length!==0||args.boundary.destination!=='0'||args.boundary.deposit.BTC!==0||args.boundary.deposit.DEMO!==0||args.boundary.withdrawal.BTC!==0||args.boundary.withdrawal.DEMO!==0))throw new Error('Invalid seal payload.');
+  if(prepared.operation!=='seal'&&(!prepared.intentProof||prepared.ciphertextRecords.length!==2||prepared.intentSignals[0]!==str(DOMAIN)))throw new Error('Invalid intent payload.');
+  if(!await this.verify(prepared))throw new Error('Prepared settlement proof verification failed.');
+  this.internals.set(prepared,plan.internal);return prepared;
  }
  async prepareSeal(){return this.prepareApplication({operation:'seal',intentSignals:[str(DOMAIN),...Array(24).fill('0')],ciphertextRecords:[],boundary:{deposit:{BTC:0,DEMO:0},withdrawal:{BTC:0,DEMO:0},destination:'0'},intentMs:0});}
  async rebase(prepared:PreparedSettlement){const internal=this.internals.get(prepared);if(!internal)throw new Error('Unknown prepared settlement.');return this.prepareApplication({operation:prepared.operation,intentProof:prepared.intentProof,intentSignals:prepared.intentSignals,ciphertextRecords:prepared.ciphertextRecords,boundary:prepared.boundary,intentMs:0,intentWitness:internal.intentWitness});}
@@ -147,6 +194,7 @@ class Kernel implements ProtocolKernel {
   return snarkjs.groth16.verify(this.vkeys.transition,prepared.transitionSignals,prepared.transitionProof);
  }
  async commit(prepared:PreparedSettlement,receipt:unknown){
+  const fingerprint=this.fingerprint(prepared),known=this.committedIds[prepared.id];if(known){if(known!==fingerprint)throw new Error('Settlement ID was already committed with a different payload.');return this.snapshot();}
   const internal=this.internals.get(prepared);if(!internal)throw new Error('Unknown prepared settlement.');
   if(this.committed.has(prepared))return this.snapshot();
   if(JSON.stringify(prepared.oldState)!==JSON.stringify(this.state))throw new Error('Stale settlement: regenerate the public-state proof; private intent remains reusable.');
@@ -156,10 +204,10 @@ class Kernel implements ProtocolKernel {
   const nextState=clone(prepared.newState),records=clone(internal.records),savedReceipt=clone(receipt);
   this.noteTree=internal.noteTree;this.spentTree=internal.spentTree;this.historyTree=internal.historyTree;this.state=nextState;
   this.log.push(...records);if(prepared.intentSignals[2]!=='0')this.nfs.push(prepared.intentSignals[2]);if(internal.anchor)this.anchors.push(internal.anchor);
-  this.receipts.push(savedReceipt);this.committed.add(prepared);return this.snapshot();
+  this.receipts.push(savedReceipt);this.committed.add(prepared);this.committedIds[prepared.id]=fingerprint;return this.snapshot();
  }
 }
-export async function createProtocol():Promise<ProtocolKernel>{
+export async function createProtocol(options:{checkpoint?:ProtocolCheckpoint;secureKeys?:boolean}={}):Promise<ProtocolKernel>{
  for(const name of ['intent','transition'])if(!existsSync(path.join(BUILD,`${name}.zkey`)))throw new Error(`Missing ${name} proof artifacts. Run npm run setup first.`);
- const [poseidon,baby]=await Promise.all([buildPoseidon(),buildBabyjub()]);return new Kernel(poseidon,baby);
+ const [poseidon,baby]=await Promise.all([buildPoseidon(),buildBabyjub()]);const kernel=new Kernel(poseidon,baby,options.secureKeys);if(options.checkpoint)kernel.restoreCheckpoint(options.checkpoint);return kernel;
 }
