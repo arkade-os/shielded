@@ -21,6 +21,7 @@ ENV NODE_ENV=production HOST=0.0.0.0 PORT=8787 SHIELDED_DATA_DIR=/data
 WORKDIR /app
 COPY --from=app --chown=node:node /app/node_modules ./node_modules
 COPY --from=app --chown=node:node /app/package.json ./package.json
+COPY --from=app --chown=node:node /app/package-lock.json ./package-lock.json
 COPY --from=app --chown=node:node /app/src ./src
 COPY --from=app --chown=node:node /app/packages ./packages
 COPY --from=app --chown=node:node /app/contracts ./contracts
@@ -33,4 +34,4 @@ USER node
 EXPOSE 8787
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-CMD ["node", "--import", "tsx", "src/server.ts"]
+CMD ["node", "--experimental-eventsource", "--import", "tsx", "src/server.ts"]

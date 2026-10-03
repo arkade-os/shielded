@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 
 const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
 const name = `shielded-deploy-smoke-${suffix}`;
@@ -9,6 +10,9 @@ const volume = `${name}-data`;
 const image = `${name}:test`;
 const token = randomBytes(32).toString('base64url');
 let hostPort = Number(process.env.SHIELDED_SMOKE_PORT ?? 0);
+const proofTransport = process.env.SHIELDED_SMOKE_TRANSPORT ?? 'inline';
+if (proofTransport !== 'inline' && proofTransport !== 'compact') throw new Error('SHIELDED_SMOKE_TRANSPORT must be inline or compact');
+const compactMeasurements: { action: string; proofBytes: number; nativeWeight: number; checkpointWeights: number[] }[] = [];
 
 function command(args: string[], allowFailure = false): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -61,6 +65,24 @@ const action = async (base: string, name: string, key: string, body: object) => 
   const response = await api(base, `/api/actions/${name}`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify(body) });
   const payload = await response.json() as { state?: Record<string, any>; result?: unknown; error?: string };
   assert.equal(response.status, 200, `${name}: ${payload.error ?? response.statusText}`);
+  if (proofTransport === 'compact' && payload.result && !(payload.result as { rejected?: unknown }).rejected) {
+    const receipt = payload.result as { proofBytes?: unknown; nativeWeight?: unknown; checkpointWeights?: unknown };
+    assert.equal(payload.state?.status?.proofTransport, 'compact');
+    assert.ok(typeof payload.state?.status?.profileId === 'string' && payload.state.status.profileId.length > 0,
+      'compact smoke requires an actual registered local profile');
+    assert.ok(Number.isSafeInteger(receipt.proofBytes) && Number(receipt.proofBytes) > 0,
+      'compact receipt must report real offchain proof bytes');
+    assert.ok(Number.isSafeInteger(receipt.nativeWeight) && Number(receipt.nativeWeight) > 0,
+      'compact receipt must report measured native transaction weight');
+    assert.ok(Number(receipt.nativeWeight) <= 4_000, `compact publication exceeds the 4,000 WU budget: ${receipt.nativeWeight}`);
+    assert.ok(Array.isArray(receipt.checkpointWeights) && receipt.checkpointWeights.every((weight) =>
+      Number.isSafeInteger(weight) && Number(weight) > 0 && Number(weight) <= 4_000),
+    `compact checkpoint transaction exceeds the 4,000 WU budget: ${JSON.stringify(receipt.checkpointWeights)}`);
+    const latestActivity = payload.state?.activity?.at(-1);
+    assert.equal(Object.hasOwn(latestActivity ?? {}, 'proof'), false, 'offchain proofs must not be returned in public activity records');
+    compactMeasurements.push({ action: name, proofBytes: Number(receipt.proofBytes), nativeWeight: Number(receipt.nativeWeight),
+      checkpointWeights: receipt.checkpointWeights.map(Number) });
+  }
   return payload;
 };
 
@@ -87,13 +109,15 @@ try {
   await command(['run', '--detach', '--name', name, '--read-only', '--user', 'node', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--stop-timeout', '120', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m,mode=1777', '--publish', `127.0.0.1:${hostPort}:8787`,
     '--mount', `type=volume,source=${volume},target=/data`, '--env', 'NODE_ENV=production', '--env', 'HOST=0.0.0.0', '--env', 'PORT=8787',
-    '--env', 'SHIELDED_NETWORK=local-emulator', '--env', 'SHIELDED_DATA_DIR=/data', '--env', `SHIELDED_API_TOKEN=${token}`, image]);
+    '--env', 'SHIELDED_NETWORK=local-emulator', '--env', `SHIELDED_PROOF_TRANSPORT=${proofTransport}`,
+    '--env', 'SHIELDED_DATA_DIR=/data', '--env', `SHIELDED_API_TOKEN=${token}`, image]);
   created = true;
   await waitReady(base, name);
   await waitHealthy(name);
   assert.equal((await fetch(`${base}/api/state`)).status, 401, 'private API must reject requests without a token');
   const initial = await currentState(base);
   assert.equal(initial.status.persistence, true);
+  assert.equal(initial.status.proofTransport, proofTransport);
 
   const shield = await action(base, 'shield', 'smoke-shield-1', { from: 'alice', asset: 'BTC', amount: 100_000 });
   const duplicate = await action(base, 'shield', 'smoke-shield-1', { from: 'alice', asset: 'BTC', amount: 100_000 });
@@ -102,6 +126,13 @@ try {
   await action(base, 'seal', 'smoke-seal-1', {});
   await action(base, 'transfer', 'smoke-transfer-1', { from: 'alice', to: 'bob', asset: 'BTC', amount: 25_000 });
   await action(base, 'seal', 'smoke-seal-2', {});
+  if (proofTransport === 'compact') {
+    const replay = await action(base, 'replay', 'smoke-replay-1', { from: 'alice' });
+    assert.equal((replay.result as { rejected?: boolean }).rejected, true, 'compact replay must hit the spent-nullifier guard');
+    const tamper = await action(base, 'tamper', 'smoke-tamper-1', { from: 'alice', to: 'bob', asset: 'BTC', amount: 1_000 });
+    assert.equal((tamper.result as { rejected?: boolean }).rejected, true, 'registered compact verifier must reject a modified public signal');
+    assert.equal(tamper.state?.status?.profileId, initial.status.profileId, 'a failed proof must not change the verifier profile');
+  }
   await action(base, 'withdraw', 'smoke-withdraw-1', { from: 'alice', asset: 'BTC', amount: 5_000 });
   const beforeRestart = durableView(await currentState(base));
 
@@ -109,12 +140,21 @@ try {
   await waitReady(base, name);
   await waitHealthy(name);
   const afterRestart = await currentState(base);
+  assert.equal(afterRestart.status.proofTransport, proofTransport);
+  if (proofTransport === 'compact') assert.equal(afterRestart.status.profileId, beforeRestart.native?.profileId ?? afterRestart.status.profileId);
   assert.deepEqual(durableView(afterRestart), beforeRestart, 'encrypted persistent state must survive container restart');
   assert.equal(afterRestart.wallets.find((wallet: Record<string, any>) => wallet.id === 'alice').notes.some((note: Record<string, any>) => note.status === 'spent'), true);
   const replayedShield = await action(base, 'shield', 'smoke-shield-1', { from: 'alice', asset: 'BTC', amount: 100_000 });
   assert.deepEqual(replayedShield.result, shield.result, 'persisted idempotency key must return the original receipt after restart');
   assert.deepEqual(durableView(replayedShield.state!), beforeRestart, 'replayed request must not add a transaction after restart');
-  console.log('Container smoke passed: auth, proof/VM shield→seal→transfer→seal→withdraw, idempotency, and encrypted-volume recovery.');
+  if (proofTransport === 'compact') {
+    await mkdir('validation', { recursive: true });
+    await writeFile('validation/compact-deployment.json', `${JSON.stringify({ network: 'local-emulator', proofTransport,
+      profileId: afterRestart.status.profileId, budgetWu: 4_000, measurements: compactMeasurements,
+      offchainProofsExcludedFromActivity: true, tamperedSignalRejected: true, replayRejected: true,
+      fundedMutinynet: false, finality: 'synthetic local compact fixture; no Arkade or Bitcoin settlement' }, null, 2)}\n`);
+  }
+  console.log(`Container smoke passed: auth, ${proofTransport === 'compact' ? 'offchain proof + compact publication' : 'proof/VM'} shield→seal→transfer→seal→withdraw, idempotency, and encrypted-volume recovery.`);
 } catch (error) {
   if (created) console.error(await command(['logs', name], true));
   throw error;

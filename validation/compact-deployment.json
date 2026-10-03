@@ -1,0 +1,80 @@
+{
+  "network": "local-emulator",
+  "proofTransport": "compact",
+  "profileId": "bd4b9b97380b0cb10c21101a4287e55544f5d6d4118da8a0e07c9fb9e529a667",
+  "budgetWu": 4000,
+  "measurements": [
+    {
+      "action": "shield",
+      "proofBytes": 7188,
+      "nativeWeight": 3204,
+      "checkpointWeights": [
+        732,
+        732,
+        732
+      ]
+    },
+    {
+      "action": "shield",
+      "proofBytes": 7188,
+      "nativeWeight": 3204,
+      "checkpointWeights": [
+        732,
+        732,
+        732
+      ]
+    },
+    {
+      "action": "seal",
+      "proofBytes": 2380,
+      "nativeWeight": 2370,
+      "checkpointWeights": [
+        732,
+        732
+      ]
+    },
+    {
+      "action": "transfer",
+      "proofBytes": 7486,
+      "nativeWeight": 2370,
+      "checkpointWeights": [
+        732,
+        732
+      ]
+    },
+    {
+      "action": "seal",
+      "proofBytes": 2372,
+      "nativeWeight": 2370,
+      "checkpointWeights": [
+        732,
+        732
+      ]
+    },
+    {
+      "action": "withdraw",
+      "proofBytes": 7621,
+      "nativeWeight": 3376,
+      "checkpointWeights": [
+        732,
+        732,
+        732
+      ]
+    },
+    {
+      "action": "shield",
+      "proofBytes": 7188,
+      "nativeWeight": 3204,
+      "checkpointWeights": [
+        732,
+        732,
+        732
+      ]
+    }
+  ],
+  "offchainProofsExcludedFromActivity": true,
+  "tamperedSignalRejected": true,
+  "replayRejected": true,
+  "fundedMutinynet": false,
+  "finality": "synthetic local compact fixture; no Arkade or Bitcoin settlement"
+}

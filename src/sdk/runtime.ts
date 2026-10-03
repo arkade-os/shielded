@@ -17,6 +17,7 @@ import {
   Transaction,
 } from "@arkade-os/sdk";
 import type { PreparedSettlement, ProtocolState, Owner, Groth16Proof } from "../../packages/protocol/src/types.ts";
+import type { CompactSidecar } from "../compact/verifier.ts";
 import {
   bridgeRequest,
   buildCovenantSpend,
@@ -70,6 +71,10 @@ export interface NativeReceipt {
   proofTimes: PreparedSettlement["proofTimes"];
   network?: "local-emulator" | "mutinynet";
   finality?: "emulator-only" | "operator-preconfirmed";
+  proofBytes?: number;
+  nativeWeight?: number;
+  checkpointWeights?: number[];
+  weightLimit?: number;
 }
 
 export interface NativeCheckpoint {
@@ -89,6 +94,8 @@ export interface NativeCheckpoint {
   funding: { BTC: string; DEMO: string };
   receipts: NativeReceipt[];
   live?: LiveCheckpoint;
+  compact?: { version: 1; profileId: string; sidecars: Record<string, string>;
+    pendingAcceptance?: { txid: string; result: NativeVmResult } };
 }
 
 export interface NativeSubmission {
@@ -98,6 +105,17 @@ export interface NativeSubmission {
   nextState: ProtocolState;
   nextGateFunding: { BTC: string; DEMO: string };
   selectedVault?: "btcVault" | "tokenVault";
+  compactSidecar?: CompactSidecar;
+}
+
+export interface BoardingOutpoint { txid: string; vout: number }
+export interface BoardingResult {
+  status: "accepted" | "pending";
+  commitmentTxid?: string;
+  selectedOutpoints: BoardingOutpoint[];
+  outputOutpoints?: BoardingOutpoint[];
+  amountSats?: number;
+  error?: string;
 }
 
 export interface SdkRuntimeOptions {
@@ -126,6 +144,7 @@ export interface SdkRuntime {
   reconcile(prepared: PreparedSettlement, submission: NativeSubmission): Promise<NativeReceipt | undefined>;
   bootstrap?(): Promise<void>;
   refreshFunding?(): Promise<void>;
+  onboardFunding?(): Promise<BoardingResult>;
 }
 
 interface VkJson {

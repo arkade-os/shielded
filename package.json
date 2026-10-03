@@ -9,7 +9,7 @@
   "scripts": {
     "postinstall": "node tools/patch-sdk.mjs",
     "dev": "concurrently -k \"npm:server\" \"npm:app\"",
-    "server": "node --import tsx src/server.ts",
+    "server": "node --experimental-eventsource --import tsx src/server.ts",
     "app": "vite --config app/vite.config.ts --host 127.0.0.1",
     "build": "tsc --noEmit && vite build --config app/vite.config.ts",
     "test": "node --import tsx --test tests/*.test.ts",

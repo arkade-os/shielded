@@ -7,6 +7,7 @@ const token = 'a sufficiently long test-only deployment token';
 const localConfig: ServerConfig = { host: '127.0.0.1', port: 8787, dataDirectory: './data', network: 'local-emulator',
   arkUrl: 'https://mutinynet.arkade.sh', emulatorUrl: 'https://emulator.mutinynet.arkade.sh', apiToken: token };
 const mutinynetConfig: ServerConfig = { ...localConfig, network: 'mutinynet' };
+const compactMutinynetConfig: ServerConfig = { ...mutinynetConfig, proofTransport: 'compact' };
 
 async function withServer(config: ServerConfig, state: Record<string, unknown>, run: (base: string, calls: unknown[][]) => Promise<void>) {
   const calls: unknown[][] = [];
@@ -73,6 +74,24 @@ test('Mutinynet blocks demo actions, requires idempotency keys, and forwards val
     assert.equal(calls.length, 2);
     assert.deepEqual(calls[0], ['bootstrap', {}, 'bootstrap-123']);
     assert.deepEqual(calls[1], ['shield', { amount: 1000 }, 'deposit-123']);
+  });
+});
+
+test('compact Mutinynet boarding is authenticated, idempotent, and unavailable on inline deployments', async () => {
+  await withServer(compactMutinynetConfig, { status: { ready: false, allowedActions: ['bootstrap', 'sync', 'board'] } }, async (base, calls) => {
+    assert.equal((await fetch(`${base}/api/actions/board`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 401);
+    const cookie = await login(base);
+    const headers = { cookie, origin: base, 'content-type': 'application/json' };
+    assert.equal((await fetch(`${base}/api/actions/board`, { method: 'POST', headers, body: '{}' })).status, 400,
+      'Mutinynet board must require an idempotency key');
+    assert.equal((await fetch(`${base}/api/actions/board`, { method: 'POST', headers: { ...headers, 'idempotency-key': 'board-1' }, body: '{}' })).status, 200);
+    assert.deepEqual(calls, [['board', {}, 'board-1']]);
+  });
+  await withServer(mutinynetConfig, { status: { ready: false } }, async (base) => {
+    const cookie = await login(base);
+    const response = await fetch(`${base}/api/actions/board`, { method: 'POST',
+      headers: { cookie, origin: base, 'content-type': 'application/json', 'idempotency-key': 'board-inline' }, body: '{}' });
+    assert.equal(response.status, 403, 'inline Mutinynet deployments must not expose unsupported boarding');
   });
 });
 

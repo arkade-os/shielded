@@ -28,15 +28,40 @@ const RESOURCE_NAMES = ["gate", "lane", "btcVault", "tokenVault"] as const;
 const ISSUE_NAMES = ["lane", "btcVault", "tokenVault", "token"] as const;
 type BootstrapResponse = Awaited<ReturnType<RestArkProvider["submitTx"]>>;
 
+export interface LiveBoardingReceipt {
+  commitmentTxid: string;
+  selectedOutpoints: { txid: string; vout: number }[];
+  outputOutpoints: { txid: string; vout: number }[];
+  amountSats: number;
+  startedAt: number;
+}
+
 export interface LiveCheckpoint {
   seedHex: string;
+  compactEmulatorSecret?: string;
   arkUrl: string;
   emulatorUrl: string;
-  phase: "funding-required" | "issuing" | "funding-programs" | "ready";
+  phase: "funding-required" | "issuing" | "profile-registration" | "funding-programs" | "ready";
   issued: Partial<Record<typeof ISSUE_NAMES[number], string>>;
   issuanceTransactions?: Partial<Record<typeof ISSUE_NAMES[number], string>>;
   pendingBootstrap?: { step: string; txid: string; request: VmBridgeRequest; response?: BootstrapResponse };
   pendingSettlement?: { txid: string; result: NativeVmResult };
+  pendingBoarding?: {
+    status: "submitting" | "unknown" | "accepted";
+    selectedOutpoints: { txid: string; vout: number }[];
+    selectedValues: { txid: string; vout: number; value: number }[];
+    walletOutpoints: { txid: string; vout: number }[];
+    expectedOutputs: { script: string; value: number }[];
+    outputOutpoints?: { txid: string; vout: number }[];
+    inputSats: number;
+    baselineVtxos: { txid: string; vout: number }[];
+    startedAt: number;
+    commitmentTxid?: string;
+    commitmentTx?: string;
+    events: { type: string; id: string; txid?: string; commitmentTxid?: string; commitmentTx?: string; reason?: string }[];
+    error?: string;
+  };
+  boardingReceipts?: LiveBoardingReceipt[];
 }
 
 function assertSameBody(actual: Transaction, expected: Transaction) {

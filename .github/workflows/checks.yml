@@ -36,6 +36,11 @@ jobs:
       - run: npm run test:e2e
   container-deployment:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        transport: [inline, compact]
+    env:
+      SHIELDED_SMOKE_TRANSPORT: ${{ matrix.transport }}
     steps:
       - uses: actions/checkout@v4
         with:

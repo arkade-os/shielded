@@ -6,18 +6,18 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { DemoEngine } from './engine.ts';
 
-type Action = 'bootstrap' | 'sync' | 'shield' | 'seal' | 'transfer' | 'withdraw' | 'reset' | 'replay' | 'tamper' | 'recover' | 'rebase';
+type Action = 'bootstrap' | 'sync' | 'board' | 'shield' | 'seal' | 'transfer' | 'withdraw' | 'reset' | 'replay' | 'tamper' | 'recover' | 'rebase';
 type Engine = Pick<DemoEngine, 'snapshot'> & {
   action(action: string, body: Record<string, unknown>, idempotencyKey?: string): Promise<unknown>;
   close(): void | Promise<void>;
 };
 export type ServerConfig = {
   host: string; port: number; dataDirectory: string; network: 'local-emulator' | 'mutinynet';
-  arkUrl: string; emulatorUrl: string; apiToken?: string; storageKey?: string;
+  arkUrl: string; emulatorUrl: string; apiToken?: string; storageKey?: string; proofTransport?: 'inline' | 'compact';
 };
 type ServerOptions = { config: ServerConfig; engine?: Engine; initializationError?: string };
 
-const actions = new Set<Action>(['bootstrap', 'sync', 'shield', 'seal', 'transfer', 'withdraw', 'reset', 'replay', 'tamper', 'recover', 'rebase']);
+const actions = new Set<Action>(['bootstrap', 'sync', 'board', 'shield', 'seal', 'transfer', 'withdraw', 'reset', 'replay', 'tamper', 'recover', 'rebase']);
 const cookieName = 'shielded_session';
 const cookieAgeSeconds = 12 * 60 * 60;
 const loginWindowMs = 15 * 60_000;
@@ -28,6 +28,8 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   const host = env.HOST ?? '127.0.0.1';
   const network = env.SHIELDED_NETWORK ?? 'local-emulator';
   if (network !== 'local-emulator' && network !== 'mutinynet') throw new Error('SHIELDED_NETWORK must be local-emulator or mutinynet');
+  const proofTransport = env.SHIELDED_PROOF_TRANSPORT ?? 'inline';
+  if (proofTransport !== 'inline' && proofTransport !== 'compact') throw new Error('SHIELDED_PROOF_TRANSPORT must be inline or compact');
   const apiToken = env.SHIELDED_API_TOKEN;
   if ((!isLoopback(host) || network === 'mutinynet' || env.NODE_ENV === 'production') && (!apiToken || apiToken.length < 32)) {
     throw new Error('Set SHIELDED_API_TOKEN to at least 32 characters for Mutinynet or non-loopback deployment');
@@ -35,7 +37,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   return { host, port: parsePort(env.PORT ?? '8787'), dataDirectory: resolve(env.SHIELDED_DATA_DIR ?? './data'), network,
     arkUrl: env.ARK_SERVER_URL ?? 'https://mutinynet.arkade.sh',
     emulatorUrl: env.EMULATOR_URL ?? 'https://emulator.mutinynet.arkade.sh', apiToken,
-    storageKey: env.SHIELDED_STORAGE_KEY };
+    storageKey: env.SHIELDED_STORAGE_KEY, proofTransport };
 }
 
 function parsePort(value: string): number {
@@ -113,7 +115,7 @@ export function createApp({ config, engine: initialEngine, initializationError: 
   };
   const allowedActions = (): Action[] => {
     const standard = config.network === 'mutinynet'
-      ? ['bootstrap', 'sync', 'shield', 'seal', 'transfer', 'withdraw', 'recover'] as Action[]
+      ? ['bootstrap', 'sync', ...(config.proofTransport === 'compact' ? ['board' as Action] : []), 'shield', 'seal', 'transfer', 'withdraw', 'recover'] as Action[]
       : ['shield', 'seal', 'transfer', 'withdraw', 'reset', 'replay', 'tamper', 'recover', 'rebase'] as Action[];
     try {
       const advertised = engine?.snapshot().status as Record<string, unknown> | undefined;
@@ -209,7 +211,8 @@ export async function createDeploymentEngine(config: ServerConfig): Promise<Demo
   await mkdir(config.dataDirectory, { recursive: true });
   const { createDemoEngine } = await import('./engine.ts');
   return createDemoEngine({ dataDirectory: config.dataDirectory, network: config.network,
-    arkUrl: config.arkUrl, emulatorUrl: config.emulatorUrl, storageKey: config.storageKey });
+    arkUrl: config.arkUrl, emulatorUrl: config.emulatorUrl, storageKey: config.storageKey,
+    proofTransport: config.proofTransport });
 }
 
 export function startServer(config = loadServerConfig()) {

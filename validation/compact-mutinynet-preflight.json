@@ -1,0 +1,31 @@
+{
+  "observedAt": "2026-10-03T21:05:33.9274727+02:00",
+  "network": "mutinynet",
+  "proofTransport": "compact",
+  "fundedMutinynet": false,
+  "ready": false,
+  "bootstrapPhase": "funding-required",
+  "operator": {
+    "arkUrl": "https://mutinynet.arkade.sh",
+    "signerPubkey": "03301078808e4f7bc0dadfe29e34b1df8eaf0108ef06b1722274075ebc107a127a",
+    "emulatorPubkey": "b7cfa04ef81efc59855af20f16bf73b730a3f5949cb9b8db7c206f1d7c928de6",
+    "maxTxWeight": "40000",
+    "effectiveMaxTxWeight": "4000",
+    "exitTimelock": {
+      "type": "seconds",
+      "value": "2048"
+    }
+  },
+  "funding": {
+    "arkAddress": "tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84e2s8qc8k54rysnd7ejp9vemlencrq8s05kw24teu2vr85vg4692sauz8s",
+    "boardingAddress": "tb1pxymwhgwhwsgrppav7wd047w35t7qvmhnzxwger5t0c6yadl8lynqet9qdp",
+    "availableSats": 0,
+    "requiredSats": 203330,
+    "boarding": {
+      "confirmed": 0,
+      "unconfirmed": 0,
+      "total": 0
+    }
+  },
+  "blocker": "No test funds received. Last Arkade faucet response was HTTP 500: missing vtxos. The official on-chain faucet GitHub authorization code expired without approval."
+}

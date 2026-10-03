@@ -1,6 +1,22 @@
 # Shielded Arkade PoC
 
-This private, experimental workspace contains a runnable proof of concept. The showcase compiles the `.ark` contracts in `contracts/poc/`, generates Groth16 proofs, builds transactions with the Arkade SDK, then submits them to the Go emulator's real `Service.SubmitTx` VM. It covers BTC and a demonstration token through **shield → seal → private transfer → seal → withdraw**. A Mutinynet container path is included for test-network operation; this remains a bounded PoC, not production wallet software. See [the PoC profile](spec/POC-PROFILE.md) for its design and security limits.
+This private, experimental workspace contains a runnable proof of concept. The retained inline showcase compiles the `.ark` contracts in `contracts/poc/`, generates Groth16 proofs, builds transactions with the Arkade SDK, then submits them to the Go emulator's real `Service.SubmitTx` VM. Both transports cover BTC and a demonstration token through **shield → seal → private transfer → seal → withdraw**. A Mutinynet container path is included for test-network operation; this remains a bounded PoC, not production wallet software. See [the PoC profile](spec/POC-PROFILE.md) for its design and security limits.
+
+The additional `compact` transport keeps real proofs, verification keys and
+verifier code off the native transaction. Transactions carry a 133-byte binding
+packet plus actual native effects and signatures. A dedicated verifier checks
+the full sidecar before signing; it retains an operator trust and liveness
+dependency. See [the compact profile](spec/COMPACT-PROFILE.md) for its authority,
+exit limits, startup and validation commands. Existing inline checkpoints are
+preserved and cannot silently switch profiles.
+
+The compact Docker test records 2,370–3,376 WU for main transactions and 732 WU
+per checkpoint in [validation/compact-deployment.json](validation/compact-deployment.json).
+That is local fixture evidence. Funded Mutinynet execution remains unverified;
+the [network preflight](validation/compact-mutinynet-preflight.json) records an
+unfunded wallet and the current funding blocker. The showcase holds its demo
+wallet keys and uses treasury backing; an external customer deposit rail and
+independent note-holder pool exit are not implemented.
 
 ## Run on Windows
 
@@ -33,16 +49,18 @@ The unit suite covers SDK covenant construction and rejection cases. The primiti
 Install Docker Engine with Compose, copy `.env.example` to `.env`, and replace `SHIELDED_API_TOKEN` with a unique random value of at least 32 characters. Keep the published port on loopback unless a trusted TLS reverse proxy protects the service.
 
 ```sh
-docker compose up --build -d
-docker compose ps
-docker compose logs -f shielded
+docker compose --project-name shielded-compact up --build -d
+docker compose --project-name shielded-compact ps
+docker compose --project-name shielded-compact logs -f shielded
 ```
 
-Compose defaults to `https://mutinynet.arkade.sh` and `https://emulator.mutinynet.arkade.sh`. The UI asks for the API token and receives a signed HttpOnly session cookie; scripts can send `Authorization: Bearer <token>`. `/healthz` reports whether the server process is alive. `/readyz` reports whether the engine can accept operations; a Mutinynet instance can remain unready until its bootstrap/funding setup is complete while the UI remains available to perform that setup. Bootstrap first checks the current proof profile against the operator's transaction-weight limit and stops before funding if it cannot fit. If it passes, the live wallet displays its funding address and requires at least 203,330 Mutinynet test sats before issuing identities; transaction fees can require additional funds. Use test coins only, and treat operator acceptance as preconfirmation rather than Bitcoin finality.
+The example uses a fresh project and volume for the compact profile. `.env.example` selects `SHIELDED_PROOF_TRANSPORT=compact`; an existing inline wallet cannot switch profiles. Compact mode uses `https://mutinynet.arkade.sh` and a dedicated verifier inside the service. Inline mode uses the configured public emulator. The UI asks for the API token and receives a signed HttpOnly session cookie; scripts can send `Authorization: Bearer <token>`. `/healthz` reports whether the server process is alive. `/readyz` remains unready until funding and bootstrap complete, while the UI exposes those steps. Each Ark transaction must fit the smaller of the operator limit and 4,000 WU. The live wallet requires at least 203,330 Mutinynet test sats initially; fees can require additional funds. Bootstrap issues four native identities, pins their verifier profile, and funds four resource heads in separate resumable transactions. Use test coins only; operator acceptance is preconfirmation rather than Bitcoin finality.
+
+Fund the displayed Ark address directly, or send on-chain coins to the boarding address and use **Board confirmed funds** after confirmation. Sync only refreshes balances. The service journals boarding inputs before joining the shared Bitcoin round and blocks ambiguous retries. The server commands and image enable Node 24's EventSource transport for Ark round events.
 
 The named `shielded-data` volume holds an authenticated, encrypted SQLite checkpoint and the generated encryption key. Preserve the volume as a unit when moving or restoring it. To manage the key separately, set `SHIELDED_STORAGE_KEY` before starting Compose and back it up securely; a securely generated 64-character hex value is a suitable key string. The service uses one process per data volume; do not attach the same volume to multiple replicas. `docker compose down` preserves the volume; remove it separately only when intentionally discarding the wallet state.
 
-For an isolated image smoke test against the bundled local emulator, run `npm ci` followed by `npm run test:deployment`. It builds and starts the actual image, exercises authentication and proof/VM shield, seal, transfer, and withdrawal actions, then restarts the container and checks that wallet state and native heads survived. The smoke test creates and removes only its own uniquely named image, container, and volume.
+For an isolated image smoke test, run `npm ci` followed by `npm run test:deployment`. Set `SHIELDED_SMOKE_TRANSPORT=compact` to test the offchain verifier; the default tests the retained inline proof/VM flow. Both exercise authentication, payments, withdrawal, idempotency and encrypted restart. The smoke removes only its own uniquely named image, container and volume. [Compact profile commands](spec/COMPACT-PROFILE.md) also describe the explicit funded Mutinynet smoke.
 
 ## Limits and older design
 
@@ -50,6 +68,6 @@ The local emulator uses synthetic genesis/funding, fixture signing keys, and sin
 
 The engine writes its checkpoint before and after native submission. A saved accepted receipt completes local state without another submission. An unknown submission outcome blocks spending; restart the service to reconcile the saved transaction against authoritative network evidence. Checkpoint-write failures also require restart. Back up the encryption key with the database: losing the key makes an intact checkpoint unrecoverable.
 
-The deployment smoke validates the bundled local emulator. Mutinynet connectivity, signer policy, funding discovery, and encrypted restart have been checked, but live pool transactions remain unverified: the connected operator currently permits 40,000 weight units and the proof profile has a conservative floor of 54,860 before the rest of the transaction. Bootstrap refuses to fund an incompatible pool. A smaller proof profile or a compatible operator limit is required before live transaction testing.
+The retained inline profile remains blocked on Mutinynet: its conservative floor is 54,860 WU before the rest of the transaction, above the observed 40,000-WU operator cap. Compact mode removes programs, keys and proofs from the transaction and uses its own stricter weight preflight. Local compact validation is separate from funded network evidence; see the compact profile and recorded validation artifacts for the tested scope.
 
 The earlier research design and fail-closed contract scaffold remain in [spec/protocol-design.md](spec/protocol-design.md) and `contracts/`. They are distinct from the runnable bounded profile under `contracts/poc/` and are not used by this showcase. Keep protocol-specific work private unless publication is explicitly approved.
