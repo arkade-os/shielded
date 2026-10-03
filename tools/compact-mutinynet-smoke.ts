@@ -91,7 +91,7 @@ async function main() {
     assert.equal(hex.encode(packet.profileId), profileId);
     assert.ok(Extension.fromTx(tx).getPackets().every(packet => packet.type() === 0 || packet.type() === 0x84));
     const { txs } = await indexer.getVirtualTxs([tx.id]);
-    const indexed = txs.map(raw => Transaction.fromRaw(hex.decode(raw))).find(raw => raw.id === tx.id);
+    const indexed = txs.map(raw => Transaction.fromPSBT(base64.decode(raw))).find(raw => raw.id === tx.id);
     assert.ok(indexed, 'Accepted live transaction must have indexed raw ancestry');
     assert.deepEqual(indexed.unsignedTx, tx.unsignedTx);
     const effects = Array.from({ length: tx.outputsLength }, (_, vout) => ({ txid: tx.id, vout }))
@@ -104,7 +104,7 @@ async function main() {
     }
     const checkpoints = receipt.signedCheckpoints.map((entry: string) => Transaction.fromPSBT(base64.decode(entry)));
     const { txs: checkpointRaws } = await indexer.getVirtualTxs(checkpoints.map((entry: Transaction) => entry.id));
-    assert.ok(checkpoints.every((checkpoint: Transaction) => checkpointRaws.some(raw => Transaction.fromRaw(hex.decode(raw)).id === checkpoint.id)));
+    assert.ok(checkpoints.every((checkpoint: Transaction) => checkpointRaws.some(raw => Transaction.fromPSBT(base64.decode(raw)).id === checkpoint.id)));
     assert.equal(Object.hasOwn(payload.state.activity.find((entry: Record<string, unknown>) => entry.txid === tx.id), 'proof'), false);
     const count = payload.state.activity.length;
     const duplicate = await action(name, suffix, body);

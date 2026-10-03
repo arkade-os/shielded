@@ -38,6 +38,29 @@ heads before acceptance advances native state. The engine then atomically saves
 the accepted receipt and successor heads before committing note state. Unknown
 network outcomes freeze spending until authoritative reconciliation.
 
+## Bootstrap response recovery
+
+Bootstrap journals the exact `SubmitTx` request before contacting the operator.
+It validates the operator-only response against the submitted body,
+previous-output metadata, checkpoint leaves, and pinned operator signatures
+before the SDK wallet signs the checkpoints. The validated signed response is
+journaled before `FinalizeTx`. On restart, recovery first checks for indexed
+acceptance; if absent, it queries the read-only pending-response endpoint using
+the exact saved input outpoints and transaction ID. It never retries
+`SubmitTx`; if no unique matching response is recoverable, bootstrap fails
+closed and keeps the operation blocked.
+
+The live indexer returns base64-encoded PSBTs, not raw transaction hex. These
+provide transaction-body and output evidence, but Arkd strips operator signature
+fields; an indexed PSBT is not a complete signed receipt. The fallback recovery
+path can restore signature fields from a finalized witness only if the exact
+matching signatures remain present and the expected leaf script and control
+block match. Otherwise it fails closed. Full finalized-transaction recovery
+without the saved journal has not been verified. Persist the full signed
+operator response before `FinalizeTx`; the read-only pending-response endpoint
+is the recovery path for an unfinalized response. Do not use raw-transaction
+parsing for indexer PSBTs or infer acceptance from a transaction ID alone.
+
 ## Authority and limits
 
 The dedicated verifier runs in this service. Bitcoin does not evaluate its
@@ -71,9 +94,13 @@ change does not remove the existing capacity, liveness, refresh or exit limits.
 Every submitted Ark transaction is checked against the smaller of the reported
 operator limit and 4,000 WU. The latter is a conservative experiment target,
 not a claim about mainnet policy. Actual signed main and checkpoint weights are
-reported separately. Local genesis and funding remain synthetic test fixtures.
-The shared Bitcoin commitment round used for on-chain boarding is an operator
-aggregate and has a separate transaction size.
+reported separately. Local emulator genesis and funding remain synthetic test
+fixtures. Mutinynet bootstrap uses actual test-network transactions, but the
+current funding result is under investigation after an output-mismatch response.
+No resource heads are recorded, readiness is false, and an accepted compact
+transaction lifecycle has not been demonstrated. The shared Bitcoin commitment
+round used for on-chain boarding is an operator aggregate and has a separate
+transaction size.
 
 Changing the pinned verifier source or keys creates a new profile. Existing
 funded checkpoints reject such a change. Preserve the exact software revision,

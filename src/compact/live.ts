@@ -3,13 +3,12 @@ import { base64, hex } from "@scure/base";
 import {
   ArkAddress, ConditionCSVMultisigTapscript, ConditionMultisigTapscript, CSVMultisigTapscript, Estimator, Extension, MultisigTapscript, Ramps,
   InMemoryContractRepository, InMemoryWalletRepository, RestArkProvider, RestIndexerProvider,
-  SingleKey, Transaction, Wallet, asset, isVirtualCoin, verifyTapscriptSignatures,
-  type ArkInfo, type ExtendedCoin, type Identity, type Recipient, type SettlementEvent,
+  SingleKey, Transaction, Wallet, asset, isVirtualCoin, matchServerCheckpoints, verifyTapscriptSignatures,
+  type ArkInfo, type ExtendedCoin, type ExtendedVirtualCoin, type Identity, type Recipient, type SettlementEvent,
 } from "@arkade-os/sdk";
 import { TaprootControlBlock } from "@scure/btc-signer/psbt.js";
 import { tapLeafHash } from "@scure/btc-signer/payment.js";
 import { createCompactRuntime, createCompactDestination, createCompactProfile, type CompactRuntimeOptions } from "./runtime.ts";
-import { verifyRemoteResponse } from "../sdk/live.ts";
 import type { BoardingResult, NativeCheckpoint, NativeSubmission, NativeVmResult, SdkRuntime, SdkRuntimeOptions } from "../sdk/runtime.ts";
 import type { VmBridgeRequest } from "../sdk/adapter.ts";
 import { coinFromTransaction } from "../sdk/adapter.ts";
@@ -28,6 +27,7 @@ const LIVE_EXIT_SECONDS = 2048n;
 const HARD_WEIGHT_LIMIT = 4_000n;
 type IssueName = typeof ISSUE_NAMES[number];
 type LiveState = NonNullable<NativeCheckpoint["live"]>;
+type BootstrapResponse = Awaited<ReturnType<RestArkProvider["submitTx"]>>;
 
 function resourceSats(name: typeof RESOURCE_NAMES[number], btcReserve: bigint): bigint {
   return name === "gate" ? GATE_FUNDING : name === "btcVault" ? CARRIER + btcReserve : CARRIER;
@@ -42,6 +42,124 @@ function sameBody(actual: Transaction, expected: Transaction): void {
   if (actual.id !== expected.id || !Buffer.from(actual.unsignedTx).equals(Buffer.from(expected.unsignedTx))) {
     throw new Error("Arkade changed the submitted transaction body");
   }
+}
+
+function sameBytes(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {
+  return left === undefined ? right === undefined : right !== undefined && Buffer.from(left).equals(Buffer.from(right));
+}
+
+function sameNonWitnessTx(left: NonNullable<ReturnType<Transaction["getInput"]>["nonWitnessUtxo"]> | undefined,
+  right: NonNullable<ReturnType<Transaction["getInput"]>["nonWitnessUtxo"]> | undefined): boolean {
+  if (!left || !right) return left === right;
+  return left.version === right.version && left.segwitFlag === right.segwitFlag && left.lockTime === right.lockTime &&
+    left.inputs.length === right.inputs.length && left.inputs.every((input, index) => {
+      const other = right.inputs[index];
+      return Boolean(other) && sameBytes(input.txid, other.txid) && input.index === other.index &&
+        sameBytes(input.finalScriptSig, other.finalScriptSig) && input.sequence === other.sequence;
+    }) && left.outputs.length === right.outputs.length && left.outputs.every((output, index) => {
+      const other = right.outputs[index];
+      return Boolean(other) && output.amount === other.amount && sameBytes(output.script, other.script);
+    }) && (left.witnesses ?? []).length === (right.witnesses ?? []).length &&
+    (left.witnesses ?? []).every((witness, index) => witness.length === (right.witnesses ?? [])[index]?.length &&
+      witness.every((item, itemIndex) => sameBytes(item, (right.witnesses ?? [])[index]?.[itemIndex])));
+}
+
+function bootstrapSignerKeys(script: Uint8Array): string[] {
+  if (ConditionMultisigTapscript.isScriptValid(script) === true) return ConditionMultisigTapscript.decode(script).params.pubkeys.map(hex.encode);
+  if (ConditionCSVMultisigTapscript.isScriptValid(script) === true) return ConditionCSVMultisigTapscript.decode(script).params.pubkeys.map(hex.encode);
+  try { return CSVMultisigTapscript.decode(script).params.pubkeys.map(hex.encode); }
+  catch { return MultisigTapscript.decode(script).params.pubkeys.map(hex.encode); }
+}
+
+function assertBootstrapInputMetadata(actual: Transaction, expected: Transaction): void {
+  if (actual.inputsLength !== expected.inputsLength) throw new Error("Arkade changed bootstrap input metadata");
+  for (let vin = 0; vin < expected.inputsLength; vin++) {
+    const input = actual.getInput(vin);
+    const original = expected.getInput(vin);
+    if (input.witnessUtxo?.amount !== original.witnessUtxo?.amount ||
+        !input.witnessUtxo?.script || !original.witnessUtxo?.script ||
+        !Buffer.from(input.witnessUtxo.script).equals(Buffer.from(original.witnessUtxo.script)) ||
+        !sameNonWitnessTx(input.nonWitnessUtxo, original.nonWitnessUtxo) ||
+        input.sighashType !== original.sighashType ||
+        (input.tapInternalKey && !Buffer.from(input.tapInternalKey).equals(Buffer.from(original.tapInternalKey ?? []))) ||
+        (original.tapInternalKey && !Buffer.from(original.tapInternalKey).equals(Buffer.from(input.tapInternalKey ?? []))) ||
+        (input.tapMerkleRoot && !Buffer.from(input.tapMerkleRoot).equals(Buffer.from(original.tapMerkleRoot ?? []))) ||
+        (original.tapMerkleRoot && !Buffer.from(original.tapMerkleRoot).equals(Buffer.from(input.tapMerkleRoot ?? [])))) {
+      throw new Error("Arkade changed bootstrap previous-output metadata");
+    }
+    const leaves = input.tapLeafScript ?? [];
+    const expectedLeaves = original.tapLeafScript ?? [];
+    if (leaves.length !== expectedLeaves.length || leaves.some(([control, script], index) => {
+      const [expectedControl, expectedScript] = expectedLeaves[index] ?? [];
+      return !expectedControl || !expectedScript || !Buffer.from(script).equals(Buffer.from(expectedScript)) ||
+        !Buffer.from(TaprootControlBlock.encode(control)).equals(Buffer.from(TaprootControlBlock.encode(expectedControl)));
+    })) throw new Error("Arkade changed bootstrap spend leaf metadata");
+  }
+}
+
+function validateBootstrapPartials(tx: Transaction, expected: Transaction, vin: number, serverKey: string, requireServer: boolean): string | undefined {
+  const input = tx.getInput(vin);
+  const leaves = expected.getInput(vin).tapLeafScript ?? [];
+  const signatures = input.tapScriptSig ?? [];
+  const seen = new Set<string>();
+  const serverLeaves = new Set<string>();
+  for (const [key, signature] of signatures) {
+    const pubkey = hex.encode(key.pubKey);
+    const leafHash = hex.encode(key.leafHash);
+    const pair = `${pubkey}:${leafHash}`;
+    if (key.pubKey.length !== 32 || key.leafHash.length !== 32 || (signature.length !== 64 && signature.length !== 65) || seen.has(pair)) {
+      throw new Error("Arkade returned malformed or duplicate bootstrap signatures");
+    }
+    seen.add(pair);
+    const leaf = leaves.find(([, scriptWithVersion]) => hex.encode(tapLeafHash(scriptWithVersion.subarray(0, -1), scriptWithVersion.at(-1)!)) === leafHash);
+    if (!leaf) throw new Error("Arkade returned a bootstrap signature for an unsubmitted leaf");
+    const signerKeys = bootstrapSignerKeys(leaf[1].subarray(0, -1));
+    if (!signerKeys.includes(pubkey)) throw new Error("Arkade returned a bootstrap signature from a non-leaf signer");
+    verifyTapscriptSignatures(tx, vin, [pubkey], signerKeys.filter((keyHex) => keyHex !== pubkey), undefined, key.leafHash);
+    if (pubkey === serverKey) serverLeaves.add(leafHash);
+  }
+  if (serverLeaves.size > 1) throw new Error("Arkade returned operator signatures for conflicting bootstrap leaves");
+  if (requireServer && serverLeaves.size === 0) throw new Error("Bootstrap response is missing the pinned operator signature");
+  return [...serverLeaves][0];
+}
+
+function validateBootstrapResponse(request: VmBridgeRequest, response: BootstrapResponse, serverKey: string) {
+  const expectedArk = Transaction.fromPSBT(base64.decode(request.arkTx));
+  const serverArk = Transaction.fromPSBT(base64.decode(response.finalArkTx));
+  sameBody(serverArk, expectedArk);
+  assertBootstrapInputMetadata(serverArk, expectedArk);
+  const localArk = Transaction.fromPSBT(base64.decode(request.arkTx));
+  for (let vin = 0; vin < localArk.inputsLength; vin++) validateBootstrapPartials(localArk, expectedArk, vin, serverKey, false);
+  for (let vin = 0; vin < serverArk.inputsLength; vin++) {
+    const leafHash = validateBootstrapPartials(serverArk, expectedArk, vin, serverKey, true)!;
+    const serverSignatures = serverArk.getInput(vin).tapScriptSig ?? [];
+    const localSignatures = localArk.getInput(vin).tapScriptSig ?? [];
+    if (localSignatures.some(([key]) => hex.encode(key.leafHash) !== leafHash)) throw new Error("Submitted Ark signature does not match the operator-signed bootstrap leaf");
+    const combined = [...serverSignatures];
+    for (const local of localSignatures) {
+      const [key, signature] = local;
+      const existing = combined.find(([otherKey]) => hex.encode(otherKey.pubKey) === hex.encode(key.pubKey) && hex.encode(otherKey.leafHash) === hex.encode(key.leafHash));
+      if (existing) {
+        if (!Buffer.from(existing[1]).equals(Buffer.from(signature))) throw new Error("Arkade returned a conflicting bootstrap partial signature");
+      } else combined.push(local);
+    }
+    if (combined.length !== serverSignatures.length) serverArk.updateInput(vin, { tapScriptSig: combined });
+    const scriptWithVersion = (expectedArk.getInput(vin).tapLeafScript ?? []).find(([, script]) =>
+      hex.encode(tapLeafHash(script.subarray(0, -1), script.at(-1)!)) === leafHash)?.[1];
+    if (!scriptWithVersion) throw new Error("Bootstrap operator signature has no submitted spend leaf");
+    const signers = bootstrapSignerKeys(scriptWithVersion.subarray(0, -1));
+    if ((serverArk.getInput(vin).tapScriptSig ?? []).some(([key]) => hex.encode(key.leafHash) !== leafHash)) {
+      throw new Error("Bootstrap Ark response contains signatures for different spend leaves");
+    }
+    verifyTapscriptSignatures(serverArk, vin, signers, undefined, undefined, hex.decode(leafHash));
+  }
+  const checkpoints = request.checkpoints.map((entry) => Transaction.fromPSBT(base64.decode(entry)));
+  for (const { server: signed, local } of matchServerCheckpoints(response.signedCheckpointTxs, checkpoints, "compact bootstrap")) {
+    sameBody(signed, local);
+    assertBootstrapInputMetadata(signed, local);
+    for (let vin = 0; vin < signed.inputsLength; vin++) validateBootstrapPartials(signed, local, vin, serverKey, true);
+  }
+  return serverArk;
 }
 
 function outpointKey(point: { txid: string; vout: number }): string {
@@ -101,8 +219,8 @@ function ensureWeight(tx: Transaction, operatorLimit?: bigint): void {
   if (weight > limit) throw new Error(`Mutinynet transaction requires ${weight} WU; effective limit is ${limit} WU`);
 }
 
-function rawFromIndexer(raws: readonly string[], txid: string): Transaction | undefined {
-  return raws.map((raw) => Transaction.fromRaw(hex.decode(raw))).find((tx) => tx.id.toLowerCase() === txid.toLowerCase());
+function transactionFromIndexerPsbt(raws: readonly string[], txid: string): Transaction | undefined {
+  return raws.map((raw) => Transaction.fromPSBT(base64.decode(raw))).find((tx) => tx.id.toLowerCase() === txid.toLowerCase());
 }
 
 function restoreSignedPsbt(raw: Transaction, original: Transaction): Transaction {
@@ -222,7 +340,7 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
   const queryAccepted = async (request: VmBridgeRequest): Promise<Transaction | undefined> => {
     const expected = Transaction.fromPSBT(base64.decode(request.arkTx));
     const { txs } = await indexer.getVirtualTxs([expected.id]);
-    const tx = rawFromIndexer(txs, expected.id);
+    const tx = transactionFromIndexerPsbt(txs, expected.id);
     if (!tx) return undefined;
     sameBody(tx, expected);
     const checkpoints = request.checkpoints.map((entry) => Transaction.fromPSBT(base64.decode(entry)));
@@ -250,12 +368,14 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
     live.pendingBootstrap = { step, txid: parsed.id, request: requested };
     await persist();
     const response = await originalSubmit(arkTx, checkpointTxs);
-    const verified = verifyRemoteResponse(requested, { signedArkTx: response.finalArkTx, signedCheckpointTxs: response.signedCheckpointTxs }, serverKey);
+    const verified = validateBootstrapResponse(requested, response, serverKey);
     if (response.arkTxid !== parsed.id || verified.id !== parsed.id) throw new Error("Arkade returned a different bootstrap transaction ID");
     ensureWeight(verified, operatorLimit);
-    live.pendingBootstrap.response = response;
+    for (const checkpoint of response.signedCheckpointTxs) ensureWeight(Transaction.fromPSBT(base64.decode(checkpoint)), operatorLimit);
+    const sdkResponse = { ...response, finalArkTx: base64.encode(verified.toPSBT()) };
+    live.pendingBootstrap.response = sdkResponse;
     await persist();
-    return response;
+    return sdkResponse;
   };
 
   const finalizeBootstrap = async (): Promise<string | undefined> => {
@@ -263,7 +383,65 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
     if (!pending) return undefined;
     const accepted = await queryAccepted(pending.request);
     if (accepted) return pending.txid;
-    if (!pending.response) throw new Error(`Bootstrap ${pending.step} outcome is unknown; no transaction will be resubmitted`);
+    if (!pending.response) {
+      const walletApi = wallet as typeof wallet & {
+        getScriptMap?: () => Promise<Map<string, { encode(): Uint8Array; forfeit(): ExtendedVirtualCoin["forfeitTapLeafScript"] }>>;
+        makeGetPendingTxIntentSignature?: (coins: ExtendedVirtualCoin[]) => Promise<Parameters<RestArkProvider["getPendingTxs"]>[0]>;
+      };
+      if (typeof walletApi.getScriptMap !== "function" || typeof walletApi.makeGetPendingTxIntentSignature !== "function") {
+        throw new Error(`Bootstrap ${pending.step} outcome is unknown; no transaction will be resubmitted`);
+      }
+      const originals = pending.request.checkpoints.map((entry) => Transaction.fromPSBT(base64.decode(entry)));
+      const inputByOutpoint = new Map<string, { txid: string; vout: number; value: bigint; script: Uint8Array }>();
+      for (const tx of originals) {
+        const input = tx.getInput(0);
+        if (!input?.txid || input.index === undefined || !input.witnessUtxo) throw new Error("Saved bootstrap checkpoint lacks its original wallet prevout");
+        const outpoint = { txid: hex.encode(input.txid).toLowerCase(), vout: input.index };
+        const key = outpointKey(outpoint);
+        const entry = { ...outpoint, value: input.witnessUtxo.amount, script: input.witnessUtxo.script };
+        const previous = inputByOutpoint.get(key);
+        if (previous && (previous.value !== entry.value || !sameBytes(previous.script, entry.script))) {
+          throw new Error("Saved bootstrap checkpoints disagree about a wallet prevout");
+        }
+        inputByOutpoint.set(key, entry);
+      }
+      if (!inputByOutpoint.size) throw new Error("Saved bootstrap request has no wallet prevouts to reconcile");
+      const expected = [...inputByOutpoint.values()];
+      const { vtxos } = await indexer.getVtxos({ outpoints: expected.map(({ txid, vout }) => ({ txid, vout })) });
+      const scripts = await walletApi.getScriptMap();
+      if (vtxos.length !== expected.length) throw new Error("Indexer did not return the exact saved bootstrap inputs");
+      const coins = expected.map((point): ExtendedVirtualCoin => {
+        const matches = vtxos.filter((coin) => outpointKey(coin) === outpointKey(point));
+        if (matches.length !== 1) throw new Error("Indexer returned a missing or duplicate saved bootstrap input");
+        const coin = matches[0]!;
+        const scriptHex = coin.script.toLowerCase();
+        const script = scripts.get(scriptHex);
+        if (coin.value !== Number(point.value) || scriptHex !== hex.encode(point.script) || !script) {
+          throw new Error("Indexed bootstrap input does not match the saved wallet prevout");
+        }
+        return { ...coin, tapTree: script.encode(), forfeitTapLeafScript: script.forfeit(), intentTapLeafScript: script.forfeit() };
+      });
+      const intent = await walletApi.makeGetPendingTxIntentSignature(coins);
+      const matches = (await provider.getPendingTxs(intent)).filter((response) => response.arkTxid.toLowerCase() === pending.txid.toLowerCase());
+      if (matches.length !== 1) throw new Error("Arkade did not return exactly one matching pending bootstrap response");
+      const response = matches[0]!;
+      const verified = validateBootstrapResponse(pending.request, response, serverKey);
+      if (response.arkTxid.toLowerCase() !== pending.txid.toLowerCase() || verified.id.toLowerCase() !== pending.txid.toLowerCase()) {
+        throw new Error("Arkade pending bootstrap response does not match the saved transaction");
+      }
+      ensureWeight(verified, operatorLimit);
+      for (const checkpoint of response.signedCheckpointTxs) ensureWeight(Transaction.fromPSBT(base64.decode(checkpoint)), operatorLimit);
+      pending.response = { ...response, finalArkTx: base64.encode(verified.toPSBT()) };
+      await persist();
+    }
+    const verified = validateBootstrapResponse(pending.request, pending.response, serverKey);
+    if (pending.response.arkTxid.toLowerCase() !== pending.txid.toLowerCase() || verified.id.toLowerCase() !== pending.txid.toLowerCase()) {
+      throw new Error("Saved bootstrap response does not match the submitted transaction");
+    }
+    ensureWeight(verified, operatorLimit);
+    for (const checkpoint of pending.response.signedCheckpointTxs) ensureWeight(Transaction.fromPSBT(base64.decode(checkpoint)), operatorLimit);
+    pending.response = { ...pending.response, finalArkTx: base64.encode(verified.toPSBT()) };
+    await persist();
     const checkpoints = await Promise.all(pending.response.signedCheckpointTxs.map(async (entry) => {
       const signed = await signCheckpoint(Transaction.fromPSBT(base64.decode(entry)));
       return base64.encode(signed.toPSBT());
@@ -443,7 +621,7 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
 
   const recordIssue = async (name: IssueName, txid: string): Promise<void> => {
     const { txs } = await indexer.getVirtualTxs([txid]);
-    const raw = rawFromIndexer(txs, txid);
+    const raw = transactionFromIndexerPsbt(txs, txid);
     if (!raw) throw new Error(`Issued ${name} ancestry is not indexed; retry bootstrap without reissuing`);
     const packet = Extension.fromTx(raw).getAssetPacket();
     const issuedAmount = name === "token" ? tokenIssuance : 1n;
@@ -499,7 +677,7 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
 
   const validateProgramFunding = async (name: typeof RESOURCE_NAMES[number], txid: string): Promise<Transaction> => {
     const { txs } = await indexer.getVirtualTxs([txid]);
-    const tx = rawFromIndexer(txs, txid);
+    const tx = transactionFromIndexerPsbt(txs, txid);
     if (!tx) throw new Error("Program funding ancestry is not indexed; retry without resending");
     if (!profile || !closure) throw new Error("Compact profile was not registered before program funding");
     const vout = 0;
@@ -627,10 +805,8 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
     const leaf = checkpoint.getInput(0).tapLeafScript?.[0];
     if (!leaf) throw new Error("Checkpoint is missing its submitted spend leaf");
     const script = leaf[1].subarray(0, -1);
-    const keys = ConditionCSVMultisigTapscript.isScriptValid(script) === true
-      ? ConditionCSVMultisigTapscript.decode(script).params.pubkeys
-      : CSVMultisigTapscript.decode(script).params.pubkeys;
-    verifyTapscriptSignatures(signed, 0, keys.map(hex.encode), undefined, undefined, tapLeafHash(script, leaf[1].at(-1)!));
+    const keys = bootstrapSignerKeys(script);
+    verifyTapscriptSignatures(signed, 0, keys, undefined, undefined, tapLeafHash(script, leaf[1].at(-1)!));
     return signed;
   };
 
@@ -648,7 +824,7 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
     const requestedCheckpoints = submission.request.checkpoints.map((entry) => Transaction.fromPSBT(base64.decode(entry)));
     const indexedCheckpoints = await indexer.getVirtualTxs(requestedCheckpoints.map((entry) => entry.id));
     const checkpoints = requestedCheckpoints.map((requested) => {
-      const found = rawFromIndexer(indexedCheckpoints.txs, requested.id);
+      const found = transactionFromIndexerPsbt(indexedCheckpoints.txs, requested.id);
       if (!found) throw new Error("Accepted compact transaction is missing indexed checkpoint ancestry");
       return base64.encode(restoreSignedPsbt(found, requested).toPSBT());
     });

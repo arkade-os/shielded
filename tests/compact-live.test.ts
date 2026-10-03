@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { base64, hex } from "@scure/base";
 import {
-  ArkAddress, asset, CSVMultisigTapscript, Ramps, RestArkProvider, RestIndexerProvider, SingleKey, Transaction, Wallet,
+  ArkAddress, asset, CSVMultisigTapscript, Ramps, RestArkProvider, RestIndexerProvider,
+  SingleKey, Transaction, Wallet, verifyTapscriptSignatures,
 } from "@arkade-os/sdk";
+import { tapLeafHash } from "@scure/btc-signer/payment.js";
 import { buildCompactSpend, createCompactClosure } from "../src/compact/adapter.ts";
 import { createCompactDestination, createCompactProfile } from "../src/compact/runtime.ts";
 import { createCompactLiveRuntime } from "../src/compact/live.ts";
@@ -44,6 +46,106 @@ test("altered Arkade bootstrap response is rejected before it is journaled as si
   } finally { await runtime.close(); }
 });
 
+type BootstrapResponseCase = "valid" | "body" | "prevout" | "missing-server" | "invalid-server" | "duplicate-checkpoint" | "invalid-local";
+
+async function bootstrapResponseCase(t: test.TestContext, scenario: BootstrapResponseCase): Promise<void> {
+  const walletIdentity = SingleKey.fromHex("09".repeat(32));
+  const walletKey = await walletIdentity.xOnlyPublicKey();
+  const serverKey = await server.xOnlyPublicKey();
+  const checkpoint = CSVMultisigTapscript.encode({ timelock: { type: "seconds", value: 2048n }, pubkeys: [serverKey, walletKey] });
+  let unsignedArk: Transaction | undefined;
+  const fixture = await mockCompactLive(t, async (requestArk, checkpoints) => {
+    if (!unsignedArk) throw new Error("Bootstrap test did not capture its submitted Ark transaction");
+    const serverArk = scenario === "missing-server" ? Transaction.fromPSBT(base64.decode(requestArk)) :
+      Transaction.fromPSBT(unsignedArk.toPSBT());
+    if (scenario === "body") serverArk.updateOutput(0, { amount: serverArk.getOutput(0).amount! - 1n });
+    if (scenario === "prevout") {
+      const prevout = serverArk.getInput(0).witnessUtxo!;
+      serverArk.updateInput(0, { witnessUtxo: { ...prevout, amount: prevout.amount + 1n } });
+    }
+    const signedArk = scenario === "missing-server" ? serverArk : await server.sign(serverArk);
+    if (scenario === "invalid-server") {
+      const signatures = signedArk.getInput(0).tapScriptSig!;
+      const corrupted = Uint8Array.from(signatures[0][1]);
+      corrupted[0] ^= 1;
+      signedArk.updateInput(0, { tapScriptSig: signatures.map(([key]) => [key, corrupted]) });
+    }
+    const signedCheckpoints = await Promise.all(checkpoints.map(async (entry) => base64.encode(
+      (await server.sign(Transaction.fromPSBT(base64.decode(entry)), [0])).toPSBT())));
+    return { arkTxid: signedArk.id, finalArkTx: base64.encode(signedArk.toPSBT()),
+      signedCheckpointTxs: scenario === "duplicate-checkpoint" ? [...signedCheckpoints, ...signedCheckpoints] : signedCheckpoints };
+  }, { checkpointScript: checkpoint.script });
+  let finalized: string[] | undefined;
+  t.mock.method(RestArkProvider.prototype, "finalizeTx", async (_txid: string, entries: string[]) => { finalized = entries; });
+  t.mock.method(Wallet, "create", async (config: { identity: SingleKey; arkProvider: RestArkProvider }) => ({
+    getAddress: async () => "tark-mock-address", getBoardingAddress: async () => "tb1q-mock-address",
+    getBalance: async () => ({ available: 203_330, boarding: { confirmed: 0, unconfirmed: 0, total: 0 } }),
+    dispose: async () => {}, send: async () => "never-sent",
+    assetManager: { issue: async () => {
+      const closure = createCompactClosure(new Uint8Array(32).fill(4), serverKey, walletKey, { type: "seconds", value: 2048n });
+      const source = offlineNativeFixture([{ script: closure.pkScript, amount: 10_000n }]);
+      const spend = await buildCompactSpend({ profileId: new Uint8Array(32).fill(4), oldStateHash: new Uint8Array(32).fill(5),
+        newStateHash: new Uint8Array(32).fill(6), sidecarTranscript: Uint8Array.of(1),
+        inputs: [{ coin: { txid: source.id, vout: 0, value: 10_000, sourceTx: source.toBytes(false, false) },
+          tapTree: closure.tapTree, tapLeafScript: closure.tapLeafScript }],
+        outputs: [{ script: closure.pkScript, amount: 10_000n }], checkpoint,
+        exitTimelock: { type: "seconds", value: 2048n }, serverPubkey: serverKey, emulatorPubkey: walletKey });
+      unsignedArk = Transaction.fromPSBT(spend.arkTx.toPSBT());
+      const signedArk = await config.identity.sign(spend.arkTx);
+      if (scenario === "invalid-local") {
+        const signatures = signedArk.getInput(0).tapScriptSig!;
+        const corrupted = Uint8Array.from(signatures[0][1]);
+        corrupted[0] ^= 1;
+        signedArk.updateInput(0, { tapScriptSig: signatures.map(([key]) => [key, corrupted]) });
+      }
+      const requestArk = base64.encode(signedArk.toPSBT());
+      const requestCheckpoints = spend.checkpoints.map((tx) => base64.encode(tx.toPSBT()));
+      const response = await config.arkProvider.submitTx(requestArk, requestCheckpoints);
+      const returnedArk = Transaction.fromPSBT(base64.decode(response.finalArkTx));
+      const leaf = returnedArk.getInput(0).tapLeafScript![0];
+      verifyTapscriptSignatures(returnedArk, 0, [hex.encode(serverKey), hex.encode(walletKey)], undefined, undefined,
+        tapLeafHash(leaf[1].subarray(0, -1), leaf[1].at(-1)!));
+      const finalCheckpoints = await Promise.all(response.signedCheckpointTxs.map(async (entry) => base64.encode(
+        (await config.identity.sign(Transaction.fromPSBT(base64.decode(entry)), [0])).toPSBT())));
+      await config.arkProvider.finalizeTx(response.arkTxid, finalCheckpoints);
+      return { arkTxId: response.arkTxid, assetId: "unused" };
+    } },
+  } as never));
+  const checkpointState = emptyCheckpoint({ seedHex: "09".repeat(32), compactEmulatorSecret: "09".repeat(32),
+    arkUrl: "https://mutinynet.arkade.sh", emulatorUrl: "inprocess://compact-verifier", phase: "funding-required", issued: {} });
+  const runtime = await fixture.create(checkpointState);
+  try {
+    if (scenario === "valid") {
+      await assert.rejects(runtime.bootstrap!(), /Issued lane ancestry is not indexed/);
+      assert.ok(fixture.durable.live!.pendingBootstrap!.response, "verified response is durably journaled before SDK finalization");
+      assert.equal(finalized?.length, 1, "SDK receives the server-only checkpoint then finalizes with its wallet signature");
+      const finalCheckpoint = Transaction.fromPSBT(base64.decode(finalized![0]));
+      const leaf = finalCheckpoint.getInput(0).tapLeafScript![0];
+      verifyTapscriptSignatures(finalCheckpoint, 0, [hex.encode(serverKey), hex.encode(walletKey)], undefined, undefined,
+        tapLeafHash(leaf[1].subarray(0, -1), leaf[1].at(-1)!));
+    } else {
+      const expected = scenario === "body" ? /changed the submitted transaction body/ :
+        scenario === "prevout" ? /previous-output metadata/ :
+          scenario === "missing-server" ? /missing the pinned operator signature/ :
+            scenario === "invalid-server" || scenario === "invalid-local" ? /Invalid signature|keyMap\(tapScriptSig\)/ : /returned 2 checkpoints, expected 1/;
+      await assert.rejects(runtime.bootstrap!(), expected);
+      assert.equal(fixture.durable.live!.pendingBootstrap?.response, undefined, "rejected bootstrap response is never durably accepted");
+      assert.equal(finalized, undefined, "SDK does not finalize a rejected response");
+    }
+  } finally { await runtime.close(); }
+}
+
+test("bootstrap accepts server-only checkpoint signatures, retains the valid Ark client signature, then finalizes", { timeout: 30_000 }, async (t) => {
+  await bootstrapResponseCase(t, "valid");
+});
+
+test("bootstrap rejects a changed transaction body", { timeout: 30_000 }, async (t) => bootstrapResponseCase(t, "body"));
+test("bootstrap rejects changed previous-output metadata", { timeout: 30_000 }, async (t) => bootstrapResponseCase(t, "prevout"));
+test("bootstrap rejects a missing pinned operator signature", { timeout: 30_000 }, async (t) => bootstrapResponseCase(t, "missing-server"));
+test("bootstrap rejects an invalid operator signature", { timeout: 30_000 }, async (t) => bootstrapResponseCase(t, "invalid-server"));
+test("bootstrap rejects duplicate checkpoints", { timeout: 30_000 }, async (t) => bootstrapResponseCase(t, "duplicate-checkpoint"));
+test("bootstrap rejects an invalid submitted client signature", { timeout: 30_000 }, async (t) => bootstrapResponseCase(t, "invalid-local"));
+
 test("lost issuance response survives restart without resubmitting the unknown transaction", { timeout: 30_000 }, async (t) => {
   let submitCount = 0;
   const fixture = await mockCompactLive(t, async () => {
@@ -62,6 +164,64 @@ test("lost issuance response survives restart without resubmitting the unknown t
     assert.equal(submitCount, 1);
     assert.equal(restored.exportState().live!.pendingBootstrap!.txid, fixture.durable.live!.pendingBootstrap!.txid);
   } finally { await restored.close(); }
+});
+
+test("lost accepted bootstrap response is recovered from the read-only pending endpoint after restart", { timeout: 30_000 }, async (t) => {
+  let submitCount = 0;
+  let fixture!: Awaited<ReturnType<typeof mockCompactLive>>;
+  fixture = await mockCompactLive(t, async () => {
+    submitCount++;
+    throw new Error("injected lost Arkade response");
+  }, {
+    signArk: true,
+    getVtxos: async (filter) => {
+      if (!filter?.outpoints || !fixture.request) return [];
+      return fixture.request.checkpoints.map((entry) => {
+        const input = Transaction.fromPSBT(base64.decode(entry)).getInput(0);
+        return { txid: hex.encode(input.txid!), vout: input.index!, value: Number(input.witnessUtxo!.amount),
+          script: hex.encode(input.witnessUtxo!.script), status: { confirmed: true } } as never;
+      });
+    },
+    getPendingTxs: async () => {
+      const request = fixture.request!;
+      const ark = await server.sign(Transaction.fromPSBT(base64.decode(request.arkTx)));
+      const checkpoints = await Promise.all(request.checkpoints.map(async (entry) => base64.encode(
+        (await server.sign(Transaction.fromPSBT(base64.decode(entry)), [0])).toPSBT())));
+      return [{ arkTxid: ark.id, finalArkTx: base64.encode(ark.toPSBT()), signedCheckpointTxs: checkpoints }];
+    },
+  });
+  const checkpoint = emptyCheckpoint({ seedHex: "09".repeat(32), compactEmulatorSecret: "09".repeat(32),
+    arkUrl: "https://mutinynet.arkade.sh", emulatorUrl: "inprocess://compact-verifier", phase: "funding-required", issued: {} });
+  const first = await fixture.create(checkpoint);
+  await assert.rejects(first.bootstrap!(), /injected lost Arkade response/);
+  assert.equal(submitCount, 1);
+  assert.equal(fixture.durable.live!.pendingBootstrap!.response, undefined);
+  await first.close();
+
+  let finalized: string[] | undefined;
+  t.mock.method(RestArkProvider.prototype, "finalizeTx", async (_txid: string, entries: string[]) => { finalized = entries; });
+  const restored = await fixture.create(fixture.durable);
+  try {
+    await assert.rejects(restored.bootstrap!(), /Issued lane ancestry is not indexed/);
+    assert.equal(submitCount, 1, "recovery never resubmits the accepted transaction");
+    assert.ok(restored.exportState().live!.pendingBootstrap!.response, "validated recovery is durably journaled before finalization");
+    assert.equal(finalized?.length, 1, "recovered checkpoint is finalized through the SDK");
+  } finally { await restored.close(); }
+
+  const saved = fixture.durable.live!.pendingBootstrap!;
+  const altered = Buffer.from(base64.decode(saved.response!.finalArkTx));
+  const signature = Buffer.from(Transaction.fromPSBT(altered).getInput(0).tapScriptSig![0]![1]);
+  const signatureOffset = altered.indexOf(signature);
+  assert.notEqual(signatureOffset, -1);
+  altered[signatureOffset] ^= 1;
+  saved.response!.finalArkTx = base64.encode(altered);
+  finalized = undefined;
+  const reopened = await fixture.create(fixture.durable);
+  try {
+    await assert.rejects(reopened.bootstrap!(), /Invalid signature|keyMap\(tapScriptSig\)/);
+    assert.equal(finalized, undefined, "modified saved response is rejected before finalization");
+    assert.equal(submitCount, 1, "reopening never resubmits the original transaction");
+  } finally { await reopened.close(); }
 });
 
 test("restart after gate funding keeps the accepted head and blocks an unknown second resource without resending", { timeout: 90_000 }, async (t) => {
@@ -105,7 +265,7 @@ test("restart after gate funding keeps the accepted head and blocks an unknown s
   t.mock.method(RestArkProvider.prototype, "getInfo", async () => info as never);
   t.mock.method(RestArkProvider.prototype, "submitTx", async () => { throw new Error("injected lost Arkade response"); });
   t.mock.method(RestIndexerProvider.prototype, "getVirtualTxs", async (txids: string[]) => ({
-    txs: txids.includes(gate.id) ? [gateRaw] : [],
+    txs: txids.includes(gate.id) ? [base64.encode(gate.toPSBT())] : [],
   } as never));
   t.mock.method(RestIndexerProvider.prototype, "getVtxos", async ({ outpoints }: { outpoints: { txid: string; vout: number }[] }) => ({
     vtxos: outpoints.filter(({ txid, vout }) => txid === gate.id && vout === 0).map(() => ({ txid: gate.id, vout: 0,
@@ -346,22 +506,39 @@ test("compact checkpoint finalization accepts emulator plus Arkade signatures an
 
 async function mockCompactLive(
   t: test.TestContext,
-  submit: (request: string) => Promise<never> | Promise<{ finalArkTx: string; signedCheckpointTxs: string[] }>,
+  submit: (request: string, checkpoints: string[]) => Promise<never> | Promise<{ arkTxid?: string; finalArkTx: string; signedCheckpointTxs: string[] }>,
+  options: {
+    checkpointScript?: Uint8Array;
+    signArk?: boolean;
+    getVtxos?: (filter?: { outpoints?: { txid: string; vout: number }[] }) => Promise<never[]>;
+    getPendingTxs?: () => Promise<unknown[]>;
+  } = {},
 ) {
   const serverKey = await server.xOnlyPublicKey();
-  const checkpointScript = CSVMultisigTapscript.encode({ timelock: { type: "seconds", value: 2048n }, pubkeys: [serverKey] }).script;
+  const checkpointScript = options.checkpointScript ?? CSVMultisigTapscript.encode({ timelock: { type: "seconds", value: 2048n }, pubkeys: [serverKey] }).script;
   t.mock.method(RestArkProvider.prototype, "getInfo", async () => ({
     network: "mutinynet", signerPubkey: `02${hex.encode(serverKey)}`, checkpointTapscript: hex.encode(checkpointScript),
     unilateralExitDelay: 2048n, maxTxWeight: 4_000n,
   } as never));
-  t.mock.method(RestArkProvider.prototype, "submitTx", async (request: string) => submit(request) as never);
+  t.mock.method(RestArkProvider.prototype, "submitTx", async (request: string, checkpoints: string[]) => submit(request, checkpoints) as never);
   t.mock.method(RestIndexerProvider.prototype, "getVirtualTxs", async () => ({ txs: [] } as never));
-  t.mock.method(RestIndexerProvider.prototype, "getVtxos", async () => ({ vtxos: [] } as never));
+  t.mock.method(RestIndexerProvider.prototype, "getVtxos", async (filter?: { outpoints?: { txid: string; vout: number }[] }) =>
+    ({ vtxos: await options.getVtxos?.(filter) ?? [] } as never));
+  if (options.getPendingTxs) t.mock.method(RestArkProvider.prototype, "getPendingTxs", options.getPendingTxs as never);
   let durable!: NativeCheckpoint;
   let request: { arkTx: string; checkpoints: string[] } | undefined;
-  t.mock.method(Wallet, "create", async (config: { arkProvider: RestArkProvider }) => ({
+  t.mock.method(Wallet, "create", async (config: { arkProvider: RestArkProvider; identity: SingleKey }) => ({
     getAddress: async () => "tark-mock-address", getBoardingAddress: async () => "tb1q-mock-address",
     getBalance: async () => ({ available: 203_330, boarding: { confirmed: 0, unconfirmed: 0, total: 0 } }),
+    ...(options.getPendingTxs ? {
+      getScriptMap: async () => {
+        const first = request?.checkpoints[0];
+        const input = first ? Transaction.fromPSBT(base64.decode(first)).getInput(0) : undefined;
+        if (!input?.witnessUtxo) return new Map();
+        const script = { encode: () => new Uint8Array(), forfeit: () => [] };
+        return new Map([[hex.encode(input.witnessUtxo.script), script]]);
+      }, makeGetPendingTxIntentSignature: async () => ({}),
+    } : {}),
     dispose: async () => {}, send: async () => "never-sent",
     assetManager: { issue: async () => {
       const signer = SingleKey.fromHex(durable.live!.compactEmulatorSecret!);
@@ -375,7 +552,8 @@ async function mockCompactLive(
         outputs: [{ script: closure.pkScript, amount: 10_000n }], checkpoint: CSVMultisigTapscript.encode({
           timelock: { type: "seconds", value: 2048n }, pubkeys: [serverKey] }), exitTimelock: closure.exitTimelock,
         serverPubkey: serverKey, emulatorPubkey: emulatorKey });
-      request = { arkTx: base64.encode(spend.arkTx.toPSBT()), checkpoints: spend.checkpoints.map((tx) => base64.encode(tx.toPSBT())) };
+      const arkTx = options.signArk ? await config.identity.sign(spend.arkTx) : spend.arkTx;
+      request = { arkTx: base64.encode(arkTx.toPSBT()), checkpoints: spend.checkpoints.map((tx) => base64.encode(tx.toPSBT())) };
       await config.arkProvider.submitTx(request.arkTx, request.checkpoints);
       return { arkTxId: spend.arkTx.id, assetId: "unused" };
     } },

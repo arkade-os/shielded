@@ -4,7 +4,8 @@ Source: [shared conversation](https://chatgpt.com/share/6abd3b85-a030-83eb-bb3b-
 
 ## Current work — 2026-10-03
 
-The implementation through `bd08830` is consolidated on `main`. Continue there;
+The implementation through `bd08830` is consolidated on `main`, followed by
+documentation commit `c2cdce7`. Continue on `main`;
 do not recreate the branch stack. Shielded PR 1 was automatically marked merged
 when its commits reached main; PRs 2–5 were closed as superseded. Preserve the
 historical branch refs and the private repository visibility.
@@ -14,17 +15,24 @@ is on main. The original `C:\Git\shielded` checkout retains its preexisting dirt
 work; do not overwrite it or switch it without preserving those changes.
 
 The compact transport stores real Groth16 proofs and note data offchain and
-carries a 133-byte binding in native transactions. Local verification passed
-54 tests without skips, the build, compact Docker lifecycle and encrypted
-restart. The retained inline VM E2E passed twice with fixed local fixture
-entropy; production randomness and collision rejection remain intact.
+carries a 133-byte binding in native transactions. Full local verification
+passed 62 tests without skips and the build; the compact Docker lifecycle and
+encrypted restart passed. The retained inline VM E2E passed twice with fixed
+local fixture entropy; production randomness and collision rejection remain
+intact. Bootstrap response recovery passed the added signature, decoder and
+restart regression checks. Program-funding recovery remains unfinished.
 
-Funded Mutinynet execution is still unverified. The preserved test service at
-`http://127.0.0.1:8788` has zero funds, and the Arkade faucet reported `missing
-vtxos`. Its encrypted Docker volume and ignored `.recovery/compact-live`
-metadata retain the wallet. After receiving test funds, run the compact live
-smoke and repeat it after restart; never bypass the network or weight preflight,
-resubmit unknown outcomes, or change a registered funded profile in place.
+Funded Mutinynet execution is still unverified. The monitored test service has
+received funds, registered verifier profile `ddabfc…a4ec`, and entered
+`funding-programs`; the latest attempt failed because the program-funding
+native asset outputs did not match the registered identities. The funding
+transaction's acceptance is under investigation. No resource heads are recorded,
+readiness is false, and the funded transaction lifecycle has not been
+demonstrated. The saved preflight JSON is a pre-funding snapshot and is
+historical evidence. The encrypted Docker volume retains the wallet. Root is
+diagnosing the funding mismatch. Never bypass the network or weight preflight,
+resubmit unknown `SubmitTx` outcomes, or change a registered funded profile in
+place.
 
 This is a treasury-backed operator PoC with service-owned demo keys, depth-eight
 trees and no independent note-holder pool exit. Client-owned CSV/recursive

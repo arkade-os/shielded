@@ -12,9 +12,13 @@ preserved and cannot silently switch profiles.
 
 The compact Docker test records 2,370–3,376 WU for main transactions and 732 WU
 per checkpoint in [validation/compact-deployment.json](validation/compact-deployment.json).
-That is local fixture evidence. Funded Mutinynet execution remains unverified;
-the [network preflight](validation/compact-mutinynet-preflight.json) records an
-unfunded wallet and the current funding blocker. The showcase holds its demo
+That is local fixture evidence. The monitored Mutinynet service has received
+funds, registered its verifier profile, and reached the program-funding phase.
+No resource heads are recorded, readiness remains false, and the funding result
+is under investigation after an output-mismatch response. The funded transaction
+lifecycle remains unverified. The [saved network
+preflight](validation/compact-mutinynet-preflight.json) predates funding and is
+historical evidence, not the current wallet state. The showcase holds its demo
 wallet keys and uses treasury backing; an external customer deposit rail and
 independent note-holder pool exit are not implemented.
 
@@ -55,6 +59,22 @@ docker compose --project-name shielded-compact logs -f shielded
 ```
 
 The example uses a fresh project and volume for the compact profile. `.env.example` selects `SHIELDED_PROOF_TRANSPORT=compact`; an existing inline wallet cannot switch profiles. Compact mode uses `https://mutinynet.arkade.sh` and a dedicated verifier inside the service. Inline mode uses the configured public emulator. The UI asks for the API token and receives a signed HttpOnly session cookie; scripts can send `Authorization: Bearer <token>`. `/healthz` reports whether the server process is alive. `/readyz` remains unready until funding and bootstrap complete, while the UI exposes those steps. Each Ark transaction must fit the smaller of the operator limit and 4,000 WU. The live wallet requires at least 203,330 Mutinynet test sats initially; fees can require additional funds. Bootstrap issues four native identities, pins their verifier profile, and funds four resource heads in separate resumable transactions. Use test coins only; operator acceptance is preconfirmation rather than Bitcoin finality.
+
+Compact bootstrap journals each exact `SubmitTx` request before contacting the
+operator. It validates the operator-only response—including the transaction
+body, previous-output metadata, expected checkpoint leaves, and pinned operator
+signatures—before the SDK wallet signs the checkpoints. The validated response
+is saved before `FinalizeTx`. After interruption, recovery first checks indexed
+acceptance, then queries the read-only pending-response endpoint using the exact
+saved inputs; it never retries `SubmitTx` for an unknown outcome. If no matching
+response can be recovered, bootstrap remains blocked. The indexer returns
+base64-encoded PSBTs with body/output evidence, but Arkd strips operator
+signature fields, so an indexed PSBT is not a complete signed receipt. A
+finalized-transaction recovery can restore signature fields only when the exact
+final witness still contains matching signatures and the expected leaf and
+control block; otherwise it fails closed. Recovery of a finalized transaction
+without its journal has not been verified. The read-only pending-response
+endpoint is the path for recovering a full, unfinalized operator response.
 
 Fund the displayed Ark address directly, or send on-chain coins to the boarding address and use **Board confirmed funds** after confirmation. Sync only refreshes balances. The service journals boarding inputs before joining the shared Bitcoin round and blocks ambiguous retries. The server commands and image enable Node 24's EventSource transport for Ark round events.
 
