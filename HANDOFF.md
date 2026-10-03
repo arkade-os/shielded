@@ -1,5 +1,8 @@
 # Shielded Arkade transfer snapshot — 2026-09-30
 
+Historical transfer record. Current development is consolidated on `main`;
+read `CONTINUATION.md` and `README.md` before following the older steps below.
+
 This is the CURRENT working tree, not a release. No changes were committed, merged, published, or deleted to make this snapshot. Continue in C:\Git\shielded. The receiving chat should orchestrate/design and use lighter subagents as requested by the user.
 
 ## Restore and run

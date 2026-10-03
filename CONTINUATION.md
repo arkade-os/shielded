@@ -2,6 +2,38 @@
 
 Source: [shared conversation](https://chatgpt.com/share/6abd3b85-a030-83eb-bb3b-1369fa813c60), original chat `6abd0c50-f2a8-83ed-829e-e51b3da88dfb` (Shielded Arkade).
 
+## Current work — 2026-10-03
+
+The implementation through `bd08830` is consolidated on `main`. Continue there;
+do not recreate the branch stack. Shielded PR 1 was automatically marked merged
+when its commits reached main; PRs 2–5 were closed as superseded. Preserve the
+historical branch refs and the private repository visibility.
+
+The managed checkout at `C:\Users\evilk\.codex\worktrees\compact-shielded\shielded`
+is on main. The original `C:\Git\shielded` checkout retains its preexisting dirty
+work; do not overwrite it or switch it without preserving those changes.
+
+The compact transport stores real Groth16 proofs and note data offchain and
+carries a 133-byte binding in native transactions. Local verification passed
+54 tests without skips, the build, compact Docker lifecycle and encrypted
+restart. The retained inline VM E2E passed twice with fixed local fixture
+entropy; production randomness and collision rejection remain intact.
+
+Funded Mutinynet execution is still unverified. The preserved test service at
+`http://127.0.0.1:8788` has zero funds, and the Arkade faucet reported `missing
+vtxos`. Its encrypted Docker volume and ignored `.recovery/compact-live`
+metadata retain the wallet. After receiving test funds, run the compact live
+smoke and repeat it after restart; never bypass the network or weight preflight,
+resubmit unknown outcomes, or change a registered funded profile in place.
+
+This is a treasury-backed operator PoC with service-owned demo keys, depth-eight
+trees and no independent note-holder pool exit. Client-owned CSV/recursive
+wallets and an external customer deposit rail remain unimplemented. Use
+`README.md` and `spec/COMPACT-PROFILE.md` for current commands and scope.
+
+The sections below record the September 30 transfer and its evidence. Their
+branch layout, test counts and deployment status are historical.
+
 ## Accepted work
 
 Continue the end-to-end PoC here: `.ark` contracts → compiler artifacts → SDK Programs → SDK-built transactions and real Groth16 proofs → actual emulator `Service.SubmitTx`. Showcase BTC and a demonstration token through shield → seal → transfer → seal → withdraw.
