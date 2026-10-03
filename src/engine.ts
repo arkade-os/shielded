@@ -395,13 +395,13 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
             if (network !== 'mutinynet' || proofTransport !== 'compact' || !native.onboardFunding) {
               throw new Error('Boarding confirmed test coins is available only for compact Mutinynet wallets.');
             }
-            const result = await native.onboardFunding();
-            persist();
+            const result = await native.onboardFunding(requestId!);
             const accepted = result.status === 'accepted';
             add({ type: 'board', status: result.status, proofTransport, summary: accepted
               ? `Ark wallet accepted ${result.amountSats ?? 'confirmed'} test sats from the boarding address`
               : 'Boarding transaction is pending Ark wallet confirmation',
               amountSats: result.amountSats, selectedOutpoints: result.selectedOutpoints, commitmentTxid: result.commitmentTxid });
+            requests[requestId!] = { bodyHash, status: 'done', result };
             persist();
             return result;
           }

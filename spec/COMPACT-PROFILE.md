@@ -104,6 +104,10 @@ For the latter, wait for confirmation, sync, then use **Board confirmed funds**
 before bootstrap. The authenticated boarding action journals its selected inputs
 before joining an Ark round. An ambiguous result blocks a new boarding attempt
 until the saved operation can be reconciled; sync alone does not spend coins.
+Boarding receipts retain their request identities so retries return or reconcile
+the original operation even when another deposit arrives after acceptance.
+Legacy boarding journals without a request identity refuse new boarding or
+reconciliation; no automatic migration assigns an old operation to a new key.
 
 ```powershell
 $env:SHIELDED_SMOKE_TRANSPORT = 'compact'

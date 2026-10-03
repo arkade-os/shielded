@@ -29,6 +29,8 @@ const ISSUE_NAMES = ["lane", "btcVault", "tokenVault", "token"] as const;
 type BootstrapResponse = Awaited<ReturnType<RestArkProvider["submitTx"]>>;
 
 export interface LiveBoardingReceipt {
+  requestId?: string;
+  requestIds?: string[];
   commitmentTxid: string;
   selectedOutpoints: { txid: string; vout: number }[];
   outputOutpoints: { txid: string; vout: number }[];
@@ -48,6 +50,8 @@ export interface LiveCheckpoint {
   pendingSettlement?: { txid: string; result: NativeVmResult };
   pendingBoarding?: {
     status: "submitting" | "unknown" | "accepted";
+    requestId?: string;
+    requestIds?: string[];
     selectedOutpoints: { txid: string; vout: number }[];
     selectedValues: { txid: string; vout: number; value: number }[];
     walletOutpoints: { txid: string; vout: number }[];

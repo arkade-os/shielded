@@ -144,7 +144,7 @@ export interface SdkRuntime {
   reconcile(prepared: PreparedSettlement, submission: NativeSubmission): Promise<NativeReceipt | undefined>;
   bootstrap?(): Promise<void>;
   refreshFunding?(): Promise<void>;
-  onboardFunding?(): Promise<BoardingResult>;
+  onboardFunding?(requestId: string): Promise<BoardingResult>;
 }
 
 interface VkJson {

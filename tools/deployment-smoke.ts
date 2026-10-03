@@ -9,10 +9,12 @@ const name = `shielded-deploy-smoke-${suffix}`;
 const volume = `${name}-data`;
 const image = `${name}:test`;
 const token = randomBytes(32).toString('base64url');
+const storageKey = randomBytes(32).toString('hex');
 let hostPort = Number(process.env.SHIELDED_SMOKE_PORT ?? 0);
 const proofTransport = process.env.SHIELDED_SMOKE_TRANSPORT ?? 'inline';
 if (proofTransport !== 'inline' && proofTransport !== 'compact') throw new Error('SHIELDED_SMOKE_TRANSPORT must be inline or compact');
 const compactMeasurements: { action: string; proofBytes: number; nativeWeight: number; checkpointWeights: number[] }[] = [];
+let compactFixtureSelection: { aliceNullifierSlot: number; bobNullifierSlot: number; bobNoteIndex: number; withdrawalAmount: number } | undefined;
 
 function command(args: string[], allowFailure = false): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -92,6 +94,50 @@ async function currentState(base: string) {
   return await response.json() as Record<string, any>;
 }
 
+async function chooseCompatibleBobWithdrawal() {
+  const inspect = `
+    const { EngineStore } = await import('./src/storage.ts');
+    const { createProtocol, DOMAIN } = await import('./packages/protocol/src/index.ts');
+    const { buildPoseidon } = await import('circomlibjs');
+    const store = EngineStore.open('/data', process.env.SHIELDED_STORAGE_KEY);
+    let checkpoint;
+    try { checkpoint = store.load(); } finally { store.close(); }
+    if (!checkpoint?.protocol) throw new Error('Compact smoke checkpoint lacks protocol state');
+    const protocol = await createProtocol({ checkpoint: checkpoint.protocol });
+    const snapshot = protocol.snapshot();
+    if (snapshot.nullifiers.length !== 0) throw new Error('Fixture preflight must run before any successful spend');
+    const poseidon = await buildPoseidon();
+    const slot = (owner, note) => Number(BigInt(poseidon.F.toObject(
+      poseidon([DOMAIN, BigInt(snapshot.wallets[owner].spendKey), BigInt(note.rho)]))) & 255n);
+    const alice = snapshot.wallets.alice.notes.find(note => note.asset === 'BTC' && note.spendable && note.amount >= 100000);
+    if (!alice) throw new Error('Alice fixture note must cover the full-value transfer');
+    const aliceSlot = slot('alice', alice);
+    const bobNotes = snapshot.wallets.bob.notes.filter(note => note.asset === 'BTC' && note.spendable && note.amount > 0)
+      .sort((left, right) => left.index - right.index);
+    const selectedIndex = bobNotes.findIndex(note => slot('bob', note) !== aliceSlot);
+    if (selectedIndex < 0) {
+      const candidates = bobNotes.map(note => note.index + ':' + slot('bob', note)).join(', ');
+      throw new Error('No compatible Bob note for Alice slot ' + aliceSlot + '; candidate slots [' + candidates + ']');
+    }
+    const selected = bobNotes[selectedIndex];
+    const precedingMaximum = bobNotes.slice(0, selectedIndex).reduce((maximum, note) => Math.max(maximum, note.amount), 0);
+    const withdrawalAmount = selectedIndex === 0 ? Math.min(5000, selected.amount) : precedingMaximum + 1;
+    if (!(withdrawalAmount > 0 && withdrawalAmount <= selected.amount &&
+      bobNotes.slice(0, selectedIndex).every(note => note.amount < withdrawalAmount))) {
+      throw new Error('Withdrawal amount does not select the compatible Bob note');
+    }
+    console.log('FIXTURE_SELECTION=' + JSON.stringify({ aliceNullifierSlot: aliceSlot, bobNullifierSlot: slot('bob', selected),
+      bobNoteIndex: selected.index, withdrawalAmount }));
+  `;
+  const output = await command(['run', '--rm', '--network', 'none', '--user', 'node', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m,mode=1777',
+    '--mount', `type=volume,source=${volume},target=/data`, '--env', `SHIELDED_STORAGE_KEY=${storageKey}`,
+    '--entrypoint', 'node', image, '--import', 'tsx', '--input-type=module', '-e', inspect]);
+  const marker = 'FIXTURE_SELECTION=';
+  const selectionLine = output.split(/\r?\n/).find(line => line.startsWith(marker));
+  if (!selectionLine) throw new Error('Compact fixture preflight did not emit a selection record');
+  return JSON.parse(selectionLine.slice(marker.length)) as NonNullable<typeof compactFixtureSelection>;
+}
+
 function durableView(state: Record<string, any>) {
   return {
     wallets: state.wallets.map((wallet: Record<string, any>) => ({ id: wallet.id, address: wallet.address, notes: wallet.notes, publicBalance: wallet.publicBalance })),
@@ -110,7 +156,7 @@ try {
     '--stop-timeout', '120', '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m,mode=1777', '--publish', `127.0.0.1:${hostPort}:8787`,
     '--mount', `type=volume,source=${volume},target=/data`, '--env', 'NODE_ENV=production', '--env', 'HOST=0.0.0.0', '--env', 'PORT=8787',
     '--env', 'SHIELDED_NETWORK=local-emulator', '--env', `SHIELDED_PROOF_TRANSPORT=${proofTransport}`,
-    '--env', 'SHIELDED_DATA_DIR=/data', '--env', `SHIELDED_API_TOKEN=${token}`, image]);
+    '--env', 'SHIELDED_DATA_DIR=/data', '--env', `SHIELDED_API_TOKEN=${token}`, '--env', `SHIELDED_STORAGE_KEY=${storageKey}`, image]);
   created = true;
   await waitReady(base, name);
   await waitHealthy(name);
@@ -123,17 +169,34 @@ try {
   const duplicate = await action(base, 'shield', 'smoke-shield-1', { from: 'alice', asset: 'BTC', amount: 100_000 });
   assert.deepEqual(duplicate.result, shield.result, 'repeated request must return its original result');
   assert.equal(duplicate.state?.activity?.length, shield.state?.activity?.length, 'repeated request must not append activity');
-  await action(base, 'seal', 'smoke-seal-1', {});
-  await action(base, 'transfer', 'smoke-transfer-1', { from: 'alice', to: 'bob', asset: 'BTC', amount: 25_000 });
+  let withdrawalAmount = 5_000;
+  let transferAmount = 25_000;
+  if (proofTransport === 'compact') {
+    // Seed alternate Bob notes so a real noncolliding spend can be selected without rerolling RNG.
+    for (let index = 1; index <= 8; index++) {
+      await action(base, 'shield', `smoke-fixture-bob-${index}`, { from: 'bob', asset: 'BTC', amount: index * 10_000 });
+    }
+    await action(base, 'seal', 'smoke-seal-1', {});
+    await command(['stop', '--time', '120', name]);
+    compactFixtureSelection = await chooseCompatibleBobWithdrawal();
+    withdrawalAmount = compactFixtureSelection.withdrawalAmount;
+    transferAmount = 100_000;
+    await command(['start', name]);
+    await waitReady(base, name);
+    await waitHealthy(name);
+    const tamper = await action(base, 'tamper', 'smoke-tamper-1', { from: 'alice', to: 'bob', asset: 'BTC', amount: 1_000 });
+    assert.equal((tamper.result as { rejected?: boolean }).rejected, true, 'registered compact verifier must reject a modified public signal');
+    assert.equal(tamper.state?.status?.profileId, initial.status.profileId, 'a failed proof must not change the verifier profile');
+  } else {
+    await action(base, 'seal', 'smoke-seal-1', {});
+  }
+  await action(base, 'transfer', 'smoke-transfer-1', { from: 'alice', to: 'bob', asset: 'BTC', amount: transferAmount });
   await action(base, 'seal', 'smoke-seal-2', {});
   if (proofTransport === 'compact') {
     const replay = await action(base, 'replay', 'smoke-replay-1', { from: 'alice' });
     assert.equal((replay.result as { rejected?: boolean }).rejected, true, 'compact replay must hit the spent-nullifier guard');
-    const tamper = await action(base, 'tamper', 'smoke-tamper-1', { from: 'alice', to: 'bob', asset: 'BTC', amount: 1_000 });
-    assert.equal((tamper.result as { rejected?: boolean }).rejected, true, 'registered compact verifier must reject a modified public signal');
-    assert.equal(tamper.state?.status?.profileId, initial.status.profileId, 'a failed proof must not change the verifier profile');
   }
-  await action(base, 'withdraw', 'smoke-withdraw-1', { from: 'alice', asset: 'BTC', amount: 5_000 });
+  await action(base, 'withdraw', 'smoke-withdraw-1', { from: proofTransport === 'compact' ? 'bob' : 'alice', asset: 'BTC', amount: withdrawalAmount });
   const beforeRestart = durableView(await currentState(base));
 
   await command(['restart', name]);
@@ -151,6 +214,7 @@ try {
     await mkdir('validation', { recursive: true });
     await writeFile('validation/compact-deployment.json', `${JSON.stringify({ network: 'local-emulator', proofTransport,
       profileId: afterRestart.status.profileId, budgetWu: 4_000, measurements: compactMeasurements,
+      fixtureSelection: compactFixtureSelection,
       offchainProofsExcludedFromActivity: true, tamperedSignalRejected: true, replayRejected: true,
       fundedMutinynet: false, finality: 'synthetic local compact fixture; no Arkade or Bitcoin settlement' }, null, 2)}\n`);
   }

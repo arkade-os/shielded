@@ -151,10 +151,13 @@ test("compact boarding uses only confirmed onchain inputs and accepts only its i
   const address = new ArkAddress(serverKey, serverKey, "tark").encode();
   const addressScript = hex.encode(ArkAddress.decode(address).pkScript);
   const input = { txid: "31".repeat(32), vout: 1, value: 600_000, status: { confirmed: true } };
+  const laterInput = { txid: "33".repeat(32), vout: 0, value: 700_000, status: { confirmed: true } };
   const unconfirmed = { txid: "32".repeat(32), vout: 0, value: 1_000_000, status: { confirmed: false } };
-  const commitment = new Transaction({ version: 2 });
+  let commitment = new Transaction({ version: 2 });
+  let activeInput = input;
   commitment.addInput({ txid: input.txid, index: input.vout, sequence: 0xfffffffd });
   let expectedAmount = 0;
+  let boardingCoins = [input, unconfirmed];
   let durable!: NativeCheckpoint;
   let settleCalls = 0;
   let indexedCommitment = "43".repeat(32);
@@ -169,12 +172,20 @@ test("compact boarding uses only confirmed onchain inputs and accepts only its i
     getAddress: async () => address, getBoardingAddress: async () => address,
     getBalance: async () => ({ available: expectedAmount, boarding: { confirmed: expectedAmount ? 0 : input.value,
       unconfirmed: 0, total: expectedAmount ? 0 : input.value } }),
-    getBoardingUtxos: async () => expectedAmount ? [] : [input, unconfirmed], getVtxos: async () => [],
-    onchainProvider: { getTxOutspends: async () => [{ spent: false, txid: "" }, { spent: true, txid: commitment.id }] },
+    getBoardingUtxos: async () => boardingCoins, getVtxos: async () => [],
+    onchainProvider: { getTxOutspends: async (txid: string) => {
+      if (txid !== activeInput.txid) return [];
+      return Array.from({ length: activeInput.vout + 1 }, (_, index) => ({ spent: index === activeInput.vout,
+        txid: index === activeInput.vout ? commitment.id : "" }));
+    } },
     settle: async (params: { inputs: typeof input[]; outputs: { address: string; amount: bigint }[] }, callback: (event: unknown) => void) => {
       settleCalls++;
-      assert.deepEqual(params.inputs.map(({ txid, vout }) => ({ txid, vout })), [{ txid: input.txid, vout: input.vout }]);
+      activeInput = params.inputs[0];
+      assert.equal(params.inputs.length, 1);
+      commitment = new Transaction({ version: 2 });
+      commitment.addInput({ txid: activeInput.txid, index: activeInput.vout, sequence: 0xfffffffd });
       expectedAmount = Number(params.outputs.find((output) => output.address === address)!.amount);
+      if (settleCalls > 1) indexedCommitment = commitment.id;
       await callback({ type: "batch_finalization", id: "round-1", commitmentTx: base64.encode(commitment.toPSBT()) });
       await callback({ type: "batch_finalized", id: "round-1", commitmentTxid: commitment.id });
       return commitment.id;
@@ -186,7 +197,7 @@ test("compact boarding uses only confirmed onchain inputs and accepts only its i
   const runtime = await create();
   try {
     assert.equal(runtime.snapshot().onboardAvailable, true);
-    const pending = await runtime.onboardFunding!();
+    const pending = await runtime.onboardFunding!("board-original");
     assert.equal(pending.status, "pending", "an unrelated round cannot satisfy boarding even with the same value and script");
     assert.equal(settleCalls, 1);
     const snapshot = runtime.snapshot() as { funding: { onboarding: Record<string, unknown> } };
@@ -197,7 +208,7 @@ test("compact boarding uses only confirmed onchain inputs and accepts only its i
   durable.live!.pendingBoarding!.commitmentTxid = "ff".repeat(32);
   const mismatched = await create(durable);
   try {
-    assert.equal((await mismatched.onboardFunding!()).status, "pending", "a stored ID that differs from the persisted PSBT cannot be accepted");
+    assert.equal((await mismatched.onboardFunding!("board-original")).status, "pending", "a stored ID that differs from the persisted PSBT cannot be accepted");
     assert.match(durable.live!.pendingBoarding!.error ?? "", /commitment transaction ID changed/);
   } finally { await mismatched.close(); }
 
@@ -205,15 +216,56 @@ test("compact boarding uses only confirmed onchain inputs and accepts only its i
   durable.live!.pendingBoarding!.commitmentTxid = undefined;
   durable.live!.pendingBoarding!.events = durable.live!.pendingBoarding!.events.filter((event) => event.type !== "batch_finalized");
   const restored = await create(durable);
+  let firstCommitmentTxid = "";
+  let firstAmountSats = 0;
   try {
-    const result = await restored.onboardFunding!();
+    const result = await restored.onboardFunding!("board-alias");
     assert.equal(settleCalls, 1, "recovery reads the persisted commitment instead of submitting the selected inputs again");
     assert.equal(result.status, "accepted", JSON.stringify({ result, pending: durable.live!.pendingBoarding }));
     assert.equal(result.commitmentTxid, commitment.id);
     assert.deepEqual(result.selectedOutpoints, [{ txid: input.txid, vout: input.vout }]);
     assert.deepEqual(result.outputOutpoints, [{ txid: "42".repeat(32), vout: 0 }]);
     assert.equal(durable.live!.pendingBoarding!.status, "accepted");
+    firstCommitmentTxid = commitment.id;
+    firstAmountSats = expectedAmount;
   } finally { await restored.close(); }
+
+  boardingCoins = [laterInput];
+  const legacy = structuredClone(durable);
+  delete legacy.live!.pendingBoarding!.requestId;
+  delete legacy.live!.pendingBoarding!.requestIds;
+  const legacyRuntime = await create(legacy);
+  try {
+    await assert.rejects(legacyRuntime.onboardFunding!("board-new"), /legacy accepted boarding attempt has no API idempotency identity/);
+    assert.equal(settleCalls, 1, "legacy accepted state fails closed instead of claiming a new request");
+  } finally { await legacyRuntime.close(); }
+
+  const replayed = await create(durable);
+  try {
+    const sameRequest = await replayed.onboardFunding!("board-alias");
+    assert.deepEqual(sameRequest, { status: "accepted", commitmentTxid: firstCommitmentTxid,
+      selectedOutpoints: [{ txid: input.txid, vout: input.vout }], outputOutpoints: [{ txid: "42".repeat(32), vout: 0 }], amountSats: firstAmountSats },
+    "an accepted native receipt survives restart before the engine can mark its alias request done, even after new coins arrive");
+    assert.equal(settleCalls, 1, "restarting an accepted-but-not-engine-completed request does not board again");
+    const second = await replayed.onboardFunding!("board-second");
+    assert.equal(second.status, "accepted", "a new id can board a later confirmed deposit");
+    assert.equal(settleCalls, 2);
+    assert.equal(durable.live!.boardingReceipts?.[0]?.requestId, "board-original");
+    assert.deepEqual(durable.live!.boardingReceipts?.[0]?.requestIds, ["board-alias"]);
+    const legacyArchived = structuredClone(durable);
+    delete legacyArchived.live!.boardingReceipts![0].requestId;
+    delete legacyArchived.live!.boardingReceipts![0].requestIds;
+    const legacyArchiveRuntime = await create(legacyArchived);
+    try {
+      await assert.rejects(legacyArchiveRuntime.onboardFunding!("board-third"), /legacy accepted boarding receipt has no API idempotency identity/);
+      assert.equal(settleCalls, 2, "an unidentified archived receipt blocks new rounds");
+    } finally { await legacyArchiveRuntime.close(); }
+    const originalRetry = await replayed.onboardFunding!("board-original");
+    assert.deepEqual(originalRetry, sameRequest, "an archived receipt replays the original response before selecting newer coins");
+    const aliasRetry = await replayed.onboardFunding!("board-alias");
+    assert.deepEqual(aliasRetry, sameRequest, "the reconciler's idempotency key is archived with the original key");
+    assert.equal(settleCalls, 2, "retrying the original request never boards the later deposit");
+  } finally { await replayed.close(); }
 });
 
 test("ambiguous compact boarding is reconciled after restart without resubmitting", async (t) => {
@@ -242,15 +294,23 @@ test("ambiguous compact boarding is reconciled after restart without resubmittin
     checkpoint, onCheckpoint: async (value) => { durable = structuredClone(value); } });
   const first = await create();
   try {
-    const result = await first.onboardFunding!();
+    const result = await first.onboardFunding!("board-unknown");
     assert.equal(result.status, "pending");
     assert.equal(settleCalls, 1);
     assert.deepEqual(durable.live!.pendingBoarding!.selectedOutpoints, [{ txid: input.txid, vout: input.vout }]);
   } finally { await first.close(); }
+  const legacy = structuredClone(durable);
+  delete legacy.live!.pendingBoarding!.requestId;
+  delete legacy.live!.pendingBoarding!.requestIds;
+  const legacyRuntime = await create(legacy);
+  try {
+    await assert.rejects(legacyRuntime.onboardFunding!("board-new"), /legacy unresolved boarding attempt has no API idempotency identity/);
+    assert.equal(settleCalls, 1, "an old unidentified journal cannot be adopted or resubmitted under a fresh key");
+  } finally { await legacyRuntime.close(); }
   const restored = await create(durable);
   try {
     assert.equal(restored.snapshot().onboardAvailable, true, "pending board action remains available for read-only reconciliation");
-    const result = await restored.onboardFunding!();
+    const result = await restored.onboardFunding!("board-reconcile");
     assert.equal(result.status, "pending");
     assert.equal(settleCalls, 1, "restart never submits another round with the captured inputs");
   } finally { await restored.close(); }

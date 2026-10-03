@@ -355,15 +355,41 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
   };
   const tokenIssuance = TOKEN_SUPPLY + BigInt(saved.state.reserves.DEMO);
 
-  const onboardFunding = async (): Promise<BoardingResult> => {
+  const onboardFunding = async (requestId: string): Promise<BoardingResult> => {
+    if (!/^[\x21-\x7e]{1,128}$/.test(requestId)) throw new Error("Boarding requires a valid API idempotency key");
     if (busy) throw new Error("Compact Mutinynet runtime is busy");
+    const receipt = live.boardingReceipts?.find((candidate) => candidate.requestId === requestId || candidate.requestIds?.includes(requestId));
+    if (receipt) return { status: "accepted", commitmentTxid: receipt.commitmentTxid,
+      selectedOutpoints: structuredClone(receipt.selectedOutpoints), outputOutpoints: structuredClone(receipt.outputOutpoints),
+      amountSats: receipt.amountSats };
+    if (live.boardingReceipts?.some((candidate) => !candidate.requestId && !candidate.requestIds?.length)) {
+      throw new Error("A legacy accepted boarding receipt has no API idempotency identity; refusing a new boarding request");
+    }
+    if (live.pendingBoarding?.status === "accepted" && (live.pendingBoarding.requestId === requestId || live.pendingBoarding.requestIds?.includes(requestId))) {
+      const accepted = live.pendingBoarding;
+      return { status: "accepted", commitmentTxid: accepted.commitmentTxid,
+        selectedOutpoints: structuredClone(accepted.selectedOutpoints), outputOutpoints: structuredClone(accepted.outputOutpoints ?? []),
+        amountSats: accepted.expectedOutputs.reduce((sum, output) => sum + output.value, 0) };
+    }
+    if (live.pendingBoarding?.status === "accepted" && !live.pendingBoarding.requestId && !live.pendingBoarding.requestIds?.length) {
+      throw new Error("A legacy accepted boarding attempt has no API idempotency identity; refusing a new boarding request");
+    }
     if (live.phase !== "funding-required") throw new Error("Boarding is available only before compact bootstrap starts");
     if (live.pendingBootstrap) throw new Error("Compact bootstrap already has an unresolved provider submission");
     if (typeof wallet.settle !== "function") throw new Error("SDK wallet settlement is unavailable for boarding");
     if (live.pendingBoarding && live.pendingBoarding.status !== "accepted") {
+      const pending = live.pendingBoarding;
+      if (!pending.requestId && !pending.requestIds?.length) {
+        throw new Error("A legacy unresolved boarding attempt has no API idempotency identity; refusing to reconcile it as a new request");
+      }
+      if (pending.requestId !== requestId && !pending.requestIds?.includes(requestId)) {
+        pending.requestIds ??= [];
+        pending.requestIds.push(requestId);
+        await persist();
+      }
       await reconcileBoarding();
       await refreshFunding();
-      const pending = live.pendingBoarding;
+      if (pending.status === "accepted") await persist();
       return { status: pending.status === "accepted" ? "accepted" : "pending",
         commitmentTxid: pending.commitmentTxid, selectedOutpoints: structuredClone(pending.selectedOutpoints),
         outputOutpoints: structuredClone(pending.outputOutpoints), amountSats: pending.expectedOutputs[0]?.value,
@@ -372,7 +398,7 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
     if (live.pendingBoarding?.status === "accepted") {
       const accepted = live.pendingBoarding;
       live.boardingReceipts ??= [];
-      live.boardingReceipts.push({ commitmentTxid: accepted.commitmentTxid!,
+      live.boardingReceipts.push({ requestId: accepted.requestId, requestIds: structuredClone(accepted.requestIds), commitmentTxid: accepted.commitmentTxid!,
         selectedOutpoints: structuredClone(accepted.selectedOutpoints), outputOutpoints: structuredClone(accepted.outputOutpoints ?? []),
         amountSats: accepted.expectedOutputs.reduce((sum, output) => sum + output.value, 0), startedAt: accepted.startedAt });
       live.pendingBoarding = undefined;
@@ -389,7 +415,7 @@ export async function createCompactLiveRuntime(options: SdkRuntimeOptions): Prom
       if (!selected.length) throw new Error("No confirmed fee-eligible Mutinynet boarding inputs are available");
       const selectedOutpoints = selected.map(({ txid, vout }) => ({ txid, vout }));
       const baselineVtxos = (await wallet.getVtxos()).map(({ txid, vout }) => ({ txid, vout }));
-      live.pendingBoarding = { status: "submitting", selectedOutpoints,
+      live.pendingBoarding = { status: "submitting", requestId, selectedOutpoints,
         selectedValues: selected.map(({ txid, vout, value }) => ({ txid, vout, value })),
         walletOutpoints: allCoins.map(({ txid, vout }) => ({ txid, vout })), expectedOutputs: [],
         inputSats: selected.reduce((sum, coin) => sum + coin.value, 0),
