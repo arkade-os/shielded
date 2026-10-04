@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test, { after } from "node:test";
-import { asset, CSVMultisigTapscript, RestArkProvider, RestIndexerProvider, SingleKey, Transaction } from "@arkade-os/sdk";
+import { asset, ConditionWitness, CSVMultisigTapscript, getArkPsbtFields, Intent, RestArkProvider, RestIndexerProvider, setArkPsbtField, SingleKey, Transaction } from "@arkade-os/sdk";
 import { base64, hex } from "@scure/base";
+import { fileURLToPath } from "node:url";
 import { createCompactDestination } from "../src/compact/runtime.ts";
 import { createCompactClosure } from "../src/compact/adapter.ts";
-import { createCompactReadyLiveRuntime } from "../src/compact/ready-live.ts";
+import { addEmptyCompactConditionWitness, createCompactReadyLiveRuntime } from "../src/compact/ready-live.ts";
 import { createProtocol } from "../packages/protocol/src/index.ts";
 import { offlineNativeFixture } from "../src/sdk/adapter.ts";
 import type { NativeCheckpoint, NativeSubmission } from "../src/sdk/runtime.ts";
@@ -14,6 +16,7 @@ const server = SingleKey.fromHex("21".repeat(32));
 const emulator = SingleKey.fromHex("22".repeat(32));
 const alice = SingleKey.fromHex("23".repeat(32));
 const bob = SingleKey.fromHex("24".repeat(32));
+const vmDir = fileURLToPath(new URL("../tools/vm/", import.meta.url));
 
 test("ready Mutinynet adapter settles, restores advanced heads, and never resubmits ambiguous network calls", { timeout: 300_000 }, async (t) => {
   const protocol = await createProtocol();
@@ -67,9 +70,12 @@ test("ready Mutinynet adapter settles, restores advanced heads, and never resubm
       request: bootstrapRequest, response: { arkTxid: genesis.id }, finalizedCheckpointTxs: [],
     }])) };
   let currentHeads = structuredClone(initial.heads);
-  let submitCalls = 0, finalizeCalls = 0;
-  let submitFailure = false, finalizeFailure = false, maxWeight = 4_000n, exposeAccepted = false, failSubmissionCallback = false;
+  let submitCalls = 0, finalizeCalls = 0, pendingCalls = 0;
+  let submitFailure = false, loseAcceptedSubmitResponse = false, finalizeFailure = false, maxWeight = 4_000n, exposeAccepted = false, failSubmissionCallback = false;
   let indexedAcceptance: { ark: Transaction; checkpoints: Transaction[] } | undefined;
+  let pendingAcceptance: Awaited<ReturnType<typeof makeResponse>> | undefined;
+  const matchingCompactInputs = (tx: Transaction) => Array.from({ length: tx.inputsLength }, (_, vin) => vin).filter((vin) =>
+    tx.getInput(vin).tapLeafScript?.some(([, script]) => Buffer.from(script.subarray(0, -1)).equals(Buffer.from(closure.script))));
   const makeResponse = async (arkTx: string, checkpoints: string[]) => {
     const parsed = Transaction.fromPSBT(base64.decode(arkTx));
     const signedArk = await server.sign(parsed);
@@ -81,12 +87,62 @@ test("ready Mutinynet adapter settles, restores advanced heads, and never resubm
     checkpointTapscript: hex.encode(checkpointScript), unilateralExitDelay: 2048n, maxTxWeight: maxWeight } as never));
   t.mock.method(RestArkProvider.prototype, "submitTx", async (arkTx: string, checkpoints: string[]) => {
     submitCalls++; if (submitFailure) throw new Error("lost submit response");
+    const submittedArk = Transaction.fromPSBT(base64.decode(arkTx));
+    assert.ok(lastSubmission, "the durable submission is written before transport");
+    assert.equal(submittedArk.id, Transaction.fromPSBT(base64.decode(lastSubmission.request.arkTx)).id,
+      "condition metadata leaves txid unchanged");
+    const compactInputs = matchingCompactInputs(submittedArk);
+    assert.ok(compactInputs.length > 0, "SubmitTx contains the registered compact closure input");
+    for (const vin of compactInputs) assert.deepEqual(getArkPsbtFields(submittedArk, vin, ConditionWitness), [[]]);
+    const testVin = compactInputs[0]!;
+    const unrecognized = submittedArk.getInput(testVin).unknown!.filter(([key]) => !(key.type === 222 && Buffer.from(key.key).equals(Buffer.from("condition"))));
+    const nonEmpty = Transaction.fromPSBT(submittedArk.toPSBT());
+    nonEmpty.updateInput(testVin, { unknown: unrecognized });
+    setArkPsbtField(nonEmpty, testVin, ConditionWitness, [Uint8Array.of(1)]);
+    assert.throws(() => addEmptyCompactConditionWitness(nonEmpty, closure.script), /non-empty/);
+    const malformed = Transaction.fromPSBT(submittedArk.toPSBT());
+    malformed.updateInput(testVin, { unknown: [...unrecognized, [{ type: 222, key: Uint8Array.from(Buffer.from("condition")) }, Uint8Array.of(2)]] });
+    assert.throws(() => addEmptyCompactConditionWitness(malformed, closure.script), /non-empty/);
+    const submittedCheckpoints = checkpoints.map((raw) => Transaction.fromPSBT(base64.decode(raw)));
+    for (const checkpoint of submittedCheckpoints) {
+      for (const vin of matchingCompactInputs(checkpoint)) assert.deepEqual(getArkPsbtFields(checkpoint, vin, ConditionWitness), [[]]);
+    }
     const response = await makeResponse(arkTx, checkpoints);
-    if (exposeAccepted) indexedAcceptance = { ark: Transaction.fromPSBT(base64.decode(response.finalArkTx)),
+    if (exposeAccepted || loseAcceptedSubmitResponse) indexedAcceptance = { ark: Transaction.fromPSBT(base64.decode(response.finalArkTx)),
       checkpoints: response.signedCheckpointTxs.map((raw) => Transaction.fromPSBT(base64.decode(raw))) };
+    if (loseAcceptedSubmitResponse) { pendingAcceptance = response; throw new Error("lost accepted submit response"); }
     return response as never;
   });
-  t.mock.method(RestArkProvider.prototype, "finalizeTx", async () => { finalizeCalls++; if (finalizeFailure) throw new Error("lost finalize response"); });
+  t.mock.method(RestArkProvider.prototype, "getPendingTxs", async (intent: { proof: string; message: unknown }) => {
+    pendingCalls++;
+    const proof = Transaction.fromPSBT(base64.decode(intent.proof));
+    const request = lastSubmission!.request;
+    const checkpoints = request.checkpoints.map((raw) => Transaction.fromPSBT(base64.decode(raw)));
+    assert.equal(proof.inputsLength, checkpoints.length + 1, "pending intent contains the BIP322 input and each exact original checkpoint source");
+    for (let index = 0; index < checkpoints.length; index++) {
+      const sourceInput = proof.getInput(index + 1), checkpointInput = checkpoints[index]!.getInput(0);
+      assert.ok(sourceInput.txid && sourceInput.index !== undefined);
+      assert.equal(hex.encode(sourceInput.txid).toLowerCase(), hex.encode(checkpointInput.txid!).toLowerCase());
+      assert.equal(sourceInput.index, checkpointInput.index);
+      assert.deepEqual(getArkPsbtFields(proof, index + 1, ConditionWitness), [[]]);
+      assert.equal(sourceInput.tapScriptSig?.length, 1, "pending intent is signed only by the registered emulator");
+      assert.equal(hex.encode(sourceInput.tapScriptSig![0]![0].pubKey), emulatorKey);
+    }
+    assert.equal(intent.message && (intent.message as { type?: string }).type, "get-pending-tx");
+    assert.equal(execFileSync("go", ["run", "./condition-witness", "verify-intent"], { cwd: vmDir,
+      input: JSON.stringify({ proof: intent.proof, message: Intent.encodeMessage(intent.message as never),
+        skipPubkeys: [hex.encode(await server.compressedPublicKey())], requireSkip: true }),
+      encoding: "utf8" }).trim(), "verified", "the real ark-lib pending-intent verifier accepts the emulator proof while skipping only the operator key");
+    return pendingAcceptance ? [{ ...pendingAcceptance }] : [];
+  });
+  t.mock.method(RestArkProvider.prototype, "finalizeTx", async (_arkTxid: string, checkpoints: string[]) => {
+    finalizeCalls++;
+    for (const raw of checkpoints) {
+      const tx = Transaction.fromPSBT(base64.decode(raw));
+      for (const vin of matchingCompactInputs(tx)) assert.deepEqual(getArkPsbtFields(tx, vin, ConditionWitness), [[]]);
+    }
+    if (finalizeFailure) throw new Error("lost finalize response");
+  });
   t.mock.method(RestIndexerProvider.prototype, "getVirtualTxs", async (ids: string[]) => ({ txs: indexedAcceptance
     ? [indexedAcceptance.ark, ...indexedAcceptance.checkpoints].filter((tx) => ids.some((id) => id.toLowerCase() === tx.id.toLowerCase()))
       .map((tx) => { const bodyOnly = Transaction.fromPSBT(tx.toPSBT());
@@ -168,7 +224,30 @@ test("ready Mutinynet adapter settles, restores advanced heads, and never resubm
         const recovered = await afterLostSubmit.reconcile(transfer, lastSubmission!);
         assert.equal(recovered, undefined);
         assert.equal(submitCalls, beforeSubmitCalls + 1, "unknown SubmitTx is reconciled without a second SubmitTx");
+        assert.equal(pendingCalls, 1, "unknown SubmitTx queries the signed pending-intent endpoint");
       } finally { await afterLostSubmit.close(); }
+
+      const acceptedTransfer = await protocol.prepareTransfer("alice", "bob", "BTC", 20_000);
+      const beforeAcceptedSubmit = submitCalls, beforeAcceptedFinalize = finalizeCalls;
+      const acceptedRuntime = await create(afterSeal);
+      try {
+        loseAcceptedSubmitResponse = true;
+        await assert.rejects(acceptedRuntime.settle(acceptedTransfer), /lost accepted submit response/);
+        loseAcceptedSubmitResponse = false;
+        assert.equal(submitCalls, beforeAcceptedSubmit + 1, "accepted-but-lost SubmitTx is attempted once");
+        const acceptedJournal = (durable.live as unknown as { readySettlement: { stage: string; networkRequest?: unknown } }).readySettlement;
+        assert.equal(acceptedJournal.stage, "submit-attempted");
+        assert.ok(acceptedJournal.networkRequest, "the exact ConditionWitness-enriched network request is durable before SubmitTx");
+        const acceptedRecovery = await create(durable);
+        try {
+          const recovered = await acceptedRecovery.reconcile(acceptedTransfer, lastSubmission!);
+          assert.equal(recovered?.network, "mutinynet", "authoritative pending response recovers acceptance and permits the first FinalizeTx");
+          assert.equal(submitCalls, beforeAcceptedSubmit + 1, "recovery never resubmits an accepted transaction");
+          assert.equal(finalizeCalls, beforeAcceptedFinalize + 1, "verified pending acceptance permits exactly one FinalizeTx");
+          assert.equal((durable.live as unknown as { readySettlement?: unknown }).readySettlement, undefined,
+            "the journal clears only after the accepted settlement is durably checkpointed");
+        } finally { await acceptedRecovery.close(); }
+      } finally { loseAcceptedSubmitResponse = false; await acceptedRuntime.close(); pendingAcceptance = undefined; indexedAcceptance = undefined; }
 
       const forFinalize = await create(afterSeal);
       try {

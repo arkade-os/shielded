@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { digest, financialState } from './compact-mutinynet-evidence.ts';
+import { validateCurrentDockerIdentity, validateLocalSmokeOrigin, validateSameContainerRestartAttestation } from './compact-mutinynet-restart-attestation.ts';
 
-const base = process.env.SHIELDED_SMOKE_URL ?? 'http://127.0.0.1:8787';
+const localApi = validateLocalSmokeOrigin(process.env.SHIELDED_SMOKE_URL ?? 'http://127.0.0.1:8787');
+const base = localApi.origin;
 const token = process.env.SHIELDED_API_TOKEN;
 const prefix = process.env.SHIELDED_SMOKE_KEY_PREFIX ?? 'compact-mutinynet-v1';
 const freshReportPath = 'validation/compact-mutinynet.json';
 const replayReportPath = 'validation/compact-mutinynet-restart-replay.json';
+const restartAttestationPath = '.recovery/compact-live/compact-mutinynet-restart-attestation.json';
 assert.match(prefix, /^[A-Za-z0-9._:-]{1,90}$/);
 
 type Scenario = { action: string; suffix: string; body: Record<string, unknown>; resultSha256: string; txid: string };
@@ -41,6 +45,22 @@ async function main() {
   assert.ok(baseline.measurements.every((entry) => entry.suffix && entry.body && entry.resultSha256 && entry.txid));
   assert.equal((await fetch(`${base}/api/state`)).status, 401);
 
+  const attestation = JSON.parse(await readFile(restartAttestationPath, 'utf8')) as unknown;
+  const restartEvidence = validateSameContainerRestartAttestation(attestation, {
+    profileId: baseline.profileId, finalFinancialStateSha256: baseline.finalFinancialStateSha256,
+    idempotencyKeyPrefix: baseline.idempotencyKeyPrefix,
+  });
+  let currentDocker: unknown;
+  try {
+    const inspected = JSON.parse(execFileSync('docker', ['inspect', restartEvidence.containerId],
+      { encoding: 'utf8', windowsHide: true, timeout: 15_000 })) as unknown[];
+    assert.ok(Array.isArray(inspected) && inspected.length === 1, 'Docker inspect must return exactly one current container');
+    currentDocker = inspected[0];
+  } catch {
+    throw new Error('Read-only Docker inspect failed; refusing to claim same-container restart verification');
+  }
+  validateCurrentDockerIdentity(currentDocker, restartEvidence, localApi.port);
+
   const before = await api('/api/state');
   assert.equal(before.status.ready, true);
   assert.equal(before.status.profileId, baseline.profileId);
@@ -69,7 +89,8 @@ async function main() {
   await mkdir('validation', { recursive: true });
   await writeFile(replayReportPath, `${JSON.stringify({ verifiedAt: new Date().toISOString(), network: 'mutinynet',
     profileId: baseline.profileId, sourceReport: freshReportPath, sourceReportSha256: digest(JSON.stringify(baseline)),
-    sameVolumeRestartReplay: true, actionCount: replayed.length, replayed, beforeFinancialStateSha256: beforeDigest,
+    restartEvidence: { ...restartEvidence, currentDockerInspectMatched: true },
+    actionCount: replayed.length, replayed, beforeFinancialStateSha256: beforeDigest,
     afterFinancialStateSha256: afterDigest, activityCount: after.activity.length,
     activityTxids: after.activity.map((item: Record<string, unknown>) => item.txid).filter(Boolean),
     newFinancialActionsDuringReplay: 0 }, null, 2)}\n`);

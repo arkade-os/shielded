@@ -59,6 +59,23 @@ async function waitHealthy(container: string) {
   throw new Error(`Docker HEALTHCHECK did not pass for ${container}`);
 }
 
+async function verifyRuntimeRecoveryModule() {
+  const probe = `
+    import assert from 'node:assert/strict';
+    import { readdir } from 'node:fs/promises';
+    import { pathToFileURL } from 'node:url';
+    const before = await readdir('/data');
+    globalThis.fetch = async () => { throw new Error('unexpected network request during recovery-module import'); };
+    const recovery = await import(pathToFileURL('/app/tools/compact-bootstrap-recovery.ts').href);
+    assert.equal(typeof recovery.continueFreshRegisteredBootstrap, 'function');
+    assert.deepEqual(await readdir('/data'), before, 'import must not touch the encrypted data directory');
+    console.log('recovery module import passed');
+  `;
+  const output = await command(['run', '--rm', '--network', 'none', '--read-only', '--user', 'node', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m,mode=1777',
+    '--entrypoint', 'node', image, '--import', 'tsx', '--input-type=module', '-e', probe]);
+  assert.match(output, /recovery module import passed/);
+}
+
 async function api(base: string, path: string, options: RequestInit = {}) {
   return fetch(`${base}${path}`, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.headers ?? {}) }, signal: AbortSignal.timeout(180_000) });
 }
@@ -150,6 +167,7 @@ let created = false;
 try {
   hostPort ||= await unusedPort();
   await command(['build', '--tag', image, '.']);
+  await verifyRuntimeRecoveryModule();
   await command(['volume', 'create', volume]);
   const base = `http://127.0.0.1:${hostPort}`;
   await command(['run', '--detach', '--name', name, '--read-only', '--user', 'node', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',

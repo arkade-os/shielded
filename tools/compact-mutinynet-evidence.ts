@@ -11,6 +11,24 @@ export function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export function effectiveWeightBudget(operator: Record<string, unknown>): { advertised?: bigint; effective: bigint; smokeCap: bigint } {
+  if (typeof operator.effectiveMaxTxWeight !== 'string' || !/^\d+$/.test(operator.effectiveMaxTxWeight)) {
+    throw new Error('Operator must expose its effective transaction weight limit as an integer string');
+  }
+  const effective = BigInt(operator.effectiveMaxTxWeight);
+  if (effective <= 0n) throw new Error('Operator effective transaction weight limit must be positive');
+  let advertised: bigint | undefined;
+  if (operator.maxTxWeight !== undefined) {
+    if (typeof operator.maxTxWeight !== 'string' || !/^\d+$/.test(operator.maxTxWeight)) {
+      throw new Error('Advertised operator transaction weight limit must be an integer string');
+    }
+    advertised = BigInt(operator.maxTxWeight);
+    if (advertised <= 0n) throw new Error('Advertised operator transaction weight limit must be positive');
+    if (effective > advertised) throw new Error('Effective transaction weight limit exceeds the operator-advertised limit');
+  }
+  return { advertised, effective, smokeCap: effective < 4_000n ? effective : 4_000n };
+}
+
 export function financialState(state: Record<string, any>): string {
   const activity = state.activity.map((item: Record<string, unknown>) => {
     const fields = Object.entries(item).filter(([key]) => ['boundary', 'checkpointWeights', 'commitments', 'id',

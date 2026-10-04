@@ -1,8 +1,8 @@
 import { base64, hex } from "@scure/base";
 import {
   ConditionCSVMultisigTapscript, ConditionMultisigTapscript, CSVMultisigTapscript,
-  Extension, MultisigTapscript, RestArkProvider, RestIndexerProvider, SingleKey, Transaction,
-  asset, verifyTapscriptSignatures,
+  ConditionWitness, Extension, Intent, MultisigTapscript, RestArkProvider, RestIndexerProvider, SingleKey, Transaction,
+  asset, getArkPsbtFields, setArkPsbtField, verifyTapscriptSignatures,
 } from "@arkade-os/sdk";
 import { TaprootControlBlock } from "@scure/btc-signer/psbt.js";
 import { tapLeafHash } from "@scure/btc-signer/payment.js";
@@ -195,6 +195,9 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
   if (profile.profileId !== saved.compact.profileId) throw new Error("Compact verifier profile changed; refusing to restore this checkpoint");
   const limit = effectiveLimit(info.maxTxWeight);
   const checkpointTx = (await import("@arkade-os/sdk")).CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript));
+  const compactClosure = createCompactClosure(hex.decode(profile.profileId), hex.decode(serverKey), hex.decode(emulatorKey),
+    { type: "seconds", value: EXIT_SECONDS });
+  const compactLeafScript = compactClosure.script;
   const journal = () => saved.live.readySettlement;
   let core: SdkRuntime | undefined;
   const persist = async () => {
@@ -248,11 +251,91 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
     checkpoints.forEach((tx) => assertWeight(tx, limit));
     return result;
   };
+  const recoverPendingSubmission = async (request: VmBridgeRequest): Promise<NativeVmResult | undefined> => {
+    const expected = Transaction.fromPSBT(base64.decode(request.arkTx));
+    const requestedCheckpoints = request.checkpoints.map((psbt) => Transaction.fromPSBT(base64.decode(psbt)));
+    const current = new Map(RESOURCES.map((name) => {
+      const head = saved.heads[name]!;
+      return [outpoint(head.txid, head.vout), { name, head }] as const;
+    }));
+    if (requestedCheckpoints.length !== expected.inputsLength) throw new Error("Durable pending intent does not have the exact Ark checkpoint input set");
+    const seen = new Set<string>();
+    const coins = requestedCheckpoints.map((checkpoint) => {
+      if (checkpoint.inputsLength !== 1) throw new Error("Durable compact checkpoint has an unexpected source input count");
+      const input = checkpoint.getInput(0);
+      if (!input.txid || input.index === undefined || !input.witnessUtxo?.script || !input.tapLeafScript?.length) {
+        throw new Error("Durable compact checkpoint lacks an authenticated original source input");
+      }
+      const point = outpoint(hex.encode(input.txid), input.index), source = current.get(point);
+      if (!source || seen.has(point)) throw new Error("Durable compact checkpoint changed or duplicated its registered source outpoint");
+      seen.add(point);
+      const rawSource = Transaction.fromRaw(hex.decode(source.head.sourceTx));
+      const prevout = rawSource.getOutput(source.head.vout);
+      const leaf = input.tapLeafScript[0]!;
+      if (rawSource.id.toLowerCase() !== source.head.txid.toLowerCase() || !prevout?.script ||
+          BigInt(source.head.value) !== prevout.amount || !Buffer.from(prevout.script).equals(Buffer.from(compactClosure.pkScript)) ||
+          input.witnessUtxo.amount !== prevout.amount || !Buffer.from(input.witnessUtxo.script).equals(Buffer.from(prevout.script)) ||
+          !Buffer.from(leaf[1]).equals(Buffer.from(compactClosure.tapLeafScript[1])) ||
+          !Buffer.from(TaprootControlBlock.encode(leaf[0])).equals(Buffer.from(TaprootControlBlock.encode(compactClosure.tapLeafScript[0])))) {
+        throw new Error(`Durable compact ${source.name} source or registered spend path changed`);
+      }
+      return { txid: source.head.txid, vout: source.head.vout, value: source.head.value, tapTree: compactClosure.tapTree,
+        intentTapLeafScript: compactClosure.tapLeafScript, forfeitTapLeafScript: compactClosure.exitLeafScript };
+    });
+    if (!coins.length) throw new Error("Durable compact request has no source outpoints for pending recovery");
+    const message: Intent.GetPendingTxMessage = { type: "get-pending-tx", expire_at: 0 };
+    const proof = Intent.create(message, coins as never, []);
+    for (let vin = 0; vin < proof.inputsLength; vin++) setArkPsbtField(proof, vin, ConditionWitness, []);
+    const signedProof = await emulatorIdentity.sign(proof);
+    sameBody(signedProof, proof);
+    for (let vin = 0; vin < signedProof.inputsLength; vin++) {
+      const input = signedProof.getInput(vin), leaf = input.tapLeafScript?.[0];
+      if (!leaf || input.tapScriptSig?.length !== 1 || hex.encode(input.tapScriptSig[0]![0].pubKey) !== emulatorKey ||
+          getArkPsbtFields(signedProof, vin, ConditionWitness).length !== 1 || getArkPsbtFields(signedProof, vin, ConditionWitness)[0]!.length !== 0) {
+        throw new Error("Pending recovery intent is missing its exact emulator-only compact proof");
+      }
+      // BIP322's synthetic ownership proof uses SIGHASH_ALL rather than the Ark tx's DEFAULT.
+      verifyTapscriptSignatures(signedProof, vin, [emulatorKey], undefined, [1], tapLeafHash(leaf[1].subarray(0, -1), leaf[1].at(-1)!));
+    }
+    const pending = await provider.getPendingTxs({ proof: base64.encode(signedProof.toPSBT()), message });
+    const matches = pending.filter((entry) => entry.arkTxid.toLowerCase() === expected.id.toLowerCase());
+    if (matches.length === 0) return undefined;
+    if (matches.length !== 1) throw new Error("Arkade returned duplicate pending responses for the exact compact transaction");
+    const response = matches[0]!;
+    const recovered: NativeVmResult = { ok: true, arkTx: response.finalArkTx, checkpoints: response.signedCheckpointTxs,
+      txid: response.arkTxid, executedInputs: expected.inputsLength, signatureCount: expected.inputsLength * 2,
+      durationMs: 0, backend: "mutinynet-pending-intent-reconciled" };
+    const verified = verifyCompactResponse(request, recovered, serverKey, emulatorKey);
+    if (response.arkTxid.toLowerCase() !== expected.id.toLowerCase() || verified.arkTx.id.toLowerCase() !== expected.id.toLowerCase()) {
+      throw new Error("Arkade pending response does not match the exact durable compact txid");
+    }
+    assertSameSpendInputs(verified.arkTx, expected);
+    assertWeight(verified.arkTx, limit);
+    if (requestedCheckpoints.length !== verified.checkpoints.length) throw new Error("Arkade pending response omitted compact checkpoints");
+    for (const checkpoint of verified.checkpoints) {
+      const requested = requestedCheckpoints.find((candidate) => candidate.id === checkpoint.id);
+      if (!requested) throw new Error("Arkade pending response contains an unrelated compact checkpoint");
+      assertSameSpendInputs(checkpoint, requested);
+      assertWeight(checkpoint, limit);
+    }
+    recovered.arkTx = base64.encode(verified.arkTx.toPSBT());
+    recovered.checkpoints = verified.checkpoints.map((tx) => base64.encode(tx.toPSBT()));
+    return recovered;
+  };
   const finalize = async (request: VmBridgeRequest, result: NativeVmResult): Promise<void> => {
     const signed = verifyCompactResponse(request, result, serverKey, emulatorKey);
     assertWeight(signed.arkTx, limit);
     signed.checkpoints.forEach((tx) => assertWeight(tx, limit));
-    await provider.finalizeTx(signed.arkTx.id, signed.checkpoints.map((tx) => base64.encode(tx.toPSBT())));
+    const checkpoints = signed.checkpoints.map((tx) => {
+      try { return base64.encode(addEmptyCompactConditionWitness(tx, compactLeafScript).toPSBT()); }
+      catch (error) {
+        if (error instanceof Error && error.message === "Ready compact request has no input for its registered condition closure") {
+          return base64.encode(tx.toPSBT());
+        }
+        throw error;
+      }
+    });
+    await provider.finalizeTx(signed.arkTx.id, checkpoints);
   };
   const execute = async (request: VmBridgeRequest): Promise<NativeVmResult> => {
     const active = journal();
@@ -270,14 +353,16 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
         funding: { BTC: Number(saved.funding.BTC), DEMO: Number(saved.funding.DEMO) },
         heads: Object.fromEntries(Object.entries(saved.heads).map(([name, head]) => [name, { ...head }])) as never });
     assertWeight(ark, limit); checkpoints.forEach((tx) => assertWeight(tx, limit));
-    active.networkRequest = structuredClone(request);
+    const networkRequest = withCompactConditionWitness(request, compactLeafScript);
+    assertEmulatorSignedRequest(active.request, networkRequest, emulatorKey);
+    active.networkRequest = structuredClone(networkRequest);
     active.stage = "submit-attempted";
     await persist();
-    const response = await provider.submitTx(request.arkTx, request.checkpoints);
+    const response = await provider.submitTx(networkRequest.arkTx, networkRequest.checkpoints);
     const result: NativeVmResult = { ok: true, arkTx: response.finalArkTx, checkpoints: response.signedCheckpointTxs,
       txid: response.arkTxid, executedInputs: ark.inputsLength, signatureCount: ark.inputsLength * 2,
       durationMs: 0, backend: "mutinynet-arkade-registered-compact" };
-    const signed = verifyCompactResponse(request, result, serverKey, emulatorKey);
+    const signed = verifyCompactResponse(networkRequest, result, serverKey, emulatorKey);
     if (response.arkTxid.toLowerCase() !== ark.id.toLowerCase() || signed.arkTx.id !== ark.id) throw new Error("Mutinynet changed the compact transaction ID");
     assertWeight(signed.arkTx, limit); signed.checkpoints.forEach((tx) => assertWeight(tx, limit));
     result.arkTx = base64.encode(signed.arkTx.toPSBT());
@@ -287,7 +372,7 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
     await persist();
     active.stage = "finalize-attempted";
     await persist();
-    await finalize(request, result);
+    await finalize(networkRequest, result);
     return result;
   };
   let currentSubmission: NativeSubmission | undefined;
@@ -373,19 +458,23 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
         const action = readyRecoveryAction(active.stage);
         if (action === "resume-submit") return execute(await signCompactEmulator(active.request, emulatorIdentity));
         if (action === "reconcile-submit") {
-          const accepted = await queryAccepted(active.request);
+          if (!active.networkRequest) throw new Error("Unknown compact SubmitTx lacks its exact durable network request");
+          const accepted = await recoverPendingSubmission(active.networkRequest);
           if (!accepted) return undefined;
           active.result = structuredClone(accepted); active.stage = "response-stored"; await persist();
+          active.stage = "finalize-attempted"; await persist();
+          await finalize(active.networkRequest, accepted);
           return accepted;
         }
         if (!active.result) throw new Error("Compact response journal is missing its verified signed response");
-        verifyCompactResponse(active.request, active.result, serverKey, emulatorKey);
+        const exactRequest = active.networkRequest ?? active.request;
+        verifyCompactResponse(exactRequest, active.result, serverKey, emulatorKey);
         if (action === "finalize-response") {
           active.stage = "finalize-attempted"; await persist();
-          await finalize(active.request, active.result);
+          await finalize(exactRequest, active.result);
           return active.result;
         }
-        return await queryAccepted(active.request, active.result);
+        return await queryAccepted(exactRequest, active.result);
       },
     });
     const readySnapshot = core.snapshot() as { profileId?: string; heads?: Record<string, unknown> };
@@ -407,6 +496,7 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
         saved.live = live;
         saved.live.readySettlement = undefined;
         currentSubmission = undefined;
+        await persist();
         return receipt;
       },
       reconcile: async (prepared, submission) => {
@@ -417,6 +507,7 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
           Object.assign(saved, structuredClone(core!.exportState()));
           saved.live = live;
           saved.live.readySettlement = undefined;
+          await persist();
         }
         return receipt;
       },
@@ -426,4 +517,54 @@ export async function createCompactReadyLiveRuntime(options: SdkRuntimeOptions):
     await core?.close();
     throw error;
   }
+}
+function assertSameSpendInputs(actual: Transaction, expected: Transaction): void {
+  if (actual.inputsLength !== expected.inputsLength) throw new Error("Recovered compact transaction changed its input set");
+  for (let vin = 0; vin < actual.inputsLength; vin++) {
+    const actualInput = actual.getInput(vin), expectedInput = expected.getInput(vin);
+    if (actualInput.witnessUtxo?.amount !== expectedInput.witnessUtxo?.amount || !actualInput.witnessUtxo?.script ||
+        !expectedInput.witnessUtxo?.script || !Buffer.from(actualInput.witnessUtxo.script).equals(Buffer.from(expectedInput.witnessUtxo.script))) {
+      throw new Error("Recovered compact transaction changed a saved prevout");
+    }
+  }
+}
+function tapSignatureFingerprint(tx: Transaction): string {
+  return JSON.stringify(Array.from({ length: tx.inputsLength }, (_, vin) => (tx.getInput(vin).tapScriptSig ?? []).map(([key, sig]) =>
+    `${hex.encode(key.pubKey)}:${hex.encode(key.leafHash)}:${hex.encode(sig)}`)));
+}
+export function addEmptyCompactConditionWitness(tx: Transaction, compactLeafScript: Uint8Array): Transaction {
+  const prepared = Transaction.fromPSBT(tx.toPSBT());
+  const signatures = tapSignatureFingerprint(tx);
+  let found = false;
+  for (let vin = 0; vin < prepared.inputsLength; vin++) {
+    const leaf = prepared.getInput(vin).tapLeafScript?.find(([, script]) =>
+      Buffer.from(script.subarray(0, -1)).equals(Buffer.from(compactLeafScript)));
+    if (!leaf) continue;
+    found = true;
+    const conditionKey = Buffer.from("condition");
+    const rawFields = (prepared.getInput(vin).unknown ?? []).filter(([key]) => key.type === 222 &&
+      Buffer.from(key.key).equals(conditionKey));
+    const fields = getArkPsbtFields(prepared, vin, ConditionWitness);
+    if (rawFields.length > 1 || (rawFields.length === 1 &&
+        (fields.length !== 1 || fields[0]!.length !== 0)) || (rawFields.length === 0 && fields.length !== 0)) {
+      throw new Error("Compact condition witness metadata is duplicated or non-empty");
+    }
+    if (rawFields.length === 0) setArkPsbtField(prepared, vin, ConditionWitness, []);
+  }
+  if (!found) throw new Error("Ready compact request has no input for its registered condition closure");
+  sameBody(prepared, tx);
+  if (tapSignatureFingerprint(prepared) !== signatures) throw new Error("Condition witness metadata changed compact signatures");
+  return prepared;
+}
+function withCompactConditionWitness(request: VmBridgeRequest, compactLeafScript: Uint8Array): VmBridgeRequest {
+  const ark = addEmptyCompactConditionWitness(Transaction.fromPSBT(base64.decode(request.arkTx)), compactLeafScript);
+  const checkpoints = request.checkpoints.map((psbt) => {
+    const tx = Transaction.fromPSBT(base64.decode(psbt));
+    try { return base64.encode(addEmptyCompactConditionWitness(tx, compactLeafScript).toPSBT()); }
+    catch (error) {
+      if (error instanceof Error && error.message === "Ready compact request has no input for its registered condition closure") return psbt;
+      throw error;
+    }
+  });
+  return { arkTx: base64.encode(ark.toPSBT()), checkpoints };
 }

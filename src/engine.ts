@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { isAbsolute, relative, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { Transaction } from '@arkade-os/sdk';
+import { base64 } from '@scure/base';
 import { createProtocol, DOMAIN, FIELD, type ProtocolKernel, type PreparedSettlement,
   type Asset, type Owner } from '../packages/protocol/src/index.ts';
 import { createSdkRuntime, DEFAULT_VM_BINARY, type SdkRuntime, type NativeReceipt, type NativeCheckpoint, type NativeSubmission } from './sdk/runtime.ts';
@@ -17,13 +20,57 @@ type WithdrawalProjection = { owner: Owner; asset: Asset; amount: number };
 type PendingCompletion = { prepared: PreparedSettlement; receipt: NativeReceipt; summary: string;
   withdrawal?: WithdrawalProjection; completed: boolean; phase: 'prepared' | 'submitted' | 'accepted';
   submission?: NativeSubmission; requestId?: string };
-type StoredRequest = { bodyHash: string; status: 'pending' | 'done'; result?: unknown };
+type StoredRequest = { bodyHash: string; status: 'pending' | 'done' | 'rejected'; result?: unknown; error?: string };
 type ProofTransport = 'inline' | 'compact';
 type EngineCheckpoint = { version: 1 | 2; proofTransport?: ProofTransport; profileId?: string;
   protocol: ProtocolCheckpoint; native: NativeCheckpoint;
   activities: Activity[]; publicBalances: Record<Owner, Record<Asset, number>>;
   pendingCompletion?: Omit<PendingCompletion, 'prepared'> & { prepared: PreparedSettlement };
   requests: Record<string, StoredRequest> };
+const EMPTY_BOOTSTRAP_BODY_HASH = createHash('sha256').update(JSON.stringify({ action: 'bootstrap', body: {} })).digest('hex');
+
+function hasFreshBootstrapJournal(checkpoint: NativeCheckpoint | undefined): boolean {
+  const live = checkpoint?.live as (NonNullable<NativeCheckpoint['live']> & { bootstrapRecovery?: { version?: number; profileId?: string; freshStart?: boolean } }) | undefined;
+  return Boolean(checkpoint?.network === 'mutinynet' && live &&
+    (live.phase === 'funding-programs' || (live.bootstrapRecovery?.version === 1 && live.bootstrapRecovery.freshStart === true &&
+      live.bootstrapRecovery.profileId === checkpoint.compact?.profileId)));
+}
+
+export function promoteAcceptedCheckpoint(checkpoint: NativeCheckpoint, pending: PendingCompletion,
+  profileId: string | undefined): boolean {
+  const live = checkpoint.live as (NonNullable<NativeCheckpoint['live']> & { readySettlement?: unknown }) | undefined;
+  if (checkpoint.network !== 'mutinynet' || !profileId || checkpoint.compact?.profileId !== profileId ||
+      checkpoint.compact?.pendingAcceptance || pending.phase !== 'submitted' || !pending.submission) return false;
+  const matching = (checkpoint.receipts ?? []).filter((receipt) => receipt.id === pending.prepared.id &&
+    receipt.operation === pending.prepared.operation && receipt.txid.toLowerCase() === pending.submission!.txid.toLowerCase());
+  if (matching.length > 1) throw new Error('Advanced compact checkpoint contains duplicate receipts for its pending settlement.');
+  if (!matching.length) return false;
+  const receipt = matching[0]!;
+  if (receipt.network !== 'mutinynet' || receipt.finality !== 'operator-preconfirmed' ||
+      !receipt.signedArkTx || !Array.isArray(receipt.signedCheckpoints) || !receipt.signedCheckpoints.length) {
+    throw new Error('Advanced compact checkpoint receipt does not prove the exact operator-preconfirmed submission.');
+  }
+  let signedBodyMatches = false;
+  try {
+    const unsignedArk = Transaction.fromPSBT(base64.decode(pending.submission.request.arkTx));
+    const signedArk = Transaction.fromPSBT(base64.decode(receipt.signedArkTx));
+    const unsignedCheckpoints = pending.submission.request.checkpoints.map((psbt) => Transaction.fromPSBT(base64.decode(psbt)));
+    const signedCheckpoints = receipt.signedCheckpoints.map((psbt) => Transaction.fromPSBT(base64.decode(psbt)));
+    signedBodyMatches = unsignedArk.id.toLowerCase() === pending.submission.txid.toLowerCase() &&
+      signedArk.id.toLowerCase() === pending.submission.txid.toLowerCase() &&
+      unsignedCheckpoints.length === signedCheckpoints.length &&
+      unsignedCheckpoints.every((tx, index) => tx.id.toLowerCase() === signedCheckpoints[index]!.id.toLowerCase());
+  } catch { signedBodyMatches = false; }
+  if (!signedBodyMatches || !isDeepStrictEqual(checkpoint.state, pending.prepared.newState)) {
+    throw new Error('Advanced compact receipt does not match the prepared native transaction and protocol state.');
+  }
+  // The first core callback precedes the receipt. Only the ready wrapper's final
+  // checkpoint, after successful finalization and journal cleanup, may promote it.
+  if (live?.readySettlement) throw new Error('Advanced compact receipt still has an unresolved ready-transport journal.');
+  pending.receipt = structuredClone(receipt);
+  pending.phase = 'accepted';
+  return true;
+}
 
 function isCompactProfilePending(checkpoint: NativeCheckpoint): boolean {
   try {
@@ -134,7 +181,12 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
         pendingCompletion.submission = submission;
         persist();
       },
-      onCheckpoint: async checkpoint => { persist(checkpoint); },
+      onCheckpoint: async checkpoint => {
+        if (network === 'mutinynet' && proofTransport === 'compact' && pendingCompletion) {
+          promoteAcceptedCheckpoint(checkpoint, pendingCompletion, profileId);
+        }
+        persist(checkpoint);
+      },
     };
     if (proofTransport === 'compact') {
       if (network === 'mutinynet') {
@@ -142,8 +194,29 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
           const { createCompactReadyLiveRuntime } = await import('./compact/ready-live.ts');
           native = await createCompactReadyLiveRuntime(runtimeOptions);
         } else {
-          const { createCompactLiveRuntime } = await import('./compact/live.ts');
-          native = await createCompactLiveRuntime(runtimeOptions);
+          const { createCompactBootstrapLiveRuntime } = await import('./compact/bootstrap-live.ts');
+          const { continueFreshRegisteredBootstrap } = await import('../tools/compact-bootstrap-recovery.ts');
+          native = await createCompactBootstrapLiveRuntime(runtimeOptions, async (nativeCheckpoint, onProgress) => {
+            if (!store || !profileId) throw new Error('Fresh compact bootstrap requires the active encrypted engine checkpoint.');
+            const freshCheckpoint = {
+              version: 2 as const, proofTransport: 'compact' as const, profileId,
+              protocol: kernel.exportState(), native: nativeCheckpoint,
+              activities: structuredClone(activities), publicBalances: structuredClone(publicBalances),
+              pendingCompletion: structuredClone(pendingCompletion), requests: structuredClone(requests),
+            } as import('../tools/compact-bootstrap-recovery.ts').StoredEngine;
+            const completed = await continueFreshRegisteredBootstrap({ checkpoint: freshCheckpoint,
+              persist: async (next) => {
+                if (next.profileId !== profileId) throw new Error('Fresh bootstrap attempted to change the registered profile.');
+                // Reuse the already-open EngineStore through the engine persistence boundary.
+                persist(next.native);
+                saved = { version: 2, proofTransport: 'compact', profileId: next.profileId,
+                  protocol: kernel.exportState(), native: next.native, activities: structuredClone(activities),
+                  publicBalances: structuredClone(publicBalances), pendingCompletion: structuredClone(pendingCompletion),
+                  requests: structuredClone(requests) };
+                onProgress(structuredClone(next.native));
+              } });
+            return completed.native;
+          });
         }
       } else {
         const { createCompactRuntime } = await import('./compact/runtime.ts');
@@ -363,9 +436,25 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
       if (network === 'mutinynet' && ['bootstrap','sync','board','shield','seal','transfer','withdraw','recover'].includes(action) && !requestId) {
         throw new Error('Idempotency-Key is required for Mutinynet actions.');
       }
+      const freshBootstrap = network === 'mutinynet' && proofTransport === 'compact' && hasFreshBootstrapJournal(native.exportState());
+      if (freshBootstrap && action === 'bootstrap') {
+        if (bodyHash !== EMPTY_BOOTSTRAP_BODY_HASH) throw new Error('Fresh compact bootstrap requires an empty request body.');
+        const pendingBootstrap = Object.entries(requests).filter(([, value]) =>
+          value.status === 'pending' && value.bodyHash === EMPTY_BOOTSTRAP_BODY_HASH);
+        if (pendingBootstrap.length && (pendingBootstrap.length !== 1 || pendingBootstrap[0]![0] !== requestId)) {
+          throw new Error('A fresh compact bootstrap is pending; retry it with the original idempotency key.');
+        }
+        if (Object.values(requests).some((value) => value.status === 'pending' && value.bodyHash !== EMPTY_BOOTSTRAP_BODY_HASH)) {
+          throw new Error('Fresh compact bootstrap cannot continue while another request is pending.');
+        }
+      } else if (freshBootstrap && Object.values(requests).some((value) =>
+        value.status === 'pending' && value.bodyHash === EMPTY_BOOTSTRAP_BODY_HASH)) {
+        throw new Error('A fresh compact bootstrap is pending; continue that bootstrap before another action.');
+      }
       if (requestId) {
         const existing = requests[requestId];
         if (existing && existing.bodyHash !== bodyHash) throw new Error('Idempotency key was already used for a different action body.');
+        if (existing?.status === 'rejected') throw new Error(existing.error ?? 'This idempotent request was explicitly rejected and cannot be retried.');
         if (existing?.status === 'done') return existing.result;
         requests[requestId] = existing ?? { bodyHash, status: 'pending' };
         persist();
@@ -391,7 +480,9 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
             publicBalances = { alice: { BTC: 0, DEMO: 0 }, bob: { BTC: 0, DEMO: 0 } };
             artifacts = await artifactView(); return { reset: true };
           case 'bootstrap':
-            if (network !== 'mutinynet' || !native.bootstrap) throw new Error('Mutinynet bootstrap is unavailable.');
+            if (network !== 'mutinynet') throw new Error('Mutinynet bootstrap is unavailable.');
+            if (proofTransport === 'compact' && native.exportState().live?.phase === 'ready') return native.snapshot();
+            if (!native.bootstrap) throw new Error('Mutinynet bootstrap is unavailable.');
             await native.bootstrap(); persist(); return native.snapshot();
           case 'sync':
             if (network !== 'mutinynet' || !native.refreshFunding) throw new Error('Mutinynet funding sync is unavailable.');
@@ -503,7 +594,9 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
         return result;
       } catch (error) {
         if (pendingCompletion?.phase === 'submitted') recoveryError = error instanceof Error ? error.message : String(error);
-        if (requestId && !pendingCompletion && !recoveryError) { delete requests[requestId]; persist(); }
+        const keepFreshBootstrapKey = action === 'bootstrap' && requestId && requests[requestId]?.bodyHash === EMPTY_BOOTSTRAP_BODY_HASH &&
+          network === 'mutinynet' && proofTransport === 'compact' && hasFreshBootstrapJournal(native.exportState());
+        if (requestId && !pendingCompletion && !recoveryError && !keepFreshBootstrapKey) { delete requests[requestId]; persist(); }
         throw error;
       } finally { activeAction = undefined; busy = false; }
     },

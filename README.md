@@ -10,25 +10,41 @@ dependency. See [the compact profile](spec/COMPACT-PROFILE.md) for its authority
 exit limits, startup and validation commands. Existing inline checkpoints are
 preserved and cannot silently switch profiles.
 
-The compact Docker test records 2,370–3,376 WU for main transactions and 732 WU
-per checkpoint in [validation/compact-deployment.json](validation/compact-deployment.json).
-That is local fixture evidence. Mutinynet received 300,000 test sats and the
-approved recovery funded all four registered resource outputs. Read-only
-indexer validation confirmed their transaction and checkpoint evidence: gate
-3,228 WU, lane 1,300 WU, and the two vaults 1,116 WU each. The pool allocation is
-200,000 sats and 10,000,000 DEMO.
+Compact bootstrap now hands off automatically after the SDK has issued the
+four assets and durably registered the verifier profile. The legacy runtime is
+closed at the persisted `funding-programs` boundary, before it can send the
+first resource-funding transaction. The continuation writes a fresh-start
+marker and each exact funding request to the engine's encrypted checkpoint,
+validates operator responses and native-asset change, and saves accepted
+receipts before finalization. After a restart it validates the contiguous
+receipt-backed prefix and funds only missing resources. If a Submit response is
+lost, it queries the operator's pending-response endpoint using the saved input
+outpoints; it never resubmits an unknown request. Unmarked partial legacy
+funding fails closed for explicit recovery.
 
-The original ready restore rehashes a derived profile object including its
-existing ID and fails. A separately reviewed ready-only
-transport adapter now reconstructs the original config. All 78 tests and the app build pass, and its compatibility image passed a read-only restore of the funded volume. Readiness was durably restored with zero network submissions; funded lifecycle validation is in progress. The funded profile, fingerprinted
-verifier sources, proving artifacts and keys remain unchanged. No payment
-lifecycle, live UI or same-volume restart/replay has passed yet. The
-[saved network preflight](validation/compact-mutinynet-preflight.json) predates
-funding and is historical evidence. The showcase holds its demo wallet keys and
-uses treasury backing; an external customer deposit rail and independent
-note-holder pool exit are not implemented.
-
-The ready adapter handles an identified funded checkpoint. Fresh Mutinynet bootstrap still needs separate orchestration: the original resource validator rejects legitimate native asset change. The recovered pool does not prove a clean deployment.
+Ready restore requires the same registered profile and authenticated receipts
+for all four resource heads. The funded Mutinynet lifecycle has now passed its
+20-action two-user, two-asset run: Alice and Bob completed bidirectional BTC
+and DEMO flows through shield, seal, transfer, and withdrawal. All 20
+transactions were accepted and indexed; the report also records passing
+negative scenarios. The largest native transaction was 3,436 WU against the
+4,000 WU effective cap (the operator advertises 40,000 WU). See the
+[funded validation report](validation/compact-mutinynet.json). The restart/replay
+check also passed on the same container image and named volume: all 20 prior
+actions replayed, no new financial actions were recorded, and the before/after
+financial-state digests match. See the
+[restart/replay report](validation/compact-mutinynet-restart-replay.json).
+The authenticated browser UI run also passed: it replayed 20 cached accepted
+receipts, inspected 20 public receipts, and verified authentication, logout,
+privacy views, and reserves. It recorded zero new financial actions and an
+unchanged financial-state digest. See the
+[UI validation report](validation/compact-ui.json). This covers cached receipt
+replay, not new funded transactions or a clean first funded bootstrap. The live
+lifecycle used the already funded resource heads; the fresh-bootstrap
+continuation is covered by controlled SDK transaction tests.
+The registered profile, verifier sources, proving artifacts, and keys remain
+unchanged. This is a treasury-funded operator PoC with service-owned demo keys;
+it has no customer deposit rail or independent note-holder pool exit.
 
 ## Run on Windows
 
@@ -54,7 +70,12 @@ npm run test:primitives
 npm run test:e2e
 ```
 
-The unit suite covers SDK covenant construction and rejection cases. The primitive smoke flow makes real proofs and exercises stale-state rejection and rebase. The end-to-end report in [validation/e2e.json](validation/e2e.json) records the actual compiler → SDK Program → proof → emulator path, including accepted transactions, withdrawal, replay/tamper rejection, and key omission from the API. To run the Go bridge checks independently, use `cd tools/vm` then `go test ./...`.
+The unit suite covers SDK covenant construction, rejection cases, bootstrap
+recovery, and the real ready adapter. The primitive smoke flow makes real
+proofs and exercises stale-state rejection and rebase. The retained inline E2E
+flow covers the compiler → SDK Program → proof → emulator path, accepted
+transactions, withdrawal, replay/tamper rejection, and API key omission. To
+run the Go bridge checks independently, use `cd tools/vm` then `go test ./...`.
 
 ## Run the container on Mutinynet
 
@@ -66,32 +87,25 @@ docker compose --project-name shielded-compact ps
 docker compose --project-name shielded-compact logs -f shielded
 ```
 
-The example uses a fresh project and volume for the compact profile. `.env.example` selects `SHIELDED_PROOF_TRANSPORT=compact`; an existing inline wallet cannot switch profiles. Compact mode uses `https://mutinynet.arkade.sh` and a dedicated verifier inside the service. Inline mode uses the configured public emulator. The UI asks for the API token and receives a signed HttpOnly session cookie; scripts can send `Authorization: Bearer <token>`. `/healthz` reports whether the server process is alive. `/readyz` remains unready until funding and bootstrap complete, while the UI exposes those steps. Each Ark transaction must fit the smaller of the operator limit and 4,000 WU. The live wallet requires at least 203,330 Mutinynet test sats initially; fees can require additional funds. Bootstrap issues four native identities, pins their verifier profile, and funds four resource heads in separate resumable transactions. Use test coins only; operator acceptance is preconfirmation rather than Bitcoin finality.
+The example uses a fresh project and volume for the compact profile. `.env.example` selects `SHIELDED_PROOF_TRANSPORT=compact`; an existing inline wallet cannot switch profiles. Compact mode uses `https://mutinynet.arkade.sh` and a dedicated verifier inside the service. Inline mode uses the configured public emulator. The UI asks for the API token and receives a signed HttpOnly session cookie; scripts can send `Authorization: Bearer <token>`. `/healthz` reports whether the server process is alive. `/readyz` remains unready until funding and bootstrap complete, while the UI exposes those steps. Each Ark transaction must fit the smaller of the operator limit and 4,000 WU. The UI reports the remaining test-funding requirement and fees. Bootstrap issues four native identities, pins their verifier profile, and automatically continues into four separately journaled resource-funding transactions. Use test coins only; operator acceptance is preconfirmation rather than Bitcoin finality.
 
-Compact bootstrap journals each exact `SubmitTx` request before contacting the
-operator. It validates the operator-only response—including the transaction
-body, previous-output metadata, expected checkpoint leaves, and pinned operator
-signatures—before the SDK wallet signs the checkpoints. The validated response
-is saved before `FinalizeTx`. After interruption, recovery first checks indexed
-acceptance, then queries the read-only pending-response endpoint using the exact
-saved inputs; it never retries `SubmitTx` for an unknown outcome. If no matching
-response can be recovered, bootstrap remains blocked. The indexer returns
-base64-encoded PSBTs with body/output evidence, but Arkd strips operator
-signature fields, so an indexed PSBT is not a complete signed receipt. A
-finalized-transaction recovery can restore signature fields only when the exact
-final witness still contains matching signatures and the expected leaf and
-control block; otherwise it fails closed. Recovery of a finalized transaction
-without its journal has not been verified. The read-only pending-response
-endpoint is the path for recovering a full, unfinalized operator response.
-
-The approved standalone recovery funded and journaled all four outputs, and
-its post-apply read-only audit passed. It stopped at the original ready-restore
-profile hashing bug. A reviewed compatibility image must preserve every
-fingerprinted verifier file, proving artifact, key and encrypted volume. Final
-readiness recovery must make zero wallet submissions. See the
+Before any resource funding, compact bootstrap durably records its fresh-start
+marker and exact `SubmitTx` request in the same encrypted engine checkpoint.
+It validates the operator response—including transaction body, prevout
+metadata, spend leaves, signatures, native-asset conservation, and wallet-owned
+change—before saving the response and finalizing. After interruption, recovery
+checks indexed acceptance first, then uses the exact saved wallet inputs to
+query the read-only pending-response endpoint. Unknown outcomes are never
+resubmitted; missing or ambiguous evidence blocks bootstrap. An unmarked legacy
+partial funding state is not adopted automatically. See the
 [compact profile](spec/COMPACT-PROFILE.md) for constraints.
 
-Fund the displayed Ark address directly, or send on-chain coins to the boarding address and use **Board confirmed funds** after confirmation. Sync only refreshes balances. The service journals boarding inputs before joining the shared Bitcoin round and blocks ambiguous retries. The server commands and image enable Node 24's EventSource transport for Ark round events.
+This service is treasury-funded and keeps its demonstration wallet keys. The
+displayed Ark and boarding addresses belong to the service; they are not an
+external customer deposit rail. For local/test-network operation, send only
+test coins. Boarding inputs are journaled before joining the shared Bitcoin
+round, and ambiguous retries remain blocked. The server commands and image
+enable Node 24's EventSource transport for Ark round events.
 
 The named `shielded-data` volume holds an authenticated, encrypted SQLite checkpoint and the generated encryption key. Preserve the volume as a unit when moving or restoring it. To manage the key separately, set `SHIELDED_STORAGE_KEY` before starting Compose and back it up securely; a securely generated 64-character hex value is a suitable key string. The service uses one process per data volume; do not attach the same volume to multiple replicas. `docker compose down` preserves the volume; remove it separately only when intentionally discarding the wallet state.
 
@@ -99,7 +113,7 @@ For an isolated image smoke test, run `npm ci` followed by `npm run test:deploym
 
 ## Limits and older design
 
-The local emulator uses synthetic genesis/funding, fixture signing keys, and single-party test proving keys. Mutinynet uses real test-network requests and operator signatures, but operator acceptance is not Bitcoin confirmation. The observer view is a display filter. The profile is limited to one lane, bounded note/history trees, one asset boundary per settlement, and one process per encrypted data volume; it does not provide refresh/expiry handling, emergency exits, or independent production security review. See [spec/POC-PROFILE.md](spec/POC-PROFILE.md), [tools/vm/README.md](tools/vm/README.md), and [HANDOFF.md](HANDOFF.md) before extending it.
+The local emulator uses synthetic genesis/funding, fixture signing keys, and single-party test proving keys. Mutinynet uses test-network requests and operator signatures, but operator acceptance is not Bitcoin confirmation. The observer view is a display filter. The profile is limited to one lane, depth-eight note/history trees, one asset boundary per settlement, and one process per encrypted data volume. It does not provide independent client-owned keys, a customer deposit rail, an independent note-holder pool exit, refresh/expiry handling, or emergency exits. It has no independent production security review. See [spec/POC-PROFILE.md](spec/POC-PROFILE.md), [tools/vm/README.md](tools/vm/README.md), and [HANDOFF.md](HANDOFF.md) before extending it.
 
 The engine writes its checkpoint before and after native submission. A saved accepted receipt completes local state without another submission. An unknown submission outcome blocks spending; restart the service to reconcile the saved transaction against authoritative network evidence. Checkpoint-write failures also require restart. Back up the encryption key with the database: losing the key makes an intact checkpoint unrecoverable.
 

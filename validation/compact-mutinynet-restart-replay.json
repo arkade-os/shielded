@@ -1,0 +1,181 @@
+{
+  "verifiedAt": "2026-10-04T08:12:39.745Z",
+  "network": "mutinynet",
+  "profileId": "ddabfcbb68e886079fca6a503721a06812e2c0f0dee2ff11ca7d2ec5c19ca4ec",
+  "sourceReport": "validation/compact-mutinynet.json",
+  "sourceReportSha256": "2f36fc4e75c9f9fcf5aca6990ca543f152eb2b560f84ec4ab5c287a4e68964b9",
+  "restartEvidence": {
+    "dataVolume": "shielded-compact-mutiny-066be2b0-data",
+    "containerId": "52a602a3e2241024f25a6fccd9a14e9d30550cfa855b1fad0367cd06bcce9bab",
+    "imageId": "sha256:229aeb706748150cc40c44a1c1fabd547b5675cc35b52b0501e53aa87d572de1",
+    "beforeStartedAt": "2026-10-04T07:48:37.013537551Z",
+    "afterStartedAt": "2026-10-04T08:11:13.531704762Z",
+    "profileId": "ddabfcbb68e886079fca6a503721a06812e2c0f0dee2ff11ca7d2ec5c19ca4ec",
+    "financialStateSha256": "d886b789284eb4b75c742151af38ac6e72a85755da40d868dc8d8b8e855241ab",
+    "idempotencyKeyPrefix": "compact-mutinynet-v2",
+    "beforeMounts": [
+      {
+        "Name": "shielded-compact-mutiny-066be2b0-data",
+        "Destination": "/data",
+        "RW": true
+      }
+    ],
+    "afterMounts": [
+      {
+        "Name": "shielded-compact-mutiny-066be2b0-data",
+        "Destination": "/data",
+        "RW": true
+      }
+    ],
+    "currentDockerInspectMatched": true
+  },
+  "actionCount": 20,
+  "replayed": [
+    {
+      "action": "shield",
+      "suffix": "btc-shield",
+      "txid": "60ad952b3cdc674ed5a3deeee3cf3ec063e3ebdd794e944c88d11a4b87304af7",
+      "resultSha256": "cf27216fe2ae1210042425d2ab1e4d743b84c6d036706ab72e4cf7e804d1c624"
+    },
+    {
+      "action": "seal",
+      "suffix": "btc-seal-1",
+      "txid": "0cbfc95177b1a018df4e3989a001928cdd157057115851b54c03841ee7d1fa31",
+      "resultSha256": "8a9b4433197e0464f77d3ab69a1ed5213cddd6c97ceb2bfbd36e87ec62451a57"
+    },
+    {
+      "action": "transfer",
+      "suffix": "btc-transfer",
+      "txid": "d6647dc1206b27500eef6307977934221aec249ed7c5d969c736563f7a9e3031",
+      "resultSha256": "997b0cafedda437a89df72e4caba6d0123ea20ce9fe7a7db52e9ade8fe9e12d5"
+    },
+    {
+      "action": "seal",
+      "suffix": "btc-seal-2",
+      "txid": "a4f637ca121b74161103246c1c7414af52cf07208b4da41056d168d226365ae4",
+      "resultSha256": "ef18d0c3777b35fdddda7746ba0d220f7469de8d4cf941038377d0a01b69a3b0"
+    },
+    {
+      "action": "withdraw",
+      "suffix": "btc-withdraw",
+      "txid": "f64bd99d493f1ab67d102878dbb3fd18f0c4576fc2c84570bac6ced265bbf553",
+      "resultSha256": "fd37c14e7ff5f544b7a7ba25d04bdc7a13514988cc8def1ff4af7d42229852d4"
+    },
+    {
+      "action": "shield",
+      "suffix": "token-shield",
+      "txid": "f8b00fc0d85d54f6749f97c193a37686529b3c1928a93234726ecb0e7e5ff9d3",
+      "resultSha256": "234765235ea28d8642f08ef77dac598fae82c5ce36fd8c0954897cf82882df37"
+    },
+    {
+      "action": "seal",
+      "suffix": "token-seal-1",
+      "txid": "33ecbfe87fec4c2977fc51a5395694f562aaa51009d061c6251218ea8d464ffd",
+      "resultSha256": "714cd008221d456bd9de059e8806ccf66407c305dc706ff01cc2148c2b467729"
+    },
+    {
+      "action": "transfer",
+      "suffix": "token-transfer",
+      "txid": "1e5056785a926640f5bba8b87f9b82e13232a7bc2b491f6779e2182587272855",
+      "resultSha256": "75056a3ecf0f35e6f5a0b26632662f1336ee1ec766944eb5a69d241340917cce"
+    },
+    {
+      "action": "seal",
+      "suffix": "token-seal-2",
+      "txid": "79824e03b3cb62bae64d67ab00efc76136dcbc972d0d51dced6f1573accb2213",
+      "resultSha256": "ef04c2be46c067bc41401c40fb356616f5d2cc3ecfbd9e0277bb01d857cefaaf"
+    },
+    {
+      "action": "withdraw",
+      "suffix": "token-withdraw",
+      "txid": "4a917f352116d28c46705c812cb1801278d163496d13be633c16a1c467855d00",
+      "resultSha256": "fa24db8b795c41ee65c791694cfa2e92d86de236651d1c82201e17ed1e0fe8e5"
+    },
+    {
+      "action": "shield",
+      "suffix": "bob-btc-shield",
+      "txid": "c3c83fc3659d38bb58cb9c931adf4b989e1b94429e2ac0a14a9da6be9f3e974d",
+      "resultSha256": "1c2768225b26abcf0fcc6bf7ad053ffd4890a74b0975a278207e2bddbcdbfc78"
+    },
+    {
+      "action": "seal",
+      "suffix": "bob-btc-seal-1",
+      "txid": "2c2d39951e38cc6d9c416e9f798d5e3ca0f9d00162798859a5cefaea4be8c043",
+      "resultSha256": "1c817c51a68cb7f2c1afa5a095927835a2e5d1ec11e9f6c2a23053f56251ac05"
+    },
+    {
+      "action": "transfer",
+      "suffix": "bob-btc-transfer",
+      "txid": "e52e2fed0aa35b83824dd8e1cd6411c34c5f404dd89e589132d323a31f73ae5c",
+      "resultSha256": "51c214b2c638e1dd097ec85b78a4a420d68fccb5d9a23b3c675f6a54c81f848e"
+    },
+    {
+      "action": "seal",
+      "suffix": "bob-btc-seal-2",
+      "txid": "579c2851beb796c9d7922ac1bcf3175272530dea66211c3346b949b07d350ebc",
+      "resultSha256": "2609cbeaf1ca824090856a7cde34a994cec9a1be26afb3a71ffab4a8ad5e0b60"
+    },
+    {
+      "action": "withdraw",
+      "suffix": "alice-btc-withdraw",
+      "txid": "02cda487fe6bc60fd5109a58265c774ec47a450de92aae28063774719c1bb9e3",
+      "resultSha256": "da5fb0c9a490d5ba0c27ec262ce3a141855ab4618845282d4753ba6d46e9eda6"
+    },
+    {
+      "action": "shield",
+      "suffix": "bob-token-shield",
+      "txid": "06379991f720150249a3a8fcd4cf572207d58d9431c782f04bbe6afcabd72b49",
+      "resultSha256": "72f84237b7d591706c058c93edac60b1f6382fb3ef39bfa9974febfd54e81548"
+    },
+    {
+      "action": "seal",
+      "suffix": "bob-token-seal-1",
+      "txid": "5beaf26af8334225901fb6cf2eba1593a4493d4d1c6beee8a95c9d23f15df3c3",
+      "resultSha256": "a57cab555bdb1bc7edc511d793da44f66332bd7329ec0f4a29f65782c1a5a874"
+    },
+    {
+      "action": "transfer",
+      "suffix": "bob-token-transfer",
+      "txid": "eb91e8a096cf214d6f5bf6e266bd5c5ce664077b248129e701a6dcc1b94a8ceb",
+      "resultSha256": "cc8e003630d08c596c06f8ccc594e38f55716b465fbdc44efd7928fec48e978f"
+    },
+    {
+      "action": "seal",
+      "suffix": "bob-token-seal-2",
+      "txid": "2c0210c4d8579b66658dbf3baa02d0f9f15fabca7afeb4b7780b21757dede78e",
+      "resultSha256": "71b2c726d0527dd2f5c015b770b41bcf9a698ac1122dde9855432f1eefd94f52"
+    },
+    {
+      "action": "withdraw",
+      "suffix": "alice-token-withdraw",
+      "txid": "077641abbcb336d8ec6c623a2ea56109be1e094fd2b956580697a3aa54712604",
+      "resultSha256": "88e98684986528a7466be87b48fdba9ca95c4aac3b950ae1a99c5205a43a1162"
+    }
+  ],
+  "beforeFinancialStateSha256": "d886b789284eb4b75c742151af38ac6e72a85755da40d868dc8d8b8e855241ab",
+  "afterFinancialStateSha256": "d886b789284eb4b75c742151af38ac6e72a85755da40d868dc8d8b8e855241ab",
+  "activityCount": 20,
+  "activityTxids": [
+    "60ad952b3cdc674ed5a3deeee3cf3ec063e3ebdd794e944c88d11a4b87304af7",
+    "0cbfc95177b1a018df4e3989a001928cdd157057115851b54c03841ee7d1fa31",
+    "d6647dc1206b27500eef6307977934221aec249ed7c5d969c736563f7a9e3031",
+    "a4f637ca121b74161103246c1c7414af52cf07208b4da41056d168d226365ae4",
+    "f64bd99d493f1ab67d102878dbb3fd18f0c4576fc2c84570bac6ced265bbf553",
+    "f8b00fc0d85d54f6749f97c193a37686529b3c1928a93234726ecb0e7e5ff9d3",
+    "33ecbfe87fec4c2977fc51a5395694f562aaa51009d061c6251218ea8d464ffd",
+    "1e5056785a926640f5bba8b87f9b82e13232a7bc2b491f6779e2182587272855",
+    "79824e03b3cb62bae64d67ab00efc76136dcbc972d0d51dced6f1573accb2213",
+    "4a917f352116d28c46705c812cb1801278d163496d13be633c16a1c467855d00",
+    "c3c83fc3659d38bb58cb9c931adf4b989e1b94429e2ac0a14a9da6be9f3e974d",
+    "2c2d39951e38cc6d9c416e9f798d5e3ca0f9d00162798859a5cefaea4be8c043",
+    "e52e2fed0aa35b83824dd8e1cd6411c34c5f404dd89e589132d323a31f73ae5c",
+    "579c2851beb796c9d7922ac1bcf3175272530dea66211c3346b949b07d350ebc",
+    "02cda487fe6bc60fd5109a58265c774ec47a450de92aae28063774719c1bb9e3",
+    "06379991f720150249a3a8fcd4cf572207d58d9431c782f04bbe6afcabd72b49",
+    "5beaf26af8334225901fb6cf2eba1593a4493d4d1c6beee8a95c9d23f15df3c3",
+    "eb91e8a096cf214d6f5bf6e266bd5c5ce664077b248129e701a6dcc1b94a8ceb",
+    "2c0210c4d8579b66658dbf3baa02d0f9f15fabca7afeb4b7780b21757dede78e",
+    "077641abbcb336d8ec6c623a2ea56109be1e094fd2b956580697a3aa54712604"
+  ],
+  "newFinancialActionsDuringReplay": 0
+}

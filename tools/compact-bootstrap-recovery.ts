@@ -30,12 +30,12 @@ type ResourceName = typeof RESOURCE_NAMES[number];
 type IssueName = typeof ISSUE_NAMES[number];
 type BootstrapResponse = Awaited<ReturnType<RestArkProvider['submitTx']>>;
 type RecoveryHeadRecord = { request: VmBridgeRequest; response: BootstrapResponse; finalizedCheckpointTxs: string[] };
-type RecoveryJournal = { version: 1; profileId: string; heads: Partial<Record<ResourceName, RecoveryHeadRecord>> };
-type BootstrapJournal = NonNullable<NonNullable<NativeCheckpoint['live']>['pendingBootstrap']> & {
+type RecoveryJournal = { version: 1; profileId: string; heads: Partial<Record<ResourceName, RecoveryHeadRecord>>; freshStart?: true };
+export type BootstrapJournal = NonNullable<NonNullable<NativeCheckpoint['live']>['pendingBootstrap']> & {
   recoveryOwned?: true;
   finalizedCheckpointTxs?: string[];
 };
-type StoredEngine = {
+export type StoredEngine = {
   version: 2;
   proofTransport: 'compact';
   profileId: string;
@@ -48,6 +48,8 @@ type StoredEngine = {
   pendingCompletion?: unknown;
   requests: Record<string, unknown>;
 };
+
+const EMPTY_BOOTSTRAP_REQUEST_HASH = createHash('sha256').update(JSON.stringify({ action: 'bootstrap', body: {} })).digest('hex');
 
 type FundingEvidence = { id: string; inputs: Map<number, Map<string, bigint>>; outputs: Map<number, Map<string, bigint>> };
 
@@ -131,6 +133,82 @@ export function assertRecoverableCheckpoint(checkpoint: StoredEngine): void {
   if (!pending && prefix.length === 0) throw new Error('Recovery requires a durable pending funding request or an adopted resource prefix.');
   if (live.bootstrapRecovery && live.bootstrapRecovery.profileId !== checkpoint.profileId) throw new Error('Recovery journal profile changed.');
   if (prefix.some((name) => !live.bootstrapRecovery?.heads[name])) throw new Error('An adopted head is missing its durable signed recovery evidence.');
+}
+
+/**
+ * Admit only a newly registered, empty profile or a continuation carrying the
+ * explicit marker written before its first funding Submit. The ordinary
+ * recovery path above intentionally keeps its stricter pending/prefix rule.
+ */
+export function assertFreshBootstrapCheckpoint(checkpoint: StoredEngine, allowStart = false): void {
+  const native = checkpoint.native;
+  const live = native?.live as (NonNullable<NativeCheckpoint['live']> & { bootstrapRecovery?: RecoveryJournal }) | undefined;
+  if (checkpoint.version !== 2 || checkpoint.proofTransport !== 'compact' || !checkpoint.profileId ||
+      native?.network !== 'mutinynet' || live?.phase !== 'funding-programs' ||
+      native.compact?.profileId !== checkpoint.profileId) {
+    throw new Error('Fresh bootstrap requires the exact registered compact Mutinynet profile in funding-programs phase.');
+  }
+  const marker = live.bootstrapRecovery;
+  const hasMarker = marker?.freshStart === true && marker.version === 1 && marker.profileId === checkpoint.profileId;
+  if (marker && !hasMarker) throw new Error('Fresh bootstrap refuses an unrelated or mismatched recovery journal.');
+  if (!hasMarker && !allowStart) throw new Error('Fresh bootstrap continuation marker is missing; ambiguous legacy state will not be adopted.');
+  if (!hasMarker && (Object.keys(native.heads ?? {}).length || live.pendingBootstrap || marker)) {
+    throw new Error('Fresh bootstrap can be started only before resource funding or any native submission.');
+  }
+  if (checkpoint.pendingCompletion || checkpoint.activities.length || native.receipts.length || live.pendingSettlement ||
+      live.pendingBoarding || (live.boardingReceipts?.length ?? 0) || native.compact?.pendingAcceptance ||
+      native.state.noteCount !== 0 || native.state.historyCount !== 0 || native.state.reserves.BTC !== 0 ||
+      native.state.reserves.DEMO !== 0 || checkpoint.protocol.encryptedLog.length || checkpoint.protocol.receipts.length ||
+      checkpoint.protocol.nullifiers.length || checkpoint.protocol.trees?.notes?.length ||
+      checkpoint.protocol.trees?.spent?.length || checkpoint.protocol.trees?.history?.length) {
+    throw new Error('Fresh bootstrap requires an empty pool with no notes, settlements, boarding, or protocol activity.');
+  }
+  const nonzero = Object.values(checkpoint.publicBalances ?? {}).some((balances) =>
+    Object.values(balances as Record<string, unknown>).some((amount) => amount !== 0));
+  if (nonzero) throw new Error('Fresh bootstrap refuses existing public payouts or balances.');
+  const issued = live.issued;
+  if (ISSUE_NAMES.some((name) => !issued[name] || !live.issuanceTransactions?.[name] || native.identities[name] !== issued[name]) ||
+      native.issuanceRaw !== live.issuanceTransactions?.token) {
+    throw new Error('Fresh bootstrap requires all registered asset identities and accepted issuance ancestry.');
+  }
+  const identitySet = new Set(ISSUE_NAMES.map((name) => compactAssetIdentity(issued[name]!)));
+  if (identitySet.size !== ISSUE_NAMES.length) throw new Error('Fresh bootstrap requires four distinct registered asset identities.');
+  const prefix = RESOURCE_NAMES.filter((_, index) => RESOURCE_NAMES.slice(0, index + 1).every((name) => native.heads[name]));
+  if (!native.state || Object.keys(native.heads ?? {}).length !== prefix.length ||
+      (!hasMarker && prefix.length) || (!hasMarker && (native.genesisRaw !== '' || native.funding.BTC !== '0' || native.funding.DEMO !== '0'))) {
+    throw new Error('Fresh bootstrap requires a zero-head start or its own contiguous interrupted prefix.');
+  }
+  if (prefix.some((name) => !marker?.heads[name])) throw new Error('Fresh bootstrap prefix lacks its own accepted receipt journal.');
+  if (native.heads.gate ? native.genesisRaw !== native.heads.gate.sourceTx || native.funding.BTC !== GATE_FUNDING.toString() ||
+      native.funding.DEMO !== TOKEN_SUPPLY.toString() : native.genesisRaw !== '' || native.funding.BTC !== '0' || native.funding.DEMO !== '0') {
+    throw new Error('Fresh bootstrap genesis and funding do not match its saved gate receipt.');
+  }
+  const next = RESOURCE_NAMES[prefix.length];
+  const pendingBootstrap = live.pendingBootstrap as BootstrapJournal | undefined;
+  if (pendingBootstrap && (!next || pendingBootstrap.step !== `fund:${next}` || pendingBootstrap.recoveryOwned !== true ||
+      !pendingBootstrap.request?.arkTx || (pendingBootstrap.response &&
+      pendingBootstrap.txid.toLowerCase() !== pendingBootstrap.response.arkTxid.toLowerCase()) ||
+      (pendingBootstrap.finalizedCheckpointTxs && pendingBootstrap.finalizedCheckpointTxs.length !== pendingBootstrap.request.checkpoints.length))) {
+    throw new Error('Fresh bootstrap has an unknown or mismatched funding request; no transaction will be retried.');
+  }
+  const pendingRequests = Object.values(checkpoint.requests ?? {}).filter((request) =>
+    (request as { status?: unknown })?.status === 'pending');
+  if (pendingRequests.length !== 1 ||
+      (pendingRequests[0] as { bodyHash?: unknown }).bodyHash !== EMPTY_BOOTSTRAP_REQUEST_HASH) {
+    throw new Error('Fresh bootstrap requires exactly one identified pending bootstrap request.');
+  }
+  if (hasMarker && marker!.profileId !== checkpoint.profileId) {
+    throw new Error('Fresh bootstrap marker contains conflicting resource receipts.');
+  }
+}
+
+/** Establish the fresh-start journal before any funding request can be sent. */
+export async function beginFreshBootstrap(checkpoint: StoredEngine, persist: (checkpoint: StoredEngine) => Promise<void>): Promise<void> {
+  assertFreshBootstrapCheckpoint(checkpoint, true);
+  const live = checkpoint.native.live! as NonNullable<NativeCheckpoint['live']> & { bootstrapRecovery?: RecoveryJournal };
+  if (live.bootstrapRecovery?.freshStart === true) return;
+  live.bootstrapRecovery = { version: 1, profileId: checkpoint.profileId, heads: {}, freshStart: true };
+  await persist(checkpoint);
 }
 
 function sameBody(actual: Transaction, expected: Transaction): void {
@@ -706,7 +784,7 @@ async function validateAcceptedResource(args: {
   return indexedArk;
 }
 
-type RecoveryContext = {
+export type RecoveryContext = {
   provider: RestArkProvider;
   indexer: RestIndexerProvider;
   wallet: Awaited<ReturnType<typeof Wallet.create>>;
@@ -963,13 +1041,13 @@ async function verifyReadyRestore(checkpoint: StoredEngine, context: RecoveryCon
   } finally { await restored.close(); }
 }
 
-async function recoverWithContext(checkpoint: StoredEngine, context: RecoveryContext, store: EngineStore): Promise<void> {
+async function recoverWithContext(checkpoint: StoredEngine, context: RecoveryContext, persist: () => Promise<void>, freshStart = false,
+  readyRestore: typeof verifyReadyRestore = verifyReadyRestore): Promise<void> {
   const live = checkpoint.native.live!;
   const limit = effectiveLimit(context.info);
   const originalSubmit = context.provider.submitTx.bind(context.provider);
   const originalFinalize = context.provider.finalizeTx.bind(context.provider);
   let activeStep: string | undefined;
-  const persist = async () => { store.save(checkpoint); };
   context.provider.submitTx = async (arkTx, checkpointTxs) => {
     if (!activeStep || live.pendingBootstrap) throw new Error('Recovery refuses an unjournaled or duplicate native submission.');
     const request: VmBridgeRequest = { arkTx, checkpoints: checkpointTxs };
@@ -1023,7 +1101,8 @@ async function recoverWithContext(checkpoint: StoredEngine, context: RecoveryCon
       await persist();
       continue;
     }
-    if (!checkpoint.native.live!.bootstrapRecovery?.heads || !Object.keys(checkpoint.native.heads).length) {
+    const journal = checkpoint.native.live!.bootstrapRecovery as RecoveryJournal | undefined;
+    if ((!journal?.heads || !Object.keys(checkpoint.native.heads).length) && !(freshStart && journal?.freshStart === true)) {
       throw new Error('No durable pending transaction or adopted resource prefix exists; refusing to begin a new recovery flow.');
     }
     activeStep = step;
@@ -1046,9 +1125,110 @@ async function recoverWithContext(checkpoint: StoredEngine, context: RecoveryCon
   }
   if (RESOURCE_NAMES.some((name) => !checkpoint.native.heads[name])) throw new Error('Recovery did not produce all four verified resource heads.');
   checkpoint.native.issuanceRaw = live.issuanceTransactions!.token!;
-  await verifyReadyRestore(checkpoint, context);
+  await readyRestore(checkpoint, context);
   live.phase = 'ready';
   await persist();
+}
+
+type IndexedFundingCoin = Awaited<ReturnType<RestIndexerProvider['getVtxos']>>['vtxos'][number];
+type PendingWalletCoin = IndexedFundingCoin & { tapTree: Uint8Array; forfeitTapLeafScript: unknown; intentTapLeafScript: unknown };
+type PendingWalletApi = {
+  getScriptMap(): Promise<Map<string, { encode(): Uint8Array; forfeit(): unknown }>>;
+  makeGetPendingTxIntentSignature(coins: PendingWalletCoin[]): Promise<Parameters<RestArkProvider['getPendingTxs']>[0]>;
+};
+
+export async function recoverLostSubmitResponse(options: {
+  pending: BootstrapJournal; provider: RestArkProvider; indexer: RestIndexerProvider; wallet: Wallet;
+  serverKey: string; limit: bigint; persist: () => Promise<void>;
+}): Promise<void> {
+  const { pending, provider, indexer, wallet, serverKey, limit, persist } = options;
+  const walletApi = wallet as typeof wallet & Partial<PendingWalletApi>;
+  if (!walletApi.getScriptMap || !walletApi.makeGetPendingTxIntentSignature) {
+    throw new Error('Funding Submit response is missing and this SDK cannot safely reconcile it; no retry was attempted.');
+  }
+  const expected = pending.request.checkpoints.map((raw) => Transaction.fromPSBT(base64.decode(raw)));
+  const points = new Map<string, { txid: string; vout: number; value: bigint; script: Uint8Array }>();
+  for (const checkpoint of expected) {
+    const input = checkpoint.getInput(0);
+    if (!input?.txid || input.index === undefined || !input.witnessUtxo) {
+      throw new Error('Saved funding checkpoint lacks its original wallet prevout; no retry was attempted.');
+    }
+    const point = { txid: hex.encode(input.txid).toLowerCase(), vout: input.index,
+      value: input.witnessUtxo.amount, script: input.witnessUtxo.script };
+    const key = `${point.txid}:${point.vout}`;
+    const previous = points.get(key);
+    if (previous && (previous.value !== point.value || !sameBytes(previous.script, point.script))) {
+      throw new Error('Saved funding checkpoints disagree about a wallet prevout.');
+    }
+    points.set(key, point);
+  }
+  if (!points.size) throw new Error('Saved funding request has no wallet inputs to reconcile.');
+  const expectedPoints = [...points.values()];
+  const indexed = await indexer.getVtxos({ outpoints: expectedPoints.map(({ txid, vout }) => ({ txid, vout })) });
+  if (indexed.vtxos.length !== expectedPoints.length) throw new Error('Indexer did not return the exact saved funding wallet inputs.');
+  const scripts = await walletApi.getScriptMap();
+  const coins = expectedPoints.map((point): PendingWalletCoin => {
+    const matches = indexed.vtxos.filter((coin) => coin.txid.toLowerCase() === point.txid && coin.vout === point.vout);
+    if (matches.length !== 1) throw new Error('Indexer returned a duplicate or missing saved funding wallet input.');
+    const coin = matches[0]!;
+    const scriptHex = coin.script.toLowerCase();
+    const walletScript = scripts.get(scriptHex);
+    if (coin.value !== Number(point.value) || scriptHex !== hex.encode(point.script).toLowerCase() || !walletScript) {
+      throw new Error('Indexed funding input does not match the exact saved wallet prevout.');
+    }
+    return { ...coin, tapTree: walletScript.encode(), forfeitTapLeafScript: walletScript.forfeit(),
+      intentTapLeafScript: walletScript.forfeit() } as PendingWalletCoin;
+  });
+  const intent = await walletApi.makeGetPendingTxIntentSignature(coins);
+  const responses = (await provider.getPendingTxs(intent)).filter((response) =>
+    response.arkTxid.toLowerCase() === pending.txid.toLowerCase());
+  if (responses.length !== 1) throw new Error('No unique matching signed pending response exists; funding outcome remains unknown and was not retried.');
+  const response = responses[0]!;
+  const verified = verifyBootstrapResponse(pending.request, response, serverKey);
+  if (response.arkTxid.toLowerCase() !== pending.txid.toLowerCase() || verified.ark.id.toLowerCase() !== pending.txid.toLowerCase()) {
+    throw new Error('Pending funding response does not match the exact saved transaction.');
+  }
+  enforceWeight(verified.ark, limit);
+  for (const checkpoint of response.signedCheckpointTxs) enforceWeight(Transaction.fromPSBT(base64.decode(checkpoint)), limit);
+  pending.response = { ...response, finalArkTx: base64.encode(verified.ark.toPSBT()) };
+  await persist();
+}
+
+/** Continue a newly registered profile using the engine's already-open encrypted store. */
+export async function continueFreshRegisteredBootstrap(options: {
+  checkpoint: StoredEngine;
+  persist: (checkpoint: StoredEngine) => Promise<void>;
+}, dependencies: {
+  createContext?: (checkpoint: StoredEngine) => Promise<RecoveryContext>;
+  verifyReadyRestore?: (checkpoint: StoredEngine, context: RecoveryContext) => Promise<void>;
+} = {}): Promise<StoredEngine> {
+  assertFreshBootstrapCheckpoint(options.checkpoint, true);
+  const checkpoint = options.checkpoint;
+  const persist = async () => options.persist(checkpoint);
+  let context: RecoveryContext | undefined;
+  try {
+    context = await (dependencies.createContext ?? createContext)(checkpoint);
+    await validateSavedPrefix(checkpoint, context);
+    const pending = checkpoint.native.live!.pendingBootstrap as BootstrapJournal | undefined;
+    if (pending) {
+      if (!pending.response) await recoverLostSubmitResponse({ pending, provider: context.provider, indexer: context.indexer,
+        wallet: context.wallet, serverKey: context.serverKey, limit: effectiveLimit(context.info), persist });
+      const name = pending.step.slice('fund:'.length) as ResourceName;
+      const accepted = await isAccepted(name, pending.request, pending.txid, checkpoint, context);
+      if (!accepted) {
+        if (!pending.recoveryOwned || pending.finalizedCheckpointTxs || !pending.response) {
+          throw new Error('Fresh funding outcome is ambiguous; no Submit or Finalize will be retried.');
+        }
+        await validateFundingCandidate({ name, request: pending.request, native: checkpoint.native,
+          serverKey: context.serverKey, programScript: context.closure.pkScript, indexer: context.indexer,
+          walletScripts: context.walletScripts, walletIdentity: context.walletIdentity, limit: effectiveLimit(context.info),
+          acceptedResponse: { txid: pending.txid, response: pending.response } });
+      }
+    }
+    await beginFreshBootstrap(checkpoint, options.persist);
+    await recoverWithContext(checkpoint, context, persist, true, dependencies.verifyReadyRestore);
+    return checkpoint;
+  } finally { await context?.wallet.dispose(); }
 }
 
 export function recoveryPlan(checkpoint: StoredEngine): { profileId: string; phase: string; pendingTxid?: string; adopted: string[]; missing: ResourceName[] } {
@@ -1095,7 +1275,7 @@ export async function runRecovery(options: { directory: string; storageKey?: str
       const latest = store.load<StoredEngine>();
       if (!latest) throw new Error('Encrypted checkpoint disappeared after the read-only preflight.');
       if (recoveryHash(latest) !== recoveryHash(initial)) throw new Error('Encrypted checkpoint changed after the read-only preflight.');
-      await recoverWithContext(latest, context, store);
+      await recoverWithContext(latest, context, async () => { store!.save(latest); });
       return { profileId: latest.profileId, phase: latest.native.live!.phase, adopted: [...RESOURCE_NAMES], missing: [] };
     }
     return { ...plan, pendingAction };

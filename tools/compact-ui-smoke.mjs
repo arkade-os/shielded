@@ -41,6 +41,26 @@ function safeError(error, token) {
     .slice(0, 240);
 }
 
+async function browserGet(page, pathname) {
+  assert(['/api/state', '/api/session'].includes(pathname), 'Browser API helper accepts only read-only session endpoints');
+  return page.evaluate(async (path) => {
+    const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
+    let body = null;
+    try { body = await response.json(); } catch {}
+    return { status: response.status, body };
+  }, pathname);
+}
+
+async function safeAuthDiagnostics(page, baseUrl, apiStateStatus) {
+  const [browserSession, browserState, apiSessionResponse] = await Promise.all([
+    browserGet(page, '/api/session'),
+    browserGet(page, '/api/state'),
+    page.request.get(`${baseUrl}/api/session`),
+  ]);
+  const apiSession = apiSessionResponse.ok() ? await apiSessionResponse.json().catch(() => ({})) : {};
+  return `APIRequestContextState=${apiStateStatus}; APIRequestContextAuthenticated=${apiSession.authenticated === true}; browserState=${browserState.status}; browserSessionAuthenticated=${browserSession.body?.authenticated === true}`;
+}
+
 const expectedUnauthorizedConsoleText = 'Failed to load resource: the server responded with a status of 401 (Unauthorized)';
 function isExpectedUnauthorizedConsoleError(messageText, locationUrl) {
   if (messageText !== expectedUnauthorizedConsoleText) return false;
@@ -243,8 +263,15 @@ async function replayFinancialUi(page, baseUrl, replayPlan, initialState, initia
         await page.getByLabel('Amount').fill(String(measurement.body.amount));
       }
 
-      const buttonName = ({ shield: 'Shield assets', seal: 'Seal current epoch', transfer: 'Prove & transfer', withdraw: 'Prove & withdraw' })[measurement.action];
+      const priorAction = replayed.length > 0 ? replayed[replayed.length - 1].action : undefined;
+      const buttonName = measurement.action === 'seal' && priorAction === 'transfer'
+        ? 'Seal & continue to withdraw'
+        : ({ shield: 'Shield assets', seal: 'Seal current epoch', transfer: 'Prove & transfer', withdraw: 'Prove & withdraw' })[measurement.action];
       const submitButton = page.getByRole('button', { name: buttonName });
+      if (await submitButton.count() !== 1) {
+        await page.screenshot({ path: path.join(screenshotDir, `failure-${measurement.suffix}.png`), fullPage: true });
+        throw new Error(`The ${measurement.suffix} UI action button was not rendered (${replayed.length}/20 completed; expected ${buttonName})`);
+      }
       assert(await submitButton.isEnabled(), `The ${measurement.suffix} UI action is disabled`);
       let resolveResponse;
       const responsePromise = new Promise((resolve) => {
@@ -270,13 +297,19 @@ async function replayFinancialUi(page, baseUrl, replayPlan, initialState, initia
       await notification.waitFor({ state: 'visible' });
       assert((await notification.innerText()).trim().length > 0, `The ${measurement.suffix} UI action did not show success feedback`);
       assert(await page.locator('.notification[role="alert"]').count() === 0, `The ${measurement.suffix} UI action showed an error notice`);
-      const currentResponse = await page.request.get(`${baseUrl}/api/state`);
-      assert(currentResponse.ok(), 'Authenticated state API failed during UI replay');
-      const currentState = await currentResponse.json();
+      const currentResponse = await browserGet(page, '/api/state');
+      assert(currentResponse.status === 200, `Authenticated browser state API failed during UI replay (HTTP ${currentResponse.status})`);
+      const currentState = currentResponse.body;
       assert(financialFingerprint(currentState) === initialFingerprint, `The ${measurement.suffix} UI replay changed persisted financial state`);
       assert(baselineFinancialDigest(currentState) === replayPlan.baseline.finalFinancialStateSha256, 'The UI replay changed the funded baseline state digest');
       replayed.push({ action: measurement.action, suffix: measurement.suffix, resultSha256 });
+      process.stdout.write(`Cached UI replay verified ${measurement.suffix} (${replayed.length}/20).\n`);
     }
+  } catch (error) {
+    const failedMeasurement = replayPlan.measurements[replayed.length];
+    const suffix = failedMeasurement?.suffix ?? 'complete';
+    await page.screenshot({ path: path.join(screenshotDir, `failure-${suffix}.png`), fullPage: true }).catch(() => {});
+    throw new Error(`UI cached replay stopped at ${suffix} (${replayed.length}/20 completed): ${safeError(error, '')}`);
   } finally {
     activeReplay = undefined;
     page.off('response', onResponse);
@@ -284,6 +317,97 @@ async function replayFinancialUi(page, baseUrl, replayPlan, initialState, initia
   }
   assert(replayed.length === 20, 'UI replay did not cover all funded lifecycle actions');
   return replayed;
+}
+
+async function verifyNotePrivacy(page, state) {
+  const notes = (state.wallets || []).flatMap((wallet) => wallet.notes || []);
+  assert(notes.length > 0, 'The completed funded lifecycle has no notes to inspect');
+  const rows = page.locator('.notes-table tbody tr');
+  assert(await rows.count() === notes.length, 'The note registry row count does not match authenticated state');
+  const byCommitment = new Map(notes.map((note) => [note.commitment, note]));
+  const inspectRows = async (isPrivate) => {
+    for (let index = 0; index < await rows.count(); index++) {
+      const row = rows.nth(index);
+      const cells = row.locator('td');
+      const hashes = row.locator('code[title]');
+      const note = byCommitment.get(await hashes.nth(0).getAttribute('title'));
+      assert(note, 'The note registry showed an unknown commitment');
+      const nullifierCell = cells.nth(5);
+      if (typeof note.nullifier === 'string' && note.nullifier.length > 0) {
+        assert(await nullifierCell.locator('code[title]').getAttribute('title') === note.nullifier, 'The note registry nullifier does not match state');
+      } else {
+        assert(await nullifierCell.locator('code[title]').count() === 0 &&
+          (await nullifierCell.innerText()).includes('Awaiting execution'), 'The note registry showed an unpublished nullifier');
+      }
+      if (isPrivate) {
+        assert((await cells.nth(1).innerText()).trim() === note.owner, 'Wallet view showed the wrong note owner');
+        assert((await cells.nth(2).innerText()).trim() === (note.asset === 'TOKEN' ? 'DEMO' : note.asset), 'Wallet view showed the wrong note asset');
+        const amount = Number(note.amount).toLocaleString('en-US', { maximumFractionDigits: 8 });
+        assert((await cells.nth(3).innerText()).includes(amount), 'Wallet view showed the wrong note amount');
+      } else {
+        for (const index of [1, 2, 3]) assert((await cells.nth(index).innerText()).trim() === 'Encrypted', 'Public view exposed private note details');
+      }
+    }
+  };
+  await inspectRows(true);
+  await page.getByRole('button', { name: 'Public view' }).click();
+  await inspectRows(false);
+  assert((await page.locator('.table-caption').innerText()).includes('Owner, asset, and value stay hidden'), 'Public note view privacy text is missing');
+  await page.getByRole('button', { name: 'Wallet view' }).click();
+  await inspectRows(true);
+}
+
+async function verifyPublicReceipts(page, state, replayPlan) {
+  const measurements = [...replayPlan.measurements].reverse();
+  const activityByTxid = new Map((state.activity || []).filter((item) => item.txid).map((item) => [item.txid, item]));
+  const records = page.locator('.record-list > button');
+  assert(await records.count() === measurements.length, 'The inspector record count does not match the 20 accepted UI receipts');
+  for (let index = 0; index < measurements.length; index++) {
+    const measurement = measurements[index];
+    const activity = activityByTxid.get(measurement.txid);
+    assert(activity, `No public activity record exists for ${measurement.suffix}`);
+    await records.nth(index).click();
+    const detail = page.locator('.inspector-detail');
+    await detail.getByRole('heading', { level: 2, name: activity.type }).waitFor({ state: 'visible' });
+    const fields = detail.locator('.transaction-fields code[title]');
+    assert(await fields.nth(0).getAttribute('title') === measurement.txid, `The inspector showed the wrong transaction for ${measurement.suffix}`);
+    assert(await fields.nth(1).getAttribute('title') === activity.statement, `The inspector showed the wrong statement for ${measurement.suffix}`);
+    assert((await detail.locator('.verification-cards').innerText()).includes('Verified') &&
+      (await detail.locator('.verification-cards').innerText()).includes('Not used'), `The inspector misreported compact verification for ${measurement.suffix}`);
+    const effects = detail.locator('.public-effects');
+    assert(await effects.count() === 2, 'The inspector omitted nullifier or output-commitment groups');
+    for (const [groupIndex, key] of [[0, 'nullifiers'], [1, 'commitments']]) {
+      const displayed = await effects.nth(groupIndex).locator('.public-effect code[title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title')));
+      assert(sameJson(displayed, activity[key] || []), `The inspector public ${key} do not match the receipt`);
+    }
+    await detail.getByRole('button', { name: 'Raw public data' }).click();
+    const raw = JSON.parse(await detail.locator('pre.raw-json').innerText());
+    assert(raw.txid === measurement.txid && sameJson(raw.nullifiers || [], activity.nullifiers || []) &&
+      sameJson(raw.commitments || [], activity.commitments || []), `Raw public data does not match ${measurement.suffix}`);
+    assert(!Object.hasOwn(raw, 'proof'), `Raw public data unexpectedly contains a proof for ${measurement.suffix}`);
+    await detail.getByRole('button', { name: 'Effects & verification' }).click();
+  }
+  return measurements.length;
+}
+
+async function verifyReserveLedger(page, state) {
+  const byAsset = new Map((state.reserves || []).map((entry) => [entry.asset, entry]));
+  const expected = ['BTC', 'TOKEN'].map((asset) => byAsset.get(asset)).filter(Boolean);
+  const rows = page.locator('.reserves-panel .reserve-row');
+  assert(expected.length === 2 && await rows.count() === expected.length, 'The reserve ledger does not show both funded assets');
+  for (let index = 0; index < expected.length; index++) {
+    const reserve = expected[index];
+    assert(Number(reserve.reserve) >= Number(reserve.liabilities), `The ${reserve.asset} reserve is below liabilities`);
+    const row = rows.nth(index);
+    assert((await row.innerText()).includes('Backed'), `The ${reserve.asset} reserve is not labeled backed`);
+    const amounts = row.locator('.reserve-numbers > div strong');
+    for (const [amountIndex, expectedAmount] of [reserve.reserve, reserve.liabilities].entries()) {
+      const text = await amounts.nth(amountIndex).innerText();
+      const value = text.match(/[\d,]+/)?.[0]?.replaceAll(',', '');
+      assert(value !== undefined && Number(value) === Number(expectedAmount), `The ${reserve.asset} reserve ledger amount is incorrect`);
+    }
+  }
+  assert((await page.locator('.invariant-formula').innerText()).includes('private liabilities ≤ native reserves'), 'The reserve invariant is not visible');
 }
 
 async function main() {
@@ -352,9 +476,13 @@ async function main() {
     await page.getByRole('navigation', { name: 'Main navigation' }).waitFor({ state: 'visible' });
     await page.getByRole('heading', { name: 'From native assets' }).waitFor({ state: 'visible' });
     await page.getByText('Mutinynet', { exact: false }).first().waitFor({ state: 'visible' });
-    const afterResponse = await page.request.get(`${baseUrl}/api/state`);
-    assert(afterResponse.ok(), 'Authenticated state API was not available after login');
-    const before = await afterResponse.json();
+    const apiContextAfterResponse = await page.request.get(`${baseUrl}/api/state`);
+    const browserSessionAfterLogin = await browserGet(page, '/api/session');
+    const browserAfterResponse = await browserGet(page, '/api/state');
+    if (browserAfterResponse.status !== 200 || browserSessionAfterLogin.body?.authenticated !== true) {
+      throw new Error(`Authenticated browser state API was not available after login (${await safeAuthDiagnostics(page, baseUrl, apiContextAfterResponse.status())})`);
+    }
+    const before = browserAfterResponse.body;
     const statusNetwork = String(before.status?.network ?? '').toLowerCase();
     const nativeNetwork = String(before.native?.network ?? '').toLowerCase();
     assert(statusNetwork === 'mutinynet' || nativeNetwork === 'mutinynet', 'Authenticated UI is not connected to Mutinynet');
@@ -363,6 +491,9 @@ async function main() {
     assert(typeof before.status?.profileId === 'string' && /^[0-9a-f]{64}$/.test(before.status.profileId), 'Registered profile ID is not a 64-character lowercase hex digest');
     assert(before.native?.profileId === before.status.profileId, 'Runtime profile does not match the registered UI profile');
     const initialFingerprint = financialFingerprint(before);
+    let uiNotesPrivacyVerified = false;
+    let uiReserveLedgerVerified = false;
+    let inspectedPublicReceiptCount = 0;
     if (replayPlan) {
       assert(before.status.profileId === replayPlan.baseline.profileId, 'Current runtime profile does not match the completed funded baseline');
       assert(baselineFinancialDigest(before) === replayPlan.baseline.finalFinancialStateSha256, 'Current funded state does not match the completed baseline digest');
@@ -379,6 +510,13 @@ async function main() {
     ]) {
       await nav.getByRole('button', { name: label }).click();
       await page.getByRole('heading', { name: heading }).waitFor({ state: 'visible' });
+    }
+    if (replayPlan) {
+      await nav.getByRole('button', { name: 'Notes & reserves' }).click();
+      await verifyNotePrivacy(page, before);
+      uiNotesPrivacyVerified = true;
+      await nav.getByRole('button', { name: 'Public inspector' }).click();
+      inspectedPublicReceiptCount = await verifyPublicReceipts(page, before, replayPlan);
     }
     await nav.getByRole('button', { name: 'Payment flow' }).click();
     await page.getByRole('heading', { name: 'Run the flow' }).waitFor({ state: 'visible' });
@@ -409,18 +547,32 @@ async function main() {
     assert(await page.getByLabel('Amount').inputValue() === '10000', 'BTC withdrawal form did not update its amount');
 
     const replayedUiActions = replayPlan ? await replayFinancialUi(page, baseUrl, replayPlan, before, initialFingerprint) : [];
+    if (replayPlan) {
+      await nav.getByRole('button', { name: 'Payment flow' }).click();
+      await page.getByRole('heading', { name: 'The reserve ledger' }).waitFor({ state: 'visible' });
+      await verifyReserveLedger(page, before);
+      uiReserveLedgerVerified = true;
+    }
 
     await page.screenshot({ path: path.join(screenshotDir, 'authenticated.png'), fullPage: true });
-    const afterUi = await (await page.request.get(`${baseUrl}/api/state`)).json();
+    const afterUiResponse = await browserGet(page, '/api/state');
+    assert(afterUiResponse.status === 200, `Authenticated browser state API failed after UI navigation (HTTP ${afterUiResponse.status})`);
+    const afterUi = afterUiResponse.body;
     assert(financialFingerprint(afterUi) === initialFingerprint, 'Read-only UI navigation changed financial state, profile, activity, or heads');
     assert(consoleErrors.length === 0, `Browser console reported ${consoleErrors.length} error(s)`);
     assert(unexpectedResponses.length === 0, 'Browser observed unexpected HTTP error responses: ' + unexpectedResponses.length);
     assert(pageErrors.length === 0, `Browser runtime reported ${pageErrors.length} error(s)`);
 
     await page.getByRole('button', { name: 'Sign out' }).click();
-    await page.getByLabel('Operator API token').waitFor({ state: 'visible' });
-    const afterLogout = await page.request.get(`${baseUrl}/api/state`);
-    assert(afterLogout.status() === 401, 'State API remained accessible after sign out');
+    const loggedOutTokenInput = page.getByLabel('Operator API token');
+    await loggedOutTokenInput.waitFor({ state: 'visible' });
+    assert(await loggedOutTokenInput.inputValue() === '', 'Sign out did not clear the operator token field');
+    const afterLogout = await browserGet(page, '/api/state');
+    assert(afterLogout.status === 401, 'State API remained accessible in the browser after sign out');
+    const afterLogoutSession = await browserGet(page, '/api/session');
+    assert(afterLogoutSession.status === 200 && afterLogoutSession.body?.authenticated === false, 'Browser session discovery still reports an authenticated user after sign out');
+    const apiAfterLogout = await page.request.get(`${baseUrl}/api/state`);
+    assert(apiAfterLogout.status() === 401, 'APIRequestContext state API remained accessible after sign out');
     await page.screenshot({ path: path.join(screenshotDir, 'logout.png'), fullPage: true });
 
     const report = {
@@ -437,14 +589,19 @@ async function main() {
         mutinynetCompactReady: true,
         paymentFlowPartiesAndAssetsSelectable: true,
         notesReservesPrimitivesInspectorRendered: true,
+        notePrivacyViews: replayPlan ? uiNotesPrivacyVerified : false,
+        backingReserveLedger: replayPlan ? uiReserveLedgerVerified : false,
+        publicReceiptInspection: replayPlan ? inspectedPublicReceiptCount === 20 : false,
         signedOutApi401: true,
+        signedOutSessionUnauthenticated: true,
+        logoutTokenFieldCleared: true,
         readOnlyFinancialFingerprintUnchanged: true,
         browserConsoleClean: true,
         noUnexpectedHttpErrors: true,
         baselineReceiptReplay: replayPlan ? replayedUiActions.length === 20 : false,
         noNewFinancialActions: replayPlan ? true : false,
       },
-      uiReplay: replayPlan ? { executed: true, actionCount: replayedUiActions.length, sourceReport: 'validation/compact-mutinynet.json', sourceReportSha256: createHash('sha256').update(JSON.stringify(replayPlan.baseline)).digest('hex'), newFinancialActions: 0, replayed: replayedUiActions } : { executed: false, actionCount: 0, newFinancialActions: 0 },
+      uiReplay: replayPlan ? { executed: true, actionCount: replayedUiActions.length, inspectedPublicReceiptCount: inspectedPublicReceiptCount, sourceReport: 'validation/compact-mutinynet.json', sourceReportSha256: createHash('sha256').update(JSON.stringify(replayPlan.baseline)).digest('hex'), newFinancialActions: 0, replayed: replayedUiActions } : { executed: false, actionCount: 0, inspectedPublicReceiptCount: 0, newFinancialActions: 0 },
       state: {
         network: nativeNetwork || statusNetwork,
         profileId: before.status.profileId,

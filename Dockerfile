@@ -23,6 +23,7 @@ COPY --from=app --chown=node:node /app/node_modules ./node_modules
 COPY --from=app --chown=node:node /app/package.json ./package.json
 COPY --from=app --chown=node:node /app/package-lock.json ./package-lock.json
 COPY --from=app --chown=node:node /app/src ./src
+COPY --from=app --chown=node:node /app/tools/compact-bootstrap-recovery.ts ./tools/compact-bootstrap-recovery.ts
 COPY --from=app --chown=node:node /app/packages ./packages
 COPY --from=app --chown=node:node /app/contracts ./contracts
 COPY --from=app --chown=node:node /app/circuits/build ./circuits/build

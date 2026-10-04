@@ -5,7 +5,7 @@ import { dirname } from 'node:path';
 import { base64, hex } from '@scure/base';
 import { Extension, RestIndexerProvider, Transaction } from '@arkade-os/sdk';
 import { encodeCompactPacket, extractCompactPacket } from '../src/compact/adapter.ts';
-import { digest, financialState } from './compact-mutinynet-evidence.ts';
+import { digest, effectiveWeightBudget, financialState } from './compact-mutinynet-evidence.ts';
 
 const base = process.env.SHIELDED_SMOKE_URL ?? 'http://127.0.0.1:8787';
 const token = process.env.SHIELDED_API_TOKEN;
@@ -125,7 +125,6 @@ async function main() {
   assert.equal(String(current.status.network).toLowerCase(), 'mutinynet');
   assert.equal(current.status.proofTransport, 'compact');
   assert.equal(current.native.operator.arkUrl, 'https://mutinynet.arkade.sh');
-  assert.ok(BigInt(current.native.operator.effectiveMaxTxWeight) <= 4_000n);
   if (!current.native.ready) {
     await recordProgress('sync-started', { phase: current.native.phase });
     await action('sync', `funding-sync-${Date.now()}`);
@@ -166,6 +165,7 @@ async function main() {
   assert.ok(current.reserves.every((entry: any) => Number(entry.reserve) === 0 && Number(entry.liabilities) === 0),
     'positive smoke refuses a pool with prior liabilities');
   assert.match(current.status.profileId, /^[0-9a-f]{64}$/);
+  const weightBudget = effectiveWeightBudget(current.native.operator);
   const profileId = current.status.profileId;
   const initialHeadTxids = [...new Set(Object.values(current.native.heads as Record<string, { txid: string }>).map(head => head.txid))];
   await recordProgress('fresh-pool-confirmed', { profileId, initialHeadTxids,
@@ -213,8 +213,11 @@ async function main() {
     assert.equal(receipt.network, 'mutinynet');
     assert.equal(receipt.finality, 'operator-preconfirmed');
     assert.equal(payload.state.status.profileId, profileId);
-    assert.ok(receipt.nativeWeight > 0 && receipt.nativeWeight <= 4_000);
-    assert.ok(receipt.checkpointWeights.length > 0 && receipt.checkpointWeights.every((weight: number) => weight > 0 && weight <= 4_000));
+    assert.ok(receipt.nativeWeight > 0 && BigInt(receipt.nativeWeight) <= weightBudget.smokeCap,
+      `Ark transaction weight must fit min(operator effective limit ${weightBudget.effective}, smoke cap 4000)`);
+    assert.ok(receipt.checkpointWeights.length > 0 && receipt.checkpointWeights.every((weight: number) =>
+      weight > 0 && BigInt(weight) <= weightBudget.smokeCap),
+    `Every checkpoint weight must fit min(operator effective limit ${weightBudget.effective}, smoke cap 4000)`);
     const tx = Transaction.fromPSBT(base64.decode(receipt.signedArkTx));
     assert.equal(tx.id, receipt.txid);
     const packet = extractCompactPacket(tx);
@@ -263,7 +266,9 @@ async function main() {
   assert.equal(final.reserves.find((entry: any) => entry.asset === 'BTC')?.reserve, 90_000);
   assert.equal(final.reserves.find((entry: any) => entry.asset === 'TOKEN')?.reserve, 9_000);
   const result = { verifiedAt: new Date().toISOString(), network: 'mutinynet', proofTransport: 'compact', profileId,
-    budgetWu: 4_000, fundedMutinynet: true, idempotencyKeyPrefix: prefix, initialHeadTxids, measurements,
+    budgetWu: Number(weightBudget.smokeCap), effectiveMaxTxWeight: weightBudget.effective.toString(),
+    operatorAdvertisedMaxTxWeight: weightBudget.advertised?.toString() ?? null,
+    fundedMutinynet: true, idempotencyKeyPrefix: prefix, initialHeadTxids, measurements,
     finality: 'Arkd accepted and indexer confirmed; Bitcoin confirmation and unilateral pool exit are not tested',
     idempotencyVerified: true, negativeScenariosVerified: true,
     parties: ['Alice', 'Bob'], assets: ['BTC', 'DEMO'], shieldFunding: 'treasury-backed; native payout projection is cumulative and transfers do not debit prior withdrawals',
