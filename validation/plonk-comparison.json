@@ -1,0 +1,105 @@
+{
+  "experiment": "isolated tiny arithmetic circuit; not a Shielded intent or transition proof",
+  "tools": {
+    "snarkjs": "0.7.6",
+    "circomCompiler": "2.2.3",
+    "curve": "bn128"
+  },
+  "verificationNote": "full snarkjs Powers of Tau transcript verification was not run: its genesis-challenge routine uses ceremonyPower 2^28 even for this power-8 truncated file",
+  "circuit": {
+    "relation": "public a, private b, public c; c = a*b",
+    "nonlinearConstraints": 1,
+    "linearConstraints": 0,
+    "statement": {
+      "a": "3",
+      "b": "5",
+      "c": "15"
+    },
+    "powersOfTau": 8,
+    "setup": "published phase-2-ready ceremony with 54 contributions and a beacon; Groth16 zkey gets one local development contribution"
+  },
+  "reusablePowersOfTau": {
+    "url": "https://circom.info/powersOfTau28_hez_final_08.ptau",
+    "hashAlgorithm": "BLAKE2b-512",
+    "hash": "d6a8fb3a04feb600096c3b791f936a578c4e664d262e4aa24beed1b7a9a96aa5eb72864d628db247e9293384b74b36ffb52ca8d148d6e1b8b51e279fdf57b583",
+    "bytes": 378008,
+    "publishedContributions": 54,
+    "publishedBeacon": true,
+    "checksumMatchesPublishedFile": true,
+    "fullTranscriptReverifiedBySnarkjs": false
+  },
+  "results": {
+    "groth16": {
+      "proofComponents": 3,
+      "solidityProofWords": 8,
+      "proofJsonBytes": 724,
+      "proofCryptoBytes": 256,
+      "compressedPointProjectionBytes": 128,
+      "publicSignals": 2,
+      "publicSignalBytes": 64,
+      "verificationKeyJsonBytes": 2761,
+      "verificationKeyCryptoBytes": 640,
+      "proveMs": 81.76160000000004,
+      "verifyMs": 14.98869999999988,
+      "validAccepted": true,
+      "changedPublicRejected": true,
+      "changedProofRejected": true,
+      "alteredProofMethod": "replace pi_a with another valid proof G1 point"
+    },
+    "plonk": {
+      "proofComponents": 9,
+      "evaluationScalars": 6,
+      "solidityProofWords": 24,
+      "proofJsonBytes": 2103,
+      "proofCryptoBytes": 768,
+      "compressedPointProjectionBytes": 480,
+      "publicSignals": 2,
+      "publicSignalBytes": 64,
+      "verificationKeyJsonBytes": 1561,
+      "verificationKeyCryptoBytesIncludingDerivedRootOfUnity": 736,
+      "minimumVerificationKeyCryptoBytesDerivingRootOfUnity": 704,
+      "proveMs": 138.41269999999986,
+      "verifyMs": 15.83640000000014,
+      "validAccepted": true,
+      "changedPublicRejected": true,
+      "changedProofRejected": true,
+      "alteredProofMethod": "replace A with another valid proof G1 point"
+    },
+    "currentShieldedGroth16": {
+      "intent": {
+        "publicSignals": 25,
+        "verificationKeyJsonBytes": 8078,
+        "verifierKeyCryptoBytes": 2112
+      },
+      "transition": {
+        "publicSignals": 30,
+        "verificationKeyJsonBytes": 9074,
+        "verifierKeyCryptoBytes": 2432
+      }
+    },
+    "currentShieldedCombined": {
+      "logicalPublicSignals": 55,
+      "logicalPublicSignalBytesNotDeduplicatedAgainstNativeWire": 1760,
+      "groth16ProofCryptoBytesTwoCircuits": 512,
+      "groth16VerifierKeyCryptoBytes": 4544,
+      "hypotheticalTwoPlonkProofCryptoBytes": 1536,
+      "hypotheticalTwoPlonkCompressedPointProjectionBytes": 960,
+      "hypotheticalTwoPlonkVerifierKeyCryptoBytesIncludingDerivedRootOfUnity": 1472,
+      "hypotheticalTwoPlonkVerifierKeyMinimumCryptoBytesDerivingRootOfUnity": 1408,
+      "groth16ProofPlusKeyPayloadBytesTwoCircuits": 5056,
+      "hypotheticalPlonkProofPlusMinimumKeyPayloadBytesTwoCircuits": 2944,
+      "hypotheticalPlonkProofPlusKeyWithRootOfUnityBytesTwoCircuits": 3008,
+      "hypotheticalTwoPlonkProofNonWitnessWeightLowerBoundWU": 6144
+    }
+  },
+  "measurementLimits": [
+    "timings are single local tiny-circuit JavaScript measurements, not EVM gas or Ark emulator WU",
+    "proof byte counts come from snarkjs Solidity calldata word layout; public signals are reported separately",
+    "compressed sizes are point-compression projections, not an implemented codec; verifier-side decompression is unmeasured",
+    "existing Shielded Groth16 sizes are read from checked-in development verification keys; no Shielded PLONK setup or proof was generated",
+    "55 logical public signals are not the native publicData packet: values overlap and native wire deduplication/serialization was not measured",
+    "proof plus verifier-key comparisons exclude logical signals, any reused circuit setup, transaction framing, and native wire data",
+    "weight lower bound is two PLONK proof payloads at 4 WU per non-witness byte; excludes public signals, binding, and transaction framing",
+    "binary sizes exclude transaction framing and any app-specific envelope"
+  ]
+}

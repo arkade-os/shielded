@@ -31,6 +31,7 @@ jobs:
       - run: npm run vm:build
       - run: go test ./...
         working-directory: tools/vm
+      - run: node tools/plonk-comparison.mjs
       - run: npm test
       - run: npm run build
       - run: npm run test:e2e
