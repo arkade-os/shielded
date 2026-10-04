@@ -1,12 +1,12 @@
 # Security status
 
-This is unaudited research software. The compact transport is an experimental,
+This is unaudited research software. The retained legacy compact transport is an experimental,
 custodial demonstration and **does not meet Shielded's core trust goal**: users
 must not have to trust the Shielded service not to steal, inflate, or force a
 custodial exit. The server stores Alice and Bob's spending secrets and note data.
 Users do not control their own keys, and the service can access their notes.
 
-Compact verification is offchain. The ordinary Ark operator checks native
+Legacy compact verification is offchain. The ordinary Ark operator checks native
 transaction rules and signatures; it does not independently verify Shielded's
 Groth16 proofs. A malicious Shielded verifier can seek an otherwise native-valid
 operator co-signature for a spend that violates the Shielded state rules; operator
@@ -35,6 +35,21 @@ is unavailable. A verifier-controlled whole-pool exit does not satisfy that
 requirement. Native asset provenance is not established by packet-declared
 quantities alone. Emulator signatures do not make the extra opcodes Bitcoin
 consensus.
+
+The isolated client-owned lab is a separate synthetic profile. It keeps user
+spend/view/native withdrawal secrets in the browser and requires the independent
+registered emulator VM to execute the full original Groth16 covenants. The
+coordinator receives public descriptors, ciphertext, proofs and receipts. Its
+registry and known client recipient directory freeze after registration.
+
+That local enforcement does not establish live Ark inclusion, Bitcoin proof
+verification, independent pooled-BTC exits or production readiness. The emulator
+extension is undeployed, the proof setup is single-party development material,
+and the bounded lab has no external customer deposit rail. Recovery also needs
+canonical Ark checkpoints and authentic independently distributed wallet code.
+Initial peer identity must be verified independently; the two named lab slots
+are not a production recipient discovery or identity system. See
+[the exact lab scope](spec/NONCUSTODIAL-LAB.md).
 
 Report issues privately to maintainers in this private repository. Do not reproduce
 private application details in public dependency issues or PRs without approval.

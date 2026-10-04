@@ -1,13 +1,15 @@
+> The current local entry point is the [client-owned wallet lab](spec/NONCUSTODIAL-LAB.md). Run `npm run vm:registry:build`, `npm run build`, then `npm run server`, and open http://127.0.0.1:8789/wallet. Its real proofs and transactions use synthetic funding. Live registry deployment and production security gates remain open; the older demo below is retained for regression tests.
+
 # Shielded Arkade PoC
 
-**Security status:** this is an experimental custodial demonstration, not a
+**Legacy deployment security status:** the retained compact demo is custodial, not a
 completed Shielded design. The compact verifier checks proofs offchain; the
 ordinary Ark operator does not independently enforce them, so a malicious
 Shielded verifier can seek a native-valid signature for an invalid Shielded
 spend without operator collusion. The service holds the demo users' keys, and
 note holders cannot independently exit their share of pooled funds if the
-service disappears. The architecture needed to remove those trust assumptions
-is proposed, not implemented. See [the security status](SECURITY.md) and
+service disappears. The new local client-owned lab implements key separation and registered VM proof
+enforcement; the larger architecture and production recovery gates remain incomplete. See [the security status](SECURITY.md) and
 [replacement architecture gates](spec/COMPACT-ARCHITECTURE.md).
 
 The retained inline showcase compiles the `.ark` contracts in `contracts/poc/`,

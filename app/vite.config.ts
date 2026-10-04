@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [react()],
-  server: { host: '0.0.0.0', port: 5173, proxy: { '/api': 'http://127.0.0.1:8787' } },
+  resolve: {alias: {circomlibjs:fileURLToPath(new URL('./src/circom-browser.ts',import.meta.url))}},
+  server: { host: '0.0.0.0', port: 5173, proxy: { '/api': process.env.SHIELDED_API_ORIGIN??'http://127.0.0.1:8789' } },
   build: { outDir: 'dist', emptyOutDir: true },
 });

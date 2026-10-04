@@ -29,6 +29,7 @@ jobs:
           cache-dependency-path: tools/vm/go.sum
       - run: npm ci
       - run: npm run vm:build
+      - run: npm run vm:registry:build
       - run: go test ./...
         working-directory: tools/vm
       - run: node tools/plonk-comparison.mjs
@@ -51,3 +52,14 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm run test:deployment
+  client-owned-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - run: npm run test:noncustodial:deployment

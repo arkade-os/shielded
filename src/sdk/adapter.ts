@@ -21,6 +21,8 @@ import {
   type ExtensionPacket,
   type PrevTxSource,
 } from "@arkade-os/sdk";
+import { sha256 } from '@noble/hashes/sha2.js';
+import { registrySidecar, type RegistryContract } from './registry.ts';
 import { base64, hex } from "@scure/base";
 import { RawWitness } from "@scure/btc-signer";
 import { TaprootControlBlock } from "@scure/btc-signer/psbt.js";
@@ -168,6 +170,8 @@ export function validateNativeAssetTransfers(
 }
 
 export interface BuildSpendOptions {
+  readonly registry?: boolean;
+  readonly registryOldState?: Uint8Array;
   readonly inputs: readonly CovenantInput[];
   readonly outputs: readonly NativeOutput[];
   readonly checkpoint: CSVMultisigTapscript.Type;
@@ -177,6 +181,7 @@ export interface BuildSpendOptions {
 }
 
 export interface BuiltCovenantSpend {
+  readonly registrySidecar?: Uint8Array;
   readonly arkTx: Transaction;
   readonly checkpoints: Transaction[];
   readonly inputs: readonly CovenantInput[];
@@ -200,6 +205,7 @@ export async function buildCovenantSpend(options: BuildSpendOptions): Promise<Bu
   const seen = new Set<string>();
   let inputTotal = 0n;
   const sdkInputs: ArkTxInput[] = [];
+  const registryEntries: {vin:number;profile:Uint8Array;witness:Uint8Array[]}[]=[];
   const entries: { vin: number; script: Uint8Array; witness: Uint8Array }[] = [];
   const conditions: Uint8Array[][] = [];
   for (const [vin, input] of options.inputs.entries()) {
@@ -218,6 +224,7 @@ export async function buildCovenantSpend(options: BuildSpendOptions): Promise<Bu
     const callArgs = Object.fromEntries(names.map((name, i) => [name, input.callArgs[i]]));
     const witnessBytes = (ref: WitnessRef) =>
       arkade.witnessRefToBytes(ref, callArgs, input.contract.args);
+    if(options.registry){const original=(input.contract as RegistryContract).registryOriginal;if(!original)throw new Error('Registry spend requires registered contracts');const legacy=original.script.compiled.find(entry=>entry.name===input.functionName)!;const oldBytes=(ref:WitnessRef)=>arkade.witnessRefToBytes(ref,callArgs,original.args);registryEntries.push({vin,profile:sha256(legacy.arkadeScript!),witness:(legacy.def.arkadeScript?.witness??[]).map(oldBytes)});}
     entries.push({
       vin,
       script: fn.arkadeScript,
@@ -242,7 +249,9 @@ export async function buildCovenantSpend(options: BuildSpendOptions): Promise<Bu
   validateNativeAssetTransfers(options.inputs, options.assets ?? [], options.outputs.length);
   if (options.assets?.length) packets.push(transferAssetPacket(options.assets));
   packets.push(EmulatorPacket.create(entries));
-  packets.push(...(options.packets ?? []).map(opaquePacket));
+  const sidecar=options.registry?registrySidecar(options.packets??[],registryEntries,options.registryOldState??new Uint8Array()):undefined;
+  packets.push(...(options.packets ?? []).filter(packet=>!options.registry||packet.type<0x80||packet.type>0x82).map(packet=>opaquePacket(options.registry&&packet.type===0x83?{type:0x83,data:sha256(packet.data)}:packet)));
+  if(sidecar)packets.push(opaquePacket({type:0x84,data:sha256(sidecar)}));
   const extension = Extension.create(packets);
   const outputs = [...options.outputs, extension.txOut()];
   const { arkTx, checkpoints } = buildOffchainTx(sdkInputs, outputs, options.checkpoint);
@@ -276,10 +285,12 @@ export async function buildCovenantSpend(options: BuildSpendOptions): Promise<Bu
     extensionIndex: options.outputs.length,
     anchorIndex: options.outputs.length + 1,
     emulatorEntries: entries,
+    ...(sidecar?{registrySidecar:sidecar}:{}),
   };
 }
 
 export interface VmBridgeRequest {
+  readonly sidecar?: string;
   readonly arkTx: string;
   readonly checkpoints: string[];
 }
@@ -287,6 +298,7 @@ export interface VmBridgeRequest {
 /** Same base64 PSBT envelope consumed by RestEmulatorProvider.submitTx. */
 export function bridgeRequest(spend: BuiltCovenantSpend): VmBridgeRequest {
   return {
+    ...(spend.registrySidecar?{sidecar:base64.encode(spend.registrySidecar)}:{}),
     arkTx: base64.encode(spend.arkTx.toPSBT()),
     checkpoints: spend.checkpoints.map((checkpoint) => base64.encode(checkpoint.toPSBT())),
   };

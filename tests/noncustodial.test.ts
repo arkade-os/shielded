@@ -1,0 +1,58 @@
+import test, {after} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {SingleKey} from '@arkade-os/sdk';
+import {createClientProtocol,createPublicProtocol} from '../packages/protocol/src/index.ts';
+import {createSdkRuntime,executeVmBinary,DEFAULT_VM_BINARY} from '../src/sdk/runtime.ts';
+import type {VmBridgeRequest} from '../src/sdk/adapter.ts';
+import {base64} from '@scure/base';
+
+test('client-owned proofs execute independently through the compact registered VM', {timeout:240000},async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'shielded-registry-'));
+ const alice=await createClientProtocol({owner:'alice',keys:{spend:'17',view:'19'}}),bob=await createClientProtocol({owner:'bob',keys:{spend:'23',view:'29'}});
+ const recipients={alice:alice.publicDescriptor(),bob:bob.publicDescriptor()};alice.setRecipients(recipients);bob.setRecipients(recipients);
+ const substituted=structuredClone(recipients);substituted.bob=recipients.alice;assert.throws(()=>alice.setRecipients(substituted),/directory changed/);assert.deepEqual(alice.publicCheckpoint().recipients,recipients);
+ const publicProtocol=await createPublicProtocol({recipients});
+ await assert.rejects(publicProtocol.prepareShield('alice','BTC',100),/Client spend authority/);
+ await assert.rejects(alice.prepareTransfer('bob','alice','BTC',1),/Client spend authority/);
+ assert.throws(()=>publicProtocol.exportWalletKeys(),/unavailable/);
+ assert.ok(!JSON.stringify(publicProtocol.publicCheckpoint()).includes('spend'));
+ const registry={file:join(directory,'registry.json'),recipientPublicKeys:{alice:Buffer.from(await SingleKey.fromHex('31'.repeat(32)).xOnlyPublicKey()).toString('hex'),bob:Buffer.from(await SingleKey.fromHex('32'.repeat(32)).xOnlyPublicKey()).toString('hex')}};
+ const binary=DEFAULT_VM_BINARY.replace('shielded-vm','shielded-registry-vm');const requests:VmBridgeRequest[]=[];
+ let runtime=await createSdkRuntime({verificationKeys:publicProtocol.verificationKeys(),initialState:publicProtocol.snapshot().state,registry,execute:async request=>{requests.push(structuredClone(request));return executeVmBinary(binary,request,registry.file);}});
+ const weights:number[]=[];
+ const apply=async(prepared:Awaited<ReturnType<typeof alice.prepareShield>>)=>{const incoming=await publicProtocol.restorePrepared(prepared);const receipt=await runtime.settle(incoming);assert.ok(receipt.native.estimatedSignedWeight<=4000);assert.equal(receipt.nativeWeight,receipt.native.estimatedSignedWeight);assert.ok(receipt.checkpointWeights?.every(weight=>weight<4000));weights.push(receipt.nativeWeight!);await publicProtocol.commit(incoming,receipt);alice.restorePublicCheckpoint(publicProtocol.publicCheckpoint());bob.restorePublicCheckpoint(publicProtocol.publicCheckpoint());return receipt;};
+ try{
+  const first=await alice.prepareShield('alice','BTC',100000);const originalNative=runtime.exportState();
+  const forged=structuredClone(first);forged.intentProof!.pi_c=['1','2','1'];await assert.rejects(runtime.settle(forged),/OP_VERIFY|execute/i);assert.deepEqual(runtime.exportState(),originalNative);
+  const stolen=structuredClone(first);stolen.boundary.deposit.BTC++;stolen.newState.reserves.BTC++;await assert.rejects(runtime.settle(stolen),/OP_VERIFY|execute/i);assert.deepEqual(runtime.exportState(),originalNative);
+  await apply(first);
+  const valid=requests.at(-1)!;assert.ok(valid.sidecar);
+  const bad=base64.decode(valid.sidecar!);bad[bad.length-1]^=1;const rejected=await executeVmBinary(binary,{...valid,sidecar:base64.encode(bad)},registry.file);assert.equal(rejected.ok,false);assert.match(rejected.error??'',/commitment/);
+  const missing=await executeVmBinary(binary,{...valid,sidecar:undefined},registry.file);assert.equal(missing.ok,false);
+  await apply(await alice.prepareShield('alice','DEMO',1000));
+  await assert.rejects(alice.prepareTransfer('alice','bob','BTC',25000),/No sealed/);
+  await apply(await publicProtocol.prepareSeal());
+  await apply(await alice.prepareTransfer('alice','bob','BTC',25000));
+  await apply(await alice.prepareTransfer('alice','bob','DEMO',250));
+  await apply(await publicProtocol.prepareSeal());
+  const withdrawal=await bob.prepareWithdraw('bob','BTC',10000,runtime.destination('bob'));
+  const altered=structuredClone(withdrawal);altered.boundary.withdrawal.BTC++;
+  await assert.rejects(publicProtocol.restorePrepared(altered),/does not match/);
+  const diverted=structuredClone(withdrawal);diverted.boundary.destination=(await import('../packages/protocol/src/index.ts')).destinationField(runtime.destination('alice'));await assert.rejects(runtime.settle(diverted),/OP_VERIFY|execute/i);
+  const receipt=await apply(withdrawal);
+  const checkpoint=publicProtocol.publicCheckpoint();const savedNative=runtime.exportState();
+  assert.equal(savedNative.aliceSecret,'');assert.equal(savedNative.bobSecret,'');
+  await runtime.close();runtime=await createSdkRuntime({verificationKeys:publicProtocol.verificationKeys(),initialState:checkpoint.state,checkpoint:savedNative,registry});
+  assert.deepEqual(runtime.snapshot().heads,savedNative.heads&&Object.fromEntries(Object.entries(savedNative.heads).map(([name,c])=>[name,{txid:c.txid,vout:c.vout,value:c.value}])));
+  const restored=await createClientProtocol({owner:'bob',keys:bob.exportWalletKeys(),recipients,checkpoint});assert.equal(restored.snapshot().wallets.bob.balances.BTC,0);assert.equal(restored.snapshot().wallets.bob.pending.BTC,15000);
+  const corrupt=structuredClone(checkpoint);corrupt.encryptedLog[0].ciphertext[0]='1';assert.throws(()=>restored.restorePublicCheckpoint(corrupt),/Invalid protocol checkpoint/);assert.deepEqual(restored.publicCheckpoint(),checkpoint);
+  await assert.rejects(publicProtocol.restorePrepared(withdrawal),/already spent|restored protocol|Stale/);
+  await apply(await bob.prepareWithdraw('bob','DEMO',100,runtime.destination('bob')));
+  assert.equal(publicProtocol.snapshot().state.reserves.BTC,90000);assert.equal(publicProtocol.snapshot().state.reserves.DEMO,900);
+  assert.equal(receipt.signatureCount>0,true);console.log('Registered VM lifecycle weights:',weights.join(','));
+ }finally{await runtime.close();await rm(directory,{recursive:true,force:true});}
+});
+after(async()=>{await (globalThis as any).curve_bn128?.terminate();});

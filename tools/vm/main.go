@@ -36,6 +36,7 @@ type expiry struct {
 }
 
 type request struct {
+	Sidecar      string   `json:"sidecar,omitempty"`
 	ID           string   `json:"id,omitempty"`
 	ArkTx        string   `json:"arkTx"`
 	Checkpoints  []string `json:"checkpoints"`
@@ -109,6 +110,10 @@ func (b *bridge) execute(ctx context.Context, req request) (res response) {
 			return
 		}
 		data.VtxoExpiries[wire.OutPoint{Hash: *hash, Index: value.Vout}] = value.Expiry
+	}
+	if err := configureRegistryData(&data, req); err != nil {
+		res.Error = err.Error()
+		return
 	}
 	packet, err := arkade.FindEmulatorPacket(arkTx.UnsignedTx)
 	if err != nil {
@@ -200,6 +205,7 @@ func (b *bridge) handler() http.Handler {
 
 func main() {
 	listen := flag.String("listen", "", "serve HTTP on loopback address, e.g. 127.0.0.1:8788; default is JSONL stdin/stdout")
+	registryFile := flag.String("registry", "", "immutable local program registry file; registered profiles cannot be provided in a request")
 	printInfo := flag.Bool("info", false, "print bridge profile and deterministic PoC public keys")
 	trace := flag.Bool("trace", false, "print local diagnostic opcode trace to stderr on JSONL failure")
 	flag.Parse()
@@ -207,7 +213,7 @@ func main() {
 		_ = json.NewEncoder(os.Stdout).Encode(info())
 		return
 	}
-	b, err := newBridge()
+	b, err := newConfiguredBridge(*registryFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

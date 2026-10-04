@@ -25,6 +25,17 @@ ceremony does not provide enforcement or exits. Do not call the design
 self-custodial, trust-minimized, or ready until the gates are implemented and
 tested end to end.
 
+### Bounded prototype availability assumption
+
+For this bounded prototype, assume users retain their spending secrets, private
+coin/account state, proofs and recovery backups. Shielded supplies missing archive,
+history, delivery and index data when needed. Clients verify supplied material
+against canonical commitments and checkpoints. Independent archive availability
+and seed-only restoration are outside this prototype's recovery requirements.
+
+This assumption covers data restoration. Independent proof enforcement and the
+holder-specific exit requirements above remain separate gates.
+
 ## Decision
 
 Replace the per-payment shared-pool transition with client-side validation:
@@ -281,15 +292,16 @@ a candidate because the proof stays offchain. Measure real proving memory/time,
 recipient verification and package size before choosing a library. Folding/IPA
 is another candidate, but sequential IVC is not automatically multi-parent PCD,
 and folding needs a sound final decider and zero-knowledge construction.
-Retain Groth16 as a possible compact boundary wrapper, with a production setup
-and a pinned relation; no need to force the wallet and bridge to use one system.
+Use Groth16 at the compact native boundary with a production setup and pinned
+relation. This selects the boundary proof system only; wallet recursion remains
+a candidate, and SP1 is not selected or integrated.
 
-Wallets retain spending secrets, current account state/proof, unspent coin proofs
-and address randomness. A seed alone cannot reconstruct unpublished data.
-Encrypt and back up this bundle. Offline delivery requires durable replicas and
-later verified retrieval; an upload acknowledgment is not a recovery guarantee.
-Metadata privacy needs a separate delivery design. Losing all copies can lose
-funds even when nullifier publication remains available.
+Wallets retain spending secrets, current account state/proof, unspent coin proofs,
+address randomness and encrypted recovery backups. Under the availability
+assumption above, a restore test must recover the user's unspent state from their
+backup plus Shielded-supplied history verified against canonical publication.
+Reject altered data, incomplete history and stale checkpoints; repeated records
+must not revive spent coins. Metadata privacy needs a separate delivery design.
 
 Public nullifier storage still grows with transitions. At 64 bytes per record,
 one million transitions require roughly 64 MB before framing, indexes and
@@ -308,10 +320,11 @@ verification-work bounds are needed against denial of service.
    withheld records, reorgs, offline recipients and encrypted backup restoration.
 4. Implement and execute the pinned bridge verifier. Verify replay, stale reserve,
    double redemption, substituted VK, wrong payout and native asset conservation.
-5. Demonstrate holder recovery with shield operator and emulator unavailable,
-   including reserve expiry, before claiming operator-independent exits or
-   production self-custody. A bounded testnet bridge can exercise the earlier
-   gates under its explicitly stated trusted-enforcement assumptions.
+5. For production operator-independent exits, demonstrate holder recovery with
+   Shielded and the emulator unavailable, including reserve expiry. The archive
+   availability assumption does not satisfy this gate. A bounded testnet bridge
+   can exercise earlier gates under its stated data-availability and
+   trusted-enforcement assumptions without claiming the exit is complete.
 
 The sizing fixture uses placeholder signatures/proofs and performs no chain
 submission or cryptographic verification. Passing its byte budget is only the
@@ -329,3 +342,8 @@ first gate. Existing PoC CI tests and preflight must stay intact.
   not a complete CSV protocol by itself.
 - [Bitcoin Core 30 release notes](https://bitcoincore.org/en/releases/30.0/),
   data-carrier relay policy changes, independent of transaction weight.
+
+
+## Implemented local client-custody slice
+
+`spec/NONCUSTODIAL-LAB.md` describes the new isolated executable slice: client-owned keys, browser proofs, public coordinator persistence, and content-addressed program/sidecar resolution inside the actual independent emulator VM. This preserves the existing intent/transition circuits and executes their full covenant checks off the native transaction body. It is not the recursive CSV account design above. The measured complete signed local lifecycle spans 2358–3532 WU under a 4000-WU experimental ceiling. It remains blocked for live use pending operator extension deployment, production setup verification, canonical checkpoint integration and a customer deposit rail. It does not satisfy the independent pooled-BTC exit gate.

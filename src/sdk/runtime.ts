@@ -1,11 +1,12 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLiveRuntime, type LiveCheckpoint } from "./live.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 // @ts-ignore ffjavascript does not ship declarations.
 import { buildBn128 } from "ffjavascript";
+import { TaprootControlBlock } from '@scure/btc-signer/psbt.js';
 import { base64, hex } from "@scure/base";
 import {
   arkade,
@@ -13,6 +14,9 @@ import {
   ASSET_CARRIER_SATS,
   CSVMultisigTapscript,
   Extension,
+  MultisigTapscript,
+  verifyTapscriptSignatures,
+  matchServerCheckpoints,
   SingleKey,
   Transaction,
 } from "@arkade-os/sdk";
@@ -37,6 +41,7 @@ import {
   type VmBridgeRequest,
 } from "./adapter.ts";
 
+import { registeredContract } from './registry.ts';
 const FR = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 const FQ = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
 const CARRIER = 1_000n;
@@ -119,6 +124,7 @@ export interface BoardingResult {
 }
 
 export interface SdkRuntimeOptions {
+  registry?: {file:string;recipientPublicKeys:Record<Owner,string>;weightLimit?:number};
   verificationKeys: Record<string, unknown>;
   initialState: ProtocolState;
   domain?: bigint | string | number;
@@ -265,9 +271,9 @@ function chooseKey(keys: Record<string, unknown>, name: string): VkJson {
 }
 
 /** One child process per attempt keeps rejected VM mutations isolated. */
-export function executeVmBinary(binary: string, request: VmBridgeRequest): Promise<NativeVmResult> {
+export function executeVmBinary(binary: string, request: VmBridgeRequest, registryFile?:string): Promise<NativeVmResult> {
   return new Promise((resolveResult, reject) => {
-    const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(binary, registryFile?['--registry',registryFile]:[], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -288,9 +294,13 @@ export function executeVmBinary(binary: string, request: VmBridgeRequest): Promi
 }
 
 export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkRuntime> {
+  if(options.registry?.weightLimit!==undefined&&(!Number.isSafeInteger(options.registry.weightLimit)||options.registry.weightLimit<=0))throw new Error("Registry weight limit must be a positive safe integer");
+  if(options.registry&&(options.network??options.checkpoint?.network)==="mutinynet")throw new Error("Registry verifier is not deployed on Mutinynet; live registry mode is disabled.");
   if ((options.network ?? options.checkpoint?.network) === "mutinynet" && !options.execute) {
     return createLiveRuntime(options);
   }
+  const programs:Record<string,string>={};
+  const bind=(artifact:arkade.ContractArtifact,args:Record<string,ParamValue>,keys:Parameters<typeof instantiateArtifact>[2])=>{const value=instantiateArtifact(artifact,args,keys);return options.registry?registeredContract(value,programs):value;};
   const restored = options.checkpoint;
   if (restored && ((options.network && options.network !== restored.network) || (options.domain !== undefined && BigInt(options.domain).toString() !== restored.domain))) {
     throw new Error("Cannot change the native checkpoint network or deployment domain");
@@ -306,16 +316,16 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
   // Only local mode uses these public signing fixtures.
   const server = SingleKey.fromHex("01".repeat(32));
   const emulator = SingleKey.fromHex("02".repeat(32));
-  const aliceSecret = restored?.aliceSecret ?? "03".repeat(32);
-  const bobSecret = restored?.bobSecret ?? "04".repeat(32);
-  const alice = SingleKey.fromHex(aliceSecret);
-  const bob = SingleKey.fromHex(bobSecret);
+  const aliceSecret = options.registry?"":restored?.aliceSecret ?? "03".repeat(32);
+  const bobSecret = options.registry?"":restored?.bobSecret ?? "04".repeat(32);
+  const alicePublic=options.registry?hex.decode(options.registry.recipientPublicKeys.alice):await SingleKey.fromHex(aliceSecret).xOnlyPublicKey();
+  const bobPublic=options.registry?hex.decode(options.registry.recipientPublicKeys.bob):await SingleKey.fromHex(bobSecret).xOnlyPublicKey();
   const serverKey = restored ? hex.decode(restored.serverKey) : await server.xOnlyPublicKey();
   const keys = { serverKey, emulatorKey: restored ? hex.decode(restored.emulatorKey) : await emulator.compressedPublicKey() };
   const checkpoint = restored ? CSVMultisigTapscript.decode(hex.decode(restored.checkpointScript)) : CSVMultisigTapscript.encode({ timelock: { type: "blocks", value: 144n }, pubkeys: [serverKey] });
   const recipients = {
-    alice: instantiateArtifact(artifacts.recipient, { owner: await alice.xOnlyPublicKey(), exitDelay: 144n }, { ...keys, userKey: await alice.xOnlyPublicKey() }),
-    bob: instantiateArtifact(artifacts.recipient, { owner: await bob.xOnlyPublicKey(), exitDelay: 144n }, { ...keys, userKey: await bob.xOnlyPublicKey() }),
+    alice: instantiateArtifact(artifacts.recipient, { owner: alicePublic, exitDelay: 144n }, { ...keys, userKey: alicePublic }),
+    bob: instantiateArtifact(artifacts.recipient, { owner: bobPublic, exitDelay: 144n }, { ...keys, userKey: bobPublic }),
   };
   const payoutScripts = { alice: recipients.alice.script.pkScript, bob: recipients.bob.script.pkScript };
   const destinationFields = {
@@ -355,7 +365,7 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
   addAssetArgs(gateArgs, "btcIdentity", identities.btcVault);
   addAssetArgs(gateArgs, "tokenIdentity", identities.tokenVault);
   addAssetArgs(gateArgs, "tokenAsset", identities.token);
-  const gate = instantiateArtifact(artifacts.gate, gateArgs, keys);
+  const gate = bind(artifacts.gate, gateArgs, keys);
   const apply = gate.script.compiled.find((fn) => fn.name === "apply");
   const seal = gate.script.compiled.find((fn) => fn.name === "seal");
   if (!apply?.arkadeScript || !seal?.arkadeScript) throw new Error("Gate artifact requires apply and seal covenants");
@@ -369,9 +379,10 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
     const args = { ...sharedArgs };
     addAssetArgs(args, "identity", id);
     if (token) addAssetArgs(args, "tokenAsset", identities.token);
-    return instantiateArtifact(artifact, args, keys);
+    return bind(artifact, args, keys);
   };
   const contracts = { gate, lane: resource(artifacts.lane, identities.lane), btcVault: resource(artifacts.btcVault, identities.btcVault), tokenVault: resource(artifacts.tokenVault, identities.tokenVault, true) };
+  if(options.registry){await mkdir(dirname(resolve(options.registry.file)),{recursive:true});const config=JSON.stringify(programs);let prior:string|undefined;try{prior=await readFile(options.registry.file,'utf8');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}if(prior!==undefined&&prior!==config)throw new Error('Immutable registry configuration mismatch');if(prior===undefined)await writeFile(options.registry.file,config,{flag:'wx',mode:0o600});}
   let state = structuredClone(options.initialState);
   let gateFundingBtc = BigInt(restored?.funding.BTC ?? INITIAL_FUNDING);
   let gateFundingToken = BigInt(restored?.funding.DEMO ?? INITIAL_FUNDING);
@@ -391,7 +402,7 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
     { script: contracts.lane.script.pkScript, amount: CARRIER },
     { script: contracts.btcVault.script.pkScript, amount: CARRIER + BigInt(state.reserves.BTC) },
     { script: contracts.tokenVault.script.pkScript, amount: CARRIER },
-  ], [genesisAssetPacket, opaquePacket(statePacket(state))], { txid: issuance.id, vout: 0 });
+  ], [genesisAssetPacket, opaquePacket(options.registry?{type:0x83,data:sha256(statePacket(state).data)}:statePacket(state))], { txid: issuance.id, vout: 0 });
   const heads: Record<string, ResourceCoin> = restored ? Object.fromEntries(Object.entries(restored.heads).map(([name, coin]) => [name, { ...coin, sourceTx: hex.decode(coin.sourceTx) }])) : {
     gate: coinFromTransaction(genesis, 0), lane: coinFromTransaction(genesis, 1),
     btcVault: coinFromTransaction(genesis, 2), tokenVault: coinFromTransaction(genesis, 3),
@@ -407,10 +418,10 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
       if (output.amount !== expectedValue) throw new Error(`Native checkpoint ${name} backing mismatch`);
     }
     const packet = Extension.fromTx(Transaction.fromRaw(heads.gate.sourceTx!)).getPackets().find((entry) => entry.type() === 0x83);
-    if (!packet || hex.encode(packet.serialize()) !== hex.encode(statePacket(state).data)) throw new Error("Native checkpoint gate state root mismatch");
+    if (!packet || hex.encode(packet.serialize()) !== hex.encode(options.registry?sha256(statePacket(state).data):statePacket(state).data)) throw new Error("Native checkpoint gate state root mismatch");
   }
   const receipts: NativeReceipt[] = structuredClone(restored?.receipts ?? []);
-  const execute = options.execute ?? ((request) => executeVmBinary(options.vmBinary ?? DEFAULT_VM_BINARY, request));
+  const execute = options.execute ?? ((request) => executeVmBinary(options.vmBinary ?? (options.registry?DEFAULT_VM_BINARY.replace(/shielded-vm/,'shielded-registry-vm'):DEFAULT_VM_BINARY), request, options.registry?.file));
   const exportState = (): NativeCheckpoint => ({
     version: 1, network: restored?.network ?? "local-emulator", domain: domain.toString(), state: structuredClone(state),
     serverKey: hex.encode(serverKey), emulatorKey: hex.encode(keys.emulatorKey), aliceSecret, bobSecret,
@@ -421,6 +432,15 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
     ...(restored?.live ? { live: structuredClone(restored.live) } : {}),
   });
 
+  const completeRegisteredResponse=async(result:NativeVmResult,request:VmBridgeRequest):Promise<NativeVmResult>=>{
+    if(!result.ok||!result.arkTx||!result.checkpoints)return result;
+    const complete=async(encoded:string,expected:Transaction)=>{const returned=Transaction.fromPSBT(base64.decode(encoded));if(hex.encode(returned.unsignedTx)!==hex.encode(expected.unsignedTx))throw new Error('Registered VM changed the transaction');
+      for(let vin=0;vin<returned.inputsLength;vin++){const actual=returned.getInput(vin),original=expected.getInput(vin);const a=actual.tapLeafScript?.[0],b=original.tapLeafScript?.[0];if(!a||!b||hex.encode(a[1])!==hex.encode(b[1])||hex.encode(TaprootControlBlock.encode(a[0]))!==hex.encode(TaprootControlBlock.encode(b[0]))||actual.witnessUtxo?.amount!==original.witnessUtxo?.amount||hex.encode(actual.witnessUtxo?.script??new Uint8Array())!==hex.encode(original.witnessUtxo?.script??new Uint8Array()))throw new Error('Registered VM changed spend metadata');const signers=MultisigTapscript.decode(b[1].subarray(0,-1)).params.pubkeys.map(key=>hex.encode(key));const emulatorSigners=signers.filter(key=>key!==hex.encode(serverKey));if(signers.length!==2||emulatorSigners.length!==1)throw new Error('Unexpected registered signer set');verifyTapscriptSignatures(returned,vin,emulatorSigners);}
+      const signed=await server.sign(returned);for(let vin=0;vin<signed.inputsLength;vin++){const leaf=signed.getInput(vin).tapLeafScript![0],script=leaf[1].subarray(0,-1),pubkeys=MultisigTapscript.decode(script).params.pubkeys;verifyTapscriptSignatures(signed,vin,pubkeys.map(key=>hex.encode(key)));const signatures=pubkeys.slice().reverse().map(pubkey=>{const entry=signed.getInput(vin).tapScriptSig?.find(([key])=>hex.encode(key.pubKey)===hex.encode(pubkey));if(!entry)throw new Error('Missing registered signature');return entry[1];});signed.updateInput(vin,{finalScriptWitness:[...signatures,script,TaprootControlBlock.encode(leaf[0])]});}return signed;
+    };
+    const tx=await complete(result.arkTx,Transaction.fromPSBT(base64.decode(request.arkTx)));const pairs=matchServerCheckpoints(result.checkpoints,request.checkpoints.map(encoded=>Transaction.fromPSBT(base64.decode(encoded))),'registered VM');const checkpoints=await Promise.all(pairs.map(pair=>complete(base64.encode(pair.server.toPSBT()),pair.local)));
+    return {...result,arkTx:base64.encode(tx.toPSBT()),checkpoints:checkpoints.map(tx=>base64.encode(tx.toPSBT())),signatureCount:tx.inputsLength*2+checkpoints.length*2};
+  };
   const accept = (prepared: PreparedSettlement, submission: NativeSubmission, result: NativeVmResult): NativeReceipt => {
     if (!result.ok) throw new Error(result.error ?? "Arkade emulator rejected transaction");
     if (!result.arkTx || !result.checkpoints || !result.txid) throw new Error("Incomplete emulator receipt");
@@ -432,6 +452,7 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
       backend: result.backend, executedInputs: result.executedInputs ?? 0, signatureCount: result.signatureCount ?? 0,
       vmMs: result.durationMs, native: submission.native, publicSignalCounts: { intent: 25, transition: 30 },
       signedArkTx: result.arkTx, signedCheckpoints: result.checkpoints, proofTimes: prepared.proofTimes,
+      ...(options.registry?{nativeWeight:signed.toBytes(true,true).length+3*signed.toBytes(false,false).length,checkpointWeights:result.checkpoints.map(encoded=>{const tx=Transaction.fromPSBT(base64.decode(encoded));return tx.toBytes(true,true).length+3*tx.toBytes(false,false).length;}),weightLimit:Math.min(options.registry.weightLimit??4000,4000)}:{}),
       network: restored?.network ?? "local-emulator", finality: restored?.network === "mutinynet" ? "operator-preconfirmed" : "emulator-only",
     };
     heads.gate = coinFromTransaction(signed, 0);
@@ -536,12 +557,13 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
           { type: 0x82, data: encodeFields(prepared.transitionSignals.slice(19)) },
           statePacket(prepared.newState),
         ];
-        const spend = await buildCovenantSpend({ inputs, outputs, checkpoint, packets, assets: assetAllocations });
+        const spend = await buildCovenantSpend({ inputs, outputs, checkpoint, packets, assets: assetAllocations,registry:!!options.registry,registryOldState:statePacket(prepared.oldState).data });
+        const summary=spendSummary(spend);if(options.registry&&summary.estimatedSignedWeight>Math.min(options.registry.weightLimit??4000,4000))throw new Error(`Registry native weight ${summary.estimatedSignedWeight} exceeds experimental limit`);
         const submission: NativeSubmission = { txid: spend.arkTx.id, request: bridgeRequest(spend), native: spendSummary(spend), nextState: prepared.newState,
           nextGateFunding: { BTC: nextGateBtc.toString(), DEMO: nextGateToken.toString() }, selectedVault };
         await options.onSubmission?.(prepared, submission);
-        const result = await execute(submission.request);
-        return accept(prepared, submission, result);
+        const executed = await execute(submission.request);const result=options.registry?await completeRegisteredResponse(executed,submission.request):executed;
+        const accepted=accept(prepared,submission,result);if(options.registry)await options.onCheckpoint?.(exportState());return accepted;
       } finally { busy = false; }
     },
   };
