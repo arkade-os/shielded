@@ -1,4 +1,6 @@
-# Compact shielded architecture
+# Historical compact shielded architecture
+
+> The registered-verifier approach described here is no longer the accepted deployment target. Use [STOCK-OPCODE-DESIGN.md](STOCK-OPCODE-DESIGN.md) for the current enforcement boundary and staged feasibility experiment. The custody, availability and independent-exit gates below still apply.
 
 Status: proposed replacement design, not implemented or accepted. The tested
 compact transport in [COMPACT-PROFILE.md](COMPACT-PROFILE.md) is an experimental

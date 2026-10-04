@@ -1,4 +1,4 @@
-> The current local entry point is the [client-owned wallet lab](spec/NONCUSTODIAL-LAB.md). Run `npm run vm:registry:build`, `npm run build`, then `npm run server`, and open http://127.0.0.1:8789/wallet. Its real proofs and transactions use synthetic funding. Live registry deployment and production security gates remain open; the older demo below is retained for regression tests.
+> Accepted deployment boundary: the existing independent Arkade emulator must enforce proofs using stock opcodes. The [stock-opcode design experiment](spec/STOCK-OPCODE-DESIGN.md) replaces the proposed custom verifier/registry deployment. The client-owned registry lab remains a local regression fixture with synthetic funding; it is not the accepted deployment path.
 
 # Shielded Arkade PoC
 
@@ -8,8 +8,8 @@ ordinary Ark operator does not independently enforce them, so a malicious
 Shielded verifier can seek a native-valid signature for an invalid Shielded
 spend without operator collusion. The service holds the demo users' keys, and
 note holders cannot independently exit their share of pooled funds if the
-service disappears. The new local client-owned lab implements key separation and registered VM proof
-enforcement; the larger architecture and production recovery gates remain incomplete. See [the security status](SECURITY.md) and
+service disappears. The historical client-owned lab implements key separation and registered VM proof
+enforcement, but requires a registry extension and does not meet the accepted stock-emulator boundary. The replacement and production recovery gates remain incomplete. See [the security status](SECURITY.md) and
 [replacement architecture gates](spec/COMPACT-ARCHITECTURE.md).
 
 The retained inline showcase compiles the `.ark` contracts in `contracts/poc/`,

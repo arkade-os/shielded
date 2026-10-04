@@ -1,4 +1,6 @@
-# Client-owned Shielded lab
+# Historical client-owned registry lab
+
+> This runnable lab uses the experimental emulator registry patch. It does not meet the current stock-emulator deployment requirement. Retain it for regression testing; the accepted redesign is [STOCK-OPCODE-DESIGN.md](STOCK-OPCODE-DESIGN.md).
 
 This is an isolated local vertical slice, not a funded Mutinynet deployment or production claim. The existing funded compact deployment is frozen and separate.
 

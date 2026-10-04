@@ -1,4 +1,6 @@
-# Mutinynet deployment preparation
+# Historical registry deployment preparation
+
+> Superseded architecture: the user requires the existing emulator opcodes and will not host an emulator or require an Arkade operator patch. This registry service is retained as a tested historical experiment. It is not an accepted deployment path. Current work is described in [STOCK-OPCODE-DESIGN.md](STOCK-OPCODE-DESIGN.md).
 
 The current public wallet is an unfunded local lab with client-owned keys and independently verified Groth16 proofs. This kit prepares a separate registered-verifier service. It does not enable a customer-funded live pool or change the preserved funded deployment.
 
