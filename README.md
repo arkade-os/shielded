@@ -1,14 +1,29 @@
 # Shielded Arkade PoC
 
-This private, experimental workspace contains a runnable proof of concept. The retained inline showcase compiles the `.ark` contracts in `contracts/poc/`, generates Groth16 proofs, builds transactions with the Arkade SDK, then submits them to the Go emulator's real `Service.SubmitTx` VM. Both transports cover BTC and a demonstration token through **shield → seal → private transfer → seal → withdraw**. A Mutinynet container path is included for test-network operation; this remains a bounded PoC, not production wallet software. See [the PoC profile](spec/POC-PROFILE.md) for its design and security limits.
+**Security status:** this is an experimental custodial demonstration, not a
+completed Shielded design. The compact verifier checks proofs offchain; the
+ordinary Ark operator does not independently enforce them, so a malicious
+Shielded verifier can seek a native-valid signature for an invalid Shielded
+spend without operator collusion. The service holds the demo users' keys, and
+note holders cannot independently exit their share of pooled funds if the
+service disappears. The architecture needed to remove those trust assumptions
+is proposed, not implemented. See [the security status](SECURITY.md) and
+[replacement architecture gates](spec/COMPACT-ARCHITECTURE.md).
+
+The retained inline showcase compiles the `.ark` contracts in `contracts/poc/`,
+generates Groth16 proofs, builds transactions with the Arkade SDK, then submits
+them to the Go emulator's real `Service.SubmitTx` VM. Both transports cover BTC
+and a demonstration token through **shield → seal → private transfer → seal →
+withdraw**. A Mutinynet container path is included for test-network operation;
+this remains a bounded PoC, not production wallet software. See [the PoC
+profile](spec/POC-PROFILE.md) for its design and security limits.
 
 The additional `compact` transport keeps real proofs, verification keys and
 verifier code off the native transaction. Transactions carry a 133-byte binding
-packet plus actual native effects and signatures. A dedicated verifier checks
-the full sidecar before signing; it retains an operator trust and liveness
-dependency. See [the compact profile](spec/COMPACT-PROFILE.md) for its authority,
-exit limits, startup and validation commands. Existing inline checkpoints are
-preserved and cannot silently switch profiles.
+packet plus actual native effects and signatures. This is a tested byte-saving
+experiment; it does not solve the trust problem and is not an accepted
+replacement architecture. Existing inline checkpoints are preserved and cannot
+silently switch profiles.
 
 Compact bootstrap now hands off automatically after the SDK has issued the
 four assets and durably registered the verifier profile. The legacy runtime is

@@ -4,6 +4,19 @@ Source: [shared conversation](https://chatgpt.com/share/6abd3b85-a030-83eb-bb3b-
 
 ## Current work — 2026-10-04
 
+**Architecture status:** the tested compact transport is an experimental
+custodial demonstration and fails Shielded's core goal: users must not need to
+trust Shielded not to steal, inflate, or force custodial exits. The service
+holds demo spending keys; its offchain verifier is not independently enforced
+by the ordinary Ark operator; and a note holder has no independent exit from
+shared backing if Shielded disappears. This is not an accepted replacement
+architecture or completed Shielded design. A replacement must keep keys with
+users, make proof rules enforceable without trusting Shielded, publish
+authorization/nullifier state canonically, and give each holder an exit while
+Shielded is offline. The multi-party Groth16 ceremony would not solve those
+requirements. See [SECURITY.md](SECURITY.md) and
+[the replacement architecture gates](spec/COMPACT-ARCHITECTURE.md).
+
 The current work is on `main`; the earlier Shielded PR stack is closed/consolidated and must not be recreated. The managed checkout is `C:\Users\evilk\.codex\worktrees\compact-shielded\shielded`. Preserve unrelated changes in the original `C:\Git\shielded` checkout and the repository's private visibility.
 
 The compact transport keeps proofs and note data offchain and carries a 133-byte binding in native transactions. Fresh Mutinynet bootstrap now continues automatically after the SDK durably registers the existing profile: it writes a fresh-start marker before resource funding, journals each exact request, validates operator signatures and native-asset conservation, and persists a verified response before finalization. Restart resumes only a contiguous receipt-backed prefix. A lost Submit response is reconciled through the exact saved input outpoints and read-only pending-response endpoint; unknown requests are never resubmitted. Unmarked partial legacy funding fails closed. Controlled contract tests cover all four SDK-built spends, restart after two accepted heads, lost Submit response, and accepted-but-uncertain Finalize. These tests do not prove a funded live deployment.
@@ -18,7 +31,7 @@ The authenticated browser UI run passed its checks, replaying 20 cached accepted
 
 The live 20-action lifecycle started from the already funded resource heads; it is distinct from the fresh-bootstrap continuation contract tests and does not prove a clean first funded bootstrap. The native heads advanced through those settlements as designed. Keep the profile, verifier sources, proving artifacts, and keys unchanged.
 
-This remains a bounded treasury-funded, operator-backed PoC with service-owned demonstration keys and depth-eight trees. It has no customer deposit rail, client-owned key custody, or independent note-holder pool exit. Operator acceptance is not Bitcoin finality. Keep the registered profile, verifier sources, proving artifacts, keys, and encrypted volume unchanged during funded verification; do not bypass network or weight preflight.
+This remains a bounded treasury-funded, operator-backed PoC with service-owned demonstration keys and depth-eight trees. It has no customer deposit rail, client-owned key custody, or independent note-holder pool exit. Operator acceptance is not Bitcoin finality. These results establish the tested custodial demo paths only; they do not establish that users can avoid trusting Shielded. Keep the registered profile, verifier sources, proving artifacts, keys, and encrypted volume unchanged during funded verification; do not bypass network or weight preflight.
 
 The sections below record the September 30 transfer and its evidence. Their
 branch layout, test counts and deployment status are historical.

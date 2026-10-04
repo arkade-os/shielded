@@ -1,5 +1,10 @@
 # Compact verifier profile
 
+Status: tested experimental transport, **failed Shielded's core trust goal**;
+not an accepted replacement architecture or completed Shielded design. This
+profile proves that a bounded operator-backed demo can move proof bytes off the
+native transaction. It does not let users avoid trusting the Shielded service.
+
 This implementation moves the existing bounded PoC's Groth16 proofs, public
 signals, encrypted note records, verification keys and verifier code off the
 native transaction. It does not implement the recursive wallet protocol proposed
@@ -63,22 +68,28 @@ parsing for indexer PSBTs or infer acceptance from a transaction ID alone.
 
 ## Authority and limits
 
-The dedicated verifier runs in this service. Bitcoin does not evaluate its
-Groth16 proofs, and the public Mutinynet emulator does not accept this sidecar
-protocol. A malicious verifier and Arkade operator can co-sign an invalid spend;
-the profile hash is an identity commitment, not remote attestation.
+The dedicated verifier runs in this service. The ordinary Ark operator checks
+native transaction validity and required signatures; it does not independently
+verify these Groth16 proofs. Bitcoin does not evaluate them either, and the
+public Mutinynet emulator does not accept this sidecar protocol. A malicious
+Shielded verifier can seek a native-valid Ark co-signature for a spend that
+violates the Shielded rules; this design does not require operator collusion.
+The profile hash is an identity commitment, not remote attestation. A correct
+multi-party Groth16 ceremony would address setup soundness, not offchain
+enforcement, service key custody, or independent exits.
 
 The pooled resources also have a CSV recovery path controlled by the verifier
 key. This key can recover an entire resource after its timelock. A shielded note
 holder cannot use that path to independently recover their fraction of the pool.
-Withdrawal creates an ordinary user VTXO with a user CSV exit. This distinction
-is material: this is an experimental operator-backed pool, not a trustless
-Bitcoin shielded rollup.
+Withdrawal creates an ordinary user VTXO with a user CSV exit, but that does not
+provide an exit for a note still held in the shared pool. This is an experimental
+custodial transport, not a trustless Bitcoin shielded rollup, and it fails the
+core requirement that users not trust Shielded with their funds.
 
 The showcase service also holds Alice and Bob's demo spending keys. Encrypted
 persistence protects data at rest; it does not hide those keys or note contents
-from the running service. A client-owned wallet and privacy from that service
-require a separate protocol and implementation.
+from the running service. Client-owned wallets, service-independent enforcement,
+and holder-specific exits require a replacement protocol and implementation.
 
 Bootstrap pre-funds a treasury gate. The showcase's shield action transfers
 that backing into reserve vaults while creating a private note; it does not

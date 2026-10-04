@@ -1,10 +1,29 @@
 # Compact shielded architecture
 
-Status: proposed client-side redesign, 2026-10-03. Recursive coin proofs and an
-independent pool exit remain unimplemented. The additional bounded Groth16
-transport implemented in [COMPACT-PROFILE.md](COMPACT-PROFILE.md) uses an offchain
-verifier and native commitments; it retains the existing PoC relation and
-operator-backed pool. The client-side architecture below is separate research.
+Status: proposed replacement design, not implemented or accepted. The tested
+compact transport in [COMPACT-PROFILE.md](COMPACT-PROFILE.md) is an experimental
+custodial transport that **fails the core goal**: users must not have to trust
+Shielded with their keys, spend validity, or ability to exit. It is not the
+replacement architecture and is not a completed Shielded design.
+
+No replacement is ready until it demonstrates all four gates:
+
+1. Spending keys and private coin state stay in client wallets.
+2. Authorization and nullifier publication are canonical, publicly recoverable,
+   and independently checked so a Shielded service cannot equivocate or suppress
+   a spend unnoticed.
+3. Funds cannot be spent contrary to the proof rules through a Shielded signer:
+   enforcement must be independent of Shielded and bind the proof to the actual
+   native effects. A proof checked only by Shielded offchain does not pass.
+4. Each holder can recover their own funds while Shielded is offline, including
+   a note still represented inside shared backing. A whole-pool timeout key or
+   an exit available only after an ordinary withdrawal does not pass.
+
+These gates are cumulative. A public log alone does not constrain a signer; a
+sound proof alone does not establish backing; and a multi-party proving-key
+ceremony does not provide enforcement or exits. Do not call the design
+self-custodial, trust-minimized, or ready until the gates are implemented and
+tested end to end.
 
 ## Decision
 
@@ -230,11 +249,14 @@ This route requires emulator/SDK integration; it is not a configuration switch.
 The emulator checks extended opcodes and signs; Bitcoin does not execute those
 pairing checks. Preserve that existing enforcement assumption explicitly.
 
-An alternative sidecar lets the emulator verify the entire proof offchain and
-co-sign the exact native transaction. That removes even the 256-byte proof from
-the transaction, but retains signer honesty and availability as funds-security
-assumptions. A shield operator's signature alone is not an equivalent ZK proof.
-Do not select that alternative implicitly to meet a byte budget.
+The experimental compact profile implements this sidecar pattern: its verifier
+checks the proof offchain and signs the native transaction. This saves proof
+bytes, but the ordinary Ark operator does not independently enforce the proof;
+a malicious Shielded verifier can seek a native-valid co-signature for an
+invalid Shielded spend without operator collusion. It therefore fails gate 3
+above. It is measured PoC evidence only, not a selected or acceptable
+replacement architecture. Do not treat a smaller transaction or successful
+ceremony as resolving that failure.
 
 ### Exit and backing lifecycle
 

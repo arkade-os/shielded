@@ -1,19 +1,40 @@
 # Security status
 
-This is unaudited research software. The runnable bounded profile is under
-`contracts/poc/`; its live adapter accepts Mutinynet test coins only. Its server
-stores both demonstration users' wallet secrets in an encrypted checkpoint, so
-the operator can access their notes. It is not a private, noncustodial wallet service.
+This is unaudited research software. The compact transport is an experimental,
+custodial demonstration and **does not meet Shielded's core trust goal**: users
+must not have to trust the Shielded service not to steal, inflate, or force a
+custodial exit. The server stores Alice and Bob's spending secrets and note data.
+Users do not control their own keys, and the service can access their notes.
+
+Compact verification is offchain. The ordinary Ark operator checks native
+transaction rules and signatures; it does not independently verify Shielded's
+Groth16 proofs. A malicious Shielded verifier can seek an otherwise native-valid
+operator co-signature for a spend that violates the Shielded state rules; operator
+collusion is not required by this design. Bitcoin does not execute the proof
+checks either. The current verifier-controlled CSV recovery key can take an
+entire pooled resource after its timeout. Note holders have no fractional,
+holder-specific pool exit if Shielded disappears.
+
+The multi-party Groth16 ceremony, even if correctly performed, would address
+proof-system setup soundness only. It would not make the service's verification
+or signing decision enforceable by the Ark operator or Bitcoin, give users their
+own keys, or create an independent exit. This experiment is not an accepted
+replacement architecture or a completed Shielded design.
 
 The older scaffold under `contracts/` stays disabled: `PairingProduct.check4`
 rejects unconditionally. Do not fund those scaffold outputs or remove their guard
 solely because the compiler supports pairing products. The runnable profile also
 lacks pooled-funds emergency exits, refresh/expiry handling, and a production audit.
 
-Never send spending keys or note openings to a batcher. Do not add a pooled-funds
-owner CSV leaf, administrative dissolution key, or a refresh path that silently
-forgets packet state. Native asset provenance is not established by packet-declared
-quantities alone. Emulator signatures do not make the extra opcodes Bitcoin consensus.
+Never send user spending keys or note openings to a batcher. The current demo's
+service-owned keys and whole-resource CSV recovery are explicit custodial test
+arrangements, not acceptable properties of a future user-facing design. A
+replacement must put keys in user wallets, make spending validity enforceable
+without trusting Shielded, and provide holder-specific recovery when Shielded
+is unavailable. A verifier-controlled whole-pool exit does not satisfy that
+requirement. Native asset provenance is not established by packet-declared
+quantities alone. Emulator signatures do not make the extra opcodes Bitcoin
+consensus.
 
 Report issues privately to maintainers in this private repository. Do not reproduce
 private application details in public dependency issues or PRs without approval.
