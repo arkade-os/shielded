@@ -21,6 +21,8 @@ test('public proof API stores no user secrets, replays accepted IDs and restores
   await coordinator.register('alice',{recipient:recipients.alice,nativePublicKey:Buffer.from(await SingleKey.fromHex('51'.repeat(32)).xOnlyPublicKey()).toString('hex')});
   await coordinator.register('bob',{recipient:recipients.bob,nativePublicKey:Buffer.from(await SingleKey.fromHex('52'.repeat(32)).xOnlyPublicKey()).toString('hex')});
   const initial=coordinator.archive().archive;assert.equal('wallets' in initial,false);alice.restorePublicCheckpoint(initial);
+  assert.equal(coordinator.profile().profile,initial.profile);assert.equal(coordinator.profile().capacity.remainingNoteRecords,256);
+  const excessive=await alice.prepareShield('alice','BTC',20000000);await assert.rejects(coordinator.submit(excessive),/funding resource exhausted/);assert.equal(coordinator.profile().ready,true);assert.deepEqual(coordinator.archive().archive,initial);
   const shield=await alice.prepareShield('alice','BTC',1000);const leaking=await post('settlements',{...shield,spendSecret:'41'});assert.equal(leaking.status,400);
   const originalSave=EngineStore.prototype.save;let injected=false;
   EngineStore.prototype.save=function(value:any){if(!injected&&Object.keys(value.accepted??{}).length>0&&!value.journal){injected=true;throw new Error('Injected final persistence interruption');}originalSave.call(this,value);};

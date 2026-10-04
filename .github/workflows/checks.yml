@@ -30,6 +30,8 @@ jobs:
       - run: npm ci
       - run: npm run vm:build
       - run: npm run vm:registry:build
+      - run: npm run registry:build
+      - run: npm run test:registry
       - run: go test ./...
         working-directory: tools/vm
       - run: node tools/plonk-comparison.mjs
@@ -63,3 +65,11 @@ jobs:
           node-version: '24'
       - run: npm ci
       - run: npm run test:noncustodial:deployment
+  registered-verifier-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: docker build --file Dockerfile.registry-server --tag shielded-registry:ci .
+      - run: docker run --rm --network none shielded-registry:ci --help

@@ -443,7 +443,7 @@ export async function createCompactRuntime(options: CompactRuntimeOptions): Prom
       if (withdrawBtc || withdrawToken) {
         const owner = (Object.entries(profile.destinations).find(([, destination]) =>
           destination.scriptPubKey === prepared.boundary.destination || destination.field === prepared.boundary.destination)?.[0]) as Owner | undefined;
-        if (!owner || !recipientScripts[owner]) throw new Error("Compact withdrawal destination is not a registered user script");
+        if (!owner || (owner !== "alice" && owner !== "bob") || !recipientScripts[owner]) throw new Error("Compact withdrawal destination is not a registered user script");
         outputs.push({ script: hex.decode(profile.destinations[owner].scriptPubKey), amount: withdrawBtc || tokenPayoutCarrier });
       }
       const allocations = extensionAssets(exportState(), inputs, prepared.operation, prepared, identities,

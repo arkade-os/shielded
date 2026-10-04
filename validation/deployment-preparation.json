@@ -1,0 +1,29 @@
+{
+  "scope": "local deployment preparation; no registered funded Mutinynet verification",
+  "nodeTests": {
+    "passed": 122,
+    "failed": 0,
+    "skipped": 0
+  },
+  "typescriptAndBrowserBuild": "passed",
+  "pythonWireTests": 14,
+  "referenceModelTests": 13,
+  "legacyInlineE2e": "passed",
+  "nativeVmTests": "passed both ordinary and registry build tags",
+  "registryServerTests": "passed including actual HTTP VM/signature path",
+  "registryContainerStartup": "passed static runtime image --help without network or keys",
+  "clientDockerLifecycle": "passed see noncustodial-deployment.json",
+  "walletUiPreview": "rendered at http://127.0.0.1:8791/wallet; no secret entry or wallet actions automated",
+  "remoteMainAtCheck": "59562a2ce45b15519f5b252855f27b7375883347",
+  "remoteMainChecks": "four existing exact-head checks completed successfully; new work unpushed",
+  "provingArtifacts": "same committed Groth16 development artifacts; browser size and SHA256 pins verified",
+  "remainingLiveGates": [
+    "operator-installed registry extension",
+    "authenticated registered transport connected to actual Ark admission/finalization and durable reconciliation",
+    "customer-funded deposit path",
+    "reviewed setup or existing wrapper integration",
+    "canonical fresh recovery checkpoint",
+    "capacity and independent holder exit architecture"
+  ],
+  "preservedUnrelatedEvidenceSha256": "EFA53AAA93F1FDEB9708DF8B64FC3FD5A68A48E71EF3984E4E58CBA505D1F8BE"
+}

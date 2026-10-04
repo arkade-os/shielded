@@ -23,7 +23,10 @@
     "vm:registry:build": "node --import tsx tools/build-vm.ts --registry",
     "server:noncustodial": "node --experimental-eventsource --import tsx src/noncustodial/server.ts",
     "server:legacy": "node --experimental-eventsource --import tsx src/server.ts",
-    "test:noncustodial:deployment": "node --import tsx tools/noncustodial-deployment-smoke.ts"
+    "test:noncustodial:deployment": "node --import tsx tools/noncustodial-deployment-smoke.ts",
+    "registry:build": "node --import tsx tools/build-registry-server.ts",
+    "test:registry": "node --import tsx tools/build-registry-server.ts --test",
+    "mutinynet:readiness": "node --import tsx tools/mutinynet-readiness.ts"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.77",

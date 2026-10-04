@@ -4,14 +4,17 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {SingleKey} from '@arkade-os/sdk';
-import {createClientProtocol,createPublicProtocol} from '../packages/protocol/src/index.ts';
+import {createPublicProtocol} from '../packages/protocol/src/index.ts';
+import {createTestClientProtocol} from './fixtures/client-protocol.ts';
+import {deriveWalletKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
 import {createSdkRuntime,executeVmBinary,DEFAULT_VM_BINARY} from '../src/sdk/runtime.ts';
 import type {VmBridgeRequest} from '../src/sdk/adapter.ts';
 import {base64} from '@scure/base';
 
 test('client-owned proofs execute independently through the compact registered VM', {timeout:240000},async()=>{
  const directory=await mkdtemp(join(tmpdir(),'shielded-registry-'));
- const alice=await createClientProtocol({owner:'alice',keys:{spend:'17',view:'19'}}),bob=await createClientProtocol({owner:'bob',keys:{spend:'23',view:'29'}});
+ const recoverySecret='42'.repeat(32),bobKeys=deriveWalletKeyMaterial(recoverySecret,'mutinynet').keys;
+ const alice=await createTestClientProtocol({owner:'alice',keys:{spend:'17',view:'19'},entropyLabel:'noncustodial-alice'}),bob=await createTestClientProtocol({owner:'bob',keys:bobKeys,entropyLabel:'noncustodial-bob'});
  const recipients={alice:alice.publicDescriptor(),bob:bob.publicDescriptor()};alice.setRecipients(recipients);bob.setRecipients(recipients);
  const substituted=structuredClone(recipients);substituted.bob=recipients.alice;assert.throws(()=>alice.setRecipients(substituted),/directory changed/);assert.deepEqual(alice.publicCheckpoint().recipients,recipients);
  const publicProtocol=await createPublicProtocol({recipients});
@@ -47,7 +50,8 @@ test('client-owned proofs execute independently through the compact registered V
   assert.equal(savedNative.aliceSecret,'');assert.equal(savedNative.bobSecret,'');
   await runtime.close();runtime=await createSdkRuntime({verificationKeys:publicProtocol.verificationKeys(),initialState:checkpoint.state,checkpoint:savedNative,registry});
   assert.deepEqual(runtime.snapshot().heads,savedNative.heads&&Object.fromEntries(Object.entries(savedNative.heads).map(([name,c])=>[name,{txid:c.txid,vout:c.vout,value:c.value}])));
-  const restored=await createClientProtocol({owner:'bob',keys:bob.exportWalletKeys(),recipients,checkpoint});assert.equal(restored.snapshot().wallets.bob.balances.BTC,0);assert.equal(restored.snapshot().wallets.bob.pending.BTC,15000);
+  const restored=await createTestClientProtocol({owner:'bob',keys:bob.exportWalletKeys(),recipients,checkpoint,entropyLabel:'noncustodial-bob-backup'});assert.equal(restored.snapshot().wallets.bob.balances.BTC,0);assert.equal(restored.snapshot().wallets.bob.pending.BTC,15000);
+  const recovered=await createTestClientProtocol({owner:'bob',keys:deriveWalletKeyMaterial(recoverySecret,'mutinynet').keys,recipients,checkpoint,entropyLabel:'noncustodial-bob-seed'});assert.deepEqual(recovered.snapshot().wallets.bob.notes,restored.snapshot().wallets.bob.notes);assert.equal(recovered.snapshot().wallets.bob.pending.BTC,15000);
   const corrupt=structuredClone(checkpoint);corrupt.encryptedLog[0].ciphertext[0]='1';assert.throws(()=>restored.restorePublicCheckpoint(corrupt),/Invalid protocol checkpoint/);assert.deepEqual(restored.publicCheckpoint(),checkpoint);
   await assert.rejects(publicProtocol.restorePrepared(withdrawal),/already spent|restored protocol|Stale/);
   await apply(await bob.prepareWithdraw('bob','DEMO',100,runtime.destination('bob')));

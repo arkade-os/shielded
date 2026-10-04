@@ -1,0 +1,33 @@
+services:
+  registered-verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.registry-server
+    image: shielded-registry:local
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 2
+    tmpfs: [/tmp:rw,noexec,nosuid,size=32m,mode=1777]
+    ports: ["127.0.0.1:8790:8790"]
+    command:
+      - --listen=0.0.0.0:8790
+      - --registry=/etc/shielded/registry.json
+      - --emulator-key-file=/run/secrets/emulator-key
+      - --api-token-file=/run/secrets/registry-api-token
+      - --ark-signer=${SHIELDED_ARK_SIGNER:?Set the pinned compressed Ark operator public key}
+      - --indexer-url=${SHIELDED_ARK_URL:?Set the trusted HTTPS Ark indexer origin}
+    volumes:
+      - type: bind
+        source: ${SHIELDED_REGISTRY_FILE:?Set the exact immutable public registry file}
+        target: /etc/shielded/registry.json
+        read_only: true
+    secrets: [emulator-key, registry-api-token]
+secrets:
+  emulator-key:
+    file: ${SHIELDED_EMULATOR_KEY_FILE:?Set the mounted signer secret file}
+  registry-api-token:
+    file: ${SHIELDED_REGISTRY_TOKEN_FILE:?Set the mounted API bearer token file}

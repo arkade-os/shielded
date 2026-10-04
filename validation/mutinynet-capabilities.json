@@ -1,0 +1,25 @@
+{
+  "checkedAt": "2026-10-04T17:26:53.755Z",
+  "actions": "Read-only GET /v1/info; no wallet, signing, funding or transaction submission",
+  "endpoints": {
+    "ark": "https://mutinynet.arkade.sh",
+    "emulator": "https://emulator.mutinynet.arkade.sh"
+  },
+  "ark": {
+    "network": "mutinynet",
+    "signerPubkey": "03301078808e4f7bc0dadfe29e34b1df8eaf0108ef06b1722274075ebc107a127a",
+    "maxTxWeight": "40000"
+  },
+  "emulator": {
+    "version": "v0.0.9-rc.0",
+    "signerPubkey": "03f823b9b2febc81f4af967e77aed2f541cbd3397c6d8f5a72e32eb7b471af889a",
+    "registryProtocol": null,
+    "registryHash": null,
+    "registeredPrograms": null,
+    "maxSidecarBytes": null
+  },
+  "experimentalMaxTxWeight": 4000,
+  "registeredWalletFundedMutinynet": false,
+  "status": "BLOCKED",
+  "reason": "Current emulator advertises no registered-program capability; live registered wallet runtime and customer deposit rail remain incomplete"
+}

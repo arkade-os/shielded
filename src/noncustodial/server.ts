@@ -19,7 +19,7 @@ export function createNoncustodialApp(coordinator:PublicCoordinator,token?:strin
  app.use('/api',(req,res,next)=>{if(token){const supplied=req.get('authorization')?.replace(/^Bearer /,'')??'';if(!timingSafeEqual(createHash('sha256').update(supplied).digest(),createHash('sha256').update(token).digest())){res.status(401).json({error:'Authentication required'});return;}}if(req.method==='POST'&&req.get('origin')&&!sameOrigin(req.get('origin')!,req.get('host')??'')){res.status(403).json({error:'Same-origin request required'});return;}next();});
  app.get('/api/profile',(_req,res)=>res.json(coordinator.profile()));app.get('/api/archive',(_req,res)=>res.json(coordinator.archive()));
  app.get('/api/proving/:name',(req,res)=>{const names:Record<string,string>={'intent.wasm':'intent_js/intent.wasm','transition.wasm':'transition_js/transition.wasm','intent.zkey':'intent.zkey','transition.zkey':'transition.zkey'};const file=names[req.params.name];if(!file){res.status(404).json({error:'Unknown proving artifact'});return;}res.sendFile(file,{root:resolve(root,'circuits/build')});});
- app.post('/api/participants/:owner',async(req,res)=>{exact(req.body,['recipient','nativePublicKey']);exact(req.body.recipient,['owner','viewPublicKey']);res.json(await coordinator.register(req.params.owner as 'alice'|'bob',req.body));});
+ app.post('/api/participants/:owner',async(req,res)=>{exact(req.body,['recipient','nativePublicKey','authorization']);exact(req.body.recipient,['owner','viewPublicKey']);if(req.body.authorization!==undefined)exact(req.body.authorization,['version','network','profile','signature']);res.json(await coordinator.register(req.params.owner,req.body));});
  app.post('/api/settlements',async(req,res)=>{validateSettlement(req.body);res.json(await coordinator.submit(req.body));});
  app.post('/api/seal',async(req,res)=>{exact(req.body,[]);res.json(await coordinator.seal());});
  app.get('/',(_req,res)=>res.redirect('/wallet'));
@@ -27,9 +27,10 @@ export function createNoncustodialApp(coordinator:PublicCoordinator,token?:strin
  app.use((error:any,_req:express.Request,res:express.Response,_next:express.NextFunction)=>res.status(error.status??400).json({error:error.message??'Request rejected'}));return app;
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- if(process.env.SHIELDED_NETWORK&&process.env.SHIELDED_NETWORK!=='local-emulator')throw new Error('Registered verifier service is local-only until operator deployment');
+ const network=process.env.SHIELDED_NETWORK??'local-emulator';if(network!=='local-emulator')throw new Error('Registered verifier service is local-only until operator deployment');
  const host=process.env.HOST??'127.0.0.1';if(host!=='127.0.0.1'&&host!=='localhost'&&(!process.env.SHIELDED_API_TOKEN||process.env.SHIELDED_API_TOKEN.length<32))throw new Error('Non-loopback lab deployment requires a strong API token');
- const coordinator=await createPublicCoordinator(resolve(process.env.SHIELDED_DATA_DIR??'data/noncustodial'));
+ const loopback=host==='127.0.0.1'||host==='localhost'||host==='::1';const allowLegacyLocalIds=loopback||(network==='local-emulator'&&process.env.SHIELDED_ALLOW_LEGACY_LOCAL_IDS==='1');
+ const coordinator=await createPublicCoordinator(resolve(process.env.SHIELDED_DATA_DIR??'data/noncustodial'),{network,allowLegacyLocalIds});
  const server=createNoncustodialApp(coordinator,process.env.SHIELDED_API_TOKEN).listen(Number(process.env.PORT??8789),host,()=>console.log('Noncustodial local wallet: http://'+host+':'+(process.env.PORT??8789)+'/wallet'));
  let stopping=false;const close=()=>{if(stopping)return;stopping=true;server.close(()=>{void (async()=>{await coordinator.close();await (globalThis as any).curve_bn128?.terminate();})().then(()=>process.exit(0),()=>{console.error('Lab shutdown failed');process.exit(1);});});};process.once('SIGINT',close);process.once('SIGTERM',close);
 }

@@ -320,9 +320,9 @@ export async function createLiveRuntime(options: SdkRuntimeOptions): Promise<Sdk
     const key = await SingleKey.fromHex(saved[name === "alice" ? "aliceSecret" : "bobSecret"]).xOnlyPublicKey();
     const recipient = instantiateArtifact(recipientArtifact, { owner: key, exitDelay: 144n }, { serverKey: hex.decode(serverKey), emulatorKey: hex.decode(saved.emulatorKey), userKey: key });
     return [name, hex.encode(recipient.script.pkScript.subarray(2))];
-  }))) as Record<"alice" | "bob", string>;
+  }))) as Record<string, string>;
   return {
-    exportState, bootstrap, refreshFunding, destination: (owner) => core?.destination(owner) ?? destinations[owner],
+    exportState, bootstrap, refreshFunding, destination: (owner) => {const fallback=Object.hasOwn(destinations,owner)?destinations[owner]:undefined;const value=core?.destination(owner)??fallback;if(!value)throw new Error("Payout destination is outside this wallet");return value;},
     compiledArtifacts: () => core?.compiledArtifacts() ?? {},
     snapshot: () => ({ ...(core?.snapshot() ?? {}), mode: "mutinynet", network: "mutinynet", syntheticFunding: false,
       bootstrapPhase: live.phase, phase: live.phase, compatible: !blockedReason, ready: Boolean(core), blockedReason,

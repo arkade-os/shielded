@@ -1,0 +1,15 @@
+FROM golang:1.26.6-bookworm AS build
+ENV CGO_ENABLED=0
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY tools/vm/go.mod tools/vm/go.sum ./tools/vm/
+RUN cd tools/vm && go mod download
+COPY . .
+RUN node tools/native-registry/apply.mjs
+RUN cd tools/registry-server && go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/registry-server .
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/registry-server /registry-server
+USER 65532:65532
+EXPOSE 8790
+ENTRYPOINT ["/registry-server"]

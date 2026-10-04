@@ -7,6 +7,13 @@
   "registeredIndependentVm": true,
   "profile": "b09323a0e204f8f17b0779b5339105c0ec6e2cc5a8399ed753e66527c11e0938",
   "budgetWu": 4000,
+  "participants": 3,
+  "thirdParticipantAppendAfterAcceptedTransactions": true,
+  "priorNativeHeadsAndProgramsUnchanged": true,
+  "btcDemoUnsealedAndSealed": true,
+  "transferToThirdAndWithdrawBothAssets": true,
+  "seedOnlyArchiveRecovery": true,
+  "encryptedClientRestore": true,
   "measurements": [
     {
       "operation": "shield",
@@ -23,6 +30,30 @@
       "checkpointWeights": [
         696,
         664,
+        664
+      ]
+    },
+    {
+      "operation": "seal",
+      "nativeWeight": 2358,
+      "checkpointWeights": [
+        696,
+        664
+      ]
+    },
+    {
+      "operation": "transfer",
+      "nativeWeight": 2358,
+      "checkpointWeights": [
+        696,
+        664
+      ]
+    },
+    {
+      "operation": "transfer",
+      "nativeWeight": 2358,
+      "checkpointWeights": [
+        696,
         664
       ]
     },
@@ -77,6 +108,24 @@
       ]
     },
     {
+      "operation": "withdraw",
+      "nativeWeight": 3476,
+      "checkpointWeights": [
+        696,
+        664,
+        664
+      ]
+    },
+    {
+      "operation": "withdraw",
+      "nativeWeight": 3532,
+      "checkpointWeights": [
+        696,
+        664,
+        664
+      ]
+    },
+    {
       "operation": "seal",
       "nativeWeight": 2358,
       "checkpointWeights": [
@@ -85,7 +134,6 @@
       ]
     }
   ],
-  "encryptedClientRestore": true,
   "sameVolumeRestart": true,
   "acceptedReplayDoesNotSignAgain": true,
   "finality": "synthetic SDK transactions; no Ark inclusion or Bitcoin settlement"

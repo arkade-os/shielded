@@ -318,30 +318,26 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
   const emulator = SingleKey.fromHex("02".repeat(32));
   const aliceSecret = options.registry?"":restored?.aliceSecret ?? "03".repeat(32);
   const bobSecret = options.registry?"":restored?.bobSecret ?? "04".repeat(32);
-  const alicePublic=options.registry?hex.decode(options.registry.recipientPublicKeys.alice):await SingleKey.fromHex(aliceSecret).xOnlyPublicKey();
-  const bobPublic=options.registry?hex.decode(options.registry.recipientPublicKeys.bob):await SingleKey.fromHex(bobSecret).xOnlyPublicKey();
+  const ownerKeys:Record<Owner,Uint8Array>=options.registry
+    ?Object.fromEntries(Object.entries(options.registry.recipientPublicKeys).map(([owner,key])=>[owner,hex.decode(key)]))
+    :{alice:await SingleKey.fromHex(aliceSecret).xOnlyPublicKey(),bob:await SingleKey.fromHex(bobSecret).xOnlyPublicKey()};
+  if(!Object.keys(ownerKeys).length)throw new Error('Native registry requires at least one participant payout key');
   const serverKey = restored ? hex.decode(restored.serverKey) : await server.xOnlyPublicKey();
   const keys = { serverKey, emulatorKey: restored ? hex.decode(restored.emulatorKey) : await emulator.compressedPublicKey() };
   const checkpoint = restored ? CSVMultisigTapscript.decode(hex.decode(restored.checkpointScript)) : CSVMultisigTapscript.encode({ timelock: { type: "blocks", value: 144n }, pubkeys: [serverKey] });
-  const recipients = {
-    alice: instantiateArtifact(artifacts.recipient, { owner: alicePublic, exitDelay: 144n }, { ...keys, userKey: alicePublic }),
-    bob: instantiateArtifact(artifacts.recipient, { owner: bobPublic, exitDelay: 144n }, { ...keys, userKey: bobPublic }),
-  };
-  const payoutScripts = { alice: recipients.alice.script.pkScript, bob: recipients.bob.script.pkScript };
-  const destinationFields = {
-    alice: (littleEndian(sha256(payoutScripts.alice.subarray(2))) % FR).toString(),
-    bob: (littleEndian(sha256(payoutScripts.bob.subarray(2))) % FR).toString(),
-  };
-  const destinations = {
-    alice: hex.encode(payoutScripts.alice.subarray(2)),
-    bob: hex.encode(payoutScripts.bob.subarray(2)),
-  };
+  const recipients=Object.fromEntries(Object.entries(ownerKeys).map(([owner,ownerKey])=>{
+    const value=instantiateArtifact(artifacts.recipient,{owner:ownerKey,exitDelay:144n},{...keys,userKey:ownerKey});
+    return [owner,value];
+  })) as Record<Owner,CompiledContract>;
+  const payoutScripts=Object.fromEntries(Object.entries(recipients).map(([owner,value])=>[owner,value.script.pkScript])) as Record<Owner,Uint8Array>;
+  const destinationFields=Object.fromEntries(Object.entries(payoutScripts).map(([owner,script])=>[owner,(littleEndian(sha256(script.subarray(2)))%FR).toString()])) as Record<Owner,string>;
+  const destinations=Object.fromEntries(Object.entries(payoutScripts).map(([owner,script])=>[owner,hex.encode(script.subarray(2))])) as Record<Owner,string>;
 
   // Issue first, then bind the resulting identities into the Programs. This
   // avoids committing an asset's own issuance transaction ID into itself.
   const initialTokenReserve = BigInt(options.initialState.reserves.DEMO);
   const issuance = restored?.issuanceRaw ? Transaction.fromRaw(hex.decode(restored.issuanceRaw)) : offlineNativeFixture(
-    [{ script: payoutScripts.alice, amount: INITIAL_FUNDING + 3n * CARRIER + BigInt(options.initialState.reserves.BTC) }],
+    [{ script: payoutScripts[Object.keys(payoutScripts)[0]!], amount: INITIAL_FUNDING + 3n * CARRIER + BigInt(options.initialState.reserves.BTC) }],
     [asset.Packet.create([1n, 1n, 1n, INITIAL_FUNDING + initialTokenReserve].map((quantity) =>
       asset.AssetGroup.create(null, null, [], [asset.AssetOutput.create(0, quantity)], [])))],
   );
@@ -465,7 +461,7 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
     return receipt;
   };
 
-  const compiledArtifacts = () => Object.fromEntries(Object.entries({ ...contracts, aliceRecipient: recipients.alice, bobRecipient: recipients.bob }).map(([name, contract]) => [name, {
+  const compiledArtifacts = () => Object.fromEntries(Object.entries({ ...contracts, ...Object.fromEntries(Object.entries(recipients).map(([owner,contract])=>[`${owner}Recipient`,contract])) }).map(([name, contract]) => [name, {
     contractName: contract.program.name,
     source: `contracts/poc/${name.endsWith("Recipient") ? "recipient" : name === "btcVault" ? "btc_vault" : name === "tokenVault" ? "token_vault" : name}.ark`,
     program: JSON.parse(arkade.stringifyArtifact(contract.program)),
@@ -475,7 +471,7 @@ export async function createSdkRuntime(options: SdkRuntimeOptions): Promise<SdkR
   }]));
 
   return {
-    destination: (owner) => destinations[owner],
+    destination: (owner) => {if(!Object.hasOwn(destinations,owner))throw new Error('Payout destination is outside this native registry');return destinations[owner]!;},
     compiledArtifacts,
     exportState,
     reconcile: async (prepared, submission) => {

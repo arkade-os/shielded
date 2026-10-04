@@ -1,5 +1,7 @@
-import type {Asset, Owner, Groth16Proof, ProtocolState, EncryptedRecord, PreparedSettlement, OwnedNote, ProtocolSnapshot, ProtocolKernel, ProtocolCheckpoint} from './types.js';
+import {isValidOwner,LEGACY_OWNERS,type Asset, type Owner, type Groth16Proof, type ProtocolState, type EncryptedRecord, type PreparedSettlement, type OwnedNote, type ProtocolSnapshot, type ProtocolKernel, type ProtocolCheckpoint} from './types.js';
 export * from './types.js';
+import {groth16Descriptor,proofDescriptorMatches,proofStatement,proofStatementMatches,type ProofBackend} from './proofs.js';
+export * from './proofs.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { PublicProtocolCheckpoint, PublicRecipient, ClientProtocolKernel, WalletKeys } from './types.js';
@@ -8,11 +10,12 @@ export const DOMAIN = 20260930001n;
 export const INTENT_SIGNAL_COUNT = 25;
 export const TRANSITION_SIGNAL_COUNT = 30;
 const ASSETS: Asset[] = ['BTC','DEMO'];
-export interface ProtocolEnvironment { randomBytes(length:number):Uint8Array; vkeys:Record<string,any>; prove(name:'intent'|'transition',witness:Record<string,unknown>):Promise<{proof:Groth16Proof;publicSignals:string[]}>; verify(key:any,signals:string[],proof:Groth16Proof):Promise<boolean>; }
+export interface ProtocolEnvironment { randomBytes(length:number):Uint8Array; vkeys:Record<string,any>; proofs:ProofBackend<Groth16Proof>; }
 const hashHex=(value:string)=>bytesToHex(sha256(new TextEncoder().encode(value)));
 const mod=(n:bigint)=>((n%FIELD)+FIELD)%FIELD;
 const clone=<T>(v:T):T=>structuredClone(v);
 const str=(n:bigint|number|string)=>String(n);
+export function protocolProfileFingerprint(vkeys:Record<string,any>):string{return hashHex(JSON.stringify({domain:str(DOMAIN),treeDepth:8,noteCapacity:256,nullifierCapacity:256,intentSignals:25,transitionSignals:30,vkeys}));}
 function freeze<T>(value:T):T { if(value && typeof value==='object') { Object.freeze(value); for(const child of Object.values(value)) freeze(child); } return value; }
 const rand=(random:(length:number)=>Uint8Array)=>{for(;;){const n=BigInt('0x'+bytesToHex(random(32)));if(n>0n&&n<FIELD)return n;}};
 const bits=(n:number)=>Array.from({length:8},(_,i)=>(n>>i)&1);
@@ -41,16 +44,19 @@ export class Kernel implements ClientProtocolKernel {
  private anchors:Anchor[]=[]; private receipts:unknown[]=[]; private internals=new WeakMap<PreparedSettlement,Internal>(); private committed=new WeakSet<PreparedSettlement>(); private committedIds:Record<string,string>={};
  private vkeys:Record<string,any>; private recipientDirectory?:Record<Owner,PublicRecipient>;
  constructor(private poseidon:any,private baby:any,private env:ProtocolEnvironment,private mode:'legacy'|'client'|'public'='legacy',private localOwner?:Owner,keys?:WalletKeys,recipients?:Record<Owner,PublicRecipient>,secureKeys=false){
+  if(this.localOwner!==undefined&&!isValidOwner(this.localOwner))throw new Error('Invalid client participant identifier.');
+  if(env.proofs.id!=='groth16-bn254'||env.proofs.version!==1)throw new Error('This native protocol profile accepts only the pinned Groth16 BN254 backend.');
   this.noteTree=new Tree(this.hash);this.spentTree=new Tree(this.hash);this.historyTree=new Tree(this.hash);
   this.state={noteRoot:str(this.noteTree.root()),spentRoot:str(this.spentTree.root()),historyRoot:str(this.historyTree.root()),noteCount:0,historyCount:0,revision:0,reserves:{BTC:0,DEMO:0}};
-  this.wallets=Object.fromEntries((['alice','bob'] as Owner[]).map(name=>{
+  const owners=this.mode==='legacy'?[...LEGACY_OWNERS] as Owner[]:[...new Set([...(recipients?Object.keys(recipients):[]),...(this.localOwner?[this.localOwner]:[])])];
+  this.wallets=Object.fromEntries(owners.map(name=>{
    const derive=(tag:string)=>BigInt('0x'+hashHex(`SHIELDED-POC-INSECURE-DEMO-KEY:${name}:${tag}`))%this.baby.subOrder||1n;
    const randomScalar=()=>BigInt('0x'+bytesToHex(this.env.randomBytes(32)))%this.baby.subOrder||1n;
    if(this.mode!=='legacy'&&name!==this.localOwner){const r=recipients?.[name];return [name,{spend:0n,view:0n,publicKey:r?r.viewPublicKey.map(BigInt):[0n,1n],owner:r?BigInt(r.owner):0n}];}
    const spend=keys?fieldValue(keys.spend):(this.mode==='client'||secureKeys?randomScalar():derive('spend')),view=keys?fieldValue(keys.view):(this.mode==='client'||secureKeys?randomScalar():derive('view'));if(spend<=0n||view<=0n||spend>=this.baby.subOrder||view>=this.baby.subOrder)throw new Error('Invalid client wallet scalar.');const publicKey=this.baby.mulPointEscalar(this.baby.Base8,view).map((x:any)=>BigInt(this.baby.F.toObject(x)));
    return [name,{spend,view,publicKey,owner:this.hash([DOMAIN,spend])}];
   })) as Record<Owner,Wallet>;
-  this.vkeys=clone(this.env.vkeys);if(recipients)this.setRecipients(recipients);if(this.mode==='public'&&!recipients)throw new Error('Public coordinator requires fixed recipient descriptors.');
+  this.vkeys=clone(this.env.vkeys);for(const name of ['intent','transition'] as const)if(!proofDescriptorMatches(this.env.proofs.describe(name,this.vkeys[name],str(DOMAIN)),groth16Descriptor(name,this.vkeys[name],str(DOMAIN))))throw new Error('Proof provider does not match the pinned Groth16 verifier profile.');if(recipients)this.setRecipients(recipients);if(this.mode==='public'&&!Object.keys(recipients??{}).length)throw new Error('Public coordinator requires registered recipient descriptors.');
  }
  private hash=(values:bigint[]):bigint=>BigInt(this.poseidon.F.toObject(this.poseidon(values)));
  private inverseEight(){ for(let k=1n;k<8n;k++)if((k*this.baby.subOrder+1n)%8n===0n)return(k*this.baby.subOrder+1n)/8n;throw new Error("No cofactor inverse.");}
@@ -80,14 +86,14 @@ export class Kernel implements ClientProtocolKernel {
  }
  recover(owner:Owner):OwnedNote[]{return this.log.map(r=>this.decrypt(owner,r)).filter((n):n is OwnedNote=>!!n&&n.amount>0);}
  snapshot():ProtocolSnapshot{
-  const wallets=Object.fromEntries((['alice','bob'] as Owner[]).map(name=>{
+  const wallets=Object.fromEntries(Object.keys(this.wallets).map(name=>{
    const w=this.wallets[name],notes=this.recover(name),balances={BTC:0,DEMO:0},pending={BTC:0,DEMO:0};
    for(const n of notes)if(!n.spent)(n.spendable?balances:pending)[n.asset]+=n.amount;
    return [name,{address:str(w.owner),spendKey:w.spend===0n?'':str(w.spend),viewKey:w.view===0n?'':str(w.view),viewPublicKey:w.publicKey.map(str),balances,pending,notes}];
   })) as ProtocolSnapshot['wallets'];
   return {state:clone(this.state),wallets,encryptedLog:clone(this.log),nullifiers:this.nfs.slice(),anchors:this.anchors.map(a=>a.root),profile:{treeDepth:8,noteCapacity:256,nullifierCapacity:256,intentPublicSignals:25,transitionPublicSignals:30},receipts:clone(this.receipts)};
  }
- private profileFingerprint(){return hashHex(JSON.stringify({domain:str(DOMAIN),treeDepth:8,noteCapacity:256,nullifierCapacity:256,intentSignals:25,transitionSignals:30,vkeys:this.vkeys}));}
+ private profileFingerprint(){return protocolProfileFingerprint(this.vkeys);}
  exportState():ProtocolCheckpoint{if(this.mode!=='legacy')throw new Error('Use publicCheckpoint and client wallet backup separately.');return {version:1,domain:str(DOMAIN),profile:this.profileFingerprint(),state:clone(this.state),wallets:{alice:{spend:str(this.wallets.alice.spend),view:str(this.wallets.alice.view)},bob:{spend:str(this.wallets.bob.spend),view:str(this.wallets.bob.view)}},trees:{notes:this.noteTree.leaves.map(str),spent:this.spentTree.leaves.map(str),history:this.historyTree.leaves.map(str)},encryptedLog:clone(this.log),nullifiers:this.nfs.slice(),anchors:this.anchors.map(a=>({root:a.root,count:a.count,leaves:a.tree.leaves.map(str)})),receipts:clone(this.receipts),committed:{...this.committedIds}};}
  private fingerprint(p:PreparedSettlement){return hashHex(JSON.stringify(p));}
  restoreCheckpoint(c:ProtocolCheckpoint){this.loadCheckpoint(c);}
@@ -112,16 +118,23 @@ export class Kernel implements ClientProtocolKernel {
   if(!Array.isArray(c.receipts)||c.receipts.length!==c.state.revision)fail('receipt count mismatch.');this.receipts=clone(c.receipts);
   if(!c.committed||typeof c.committed!=='object')fail('missing wallet or commit data.');
   if(this.mode==='legacy'){if(!(c as ProtocolCheckpoint).wallets)fail('missing legacy wallet keys.');
-  this.wallets=Object.fromEntries((['alice','bob'] as Owner[]).map(name=>{const keys=(c as ProtocolCheckpoint).wallets[name];if(!keys)fail('missing wallet key.');const spend=field(keys.spend),view=field(keys.view);if(spend<=0n||spend>=this.baby.subOrder||view<=0n||view>=this.baby.subOrder)fail('wallet scalar outside subgroup order.');const publicKey=this.baby.mulPointEscalar(this.baby.Base8,view).map((x:any)=>BigInt(this.baby.F.toObject(x)));if(!this.baby.inSubgroup(this.point(publicKey)))fail('wallet view key is invalid.');return [name,{spend,view,publicKey,owner:this.hash([DOMAIN,spend])}];})) as Record<Owner,Wallet>;
-  const knownNullifiers=new Set<string>();for(const record of this.log)if(this.anchors.some(a=>record.index<a.count)){for(const owner of ['alice','bob'] as Owner[]){const note=this.decrypt(owner,record);if(note&&note.amount>0)knownNullifiers.add(str(this.hash([DOMAIN,this.wallets[owner].spend,BigInt(note.rho)])));}}if(this.nfs.some(nf=>!knownNullifiers.has(nf)))fail('nullifier has no recoverable sealed note.');
-  }else{const publicState=c as PublicProtocolCheckpoint;if(publicState.version!==1||!publicState.recipients)fail('missing public recipients.');if(JSON.stringify(publicState.recipients)!==JSON.stringify(this.publicRecipients()))fail('recipient profile mismatch.');}
+  this.wallets=Object.fromEntries(LEGACY_OWNERS.map(name=>{const keys=(c as ProtocolCheckpoint).wallets[name];if(!keys)fail('missing legacy wallet key.');const spend=field(keys.spend),view=field(keys.view);if(spend<=0n||spend>=this.baby.subOrder||view<=0n||view>=this.baby.subOrder)fail('wallet scalar outside subgroup order.');const publicKey=this.baby.mulPointEscalar(this.baby.Base8,view).map((x:any)=>BigInt(this.baby.F.toObject(x)));if(!this.baby.inSubgroup(this.point(publicKey)))fail('wallet view key is invalid.');return [name,{spend,view,publicKey,owner:this.hash([DOMAIN,spend])}];})) as Record<Owner,Wallet>;
+  const knownNullifiers=new Set<string>();for(const record of this.log)if(this.anchors.some(a=>record.index<a.count)){for(const owner of LEGACY_OWNERS){const note=this.decrypt(owner,record);if(note&&note.amount>0)knownNullifiers.add(str(this.hash([DOMAIN,this.wallets[owner].spend,BigInt(note.rho)])));}}if(this.nfs.some(nf=>!knownNullifiers.has(nf)))fail('nullifier has no recoverable sealed note.');
+  }else{const publicState=c as PublicProtocolCheckpoint;if(publicState.version!==1||!publicState.recipients)fail('missing public recipients.');const checkpointOwners=Object.keys(publicState.recipients),knownOwners=Object.keys(this.wallets);if(checkpointOwners.length<2||checkpointOwners.length>knownOwners.length||checkpointOwners.some((name,index)=>name!==knownOwners[index]))fail('recipient directory is not a registered append-only prefix.');for(const [name,recipient] of Object.entries(publicState.recipients))if(JSON.stringify(recipient)!==JSON.stringify(this.publicRecipients()[name]))fail('recipient profile mismatch.');}
   for(const [id,fp] of Object.entries(c.committed))if(!/^[0-9a-f]{24}$/.test(id)||!/^[0-9a-f]{64}$/.test(fp))fail('invalid committed settlement index.');if(Object.keys(c.committed).length!==c.receipts.length)fail('committed settlement count mismatch.');this.committedIds={...c.committed};
  }
 
  private requireOwner(owner:Owner){if(this.mode==='public'||(this.mode==='client'&&owner!==this.localOwner))throw new Error('Client spend authority is required.');}
  publicDescriptor():PublicRecipient {if(!this.localOwner)throw new Error('No client wallet.');return clone(this.publicRecipients()[this.localOwner]);}
- private publicRecipients():Record<Owner,PublicRecipient>{return Object.fromEntries((['alice','bob'] as Owner[]).map(name=>[name,{owner:str(this.wallets[name].owner),viewPublicKey:this.wallets[name].publicKey.map(str)}])) as Record<Owner,PublicRecipient>;}
- setRecipients(recipients:Record<Owner,PublicRecipient>){if(this.recipientDirectory&&JSON.stringify(recipients)!==JSON.stringify(this.recipientDirectory))throw new Error('Registered recipient directory changed.');const staged={...this.wallets};for(const name of ['alice','bob'] as Owner[]){const r=recipients[name];if(!r||r.viewPublicKey?.length!==2)throw new Error('Invalid public recipient.');const owner=fieldValue(r.owner),publicKey=r.viewPublicKey.map(fieldValue);if(owner===0n||publicKey[0]===0n||!this.baby.inCurve(this.point(publicKey))||!this.baby.inSubgroup(this.point(publicKey)))throw new Error('Invalid public recipient subgroup.');const existing=this.wallets[name];if(existing.spend!==0n&&(owner!==existing.owner||publicKey.some((v,i)=>v!==existing.publicKey[i])))throw new Error('Client keys do not match the registered recipient.');staged[name]={...existing,owner,publicKey};}this.wallets=staged;this.recipientDirectory=clone(recipients);}
+ private publicRecipients():Record<Owner,PublicRecipient>{return Object.fromEntries(Object.keys(this.wallets).map(name=>[name,{owner:str(this.wallets[name].owner),viewPublicKey:this.wallets[name].publicKey.map(str)}])) as Record<Owner,PublicRecipient>;}
+ setRecipients(recipients:Record<Owner,PublicRecipient>){
+  const names=Object.keys(recipients);if(!names.length||names.some(name=>!isValidOwner(name)))throw new Error('Invalid public recipient identifier.');
+  if(this.localOwner&&!Object.hasOwn(recipients,this.localOwner))throw new Error('Client recipient directory omits this wallet.');
+  if(this.recipientDirectory){const priorNames=Object.keys(this.recipientDirectory);if(priorNames.some((name,index)=>names[index]!==name))throw new Error('Registered recipient directory changed: identities are append-only.');for(const [name,prior] of Object.entries(this.recipientDirectory))if(JSON.stringify(recipients[name])!==JSON.stringify(prior))throw new Error('Registered recipient directory changed: descriptors are immutable.');}
+  const staged:Record<Owner,Wallet>={},owners=new Set<string>(),views=new Set<string>();
+  for(const name of names){const r=recipients[name];if(!r||r.viewPublicKey?.length!==2)throw new Error('Invalid public recipient.');const owner=fieldValue(r.owner),publicKey=r.viewPublicKey.map(fieldValue);if(owner===0n||publicKey[0]===0n||!this.baby.inCurve(this.point(publicKey))||!this.baby.inSubgroup(this.point(publicKey)))throw new Error('Invalid public recipient subgroup.');const ownerKey=str(owner),viewKey=publicKey.map(str).join(':');if(owners.has(ownerKey)||views.has(viewKey))throw new Error('Duplicate public recipient key.');owners.add(ownerKey);views.add(viewKey);const existing=this.wallets[name];if(existing?.spend!==undefined&&existing.spend!==0n&&(owner!==existing.owner||publicKey.some((v,i)=>v!==existing.publicKey[i])))throw new Error('Client keys do not match the registered recipient.');if(existing?.spend===undefined&&this.mode==='client'&&name===this.localOwner)throw new Error('Client wallet is missing its private keys.');staged[name]={...(existing??{spend:0n,view:0n}),owner,publicKey};}
+  this.wallets=staged;this.recipientDirectory=clone(recipients);
+ }
  exportWalletKeys():WalletKeys {if(this.mode!=='client'||!this.localOwner)throw new Error('Client wallet keys are unavailable.');const w=this.wallets[this.localOwner];return {spend:str(w.spend),view:str(w.view)};}
  publicCheckpoint():PublicProtocolCheckpoint{return {version:1,domain:str(DOMAIN),profile:this.profileFingerprint(),state:clone(this.state),recipients:this.publicRecipients(),trees:{notes:this.noteTree.leaves.map(str),spent:this.spentTree.leaves.map(str),history:this.historyTree.leaves.map(str)},encryptedLog:clone(this.log),nullifiers:this.nfs.slice(),anchors:this.anchors.map(a=>({root:a.root,count:a.count,leaves:a.tree.leaves.map(str)})),receipts:clone(this.receipts),committed:{...this.committedIds}};}
  restorePublicCheckpoint(checkpoint:PublicProtocolCheckpoint){if(this.mode==='legacy')throw new Error('Public restoration requires client or public mode.');if('wallets' in checkpoint)throw new Error('Public archive must not contain wallet keys.');const previous=this.publicCheckpoint();try{this.loadCheckpoint(checkpoint);}catch(error){this.loadCheckpoint(previous);throw error;}}
@@ -129,13 +142,18 @@ export class Kernel implements ClientProtocolKernel {
  private validateAmount(amount:number){if(!Number.isSafeInteger(amount)||amount<=0||amount>=2**48)throw new Error('Amount must be a positive bounded 48-bit integer.');}
  private async prove(name:'intent'|'transition',witness:Record<string,unknown>){
   const started=performance.now();
-  const result=await this.env.prove(name,witness);
+  const result=await this.env.proofs.prove(name,witness,this.vkeys[name],str(DOMAIN));
+  const descriptor=groth16Descriptor(name,this.vkeys[name],str(DOMAIN));
+  if(!proofDescriptorMatches(this.env.proofs.describe(name,this.vkeys[name],str(DOMAIN)),descriptor))throw new Error('Proof provider is not compatible with the pinned Groth16 profile.');
+  const expected=proofStatement(descriptor,result.publicSignals);
+  if(!proofStatementMatches(expected,result.statement))throw new Error('Proof provider returned a statement for a different backend profile.');
   return {proof:result.proof as Groth16Proof,signals:result.publicSignals as string[],ms:performance.now()-started};
  }
  async prepareShield(owner:Owner,asset:Asset,amount:number){this.validateAmount(amount);return this.makeIntent('shield',owner,owner,asset,amount);}
  async prepareTransfer(from:Owner,to:Owner,asset:Asset,amount:number){this.validateAmount(amount);return this.makeIntent('transfer',from,to,asset,amount);}
  async prepareWithdraw(owner:Owner,asset:Asset,amount:number,destination:string){this.validateAmount(amount);return this.makeIntent('withdraw',owner,owner,asset,amount,destinationField(destination));}
  private async makeIntent(operation:'shield'|'transfer'|'withdraw',from:Owner,to:Owner,asset:Asset,amount:number,destination='0'){
+  if(!isValidOwner(from)||!isValidOwner(to)||!this.wallets[from]||!this.wallets[to])throw new Error('Unknown public participant.');
   this.requireOwner(from);
   const input=operation==='shield'?undefined:this.recover(from).find(n=>n.asset===asset&&!n.spent&&n.spendable&&n.amount>=amount);
   if(operation!=='shield'&&!input)throw new Error(`No sealed ${asset} note covers this amount. Seal new receipts first; this profile consumes one note per intent.`);
@@ -198,8 +216,12 @@ export class Kernel implements ClientProtocolKernel {
  async verify(prepared:PreparedSettlement){
   if(prepared.intentSignals.length!==25||prepared.transitionSignals.length!==30)return false;
   if(prepared.intentSignals.slice(0,19).some((v,i)=>v!==prepared.transitionSignals[i]))return false;
-  if(prepared.operation!=='seal'&&(!prepared.intentProof||!await this.env.verify(this.vkeys.intent,prepared.intentSignals,prepared.intentProof)))return false;
-  return this.env.verify(this.vkeys.transition,prepared.transitionSignals,prepared.transitionProof);
+  try{
+   const intentDescriptor=groth16Descriptor('intent',this.vkeys.intent,str(DOMAIN)),transitionDescriptor=groth16Descriptor('transition',this.vkeys.transition,str(DOMAIN));
+   if(!proofDescriptorMatches(this.env.proofs.describe('intent',this.vkeys.intent,str(DOMAIN)),intentDescriptor)||!proofDescriptorMatches(this.env.proofs.describe('transition',this.vkeys.transition,str(DOMAIN)),transitionDescriptor))return false;
+   if(prepared.operation!=='seal'&&(!prepared.intentProof||!await this.env.proofs.verify(proofStatement(intentDescriptor,prepared.intentSignals),prepared.intentProof,this.vkeys.intent,str(DOMAIN))))return false;
+   return await this.env.proofs.verify(proofStatement(transitionDescriptor,prepared.transitionSignals),prepared.transitionProof,this.vkeys.transition,str(DOMAIN));
+  }catch{return false;}
  }
  async commit(prepared:PreparedSettlement,receipt:unknown){
   const fingerprint=this.fingerprint(prepared),known=this.committedIds[prepared.id];if(known){if(known!==fingerprint)throw new Error('Settlement ID was already committed with a different payload.');return this.snapshot();}
