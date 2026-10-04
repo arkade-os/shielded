@@ -124,7 +124,16 @@ export default function App() {
  function requestKey(){const bytes=new Uint8Array(16);globalThis.crypto.getRandomValues(bytes);return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('')}
  async function act(action:Action,override?:Record<string,unknown>) {
   if(busy||pendingActionRef.current)return;
-  await runAction({action,body:{asset,amount:Number(amount),from,to,...override},key:requestKey()});
+  const nativeAsset=asset==='TOKEN'?'DEMO':asset;
+  let body:Record<string,unknown>;
+  switch(action) {
+   case 'shield': body={from,asset:nativeAsset,amount:Number(amount),...override}; break;
+   case 'seal': body={...override}; break;
+   case 'transfer': body={from,to,asset:nativeAsset,amount:Number(amount),...override}; break;
+   case 'withdraw': body={from,asset:nativeAsset,amount:Number(amount),...override}; break;
+   default: body={asset,amount:Number(amount),from,to,...override}; break;
+  }
+  await runAction({action,body,key:requestKey()});
  }
  async function retryAction(){const request=pendingActionRef.current;if(request)await runAction(request)}
  async function copyAddress(value:string){try{await navigator.clipboard.writeText(value);setNotice('Address copied to clipboard.')}catch{setError('Clipboard access is unavailable; select and copy the address manually.')}}

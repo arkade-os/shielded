@@ -95,17 +95,39 @@ Every submitted Ark transaction is checked against the smaller of the reported
 operator limit and 4,000 WU. The latter is a conservative experiment target,
 not a claim about mainnet policy. Actual signed main and checkpoint weights are
 reported separately. Local emulator genesis and funding remain synthetic test
-fixtures. Mutinynet bootstrap uses actual test-network transactions, but the
-current funding result is under investigation after an output-mismatch response.
-No resource heads are recorded, readiness is false, and an accepted compact
-transaction lifecycle has not been demonstrated. The shared Bitcoin commitment
-round used for on-chain boarding is an operator aggregate and has a separate
-transaction size.
+fixtures. Mutinynet received 300,000 test sats and the approved recovery funded
+all four registered resource outputs. Read-only indexer validation confirmed
+signed request/response, checkpoint and head evidence: gate 3,228 WU, lane
+1,300 WU, BTC and token vaults 1,116 WU each; funding checkpoints are 696 WU.
+The pool allocation is 200,000 sats and 10,000,000 DEMO.
 
-Changing the pinned verifier source or keys creates a new profile. Existing
-funded checkpoints reject such a change. Preserve the exact software revision,
-proving artifacts, database and encryption key together; automatic migration
-of funded profiles is not implemented.
+Recovery stopped at ready restore because the original live adapter rehashes
+a derived profile object including its old ID. The original profile still
+recomputes exactly from its base configuration. A separate ready-only
+orchestration adapter passed independent review, all 78 tests and a read-only restore of the funded volume; fingerprinted verifier
+files, proving artifacts, signing keys and accepted resource outputs remain
+unchanged. Readiness was durably restored with zero network submissions. Full funded payment lifecycle, UI and
+same-volume restart/replay evidence are pending. The shared Bitcoin commitment
+round used for boarding is an operator aggregate with a separate size.
+
+The standalone recovery tool passed read-only preflight and post-apply validation on this checkpoint. It
+is restricted to a clean treasury state with no boarding requests or receipts,
+notes, reserves, activities, or protocol receipts. It validates signed request
+and response data, checkpoint ancestry, source-asset provenance and conservation,
+head allocation and wallet-owned change; it enforces the effective 4,000-WU
+limit and journals before any new SubmitTx or FinalizeTx. Ambiguous outcomes fail
+closed without retry. The human-approved apply funded the remaining outputs,
+then stopped at final ready restore. The readiness-only apply subsequently changed only native.live.phase; original keys and the encrypted volume are preserved. Readiness may be persisted only
+after a read-only restore passes using a separately reviewed orchestration
+image with unchanged fingerprinted verifier files; that final step must make
+zero network submissions.
+
+The separately proposed normal-bootstrap source fix was not applied to this
+registered profile. Do not install changed verifier/profile artifacts on the
+funded service; future source changes require a fresh, unfunded profile unless
+an independently reviewed migration is designed. The saved
+`validation/compact-mutinynet-preflight.json` predates funding and is historical,
+not current wallet evidence.
 
 ## Run
 

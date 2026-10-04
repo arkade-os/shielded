@@ -15,7 +15,7 @@ import { tapLeafHash } from '@scure/btc-signer/payment.js';
 import { createProtocol } from '../packages/protocol/src/index.ts';
 import { createCompactDestination, createCompactProfile } from '../src/compact/runtime.ts';
 import type { CompactProfileConfig } from '../src/compact/profile.ts';
-import { createCompactLiveRuntime } from '../src/compact/live.ts';
+import { createCompactReadyLiveRuntime } from '../src/compact/ready-live.ts';
 import { coinFromTransaction, type VmBridgeRequest } from '../src/sdk/adapter.ts';
 import type { NativeCheckpoint } from '../src/sdk/runtime.ts';
 import { EngineStore } from '../src/storage.ts';
@@ -951,7 +951,7 @@ async function verifyReadyRestore(checkpoint: StoredEngine, context: RecoveryCon
   const candidate = structuredClone(checkpoint.native);
   candidate.issuanceRaw = candidate.live!.issuanceTransactions!.token!;
   candidate.live!.phase = 'ready';
-  const restored = await createCompactLiveRuntime({ verificationKeys: context.verificationKeys, initialState: context.initialState,
+  const restored = await createCompactReadyLiveRuntime({ verificationKeys: context.verificationKeys, initialState: context.initialState,
     domain: BigInt(candidate.domain), checkpoint: candidate, network: 'mutinynet', arkUrl: candidate.live!.arkUrl,
     onCheckpoint: async () => {} });
   try {

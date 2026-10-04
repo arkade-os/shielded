@@ -2,45 +2,24 @@
 
 Source: [shared conversation](https://chatgpt.com/share/6abd3b85-a030-83eb-bb3b-1369fa813c60), original chat `6abd0c50-f2a8-83ed-829e-e51b3da88dfb` (Shielded Arkade).
 
-## Current work — 2026-10-03
+## Current work — 2026-10-04
 
-The implementation through `bd08830` is consolidated on `main`, followed by
-documentation commit `c2cdce7`. Continue on `main`;
-do not recreate the branch stack. Shielded PR 1 was automatically marked merged
-when its commits reached main; PRs 2–5 were closed as superseded. Preserve the
-historical branch refs and the private repository visibility.
+Implementation revision `4e46646` (`fix: recover funded compact resource bootstrap`) passed all four CI checks on run `37159875368`; the complete test suite passes 72/72 and `npm run build` passes. PR 1 was automatically marked merged when its commits reached main; PRs 2–5 were closed as superseded. Preserve historical branch refs and private repository visibility; do not recreate the stack. The managed checkout at `C:\Users\evilk\.codex\worktrees\compact-shielded\shielded` is on main. The original `C:\Git\shielded` checkout retains unrelated preexisting dirty work; preserve it before changing that checkout.
 
-The managed checkout at `C:\Users\evilk\.codex\worktrees\compact-shielded\shielded`
-is on main. The original `C:\Git\shielded` checkout retains its preexisting dirty
-work; do not overwrite it or switch it without preserving those changes.
+The compact transport keeps real Groth16 proofs and note data offchain and carries a 133-byte binding in native transactions. Local compact tests and retained inline E2E validate their fixture paths; neither proves the funded Mutinynet lifecycle. Earlier test and local-container results in the September 30 history below are historical, not current network evidence.
 
-The compact transport stores real Groth16 proofs and note data offchain and
-carries a 133-byte binding in native transactions. Full local verification
-passed 62 tests without skips and the build; the compact Docker lifecycle and
-encrypted restart passed. The retained inline VM E2E passed twice with fixed
-local fixture entropy; production randomness and collision rejection remain
-intact. Bootstrap response recovery passed the added signature, decoder and
-restart regression checks. Program-funding recovery remains unfinished.
+Mutinynet received 300,000 test sats and registered the existing verifier profile. The approved recovery funded and durably journaled all four resource outputs. Read-only indexer validation confirmed their signed request/response and checkpoint evidence: gate 3,228 WU, lane 1,300 WU, BTC and token vaults 1,116 WU each, with 696-WU funding checkpoints. The pool allocation is 200,000 sats and 10,000,000 DEMO. No shield/seal/transfer/withdraw lifecycle has run yet.
 
-Funded Mutinynet execution is still unverified. The monitored test service has
-received funds, registered verifier profile `ddabfc…a4ec`, and entered
-`funding-programs`; the latest attempt failed because the program-funding
-native asset outputs did not match the registered identities. The funding
-transaction's acceptance is under investigation. No resource heads are recorded,
-readiness is false, and the funded transaction lifecycle has not been
-demonstrated. The saved preflight JSON is a pre-funding snapshot and is
-historical evidence. The encrypted Docker volume retains the wallet. Root is
-diagnosing the funding mismatch. Never bypass the network or weight preflight,
-resubmit unknown `SubmitTx` outcomes, or change a registered funded profile in
-place.
+Recovery stopped before declaring readiness: the original live adapter passes a derived profile object back into the registration hash, including its existing profile ID. This deterministically changes the computed ID. The registered profile, verifier files, keys and accepted outputs remain unchanged; the service remained stopped until the readiness-only apply. The separate ready-only transport adapter passed independent review, all 78 tests, the app build, and a read-only restore using its compatibility image. It reconstructs the original configuration and calls the unchanged verifier/runtime, preserving the funded binding. No hash spoofing, profile rewrite or transaction resubmission is permitted.
 
-This is a treasury-backed operator PoC with service-owned demo keys, depth-eight
-trees and no independent note-holder pool exit. Client-owned CSV/recursive
-wallets and an external customer deposit rail remain unimplemented. Use
-`README.md` and `spec/COMPACT-PROFILE.md` for current commands and scope.
+The standalone recovery tool passed a post-apply read-only audit with all four heads adopted, no missing heads and no pending bootstrap. The compatibility image passed exact ready restore read-only, then the readiness-only apply changed only native.live.phase, with zero SubmitTx, FinalizeTx or wallet send. Funded lifecycle validation is in progress. A separately pinned orchestration image may add the reviewed adapter and engine routing while preserving every fingerprinted verifier file, proving artifact, key and the original encrypted volume. Full funded lifecycle, UI and same-volume restart/replay evidence remain pending.
+
+Do not replace the funded service with changed verifier/profile artifacts. Future source changes require a fresh, unfunded profile unless a separately reviewed migration is designed.
 
 The sections below record the September 30 transfer and its evidence. Their
 branch layout, test counts and deployment status are historical.
+
+This remains a treasury-backed operator PoC with service-owned demo keys, depth-eight trees and no independent note-holder pool exit. Client-owned CSV/recursive wallets and an external customer deposit rail remain unimplemented.
 
 ## Accepted work
 

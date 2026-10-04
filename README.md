@@ -12,15 +12,23 @@ preserved and cannot silently switch profiles.
 
 The compact Docker test records 2,370–3,376 WU for main transactions and 732 WU
 per checkpoint in [validation/compact-deployment.json](validation/compact-deployment.json).
-That is local fixture evidence. The monitored Mutinynet service has received
-funds, registered its verifier profile, and reached the program-funding phase.
-No resource heads are recorded, readiness remains false, and the funding result
-is under investigation after an output-mismatch response. The funded transaction
-lifecycle remains unverified. The [saved network
-preflight](validation/compact-mutinynet-preflight.json) predates funding and is
-historical evidence, not the current wallet state. The showcase holds its demo
-wallet keys and uses treasury backing; an external customer deposit rail and
-independent note-holder pool exit are not implemented.
+That is local fixture evidence. Mutinynet received 300,000 test sats and the
+approved recovery funded all four registered resource outputs. Read-only
+indexer validation confirmed their transaction and checkpoint evidence: gate
+3,228 WU, lane 1,300 WU, and the two vaults 1,116 WU each. The pool allocation is
+200,000 sats and 10,000,000 DEMO.
+
+The original ready restore rehashes a derived profile object including its
+existing ID and fails. A separately reviewed ready-only
+transport adapter now reconstructs the original config. All 78 tests and the app build pass, and its compatibility image passed a read-only restore of the funded volume. Readiness was durably restored with zero network submissions; funded lifecycle validation is in progress. The funded profile, fingerprinted
+verifier sources, proving artifacts and keys remain unchanged. No payment
+lifecycle, live UI or same-volume restart/replay has passed yet. The
+[saved network preflight](validation/compact-mutinynet-preflight.json) predates
+funding and is historical evidence. The showcase holds its demo wallet keys and
+uses treasury backing; an external customer deposit rail and independent
+note-holder pool exit are not implemented.
+
+The ready adapter handles an identified funded checkpoint. Fresh Mutinynet bootstrap still needs separate orchestration: the original resource validator rejects legitimate native asset change. The recovered pool does not prove a clean deployment.
 
 ## Run on Windows
 
@@ -75,6 +83,13 @@ final witness still contains matching signatures and the expected leaf and
 control block; otherwise it fails closed. Recovery of a finalized transaction
 without its journal has not been verified. The read-only pending-response
 endpoint is the path for recovering a full, unfinalized operator response.
+
+The approved standalone recovery funded and journaled all four outputs, and
+its post-apply read-only audit passed. It stopped at the original ready-restore
+profile hashing bug. A reviewed compatibility image must preserve every
+fingerprinted verifier file, proving artifact, key and encrypted volume. Final
+readiness recovery must make zero wallet submissions. See the
+[compact profile](spec/COMPACT-PROFILE.md) for constraints.
 
 Fund the displayed Ark address directly, or send on-chain coins to the boarding address and use **Board confirmed funds** after confirmation. Sync only refreshes balances. The service journals boarding inputs before joining the shared Bitcoin round and blocks ambiguous retries. The server commands and image enable Node 24's EventSource transport for Ark round events.
 

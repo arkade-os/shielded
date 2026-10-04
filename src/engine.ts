@@ -138,8 +138,13 @@ export async function createDemoEngine(options: DemoEngineOptions = {}): Promise
     };
     if (proofTransport === 'compact') {
       if (network === 'mutinynet') {
-        const { createCompactLiveRuntime } = await import('./compact/live.ts');
-        native = await createCompactLiveRuntime(runtimeOptions);
+        if (saved?.native.live?.phase === 'ready') {
+          const { createCompactReadyLiveRuntime } = await import('./compact/ready-live.ts');
+          native = await createCompactReadyLiveRuntime(runtimeOptions);
+        } else {
+          const { createCompactLiveRuntime } = await import('./compact/live.ts');
+          native = await createCompactLiveRuntime(runtimeOptions);
+        }
       } else {
         const { createCompactRuntime } = await import('./compact/runtime.ts');
         native = await createCompactRuntime(runtimeOptions);
