@@ -36,11 +36,10 @@ const number=(value:string,label:string)=>{const n=Number(value);if(!Number.isSa
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms)),same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b),randomHex=()=>bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
 const short=(value:string)=>value?`${value.slice(0,10)}…${value.slice(-8)}`:'—',sats=(value:number)=>value.toLocaleString('en-US'),mb=(bytes:number)=>(bytes/1048576).toFixed(0);
 const validEncrypted=(value:any):value is EncryptedWallet=>value?.version===1&&/^[0-9a-f]{32}$/.test(value.salt)&&/^[0-9a-f]{24}$/.test(value.iv)&&/^(?:[0-9a-f]{2})+$/.test(value.ciphertext)&&value.ciphertext.length<=4000000;
-// URLs carry the pinned sha256, so a cached entry can only ever serve the bytes its pin expects.
-const PROOF_CACHE='shielded-proof-keys-v1',cachedFetch=(async(url:string)=>{
- const cache=await caches.open(PROOF_CACHE).catch(()=>undefined),hit=await cache?.match(url);if(hit)return hit;
- const response=await fetch(url);if(response.ok&&cache)void cache.put(url,response.clone()).catch(()=>undefined);return response;
-}) as typeof fetch;
+// Only bytes that already matched their pinned sha256 are cached, keyed by that hash, so a hit skips both download and re-hash.
+const PROOF_CACHE='shielded-proof-keys-v2';
+const cachedProofKey=async(key:string)=>{try{const hit=await (await caches.open(PROOF_CACHE)).match(key);return hit?new Uint8Array(await hit.arrayBuffer()):undefined;}catch{return undefined;}};
+const storeProofKey=(key:string,bytes:Uint8Array)=>void caches.open(PROOF_CACHE).then(cache=>cache.put(key,new Response(bytes as Uint8Array<ArrayBuffer>))).catch(()=>undefined);
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 const saveFile=(name:string,value:unknown)=>{const url=URL.createObjectURL(new Blob([JSON.stringify(value)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download=name;link.click();URL.revokeObjectURL(url);};
 
@@ -65,15 +64,22 @@ export default function StockWallet(){
   }
  };
  const save=async(value=walletRef.current,createOnly=false)=>{if(!value)return;const encrypted=await encryptWallet(value,passphrase.current);await storeWalletBackup(encrypted,createOnly);backupFile.current=encrypted;};
- const loader=(current:Profile)=>artifact.current??=createPinnedArtifactLoader(cachedFetch,current.provingManifest.artifacts,name=>`/api/proving/${encodeURIComponent(name)}?sha256=${current.provingManifest.artifacts[name]?.sha256}`,undefined,(name,loaded,total)=>{
-  downloads.current[name]=[loaded,total];const parts=Object.values(downloads.current);
-  setProofKeys(value=>({loaded:parts.reduce((sum,[part])=>sum+part,0),total:parts.reduce((sum,[,part])=>sum+part,0),ready:value?.ready??false}));
- });
+ const loader=(current:Profile)=>artifact.current??=(()=>{
+  const pins=current.provingManifest.artifacts,loads=new Map<string,Promise<Uint8Array>>();
+  const network=createPinnedArtifactLoader(fetch,pins,name=>'/api/proving/'+encodeURIComponent(name),undefined,(name,loaded,total)=>{
+   downloads.current[name]=[loaded,total];const parts=Object.values(downloads.current);
+   setProofKeys(value=>({loaded:parts.reduce((sum,[part])=>sum+part,0),total:parts.reduce((sum,[,part])=>sum+part,0),ready:value?.ready??false}));
+  });
+  return (name:string)=>{
+   let load=loads.get(name);
+   if(!load){const key='/proof-keys/'+pins[name]?.sha256;load=cachedProofKey(key).then(hit=>hit??network(name).then(bytes=>{storeProofKey(key,bytes);return bytes;}));load.catch(()=>loads.delete(name));loads.set(name,load);}
+   return load;
+  };
+ })();
  const prefetch=(current:Profile)=>{
-  if(prefetching.current)return;prefetching.current=true;
-  for(const name of PROOF_KEYS)downloads.current[name]??=[0,current.provingManifest.artifacts[name]?.size??0];
-  const total=Object.values(downloads.current).reduce((sum,[,part])=>sum+part,0),load=loader(current);setProofKeys(value=>value??{loaded:0,total,ready:false});
-  void Promise.all(PROOF_KEYS.map(name=>load(name))).then(()=>setProofKeys({loaded:total,total,ready:true})).catch(()=>{prefetching.current=false;downloads.current={};setProofKeys(undefined);void caches.delete(PROOF_CACHE).catch(()=>undefined);});
+  if(prefetching.current)return;prefetching.current=true;void caches.delete('shielded-proof-keys-v1').catch(()=>undefined);
+  const load=loader(current);
+  void Promise.all(PROOF_KEYS.map(name=>load(name))).then(()=>setProofKeys(value=>value&&{...value,loaded:value.total,ready:true})).catch(()=>{prefetching.current=false;downloads.current={};setProofKeys(undefined);});
  };
  const refresh=async()=>{const current=await api<Profile>('/profile');setProfile(current);const {archive}=await api<{archive:Archive}>('/archive');return {current,archive};};
  const install=async(value:WalletBackup,current:Profile,archive:Archive)=>{

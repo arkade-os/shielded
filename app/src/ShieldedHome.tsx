@@ -65,7 +65,7 @@ function Medallion({numeral,tone}:{numeral:string;tone:Tincture}){
 
 export default function ShieldedHome(){
  useEffect(()=>{
-  const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){entry.target.setAttribute('data-visible','');observer.unobserve(entry.target);}},{threshold:.2});
+  const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){entry.target.setAttribute('data-visible','');observer.unobserve(entry.target);}},{rootMargin:'0px 0px -15% 0px'});
   document.querySelectorAll('[data-reveal]').forEach(node=>observer.observe(node));
   document.querySelector('.shielded-home')?.classList.add('sh-ready');
   return()=>observer.disconnect();
