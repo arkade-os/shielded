@@ -58,6 +58,10 @@ async function postJson<T>(base:string,path:string,body:unknown,name:string,disc
  finally{if(timer)clearTimeout(timer);}
 }
 function copyPublic<T>(value:T):T{return structuredClone(value);}
+export function createSavedStoreView<T>(initial:T,persist:(next:T)=>void){
+ let saved=initial;
+ return {get saved(){return saved;},save(next:T){persist(next);saved=next;}};
+}
 export function modeMutationPaths(mode:'prepare'|'run'|'verify-only'):string[]{return mode==='run'?['/api/participants/:owner','/api/prepare','/api/settlements']:[];}
 export function selectExactFundingCoin(coins:readonly CustomerVtxo[],outpoint:string,minimumValue=330):CustomerVtxo{
  const matches=coins.filter(coin=>`${coin.funding.txid.toLowerCase()}:${coin.funding.vout}`===outpoint.toLowerCase());
@@ -97,12 +101,14 @@ function loadOrCreateStore(){
  mkdirSync(STORE_DIR,{recursive:true,mode:0o700});chmodSync(STORE_DIR,0o700);const store=EngineStore.open(STORE_DIR);let saved=store.load<Saved>();
  if(!saved){saved={version:1,purpose:'stock-live-smoke',network:'mutinynet',releaseFingerprint:requiredFingerprint(),softwareImageDigest:requiredImageDigest(),bobMaster:randomBytes(32).toString('hex'),carolMaster:randomBytes(32).toString('hex'),completed:{},fundingCoins:{},restartBoundaryReached:false,startedAt:new Date().toISOString()};store.save(saved);}
  if(saved.version!==1||saved.purpose!=='stock-live-smoke'||saved.network!=='mutinynet'||saved.releaseFingerprint!==requiredFingerprint()||saved.softwareImageDigest!==requiredImageDigest()||!/^(?:[0-9a-f]{2}){32}$/.test(saved.bobMaster)||!/^(?:[0-9a-f]{2}){32}$/.test(saved.carolMaster))fail('encrypted client journal belongs to a different profile, software image, or is malformed.');
- return {store,saved,save:(next:Saved)=>{store.save(next);saved=next;}};
+ const view=createSavedStoreView(saved,next=>store.save(next));
+ return {store,get saved(){return view.saved;},save:(next:Saved)=>view.save(next)};
 }
 function openExistingStore(){
  if(!existsSync(join(STORE_DIR,'shielded.sqlite'))||!existsSync(join(STORE_DIR,'.key')))fail('the encrypted live-smoke wallet journal does not exist; run --run once to initialize it.');
  const store=EngineStore.open(STORE_DIR);let saved=store.load<Saved>();if(!saved||saved.version!==1||saved.purpose!=='stock-live-smoke'||saved.network!=='mutinynet'||saved.releaseFingerprint!==requiredFingerprint()||saved.softwareImageDigest!==requiredImageDigest())fail('encrypted live-smoke journal has no matching deployment and software identity.');
- return {store,saved,save:(next:Saved)=>{store.save(next);saved=next;}};
+ const view=createSavedStoreView(saved,next=>store.save(next));
+ return {store,get saved(){return view.saved;},save:(next:Saved)=>view.save(next)};
 }
 async function initializeParty(name:PartyName,master:string,network:StockNetworkInfo,profile:StockProfile,backend:Awaited<ReturnType<typeof loadStockProofArtifacts>>['backend'],registrationProfile:string,vault:{saved:Saved;save:(next:Saved)=>void}):Promise<Party>{
  const material=deriveWalletKeyMaterial(master,'mutinynet'),identity=SingleKey.fromHex(material.nativeSecret),owner=hex.encode(await identity.xOnlyPublicKey()),server=hex.decode(network.serverKey),key=await identity.xOnlyPublicKey();

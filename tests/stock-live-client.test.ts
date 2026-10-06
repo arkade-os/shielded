@@ -3,7 +3,7 @@ import test from 'node:test';
 import {base64} from '@scure/base';
 import {Transaction} from '@arkade-os/sdk';
 import {offlineNativeFixture} from '../src/sdk/adapter.ts';
-import {assertUnsealedTransferRejected,modeMutationPaths,pendingSettlementMatches,selectExactFundingCoin} from '../tools/stock-live-smoke.ts';
+import {assertUnsealedTransferRejected,createSavedStoreView,modeMutationPaths,pendingSettlementMatches,selectExactFundingCoin} from '../tools/stock-live-smoke.ts';
 
 const coin=(txid:string,vout:number,value:number)=>({amount:value,funding:{txid,vout,value,sourceTxHex:'00',tapTreeHex:'00',leafHex:'51'}});
 
@@ -18,6 +18,35 @@ test('verify-only has no mutating HTTP paths',()=>{
  assert.deepEqual(modeMutationPaths('verify-only'),[]);
  assert.deepEqual(modeMutationPaths('prepare'),[]);
  assert.ok(modeMutationPaths('run').length>0);
+});
+
+test('live journal view follows each successful persisted save and survives reload',()=>{
+ const initial={registrations:{alice:'signed-registration'},pending:{name:'alice:transfer'},completed:{},fundingCoins:{alice:'exact-coin'}};
+ let durable=structuredClone(initial);
+ const vault=createSavedStoreView(initial,next=>{durable=structuredClone(next);});
+ vault.save({...vault.saved,completed:{...vault.saved.completed,deposit:{txid:'deposit-tx'}}});
+ assert.equal(vault.saved.registrations.alice,'signed-registration');
+ assert.equal(vault.saved.pending?.name,'alice:transfer');
+ vault.save({...vault.saved,completed:{...vault.saved.completed,transfer:{txid:'transfer-tx'}}});
+ const cleared={...vault.saved,completed:{...vault.saved.completed,transfer:{txid:'transfer-tx',acceptedAt:'now'}}} as typeof initial;
+ delete (cleared as any).pending;
+ vault.save(cleared);
+ assert.equal(vault.saved.pending,undefined);
+ assert.deepEqual(Object.keys(vault.saved.completed).sort(),['deposit','transfer']);
+ const reopened=createSavedStoreView(structuredClone(durable),next=>{durable=structuredClone(next);});
+ assert.equal(reopened.saved.registrations.alice,'signed-registration');
+ assert.equal(reopened.saved.fundingCoins.alice,'exact-coin');
+ assert.equal(reopened.saved.pending,undefined);
+ assert.deepEqual(Object.keys(reopened.saved.completed).sort(),['deposit','transfer']);
+});
+
+test('failed live journal persistence leaves the saved view at the last committed value',()=>{
+ const initial={completed:{first:{txid:'kept'}},pending:{name:'exact-pending'}};
+ const view=createSavedStoreView(initial,()=>{throw new Error('disk full');});
+ const before=view.saved;
+ assert.throws(()=>view.save({completed:{},pending:undefined}),/disk full/);
+ assert.equal(view.saved,before);
+ assert.deepEqual(view.saved,{completed:{first:{txid:'kept'}},pending:{name:'exact-pending'}});
 });
 
 test('unsealed transfer probe accepts only the expected local sealed-state rejection',async()=>{
