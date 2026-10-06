@@ -33,12 +33,15 @@ export async function verifyPinnedArtifact(response: Response, expected: PinnedA
   return bytes;
 }
 
+export interface PinnedArtifactStore { get(sha256: string): Promise<Uint8Array | undefined>; put(sha256: string, bytes: Uint8Array): void }
+
 export function createPinnedArtifactLoader(
   fetcher: typeof fetch,
   manifest: PinnedArtifactManifest,
   urlFor: (name: string) => string,
   headers?: HeadersInit,
   onProgress?: (name: string, loaded: number, total: number) => void,
+  store?: PinnedArtifactStore,
 ): (name: string) => Promise<Uint8Array> {
   const cache = new Map<string, Promise<Uint8Array>>();
   return (name) => {
@@ -46,9 +49,15 @@ export function createPinnedArtifactLoader(
     if (!pin) return Promise.reject(new Error('Unknown pinned proving artifact'));
     const cached = cache.get(name);
     if (cached) return cached;
-    let pending: Promise<Uint8Array>;
-    pending = fetcher(urlFor(name), { headers })
+    const download = () => fetcher(urlFor(name), { headers })
       .then((response) => verifyPinnedArtifact(response, pin, onProgress && ((loaded) => onProgress(name, loaded, pin.size))))
+      .then((bytes) => { store?.put(pin.sha256, bytes); return bytes; });
+    let pending: Promise<Uint8Array>;
+    // A persisted copy is re-hashed like a download: a tampered proving key could leak the witness through the proof.
+    pending = Promise.resolve(store?.get(pin.sha256))
+      .then((hit) => hit && verifyPinnedArtifact(new Response(hit as Uint8Array<ArrayBuffer>), pin))
+      .catch(() => undefined)
+      .then((hit) => hit ?? download())
       .catch((error) => {
         if (cache.get(name) === pending) cache.delete(name);
         throw error;

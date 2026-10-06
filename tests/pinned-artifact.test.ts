@@ -42,6 +42,21 @@ test('artifact loading reports streamed download progress', async () => {
   assert.deepEqual(seen, [['intent.wasm', 2, 5], ['intent.wasm', 5, 5]]);
 });
 
+test('artifact loading re-verifies persisted bytes before use', async () => {
+  const pin = { size: 5, sha256: createHash('sha256').update('proof').digest('hex') };
+  const stored: [string, string][] = [];
+  const store = (hit: string) => ({ get: async () => new TextEncoder().encode(hit), put: (key: string, bytes: Uint8Array) => stored.push([key, new TextDecoder().decode(bytes)]) });
+  let calls = 0;
+  const fetcher = async () => { calls++; return new Response('proof'); };
+  const trusted = await createPinnedArtifactLoader(fetcher, { 'intent.wasm': pin }, (name) => name, undefined, undefined, store('proof'))('intent.wasm');
+  assert.equal(new TextDecoder().decode(trusted), 'proof');
+  assert.equal(calls, 0);
+  const replaced = await createPinnedArtifactLoader(fetcher, { 'intent.wasm': pin }, (name) => name, undefined, undefined, store('proef'))('intent.wasm');
+  assert.equal(new TextDecoder().decode(replaced), 'proof');
+  assert.equal(calls, 1);
+  assert.deepEqual(stored, [[pin.sha256, 'proof']]);
+});
+
 test('artifact loading caches verified bytes and retries after a rejected download', async () => {
   const pin = { size: 5, sha256: createHash('sha256').update('proof').digest('hex') };
   let calls = 0;
