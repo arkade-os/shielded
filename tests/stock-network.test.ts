@@ -11,6 +11,7 @@ test('stock network preflight retains the experimental cap and refuses incompati
  const lower=parseStockNetworkInfo({...ark,maxTxWeight:'2000'},emulator);
  assert.throws(()=>assertStockWeightBudget(lower,{ark:2001,checkpoints:[696]}),/exceeds/);
  assert.throws(()=>parseStockNetworkInfo({...ark,network:'mainnet'},emulator),/different network/);
+ assert.throws(()=>parseStockNetworkInfo({...ark,signerPubkey:emulator.signerPubkey},emulator),/must be distinct/);
  assert.throws(()=>parseStockNetworkInfo({...ark,dust:'331'},emulator),/carrier/);
  assert.throws(()=>parseStockNetworkInfo(ark,emulator,{serverKey:'00'.repeat(32),emulatorKey:info.emulatorKey}),/signer keys changed/);
  assert.throws(()=>parseStockNetworkInfo({...ark,maxTxWeight:'04000'},emulator),/canonical/);
@@ -18,8 +19,17 @@ test('stock network preflight retains the experimental cap and refuses incompati
 test('stock public preflight only fetches bounded public info and leaves native admission unverified',async()=>{
  const visited:string[]=[];
  const fetcher:typeof fetch=async(input,init)=>{const url=String(input);visited.push(url);assert.equal(init?.redirect,'error');assert.equal(init?.method,undefined);return new Response(JSON.stringify(url.includes('emulator.')?emulator:ark));};
- assert.equal((await preflightStockMutinynet({fetcher})).nativeAdmission,'unverified');
+ const defaultNetwork=await preflightStockMutinynet({fetcher});
+ assert.equal(defaultNetwork.nativeAdmission,'unverified');assert.equal(Object.hasOwn(defaultNetwork,'indexerUrl'),false);
  assert.deepEqual(visited.sort(),['https://emulator.mutinynet.arkade.sh/v1/info','https://mutinynet.arkade.sh/v1/info']);
  await assert.rejects(preflightStockMutinynet({fetcher:async()=>new Response(' '.repeat(65537))}),/exceeds the limit/);
  await assert.rejects(preflightStockMutinynet({fetcher:async()=>new Response('{}',{status:503})}),/HTTP 503/);
+});
+test('stock preflight accepts explicit Mutinynet provider origins while retaining its operator identity and weight cap',async()=>{
+ const visited:string[]=[],arkUrl='https://ark.example',emulatorUrl='https://emulator.example',indexerUrl='https://indexer.example';
+ const fetcher:typeof fetch=async(input)=>{const url=String(input);visited.push(url);return new Response(JSON.stringify(url.startsWith(emulatorUrl)?emulator:ark));};
+ const network=await preflightStockMutinynet({fetcher,arkUrl,emulatorUrl,indexerUrl});
+ assert.deepEqual(visited.sort(),[arkUrl+'/v1/info',emulatorUrl+'/v1/info']);
+ assert.equal(network.arkUrl,arkUrl);assert.equal(network.emulatorUrl,emulatorUrl);assert.equal(network.indexerUrl,indexerUrl);assert.equal(network.weightLimit,4000);
+ await assert.rejects(preflightStockMutinynet({fetcher,arkUrl:'https://user:secret@ark.example'}),/Arkade URL/);
 });

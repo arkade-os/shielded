@@ -102,3 +102,12 @@ jobs:
       - run: npm run stock:qualify -- --local-only
       - run: docker build --file Dockerfile.stock --tag shielded-stock:ci .
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-stock:ci node --import tsx src/stock/server.ts --help
+  dokploy-installation-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
+      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node --experimental-eventsource --import tsx src/stock/install-server.ts --help

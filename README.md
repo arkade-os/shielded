@@ -2,6 +2,8 @@
 
 The replacement BTC implementation is in `src/stock` and `circuits/stock`. It combines note ownership, encryption, indexed nullifiers and native value conservation in one Groth16 proof, keeps customer keys in their wallets, and pins the verifier to the existing emulator's stock BN254 opcodes. See the [statement](spec/STOCK-STATEMENT.md) and [deployment and acceptance gates](spec/STOCK-DEPLOYMENT.md). All nine paths have passed local native execution, including the three delayed exits. The [funded BTC stock lifecycle and same-volume restart](validation/stock-mutinynet-lifecycle.json) also passed on public Mutinynet: a three-client flow covered an exact deposit, seals, private transfers, sub-dust withdrawals, disconnect recovery and final cashouts. The maximum signed Ark transaction was 3,930 WU under the 4,000-WU cap. This is bounded testnet acceptance; the delayed Bitcoin exits have only been exercised locally. The historical results below apply to their original profiles.
 
+For a fresh Mutinynet deployment on Dokploy, use the [Dockerfile installation guide](docs/DOKPLOY.md): runtime environment variables, one `/data` volume and a domain on port `8792`. No release directory or fingerprint environment variable is required. Customer keys remain in their own clients. Existing test deployments keep their original profiles and volumes.
+
 # Shielded Arkade PoC
 
 **Legacy deployment security status:** the retained compact demo is custodial, not a

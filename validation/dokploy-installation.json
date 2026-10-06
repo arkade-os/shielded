@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "recordedAt": "2026-10-06",
+  "scope": "Fresh Dokploy installation and unfunded same-volume image replacement",
+  "baseCommit": "06051d0d0b78f6ee8bb775cbdbb0a117c562bd85",
+  "network": "mutinynet",
+  "endpoints": {
+    "ark": "https://mutinynet.arkade.sh",
+    "emulator": "https://emulator.mutinynet.arkade.sh"
+  },
+  "image": {
+    "tag": "shielded-dokploy:install-release",
+    "manifestDigest": "sha256:d70dcf13bac1e50cb6eef1b2ea8bfee82497fa119c81447c1153527eb04f7fdc",
+    "offlineHelpSmoke": true
+  },
+  "verification": {
+    "fullRetainedTestRun": {
+      "passed": 198,
+      "failed": 0,
+      "skipped": 0
+    },
+    "subsequentFocusedRun": {
+      "passed": 22,
+      "failed": 0,
+      "newWalletStorageTests": 2
+    },
+    "typescriptAndWalletBuild": "passed",
+    "freshInstallerSelfPreflight": "passed",
+    "localNativeQualification": {
+      "allNinePaths": true,
+      "targetWeightLimit": 4000,
+      "maximumProjectedWeight": 3930,
+      "fundedMutinynet": false
+    },
+    "sameImageSameVolumeRestart": true,
+    "newImageSameVolumeRestart": true,
+    "browserSetupPage": "waiting-funds",
+    "http": {
+      "health": 200,
+      "readiness": 503,
+      "transactionApiWhileUnfunded": 503,
+      "wallet": 200
+    }
+  },
+  "preservedVolume": {
+    "fundingPublicKey": "288efad70f939c761bc97410b291379a7966c6a7b76b64ff9b9bf15919660991",
+    "manifestHash": "912962f9df01b990986d223cf4b8661231072ab61ebfd3c57150cf334546de8c",
+    "descriptorProfileId": "01d9e4f01fe14b9c62f2bd103a87f4b41bfb2b2d85d55155d289ea3990c6bf9d",
+    "programsHash": "ad42edb0130b3ea2802e86f3742569a4eb79f0eb9e94bebfaf7e32b5cc96f86a",
+    "qualificationHash": "6834d0b619010e7126158bb4bbd9d87794a21b66f625f7a90ac1f45f4177b210",
+    "noFundingOutpointSelected": true,
+    "noAcceptedBootstrap": true,
+    "initialized": false,
+    "coordinatorInitialized": false
+  },
+  "changedImageBundle": {
+    "manifestHash": "88dc1fbb95b92e64a7b405f748b9f17d8dc390864016aa0b65c883df789d5da6",
+    "descriptorProfileId": "49ecb4122a6a993777206b4acb83d013b26ab63c70d3111716f4419695ca68bb",
+    "persistedVerifierPreserved": true
+  },
+  "customerKeyStorage": {
+    "encryptedBrowserBackup": true,
+    "spendingAndViewingKeysClientSide": true,
+    "exclusiveCrossTabStorage": true
+  },
+  "limitations": [
+    "This fresh installer remains unfunded; no native genesis submission or funded lifecycle was performed by this validation.",
+    "Local qualification uses synthetic execution and projects weights against the actual configured public operator; it does not prove live admission.",
+    "Historical funded stock lifecycle evidence belongs to the preserved separate deployment.",
+    "Mutinynet-only bounded BTC pool with development-only circuit-specific Groth16 phase 2; no independent pool exit during Arkade outages; note recovery depends on available proof sidecars."
+  ]
+}

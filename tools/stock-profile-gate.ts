@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,writeFile,rename,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {resolve,join} from 'node:path';
 import {base64,hex} from '@scure/base';
@@ -22,10 +22,12 @@ import {verifyStockResponse,stockSignedWeights,type StockWireRequest} from '../s
 import {offlineNativeFixture} from '../src/sdk/adapter.ts';
 import {executeVmBinary} from '../src/sdk/runtime.ts';
 import {preflightStockMutinynet,type StockNetworkInfo} from '../src/stock/network.ts';
+import {loadStockInstallConfig} from '../src/stock/config.ts';
 import {validateStockCheckpoint} from '../src/stock/checkpoint.ts';
 import type {StockProfileWeightEvidence,StockQualificationPath,StockQualificationPathEvidence} from '../src/stock/bootstrap.ts';
 
-const root=process.cwd(),localOnly=process.argv.includes('--local-only'),artifactDirectory=resolve(process.env.SHIELDED_STOCK_ARTIFACTS??'circuits/stock/build/compiled');
+const root=process.cwd(),localOnly=process.argv.includes('--local-only'),installation=process.argv.includes('--installation'),installConfig=installation?loadStockInstallConfig():undefined,artifactDirectory=resolve(process.env.SHIELDED_STOCK_ARTIFACTS??'circuits/stock/build/compiled');
+if(installation&&localOnly)throw new Error('Installation qualification cannot use synthetic local-only network metadata.');
 const sha=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const manifest=JSON.parse(await readFile(join(artifactDirectory,'stock-combined.manifest.json'),'utf8')) as StockArtifactManifest;
 const loaded=await loadStockProofArtifacts(artifactDirectory,manifest),binary=resolve('bin',process.platform==='win32'?'shielded-vm.exe':'shielded-vm');
@@ -33,7 +35,7 @@ const programs=JSON.parse(execFileSync(binary,['--stock-build',join(artifactDire
 const server=SingleKey.fromHex('01'.repeat(32)),emulator=SingleKey.fromHex('02'.repeat(32));
 const network:StockNetworkInfo={network:'mutinynet',arkUrl:'synthetic-native-service',emulatorUrl:'synthetic-native-service',serverKey:hex.encode(await server.xOnlyPublicKey()),emulatorKey:hex.encode(await emulator.xOnlyPublicKey()),operatorMaxWeight:4000,weightLimit:4000,dust:330,exitDelay:{type:'seconds',value:2048},emulatorVersion:'local-pinned-Service',nativeAdmission:'unverified'};
 const checkpoint=CSVMultisigTapscript.encode({pubkeys:[await server.xOnlyPublicKey()],timelock:{type:'seconds',value:4096n}}),checkpointTapscript=hex.encode(checkpoint.script);
-const targetNetwork=localOnly?network:await preflightStockMutinynet();
+const targetNetwork=localOnly?network:await preflightStockMutinynet(installConfig?{arkUrl:installConfig.network.arkUrl,emulatorUrl:installConfig.network.emulatorUrl,indexerUrl:installConfig.network.indexerUrl}:{});
 const targetInfo=localOnly?undefined:await new RestArkProvider(targetNetwork.arkUrl).getInfo();
 const targetCheckpoint=targetInfo?validateStockCheckpoint(targetInfo.checkpointTapscript,targetInfo.forfeitPubkey):checkpoint;
 const targetCheckpointTapscript=hex.encode(targetCheckpoint.script);
@@ -136,7 +138,8 @@ try{
   cases.push({name:funded?'exit-withdraw-funded':'exit-withdraw',psbt:base64.encode(tx.toPSBT()),party:alice});
  }
  const input=join(directory,'onchain-cases.json');await writeFile(input,JSON.stringify({cases:cases.map(({name,psbt})=>({name,psbt}))}));
- const output=execFileSync('go',['test','-run','^TestStockOnchainGateHarness$','-count=1','-v'],{cwd:join(root,'tools/vm'),env:{...process.env,SHIELDED_STOCK_ONCHAIN_GATE_INPUT:input},encoding:'utf8',windowsHide:true,maxBuffer:16*1024*1024});
+ const gateBinary=resolve(root,'bin',process.platform==='win32'?'stock-onchain-qualification.exe':'stock-onchain-qualification');
+ const output=installation?execFileSync(gateBinary,['-test.run=^TestStockOnchainGateHarness$','-test.count=1','-test.v'],{cwd:root,env:{...process.env,SHIELDED_STOCK_ONCHAIN_GATE_INPUT:input},encoding:'utf8',windowsHide:true,maxBuffer:16*1024*1024}):execFileSync('go',['test','-run','^TestStockOnchainGateHarness$','-count=1','-v'],{cwd:join(root,'tools/vm'),env:{...process.env,SHIELDED_STOCK_ONCHAIN_GATE_INPUT:input},encoding:'utf8',windowsHide:true,maxBuffer:16*1024*1024});
  const line=output.split(/\r?\n/).find(value=>value.startsWith('STOCK_ONCHAIN_GATE_RESULT='));assert.ok(line,'Pinned native Service returned no exit receipts');
  const result=JSON.parse(line.slice('STOCK_ONCHAIN_GATE_RESULT='.length));
  for(const item of cases){const receipt=result.cases.find((entry:any)=>entry.name===item.name);assert.equal(receipt?.ok,true);const signed=Transaction.fromPSBT(base64.decode(receipt.signedPsbt)),submitted=Transaction.fromPSBT(base64.decode(item.psbt));assert.equal(signed.id,submitted.id);assert.deepEqual(signed.unsignedTx,submitted.unsignedTx);
@@ -145,6 +148,6 @@ try{
  }
  assert.equal(Object.keys(paths).length,9);
  const evidence:StockProfileWeightEvidence={version:1,network:'mutinynet',qualification:'local-native-service-all-nine',fundedMutinynet:false,nativeAdmission:'unverified',descriptorProfileId:targetProfile.descriptorProfileId,programsHash:targetProfile.programsHashHex,artifactsHash:stockJournalFingerprint(manifest),serverKey:targetNetwork.serverKey,emulatorKey:targetNetwork.emulatorKey,checkpointHash:sha(targetCheckpoint.script),exitDelay:targetNetwork.exitDelay,targetWeightLimit:targetNetwork.weightLimit,poolTapTreeHash:sha(targetProfile.tapTree),signatureModel:'64-byte-default-sighash',paths};
- const outputPath=resolve(localOnly?'validation/stock-profile-local.json':'validation/stock-profile-qualification.json');await writeFile(outputPath,JSON.stringify({...evidence,localOnly,measurements:samples,weightProjection:'Exact target-policy leaf/control-block lengths and 64-byte default-sighash signatures; actual locally executed proof witness bytes are retained. Target public signer signatures and target public admission are not claimed.',limitations:['Synthetic prevouts and deterministic public fixture signer keys; no network submission','CSV exit service execution does not demonstrate a confirmed matured Bitcoin exit','Development circuit-specific phase2']},null,2)+'\n');console.log('All nine actual pinned native Service paths qualified; funded public admission remains unverified.');
+ const outputPath=resolve(installation?join(installConfig!.network.dataDirectory,'stock-profile-qualification.json'):localOnly?'validation/stock-profile-local.json':'validation/stock-profile-qualification.json'),content=JSON.stringify({...evidence,localOnly,measurements:samples,weightProjection:'Exact target-policy leaf/control-block lengths and 64-byte default-sighash signatures; actual locally executed proof witness bytes are retained. Target public signer signatures and target public admission are not claimed.',limitations:['Synthetic prevouts and deterministic public fixture signer keys; no network submission','CSV exit service execution does not demonstrate a confirmed matured Bitcoin exit','Development circuit-specific phase2']},null,2)+'\n';if(installation){await mkdir(installConfig!.network.dataDirectory,{recursive:true});const temporary=outputPath+'.tmp-'+process.pid;await writeFile(temporary,content,{flag:'wx',mode:0o600});try{await rename(temporary,outputPath);}catch(error){await rm(temporary,{force:true});throw error;}}else await writeFile(outputPath,content);console.log('All nine actual pinned native Service paths qualified; funded public admission remains unverified.');
 }finally{coordinator.close();assert.ok(directory.startsWith(join(tmpdir(),'shielded-stock-qualification-')));await rm(directory,{recursive:true,force:true});await (globalThis as any).curve_bn128?.terminate();}
 process.exit(0);

@@ -106,7 +106,7 @@ function restoreIndexed(raw:Transaction,expected:Transaction):Transaction {
  return result;
 }
 export function createStockMutinynetTransport(network:StockNetworkInfo,providers:{emulator?:Pick<RestEmulatorProvider,'submitTx'>;indexer?:Pick<RestIndexerProvider,'getVirtualTxs'|'getVtxos'>}={}){
- const emulator=providers.emulator??new RestEmulatorProvider(network.emulatorUrl),indexer=providers.indexer??new RestIndexerProvider(network.arkUrl);
+ const emulator=providers.emulator??new RestEmulatorProvider(network.emulatorUrl),indexer=providers.indexer??new RestIndexerProvider(network.indexerUrl??network.arkUrl);
  const lookup=async(request:StockWireRequest):Promise<StockNativeReceipt|undefined>=>{
   const expected=Transaction.fromPSBT(base64.decode(request.arkTx)),checkpoints=request.checkpoints.map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));
   const raw=(await indexer.getVirtualTxs([expected.id,...checkpoints.map(tx=>tx.id)])).txs.map(decodeStockIndexerTransaction);

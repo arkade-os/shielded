@@ -30,7 +30,15 @@ The lifecycle gate uses actual combined proofs and the real stock emulator Servi
 
 Before live genesis, run `npm run stock:qualify` to bind all nine local native executions and signed weight projections to the current public signer keys, checkpoint, verifier, artifacts and pool tree. Supply its `validation/stock-profile-qualification.json` to bootstrap with `--weight-evidence`. The three CSV paths execute through the pinned stock emulator Bitcoin API with synthetic prevouts; this does not prove a confirmed, matured Bitcoin exit. The bootstrap gate labels public funded admission unverified and never accepts it as an inferred result of local execution.
 
-## Immutable release
+## Fresh Docker installation
+
+Use `Dockerfile.dokploy` for a fresh Mutinynet test pool. The [Dokploy guide](../docs/DOKPLOY.md) and [runtime environment example](../dokploy.env.example) cover network endpoints, the optional bootstrap mnemonic, one persistent `/data` volume and HTTPS routing. The installer creates or restores its encrypted funding identity, pins its bundled development proving artifacts, qualifies the configured network and creates a 330-sat carrier from one exact eligible Arkade VTXO. If the wallet is empty, `/api/setup` and the wallet page display its public funding address. A restart follows the recorded coin and transaction identities rather than selecting another coin or resubmitting an unknown outcome.
+
+The volume keeps the proving bundle and native programs across image builds. A rebuild's new development setup does not replace the saved pool verifier. Missing or changed funded artifacts, network keys or programs stop startup safely. Keep one replica and use stop-first updates and rollbacks.
+
+The installer handles internal release publication and fingerprint pinning. A new wallet can pin a fingerprint from an independent trusted channel, or explicitly choose trust on first use over HTTPS. That choice trusts the installation's initial verifier selection and is saved in the new wallet backup. It does not alter existing backup pins or establish independent verification of the chosen verifier. Customer spending, viewing and native keys remain client-side; the optional server mnemonic funds only the initial carrier.
+
+## Existing immutable releases
 
 A release directory contains `deployment.json`, `stock-combined.manifest.json`, `stock-combined.vkey.json`, `stock-combined.zkey` and `stock-combined_js/stock-combined.wasm`. The deployment binds the accepted genesis transaction, native programs, signer keys, checkpoint policy and all proving artifact hashes. Publish its canonical release fingerprint through an independently verified software release. Wallets require that fingerprint before trusting the operator API; matching a server-supplied key to a server-supplied manifest alone is insufficient.
 
@@ -41,7 +49,7 @@ SHIELDED_STOCK_ALLOW_DEV_SETUP=true
 docker compose -f compose.stock.yaml up --build -d
 ```
 
-The development opt-in applies only to this test-network profile. The container runs without root privileges, mounts the release read-only and stores encrypted coordinator state in a dedicated volume. It exposes the wallet on loopback port 8792 at `/stock-wallet`. A separately configured public HTTPS origin is needed for public use. Build and startup do not create or fund genesis.
+The development opt-in applies only to this test-network profile. The container runs without root privileges, mounts the release read-only and stores encrypted coordinator state in a dedicated volume. It exposes the wallet on loopback port 8792 at `/stock-wallet`. A separately configured public HTTPS origin is needed for public use. This legacy release-only entry point does not create or fund genesis; the fresh installer above handles first genesis.
 
 Startup checks the public network, signer keys, current checkpoint policy, fee assumptions and accepted genesis against the indexer. Before submission it checks the exact original inputs. Changed, spent, expired, swept or unrolled inputs fail closed. The first profile requires zero operator fees and uses the lower of the advertised operator limit and 4000 WU.
 
@@ -65,12 +73,10 @@ Data availability remains a protocol assumption. Clients retain their sidecars a
 
 A separate data-publication transaction is a candidate for a future fresh profile, not a completed mitigation. It must bind the published records and nullifier to the proved transition, remain within the weight cap, and support authenticated discovery of foreign native heads. It must also prevent an arbitrary publisher from locking the shared pool to data for which no valid transition exists. Generating a proof in an honest wallet before publication does not enforce that requirement against a malicious publisher. A proofless pending-state lock without an independently safe recovery path is insufficient.
 
-## Dokploy test deployment
+## Existing release deployment and migration
 
-Use Docker Compose with the private repository branch `main` and Compose path `./compose.stock.yaml`. Copy `stock.env.example` into Dokploy Environment and replace both release placeholders with the separately accepted immutable release. Dokploy can keep the release under its managed `../files` directory, outside the Git checkout. The Compose build passes the release fingerprint to the wallet as `VITE_STOCK_RELEASE_FINGERPRINT`; it is public and must also be distributed through an independently trusted release channel.
+The fresh Dockerfile application is the recommended Dokploy setup. `compose.stock.yaml` and `stock.env.example` remain available for an already accepted immutable release. That legacy path requires the exact release directory and fingerprint; it is not a requirement for a new installation.
 
-In Domains select service `shielded-stock`, container port `8792`, path `/`, and HTTPS. The wallet is served at `/stock-wallet`; `/health` checks the HTTP service. Preserve the named `/data` volume and its `.key`, and keep one writer. Deployments stop the previous writer before starting its replacement. Keep the software image fixed during the funded restart acceptance run, and never regenerate or overwrite a funded release from a CD build.
+The [recorded funded test](../validation/stock-mutinynet-lifecycle.json) has already spent its genesis and subsequently cashed out all private reserves. Moving that exact deployment to another host requires the complete encrypted coordinator journal and its storage key, alongside the unchanged immutable release; stop the original writer before starting its replacement. A new empty data volume cannot recover the live continuation from the spent genesis alone. Use a separate fresh installer volume for a new test pool. Never commit storage keys, bootstrap mnemonics, customer secrets or encrypted recovery metadata to Git.
 
-The [recorded funded test](../validation/stock-mutinynet-lifecycle.json) has already spent its genesis and subsequently cashed out all private reserves. Moving that exact deployment to another host requires the complete encrypted coordinator journal and its storage key, alongside the unchanged immutable release; stop the original writer before starting its replacement. A new empty data volume cannot recover the live continuation from the spent genesis alone. A separate test pool needs a fresh bootstrap and release fingerprint. Never commit the storage key, customer secrets or encrypted recovery metadata to Git.
-
-Dokploy push auto-deploy does not wait for GitHub Actions. For CI-gated CD, disable that trigger and have a successful workflow call `POST /api/compose.deploy` with the Compose ID and a Dokploy API key stored in GitHub Secrets. Dokploy configuration and the live release mount must be verified on the deployment host; a successful image build alone does not establish public acceptance.
+Dokploy push auto-deploy does not wait for GitHub Actions. Verify the application environment, persistent volume, HTTPS domain and stop-first rollout on the deployment host. A built image or synthetic qualification alone does not establish funded public acceptance.

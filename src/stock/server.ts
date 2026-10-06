@@ -9,7 +9,7 @@ import {loadStockProofArtifacts,type StockArtifactManifest} from '../../packages
 import {createStockCoordinator,type StockPublicArchive} from './coordinator.ts';
 import {createStockApp} from './http.ts';
 import {stockJournalFingerprint,type StockReleasePin} from './journal.ts';
-import {preflightStockMutinynet} from './network.ts';
+import {preflightStockMutinynet,type StockNetworkEndpoints} from './network.ts';
 import {loadStockProfile,type StockProgramManifest} from './sdk.ts';
 import {createStockMutinynetTransport} from './transport.ts';
 import {decodeStockIndexerTransaction} from './indexer.ts';
@@ -23,13 +23,13 @@ export interface StockDeployment {
  checkpointTapscript:string;
  genesis:StockPublicArchive;
 }
-export async function openStockMutinynetService(options:{deploymentFile:string;artifactDirectory:string;dataDirectory:string;webRoot:string;allowDevelopmentSetup?:boolean;adminToken?:string}){
+export async function openStockMutinynetService(options:{deploymentFile:string;artifactDirectory:string;dataDirectory:string;webRoot:string;allowDevelopmentSetup?:boolean;adminToken?:string;endpoints?:StockNetworkEndpoints}){
  const deployment=JSON.parse(await readFile(options.deploymentFile,'utf8')) as StockDeployment;
  if(deployment.version!==1||deployment.pin.network!=='mutinynet'||deployment.pin.artifactsHash!==stockJournalFingerprint(deployment.proving))throw new Error('Stock deployment has an invalid network or artifact release pin.');
  if(deployment.proving.setup.phase2==='development-only'&&!options.allowDevelopmentSetup)throw new Error('Development Groth16 keys require explicit SHIELDED_STOCK_ALLOW_DEV_SETUP=true on this test network.');
  const loaded=await loadStockProofArtifacts(options.artifactDirectory,deployment.proving);
- const network=await preflightStockMutinynet({expected:{serverKey:deployment.pin.serverKey,emulatorKey:deployment.pin.emulatorKey}});
- const provider=new RestArkProvider(network.arkUrl),indexer=new RestIndexerProvider(network.arkUrl),info=await provider.getInfo();
+ const network=await preflightStockMutinynet({...options.endpoints,expected:{serverKey:deployment.pin.serverKey,emulatorKey:deployment.pin.emulatorKey}});
+ const provider=new RestArkProvider(network.arkUrl),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl),info=await provider.getInfo();
  const noFee=(value:unknown)=>typeof value==='string'&&/^0(?:\.0+)?$/.test(value);
  if(!info.fees||!noFee(info.fees.txFeeRate)||Object.values(info.fees.intentFee??{}).length!==4||!Object.values(info.fees.intentFee).every(noFee))throw new Error('The first stock profile requires zero offchain operator fees; a fee-aware profile needs a separate genesis.');
  if(info.checkpointTapscript!==deployment.checkpointTapscript||createHash('sha256').update(hex.decode(info.checkpointTapscript)).digest('hex')!==deployment.pin.checkpointHash)throw new Error('Public Arkade checkpoint policy changed; migration is required.');

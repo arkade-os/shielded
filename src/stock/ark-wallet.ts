@@ -24,7 +24,7 @@ export function walletIntentLeafScriptHex(leaf:readonly [unknown,Uint8Array]):st
  return hex.encode(leaf[1].subarray(0,-1));
 }
 export async function openCustomerArkWallet(identity:Identity,network:StockNetworkInfo){
- const indexer=new RestIndexerProvider(network.arkUrl),wallet=await Wallet.create({identity,arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:indexer,storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static'});
+ const indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl),wallet=await Wallet.create({identity,arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:indexer,storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static'});
  const address=await wallet.getAddress(),decoded=ArkAddress.decode(address),script=decoded.pkScript;
  if(script.length!==34||script[0]!==0x51||script[1]!==0x20)throw new Error('Arkade wallet did not return a standard P2TR receive program.');
  const rawCoins=await wallet.getSpendableVtxos();assertUniqueCustomerVtxos(rawCoins);const txids=[...new Set(rawCoins.map(coin=>coin.txid))],raw=txids.length?await indexer.getVirtualTxs(txids):{txs:[]};

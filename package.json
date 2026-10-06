@@ -37,7 +37,8 @@
     "stock:funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
     "stock:bootstrap": "node --experimental-eventsource --import tsx tools/stock-bootstrap.ts",
     "stock:live": "node --experimental-eventsource --import tsx tools/stock-live-smoke.ts",
-    "stock:qualify": "node --experimental-eventsource --import tsx tools/stock-profile-gate.ts"
+    "stock:qualify": "node --experimental-eventsource --import tsx tools/stock-profile-gate.ts",
+    "server:install": "node --experimental-eventsource --import tsx src/stock/install-server.ts"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.77",

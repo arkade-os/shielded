@@ -6,7 +6,7 @@ import {hex,base64} from '@scure/base';
 import {tapLeafHash} from '@scure/btc-signer/payment.js';
 import {TaprootControlBlock} from '@scure/btc-signer';
 import type {StockNetworkInfo} from './network.ts';
-import {assertStockWeightBudget} from './network.ts';
+import {assertStockWeightBudget,parseStockEndpoint} from './network.ts';
 import {stockJournalFingerprint} from './journal.ts';
 import type {StockProfile,StockProgramManifest} from './sdk.ts';
 import type {StockArtifactManifest} from '../../packages/protocol/src/stock-proof-node.ts';
@@ -64,7 +64,7 @@ function fail(message:string):never{throw new Error('Stock genesis bootstrap: '+
 function outpoint(value:string){if(!/^[0-9a-f]{64}:[0-9]+$/.test(value))fail('select exactly one canonical customer outpoint (txid:vout).');const [txid,vout]=value.split(':');if(!Number.isSafeInteger(Number(vout))||Number(vout)<0)fail('customer outpoint index is invalid.');return {txid:txid!,vout:Number(vout)};}
 function validatePin(pin:StockBootstrapPin,profile:StockProfile){
  if(pin.version!==1||pin.network!=='mutinynet'||pin.networkInfo.network!=='mutinynet'||pin.policyVersion!==1)fail('unsupported network or genesis policy.');
- if(pin.networkInfo.arkUrl!=='https://mutinynet.arkade.sh'||pin.networkInfo.emulatorUrl!=='https://emulator.mutinynet.arkade.sh'||pin.networkInfo.nativeAdmission!=='unverified')fail('only the pinned public Mutinynet endpoints are permitted.');
+ parseStockEndpoint(pin.networkInfo.arkUrl,'pinned Arkade URL');parseStockEndpoint(pin.networkInfo.emulatorUrl,'pinned emulator URL');if(pin.networkInfo.indexerUrl)parseStockEndpoint(pin.networkInfo.indexerUrl,'pinned indexer URL');if(pin.networkInfo.nativeAdmission!=='unverified')fail('genesis requires an unverified native admission profile.');
  if(pin.networkInfo.weightLimit!==Math.min(pin.networkInfo.operatorMaxWeight,4000)||pin.networkInfo.weightLimit<1)fail('invalid operator weight preflight.');
  if(profile.descriptorProfileId!==pin.descriptorProfileId||profile.programsHashHex!==pin.programsHash||profile.serverKey!==pin.serverKey||profile.emulatorKey!==pin.emulatorKey)fail('release pins do not match the loaded stock verifier and covenant program.');
  for(const key of ['descriptorProfileId','programsHash','artifactsHash','checkpointHash','serverKey','emulatorKey'] as const)if(!/^[0-9a-f]{64}$/.test(pin[key]))fail('malformed immutable release pin.');
