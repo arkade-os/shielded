@@ -6,8 +6,9 @@ import {promisify} from 'node:util';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createStockInstallApp} from '../src/stock/install-server.ts';
+import {createStockInstallApp,openWhenUnlocked} from '../src/stock/install-server.ts';
 import type {StockSetupStatus} from '../src/stock/install.ts';
+import {EngineStore} from '../src/storage.ts';
 
 async function fixture(){
  const directory=await mkdtemp(join(tmpdir(),'shielded-install-http-'));await writeFile(join(directory,'index.html'),'<main>installation wallet</main>');
@@ -46,4 +47,12 @@ test('installation qualification refuses synthetic network metadata before readi
  await assert.rejects(promisify(execFile)(process.execPath,['--import','tsx','tools/stock-profile-gate.ts','--installation','--local-only'],{env:{...process.env,SHIELDED_NETWORK:'mutinynet',SHIELDED_ARK_URL:'http://127.0.0.1:1',SHIELDED_EMULATOR_URL:'http://127.0.0.1:1',SHIELDED_STOCK_ARTIFACTS:'/missing-test-artifacts'},timeout:15000}),error=>{
   assert.match((error as any).stderr,/Installation qualification cannot use synthetic local-only network metadata/);return true;
  });
+});
+
+test('a replacement instance waits for the previous instance to release the data volume',async()=>{
+ const directory=await mkdtemp(join(tmpdir(),'shielded-install-lock-')),first=EngineStore.open(directory),signal=new AbortController().signal;let waits=0;
+ try{
+  const second=await openWhenUnlocked(async()=>EngineStore.open(directory),signal,()=>{waits++;if(waits===2)first.close();},10);second.close();assert.equal(waits,2);
+  await assert.rejects(openWhenUnlocked(async()=>{throw new Error('Saved installation configuration differs');},signal,()=>{waits++;},10),/configuration differs/);assert.equal(waits,2);
+ }finally{first.close();await rm(directory,{recursive:true,force:true});}
 });

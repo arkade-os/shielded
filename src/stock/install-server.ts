@@ -109,6 +109,16 @@ export async function openStockInstallation(config:StockInstallConfig,activate:(
   return {controller,close:()=>{service?.coordinator.close();store.close();}};
  }catch(error){store.close();throw error;}
 }
+// Swarm's start-first update keeps the old task until this one is healthy, so wait for its lock instead of failing.
+export async function openWhenUnlocked<T>(open:()=>Promise<T>,signal:AbortSignal,onWait:()=>void,delay=2000):Promise<T>{
+ for(;;){
+  try{return await open();}
+  catch(error){
+   if(signal.aborted||!(error instanceof Error&&error.cause instanceof Error&&/database is locked/i.test(error.cause.message)))throw error;
+   onWait();await new Promise(resolve=>setTimeout(resolve,delay));
+  }
+ }
+}
 export function createStockInstallApp(status:()=>StockSetupStatus,webRoot:string){
  const app=express();app.disable('x-powered-by');let service:express.Express|undefined;
  app.get('/api/setup',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(status());});
@@ -130,5 +140,6 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const logError=(error:unknown)=>{const reasons:string[]=[];let current=error;for(let depth=0;depth<4&&current instanceof Error;depth++){reasons.push(current.message);current=current.cause;}let message=reasons.join(': ')||'Setup failed safely.';if(config.secrets.bootstrapMnemonic)message=message.replaceAll(config.secrets.bootstrapMnemonic,'[redacted]');console.error(message.replace(/\b[0-9a-f]{64}\b/gi,'[redacted 32-byte value]'));};
  const tick=()=>{active=(async()=>{try{await installation!.controller.step();}catch(error){logError(error);}if(!stopping&&installation!.controller.status().phase!=='ready')timer=setTimeout(tick,10000);})();};
  const stop=async()=>{if(stopping)return;stopping=true;shutdown.abort();if(timer)clearTimeout(timer);listener.close();await active;installation?.close();await (globalThis as any).curve_bn128?.terminate();process.exit(0);};process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
- try{installation=await openStockInstallation(config,http.activate,{signal:shutdown.signal});if(!stopping)tick();else installation.close();}catch(error){initial={...initial,phase:'blocked',message:'Installation stopped safely. Check the server logs and preserve the data volume.'};logError(error);}
+ const waiting='Waiting for the previous instance to release the data volume.';
+ try{installation=await openWhenUnlocked(()=>openStockInstallation(config,http.activate,{signal:shutdown.signal}),shutdown.signal,()=>{if(initial.message!==waiting){initial={...initial,message:waiting};console.log(waiting);}});if(!stopping)tick();else installation.close();}catch(error){initial={...initial,phase:'blocked',message:'Installation stopped safely. Check the server logs and preserve the data volume.'};logError(error);}
 }
