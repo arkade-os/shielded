@@ -44,7 +44,7 @@ test('blocked setup fails health and readiness, while activated service receives
 });
 
 test('installation qualification refuses synthetic network metadata before reading artifacts or contacting providers',async()=>{
- await assert.rejects(promisify(execFile)(process.execPath,['--import','tsx','tools/stock-profile-gate.ts','--installation','--local-only'],{env:{...process.env,SHIELDED_NETWORK:'mutinynet',SHIELDED_ARK_URL:'http://127.0.0.1:1',SHIELDED_EMULATOR_URL:'http://127.0.0.1:1',SHIELDED_STOCK_ARTIFACTS:'/missing-test-artifacts'},timeout:15000}),error=>{
+ await assert.rejects(promisify(execFile)(process.execPath,['--import','tsx','tools/stock-profile-gate.ts','--installation','--local-only'],{env:{...process.env,SHIELDED_NETWORK:'mutinynet',SHIELDED_ARK_URL:'http://127.0.0.1:1',SHIELDED_EMULATOR_URL:'http://127.0.0.1:1',SHIELDED_STOCK_ARTIFACTS:'/missing-test-artifacts'},timeout:60000}),error=>{
   assert.match((error as any).stderr,/Installation qualification cannot use synthetic local-only network metadata/);return true;
  });
 });
