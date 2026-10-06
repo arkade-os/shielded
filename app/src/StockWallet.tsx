@@ -19,6 +19,7 @@ import {storeWalletBackup} from './wallet-storage.ts';
 import {useStockSetup,stockSetupPresentation,stockWalletStatus} from './stock-setup.ts';
 import {autoShieldCoins,noteSummary,parseRecipient,sealedAfter} from './stock-flow.ts';
 import {CopyButton,Icon} from './components.tsx';
+import {Seal} from './guilloche.tsx';
 
 type Profile=StockArchiveProfile&{profile:string;participants:Record<string,RegistrationPayload>;ready:boolean;phase:17|18;head:{txid:string;vout:number;value:number;sourceTxHex:string};blockedReason:string;pending?:{id:string;stage:string};capacity:{remainingNoteRecords:number};proofSystem:string;setup:string;limitations:string[]};
 type Archive=StockPublicArchive;
@@ -248,6 +249,7 @@ export default function StockWallet(){
  const setupCard=<section className="stock-card stock-install"><h2>{setupPresentation.title}</h2><p role="status">{setupPresentation.detail}</p>{setupPresentation.progress&&<p>{setupPresentation.progress.stage}{Number.isSafeInteger(setupPresentation.progress.completed)&&Number.isSafeInteger(setupPresentation.progress.total)?` · ${setupPresentation.progress.completed} of ${setupPresentation.progress.total} checks complete`:''}</p>}{setupPresentation.funding&&<><p>The operator needs at least <b>{setup!.minimumFundingSats} Mutinynet sats</b> at this initial funding address.</p><div className="stock-address"><small>Initial pool funding address</small><Copyable value={setup!.fundingAddress!}/></div></>}{setup?.phase==='blocked'&&<p className="stock-muted">Status refreshes automatically. Customer deposits are unavailable until setup succeeds.</p>}</section>;
  const loadingCard=<section className="stock-card stock-loading" aria-busy={!profileError}>{!profileError&&<span className="stock-spinner" aria-hidden="true"/>}<div><h2>{profileError?'Pool details unavailable':'Connecting to the pool'}</h2><p className="stock-muted">{profileError??'Loading the pool and its proof verifier.'}</p></div>{profileError&&<button onClick={()=>setProfileAttempt(value=>value+1)}>Retry</button>}</section>;
  const welcomeCard=<section className="stock-card stock-welcome">
+  <Seal className="stock-welcome-seal"/>
   <h2>Private Bitcoin on Arkade</h2>
   <p className="stock-muted">Creating a wallet generates keys in this browser and registers your private receiving key with the pool. Your keys never leave this device.</p>
   <button className="stock-primary" disabled={busy} onClick={()=>void create()}>Create wallet</button>
@@ -265,7 +267,8 @@ export default function StockWallet(){
  </section>;
  const home=wallet&&<>
   <section className="stock-card stock-balance">
-   <div><small>SHIELDED BALANCE{syncing&&' · SYNCING'}</small><strong>{sats(summary.spendable+summary.sealing)} <em>sats</em></strong>{summary.sealing>0&&<span className="stock-pill">{sats(summary.sealing)} sats sealing</span>}</div>
+   <div><small>SHIELDED BALANCE{syncing&&' · SYNCING'}</small><strong key={summary.spendable+summary.sealing}>{sats(summary.spendable+summary.sealing)} <em>sats</em></strong>{summary.sealing>0&&<span className="stock-pill">{sats(summary.sealing)} sats sealing</span>}</div>
+   <Seal className="stock-seal"/>
    <div className="stock-balance-side"><div><small>ARKADE · NOT SHIELDED</small><b>{ark?`${sats(arkBalance)} sats`:'Loading…'}</b>{ark?.coins.length&&profile?<button className="stock-ghost stock-mini" disabled={busy||syncing} onClick={()=>{const coin=[...ark.coins].sort((a,b)=>b.amount-a.amount)[0]!;void run(`Shielding ${sats(coin.amount)} sats`,SHIELD_STEPS,step=>settle('deposit',{amount:coin.amount,funding:coin.funding},step));}}>Shield</button>:null}</div><div><small>MAX PER SEND</small><b>{sats(summary.maxAfterSeal)} sats</b></div></div>
    {proofBar}
   </section>
@@ -292,10 +295,10 @@ export default function StockWallet(){
   </details>
  </>;
 
- return <main className="stock-shell"><header className="stock-header"><div><span>ARKADE · MUTINYNET</span><h1>Shielded wallet</h1></div><a href="/">Home</a></header>
+ return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test wallet</strong><span>Your keys and backup passphrase are stored in this browser so the wallet opens automatically. Use test funds only.</span></section>
   {setupSupported!==false&&setup?.phase!=='ready'?setupCard:!profile?loadingCard:wallet?home:<>{activityCard}{!busy&&(saved?unlockCard:welcomeCard)}</>}
   {message&&<p className="stock-message" role="status">{message}</p>}
   {status&&<section className="stock-meta"><span>Proof system: {status.proof}</span><span>Verifier setup: {status.setup}</span><span>Wallet verification: {status.state}</span>{profile?.limitations?.map(item=><small key={item}>{item}</small>)}</section>}
- </main>;
+ </main></div>;
 }

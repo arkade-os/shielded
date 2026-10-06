@@ -1,0 +1,9 @@
+.seal{position:relative;aspect-ratio:1}
+.seal svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;will-change:transform}
+.seal path{fill:none;stroke-width:.8;vector-effect:non-scaling-stroke}
+.seal-outer{animation:seal-spin 80s linear infinite}
+.seal-middle{animation:seal-spin 60s linear infinite reverse}
+.seal-inner{animation:seal-spin 40s linear infinite}
+.seal-mark{position:absolute;inset:0;display:grid;place-items:center;font-family:'Fraunces',Georgia,serif;font-style:italic;line-height:1}
+@keyframes seal-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.seal svg{animation:none}}
