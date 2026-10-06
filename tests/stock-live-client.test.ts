@@ -41,7 +41,8 @@ test('live journal view follows each successful persisted save and survives relo
 });
 
 test('failed live journal persistence leaves the saved view at the last committed value',()=>{
- const initial={completed:{first:{txid:'kept'}},pending:{name:'exact-pending'}};
+ type Journal={completed:Record<string,{txid:string}>;pending?:{name:string}};
+ const initial:Journal={completed:{first:{txid:'kept'}},pending:{name:'exact-pending'}};
  const view=createSavedStoreView(initial,()=>{throw new Error('disk full');});
  const before=view.saved;
  assert.throws(()=>view.save({completed:{},pending:undefined}),/disk full/);
