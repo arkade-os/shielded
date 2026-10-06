@@ -3,7 +3,6 @@ import {execFile,execFileSync} from 'node:child_process';
 import {existsSync,lstatSync,mkdirSync,readFileSync,readdirSync,writeFileSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {promisify} from 'node:util';
 import express from 'express';
 import {MnemonicIdentity,SingleKey,type Identity} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
@@ -11,7 +10,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {EngineStore} from '../storage.ts';
 import {loadStockInstallConfig,type StockInstallConfig} from './config.ts';
 import {preflightStockMutinynet} from './network.ts';
-import {createStockInstallation,type StockInstallationRecord,type StockSetupStatus} from './install.ts';
+import {createStockInstallation,type StockInstallationRecord,type StockSetupStatus,type StockQualificationProgress} from './install.ts';
 import {createStockBootstrap,type StockProfileWeightEvidence} from './bootstrap.ts';
 import {createStockBootstrapAdapter} from './bootstrap-adapter.ts';
 import {stockJournalFingerprint} from './journal.ts';
@@ -76,14 +75,26 @@ export async function openStockInstallation(config:StockInstallConfig,activate:(
     const bootstrapStore=openStore(join(data,'bootstrap'),!!saved.releaseFingerprint);
     return {pin,fundingAddress:adapter.ark.address,coins:adapter.ark.coins.map(coin=>coin.funding),close:()=>bootstrapStore.close(),makeBootstrap:(weightEvidence,expectedReleaseFingerprint)=>createStockBootstrap({store:bootstrapStore,pin,expectedReleaseFingerprint,proving:saved.manifest,checkpointTapscript:adapter.checkpointTapscript,weightEvidence,profile,programs:saved.programs,backend:loaded.backend,identity,ownerKey:adapter.ownerKey,input:adapter.input,changeScript:adapter.changeScript,checkpoint:adapter.checkpoint,hash,submit:adapter.submit,lookup:adapter.lookup,finalize:adapter.finalize,indexed:adapter.indexed,releaseRoot:join(data,'releases'),artifactFiles:Object.fromEntries(files.map(name=>[name,join(artifactDirectory,name)]))})};
    },
-   qualify:async(pin)=>{
+   qualify:async(pin,onProgress)=>{
+    const startedAt=new Date().toISOString(),progress=(stage:StockQualificationProgress['stage'],completed:number)=>onProgress?.({stage,completed,total:9,startedAt,updatedAt:new Date().toISOString()});
     const path=join(data,'stock-profile-qualification.json');
     if(existsSync(path)){
      const evidence=JSON.parse(readFileSync(path,'utf8')) as StockProfileWeightEvidence;
-     if(evidence.artifactsHash===pin.artifactsHash&&evidence.programsHash===pin.programsHash&&evidence.serverKey===pin.serverKey&&evidence.emulatorKey===pin.emulatorKey&&evidence.checkpointHash===pin.checkpointHash&&evidence.targetWeightLimit===pin.networkInfo.weightLimit&&stockJournalFingerprint(evidence.exitDelay)===stockJournalFingerprint(pin.networkInfo.exitDelay))return evidence;
+     if(evidence.artifactsHash===pin.artifactsHash&&evidence.programsHash===pin.programsHash&&evidence.serverKey===pin.serverKey&&evidence.emulatorKey===pin.emulatorKey&&evidence.checkpointHash===pin.checkpointHash&&evidence.targetWeightLimit===pin.networkInfo.weightLimit&&stockJournalFingerprint(evidence.exitDelay)===stockJournalFingerprint(pin.networkInfo.exitDelay)){progress('cached',9);return evidence;}
     }
     const env:NodeJS.ProcessEnv={...process.env,SHIELDED_NETWORK:config.network.name,SHIELDED_ARK_URL:config.network.arkUrl,SHIELDED_EMULATOR_URL:config.network.emulatorUrl,SHIELDED_INDEXER_URL:config.network.indexerUrl,SHIELDED_DATA_DIR:data,SHIELDED_STOCK_ARTIFACTS:artifactDirectory};delete env.SHIELDED_BOOTSTRAP_MNEMONIC;
-    await promisify(execFile)(process.execPath,['--experimental-eventsource','--import','tsx',join(root,'tools/stock-profile-gate.ts'),'--installation'],{cwd:root,env,signal:options.signal,timeout:30*60*1000,maxBuffer:4*1024*1024,windowsHide:true});
+    progress('preparing',0);
+    await new Promise<void>((resolve,reject)=>{
+     let buffer='',completed=0;
+     const child=execFile(process.execPath,['--experimental-eventsource','--import','tsx',join(root,'tools/stock-profile-gate.ts'),'--installation'],{cwd:root,env,signal:options.signal,timeout:30*60*1000,maxBuffer:4*1024*1024,windowsHide:true},error=>error?reject(error):resolve());
+     child.stdout?.on('data',(chunk:string)=>{
+      buffer+=chunk;const lines=buffer.split(/\r?\n/);buffer=lines.pop()!.slice(-4096);
+      for(const line of lines){
+       if(!line.startsWith('STOCK_INSTALL_PROGRESS='))continue;
+       try{const item=JSON.parse(line.slice('STOCK_INSTALL_PROGRESS='.length));if(item.stage==='native-paths'&&item.total===9&&Number.isInteger(item.completed)&&item.completed>completed&&item.completed<=9){completed=item.completed;progress('native-paths',completed);}}catch{}
+      }
+     });
+    });
     return JSON.parse(readFileSync(path,'utf8')) as StockProfileWeightEvidence;
    },
    activate:async(saved)=>{
@@ -103,8 +114,9 @@ export function createStockInstallApp(status:()=>StockSetupStatus,webRoot:string
  app.get('/api/setup',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(status());});
  app.get('/health',(_req,res)=>{const phase=status().phase;res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
  app.get('/readyz',(_req,res)=>res.status(status().phase==='ready'?200:503).json({ready:status().phase==='ready'}));
+ app.get('/',(_req,res)=>res.sendFile(join(webRoot,'index.html')));app.get('/lab',(_req,res)=>res.sendFile(join(webRoot,'index.html')));app.get('/wallet',(_req,res)=>res.redirect('/stock-wallet'));app.get('/stock-wallet',(_req,res)=>res.sendFile(join(webRoot,'index.html')));
  app.use((req,res,next)=>{if(service&&status().phase==='ready')return service(req,res,next);if(req.path.startsWith('/api/')){res.status(503).json({error:'The pool is being initialized. Read /api/setup for funding and recovery status.'});return;}next();});
- app.get('/',(_req,res)=>res.redirect('/stock-wallet'));app.get('/wallet',(_req,res)=>res.redirect('/stock-wallet'));app.get('/stock-wallet',(_req,res)=>res.sendFile(join(webRoot,'index.html')));app.use(express.static(webRoot));
+ app.use(express.static(webRoot));
  return {app,activate:(value:express.Express)=>{service=value;}};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){

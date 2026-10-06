@@ -21,7 +21,7 @@ test('unfunded installation serves wallet and public funding status without acce
  const f=await fixture();try{
   const response=await fetch(f.url+'/api/setup');assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');assert.deepEqual(await response.json(),{version:1,phase:'waiting-funds',network:'mutinynet',minimumFundingSats:660,fundingAddress:'tark1public-funding-address'});
   assert.equal((await fetch(f.url+'/health')).status,200);assert.equal((await fetch(f.url+'/readyz')).status,503);
-  assert.match(await (await fetch(f.url+'/stock-wallet')).text(),/installation wallet/);
+  for(const path of ['/','/stock-wallet','/lab']){const page=await fetch(f.url+path,{redirect:'manual'});assert.equal(page.status,200);assert.match(await page.text(),/installation wallet/);}
   const redirect=await fetch(f.url+'/wallet',{redirect:'manual'});assert.equal(redirect.status,302);assert.equal(redirect.headers.get('location'),'/stock-wallet');
   assert.equal((await fetch(f.url+'/api/setup',{method:'POST',body:JSON.stringify({mnemonic:'must-not-be-accepted'})})).status,503);
   assert.equal((await fetch(f.url+'/api/settlements',{method:'POST'})).status,503);
@@ -36,6 +36,7 @@ test('blocked setup fails health and readiness, while activated service receives
   const service=express();service.get('/api/profile',(_req,res)=>res.json({public:true}));service.post('/api/settlements',(_req,res)=>res.json({accepted:true}));f.activate(service);
   assert.equal((await fetch(f.url+'/api/settlements',{method:'POST'})).status,503);
   f.setStatus({version:1,phase:'ready',network:'mutinynet',minimumFundingSats:660,releaseFingerprint:'a'.repeat(64)});
+  const page=await fetch(f.url+'/',{redirect:'manual'});assert.equal(page.status,200);assert.match(await page.text(),/installation wallet/);
   assert.equal((await fetch(f.url+'/health')).status,200);assert.equal((await fetch(f.url+'/readyz')).status,200);assert.deepEqual(await (await fetch(f.url+'/api/profile')).json(),{public:true});
   assert.equal((await (await fetch(f.url+'/api/setup')).json() as any).releaseFingerprint,'a'.repeat(64));
  }finally{await f.close();}

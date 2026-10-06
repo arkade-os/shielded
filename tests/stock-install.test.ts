@@ -120,3 +120,28 @@ test('a later coin cannot replace the journaled outpoint',async()=>{
  assert.equal(h.controller.status().phase,'recovering');assert.equal(h.counts().applies,0);assert.equal((h.saved as StockInstallationRecord).outpoint,`${'1'.repeat(64)}:0`);
  h.setCoins([coin('1'.repeat(64),660),coin('2'.repeat(64),660)]);await h.controller.step();assert.equal(h.controller.status().phase,'ready');assert.equal((h.saved as StockInstallationRecord).outpoint,`${'1'.repeat(64)}:0`);
 });
+
+
+test('qualification progress exposes verified counts and timing without arbitrary child data',async()=>{
+ const context:StockInstallationContext={pin,fundingAddress:'tark1public-address',coins:[],makeBootstrap:async()=>{throw Error('must not bootstrap');},close(){}};
+ let finish!:()=>void,report!:NonNullable<Parameters<Parameters<typeof createStockInstallation>[0]['qualify']>[1]>;
+ const pending=new Promise<void>(resolve=>{finish=resolve;});
+ const controller=createStockInstallation({store:{load:()=>undefined,save(){}},record:base(),openContext:async()=>context,qualify:async(_pin,onProgress)=>{report=onProgress!;await pending;return {} as any;},activate:async()=>undefined});
+ const step=controller.step();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(controller.status().phase,'qualifying');
+ const now=new Date().toISOString();report({stage:'native-paths',completed:2,total:9,startedAt:now,updatedAt:now,secret:'private child output'} as any);
+ assert.deepEqual(controller.status().qualification,{stage:'native-paths',completed:2,total:9,startedAt:now,updatedAt:now});assert.equal(JSON.stringify(controller.status()).includes('private child output'),false);
+ report({stage:'native-paths',completed:10,total:9,startedAt:now,updatedAt:now});assert.equal(controller.status().qualification!.completed,2);
+ const snapshot=controller.status();snapshot.qualification!.completed=8;assert.equal(controller.status().qualification!.completed,2);
+ finish();await step;assert.equal(controller.status().phase,'waiting-funds');assert.equal(controller.status().releaseFingerprint,undefined);
+});
+
+test('cached funding polls retain waiting status while rechecking the immutable network pin',async()=>{
+ let polls=0,qualifications=0,release!:()=>void;
+ const context:StockInstallationContext={pin,fundingAddress:'tark1public-address',coins:[],makeBootstrap:async()=>{throw Error('must not bootstrap');},close(){}};
+ let saved:StockInstallationRecord|undefined;
+ const controller=createStockInstallation({store:{load:<T>()=>saved as T|undefined,save:value=>{saved=structuredClone(value) as StockInstallationRecord;}},record:base(),openContext:async()=>{polls++;if(polls===2)await new Promise<void>(resolve=>{release=resolve;});return context;},qualify:async(_pin,report)=>{qualifications++;const now=new Date().toISOString();report?.({stage:'cached',completed:9,total:9,startedAt:now,updatedAt:now});assert.equal(controller.status().phase,polls===2?'waiting-funds':'qualifying');return {} as any;},activate:async()=>undefined});
+ await controller.step();assert.equal(controller.status().phase,'waiting-funds');
+ const poll=controller.step();await new Promise(resolve=>setImmediate(resolve));assert.equal(controller.status().phase,'waiting-funds');release();await poll;
+ assert.equal(polls,2);assert.equal(qualifications,2);assert.equal(controller.status().phase,'waiting-funds');assert.equal(controller.status().qualification!.stage,'cached');assert.equal(saved!.outpoint,undefined);
+});

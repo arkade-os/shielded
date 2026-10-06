@@ -17,6 +17,14 @@ export interface StockInstallationRecord {
  serviceInitialized?:boolean;
 }
 
+export interface StockQualificationProgress {
+ stage:'preparing'|'native-paths'|'cached';
+ completed:number;
+ total:9;
+ startedAt:string;
+ updatedAt:string;
+}
+
 export interface StockSetupStatus {
  version:1;
  phase:'starting'|'qualifying'|'waiting-funds'|'bootstrapping'|'recovering'|'ready'|'blocked';
@@ -25,6 +33,7 @@ export interface StockSetupStatus {
  minimumFundingSats:660;
  releaseFingerprint?:string;
  message?:string;
+ qualification?:StockQualificationProgress;
 }
 
 export interface StockInstallationContext {
@@ -39,7 +48,7 @@ export interface StockInstallationOptions {
  store:Pick<EngineStore,'load'|'save'>;
  record:StockInstallationRecord;
  openContext:(record:StockInstallationRecord)=>Promise<StockInstallationContext>;
- qualify:(pin:StockBootstrapPin)=>Promise<StockProfileWeightEvidence>;
+ qualify:(pin:StockBootstrapPin,onProgress?:(progress:StockQualificationProgress)=>void)=>Promise<StockProfileWeightEvidence>;
  activate:(record:StockInstallationRecord)=>Promise<void>;
 }
 
@@ -50,16 +59,17 @@ type BootstrapPhase=ReturnType<Awaited<ReturnType<typeof createStockBootstrap>>[
 
 export function createStockInstallation(options:StockInstallationOptions){
  let record=structuredClone(options.record),current:StockSetupStatus={version:1,phase:'starting',network:'mutinynet',minimumFundingSats:660};
- let running:Promise<void>|undefined;
+ let running:Promise<void>|undefined,qualification:StockQualificationProgress|undefined;
  const save=()=>options.store.save(structuredClone(record));
  const status=()=>structuredClone(current);
  const set=(phase:StockSetupStatus['phase'],message?:string,fundingAddress?:string)=>{
-  current={version:1,phase,network:'mutinynet',minimumFundingSats:660,...(fundingAddress?{fundingAddress}:{}),...(record.releaseFingerprint?{releaseFingerprint:record.releaseFingerprint}:{}),...(message?{message}:{})};
+  current={version:1,phase,network:'mutinynet',minimumFundingSats:660,...(fundingAddress?{fundingAddress}:{}),...(record.releaseFingerprint?{releaseFingerprint:record.releaseFingerprint}:{}),...(message?{message}:{}),...(qualification?{qualification:structuredClone(qualification)}:{})};
  };
  const run=async()=>{
   let context:StockInstallationContext|undefined;
   try{
-   set('starting');
+   const waiting=current.phase==='waiting-funds';
+   if(!waiting)set('starting');
    const saved=options.store.load<StockInstallationRecord>();
    if(saved){
     if(saved.version!==1||!same(fundingIdentity(saved),fundingIdentity(record)))throw new Error('Stored installation does not match configured network, wallet, or verifier.');
@@ -70,8 +80,13 @@ export function createStockInstallation(options:StockInstallationOptions){
    if(context.pin.network!=='mutinynet'||context.pin.networkInfo.arkUrl!==record.network.arkUrl||context.pin.networkInfo.emulatorUrl!==record.network.emulatorUrl||context.pin.networkInfo.indexerUrl!==record.network.indexerUrl)throw new Error('Network pin differs from installation configuration.');
    if(record.pin&&!same(record.pin,context.pin))throw new Error('Persisted verifier or network pin changed.');
    if(!record.pin){record.pin=structuredClone(context.pin);save();}
-   set('qualifying',undefined,context.fundingAddress);
-   const evidence=await options.qualify(context.pin);
+   if(!waiting)set('qualifying',undefined,context.fundingAddress);
+   const evidence=await options.qualify(context.pin,progress=>{
+    if(!['preparing','native-paths','cached'].includes(progress.stage)||progress.total!==9||!Number.isInteger(progress.completed)||progress.completed<0||progress.completed>9||!Number.isFinite(Date.parse(progress.startedAt))||!Number.isFinite(Date.parse(progress.updatedAt)))return;
+    qualification={stage:progress.stage,completed:progress.completed,total:9,startedAt:progress.startedAt,updatedAt:progress.updatedAt};
+    if(progress.stage!=='cached'||!waiting)set('qualifying',undefined,context!.fundingAddress);
+    else current={...current,qualification:structuredClone(qualification)};
+   });
    const eligible=context.coins.filter(coin=>coin.value===330||coin.value>=660).sort((a,b)=>a.value-b.value||a.txid.localeCompare(b.txid)||a.vout-b.vout);
    if(!record.outpoint){
     if(!eligible.length){set('waiting-funds',undefined,context.fundingAddress);return;}

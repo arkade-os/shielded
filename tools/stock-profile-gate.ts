@@ -48,6 +48,8 @@ const initial:StockPublicArchive={version:1,protocol,participants:{},head:{txid:
 const pin={version:1 as const,network:'local-stock' as const,descriptorProfileId:profile.descriptorProfileId,programsHash:profile.programsHashHex,artifactsHash:stockJournalFingerprint(manifest),checkpointHash:sha(checkpoint.script),genesisTxid:genesis.id,serverKey:network.serverKey,emulatorKey:network.emulatorKey};
 const directory=await mkdtemp(join(tmpdir(),'shielded-stock-qualification-'));
 const paths={} as Record<StockQualificationPath,StockQualificationPathEvidence>;
+let completedPaths=0;
+function progress(){const completed=Object.keys(paths).length;if(installation&&completed>completedPaths){completedPaths=completed;console.log('STOCK_INSTALL_PROGRESS='+JSON.stringify({stage:'native-paths',completed,total:9}));}}
 const samples:Record<string,{localWU:number;targetWU:number;checkpointWU:number[]}>={};
 const accepted=new Map<string,ReturnType<typeof verifyStockResponse>>();
 const transport={submit:async(request:StockWireRequest)=>{
@@ -88,7 +90,7 @@ function project(request:StockWireRequest,operation:Exclude<StockQualificationPa
 function record(operation:Exclude<StockQualificationPath,StockExitLeaf>,request:StockWireRequest,receipt:ReturnType<typeof verifyStockResponse>,p?:typeof parties[number]){
  const projected=project(request,operation,p);assert.ok(projected.ark<=targetNetwork.weightLimit&&projected.checkpoints.every(w=>w<=targetNetwork.weightLimit));
  paths[operation]={kind:'arkade-offchain',executed:true,backend:'pinned-emulator.SubmitTx',evidenceHash:sha(JSON.stringify({request,receipt,projected})),txWU:projected.ark,checkpointWU:projected.checkpoints};
- samples[operation]={localWU:receipt.weights.ark,targetWU:projected.ark,checkpointWU:projected.checkpoints};console.log('Qualified '+operation+': '+projected.ark+' WU');
+ samples[operation]={localWU:receipt.weights.ark,targetWU:projected.ark,checkpointWU:projected.checkpoints};console.log('Qualified '+operation+': '+projected.ark+' WU');progress();
 }
 async function prepare(){const prior=coordinator.archive().history.length;await coordinator.prepare();const entry=coordinator.archive().history[prior];record('prepare',entry.request,entry.receipt);sync();}
 async function apply(p:typeof parties[number],prepared:StockPreparedSettlement,externalFunding?:StockPublicFunding){
@@ -144,7 +146,7 @@ try{
  const result=JSON.parse(line.slice('STOCK_ONCHAIN_GATE_RESULT='.length));
  for(const item of cases){const receipt=result.cases.find((entry:any)=>entry.name===item.name);assert.equal(receipt?.ok,true);const signed=Transaction.fromPSBT(base64.decode(receipt.signedPsbt)),submitted=Transaction.fromPSBT(base64.decode(item.psbt));assert.equal(signed.id,submitted.id);assert.deepEqual(signed.unsignedTx,submitted.unsignedTx);
   for(let vin=0;vin<signed.inputsLength;vin++){const selected=signed.getInput(vin).tapLeafScript![0],original=submitted.getInput(vin);assert.deepEqual(selected,original.tapLeafScript![0]);assert.deepEqual(signed.getInput(vin).witnessUtxo,original.witnessUtxo);const script=selected[1].subarray(0,-1),keys=CSVMultisigTapscript.decode(script).params.pubkeys;verifyTapscriptSignatures(signed,vin,keys.map(hex.encode),[],undefined,tapLeafHash(script,selected[1].at(-1)!));}
-  const localWU=exitWeight(signed),targetWU=exitWeight(signed,true,item.party,item.name);assert.ok(localWU<=4000&&targetWU<=4000);paths[item.name]={kind:'bitcoin-onchain-exit',executed:true,backend:'pinned-emulator.SubmitOnchainTx',evidenceHash:sha(JSON.stringify({submitted:item.psbt,signed:receipt.signedPsbt,targetWU})),txWU:targetWU,checkpointWU:[]};samples[item.name]={localWU,targetWU,checkpointWU:[]};console.log('Qualified '+item.name+': '+targetWU+' WU');
+  const localWU=exitWeight(signed),targetWU=exitWeight(signed,true,item.party,item.name);assert.ok(localWU<=4000&&targetWU<=4000);paths[item.name]={kind:'bitcoin-onchain-exit',executed:true,backend:'pinned-emulator.SubmitOnchainTx',evidenceHash:sha(JSON.stringify({submitted:item.psbt,signed:receipt.signedPsbt,targetWU})),txWU:targetWU,checkpointWU:[]};samples[item.name]={localWU,targetWU,checkpointWU:[]};console.log('Qualified '+item.name+': '+targetWU+' WU');progress();
  }
  assert.equal(Object.keys(paths).length,9);
  const evidence:StockProfileWeightEvidence={version:1,network:'mutinynet',qualification:'local-native-service-all-nine',fundedMutinynet:false,nativeAdmission:'unverified',descriptorProfileId:targetProfile.descriptorProfileId,programsHash:targetProfile.programsHashHex,artifactsHash:stockJournalFingerprint(manifest),serverKey:targetNetwork.serverKey,emulatorKey:targetNetwork.emulatorKey,checkpointHash:sha(targetCheckpoint.script),exitDelay:targetNetwork.exitDelay,targetWeightLimit:targetNetwork.weightLimit,poolTapTreeHash:sha(targetProfile.tapTree),signatureModel:'64-byte-default-sighash',paths};
