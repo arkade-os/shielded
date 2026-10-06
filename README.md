@@ -1,6 +1,6 @@
 > Accepted deployment boundary: the existing independent Arkade emulator must enforce proofs using stock opcodes. The [stock-opcode design experiment](spec/STOCK-OPCODE-DESIGN.md) replaces the proposed custom verifier/registry deployment. The client-owned registry lab remains a local regression fixture with synthetic funding; it is not the accepted deployment path.
 
-The replacement BTC implementation is in `src/stock` and `circuits/stock`. It combines note ownership, encryption, indexed nullifiers and native value conservation in one Groth16 proof, keeps customer keys in their wallets, and pins the verifier to the existing emulator's stock BN254 opcodes. See the [statement](spec/STOCK-STATEMENT.md) and [deployment and acceptance gates](spec/STOCK-DEPLOYMENT.md). All nine paths have passed local native execution, including the three delayed exits. Public funded admission and same-volume restart remain separate gates. The historical results below apply to their original profiles.
+The replacement BTC implementation is in `src/stock` and `circuits/stock`. It combines note ownership, encryption, indexed nullifiers and native value conservation in one Groth16 proof, keeps customer keys in their wallets, and pins the verifier to the existing emulator's stock BN254 opcodes. See the [statement](spec/STOCK-STATEMENT.md) and [deployment and acceptance gates](spec/STOCK-DEPLOYMENT.md). All nine paths have passed local native execution, including the three delayed exits. The [funded BTC stock lifecycle and same-volume restart](validation/stock-mutinynet-lifecycle.json) also passed on public Mutinynet: a three-client flow covered an exact deposit, seals, private transfers, sub-dust withdrawals, disconnect recovery and final cashouts. The maximum signed Ark transaction was 3,930 WU under the 4,000-WU cap. This is bounded testnet acceptance; the delayed Bitcoin exits have only been exercised locally. The historical results below apply to their original profiles.
 
 # Shielded Arkade PoC
 
@@ -11,7 +11,7 @@ Shielded verifier can seek a native-valid signature for an invalid Shielded
 spend without operator collusion. The service holds the demo users' keys, and
 note holders cannot independently exit their share of pooled funds if the
 service disappears. The historical client-owned lab implements key separation and registered VM proof
-enforcement, but requires a registry extension and does not meet the accepted stock-emulator boundary. The replacement and production recovery gates remain incomplete. See [the security status](SECURITY.md) and
+enforcement, but requires a registry extension and does not meet the accepted stock-emulator boundary. The BTC stock profile has separate funded acceptance evidence; production setup, adversarial data availability and platform-independent pooled recovery remain unresolved. See [the security status](SECURITY.md) and
 [replacement architecture gates](spec/COMPACT-ARCHITECTURE.md).
 
 The retained inline showcase compiles the `.ark` contracts in `contracts/poc/`,

@@ -30,3 +30,28 @@ The operator archive and volume must contain no customer recovery, spend, view o
 The local Service harness proves actual Groth16 and native policy execution on synthetic parents. It does not establish public ArkD admission, funded settlement, expiry renewal or platform-independent Bitcoin exits. Public acceptance and restart evidence are recorded separately. No step may bypass current network, fee, ancestry, signature or weight preflight; signed Ark transactions and all checkpoints must fit min(operator limit, 4000 WU).
 
 The controlled three-party lifecycle uses the coordinator's durable sidecar archive. It does not establish recovery from a valid out-of-band transaction whose sender withholds that sidecar, or automatic adoption of a foreign native prepare.
+
+## Recorded public run
+
+The [sanitized funded acceptance ledger](../validation/stock-mutinynet-lifecycle.json)
+records the pinned release and software image, accepted genesis, 30 subsequent
+native transactions across 33 scenario steps, three registered client wallets,
+signed Ark/checkpoint weights and the exact before/after restart identities.
+The maximum Ark transaction was 3,930 WU; the maximum checkpoint was 792 WU.
+
+The disconnected transfer response was reconciled against its exact accepted
+history entry without resubmission. The external test runner's stale in-memory
+journal view was fixed; lost runner metadata was rebuilt from proof-verified
+history and seed-derived balances before further transactions. An independently
+captured restart receipt confirmed the same image, read-only release and encrypted
+volume, an unchanged archive hash, and recovered balances of 48,670, 169 and zero
+sats. Fresh withdrawals then succeeded after that restart.
+
+The public indexer and customer wallets confirmed final spendable payouts of
+48,670 sats to Alice and 500 sats each to Bob and Carol. Together with the 330-sat
+pool carrier, these account for the original 50,000 sats; private reserves are zero.
+The seal operations did not use recipient private keys; the test did not observe
+a physically offline recipient. Rejection/tampering and the three CSV
+Bitcoin leaf checks remain separately documented local tests. This run does not
+establish funded Bitcoin exits, adversarial sidecar availability, expiry renewal
+or public-for-everyone readiness.

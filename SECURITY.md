@@ -1,5 +1,23 @@
 # Security status
 
+The current BTC stock-opcode profile keeps customer spending, viewing and native
+keys outside the Shield coordinator. The existing public Arkade emulator executes
+the pinned Groth16 verifier through stock BN254 opcodes. The [funded Mutinynet
+lifecycle and same-volume restart](validation/stock-mutinynet-lifecycle.json)
+passed for the pinned test release, with three client wallets and independently
+verified final customer payout VTXOs. This evidence is separate from the retained
+legacy and registry profiles described below.
+
+That acceptance does not make the profile production-ready. Its circuit-specific
+phase-2 ceremony is development-only; the reused public phase-1 transcript does
+not remove that assumption. The pool is bounded and serial. Sidecar availability
+is not enforced: a valid native transition can withhold the data other clients
+need and freeze recovery or further settlement. Foreign native prepares are not
+automatically adopted. Arkade/emulator availability remains necessary; there is
+no platform-independent note-holder pool exit or durable expiry renewal. The
+three delayed Bitcoin leaf shapes passed local execution, not funded, matured
+Bitcoin exit verification. No independent production security review is complete.
+
 This is unaudited research software. The retained legacy compact transport is an experimental,
 custodial demonstration and **does not meet Shielded's core trust goal**: users
 must not have to trust the Shielded service not to steal, inflate, or force a
