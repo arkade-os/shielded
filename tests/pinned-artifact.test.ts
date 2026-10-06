@@ -33,6 +33,15 @@ test('proving artifact verifier rejects altered bytes and declared or streamed s
   await assert.rejects(verifyPinnedArtifact(oversized, pin), /exceeds its pinned size/);
 });
 
+test('artifact loading reports streamed download progress', async () => {
+  const pin = { size: 5, sha256: createHash('sha256').update('proof').digest('hex') };
+  const seen: [string, number, number][] = [];
+  const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('pr')); controller.enqueue(new TextEncoder().encode('oof')); controller.close(); } });
+  const load = createPinnedArtifactLoader(async () => new Response(body), { 'intent.wasm': pin }, (name) => `/api/proving/${name}`, undefined, (name, loaded, total) => seen.push([name, loaded, total]));
+  await load('intent.wasm');
+  assert.deepEqual(seen, [['intent.wasm', 2, 5], ['intent.wasm', 5, 5]]);
+});
+
 test('artifact loading caches verified bytes and retries after a rejected download', async () => {
   const pin = { size: 5, sha256: createHash('sha256').update('proof').digest('hex') };
   let calls = 0;

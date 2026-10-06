@@ -12,8 +12,8 @@ export interface StockBrowserProfile {
  provingManifest:{artifacts:Record<string,{size:number;sha256:string}>};
 }
 
-export async function createStockBrowserClient(options:{owner:Owner;keys:WalletKeys;profile:StockBrowserProfile;checkpoint?:PublicProtocolCheckpoint}):Promise<Awaited<ReturnType<typeof createBrowserClient>>>{
- const artifact=createPinnedArtifactLoader(fetch,options.profile.provingManifest.artifacts,name=>'/api/proving/'+encodeURIComponent(name));
+export async function createStockBrowserClient(options:{owner:Owner;keys:WalletKeys;profile:StockBrowserProfile;checkpoint?:PublicProtocolCheckpoint;artifact?:(name:string)=>Promise<Uint8Array>}):Promise<Awaited<ReturnType<typeof createBrowserClient>>>{
+ const artifact=options.artifact??createPinnedArtifactLoader(fetch,options.profile.provingManifest.artifacts,name=>'/api/proving/'+encodeURIComponent(name));
  const backend=createStockGroth16ProofBackend({
   prove:async witness=>snarkjs.groth16.fullProve(witness,await artifact('stock-combined.wasm'),await artifact('stock-combined.zkey'),undefined,undefined,{singleThread:true}),
   verify:(verifierKey,signals,proof)=>snarkjs.groth16.verify(verifierKey,signals,proof),

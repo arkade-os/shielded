@@ -4,7 +4,7 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 export interface PinnedArtifact { size: number; sha256: string }
 export type PinnedArtifactManifest = Record<string, PinnedArtifact>;
 
-export async function verifyPinnedArtifact(response: Response, expected: PinnedArtifact): Promise<Uint8Array> {
+export async function verifyPinnedArtifact(response: Response, expected: PinnedArtifact, onProgress?: (loaded: number) => void): Promise<Uint8Array> {
   if (!response.ok || !Number.isSafeInteger(expected.size) || expected.size < 1 || !/^[a-f0-9]{64}$/.test(expected.sha256)) throw new Error('Proving artifact unavailable or invalid pin');
   const declared = response.headers.get('content-length');
   if (declared !== null && (!/^(0|[1-9][0-9]*)$/.test(declared) || Number(declared) !== expected.size)) throw new Error('Proving artifact size does not match its pin');
@@ -19,6 +19,7 @@ export async function verifyPinnedArtifact(response: Response, expected: PinnedA
       size += value.byteLength;
       if (size > expected.size) throw new Error('Proving artifact exceeds its pinned size');
       chunks.push(value);
+      onProgress?.(size);
     }
   } catch (error) {
     await reader.cancel().catch(() => undefined);
@@ -37,6 +38,7 @@ export function createPinnedArtifactLoader(
   manifest: PinnedArtifactManifest,
   urlFor: (name: string) => string,
   headers?: HeadersInit,
+  onProgress?: (name: string, loaded: number, total: number) => void,
 ): (name: string) => Promise<Uint8Array> {
   const cache = new Map<string, Promise<Uint8Array>>();
   return (name) => {
@@ -46,7 +48,7 @@ export function createPinnedArtifactLoader(
     if (cached) return cached;
     let pending: Promise<Uint8Array>;
     pending = fetcher(urlFor(name), { headers })
-      .then((response) => verifyPinnedArtifact(response, pin))
+      .then((response) => verifyPinnedArtifact(response, pin, onProgress && ((loaded) => onProgress(name, loaded, pin.size))))
       .catch((error) => {
         if (cache.get(name) === pending) cache.delete(name);
         throw error;
