@@ -1,0 +1,24 @@
+services:
+  shielded-stock:
+    build:
+      context: .
+      dockerfile: Dockerfile.stock
+      args:
+        VITE_STOCK_RELEASE_FINGERPRINT: ${SHIELDED_STOCK_RELEASE_FINGERPRINT:?Set the independently verified release fingerprint}
+    ports:
+      - "127.0.0.1:8792:8792"
+    volumes:
+      - shielded-stock-data:/data
+      - ${SHIELDED_STOCK_RELEASE_DIR:?Set an absolute path to the immutable release}:/release:ro
+    environment:
+      SHIELDED_STOCK_ALLOW_DEV_SETUP: ${SHIELDED_STOCK_ALLOW_DEV_SETUP:-false}
+      SHIELDED_STOCK_ADMIN_TOKEN: ${SHIELDED_STOCK_ADMIN_TOKEN:-}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    stop_grace_period: 2m
+    restart: unless-stopped
+volumes:
+  shielded-stock-data:

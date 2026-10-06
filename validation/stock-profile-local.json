@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "network": "mutinynet",
+  "qualification": "local-native-service-all-nine",
+  "fundedMutinynet": false,
+  "nativeAdmission": "unverified",
+  "descriptorProfileId": "1ed8e8772cce6007ddbc2f355d4dcee8d0250724b7e193cd6c1f33aee5f6fcbb",
+  "programsHash": "d98ef4b27d4f9b5b98a3b3a3b8d1cc5718fac7ab1acc6d9b9fe7deecb7cf439e",
+  "artifactsHash": "126a61975ec6b9288d12521862037dbada368ac87cbe833e97001bb3efad698a",
+  "serverKey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+  "emulatorKey": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+  "checkpointHash": "94c89a0b570387bf357b6a616dc9ea7ea6eb7225f29cc9ae8c100387b8ce89f2",
+  "exitDelay": {
+    "type": "seconds",
+    "value": 2048
+  },
+  "targetWeightLimit": 4000,
+  "poolTapTreeHash": "32e5f04e9a1540ecff86f87aacb410b94139d5816ad16c03b2959dbb6247a9a9",
+  "signatureModel": "64-byte-default-sighash",
+  "paths": {
+    "prepare": {
+      "kind": "arkade-offchain",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitTx",
+      "evidenceHash": "efbd540c25747bd6c92ecbb9d590abcdb045017555202436ae9b4a718a4b9572",
+      "txWU": 3816,
+      "checkpointWU": [
+        760
+      ]
+    },
+    "deposit": {
+      "kind": "arkade-offchain",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitTx",
+      "evidenceHash": "bbcf84e3e3d6160ad789bc634e18c5d8c921f771fed78e6db1e535575f5125cb",
+      "txWU": 3722,
+      "checkpointWU": [
+        760,
+        696
+      ]
+    },
+    "seal": {
+      "kind": "arkade-offchain",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitTx",
+      "evidenceHash": "1dad231e80a25f8ee569d8075a622dc4e46645e0083b20be74656a4f6bf6eb81",
+      "txWU": 3272,
+      "checkpointWU": [
+        760
+      ]
+    },
+    "transfer": {
+      "kind": "arkade-offchain",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitTx",
+      "evidenceHash": "d8da5fc005a3b9a7658534a17e5f317819f1a389b2bc51e7b11f7c225077303b",
+      "txWU": 3272,
+      "checkpointWU": [
+        792
+      ]
+    },
+    "withdraw": {
+      "kind": "arkade-offchain",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitTx",
+      "evidenceHash": "768e71fa5fed8153e8563d7b4f168fa3cb750b53d3078758d8f5610327b479df",
+      "txWU": 3496,
+      "checkpointWU": [
+        792
+      ]
+    },
+    "withdraw-funded": {
+      "kind": "arkade-offchain",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitTx",
+      "evidenceHash": "f2d623e823bd30abd5c0485f0be75daf80833216152470f830bf35f4eeeb5ff8",
+      "txWU": 3930,
+      "checkpointWU": [
+        760,
+        696
+      ]
+    },
+    "exit-prepare": {
+      "kind": "bitcoin-onchain-exit",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitOnchainTx",
+      "evidenceHash": "19294f12f7c7ba1cd51f3e07e182ed04be8a4731ca3c1dc72318750ef8f903b8",
+      "txWU": 3787,
+      "checkpointWU": []
+    },
+    "exit-withdraw": {
+      "kind": "bitcoin-onchain-exit",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitOnchainTx",
+      "evidenceHash": "fb694715fe257e3102f89a4afce8ade19eb20079dd7a7f8ec0a78001ae6fc026",
+      "txWU": 3467,
+      "checkpointWU": []
+    },
+    "exit-withdraw-funded": {
+      "kind": "bitcoin-onchain-exit",
+      "executed": true,
+      "backend": "pinned-emulator.SubmitOnchainTx",
+      "evidenceHash": "67b642e1ead50f17c1916ce8ca3ef58f31036a536a3063218cb75d0fa5c46ea3",
+      "txWU": 3808,
+      "checkpointWU": []
+    }
+  },
+  "localOnly": true,
+  "measurements": {
+    "prepare": {
+      "localWU": 3816,
+      "targetWU": 3816,
+      "checkpointWU": [
+        760
+      ]
+    },
+    "deposit": {
+      "localWU": 3722,
+      "targetWU": 3722,
+      "checkpointWU": [
+        760,
+        696
+      ]
+    },
+    "seal": {
+      "localWU": 3272,
+      "targetWU": 3272,
+      "checkpointWU": [
+        760
+      ]
+    },
+    "transfer": {
+      "localWU": 3272,
+      "targetWU": 3272,
+      "checkpointWU": [
+        792
+      ]
+    },
+    "withdraw": {
+      "localWU": 3496,
+      "targetWU": 3496,
+      "checkpointWU": [
+        792
+      ]
+    },
+    "withdraw-funded": {
+      "localWU": 3930,
+      "targetWU": 3930,
+      "checkpointWU": [
+        760,
+        696
+      ]
+    },
+    "exit-prepare": {
+      "localWU": 3787,
+      "targetWU": 3787,
+      "checkpointWU": []
+    },
+    "exit-withdraw": {
+      "localWU": 3467,
+      "targetWU": 3467,
+      "checkpointWU": []
+    },
+    "exit-withdraw-funded": {
+      "localWU": 3808,
+      "targetWU": 3808,
+      "checkpointWU": []
+    }
+  },
+  "weightProjection": "Exact target-policy leaf/control-block lengths and 64-byte default-sighash signatures; actual locally executed proof witness bytes are retained. Target public signer signatures and target public admission are not claimed.",
+  "limitations": [
+    "Synthetic prevouts and deterministic public fixture signer keys; no network submission",
+    "CSV exit service execution does not demonstrate a confirmed matured Bitcoin exit",
+    "Development circuit-specific phase2"
+  ]
+}

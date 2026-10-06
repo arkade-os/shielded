@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "scope": "local integrated application and read-only funded wallet preflight",
+  "fundedLifecycle": false,
+  "nativeCombinedProofLifecycle": {
+    "localMainOperations": true,
+    "publicFunded": false,
+    "evidence": "stock-lifecycle.json",
+    "localAllNinePaths": true
+  },
+  "integratedTests": {
+    "failed": 0,
+    "passed": 174,
+    "skipped": 0
+  },
+  "latestLiveClientTests": {
+    "failed": 0,
+    "passed": 4
+  },
+  "build": "passed",
+  "containerHelp": "passed with network none and read-only filesystem",
+  "imageId": "sha256:b339d9afd7cbb80d796c11f824fd9d5f339e18876598afb873874a8cfbee6622",
+  "remoteMain": "59562a2ce45b15519f5b252855f27b7375883347",
+  "remoteMainCi": {
+    "runId": 37194712531,
+    "conclusion": "success"
+  },
+  "wallet": {
+    "network": "mutinynet",
+    "transactionsSubmitted": 0,
+    "fundingPresent": true
+  },
+  "limitations": [
+    "Complete all-nine native weight qualification required before genesis funding",
+    "Public funded native lifecycle and restart have not run",
+    "Off-chain sidecar availability is not enforced by the current stock profile",
+    "Development circuit-specific Groth16 setup"
+  ],
+  "retainedTenLeafNativeBaseline": {
+    "publicNetworkAcceptance": false,
+    "evidence": "stock-ten-leaf-lifecycle.json",
+    "maximumArkWu": 3930,
+    "nativeCsvExitsExecuted": false,
+    "passed": true
+  },
+  "proposedNineLeafNativeAcceptance": {
+    "localMainOperations": true,
+    "allNinePaths": true,
+    "publicNetwork": false,
+    "localEvidence": "stock-profile-local.json"
+  }
+}

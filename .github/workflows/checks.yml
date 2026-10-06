@@ -73,3 +73,32 @@ jobs:
           persist-credentials: false
       - run: docker build --file Dockerfile.registry-server --tag shielded-registry:ci .
       - run: docker run --rm --network none shielded-registry:ci --help
+  stock-proof-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: tools/vm/go.sum
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: stock-circom-2.2.2-linux-phase1-7e6a9c2e5f05
+      - run: npm ci
+      - run: npm run stock:tools
+      - run: npm run stock:compile
+      - run: npm run test:stock:witness
+      - run: npm run stock:setup -- --development-only
+      - run: npm run vm:build
+      - run: npm run test:stock:lifecycle
+      - run: npm run test:stock:baseline-ten
+      - run: npm run stock:qualify -- --local-only
+      - run: docker build --file Dockerfile.stock --tag shielded-stock:ci .
+      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-stock:ci node --import tsx src/stock/server.ts --help

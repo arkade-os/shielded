@@ -410,15 +410,26 @@ func stagedTransportRequest(
 
 func addStagedTransportServerSignature(t *testing.T, packet *psbt.Packet, key *btcec.PrivateKey) {
 	t.Helper()
+	prevouts := make(map[wire.OutPoint]*wire.TxOut, len(packet.Inputs))
+	for inputIndex, input := range packet.Inputs {
+		if input.WitnessUtxo == nil {
+			t.Fatalf("input %d has no witness UTXO", inputIndex)
+		}
+		prevouts[packet.UnsignedTx.TxIn[inputIndex].PreviousOutPoint] = input.WitnessUtxo
+	}
+	fetcher := txscript.NewMultiPrevOutFetcher(prevouts)
+	hashes := txscript.NewTxSigHashes(packet.UnsignedTx, fetcher)
 	for inputIndex := range packet.Inputs {
 		input := &packet.Inputs[inputIndex]
-		if len(input.TaprootLeafScript) != 1 || input.WitnessUtxo == nil {
+		if input.WitnessUtxo == nil {
 			t.Fatalf("input %d lacks one leaf and witness UTXO", inputIndex)
 		}
-		fetcher := txscript.NewMultiPrevOutFetcher(map[wire.OutPoint]*wire.TxOut{
-			packet.UnsignedTx.TxIn[inputIndex].PreviousOutPoint: input.WitnessUtxo,
-		})
-		hashes := txscript.NewTxSigHashes(packet.UnsignedTx, fetcher)
+		if len(input.TaprootLeafScript) == 0 && len(input.TaprootKeySpendSig) > 0 {
+			continue
+		}
+		if len(input.TaprootLeafScript) != 1 {
+			t.Fatalf("input %d lacks one leaf and witness UTXO", inputIndex)
+		}
 		leaf := txscript.NewBaseTapLeaf(input.TaprootLeafScript[0].Script)
 		signature, err := txscript.RawTxInTapscriptSignature(
 			packet.UnsignedTx, hashes, inputIndex, input.WitnessUtxo.Value,
@@ -439,6 +450,15 @@ func addStagedTransportServerSignature(t *testing.T, packet *psbt.Packet, key *b
 
 func stagedTransportFinalizeWeight(t *testing.T, packet *psbt.Packet) (weight, strippedBytes, totalBytes int) {
 	t.Helper()
+	prevOutputs := make(map[wire.OutPoint]*wire.TxOut, len(packet.Inputs))
+	for inputIndex := range packet.Inputs {
+		input := packet.Inputs[inputIndex]
+		if input.WitnessUtxo == nil {
+			t.Fatalf("input %d has no witness UTXO", inputIndex)
+		}
+		prevOutputs[packet.UnsignedTx.TxIn[inputIndex].PreviousOutPoint] = input.WitnessUtxo
+	}
+	fetcher := txscript.NewMultiPrevOutFetcher(prevOutputs)
 	for inputIndex := range packet.Inputs {
 		if err := psbt.Finalize(packet, inputIndex); err != nil {
 			t.Fatalf("finalize input %d: %v", inputIndex, err)
@@ -450,9 +470,6 @@ func stagedTransportFinalizeWeight(t *testing.T, packet *psbt.Packet) (weight, s
 	}
 	for inputIndex := range packet.Inputs {
 		input := packet.Inputs[inputIndex]
-		fetcher := txscript.NewMultiPrevOutFetcher(map[wire.OutPoint]*wire.TxOut{
-			tx.TxIn[inputIndex].PreviousOutPoint: input.WitnessUtxo,
-		})
 		engine, err := txscript.NewEngine(
 			input.WitnessUtxo.PkScript, tx, inputIndex, txscript.StandardVerifyFlags,
 			txscript.NewSigCache(2), txscript.NewTxSigHashes(tx, fetcher), input.WitnessUtxo.Value, fetcher,
@@ -461,7 +478,7 @@ func stagedTransportFinalizeWeight(t *testing.T, packet *psbt.Packet) (weight, s
 			t.Fatalf("construct finalized Bitcoin script engine: %v", err)
 		}
 		if err := engine.Execute(); err != nil {
-			t.Fatalf("finalized 2-of-2 Taproot witness is invalid: %v", err)
+			t.Fatalf("finalized Taproot witness for input %d is invalid: %v", inputIndex, err)
 		}
 	}
 	var stripped, total bytes.Buffer
@@ -486,10 +503,10 @@ func stagedTransportICPacket(f stagedGroth16Fixture) []byte {
 func stagedTransportVKPacket(f stagedGroth16Fixture) []byte {
 	packet := make([]byte, 0, 448)
 	for _, coordinate := range []*big.Int{
+		f.deltaNeg.x1, f.deltaNeg.x0, f.deltaNeg.y1, f.deltaNeg.y0,
+		f.gammaNeg.x1, f.gammaNeg.x0, f.gammaNeg.y1, f.gammaNeg.y0,
 		f.alpha.x, f.alpha.y,
 		f.betaNeg.x1, f.betaNeg.x0, f.betaNeg.y1, f.betaNeg.y0,
-		f.gammaNeg.x1, f.gammaNeg.x0, f.gammaNeg.y1, f.gammaNeg.y0,
-		f.deltaNeg.x1, f.deltaNeg.x0, f.deltaNeg.y1, f.deltaNeg.y0,
 	} {
 		packet = append(packet, stagedBNBytes(coordinate)...)
 	}

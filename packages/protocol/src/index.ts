@@ -10,16 +10,17 @@ import { Kernel, type ProtocolEnvironment } from './core.js';
 import { createGroth16ProofBackend, type ProofBackend } from './proofs.js';
 import type { Groth16Proof } from './types.js';
 import type { Owner, WalletKeys, PublicRecipient, ProtocolCheckpoint, PublicProtocolCheckpoint } from './types.js';
+import type { StockProofBackend } from './stock-native.js';
 export * from './core.js';
 export * from './registration.js';
 const BUILD=path.join(fileURLToPath(new URL('../../..',import.meta.url)),'circuits/build');
-async function kernel(mode:'legacy'|'client'|'public',options:{owner?:Owner;keys?:WalletKeys;recipients?:Record<Owner,PublicRecipient>;secureKeys?:boolean;proofBackend?:ProofBackend<Groth16Proof>}){
- for(const name of ['intent','transition'])if(!existsSync(path.join(BUILD,`${name}.zkey`)))throw new Error(`Missing ${name} proof artifacts. Run npm run setup first.`);
- const vkeys=Object.fromEntries(['intent','transition'].map(name=>[name,JSON.parse(readFileSync(path.join(BUILD,`${name}.vkey.json`),'utf8'))]));
- const proofBackend=options.proofBackend??createGroth16ProofBackend({prove:(name,witness)=>snarkjs.groth16.fullProve(witness,path.join(BUILD,`${name}_js/${name}.wasm`),path.join(BUILD,`${name}.zkey`),undefined,undefined,{singleThread:true}),verify:(key,signals,proof)=>snarkjs.groth16.verify(key,signals,proof)});
- const env:ProtocolEnvironment={randomBytes,vkeys,proofs:proofBackend};
+async function kernel(mode:'legacy'|'client'|'public',options:{owner?:Owner;keys?:WalletKeys;recipients?:Record<Owner,PublicRecipient>;secureKeys?:boolean;proofBackend?:ProofBackend<Groth16Proof>;stockProofBackend?:StockProofBackend;stockVerifierKey?:unknown;stockOnly?:boolean}){
+ if(!options.stockOnly)for(const name of ['intent','transition'])if(!existsSync(path.join(BUILD,`${name}.zkey`)))throw new Error(`Missing ${name} proof artifacts. Run npm run setup first.`);
+ const vkeys=options.stockOnly?{}:Object.fromEntries(['intent','transition'].map(name=>[name,JSON.parse(readFileSync(path.join(BUILD,`${name}.vkey.json`),'utf8'))]));
+ const proofBackend=options.proofBackend??(options.stockOnly?undefined:createGroth16ProofBackend({prove:(name,witness)=>snarkjs.groth16.fullProve(witness,path.join(BUILD,`${name}_js/${name}.wasm`),path.join(BUILD,`${name}.zkey`),undefined,undefined,{singleThread:true}),verify:(key,signals,proof)=>snarkjs.groth16.verify(key,signals,proof)}));
+ const env:ProtocolEnvironment={randomBytes,vkeys,proofs:proofBackend,stockProof:options.stockProofBackend,stockVerifierKey:options.stockVerifierKey,stockOnly:options.stockOnly};
  const [poseidon,baby]=await Promise.all([buildPoseidon(),buildBabyjub()]);return new Kernel(poseidon,baby,env,mode,options.owner,options.keys,options.recipients,options.secureKeys);
 }
-export async function createProtocol(options:{checkpoint?:ProtocolCheckpoint;secureKeys?:boolean;proofBackend?:ProofBackend<Groth16Proof>}={}){const value=await kernel('legacy',options);if(options.checkpoint)value.restoreCheckpoint(options.checkpoint);return value;}
-export async function createClientProtocol(options:{owner:Owner;keys?:WalletKeys;recipients?:Record<Owner,PublicRecipient>;checkpoint?:PublicProtocolCheckpoint;proofBackend?:ProofBackend<Groth16Proof>}){const value=await kernel('client',options);if(options.checkpoint)value.restorePublicCheckpoint(options.checkpoint);return value;}
-export async function createPublicProtocol(options:{recipients:Record<Owner,PublicRecipient>;checkpoint?:PublicProtocolCheckpoint;proofBackend?:ProofBackend<Groth16Proof>}){const value=await kernel('public',options);if(options.checkpoint)value.restorePublicCheckpoint(options.checkpoint);return value;}
+export async function createProtocol(options:{checkpoint?:ProtocolCheckpoint;secureKeys?:boolean;proofBackend?:ProofBackend<Groth16Proof>;stockProofBackend?:StockProofBackend;stockVerifierKey?:unknown}={}){const value=await kernel('legacy',options);if(options.checkpoint)value.restoreCheckpoint(options.checkpoint);return value;}
+export async function createClientProtocol(options:{owner:Owner;keys?:WalletKeys;recipients?:Record<Owner,PublicRecipient>;checkpoint?:PublicProtocolCheckpoint;proofBackend?:ProofBackend<Groth16Proof>;stockProofBackend?:StockProofBackend;stockVerifierKey?:unknown;stockOnly?:boolean}){const value=await kernel('client',options);if(options.checkpoint)value.restorePublicCheckpoint(options.checkpoint);return value;}
+export async function createPublicProtocol(options:{recipients:Record<Owner,PublicRecipient>;checkpoint?:PublicProtocolCheckpoint;proofBackend?:ProofBackend<Groth16Proof>;stockProofBackend?:StockProofBackend;stockVerifierKey?:unknown;stockOnly?:boolean}){const value=await kernel('public',options);if(options.checkpoint)value.restorePublicCheckpoint(options.checkpoint);return value;}

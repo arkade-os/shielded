@@ -1,5 +1,7 @@
 > Accepted deployment boundary: the existing independent Arkade emulator must enforce proofs using stock opcodes. The [stock-opcode design experiment](spec/STOCK-OPCODE-DESIGN.md) replaces the proposed custom verifier/registry deployment. The client-owned registry lab remains a local regression fixture with synthetic funding; it is not the accepted deployment path.
 
+The replacement BTC implementation is in `src/stock` and `circuits/stock`. It combines note ownership, encryption, indexed nullifiers and native value conservation in one Groth16 proof, keeps customer keys in their wallets, and pins the verifier to the existing emulator's stock BN254 opcodes. See the [statement](spec/STOCK-STATEMENT.md) and [deployment and acceptance gates](spec/STOCK-DEPLOYMENT.md). All nine paths have passed local native execution, including the three delayed exits. Public funded admission and same-volume restart remain separate gates. The historical results below apply to their original profiles.
+
 # Shielded Arkade PoC
 
 **Legacy deployment security status:** the retained compact demo is custodial, not a

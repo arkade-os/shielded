@@ -26,7 +26,18 @@
     "test:noncustodial:deployment": "node --import tsx tools/noncustodial-deployment-smoke.ts",
     "registry:build": "node --import tsx tools/build-registry-server.ts",
     "test:registry": "node --import tsx tools/build-registry-server.ts --test",
-    "mutinynet:readiness": "node --import tsx tools/mutinynet-readiness.ts"
+    "mutinynet:readiness": "node --import tsx tools/mutinynet-readiness.ts",
+    "stock:tools": "node tools/prepare-stock-tools.mjs",
+    "stock:compile": "node circuits/stock/generate.mjs --compile",
+    "stock:setup": "node tools/stock-setup.mjs",
+    "server:stock": "node --experimental-eventsource --import tsx src/stock/server.ts",
+    "test:stock:witness": "node --import tsx tools/stock-circuit-witness-smoke.ts",
+    "test:stock:lifecycle": "node --import tsx tools/stock-lifecycle.ts",
+    "test:stock:baseline-ten": "node --import tsx tools/stock-ten-leaf-baseline.ts",
+    "stock:funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
+    "stock:bootstrap": "node --experimental-eventsource --import tsx tools/stock-bootstrap.ts",
+    "stock:live": "node --experimental-eventsource --import tsx tools/stock-live-smoke.ts",
+    "stock:qualify": "node --experimental-eventsource --import tsx tools/stock-profile-gate.ts"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.77",

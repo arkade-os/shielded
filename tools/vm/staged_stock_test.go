@@ -32,10 +32,10 @@ func TestStagedStockVMChecksOriginalPacketsAndGroth16(t *testing.T) {
 	}
 	vkPacket := make([]byte, 0, 448)
 	for _, point := range [][]*big.Int{
+		{fixture.deltaNeg.x1, fixture.deltaNeg.x0, fixture.deltaNeg.y1, fixture.deltaNeg.y0},
+		{fixture.gammaNeg.x1, fixture.gammaNeg.x0, fixture.gammaNeg.y1, fixture.gammaNeg.y0},
 		{fixture.alpha.x, fixture.alpha.y},
 		{fixture.betaNeg.x1, fixture.betaNeg.x0, fixture.betaNeg.y1, fixture.betaNeg.y0},
-		{fixture.gammaNeg.x1, fixture.gammaNeg.x0, fixture.gammaNeg.y1, fixture.gammaNeg.y0},
-		{fixture.deltaNeg.x1, fixture.deltaNeg.x0, fixture.deltaNeg.y1, fixture.deltaNeg.y0},
 	} {
 		for _, coordinate := range point {
 			vkPacket = append(vkPacket, stagedBNBytes(coordinate)...)
@@ -161,50 +161,22 @@ func stagedOpcodeNames(script []byte, start int) []string {
 func stagedVerifierScript(t *testing.T, f stagedGroth16Fixture, icPacket, vkPacket, payoutScript []byte) []byte {
 	t.Helper()
 	b := txscript.NewScriptBuilder()
-	// The public input is the actual output value and the destination is fixed.
+	// This harness retains its toy payout checks; production callers bind the
+	// real transaction facts before appending the reusable verifier.
 	b.AddOp(txscript.OP_DUP).AddInt64(0).AddOp(arkade.OP_INSPECTOUTPUTVALUE).AddOp(txscript.OP_EQUALVERIFY)
 	b.AddInt64(0).AddOp(arkade.OP_INSPECTOUTPUTSCRIPTPUBKEY).AddOp(txscript.OP_1).AddOp(txscript.OP_EQUALVERIFY)
 	b.AddData(payoutScript[2:]).AddOp(txscript.OP_EQUALVERIFY)
-	// The VM opcode reads from the parent supplied by the test fetcher. Pin exact
-	// sizes and bytes before parsing the two public-input IC points.
-	b.AddInt64(0x85).AddInt64(0).AddOp(arkade.OP_INSPECTINPUTPACKET).AddOp(txscript.OP_VERIFY)
-	b.AddOp(txscript.OP_SIZE).AddInt64(int64(len(icPacket))).AddOp(txscript.OP_NUMEQUALVERIFY)
-	b.AddOp(txscript.OP_DUP).AddOp(txscript.OP_SHA256).AddData(stagedHash(icPacket)).AddOp(txscript.OP_EQUALVERIFY)
-	// Keep the pinned packet on stack and duplicate it for each coordinate slice.
-	for _, offset := range []int64{0, 32, 64, 96} {
-		stagedExtractTopPacket(b, offset)
-	}
-	b.AddOp(txscript.OP_DROP)
-	// vk_x = IC0 + X*IC1. Existing Arkade BN254 operations perform the real
-	// scalar multiplication and addition using the coordinates parsed above.
-	b.AddOp(txscript.OP_4).AddOp(txscript.OP_ROLL).AddInt64(arkade.CurveAltBN128).AddOp(arkade.OP_ECMUL)
-	b.AddInt64(arkade.CurveAltBN128).AddOp(arkade.OP_ECADD)
-	// Preserve vk_x on the alternate stack while parsing the fixed key packet.
-	b.AddOp(txscript.OP_TOALTSTACK).AddOp(txscript.OP_TOALTSTACK)
-
-	// Pin the fixed VK packet once and retain it on the main stack. Extract
-	// delta first, restore vk_x, then append gamma, alpha, and beta in pairing
-	// order. Every parsed coordinate remains below the packet.
-	b.AddInt64(0x86).AddInt64(0).AddOp(arkade.OP_INSPECTINPUTPACKET).AddOp(txscript.OP_VERIFY)
-	b.AddOp(txscript.OP_SIZE).AddInt64(int64(len(vkPacket))).AddOp(txscript.OP_NUMEQUALVERIFY)
-	b.AddOp(txscript.OP_DUP).AddOp(txscript.OP_SHA256).AddData(stagedHash(vkPacket)).AddOp(txscript.OP_EQUALVERIFY)
-	for _, offset := range []int64{320, 352, 384, 416} {
-		stagedExtractTopPacket(b, offset)
-	}
-	b.AddOp(txscript.OP_FROMALTSTACK).AddOp(txscript.OP_FROMALTSTACK)
-	b.AddOp(txscript.OP_2).AddOp(txscript.OP_ROLL)
-	for _, offset := range []int64{192, 224, 256, 288, 0, 32, 64, 96, 128, 160} {
-		stagedExtractTopPacket(b, offset)
-	}
-	b.AddOp(txscript.OP_DROP)
-	b.AddInt64(4).AddInt64(arkade.CurveAltBN128).AddOp(arkade.OP_ECPAIRING)
-	script, err := b.Script()
+	combined := append(append([]byte(nil), icPacket...), vkPacket...)
+	program, err := stockGroth16VerifierScript(stagedHash(combined))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return script
+	prefix, err := b.Script()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(prefix, program...)
 }
-
 func stagedExtractTopPacket(b *txscript.ScriptBuilder, start int64) {
 	b.AddOp(txscript.OP_DUP).AddInt64(start).AddInt64(32).AddOp(txscript.OP_SUBSTR).AddOp(arkade.OP_BIN2NUM).AddOp(txscript.OP_SWAP)
 }

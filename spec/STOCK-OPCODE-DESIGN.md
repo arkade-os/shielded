@@ -1,3 +1,5 @@
+> Historical feasibility candidate and measurements. The current combined BTC implementation is specified in [STOCK-STATEMENT.md](STOCK-STATEMENT.md); its proposed fresh live policy and acceptance gates are in [STOCK-DEPLOYMENT.md](STOCK-DEPLOYMENT.md). The old arithmetic fixtures and abort coverage remain intact.
+
 # Stock-opcode Shielded design
 
 ## Accepted enforcement boundary

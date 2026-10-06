@@ -33,3 +33,6 @@ circuits/build/intent_js/*
 circuits/build/transition_js/*
 !circuits/build/transition_js/transition.wasm
 !circuits/build/transition_js/witness_calculator.js
+circuits/stock/build/
+data-stock/
+stock-release/

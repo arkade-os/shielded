@@ -1,0 +1,179 @@
+{
+  "network": "local-stock",
+  "fundedMutinynet": false,
+  "proofSystem": "actual combined Groth16 BN254 development setup",
+  "profile": {
+    "backendId": "groth16-bn254",
+    "version": 1,
+    "curve": "bn128",
+    "circuitId": "shielded.stock-btc.v1",
+    "verifierId": "86ef9d3512d56c3472834dc3cc269ff2a30b7aa0a467a568f455dd9db9df725f",
+    "publicSignalCount": 1,
+    "statementEncoding": "sha256-le-248",
+    "domain": "20260930001",
+    "profileId": "1ed8e8772cce6007ddbc2f355d4dcee8d0250724b7e193cd6c1f33aee5f6fcbb"
+  },
+  "participants": 3,
+  "clientKeys": true,
+  "operatorHasCustomerSecrets": false,
+  "stockServiceExecution": true,
+  "customerTwoLeafArkPolicy": true,
+  "budgetWu": 4000,
+  "oneSatWithdrawalWithCustomerDustFunding": true,
+  "seedPlusAuthenticatedArchiveRecovery": true,
+  "exactAcceptedReplay": true,
+  "unknownResponseRecoveredWithoutSubmission": true,
+  "sameDirectoryRestart": true,
+  "staleParallelProofRejectedBeforeSubmission": true,
+  "nativeAmountAndDestinationMutationsRejected": true,
+  "measurements": [
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "deposit",
+      "ark": 3722,
+      "checkpoints": [
+        760,
+        696
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "seal",
+      "ark": 3272,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "transfer",
+      "ark": 3272,
+      "checkpoints": [
+        792
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "seal",
+      "ark": 3272,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "withdraw-funded",
+      "ark": 3930,
+      "checkpoints": [
+        760,
+        696
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "seal",
+      "ark": 3272,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "transfer",
+      "ark": 3272,
+      "checkpoints": [
+        792
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "seal",
+      "ark": 3272,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "withdraw-funded",
+      "ark": 3930,
+      "checkpoints": [
+        760,
+        696
+      ]
+    },
+    {
+      "operation": "prepare",
+      "ark": 3816,
+      "checkpoints": [
+        760
+      ]
+    },
+    {
+      "operation": "withdraw",
+      "ark": 3496,
+      "checkpoints": [
+        792
+      ]
+    }
+  ],
+  "limitations": [
+    "Synthetic native prevouts, no public Arkd admission or Bitcoin settlement",
+    "Development circuit-specific phase2",
+    "No independent pooled Bitcoin exit if Arkade platform is unavailable"
+  ]
+}

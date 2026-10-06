@@ -1,6 +1,9 @@
 .git
 .github
 .deps
+circuits/stock/build
+stock-release
+data-stock
 .recovery
 node_modules
 /build
