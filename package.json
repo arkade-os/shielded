@@ -29,6 +29,7 @@
     "mutinynet:readiness": "node --import tsx tools/mutinynet-readiness.ts",
     "stock:tools": "node tools/prepare-stock-tools.mjs",
     "stock:compile": "node circuits/stock/generate.mjs --compile",
+    "rollup:compile": "node circuits/rollup/generate.mjs",
     "stock:setup": "node tools/stock-setup.mjs",
     "server:stock": "node --experimental-eventsource --import tsx src/stock/server.ts",
     "test:stock:witness": "node --import tsx tools/stock-circuit-witness-smoke.ts",
