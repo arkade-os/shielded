@@ -7,6 +7,8 @@ export interface BatchSlot { root: bigint; nullifiers: bigint[]; commitments: [b
 export interface BatchResult { next: RollupState; witness: Record<string, unknown>; publicSignals: bigint[]; binding: Uint8Array; daRoot: bigint }
 
 const le32 = (value: bigint) => Uint8Array.from({ length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
+export const bindingOf = (kind: BatchKind, oldCommitment: bigint, newCommitment: bigint, daRoot: bigint) =>
+ Uint8Array.from([0x53, 0x48, 2, BATCH_KIND_BYTE[kind], BATCH_SLOTS, ...le32(oldCommitment), ...le32(newCommitment), ...le32(daRoot)]);
 
 function validateGroups(hash: Hash, slots: BatchSlot[]): void {
  const bad = (why: string) => new RollupRejection('group-invalid', why);
@@ -66,7 +68,7 @@ export class RollupState {
   next.noteCount += 2 ** SUBTREE_DEPTH;
   next.window.set(windowSlot, next.notes.root());
   next.batchCount += 1;
-  const binding = Uint8Array.from([0x53, 0x48, 2, BATCH_KIND_BYTE[kind], BATCH_SLOTS, ...le32(oldCommitment), ...le32(next.commitment()), ...le32(da)]);
+  const binding = bindingOf(kind, oldCommitment, next.commitment(), da);
   const statement = sha256le248(binding);
   const witness = {
    ...lists, statement,
