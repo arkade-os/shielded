@@ -33,6 +33,13 @@ test('a join slot has both nullifiers and per-input arrays', () => {
  assert.throws(() => clientWitness(hash, { ...base, inputs: [] }), /one input/);
 });
 
+test('an internal transfer hides its asset and a boundary leg reveals it', () => {
+ assert.equal(clientWitness(hash, { ...base, asset: 77n }).publicSignals[3], 0n);
+ const deposit = clientWitness(hash, { ...base, asset: 77n, inputs: [{ ...base.inputs[0], amount: 0n }], deposit: 100n });
+ assert.equal(deposit.publicSignals[3], 77n);
+ assert.equal(deposit.input.boundaryAsset, 77n);
+});
+
 test('circuit inputs are decimal strings', () => {
  assert.deepEqual(toCircuitInput({ a: 5n, b: [1n, [2n]] }), { a: '5', b: ['1', ['2']] });
 });

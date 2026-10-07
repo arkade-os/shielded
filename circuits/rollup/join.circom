@@ -3,8 +3,8 @@ include "lib.circom";
 
 // Two input notes, two outputs, one asset: consolidation, splitting and pay-from-two.
 template Join(DEPTH) {
- signal input pub; signal input deposit; signal input withdraw; signal input asset; signal input destination;
- signal input domain; signal input root; signal input ctDigest; signal input groupId; signal input groupSize;
+ signal input pub; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
+ signal input domain; signal input root; signal input ctDigest; signal input groupId; signal input groupSize; signal input asset;
  signal input inAmount[2]; signal input inRho[2]; signal input spendSecret[2];
  signal input path[2][DEPTH]; signal input bits[2][DEPTH];
  signal input outAmount[2]; signal input outOwner[2]; signal input outRandom[2];
@@ -36,6 +36,7 @@ template Join(DEPTH) {
  }
  inAmount[0]+inAmount[1]+deposit === outAmount[0]+outAmount[1]+withdraw;
  component noWithdraw=IsZero(); noWithdraw.in <== withdraw; noWithdraw.out*destination === 0;
+ component noLeg=IsZero(); noLeg.in <== deposit+withdraw; boundaryAsset === asset*(1-noLeg.out);
 
  component statement=Poseidon(9);
  statement.inputs[0] <== domain; statement.inputs[1] <== root; statement.inputs[2] <== nf[0].out;
@@ -43,4 +44,4 @@ template Join(DEPTH) {
  statement.inputs[6] <== ctDigest; statement.inputs[7] <== groupId; statement.inputs[8] <== groupSize;
  statement.out === pub;
 }
-component main {public [pub, deposit, withdraw, asset, destination]} = Join(32);
+component main {public [pub, deposit, withdraw, boundaryAsset, destination]} = Join(32);
