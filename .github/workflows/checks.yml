@@ -102,6 +102,24 @@ jobs:
       - run: npm run stock:qualify -- --local-only
       - run: docker build --file Dockerfile.stock --tag shielded-stock:ci .
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-stock:ci node --import tsx src/stock/server.ts --help
+  rollup-circuits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: stock-circom-2.2.2-linux-phase1-7e6a9c2e5f05
+      - run: npm ci
+      - run: npm run stock:tools -- --compiler-only
+      - run: npm run rollup:compile
+      - run: npm run test:rollup:witness
   dokploy-installation-image:
     runs-on: ubuntu-latest
     timeout-minutes: 45

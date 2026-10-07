@@ -33,6 +33,7 @@
     "stock:setup": "node tools/stock-setup.mjs",
     "server:stock": "node --experimental-eventsource --import tsx src/stock/server.ts",
     "test:stock:witness": "node --import tsx tools/stock-circuit-witness-smoke.ts",
+    "test:rollup:witness": "node --import tsx tools/rollup-circuit-witness-smoke.ts",
     "test:stock:lifecycle": "node --import tsx tools/stock-lifecycle.ts",
     "test:stock:baseline-ten": "node --import tsx tools/stock-ten-leaf-baseline.ts",
     "stock:funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
