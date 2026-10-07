@@ -81,6 +81,9 @@ func newRollupWorld(t *testing.T, slots int, kind byte, seed int64) *rollupWorld
 	w.leaf = leaf
 	w.x = asset.AssetId{Txid: chainhash.Hash{0xaa, 1}, Index: 2}
 	w.token = asset.AssetId{Txid: chainhash.Hash{0xcc, 3}, Index: 0}
+	if w.reserveLeaf, err = buildRollupReserveLeaf(w.token); err != nil {
+		t.Fatal(err)
+	}
 	w.headIn, w.xIn = 100_330, 10_000
 	state := func() []byte { b := make([]byte, 32); rng.Read(b[:31]); return b }
 	w.oldPacket = append(state(), state()...)
