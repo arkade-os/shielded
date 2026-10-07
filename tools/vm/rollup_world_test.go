@@ -129,6 +129,7 @@ type rollupBatch struct {
 	pubs       []*big.Int
 	proofs     []rollupProof
 	assetAs    map[int]*big.Int
+	depositAs  map[int]*big.Int
 	zeroDest   map[int]bool
 	tx         *wire.MsgTx
 	assets     asset.Packet
@@ -141,9 +142,9 @@ type rollupBatch struct {
 }
 
 func (w *rollupWorld) batchOf(legs []rollupLeg, reserve bool) *rollupBatch {
-	b := &rollupBatch{w: w, legs: legs, reserve: reserve, assetAs: map[int]*big.Int{}, zeroDest: map[int]bool{}, reserveVin: 1, batchKind: w.kind}
+	b := &rollupBatch{w: w, legs: legs, reserve: reserve, assetAs: map[int]*big.Int{}, depositAs: map[int]*big.Int{}, zeroDest: map[int]bool{}, reserveVin: 1, batchKind: w.kind}
 	for range legs {
-		b.pubs = append(b.pubs, new(big.Int).Rand(w.rng, new(big.Int).Lsh(big.NewInt(1), 248)))
+		b.pubs = append(b.pubs, new(big.Int).Rand(w.rng, rollupScalarField))
 	}
 	b.prove()
 	b.buildTx()
@@ -163,8 +164,16 @@ func (b *rollupBatch) publics(i int) []*big.Int {
 	if l.wd > 0 && !b.zeroDest[i] {
 		d = rollupLE248(l.dest)
 	}
-	return []*big.Int{b.pubs[i], new(big.Int).SetUint64(l.dep), new(big.Int).SetUint64(l.wd), a, d}
+	dep := new(big.Int).SetUint64(l.dep)
+	if v, ok := b.depositAs[i]; ok {
+		dep = v
+	}
+	return []*big.Int{b.pubs[i], dep, new(big.Int).SetUint64(l.wd), a, d}
 }
+
+// slotItem is the witness index of slot i's field f: 0-7 proof, 8 pub, 9
+// deposit, 10 withdraw, 11 boundaryAsset, 12 destination.
+func (b *rollupBatch) slotItem(i, f int) int { return 8 + (b.w.slots-1-i)*13 + f }
 
 func (b *rollupBatch) prove() {
 	b.proofs = nil

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"math/big"
 	"testing"
 
 	"github.com/arkade-os/arkd/pkg/ark-lib/asset"
@@ -77,6 +78,15 @@ func TestRollupBatchLeafRejectsBTCLegAttacks(t *testing.T) {
 	b = rollupBoundaryBatch(t, nil)
 	b.tx.TxOut[0].Value--
 	rollupExpectReject(t, "head credited one sat short", b, "OP_NUMEQUALVERIFY")
+
+	// The proof binds deposit q-5; the witness encodes it as -5 to drain 5 sats.
+	b = rollupBoundaryBatch(t, nil)
+	b.depositAs[4] = new(big.Int).Sub(rollupScalarField, big.NewInt(5))
+	b.prove()
+	b.buildWitness()
+	b.witness[b.slotItem(4, 9)] = []byte{0x85}
+	b.tx.TxOut[0].Value -= 5
+	rollupExpectReject(t, "negative deposit drains the head", b, "OP_VERIFY")
 }
 
 func TestRollupBatchLeafRejectsAssetAttacks(t *testing.T) {

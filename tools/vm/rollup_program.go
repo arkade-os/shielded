@@ -233,7 +233,12 @@ func emitRollupLegs(s *rollupStack, i, n int) {
 		s.pick("F", "f2")
 		s.op(txscript.OP_EQUALVERIFY, 2)
 	}, func() { s.op(txscript.OP_DROP, 1) })
+	// The pairing only binds dep mod q; a negative encoding would shrink the head.
 	s.roll(dep)
+	s.op(txscript.OP_DUP, 0, "dep2")
+	s.small(0, "zero")
+	s.op(txscript.OP_GREATERTHANOREQUAL, 2, "ok")
+	s.op(txscript.OP_VERIFY, 1)
 	s.pick(wd, "y")
 	s.op(txscript.OP_SUB, 2, "net")
 	s.op(txscript.OP_DUP, 0, "net2")
