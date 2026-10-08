@@ -11,7 +11,7 @@ import {F1Field} from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
 import {BTC_ASSET,ROLLUP_DOMAIN,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 import {clientWitness} from '../packages/protocol/src/rollup/client.ts';
-import {destinationFieldOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,nullifierOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {offlineNativeFixture} from '../src/sdk/adapter.ts';
 import {DEFAULT_VM_BINARY,executeVmBinary} from '../src/sdk/runtime.ts';
@@ -26,24 +26,43 @@ const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
 const field=new F1Field(ROLLUP_FIELD);
 const toy=(name:string)=>join('tests','fixtures','rollup-toy',name);
 const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-covenant-snarkjs.json','utf8')) as {clientKey:unknown;batchKey:unknown};
-const token=asset.AssetId.create('cc'.repeat(32),0).toString();
+const token=asset.AssetId.create('cc'.repeat(32),0).toString(),x=asset.AssetId.create('dd'.repeat(32),0).toString();
 const owner=ownerOf(hash,ROLLUP_DOMAIN,7n);
 const sha=(text:string|Uint8Array)=>createHash('sha256').update(text).digest('hex');
 const le32=(value:bigint)=>Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 let counter=5000n;
 const fresh=()=>++counter;
 
+interface Leg {deposit?:bigint;withdraw?:bigint;asset?:string;program?:Uint8Array;coin?:RollupCoin&{assetAmount?:bigint};groupId?:bigint;groupSize?:number}
+const spendOf=async(id:string,w:ReturnType<typeof clientWitness>,root2:unknown,leg:Leg):Promise<Omit<RollupSpend,'receivedAt'>>=>{
+ const [pub,deposit,withdraw,boundaryAsset,destination]=w.publicSignals.map(String);
+ const {proof}=await snarkjs.groth16.fullProve({pub,deposit,withdraw,boundaryAsset,destination,w:String(root2)},toy('covenant-client.wasm'),toy('covenant-client.zkey'));
+ return {id,slot:w.slot,publics:w.publicSignals as unknown as RollupSpend['publics'],proof:proof as SnarkProof,
+  ...(leg.asset&&(leg.deposit||leg.withdraw)?{asset:leg.asset}:{}),...(leg.program?{program:leg.program}:{}),...(leg.coin?{coin:leg.coin}:{})};
+};
+const witnessOf=(root:bigint,leg:Leg,input:{spendSecret:bigint;rho:bigint},groupId:bigint,groupSize:number)=>
+ clientWitness(hash,{domain:ROLLUP_DOMAIN,root,asset:leg.asset?assetFieldOfId(leg.asset):BTC_ASSET,inputs:[{amount:leg.withdraw??0n,...input,index:0,path:Array(32).fill(0n)}],
+  outputs:[{amount:leg.deposit??0n,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit:leg.deposit??0n,withdraw:leg.withdraw??0n,
+  destination:leg.program?destinationFieldOf(leg.program):0n,ctDigest:fresh(),groupId,groupSize});
+
 /** A toy client proof for a real Poseidon statement: the toy circuit only needs pub = w^2. */
-async function toySpend(id:string,root:bigint,leg:{deposit?:bigint;withdraw?:bigint;program?:Uint8Array;coin?:RollupCoin}={}):Promise<Omit<RollupSpend,'receivedAt'>> {
+async function toySpend(id:string,root:bigint,leg:Leg={}):Promise<Omit<RollupSpend,'receivedAt'>> {
  for(;;){
-  const deposit=leg.deposit??0n,withdraw=leg.withdraw??0n,destination=leg.program?destinationFieldOf(leg.program):0n;
-  const w=clientWitness(hash,{domain:ROLLUP_DOMAIN,root,asset:BTC_ASSET,inputs:[{amount:withdraw,spendSecret:fresh(),rho:fresh(),index:0,path:Array(32).fill(0n)}],
-   outputs:[{amount:deposit,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit,withdraw,destination,ctDigest:fresh(),groupId:0n,groupSize:0});
+  const w=witnessOf(root,leg,{spendSecret:fresh(),rho:fresh()},leg.groupId??0n,leg.groupSize??0);
   const root2=field.sqrt(w.publicSignals[0]!);
   if(root2===null)continue;
-  const [pub,dep,wd,a,d]=w.publicSignals.map(String);
-  const {proof}=await snarkjs.groth16.fullProve({pub,deposit:dep,withdraw:wd,boundaryAsset:a,destination:d,w:String(root2)},toy('covenant-client.wasm'),toy('covenant-client.zkey'));
-  return {id,slot:w.slot,publics:w.publicSignals as unknown as RollupSpend['publics'],proof:proof as SnarkProof,...(leg.program?{program:leg.program}:{}),...(leg.coin?{coin:leg.coin}:{})};
+  return spendOf(id,w,root2,leg);
+ }
+}
+/** A toy group, whose id commits to its members' first nullifiers as the batch requires. */
+async function toyGroup(ids:string[],root:bigint,legs:Leg[]):Promise<Omit<RollupSpend,'receivedAt'>[]> {
+ for(;;){
+  const inputs=legs.map(()=>({spendSecret:fresh(),rho:fresh()}));
+  const groupId=groupIdOf(hash,inputs.map(i=>nullifierOf(hash,ROLLUP_DOMAIN,i.spendSecret,i.rho)));
+  const made=legs.map((leg,i)=>witnessOf(root,leg,inputs[i]!,groupId,legs.length));
+  const roots=made.map(w=>field.sqrt(w.publicSignals[0]!));
+  if(roots.some(r=>r===null))continue;
+  return Promise.all(made.map((w,i)=>spendOf(ids[i]!,w,roots[i],legs[i]!)));
  }
 }
 after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();});
@@ -222,6 +241,38 @@ test('a deposit the network keeps refusing is dropped, and the honest spend stil
  assert.equal(submits,3,'the refused deposit is never proven or sent again');
  assert.equal(await op.tick(),undefined);
  assert.equal(readdirSync(join(w.dir,'abandoned')).length,0,'the kept plan is dropped once the head moves past it');
+});
+
+test('admission refuses every spend the batch itself would reject',async(t)=>{
+ const w=await world(),op=await w.open(t),root=op.state.latestRoot();
+ await assert.rejects(op.submit(await toySpend('lone',root,{groupId:0n,groupSize:2})),/group/,'a group size no batch can place');
+ const shifted=await toySpend('shifted',root);
+ await assert.rejects(op.submit({...shifted,slot:{...shifted.slot,nullifiers:[shifted.slot.nullifiers[0]!+ROLLUP_FIELD]}}),/field/,'a nullifier above the field');
+ await assert.rejects(op.submit({...shifted,slot:{...shifted.slot,commitments:[shifted.slot.commitments[0]+ROLLUP_FIELD,shifted.slot.commitments[1]]}}),/field/,'a commitment above the field');
+ const pair=await toyGroup(['first','second'],root,[{},{}]);
+ await op.submit(pair[0]!);
+ await assert.rejects(op.submit(await toySpend('odd',root,{groupId:pair[0]!.slot.groupId,groupSize:3})),/group/,'a member that disagrees on the group size');
+ const payout=await toyGroup(['payout','carrier'],root,[{withdraw:5n,asset:x,program:new Uint8Array(32).fill(0x53)},{withdraw:330n,program:new Uint8Array(32).fill(0x53)}]);
+ await assert.rejects(op.submit(payout[0]!),/reserve/,'an asset with no reserve to move it');
+ const both=await Promise.allSettled([op.submit(shifted),op.submit({...shifted,id:'retry'})]);
+ assert.deepEqual(both.map(r=>r.status),['fulfilled','rejected'],'a concurrent retry of the same request is admitted once');
+ assert.equal(op.pending(),2);
+});
+
+test('a selection whose asset reserve vanished is evicted and gives its padding back',async(t)=>{
+ const w=await world(),op=await w.open(t),root=op.state.latestRoot(),head=op.status().archive.head;
+ await op.relocate({head,reserves:{[x]:{...head,amount:'10'}}});
+ const payout=await toyGroup(['payout','carrier'],root,[{withdraw:5n,asset:x,program:new Uint8Array(32).fill(0x53)},{withdraw:330n,program:new Uint8Array(32).fill(0x53)}]);
+ for(const s of payout)await op.submit(s);
+ await op.submit(await toySpend('transfer',root));
+ op.addPadding(await pads(root,10));
+ await op.relocate({head,reserves:{}});
+ w.clock.now=10_000;
+ await assert.rejects(op.tick(),/No reserve/);
+ assert.equal(op.pending(),0,'the selection is evicted instead of being retried forever');
+ await op.submit(await toySpend('after',root));
+ w.clock.now+=10_000;
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch'],'the evicted batch gave its padding back');
 });
 
 test('admission refuses forged statements, proofs and boundary legs, and double spends',async(t)=>{

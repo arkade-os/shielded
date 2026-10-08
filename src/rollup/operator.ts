@@ -2,8 +2,8 @@ import {mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {ROLLUP_DOMAIN,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
-import {assetFieldOfId,destinationFieldOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
+import {ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupState,type BatchSlot} from '../../packages/protocol/src/rollup/state.ts';
 import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
 import {stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
@@ -112,20 +112,33 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  const depositFacts=(s:RollupSpend):RollupDepositFacts=>({txid:s.coin!.txid,vout:s.coin!.vout,value:s.coin!.value,
   script:hex.encode(VtxoScript.decode(s.coin!.tapTree).pkScript),assets:s.coin!.assetAmount?[{assetId:s.asset!,amount:s.coin!.assetAmount}]:[]});
 
+ /** The only gate: a spend the batch, the builder or the network would reject must never reserve a nullifier. */
  const submit=async(spend:Omit<RollupSpend,'receivedAt'>)=>{
   const [pub,deposit,withdraw,assetField,destination]=spend.publics;
+  const {root,nullifiers,commitments,ctDigest,groupId,groupSize}=spend.slot;
   if([...pending,...inflight].some(s=>s.id===spend.id))throw new Error('Duplicate rollup spend id.');
-  if(spend.slot.nullifiers.some(spent))throw new RollupRejection('double-spend','The note is already spent or pending.');
-  if(state.windowIndex(spend.slot.root)<0)throw new RollupRejection('stale-root','The spend proves against a root outside the window.');
+  if(nullifiers.length!==1)throw new RollupRejection('slot-shape','A spend slot spends exactly one note.');
+  if(nullifiers.some(nf=>nf<=0n||nf>=ROLLUP_FIELD))throw new RollupRejection('nullifier-range','The nullifier is zero or outside the field.');
+  if(commitments.length!==2||[...commitments,root,ctDigest,groupId].some(v=>v<0n||v>=ROLLUP_FIELD))throw new RollupRejection('slot-shape','A slot has two field-element commitments.');
+  if(![0,2,3].includes(groupSize)||(groupId===0n)!==(groupSize===0))throw new RollupRejection('group-invalid','A group has two or three members and a nonzero id.');
+  const siblings=pending.filter(s=>groupId!==0n&&s.slot.groupId===groupId);
+  if(groupId!==0n&&(siblings.length>=groupSize||siblings.some(s=>s.slot.groupSize!==groupSize)))throw new RollupRejection('group-invalid','The group is already complete or disagrees on its size.');
+  if(nullifiers.some(spent))throw new RollupRejection('double-spend','The note is already spent or pending.');
+  if(state.windowIndex(root)<0)throw new RollupRejection('stale-root','The spend proves against a root outside the window.');
   if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...spend.slot})!==pub)throw new Error('The spend statement does not match its opening.');
   if((withdraw>0n)!==!!spend.program||(spend.program?destinationFieldOf(spend.program):0n)!==destination)throw new Error('The withdrawal destination does not match its P2TR program.');
   if((assetField!==0n)!==!!spend.asset||(spend.asset?assetFieldOfId(spend.asset):0n)!==assetField)throw new Error('The boundary asset does not match its Arkade asset id.');
   if(spend.coin&&deposit===0n)throw new Error('A deposit coin needs a deposit leg.');
-  if(!await verifyRollupProof(o.clientKey,spend.publics,spend.proof))throw new Error('Invalid client proof.');
-  const admitted={...spend,receivedAt:now()},{groupId,groupSize}=spend.slot;
-  const unit=groupId===0n?[admitted]:[...pending.filter(s=>s.slot.groupId===groupId),admitted];
-  if(unit.length===Math.max(groupSize,1))checkUnit(unit);
+  if(spend.asset&&!journal.status().archive.reserves[spend.asset])throw new Error(`No reserve for asset ${spend.asset}.`);
+  const admitted={...spend,receivedAt:now()};
   pending.push(admitted);
+  try{
+   if(!await verifyRollupProof(o.clientKey,spend.publics,spend.proof))throw new Error('Invalid client proof.');
+   const unit=groupId===0n?[admitted]:pending.filter(s=>s.slot.groupId===groupId);
+   if(unit.length!==Math.max(groupSize,1))return;
+   checkUnit(unit);
+   if(groupId!==0n&&groupIdOf(o.hash,unit.map(s=>s.slot.nullifiers[0]!))!==groupId)throw new RollupRejection('group-invalid','The group id does not commit to its members.');
+  }catch(error){pending=pending.filter(s=>s!==admitted);throw error;}
  };
 
  const run=async():Promise<RollupTick>=>{
@@ -135,18 +148,20 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   let taken:RollupSpend[]=[];
   const selection=selectRollupBatch(pending,now(),count=>{if(padding.length<count)throw new Error('padding');taken=padding.splice(0,count);return taken;},coinCap);
   if(!selection)return undefined;
-  const archive=journal.status().archive,reserveCoin=selection.asset?archive.reserves[selection.asset]:undefined;
-  if(selection.asset&&!reserveCoin)throw new Error(`No reserve for asset ${selection.asset}.`);
   const clients=selection.spends.filter(s=>!taken.includes(s)),deposits=selection.spends.filter(s=>s.coin);
   pending=pending.filter(s=>!clients.includes(s));inflight=clients;inflightPadding=taken;
-  let submitted=false,applied=false;
+  const archive=journal.status().archive,reserveCoin=selection.asset?archive.reserves[selection.asset]:undefined;
+  let submitted=false,applied=false,evict=false;
+  // Admission gates everything below, so a rejection here is a gap: evict the selection rather than loop on it.
+  const gate=<T>(build:()=>T):T=>{try{return build();}catch(error){evict=true;throw error;}};
   try{
-   const result=state.apply('spend',selection.spends.map(s=>s.slot));applied=true;
+   if(selection.asset&&!reserveCoin)gate(()=>{throw new Error(`No reserve for asset ${selection.asset}.`);});
+   const result=gate(()=>state.apply('spend',selection.spends.map(s=>s.slot)));applied=true;
    const proof=await o.prover.prove(result.witness,result.publicSignals);
    const witness=rollupWitness(proof,selection.spends.map(s=>({proof:s.proof,publics:s.publics})));
    const reserve=reserveCoin?{...poolCoin(reserveCoin,pool.reserve),amount:BigInt(reserveCoin.amount)}:undefined;
-   const built=buildRollupBatchTx({head:poolCoin(archive.head,pool.batch),...(reserve?{reserve}:{}),deposits:deposits.map(s=>s.coin!),legs:selection.legs,token:o.token,...(selection.asset?{asset:selection.asset}:{}),
-    leaves:o.leaves,witness,newPacket:Uint8Array.from([...le32(state.commitment()),...le32(result.daRoot)]),checkpoint:o.checkpoint});
+   const built=gate(()=>buildRollupBatchTx({head:poolCoin(archive.head,pool.batch),...(reserve?{reserve}:{}),deposits:deposits.map(s=>s.coin!),legs:selection.legs,token:o.token,...(selection.asset?{asset:selection.asset}:{}),
+    leaves:o.leaves,witness,newPacket:Uint8Array.from([...le32(state.commitment()),...le32(result.daRoot)]),checkpoint:o.checkpoint}));
    const firstDeposit=reserve?2:1;
    let request={arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(tx=>base64.encode(tx.toPSBT()))};
    if(deposits.length){
@@ -168,7 +183,8 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   }catch(error){
    if(submitted&&journal.status().pending)return {blocked:String((error as Error).message)};
    if(applied)state.undoLast();
-   padding.unshift(...inflightPadding);pending.unshift(...inflight);inflight=[];inflightPadding=[];
+   padding.unshift(...inflightPadding);if(!evict)pending.unshift(...inflight);
+   inflight=[];inflightPadding=[];
    throw error;
   }
  };
