@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdtempSync,readdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after,test,type TestContext} from 'node:test';
@@ -15,7 +15,7 @@ import {destinationFieldOf,ownerOf} from '../packages/protocol/src/rollup/notes.
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {offlineNativeFixture} from '../src/sdk/adapter.ts';
 import {DEFAULT_VM_BINARY,executeVmBinary} from '../src/sdk/runtime.ts';
-import type {StockWireRequest} from '../src/stock/transport.ts';
+import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
 import type {RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {loadRollupLeaves} from '../src/rollup/leaves.ts';
@@ -85,6 +85,22 @@ async function world(){
  return {dir,options,clock,coin,transport,open:async(t:TestContext,overrides={})=>{const op=await openRollupOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 
+/** A network that accepts one batch, loses the reply, and indexes it only once the test says so. */
+function lossyNetwork(w:Awaited<ReturnType<typeof world>>){
+ const net={landed:undefined as {arkTx:string;receipt:StockNativeReceipt}|undefined,indexed:false,sent:[] as string[]};
+ const transport:RollupTransport={...w.transport,
+  submit:async(request:StockWireRequest,first:number)=>{
+   net.sent.push(request.arkTx);
+   if(net.landed)throw new Error(net.landed.arkTx===request.arkTx?'the emulator already knows this batch':'the head is already spent');
+   net.landed={arkTx:request.arkTx,receipt:await w.transport.submit(request,first)};
+   throw new Error('proxy timeout after the emulator accepted it');
+  },
+  lookup:async request=>net.indexed&&net.landed?.arkTx===request.arkTx?net.landed.receipt:undefined,
+  unspent:async()=>!(net.indexed&&net.landed),
+ };
+ return {net,transport};
+}
+
 test('the operator batches a deposit and then a withdrawal through the covenant, and replays them after a restart',async(t)=>{
  const w=await world(),op=await w.open(t);
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
@@ -122,7 +138,7 @@ test('a deposit that is never signed is dropped and the rest of the batch goes t
  assert.equal(op.status().archive.head.value,100_330);
 });
 
-test('a submission with no outcome blocks the pool until the head is shown unspent, then it is abandoned',async(t)=>{
+test('a submission with no outcome blocks the pool, then the exact batch is re-sent',async(t)=>{
  const w=await world();
  let down=true;
  const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('emulator unreachable');return w.transport.submit(request,first);}}});
@@ -131,7 +147,8 @@ test('a submission with no outcome blocks the pool until the head is shown unspe
  w.clock.now=10_000;
  assert.match(((await op.tick()) as {blocked:string}).blocked,/unreachable/);
  assert.equal(op.state.batchCount,1,'the unconfirmed batch stays applied while its outcome is unknown');
- down=false;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/no known outcome/,'re-sends are rate limited');
+ down=false;w.clock.now+=300_000;
  assert.equal(((await op.tick()) as {batch:number}).batch,0);
  assert.equal(op.status().archive.batches,1);
 });
@@ -146,6 +163,65 @@ test('an over-weight batch is caught before submission and its newest deposit wa
  assert.equal(op.state.batchCount,0);
  assert.equal(op.status().pending,undefined,'nothing reached the journal');
  assert.equal(op.pending(),2);
+});
+
+test('a batch whose reply was lost is re-sent and recorded instead of being replaced',async(t)=>{
+ const w=await world(),{net,transport}=lossyNetwork(w),op=await w.open(t,{transport});
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/proxy timeout/);
+ w.clock.now+=300_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/already knows/,'the exact journaled batch is re-sent');
+ net.indexed=true;w.clock.now+=300_000;
+ assert.deepEqual(await op.tick(),{txid:net.landed!.receipt.txid,batch:0});
+ assert.equal(op.status().archive.batches,1);
+ assert.ok(existsSync(join(w.dir,'batches','0.json')),'the accepted batch is published');
+ assert.deepEqual([...new Set(net.sent)],[net.landed!.arkTx],'only one transaction is ever built on the head');
+});
+
+test('an abandoned batch that lands late is adopted, head and record included',async(t)=>{
+ const w=await world(),{net,transport}=lossyNetwork(w),op=await w.open(t,{transport});
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/proxy timeout/);
+ w.clock.now+=300_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/already knows/);
+ w.clock.now+=300_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/abandoned/);
+ assert.equal(op.state.batchCount,0,'the abandoned batch is undone');
+ net.indexed=true;
+ assert.deepEqual(await op.tick(),{txid:net.landed!.receipt.txid,batch:0});
+ assert.equal(op.status().archive.batches,1);
+ assert.ok(existsSync(join(w.dir,'batches','0.json')),'the adopted batch is published');
+ assert.deepEqual([...new Set(net.sent)],[net.landed!.arkTx],'only one transaction is ever built on the head');
+});
+
+test('a deposit the network keeps refusing is dropped, and the honest spend still lands',async(t)=>{
+ const w=await world();let submits=0;
+ const transport:RollupTransport={...w.transport,submit:async(request:StockWireRequest,first:number)=>{
+  submits++;
+  if(Transaction.fromPSBT(base64.decode(request.arkTx)).inputsLength>1)throw new Error('arkd rejected the deposit input');
+  return w.transport.submit(request,first);
+ }};
+ const op=await w.open(t,{transport});
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/rejected the deposit/);
+ w.clock.now+=300_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/rejected the deposit/,'the exact journaled batch is re-sent');
+ w.clock.now+=300_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/abandoned/);
+ assert.equal(op.pending(),1,'the refused deposit is dropped and the transfer waits');
+ assert.equal(readdirSync(join(w.dir,'abandoned')).length,1);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.equal(op.status().archive.head.value,100_330,'the batch that lands carries no deposit');
+ assert.equal(submits,3,'the refused deposit is never proven or sent again');
+ assert.equal(await op.tick(),undefined);
+ assert.equal(readdirSync(join(w.dir,'abandoned')).length,0,'the kept plan is dropped once the head moves past it');
 });
 
 test('admission refuses forged statements, proofs and boundary legs, and double spends',async(t)=>{

@@ -1,6 +1,6 @@
-import {mkdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {Transaction,type CSVMultisigTapscript} from '@arkade-os/sdk';
+import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {ROLLUP_DOMAIN,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
@@ -17,13 +17,15 @@ interface RecordSlot {root:string;nullifiers:string[];commitments:[string,string
 /** One accepted batch as published for data availability. */
 export interface RollupRecord {kind:'spend';slots:RecordSlot[]}
 interface RollupPlan {version:1;request:StockWireRequest;record:RollupRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
+/** What a deposit coin must still be when the batch is signed, as the client claims it. */
+export interface RollupDepositFacts {txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[]}
 export interface RollupTransport {
  submit(request:StockWireRequest,firstDeposit:number):Promise<StockNativeReceipt>;
  lookup(request:StockWireRequest):Promise<StockNativeReceipt|undefined>;
  verify(request:StockWireRequest,receipt:StockNativeReceipt):void;
  unspent(coin:{txid:string;vout:number}):Promise<boolean>;
- /** Unspent and expiring after now + floorMs: a batch's outputs inherit its earliest input expiry. */
- fresh?(coin:{txid:string;vout:number},floorMs:number):Promise<boolean>;
+ /** Unspent, exactly these facts, and expiring after now + floorMs: a batch's outputs inherit its earliest input expiry. */
+ fresh?(coin:RollupDepositFacts,floorMs:number):Promise<boolean>;
 }
 export interface RollupOperatorOptions {
  directory:string;
@@ -46,6 +48,8 @@ export interface RollupOperatorOptions {
 }
 export type RollupTick={txid:string;batch:number}|{blocked:string}|undefined;
 
+/** How long an unresolved submission is left alone between exact re-sends, and before it may be abandoned. */
+export const ROLLUP_RESEND_GRACE_MS=120_000;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const slotOf=(s:RecordSlot):BatchSlot=>({root:BigInt(s.root),nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
 const recordOf=(spends:readonly RollupSpend[]):RollupRecord=>({kind:'spend',slots:spends.map(({slot,publics})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String)}))});
@@ -65,17 +69,30 @@ function checkUnit(unit:readonly RollupSpend[]):void {
 export async function openRollupOperator(o:RollupOperatorOptions){
  const now=o.now??Date.now,pool=rollupPoolTree(o.serverKey,o.emulatorKey,o.leaves,o.exitDelay),serverKeyHex=hex.encode(o.serverKey);
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
+ const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
  const state=RollupState.genesis(o.hash);
  const poolCoin=(c:RollupPoolCoin,leaf:Uint8Array):RollupCoin=>({txid:c.txid,vout:c.vout,value:c.value,sourceTx:hex.decode(c.sourceTxHex),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(leaf))});
  const headOf=(plan:RollupPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
+ const keptPath=(plan:RollupPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
+ /** The last transmission of the journaled plan; `tries` counts the sends of the exact bytes the journal holds. */
+ let sent:{at:number;failed:boolean;tries:number}|undefined;
  const journal=await openStockJournal<RollupArchive,RollupPlan,StockNativeReceipt>(join(o.directory,'journal'),o.pin,o.genesis,{
   validateArchive:archive=>{if(archive.version!==1||Transaction.fromRaw(hex.decode(archive.head.sourceTxHex),{allowUnknownOutputs:true}).id!==archive.head.txid)throw new Error('Invalid rollup archive head.');},
   validatePlan:(plan,archive)=>{const head=headOf(plan);if(plan.version!==1||head.txid!==archive.head.txid||head.vout!==archive.head.vout)throw new Error('Rollup plan spends a different head.');},
   verifyReceipt:(plan,receipt)=>o.transport.verify(plan.request,receipt),
-  transmit:plan=>o.transport.submit(plan.request,plan.firstDeposit),
+  transmit:async plan=>{
+   sent={at:now(),failed:true,tries:(sent?.tries??0)+1};
+   const receipt=await o.transport.lookup(plan.request)??await o.transport.submit(plan.request,plan.firstDeposit);
+   sent=undefined;return receipt;
+  },
   lookup:plan=>o.transport.lookup(plan.request),
-  abandoned:async plan=>!await o.transport.lookup(plan.request)&&await o.transport.unspent(headOf(plan)),
+  // Only "not accepted yet" is observable, so the plan is also kept on disk in case it lands after this.
+  abandoned:async plan=>{
+   if(!sent?.failed||sent.tries<2||now()-sent.at<ROLLUP_RESEND_GRACE_MS)return false;
+   if(await o.transport.lookup(plan.request)||!await o.transport.unspent(headOf(plan)))return false;
+   writeFileSync(keptPath(plan),JSON.stringify(plan));return true;
+  },
   apply:(archive,plan,receipt)=>{
    writeFileSync(bodyPath(archive.batches),JSON.stringify(plan.record));
    if(state.batchCount===archive.batches)state.apply(plan.record.kind,plan.record.slots.map(slotOf));
@@ -86,7 +103,14 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  });
  for(let n=0;n<journal.status().archive.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;state.apply(body.kind,body.slots.map(slotOf));}
  let pending:RollupSpend[]=[],padding:RollupSpend[]=[],inflight:RollupSpend[]=[],inflightPadding:RollupSpend[]=[],busy=false,coinCap:number|undefined;
- const spent=(nf:bigint)=>state.nullifiers.has(nf)||[...pending,...inflight].some(s=>s.slot.nullifiers.includes(nf));
+ const spent=(nf:bigint)=>state.nullifiers.has(nf)||[...pending,...inflight,...padding].some(s=>s.slot.nullifiers.includes(nf));
+ /** Every spend of every unit (a lone spend, or a whole group) the predicate picks out. */
+ const unitsOf=(list:readonly RollupSpend[],pick:(s:RollupSpend)=>boolean)=>{
+  const ids=new Set(list.filter(s=>pick(s)&&s.slot.groupId!==0n).map(s=>s.slot.groupId));
+  return new Set(list.filter(s=>pick(s)||ids.has(s.slot.groupId)));
+ };
+ const depositFacts=(s:RollupSpend):RollupDepositFacts=>({txid:s.coin!.txid,vout:s.coin!.vout,value:s.coin!.value,
+  script:hex.encode(VtxoScript.decode(s.coin!.tapTree).pkScript),assets:s.coin!.assetAmount?[{assetId:s.asset!,amount:s.coin!.assetAmount}]:[]});
 
  const submit=async(spend:Omit<RollupSpend,'receivedAt'>)=>{
   const [pub,deposit,withdraw,assetField,destination]=spend.publics;
@@ -105,9 +129,9 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  };
 
  const run=async():Promise<RollupTick>=>{
-  const fresh=(s:RollupSpend)=>state.windowIndex(s.slot.root)>=0;
-  pending=pending.filter(fresh);padding=padding.filter(fresh);
-  for(const s of pending.filter(s=>s.coin))if(o.transport.fresh&&!await o.transport.fresh(s.coin!,o.depositFloorMs??72*3600_000))pending=pending.filter(p=>p!==s&&(s.slot.groupId===0n||p.slot.groupId!==s.slot.groupId));
+  const live=(s:RollupSpend)=>state.windowIndex(s.slot.root)>=0&&!s.slot.nullifiers.some(nf=>state.nullifiers.has(nf));
+  pending=pending.filter(live);padding=padding.filter(live);
+  for(const s of pending.filter(s=>s.coin))if(o.transport.fresh&&!await o.transport.fresh(depositFacts(s),o.depositFloorMs??72*3600_000)){const drop=unitsOf(pending,p=>p===s);pending=pending.filter(p=>!drop.has(p));}
   let taken:RollupSpend[]=[];
   const selection=selectRollupBatch(pending,now(),count=>{if(padding.length<count)throw new Error('padding');taken=padding.splice(0,count);return taken;},coinCap);
   if(!selection)return undefined;
@@ -149,6 +173,19 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   }
  };
 
+ /** Records an abandoned batch the network accepted after all, while the head it spends is still ours. */
+ const adopt=async():Promise<RollupTick>=>{
+  for(const name of readdirSync(kept)){
+   const plan=JSON.parse(readFileSync(join(kept,name),'utf8')) as RollupPlan,archive=journal.status().archive,head=headOf(plan);
+   if(head.txid!==archive.head.txid||head.vout!==archive.head.vout){rmSync(join(kept,name));continue;}
+   if(!await o.transport.lookup(plan.request))continue;
+   const outcome=await journal.submit('batch-'+archive.batches,plan);
+   rmSync(join(kept,name));
+   return {txid:outcome.receipt.txid,batch:archive.batches};
+  }
+  return undefined;
+ };
+
  return {
   state,submit,
   addPadding:(spends:RollupSpend[])=>{padding.push(...spends);},
@@ -156,16 +193,28 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   status:()=>journal.status(),
   /** Adopts the head and reserves a renewal round moved; their state packet is unchanged. */
   relocate:(moved:Pick<RollupArchive,'head'|'reserves'>)=>journal.updateArchive(archive=>({...archive,head:moved.head,reserves:moved.reserves})),
-  /** Runs at most one batch: reconciles an unresolved submission first, then closes a due batch. */
+  /** Runs at most one batch: resolves an unresolved submission first, then closes a due batch. */
   tick:async():Promise<RollupTick>=>{
    if(busy)return undefined;busy=true;
    try{
     if(journal.status().pending){
-     const r=await journal.reconcile() as {resolved:boolean;abandoned?:boolean};
-     if(!r.resolved)return {blocked:'A submitted batch has no known outcome yet.'};
-     if(r.abandoned&&state.batchCount>journal.status().archive.batches){state.undoLast();pending.unshift(...inflight);padding.unshift(...inflightPadding);}
+     const batch=journal.status().archive.batches;
+     let r=await journal.reconcile() as {resolved:boolean;abandoned?:boolean;receipt?:StockNativeReceipt};
+     if(!r.resolved){
+      if(sent&&now()-sent.at<ROLLUP_RESEND_GRACE_MS)return {blocked:'A submitted batch has no known outcome yet.'};
+      try{r={resolved:true,...await journal.retransmit()};}catch(error){return {blocked:String((error as Error).message)};}
+     }
+     if(r.abandoned){
+      if(state.batchCount>journal.status().archive.batches)state.undoLast();
+      const refused=unitsOf(inflight,s=>!!s.coin);
+      padding.unshift(...inflightPadding);pending.unshift(...inflight.filter(s=>!refused.has(s)));
+      inflight=[];inflightPadding=[];sent=undefined;
+      return {blocked:'A submitted batch was abandoned; its plan is kept in case it lands.'};
+     }
      inflight=[];inflightPadding=[];
+     if(r.receipt)return {txid:r.receipt.txid,batch};
     }
+    const adopted=await adopt();if(adopted)return adopted;
     try{return await run();}catch(error){if((error as Error).message==='padding')return {blocked:'Not enough padding spends.'};throw error;}
    }finally{busy=false;}
   },

@@ -63,7 +63,8 @@ test('the builder refuses batches that cannot balance',async()=>{
 test('the live transport refuses an over-weight batch before the emulator, and reads coin freshness from the indexer',async()=>{
  const w=await world();
  const built=buildRollupBatchTx({head:w.head,deposits:[w.deposit],legs:w.legs,token,leaves:w.leaves,witness:w.witness,newPacket:hex.decode(fixture.newPacket),checkpoint:w.checkpoint});
- const coin={txid:'aa'.repeat(32),vout:0,isSpent:false,isSwept:false,isUnrolled:false,expiresAt:new Date(Date.now()+2*3600_000)};
+ const facts={txid:'aa'.repeat(32),vout:0,value:2500,script:'5120'+'33'.repeat(32),assets:[]};
+ const coin={...facts,isSpent:false,isSwept:false,isUnrolled:false,expiresAt:new Date(Date.now()+2*3600_000)};
  let reached=false;
  const transport=createRollupTransport({serverKey:hex.encode(w.server),operatorMaxWeight:20_000,arkUrl:'https://unused.invalid',emulatorUrl:'https://unused.invalid'} as unknown as StockNetworkInfo,{
   emulator:{submitTx:async()=>{reached=true;throw new Error('unreachable');}},
@@ -71,7 +72,7 @@ test('the live transport refuses an over-weight batch before the emulator, and r
  } as never);
  await assert.rejects(transport.submit(wire(built),1),/exceeds/);
  assert.equal(reached,false);
- assert.equal(await transport.fresh(coin,3600_000),true);
- assert.equal(await transport.fresh(coin,3*3600_000),false);
+ assert.equal(await transport.fresh(facts,3600_000),true);
+ assert.equal(await transport.fresh(facts,3*3600_000),false);
  assert.equal(await transport.unspent({txid:'bb'.repeat(32),vout:0}),false);
 });

@@ -19,6 +19,7 @@ export interface StockJournalHooks<A,P,R extends StockJournalReceipt> {
  validateArchive(archive:A):Promise<void>|void;
  validatePlan(plan:P,archive:A):Promise<void>|void;
  verifyReceipt(plan:P,receipt:R):Promise<void>|void;
+ /** Must be idempotent: `retransmit()` calls it again with the same plan, which the network may already hold. */
  transmit(plan:P):Promise<R>;
  lookup(plan:P):Promise<R|undefined>;
  apply(archive:A,plan:P,receipt:R):Promise<A>|A;
@@ -89,6 +90,11 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
     persist({...saved,pending:{id,fingerprint,plan:structuredClone(plan),stage:'submitted'}});
     return await finish(await hooks.transmit(structuredClone(plan)));
    }finally{busy=false;}
+  },
+  /** Re-sends the exact journaled plan, so an unresolved outcome can be settled without building another one. */
+  retransmit:async()=>{
+   ensure();const pending=saved.pending;if(!pending)throw new Error('There is no unresolved stock outcome to retransmit.');
+   busy=true;try{return await finish(await hooks.transmit(structuredClone(pending.plan)));}finally{busy=false;}
   },
   reconcile:async()=>{
    ensure();if(!saved.pending)return {resolved:true,archive:structuredClone(saved.archive)};
