@@ -42,10 +42,11 @@ export function createRollupRouter(service:()=>RollupService|undefined){
    const b=req.body??{},s=b.slot??{};
    if(typeof b.id!=='string'||!/^[0-9a-f]{16,64}$/.test(b.id))throw new Error('A spend id is 8 to 32 random bytes in hex.');
    if(!Array.isArray(s.nullifiers)||!Array.isArray(s.commitments)||s.commitments.length!==2||!Array.isArray(b.publics)||b.publics.length!==5)throw new Error('Malformed spend slot.');
-   if(s.groupId!=='0'||s.groupSize!==0)throw new Error('Grouped spends are not accepted here yet.');
+   const groupId=decimal(s.groupId);
+   if(!(groupId===0n&&s.groupSize===0)&&!(groupId!==0n&&(s.groupSize===2||s.groupSize===3)))throw new Error('A group has a nonzero id and two or three members; a lone spend has neither.');
    const coin=b.coin?await service()!.depositCoin({txid:hexOf(b.coin.txid,32),vout:Number.isInteger(b.coin.vout)&&b.coin.vout>=0?b.coin.vout:-1,tapTree:hexOf(b.coin.tapTree),leaf:hexOf(b.coin.leaf)}):undefined;
    const spend:Omit<RollupSpend,'receivedAt'>={id:b.id,
-    slot:{root:decimal(s.root),nullifiers:s.nullifiers.map(decimal),commitments:[decimal(s.commitments[0]),decimal(s.commitments[1])],ctDigest:decimal(s.ctDigest),groupId:0n,groupSize:0},
+    slot:{root:decimal(s.root),nullifiers:s.nullifiers.map(decimal),commitments:[decimal(s.commitments[0]),decimal(s.commitments[1])],ctDigest:decimal(s.ctDigest),groupId,groupSize:s.groupSize},
     publics:b.publics.map(decimal) as unknown as RollupSpend['publics'],proof:proofOf(b.proof),ciphertext:hex.decode(hexOf(b.ciphertext,ROLLUP_RECORD_BYTES)),
     ...(b.program!==undefined?{program:hex.decode(hexOf(b.program,32))}:{}),...(coin?{coin}:{})};
    await service()!.submit(spend);

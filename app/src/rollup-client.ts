@@ -39,7 +39,7 @@ export const pickNote=(notes:OwnedNote[],amount:bigint,inFlight:Set<bigint>)=>
 
 export function spendBody(id:string,built:BuiltSpend,proof:Groth16Proof,extra:{program?:Uint8Array;coin?:{txid:string;vout:number;tapTree:string;leaf:string}}={}){
  const s=built.witness.slot;
- return {id,slot:{root:String(s.root),nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:'0',groupSize:0},
+ return {id,slot:{root:String(s.root),nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize},
   publics:built.witness.publicSignals.map(String),proof:{pi_a:proof.pi_a,pi_b:proof.pi_b,pi_c:proof.pi_c},ciphertext:hex.encode(built.ciphertext),
   ...(extra.program?{program:hex.encode(extra.program)}:{}),...(extra.coin?{coin:extra.coin}:{})};
 }

@@ -47,7 +47,10 @@ test('a spend is validated and handed to the operator with field elements as big
  const api=await serve({ready:()=>true,submit:async s=>{submitted.push(s);},spend:()=>undefined,sign:()=>{throw new Error('This spend has no open signing round.');},batches:()=>({from:0,total:0,batches:[]})});t.after(api.close);
  assert.equal((await post(api.base+'/spends',{...spend,id:'short'})).status,400);
  assert.equal((await post(api.base+'/spends',{...spend,ciphertext:'00'})).status,400);
- assert.equal((await post(api.base+'/spends',{...spend,slot:{...spend.slot,groupId:'5',groupSize:2}})).status,400);
+ for(const [groupId,groupSize] of [['0',2],['5',0],['5',4],['5','2']] as const)assert.equal((await post(api.base+'/spends',{...spend,slot:{...spend.slot,groupId,groupSize}})).status,400,`group ${groupId}/${groupSize}`);
+ assert.equal((await post(api.base+'/spends',{...spend,id:'cd'.repeat(16),slot:{...spend.slot,groupId:'5',groupSize:3}})).status,202);
+ assert.deepEqual([submitted[0]!.slot.groupId,submitted[0]!.slot.groupSize],[5n,3]);
+ submitted.length=0;
  const accepted=await post(api.base+'/spends',{...spend,program:'cd'.repeat(32)});
  assert.equal(accepted.status,202);
  assert.deepEqual(submitted[0]!.slot,{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0});

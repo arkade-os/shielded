@@ -50,6 +50,24 @@ test('a deposit, a transfer and a withdrawal move notes between replicas that ag
  assert.equal(bob.balance(),200n);assert.equal(alice.balance(),700n);
 });
 
+test('a payment larger than any single note goes out as one atomic group of notes',async()=>{
+ const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys);
+ const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);};
+ await apply(await batchOf(alice.state.latestRoot(),[await alice.spend({deposit:600n},aliceTo),await alice.spend({deposit:300n},aliceTo),await alice.spend({deposit:100n},aliceTo)]));
+ assert.equal(alice.balance(),1000n);
+ const single=await alice.pay(bobTo,250n,aliceTo);
+ assert.equal(single.length,1,'one note covers it, so no group');
+ assert.equal(single[0]!.witness.slot.groupSize,0);
+ await assert.rejects(alice.pay(bobTo,1001n,aliceTo),/cover/);
+ const group=await alice.pay(bobTo,850n,aliceTo);
+ assert.equal(group.length,2);
+ assert.ok(group.every(s=>s.witness.slot.groupSize===2&&s.witness.slot.groupId===group[0]!.witness.slot.groupId&&s.witness.slot.groupId!==0n));
+ await apply(await batchOf(alice.state.latestRoot(),group));
+ assert.equal(bob.balance(),850n);
+ assert.equal(alice.balance(),150n);
+ assert.deepEqual(alice.notes().map(n=>n.amount).sort(),[100n,50n],'the untouched note and the change remain');
+});
+
 test('a record that opens under our view key but commits to another owner is not ours',async()=>{
  const alice=new RollupAccount(hash,aliceKeys);
  // Sealed to Alice's view key, but the commitment names Bob as owner: Alice cannot spend it.

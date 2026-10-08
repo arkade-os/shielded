@@ -353,6 +353,24 @@ test('admission refuses a payout below the network dust limit, which arkd would 
  assert.deepEqual(op.pendingIds(),['enough']);
 });
 
+test('a group whose other members never arrive is dropped after a wait, freeing its notes',async(t)=>{
+ const w=await world(),drops:[string[],string][]=[];
+ const op=await w.open(t,{onDrop:(ids:string[],reason:string)=>drops.push([ids,reason])});
+ const pair=await toyGroup(['first','second'],op.state.latestRoot(),[{},{}]);
+ await op.submit(pair[0]!);
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=60_000;
+ assert.equal(await op.tick(),undefined);
+ assert.deepEqual(op.pendingIds(),['first'],'a straggler still has time to arrive');
+ w.clock.now=200_000;
+ assert.equal(await op.tick(),undefined);
+ assert.deepEqual(op.pendingIds(),[]);
+ assert.deepEqual(drops.map(([ids])=>ids),[['first']]);
+ assert.match(drops[0]![1],/group/);
+ await op.submit({...pair[0]!,id:'again'});
+ assert.deepEqual(op.pendingIds(),['again'],'its note is no longer reserved');
+});
+
 test('a note record is admitted only under its digest and is published with its batch',async(t)=>{
  const w=await world(),op=await w.open(t),root=op.state.latestRoot();
  const record=Uint8Array.from({length:ROLLUP_RECORD_BYTES},(_,i)=>i),digest=ctDigestOf(record);

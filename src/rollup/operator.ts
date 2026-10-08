@@ -55,6 +55,8 @@ export type RollupTick={txid:string;batch:number}|{blocked:string}|undefined;
 
 /** How long an unresolved submission is left alone between exact re-sends, and before it may be abandoned. */
 export const ROLLUP_RESEND_GRACE_MS=120_000;
+/** How long the first member of a group waits for the rest before the group is dropped. */
+export const ROLLUP_GROUP_WAIT_MS=120_000;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const slotOf=(s:RecordSlot):BatchSlot=>({root:BigInt(s.root),nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
 const recordOf=(spends:readonly RollupSpend[]):RollupRecord=>({kind:'spend',slots:spends.map(({slot,publics,ciphertext})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})}))});
@@ -158,6 +160,9 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   const live=(s:RollupSpend)=>state.windowIndex(s.slot.root)>=0&&!s.slot.nullifiers.some(nf=>state.nullifiers.has(nf));
   dropped(pending.filter(s=>!live(s)),'Its root left the 64-batch window or its note is already spent.');
   pending=pending.filter(live);padding=padding.filter(live);
+  // An incomplete group never batches, so without a deadline its members would hold their notes indefinitely.
+  const stranded=pending.filter(s=>s.slot.groupId!==0n&&now()-s.receivedAt>ROLLUP_GROUP_WAIT_MS&&pending.filter(p=>p.slot.groupId===s.slot.groupId).length<s.slot.groupSize);
+  dropped(stranded,'The rest of its group never arrived.');pending=pending.filter(s=>!stranded.includes(s));
   const floorMs=o.depositFloorMs??72*3600_000;
   for(const s of pending.filter(s=>s.coin))if(o.transport.fresh&&!await o.transport.fresh(depositFacts(s),floorMs)){
    const drop=unitsOf(pending,p=>p===s);pending=pending.filter(p=>!drop.has(p));

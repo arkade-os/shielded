@@ -1,7 +1,7 @@
 import { hex } from '@scure/base';
 import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD } from './constants.ts';
 import { clientWitness, type ClientWitness } from './client.ts';
-import { destinationFieldOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
+import { destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
 import { RollupState, type BatchSlot } from './state.ts';
 import { ctDigestOf, openRollupNotes, sealRollupNotes, type RollupNote, type RollupRecipient } from './wallet.ts';
 
@@ -47,14 +47,32 @@ export class RollupAccount {
  notes(asset = BTC_ASSET): OwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.index - b.index); }
  balance(asset = BTC_ASSET): bigint { return this.notes(asset).reduce((sum, n) => sum + n.amount, 0n); }
 
- spend(request: SpendRequest, self: RollupRecipient, random = randomField): Promise<BuiltSpend> {
+ spend(request: SpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<BuiltSpend> {
   const path = request.input ? this.state.notes.path(request.input.index) : undefined;
-  return buildRollupSpend(this.hash, { root: this.state.latestRoot(), spendSecret: this.keys.spendSecret, self, request, ...(path ? { path } : {}) }, random);
+  return buildRollupSpend(this.hash, { root: this.state.latestRoot(), spendSecret: this.keys.spendSecret, self, request, ...(path ? { path } : {}), ...(group ? { group } : {}) }, random);
+ }
+
+ /**
+  * Pays from one note when one covers the amount, else from up to three notes as one atomic group: the batch takes
+  * every member or none. Members must be submitted in the returned order, the order the group id commits to.
+  */
+ async pay(recipient: RollupRecipient, amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET): Promise<BuiltSpend[]> {
+  const notes = this.notes(asset).filter(n => !inFlight.has(n.nullifier)).sort((a, b) => (a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0));
+  const single = notes.filter(n => n.amount >= amount).pop();
+  if (single) return [await this.spend({ asset, input: single, to: { recipient, amount } }, self)];
+  const chosen: OwnedNote[] = [];
+  for (const note of notes) { if (chosen.reduce((sum, n) => sum + n.amount, 0n) >= amount || chosen.length === 3) break; chosen.push(note); }
+  if (chosen.length < 2 || chosen.reduce((sum, n) => sum + n.amount, 0n) < amount) throw new Error('No three notes together cover this amount.');
+  const group = { id: groupIdOf(this.hash, chosen.map(n => n.nullifier)), size: chosen.length };
+  let left = amount;
+  const legs: BuiltSpend[] = [];
+  for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient, amount: part } }, self, randomField, group)); }
+  return legs;
  }
 }
 
 /** One input (a dummy for a pure deposit or padding), two sealed outputs: the payment, then change to `self`. */
-export async function buildRollupSpend(hash: Hash, o: { root: bigint; spendSecret: bigint; self: RollupRecipient; request: SpendRequest; path?: bigint[] }, random = randomField): Promise<BuiltSpend> {
+export async function buildRollupSpend(hash: Hash, o: { root: bigint; spendSecret: bigint; self: RollupRecipient; request: SpendRequest; path?: bigint[]; group?: { id: bigint; size: number } }, random = randomField): Promise<BuiltSpend> {
  const { request } = o, asset = request.asset ?? BTC_ASSET, deposit = request.deposit ?? 0n, withdraw = request.withdraw ?? 0n, paid = request.to?.amount ?? 0n;
  if (request.input && (!o.path || request.input.asset !== asset)) throw new Error('A note input needs its path and the asset it holds.');
  const input = request.input
@@ -70,7 +88,7 @@ export async function buildRollupSpend(hash: Hash, o: { root: bigint; spendSecre
  const witness = clientWitness(hash, {
   domain: ROLLUP_DOMAIN, root: o.root, asset, inputs: [input],
   outputs: [{ amount: outputs[0]!.amount, owner: outputs[0]!.to.owner, random: randoms[0]! }, { amount: outputs[1]!.amount, owner: outputs[1]!.to.owner, random: randoms[1]! }],
-  deposit, withdraw, destination: request.program ? destinationFieldOf(request.program) : 0n, ctDigest: ctDigestOf(ciphertext), groupId: 0n, groupSize: 0,
+  deposit, withdraw, destination: request.program ? destinationFieldOf(request.program) : 0n, ctDigest: ctDigestOf(ciphertext), groupId: o.group?.id ?? 0n, groupSize: o.group?.size ?? 0,
  });
  return { witness, ciphertext, change };
 }

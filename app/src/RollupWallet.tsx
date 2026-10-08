@@ -79,10 +79,13 @@ export default function RollupWallet(){
   const built=await account.current!.spend({deposit:sats},self.current!);
   return submit(built,step,1,{coin:{txid:coin.txid,vout:coin.vout,tapTree:coin.tapTreeHex,leaf:coin.leafHex}},coin);
  });
- const send=()=>void run('Sending privately',['Pick a note','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
-  step(0);const recipient=parseRollupAddress(to.trim()),value=amountOf(amount),input=pickNote(account.current!.notes(),value,new Set());
-  if(!input)throw new Error('No single note covers this amount. A payment spends one note; send a smaller amount.');
-  return submit(await account.current!.spend({input,to:{recipient,amount:value}},self.current!),step,1);
+ // A payment of several notes is one group: prove all, submit in the order its id commits to, then wait for every member.
+ const send=()=>void run('Sending privately',['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
+  step(0);const spends=await account.current!.pay(parseRollupAddress(to.trim()),amountOf(amount),self.current!);
+  step(1);const proofs=[];for(const built of spends)proofs.push(await prove(built,pool!.proving!.spend));
+  step(2);const ids:string[]=[];for(const [i,built] of spends.entries()){const id=bytesToHex(crypto.getRandomValues(new Uint8Array(16)));await rollupApi('/spends',spendBody(id,built,proofs[i]!));ids.push(id);}
+  step(3);const finals=await Promise.all(ids.map(id=>waitForSpend(id,async()=>{throw new Error('The pool asked to sign a payment that has no deposit.');})));
+  return finals.find(f=>f.status==='dropped')??finals[0]!;
  });
  const withdraw=()=>void run('Withdrawing',['Pick a note','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
   step(0);const value=amountOf(amount);if(value<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
@@ -92,6 +95,7 @@ export default function RollupWallet(){
  });
 
  const balance=notes.reduce((sum,n)=>sum+n.amount,0n),address=self.current?rollupAddressOf(self.current):'';
+ const maxSend=[...notes].sort((a,b)=>a.amount<b.amount?1:-1).slice(0,3).reduce((sum,n)=>sum+n.amount,0n);
  const ready=pool?.phase==='ready';
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>v2 pool</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Development proving keys and test funds only. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
@@ -113,7 +117,7 @@ export default function RollupWallet(){
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();(tab==='shield'?shield:tab==='send'?send:withdraw)();}}>
      {tab==='send'&&<label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol1…" autoComplete="off" spellCheck={false}/></label>}
      <label>Amount (sats)<input inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
-     <p className="stock-muted">{tab==='shield'?'Moves sats from your Arkade balance into a private note. The amount is public.':tab==='send'?'Pays from one of your notes; the amount and both parties stay private.':`Pays out to your Arkade address; the amount is public. At least ${DUST} sats.`}</p>
+     <p className="stock-muted">{tab==='shield'?'Moves sats from your Arkade balance into a private note. The amount is public.':tab==='send'?`Pays from up to three of your notes at once, up to ${sats(maxSend)} sats; the amount and both parties stay private.`:`Pays out to your Arkade address; the amount is public. At least ${DUST} sats.`}</p>
      <button className="stock-primary" disabled={busy||!synced||!amount||(tab==='send'&&!to.trim())}>{busy?'Working…':tab==='shield'?'Shield':tab==='send'?'Send':'Withdraw'}</button>
     </form>}
    </section>

@@ -25,6 +25,8 @@ test('a spend body carries decimal field elements, the hex record, and only the 
  const built={witness:{slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0},publicSignals:[1n,2n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1,2),change:0n} as unknown as BuiltSpend;
  const proof={pi_a:['1'],pi_b:[['2']],pi_c:['3']};
  assert.deepEqual(spendBody('ab',built,proof),{id:'ab',slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0'],proof,ciphertext:'0102'});
+ const member={...built,witness:{...built.witness,slot:{...built.witness.slot,groupId:99n,groupSize:3}}} as BuiltSpend;
+ assert.deepEqual([spendBody('ab',member,proof).slot.groupId,spendBody('ab',member,proof).slot.groupSize],['99',3]);
  const withLegs=spendBody('ab',built,proof,{program:new Uint8Array(32).fill(1),coin:{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'}});
  assert.equal(withLegs.program,'01'.repeat(32));
  assert.deepEqual(withLegs.coin,{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'});
