@@ -16,7 +16,8 @@
     "circom": "node tools/prepare-circom.mjs",
     "rollup:compile": "node circuits/rollup/generate.mjs",
     "test:rollup:witness": "node --import tsx tools/rollup-circuit-witness-smoke.ts",
-    "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts"
+    "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
+    "fallback": "node --max-old-space-size=8192 --experimental-eventsource --import tsx tools/rollup-fallback.ts"
   },
   "dependencies": {
     "@arkade-os/sdk": "0.4.77",

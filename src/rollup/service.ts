@@ -38,7 +38,7 @@ const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
- pool?:{token:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
+ pool?:{token:string;operator:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
  network?:StockNetworkInfo;
  proving?:{spend:{wasm:string;zkey:string};batch?:{wasm:string;zkey:string}};
 }
@@ -305,7 +305,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   status:():RollupStatus=>{
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,{archive}=operator.status();
-   return {...status,network,pool:{token:genesis.token,address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.latestRoot()),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.latestRoot()),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
     reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount]))}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */

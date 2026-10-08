@@ -39,6 +39,18 @@ SHIELDED_DATA_DIR=.deps/data SHIELDED_ROLLUP_CIRCUITS=circuits/rollup/build HOST
 
 The first start generates development proving keys once. It needs at least 4 GiB of memory and downloads a 2^20 powers-of-tau file. Set `SHIELDED_ROLLUP_KEYS` to a directory of existing keys to skip it. Then fund the `fundingAddress` from `/api/rollup/status` with at least 2,000 sats to create the pool. The server listens on port 8792; `npm run app` serves the web app with hot reload and proxies `/api` to it.
 
+## If the operator stops
+
+The batch leaf accepts any valid batch, whoever proves it. Mirror the pool while it is up, then prove and submit your own withdrawal without it:
+
+```sh
+npm run fallback -- mirror https://shielded.mutinynet.arkade.sh ./pool-mirror
+SHIELDED_PHRASE="your 24 words" npm run fallback -- withdraw ./pool-mirror 5000 tark1…
+npm run fallback -- publish ./pool-mirror https://shielded.mutinynet.arkade.sh <batch>
+```
+
+`withdraw` replays the mirrored batches, checks they reach the head the indexer shows, and proves your spend plus ten zero-value spends and the batch. It then submits the batch to the Arkade emulator. `publish` hands its record to the operator, which checks it against the chain before following.
+
 ## Test
 
 ```sh
