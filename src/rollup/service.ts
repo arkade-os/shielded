@@ -22,6 +22,7 @@ import {loadRollupLeaves} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
 import {createRollupProver} from './prover.ts';
 import {renewRollupPool} from './renewal.ts';
+import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
 
 export const ROLLUP_KEY_FILES=['manifest.json','spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json'] as const;
@@ -99,7 +100,29 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  }
  let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
  let stopped=false,timers:ReturnType<typeof setTimeout>[]=[];
- const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>();
+ const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
+ /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. */
+ const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
+  const t=tracked.get(id);if(!t)return;Object.assign(t,patch);
+  store.save({id,status:t.status==='signing'?'pending':t.status,nullifier:t.nullifier,at:t.at,...(t.batch!==undefined?{batch:t.batch}:{}),...(t.txid?{txid:t.txid}:{}),...(t.reason?{reason:t.reason}:{})});
+ };
+ const resolveCoin=async(c:CoinRef):Promise<RollupCoin>=>{
+  const raw=(await live!.indexer.getVirtualTxs([c.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===c.txid);
+  const output=raw&&c.vout<raw.outputsLength?raw.getOutput(c.vout):undefined,tree=VtxoScript.decode(hex.decode(c.tapTree));
+  if(!raw||!output?.script||hex.encode(output.script)!==hex.encode(tree.pkScript))throw new Error('The deposit coin is not indexed under that tree.');
+  return {txid:c.txid,vout:c.vout,value:Number(output.amount),sourceTx:raw.toBytes(true,true),tapTree:tree.encode(),leaf:tree.findLeaf(c.leaf)};
+ };
+ /** Re-admits spends that were waiting when the service stopped, oldest first so groups keep the order their id commits to. */
+ async function restore(operator:RollupOperator){
+  for(const record of store.load()){
+   if(Date.now()-record.at>3600_000){store.remove(record.id);continue;}
+   tracked.set(record.id,{status:record.status,nullifier:record.nullifier,at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})});
+   if(record.status!=='pending'||!record.spend)continue;
+   if(operator.state.nullifiers.has(BigInt(record.nullifier))){settle(record.id,{status:'included'});continue;}
+   try{const coin=record.spend.coin?await resolveCoin(record.spend.coin):undefined;await operator.submit({...decodeSpend(record.spend),...(coin?{coin}:{})});}
+   catch(error){settle(record.id,{status:'dropped',reason:'It could not be re-admitted after the pool restarted: '+(error as Error).message});}
+  }
+ }
 
  const spec=async(token:string)=>{
   writeFileSync(join(o.directory,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',slots:BATCH_SLOTS,kind:0,token,operator:hex.encode(schnorr.getPublicKey(operatorSecret))}));
@@ -159,9 +182,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-spend'),programsHash:sha(leaves.batch),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(adapter.checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
    genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint:adapter.checkpoint,
    clientKey:readJson(join(keys,'spend.vkey.json')),hash,prover:prover('batch-spend'),transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
-   onDrop:(ids,reason)=>{for(const id of ids){const t=tracked.get(id);if(t?.status==='pending')Object.assign(t,{status:'dropped',reason});}}});
+   onDrop:(ids,reason)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});}});
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
+  await restore(operator);
   status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:adapter.ark.address};
   run(prover('spend'));
  }
@@ -171,13 +195,13 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const note=(message:string)=>{if(message!==lastError)log(message);lastError=message;};
   const included=(batch:number,txid:string)=>{
    const record=readJson<RollupRecord>(join(o.directory,'operator','batches',`${batch}.json`)),spent=new Set(record.slots.flatMap(s=>s.nullifiers));
-   for(const t of tracked.values())if(t.status==='pending'&&spent.has(t.nullifier))Object.assign(t,{status:'included',batch,txid});
+   for(const [id,t] of tracked)if(t.status==='pending'&&spent.has(t.nullifier))settle(id,{status:'included',batch,txid});
   };
   const sweep=()=>{
    const waiting=new Set(operator.pendingIds());
    for(const [id,t] of tracked){
-    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id))Object.assign(t,operator.state.nullifiers.has(BigInt(t.nullifier))?{status:'included'}:{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
-    if(Date.now()-t.at>3600_000)tracked.delete(id);
+    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id))settle(id,operator.state.nullifiers.has(BigInt(t.nullifier))?{status:'included'}:{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
+    if(Date.now()-t.at>3600_000){tracked.delete(id);store.remove(id);}
    }
   };
   const tick=async()=>{
@@ -244,17 +268,13 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    return {from,total,batches:list};
   },
   /** Fills a deposit coin from the indexer; the client names the outpoint and the tree that locks it. */
-  depositCoin:async(c:{txid:string;vout:number;tapTree:string;leaf:string}):Promise<RollupCoin>=>{
-   const raw=(await live!.indexer.getVirtualTxs([c.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===c.txid);
-   const output=raw&&c.vout<raw.outputsLength?raw.getOutput(c.vout):undefined,tree=VtxoScript.decode(hex.decode(c.tapTree));
-   if(!raw||!output?.script||hex.encode(output.script)!==hex.encode(tree.pkScript))throw new Error('The deposit coin is not indexed under that tree.');
-   return {txid:c.txid,vout:c.vout,value:Number(output.amount),sourceTx:raw.toBytes(true,true),tapTree:tree.encode(),leaf:tree.findLeaf(c.leaf)};
-  },
-  submit:async(spend:Omit<RollupSpend,'receivedAt'>)=>{
+  depositCoin:resolveCoin,
+  submit:async(spend:Omit<RollupSpend,'receivedAt'>,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
    await live.operator.submit(spend);
-   tracked.set(spend.id,{status:'pending',nullifier:String(spend.slot.nullifiers[0]),at:Date.now()});
+   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),at:Date.now()};
+   tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:encodeSpend(spend,coin)});
   },
   spend:(id:string):RollupSpendStatus|undefined=>{
    const s=sessions.get(id),t=tracked.get(id);
