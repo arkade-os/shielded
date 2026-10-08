@@ -12,7 +12,7 @@ export const BTC_ASSET = 0n;
 export type BatchKind = 'spend' | 'join';
 export const BATCH_KIND_BYTE: Record<BatchKind, number> = { spend: 0, join: 1 };
 
-export type RejectionCode = 'slot-count' | 'slot-shape' | 'stale-root' | 'double-spend' | 'note-tree-full' | 'nullifier-tree-full' | 'group-invalid';
+export type RejectionCode = 'slot-count' | 'slot-shape' | 'stale-root' | 'double-spend' | 'nullifier-range' | 'note-tree-full' | 'nullifier-tree-full' | 'group-invalid';
 export class RollupRejection extends Error {
  constructor(readonly code: RejectionCode, message: string) { super(message); }
 }

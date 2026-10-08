@@ -9,7 +9,10 @@ export interface InsertionWitness { predIdx: number; pred: [bigint, bigint, bigi
 export class RollupNullifiers {
  private tree: DeepTree;
  private leaves: NullifierLeaf[] = [{ value: 0n, nextIndex: 0, nextValue: 0n }];
- private values = new Set<bigint>();
+ // ponytail: sorted array with splice inserts; a B-tree once the set passes ~1e7.
+ private sorted: bigint[] = [];
+ private index = new Map<bigint, number>();
+ private log?: { value: bigint; predIdx: number; pred: NullifierLeaf; at: number; had?: number }[];
  constructor(private readonly hash: Hash) {
   this.tree = new DeepTree(hash, NULLIFIER_DEPTH);
   this.tree.set(0, this.leafHash(this.leaves[0]));
@@ -17,21 +20,33 @@ export class RollupNullifiers {
  private leafHash(leaf: NullifierLeaf): bigint { return this.hash([NULLIFIER_TAG, leaf.value, BigInt(leaf.nextIndex), leaf.nextValue]); }
  root(): bigint { return this.tree.root(); }
  count(): number { return this.leaves.length; }
- has(value: bigint): boolean { return this.values.has(value); }
+ has(value: bigint): boolean { return this.index.has(value); }
  clone(): RollupNullifiers {
   const copy = new RollupNullifiers(this.hash);
   copy.tree = this.tree.clone();
   copy.leaves = this.leaves.map(leaf => ({ ...leaf }));
-  copy.values = new Set(this.values);
+  copy.sorted = [...this.sorted];
+  copy.index = new Map(this.index);
   return copy;
  }
+ begin(): void { this.log = []; this.tree.begin(); }
+ rollback(): void {
+  for (const op of (this.log ?? []).reverse()) {
+   this.leaves.pop();
+   this.leaves[op.predIdx] = op.pred;
+   this.sorted.splice(op.at, 1);
+   if (op.had === undefined) this.index.delete(op.value); else this.index.set(op.value, op.had);
+  }
+  this.log = undefined;
+  this.tree.rollback();
+ }
  insert(value: bigint): InsertionWitness {
-  if (value <= 0n || value >= ROLLUP_FIELD) throw new Error('Nullifier is outside the field.');
-  if (this.values.has(value)) throw new RollupRejection('double-spend', 'The nullifier is already spent.');
+  if (value <= 0n || value >= ROLLUP_FIELD) throw new RollupRejection('nullifier-range', 'The nullifier is zero or outside the field.');
+  if (this.has(value)) throw new RollupRejection('double-spend', 'The nullifier is already spent.');
   if (this.leaves.length >= 2 ** NULLIFIER_DEPTH) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
-  // ponytail: linear predecessor walk; the operator (Plan 3) needs an ordered index at scale.
-  let predIdx = 0;
-  while (this.leaves[predIdx].nextIndex !== 0 && this.leaves[predIdx].nextValue < value) predIdx = this.leaves[predIdx].nextIndex;
+  let at = 0, hi = this.sorted.length;
+  while (at < hi) { const mid = (at + hi) >>> 1; if (this.sorted[mid] < value) at = mid + 1; else hi = mid; }
+  const predIdx = at === 0 ? 0 : this.index.get(this.sorted[at - 1])!;
   const prior = this.leaves[predIdx], count = this.leaves.length;
   const witness: InsertionWitness = { predIdx, pred: [prior.value, BigInt(prior.nextIndex), prior.nextValue], predPath: this.tree.path(predIdx), appendPath: [] };
   this.leaves[predIdx] = { value: prior.value, nextIndex: count, nextValue: value };
@@ -39,7 +54,9 @@ export class RollupNullifiers {
   witness.appendPath = this.tree.path(count);
   this.leaves.push({ value, nextIndex: prior.nextIndex, nextValue: prior.nextValue });
   this.tree.set(count, this.leafHash(this.leaves[count]));
-  this.values.add(value);
+  this.log?.push({ value, predIdx, pred: prior, at, had: this.index.get(value) });
+  this.sorted.splice(at, 0, value);
+  this.index.set(value, count);
   return witness;
  }
 }

@@ -3,6 +3,7 @@ import type { Hash } from './notes.ts';
 // Sparse binary Poseidon tree; indices use arithmetic, not bitwise ops, so depth 32 is safe.
 export class DeepTree {
  private nodes = new Map<string, bigint>();
+ private log?: [string, bigint | undefined][];
  readonly empty: bigint[];
  constructor(private readonly hash: Hash, readonly depth: number, empty?: bigint[]) {
   if (!Number.isInteger(depth) || depth < 1 || depth > 32) throw new Error('Unsupported tree depth.');
@@ -21,15 +22,25 @@ export class DeepTree {
   for (let level = fromLevel, i = index; level < this.depth; level++, i = Math.floor(i / 2)) out.push(this.at(level, i % 2 === 0 ? i + 1 : i - 1));
   return out;
  }
+ private write(key: string, value: bigint): void {
+  this.log?.push([key, this.nodes.get(key)]);
+  this.nodes.set(key, value);
+ }
  setAt(level: number, index: number, value: bigint): void {
   this.check(level, index);
-  this.nodes.set(level + ':' + index, value);
+  this.write(level + ':' + index, value);
   for (let l = level, i = index, v = value; l < this.depth; l++) {
    const sibling = this.at(l, i % 2 === 0 ? i + 1 : i - 1);
    v = i % 2 === 0 ? this.hash([v, sibling]) : this.hash([sibling, v]);
    i = Math.floor(i / 2);
-   this.nodes.set((l + 1) + ':' + i, v);
+   this.write((l + 1) + ':' + i, v);
   }
+ }
+ /** Records writes until rollback(); a later begin() drops the record. */
+ begin(): void { this.log = []; }
+ rollback(): void {
+  for (const [key, value] of (this.log ?? []).reverse()) if (value === undefined) this.nodes.delete(key); else this.nodes.set(key, value);
+  this.log = undefined;
  }
  set(index: number, value: bigint): void { this.setAt(0, index, value); }
  clone(): DeepTree {

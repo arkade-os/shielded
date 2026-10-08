@@ -29,6 +29,17 @@ test('re-inserting a spent nullifier is a double spend', () => {
  assert.throws(() => set.insert(0n), /outside the field/);
 });
 
+test('rollback undoes every insertion since begin', () => {
+ const set = new RollupNullifiers(hash), untouched = new RollupNullifiers(hash);
+ set.insert(50n); untouched.insert(50n);
+ set.begin();
+ set.insert(10n); set.insert(70n);
+ set.rollback();
+ assert.equal(set.root(), untouched.root());
+ assert.equal(set.has(10n), false);
+ assert.deepEqual(set.insert(30n), untouched.insert(30n));
+});
+
 test('clones do not share leaves', () => {
  const set = new RollupNullifiers(hash);
  set.clone().insert(9n);
