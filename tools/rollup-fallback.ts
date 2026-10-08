@@ -39,7 +39,10 @@ async function mirror(url:string,dir:string){
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token:status.pool.token,operator:status.pool.operator,script:status.pool.script,network:status.network} satisfies Pool));
  const manifest=await (await get('/proving/manifest.json')).json() as {circuits:Record<string,{files:Record<string,string>}>};
  writeFileSync(join(dir,'keys','manifest.json'),JSON.stringify(manifest));
+ // The manifest comes from the pool, so its file names are untrusted: only the six key files are written.
+ const known=new Set(['spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json']);
  for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files)){
+  if(!known.has(name))throw new Error(`The key manifest names an unexpected file: ${JSON.stringify(name)}.`);
   const path=join(dir,'keys',name);if(existsSync(path)&&sha(readFileSync(path))===digest)continue;
   const bytes=new Uint8Array(await (await get('/proving/'+name)).arrayBuffer());
   if(sha(bytes)!==digest)throw new Error(`${name} does not match the key manifest.`);
