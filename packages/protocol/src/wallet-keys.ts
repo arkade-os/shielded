@@ -2,6 +2,8 @@ import {hkdf} from '@noble/hashes/hkdf.js';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import {secp256k1} from '@noble/curves/secp256k1.js';
+import {entropyToMnemonic,mnemonicToEntropy} from '@scure/bip39';
+import {wordlist} from '@scure/bip39/wordlists/english.js';
 import {ROLLUP_FIELD} from './rollup/constants.ts';
 
 export const WALLET_KEY_DERIVATION_VERSION=1 as const;
@@ -13,9 +15,13 @@ const DOMAIN='arkade-shielded:wallet-key-derivation:v1';
 const SALT=new TextEncoder().encode('arkade-shielded:master-secret:v1');
 
 export function parseMasterSecret(value:string):Uint8Array {
- if(typeof value!=='string'||!/^(?:[0-9a-fA-F]{2}){32}$/.test(value))throw new Error('Recovery secret must be exactly 64 hexadecimal characters.');
- return hexToBytes(value);
+ if(typeof value==='string'&&/^(?:[0-9a-fA-F]{2}){32}$/.test(value))return hexToBytes(value);
+ const words=typeof value==='string'?value.trim().toLowerCase().split(/\s+/):[];
+ if(words.length!==24)throw new Error('A recovery phrase is 24 words (older wallets: 64 hexadecimal characters).');
+ try{return mnemonicToEntropy(words.join(' '),wordlist);}catch{throw new Error('That recovery phrase is not valid; check each word.');}
 }
+/** The 32-byte secret as a 24-word BIP39 phrase: the same bytes, so every derived key stays the same. */
+export const recoveryPhraseOf=(masterSecret:Uint8Array|string)=>entropyToMnemonic(typeof masterSecret==='string'?parseMasterSecret(masterSecret):masterSecret,wordlist);
 
 function scalar(master:Uint8Array,network:string,purpose:string,order:bigint):bigint {
  if(!/^[a-z0-9][a-z0-9.-]{0,62}$/.test(network))throw new Error('Invalid wallet network label.');

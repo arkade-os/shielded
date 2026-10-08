@@ -94,3 +94,25 @@ test('a record that opens under our view key but commits to another owner is not
  await alice.apply(await batchOf(alice.state.latestRoot(),[forged]));
  assert.equal(alice.balance(),0n);
 });
+
+test('each wallet keeps a history of what moved its notes, with the batch that moved them',async()=>{
+ const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
+ const full=(s:BuiltSpend)=>({...published(s),groupId:String(s.witness.slot.groupId),groupSize:s.witness.slot.groupSize,publics:s.witness.publicSignals.map(String)});
+ let n=0;
+ const apply=async(spends:BuiltSpend[])=>{
+  const root=alice.state.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const batch={kind:'spend' as const,slots:[...spends,...padding].map(full),txid:'aa'.repeat(31)+String(n).padStart(2,'0'),at:1000*n++};
+  await alice.apply(batch);await bob.apply(batch);
+ };
+ await apply([await alice.spend({deposit:1000n},aliceTo)]);
+ await apply(await alice.pay(bobTo,300n,aliceTo));
+ await apply(await alice.depositAsset(x,50n,330n,aliceTo));
+ await apply([await bob.spend({input:bob.notes()[0]!,withdraw:100n,program},bobTo)]);
+ const view=(account:RollupAccount)=>account.history.map(e=>[e.kind,e.batch,e.amounts.map(a=>`${a.amount}${a.asset===0n?'':'x'}`).join('+')]);
+ assert.deepEqual(view(alice),[['shield',0,'1000'],['send',1,'300'],['shield',2,'50x+330']]);
+ assert.deepEqual(view(bob),[['receive',1,'300'],['withdraw',3,'100']]);
+ assert.deepEqual([alice.history[1]!.txid,alice.history[1]!.at],['aa'.repeat(31)+'01',1000]);
+ assert.equal(bob.history[1]!.destination,destinationFieldOf(program));
+ assert.deepEqual(alice.history[1]!.spent,[alice.history[0]!.created[0]!.nullifier],'a send names the notes it spent');
+ assert.ok(bob.txids.has('aa'.repeat(31)+'03')&&bob.txids.size===4,'every batch txid is known, mine or not');
+});

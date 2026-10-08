@@ -2,128 +2,179 @@ import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
 import * as snarkjs from 'snarkjs';
-import {ArkAddress,SingleKey} from '@arkade-os/sdk';
+import {ArkAddress,SingleKey,TxType,type ArkTransaction} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {hex} from '@scure/base';
-import {assetFieldOfId} from '../../packages/protocol/src/rollup/notes.ts';
-import {RollupAccount,type BuiltSpend,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
+import {assetFieldOfId,destinationFieldOf} from '../../packages/protocol/src/rollup/notes.ts';
+import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
-import {deriveRollupKeyMaterial,deriveWalletKeyMaterial,parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeyMaterial,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/ark-wallet.ts';
-import {checkSigningRequest,DUST,pickNote,rollupApi,signDeposit,spendBody,syncAccount,waitForSpend,type RollupPoolStatus,type SpendStatus} from './rollup-client.ts';
+import {checkSigningRequest,DUST,pickNote,rollupApi,shieldPlan,signDeposit,spendBody,syncAccount,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
-const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1';
-type Tab='receive'|'shield'|'send'|'withdraw';
+const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1';
+const EXPLORER='https://explorer.mutinynet.arkade.sh';
+// The pool refuses deposit coins that expire within 24 hours; the extra hour covers the batch wait.
+const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000;
+type Tab='receive'|'send'|'withdraw';
 type Activity={title:string;steps:string[];current:number;done?:boolean;error?:string};
+type Ark={address:string;available:number;coins:ArkCoin[];assets:{assetId:string;amount:bigint}[];history:ArkTransaction[]};
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
-const amountOf=(value:string)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw new Error('Enter a whole number of sats.');return BigInt(n);};
+const amountOf=(value:string)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw new Error('Enter a whole number.');return BigInt(n);};
+const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Time unknown';
+const sentLog=():Record<string,string>=>{try{return JSON.parse(localStorage.getItem(SENT)??'{}');}catch{return {};}};
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 // Key URLs carry their hashes, so a browser cache can only ever hold the keys this pool proves with.
 const prove=async(built:BuiltSpend,keys:{wasm:string;zkey:string})=>(await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),`/api/rollup/proving/spend.wasm?v=${keys.wasm}`,`/api/rollup/proving/spend.zkey?v=${keys.zkey}`,undefined,undefined,{singleThread:true})).proof;
+const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
- const [notes,setNotes]=useState<OwnedNote[]>([]),[assetNotes,setAssetNotes]=useState<Record<string,OwnedNote[]>>({}),[synced,setSynced]=useState(false);
- const [ark,setArk]=useState<{address:string;available:number;assets:{assetId:string;amount:bigint}[]}>(),[listed,setListed]=useState('');
+ const [notes,setNotes]=useState<OwnedNote[]>([]),[assetNotes,setAssetNotes]=useState<Record<string,OwnedNote[]>>({}),[history,setHistory]=useState<HistoryEntry[]>([]),[synced,setSynced]=useState(false);
+ const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState('');
  const [tab,setTab]=useState<Tab>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[activity,setActivity]=useState<Activity>(),[busy,setBusy]=useState(false);
  const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false);
+ const poolRef=useRef<RollupPoolStatus|undefined>(undefined),arkRef=useRef<Ark|undefined>(undefined),retryAt=useRef(0),used=useRef(new Set<string>());
 
  useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);setSecret(fresh);}},[secret]);
  useEffect(()=>{
   let stop=false;
   // Keeps polling after the wallet opens: listings and the batch count change while the page stays up.
-  const poll=async()=>{try{const status=await rollupApi<RollupPoolStatus>('/status');if(!stop){setPool(status);setPoolError('');}}catch(error){if(!stop)setPoolError((error as Error).message);}if(!stop)setTimeout(poll,10_000);};
+  const poll=async()=>{try{const status=await rollupApi<RollupPoolStatus>('/status');if(!stop){poolRef.current=status;setPool(status);setPoolError('');}}catch(error){if(!stop)setPoolError((error as Error).message);}if(!stop)setTimeout(poll,10_000);};
   void poll();return()=>{stop=true;};
  },[]);
  const native=()=>SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret);
+ const openArk=()=>openCustomerArkWallet(native(),poolRef.current!.network);
  const refreshArk=async()=>{
-  if(!pool?.network)return;
-  const wallet=await openCustomerArkWallet(native(),pool.network),balance=await wallet.wallet.getBalance();
-  setArk({address:wallet.address,available:balance.available,assets:(balance.availableAssets??[]).map(a=>({assetId:a.assetId,amount:BigInt(a.amount)}))});return wallet;
+  if(!poolRef.current?.network)return;
+  const wallet=await openArk(),[balance,vtxos,txs]=await Promise.all([wallet.wallet.getBalance(),wallet.wallet.getSpendableVtxos(),wallet.wallet.getTransactionHistory().catch(()=>[] as ArkTransaction[])]);
+  const coins=vtxos.map(v=>({txid:v.txid,vout:v.vout,value:v.value,...(v.expiresAt instanceof Date?{expiresAt:v.expiresAt.getTime()}:{}),...(v.assets?.length?{assets:v.assets.map(a=>({assetId:a.assetId,amount:BigInt(a.amount)}))}:{})}));
+  const next={address:wallet.address,available:balance.available,coins,assets:(balance.availableAssets??[]).map(a=>({assetId:a.assetId,amount:BigInt(a.amount)})),history:txs};
+  arkRef.current=next;setArk(next);return wallet;
  };
  const sync=async()=>{
-  const current=account.current;if(!current)return;await syncAccount(current);setNotes(current.notes());
-  setAssetNotes(Object.fromEntries(Object.keys(pool?.pool?.reserves??{}).map(id=>[id,current.notes(assetFieldOfId(id))])));setSynced(true);
+  const current=account.current;if(!current)return;await syncAccount(current);setNotes(current.notes());setHistory([...current.history]);
+  setAssetNotes(Object.fromEntries(Object.keys(poolRef.current?.pool?.reserves??{}).map(id=>[id,current.notes(assetFieldOfId(id))])));setSynced(true);
  };
- useEffect(()=>{
-  if(pool?.phase!=='ready'||!secret)return;
-  let stop=false,timer:ReturnType<typeof setTimeout>|undefined;
-  void (async()=>{
-   const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeyMaterial(secret,'mutinynet');
-   account.current=new RollupAccount(hash,keys);self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
-   void refreshArk().catch(error=>setPoolError((error as Error).message));
-   const loop=async()=>{if(stop)return;try{if(!busyRef.current)await sync();}catch(error){setPoolError((error as Error).message);}timer=setTimeout(loop,5000);};
-   await loop();
-  })();
-  return()=>{stop=true;if(timer)clearTimeout(timer);account.current=undefined;};
- },[pool?.phase,secret]);
+ /** Coins the pool paid out, from a withdrawal, stay on Arkade until the user shields them again. */
+ const payout=(c:ArkCoin)=>!!account.current?.txids.has(c.txid);
+ const outpoint=(c:ArkCoin)=>`${c.txid}:${c.vout}`;
 
- /** Runs one spend end to end with visible steps; a depositor signs the batch when the operator asks. */
+ /** Runs one action end to end with visible steps; resolves whether it landed. */
  const run=async(title:string,steps:string[],work:(step:(n:number)=>void)=>Promise<SpendStatus>)=>{
-  if(busyRef.current)return;busyRef.current=true;setBusy(true);
+  if(busyRef.current)return false;busyRef.current=true;setBusy(true);
   const step=(current:number)=>setActivity({title,steps,current});
   try{
    const final=await work(step);
    if(final.status==='dropped')throw new Error(final.reason??'The pool dropped this spend.');
-   step(steps.length-1);await sync();setActivity({title,steps,current:steps.length,done:true});setAmount('');void refreshArk();
-  }catch(error){setActivity(a=>({...(a??{title,steps,current:0}),error:(error as Error).message}));}
+   step(steps.length-1);await sync();setActivity({title,steps,current:steps.length,done:true});setAmount('');void refreshArk();return true;
+  }catch(error){setActivity(a=>({...(a??{title,steps,current:0}),error:(error as Error).message}));return false;}
   finally{busyRef.current=false;setBusy(false);}
  };
  type Member={built:BuiltSpend;extra?:Parameters<typeof spendBody>[3];coin?:{txid:string;vout:number}};
  /** Proves every member, submits them in the order a group id commits to, and waits for all; only a coin's member signs. */
  const submitAll=async(members:Member[],step:(n:number)=>void,first:number)=>{
-  step(first);const proofs=[];for(const m of members)proofs.push(await prove(m.built,pool!.proving!.spend));
+  step(first);const proofs=[];for(const m of members)proofs.push(await prove(m.built,poolRef.current!.proving!.spend));
   step(first+1);const ids:string[]=[];
   for(const [i,m] of members.entries()){const id=bytesToHex(crypto.getRandomValues(new Uint8Array(16)));await rollupApi('/spends',spendBody(id,m.built,proofs[i]!,m.extra));ids.push(id);}
   step(first+2);
   const finals=await Promise.all(ids.map((id,i)=>waitForSpend(id,async request=>{
    const coin=members[i]!.coin;if(!coin)throw new Error('The pool asked to sign a spend with no deposit coin.');
-   checkSigningRequest(request,coin,pool!.pool!.script);step(first+3);
+   checkSigningRequest(request,coin,poolRef.current!.pool!.script);step(first+3);
    await rollupApi(`/spends/${id}/sign`,await signDeposit(native(),request));
   })));
   return finals.find(f=>f.status==='dropped')??finals[0]!;
  };
- /** Waits for the self-sent exact coin to show up with the value and asset holding a deposit needs. */
- const exactCoin=async(txid:string,sats:number,asset?:{assetId:string;amount:bigint})=>{
+ /** Waits for a coin with the value and asset holding a deposit needs, and returns how to spend it. */
+ const depositCoin=async(txid:string,value:number,asset?:{assetId:string;amount:bigint})=>{
   for(let i=0;i<30;i++){
    await new Promise(r=>setTimeout(r,1000));
-   const wallet=await openCustomerArkWallet(native(),pool!.network),found=(await wallet.wallet.getSpendableVtxos()).find(v=>v.txid===txid&&v.value===sats&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
+   const wallet=await openArk(),found=(await wallet.wallet.getSpendableVtxos()).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
    if(found?.tapTree&&found.intentTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.intentTapLeafScript)};
   }
-  throw new Error('The exact coin did not appear in your Arkade wallet; try again.');
+  throw new Error('The deposit coin did not appear in your Arkade wallet.');
  };
- const shield=()=>void run('Shielding',['Prepare an exact coin','Prove the deposit on this device','Submit to the pool','Wait for the next batch','Sign your deposit','Included'],async step=>{
-  const value=amountOf(amount),wallet=(await refreshArk())!;step(0);
-  if(!assetId){
-   if(value<DUST)throw new Error(`Shield at least ${DUST} sats.`);
-   const coin=await exactCoin(await wallet.wallet.send({recipients:[{address:wallet.address,amount:Number(value)}]}),Number(value));
-   return submitAll([{built:await account.current!.spend({deposit:value},self.current!),extra:{coin},coin}],step,1);
-  }
-  // An asset coin also holds the dust in sats; the group's BTC slot deposits those sats as a note of their own.
-  const coin=await exactCoin(await wallet.wallet.send({recipients:[{address:wallet.address,amount:DUST,assets:[{assetId,amount:value}]}]}),DUST,{assetId,amount:value});
-  const [assetSlot,btcSlot]=await account.current!.depositAsset(assetFieldOfId(assetId),value,BigInt(coin.value),self.current!);
-  return submitAll([{built:assetSlot,extra:{coin,asset:assetId},coin},{built:btcSlot}],step,1);
- });
+ const shieldWith=(plan:ShieldPlan)=>{
+  const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(outpoint);taken.forEach(o=>used.current.add(o));
+  const title=plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
+  // A failed attempt hands its coins back, so the retry can use them; a landed one keeps them out while the indexer catches up.
+  return run(title,['Prepare the deposit coin','Prove the deposit on this device','Submit to the pool','Wait for the next batch','Sign your deposit','Included'],async step=>{
+   step(0);
+   if(plan.kind==='asset'){
+    // One asset coin funds a group: its units in the asset slot, its sats in a BTC slot.
+    const coin=await depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units});
+    const [assetSlot,btcSlot]=await account.current!.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),self.current!);
+    return submitAll([{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}],step,1);
+   }
+   const single=plan.coins.length===1?plan.coins[0]!:undefined,wallet=single?undefined:await openArk();
+   const coin=single?await depositCoin(single.txid,single.value):await depositCoin(await wallet!.wallet.send({recipients:[{address:wallet!.address,amount:plan.amount}]}),plan.amount);
+   taken.push(outpoint(coin));used.current.add(outpoint(coin));
+   return submitAll([{built:await account.current!.spend({deposit:BigInt(plan.amount)},self.current!),extra:{coin},coin}],step,1);
+  }).then(ok=>{if(!ok)taken.forEach(o=>used.current.delete(o));return ok;});
+ };
+ const planFor=(coins:ArkCoin[])=>shieldPlan(coins.filter(c=>!used.current.has(outpoint(c))),new Set(Object.keys(poolRef.current?.pool?.reserves??{})),Date.now(),SHIELD_FLOOR_MS);
+ const autoShield=async()=>{
+  if(busyRef.current||Date.now()<retryAt.current||!arkRef.current||!account.current)return;
+  const plan=planFor(arkRef.current.coins.filter(c=>!payout(c)));
+  if(plan&&!await shieldWith(plan))retryAt.current=Date.now()+RETRY_MS;
+ };
+
+ useEffect(()=>{
+  if(pool?.phase!=='ready'||!secret)return;
+  let stop=false,timer:ReturnType<typeof setTimeout>|undefined,arkAt=0;
+  void (async()=>{
+   const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeyMaterial(secret,'mutinynet');
+   account.current=new RollupAccount(hash,keys);self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
+   const loop=async()=>{
+    if(stop)return;
+    try{
+     if(!busyRef.current){
+      await sync();
+      if(Date.now()-arkAt>15_000){arkAt=Date.now();await refreshArk();}
+      await autoShield();
+     }
+    }catch(error){setPoolError((error as Error).message);}
+    timer=setTimeout(loop,5000);
+   };
+   await loop();
+  })();
+  return()=>{stop=true;if(timer)clearTimeout(timer);account.current=undefined;};
+ },[pool?.phase,secret]);
+
  const send=()=>void run('Sending privately',['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
-  step(0);const spends=await account.current!.pay(parseRollupAddress(to.trim()),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n);
+  step(0);const recipient=to.trim(),spends=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n);
+  localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(spends.map(s=>[String(s.witness.slot.nullifiers[0]),recipient]))}));
   return submitAll(spends.map(built=>({built})),step,1);
  });
  const withdraw=()=>void run('Withdrawing',['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
-  step(0);const value=amountOf(amount),program=ArkAddress.decode(ark!.address).pkScript.subarray(2);
-  if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
+  step(0);const value=amountOf(amount),address=to.trim()||ark!.address,program=ArkAddress.decode(address).pkScript.subarray(2);
+  const remember=(spends:BuiltSpend[])=>localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(spends.map(s=>[String(s.witness.slot.nullifiers[0]),address]))}));
+  if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!);remember([payout,carrier]);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
   if(value<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
   const input=pickNote(account.current!.notes(),value,new Set());if(!input)throw new Error('No single note covers this amount.');
-  return submitAll([{built:await account.current!.spend({input,withdraw:value,program},self.current!),extra:{program}}],step,1);
+  const built=await account.current!.spend({input,withdraw:value,program},self.current!);remember([built]);
+  return submitAll([{built,extra:{program}}],step,1);
  });
- const list=async(id:string)=>{try{const wallet=(await refreshArk())!;await wallet.wallet.send({recipients:[{address:pool!.pool!.address,amount:DUST,assets:[{assetId:id,amount:1n}]}]});setListed(id);void refreshArk();}catch(error){setPoolError((error as Error).message);}};
+ const list=async(id:string)=>{try{const wallet=(await refreshArk())!;await wallet.wallet.send({recipients:[{address:poolRef.current!.pool!.address,amount:DUST,assets:[{assetId:id,amount:1n}]}]});setListed(id);void refreshArk();}catch(error){setPoolError((error as Error).message);}};
 
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=self.current?rollupAddressOf(self.current):'';
  const shown=assetId?assetNotes[assetId]??[]:notes,balance=notes.reduce((sum,n)=>sum+n.amount,0n);
  const maxSend=[...shown].sort((a,b)=>a.amount<b.amount?1:-1).slice(0,3).reduce((sum,n)=>sum+n.amount,0n);
  const ready=pool?.phase==='ready',unit=assetId?'units':'sats';
+ const paidOut=(ark?.coins??[]).filter(c=>payout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
+ const expiring=(ark?.coins??[]).filter(c=>!payout(c)&&!c.assets?.length&&c.expiresAt!==undefined&&c.expiresAt-Date.now()<=SHIELD_FLOOR_MS).reduce((sum,c)=>sum+c.value,0);
+ const ownField=ark?destinationFieldOf(ArkAddress.decode(ark.address).pkScript.subarray(2)):undefined,sent=sentLog();
+ const assetName=(field:bigint)=>{const id=reserves.find(r=>assetFieldOfId(r)===field);return id?`asset ${short(id)}`:'an asset';};
+ const amountText=(amounts:{asset:bigint;amount:bigint}[])=>amounts.map(a=>a.asset===0n?`${sats(a.amount)} sats`:`${sats(a.amount)} units of ${assetName(a.asset)}`).join(' + ');
+ const kinds={shield:'Shielded',receive:'Received privately',send:'Sent privately',withdraw:'Withdrew'} as const;
+ const timeline=[
+  ...history.map(e=>({key:`r${e.batch}-${e.spent[0]??e.created[0]?.nullifier}`,at:e.at??0,rollup:e})),
+  ...(ark?.history??[]).filter(t=>t.amount>0&&!account.current?.txids.has(t.key.arkTxid)).map(t=>({key:`a${t.key.arkTxid||t.key.commitmentTxid||t.key.boardingTxid}-${t.type}`,at:t.createdAt,arkade:t})),
+ ].sort((a,b)=>b.at-a.at);
+ const phrase=secret?recoveryPhraseOf(secret):'';
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Development proving keys and test funds only. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
   {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{poolError||pool?.message}</p></div></section>}
@@ -135,32 +186,53 @@ export default function RollupWallet(){
    </section>
    {activity&&<section className={'stock-card stock-activity'+(activity.done?' finished':activity.error?' failed':'')}><div className="stock-activity-head"><h2>{activity.title}</h2></div>
     <ol className="stock-steps">{activity.steps.map((label,i)=><li key={label} className={activity.error&&i===activity.current?'error':i<activity.current||activity.done?'done':i===activity.current?'active':''}><i/>{label}</li>)}</ol>
-    {activity.error&&<p className="stock-blocked">{activity.error}</p>}
+    {activity.error&&<p className="stock-blocked">{activity.error}{activity.title.startsWith('Shielding')&&' It tries again in a minute.'}</p>}
    </section>}
    <section className="stock-card stock-panel">
-    <div className="stock-tabs" role="tablist" style={{gridTemplateColumns:'repeat(4,1fr)'}}>{(['receive','shield','send','withdraw'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>setTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>
+    <div className="stock-tabs" role="tablist" style={{gridTemplateColumns:'repeat(3,1fr)'}}>{(['receive','send','withdraw'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>{setTab(name);setTo('');}}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>
     {tab==='receive'?<div className="stock-receive">
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
-     <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{ark?<Copyable value={ark.address}/>:<code>Loading…</code>}<p className="stock-muted">Fund this from the Mutinynet faucet, then shield it.</p></div>
+     <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{ark?<Copyable value={ark.address}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`}</p></div>
+     {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>{const plan=planFor(paidOut);if(plan)void shieldWith(plan);}}>Shield again</button></div>}
      {ark?.assets.map(a=><div key={a.assetId} className="stock-address"><small>ARKADE ASSET {short(a.assetId)}</small><b>{sats(a.amount)} units</b>
-      {reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool; shield it from the Shield tab.</p>:listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>:<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void list(a.assetId)}>List in the pool</button></>}</div>)}
-    </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();(tab==='shield'?shield:tab==='send'?send:withdraw)();}}>
+      {reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool, so it moves in on its own.</p>:listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>:<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void list(a.assetId)}>List in the pool</button></>}</div>)}
+    </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();(tab==='send'?send:withdraw)();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
-     {tab==='send'&&<label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol1…" autoComplete="off" spellCheck={false}/></label>}
+     <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder={tab==='send'?'shrol1…':'Your Arkade address, or another tark1…'} autoComplete="off" spellCheck={false}/></label>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
-     <p className="stock-muted">{tab==='shield'?assetId?`Moves units from your Arkade balance into a private note, with ${DUST} sats beside them. The amount is public.`:'Moves sats from your Arkade balance into a private note. The amount is public.':tab==='send'?`Pays from up to three of your notes at once, up to ${sats(maxSend)} ${unit}; the amount and both parties stay private.`:assetId?`Pays out to your Arkade address with a ${DUST}-sat BTC note as its carrier; the amount is public.`:`Pays out to your Arkade address; the amount is public. At least ${DUST} sats.`}</p>
-     <button className="stock-primary" disabled={busy||!synced||!amount||(tab==='send'&&!to.trim())}>{busy?'Working…':tab==='shield'?'Shield':tab==='send'?'Send':'Withdraw'}</button>
+     <p className="stock-muted">{tab==='send'?`Pays from up to three of your notes at once, up to ${sats(maxSend)} ${unit}; the amount and both parties stay private.`:assetId?`Pays out to an Arkade address with a ${DUST}-sat BTC note as its carrier; the amount is public.`:`Pays out to an Arkade address; the amount is public. At least ${DUST} sats.`}</p>
+     <button className="stock-primary" disabled={busy||!synced||!amount||(tab==='send'&&!to.trim())}>{busy?'Working…':tab==='send'?'Send':'Withdraw'}</button>
     </form>}
+   </section>
+   <section className="stock-card stock-history"><h2>History</h2>
+    {!timeline.length?<p className="stock-muted">{synced?'Nothing yet. Fund your Arkade address and it shows up here.':'Reading the pool…'}</p>:<ul>{timeline.map(item=>{
+     if('rollup' in item){const e=item.rollup,recipient=e.spent.map(nf=>sent[String(nf)]).find(Boolean),incoming=e.kind==='shield'||e.kind==='receive';
+      return <li key={item.key}><details><summary><span className={'stock-kind '+e.kind}>{kinds[e.kind]}</span><b className={incoming?'in':'out'}>{incoming?'+':'−'}{amountText(e.amounts)}</b><time>{when(e.at)}</time></summary>
+       <dl>
+        <dt>Where</dt><dd>{e.kind==='shield'?'From your Arkade coins into the pool; the amount is public.':e.kind==='withdraw'?(recipient?`To ${recipient}`:e.destination===ownField?'To your Arkade address':'To another Arkade address')+'; the amount is public.':e.kind==='send'?`Inside the pool${recipient?` to ${recipient}`:''}; amount and parties stay private.`:'Inside the pool; amount and sender stay private.'}</dd>
+        <dt>Batch</dt><dd>#{e.batch}{e.txid&&<> · <TxLink txid={e.txid}/></>}</dd>
+        {e.spent.length>0&&<><dt>Notes spent</dt><dd>{e.spent.length}</dd></>}
+        {e.created.length>0&&<><dt>{incoming?'Notes received':'Change'}</dt><dd>{e.created.map(n=>n.asset===0n?`${sats(n.amount)} sats`:`${sats(n.amount)} units`).join(', ')}</dd></>}
+        {e.txid&&<><dt>Transaction</dt><dd><Copyable value={e.txid}/></dd></>}
+       </dl></details></li>;}
+     const t=item.arkade,id=t.key.arkTxid||t.key.commitmentTxid,received=t.type===TxType.TxReceived;
+     return <li key={item.key}><details><summary><span className="stock-kind arkade">{received?'Arkade funding':'Arkade payment'}</span><b className={received?'in':'out'}>{received?'+':'−'}{sats(t.amount)} sats</b><time>{when(t.createdAt)}</time></summary>
+      <dl><dt>Where</dt><dd>{received?'Into your Arkade address, outside the pool.':'From your Arkade address, outside the pool.'}</dd>
+       {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={t.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
+       <dt>Status</dt><dd>{t.settled?'Settled':'Preconfirmed'}</dd></dl></details></li>;
+    })}</ul>}
    </section>
    {(notes.length>0||Object.values(assetNotes).some(list=>list.length))&&<section className="stock-card"><h2>Notes</h2><div className="stock-notes">
     {notes.map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} sats</span><span className="ok">Spendable</span></div>)}
     {Object.entries(assetNotes).flatMap(([id,list])=>list.map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} units</span><span className="ok">Asset {short(id)}</span></div>))}
    </div></section>}
   </>}
-  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery secret</h2><p className="stock-muted">It restores this wallet and its Arkade balance in any browser. Anyone who has it can spend your funds.</p>{reveal&&<div className="stock-address"><Copyable value={secret}/></div>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show secret</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
-  <details className="stock-card stock-advanced"><summary>Restore</summary>
-   <label>Recovery secret<input value={restore} onChange={e=>setRestore(e.target.value.trim())} autoComplete="off" spellCheck={false}/></label>
-   <button disabled={busy||!restore} onClick={()=>{try{parseMasterSecret(restore);localStorage.setItem(SECRET,restore);location.reload();}catch(error){setPoolError((error as Error).message);}}}>Restore wallet</button>
+  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore this wallet and its Arkade balance in any browser. Anyone who has them can spend your funds.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+  <details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
+   {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}
+   <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
+   <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
+   {restoreError&&<p className="stock-blocked">{restoreError}</p>}
   </details>
  </main></div>;
 }

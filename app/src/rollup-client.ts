@@ -67,3 +67,14 @@ export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Pr
   await sleep(pollMs);
  }
 }
+
+export interface ArkCoin {txid:string;vout:number;value:number;expiresAt?:number;assets?:{assetId:string;amount:bigint}[]}
+export type ShieldPlan={kind:'btc';coins:ArkCoin[];amount:number}|{kind:'asset';coin:ArkCoin;assetId:string;units:bigint};
+/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry. */
+export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,now:number,floorMs:number):ShieldPlan|undefined {
+ const usable=coins.filter(c=>c.expiresAt===undefined||c.expiresAt-now>floorMs);
+ const plain=usable.filter(c=>!c.assets?.length),amount=plain.reduce((sum,c)=>sum+c.value,0);
+ if(amount>=DUST)return {kind:'btc',coins:plain,amount};
+ const coin=usable.find(c=>c.assets?.length===1&&listed.has(c.assets[0]!.assetId));
+ return coin?{kind:'asset',coin,assetId:coin.assets![0]!.assetId,units:coin.assets![0]!.amount}:undefined;
+}

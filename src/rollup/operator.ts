@@ -16,7 +16,7 @@ export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHe
 export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
 interface RecordSlot {root:string;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[];ciphertext?:string}
 /** One accepted batch as published for data availability. */
-export interface RollupRecord {kind:'spend';slots:RecordSlot[]}
+export interface RollupRecord {kind:'spend';slots:RecordSlot[];txid?:string;at?:number}
 interface RollupPlan {version:1;request:StockWireRequest;record:RollupRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
 /** What a deposit coin must still be when the batch is signed, as the client claims it. */
 export interface RollupDepositFacts {txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[]}
@@ -106,7 +106,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    writeFileSync(keptPath(plan),JSON.stringify(plan));return true;
   },
   apply:(archive,plan,receipt)=>{
-   writeFileSync(bodyPath(archive.batches),JSON.stringify(plan.record));
+   writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));
    if(state.batchCount===archive.batches)state.apply(plan.record.kind,plan.record.slots.map(slotOf));
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
    const reserves=plan.asset?{...archive.reserves,[plan.asset]:{...coin(1),amount:plan.reserveAmount!}}:archive.reserves;
@@ -239,6 +239,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   pendingIds:()=>[...pending,...inflight].map(s=>s.id),
   padding:()=>padding.length,
   status:()=>journal.status(),
+  txidOf:(batch:number)=>journal.receipt('batch-'+batch)?.txid,
   /** Adopts the head and reserves a renewal round moved; their state packet is unchanged. */
   relocate:(moved:Pick<RollupArchive,'head'|'reserves'>)=>journal.updateArchive(archive=>({...archive,head:moved.head,reserves:moved.reserves})),
   /** Runs at most one batch: resolves an unresolved submission first, then closes a due batch. */

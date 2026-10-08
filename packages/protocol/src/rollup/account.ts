@@ -6,9 +6,11 @@ import { RollupState, type BatchSlot } from './state.ts';
 import { ctDigestOf, openRollupNotes, sealRollupNotes, type RollupNote, type RollupRecipient } from './wallet.ts';
 
 /** A slot as the operator publishes it: decimal field elements plus the hex note record. */
-export interface PublishedSlot { root: string; nullifiers: string[]; commitments: [string, string]; ctDigest: string; groupId: string; groupSize: number; ciphertext?: string }
-export interface PublishedBatch { kind: 'spend'; slots: PublishedSlot[] }
+export interface PublishedSlot { root: string; nullifiers: string[]; commitments: [string, string]; ctDigest: string; groupId: string; groupSize: number; publics?: string[]; ciphertext?: string }
+export interface PublishedBatch { kind: 'spend'; slots: PublishedSlot[]; txid?: string; at?: number }
 export interface OwnedNote extends RollupNote { index: number; nullifier: bigint }
+/** One slot, or one whole group, that moved this wallet's notes. Amounts are per asset field, BTC being 0. */
+export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint }
 export interface RollupKeys { spendSecret: bigint; viewSecret: Uint8Array }
 export interface SpendRequest { asset?: bigint; input?: OwnedNote; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { spendSecret: bigint; rho: bigint } }
 export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; change: bigint }
@@ -21,16 +23,20 @@ export class RollupAccount {
  readonly state: RollupState;
  readonly owner: bigint;
  private readonly owned = new Map<bigint, OwnedNote>();
+ readonly history: HistoryEntry[] = [];
+ /** Every published batch txid, so the wallet can tell pool payouts from outside funding. */
+ readonly txids = new Set<string>();
  constructor(private readonly hash: Hash, private readonly keys: RollupKeys) {
   this.state = RollupState.genesis(hash);
   this.owner = ownerOf(hash, ROLLUP_DOMAIN, keys.spendSecret);
  }
 
  async apply(batch: PublishedBatch): Promise<OwnedNote[]> {
-  const base = this.state.noteCount;
+  const base = this.state.noteCount, number = this.state.batchCount;
+  if (batch.txid) this.txids.add(batch.txid);
   this.state.apply(batch.kind, batch.slots.map(slotOf));
-  for (const slot of batch.slots) for (const nf of slot.nullifiers) this.owned.delete(BigInt(nf));
-  const found: OwnedNote[] = [];
+  const spent = batch.slots.map(slot => slot.nullifiers.flatMap(nf => { const note = this.owned.get(BigInt(nf)); this.owned.delete(BigInt(nf)); return note ? [note] : []; }));
+  const created: OwnedNote[][] = batch.slots.map(() => []);
   for (const [i, slot] of batch.slots.entries()) {
    if (!slot.ciphertext) continue;
    const opened = await openRollupNotes(hex.decode(slot.ciphertext), this.keys.viewSecret);
@@ -38,10 +44,35 @@ export class RollupAccount {
     // A record can claim anything; only a note whose commitment is in the tree under our owner is ours.
     if (!note || note.amount === 0n || noteOf(this.hash, ROLLUP_DOMAIN, note.amount, note.asset, this.owner, note.rho) !== BigInt(slot.commitments[j])) return;
     const mine = { ...note, index: base + 2 * i + j, nullifier: nullifierOf(this.hash, ROLLUP_DOMAIN, this.keys.spendSecret, note.rho) };
-    this.owned.set(mine.nullifier, mine); found.push(mine);
+    this.owned.set(mine.nullifier, mine); created[i]!.push(mine);
    });
   }
-  return found;
+  for (let i = 0; i < batch.slots.length;) {
+   let end = i + 1;
+   while (batch.slots[i]!.groupId !== '0' && batch.slots[end]?.groupId === batch.slots[i]!.groupId) end++;
+   const entry = this.entryOf(batch, number, i, end, spent.slice(i, end).flat(), created.slice(i, end).flat());
+   if (entry) this.history.push(entry);
+   i = end;
+  }
+  return created.flat();
+ }
+
+ private entryOf(batch: PublishedBatch, number: number, from: number, to: number, spent: OwnedNote[], created: OwnedNote[]): HistoryEntry | undefined {
+  const legs = batch.slots.slice(from, to).map(slot => (slot.publics ?? []).map(v => BigInt(v)));
+  const sum = (items: { asset: bigint; amount: bigint }[]) => {
+   const totals = new Map<bigint, bigint>();
+   for (const { asset, amount } of items) totals.set(asset, (totals.get(asset) ?? 0n) + amount);
+   return [...totals].filter(([, amount]) => amount > 0n).map(([asset, amount]) => ({ asset, amount }));
+  };
+  const base = { batch: number, ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), spent: spent.map(n => n.nullifier), created };
+  if (created.length && legs.some(p => (p[1] ?? 0n) > 0n)) return { kind: 'shield', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[1] ?? 0n }))) };
+  const payout = legs.find(p => (p[2] ?? 0n) > 0n);
+  if (spent.length && payout) return { kind: 'withdraw', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[2] ?? 0n }))), destination: payout[4] ?? 0n };
+  if (spent.length) {
+   const amounts = sum([...spent.map(n => ({ asset: n.asset, amount: n.amount })), ...created.map(n => ({ asset: n.asset, amount: -n.amount }))]);
+   return amounts.length ? { kind: 'send', ...base, amounts } : undefined;
+  }
+  return created.length ? { kind: 'receive', ...base, amounts: sum(created.map(n => ({ asset: n.asset, amount: n.amount }))) } : undefined;
  }
 
  notes(asset = BTC_ASSET): OwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.index - b.index); }

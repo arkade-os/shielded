@@ -14,3 +14,28 @@
 .stock-notes{display:grid;gap:10px}.stock-notes>div{position:relative;overflow:hidden;display:grid;grid-template-columns:1fr auto;gap:6px 12px;padding:14px 16px;background:linear-gradient(135deg,#fbf6ea,#f2e8d2);border:1px solid var(--gilt);outline:1px solid rgba(184,134,43,.25);outline-offset:-5px}.stock-notes>div::after{content:'';position:absolute;right:-34px;top:-34px;width:120px;height:120px;border-radius:50%;background:repeating-radial-gradient(circle,transparent 0 5px,rgba(184,134,43,.2) 5px 6px);pointer-events:none}.stock-notes span:first-child{font-family:'Fraunces',Georgia,serif;font-size:22px;font-weight:500}.stock-notes .ok,.stock-notes .wait{position:relative;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--vert)}.stock-notes .wait{color:#8a6a20}.stock-notes code{grid-column:1/-1;font-family:'Geist Mono',monospace;font-size:12px;color:var(--slate)}
 .stock-recovery{background:linear-gradient(135deg,rgba(143,29,58,.06),rgba(184,134,43,.09));border-color:rgba(143,29,58,.3)}.stock-message,.stock-blocked{padding:13px 15px;line-height:1.5;background:rgba(31,107,82,.08);border-left:3px solid var(--vert)}.stock-blocked{background:rgba(143,29,58,.07);border-left-color:var(--gules);color:var(--gules)}.stock-advanced>summary{cursor:pointer;font-family:'Fraunces',Georgia,serif;font-size:18px;font-weight:500}.stock-advanced:not([open]){gap:0}.stock-welcome h2{font-size:30px}.stock-welcome-seal{width:132px;justify-self:center}.stock-install code{overflow-wrap:anywhere}.stock-meta{display:grid;gap:4px;padding:0 4px;font-size:12px;color:var(--slate)}.stock-meta small{line-height:1.5}.stock-file input{font-weight:400}
 @media(max-width:600px){.stock-shell{width:min(100% - 22px,880px);padding-top:18px}.stock-card{padding:18px}.stock-row,.stock-balance-side{grid-template-columns:1fr}.stock-actions{display:grid;grid-template-columns:1fr}.stock-actions button{width:100%}.stock-seal{width:96px}.stock-brand{font-size:26px}}
+.stock-history ul{display:grid;margin:0;padding:0;list-style:none}
+.stock-history li+li{border-top:1px solid var(--rule)}
+.stock-history summary{display:grid;grid-template-columns:auto 1fr;align-items:baseline;gap:2px 14px;padding:13px 2px;cursor:pointer;list-style:none}
+.stock-history summary::-webkit-details-marker{display:none}
+.stock-history summary:focus-visible{outline:2px solid var(--or);outline-offset:2px}
+.stock-history summary b{font-family:'Geist Mono',ui-monospace,monospace;font-size:14px;font-weight:600;text-align:right;overflow-wrap:anywhere}
+.stock-history summary b.in{color:var(--vert)}
+.stock-history summary b.out{color:var(--gules)}
+.stock-history summary time{grid-column:1/-1;font-size:12px;color:var(--slate)}
+.stock-kind{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600}
+.stock-kind::before{content:'';flex:none;width:8px;height:8px;border-radius:50%;background:var(--teal)}
+.stock-kind.shield::before{background:var(--or)}
+.stock-kind.receive::before{background:var(--vert)}
+.stock-kind.send::before{background:var(--purpure)}
+.stock-kind.withdraw::before{background:var(--gules)}
+.stock-kind.arkade::before{background:transparent;box-shadow:inset 0 0 0 1.5px var(--slate)}
+.stock-history dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 16px;margin:0 0 14px;padding:12px 14px;background:rgba(244,239,229,.75);border:1px dashed var(--gilt);font-size:13px}
+.stock-history dt{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--slate)}
+.stock-history dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.stock-txlink{font-family:'Geist Mono',ui-monospace,monospace;color:var(--teal);text-decoration:underline;text-underline-offset:3px}
+.stock-words{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:6px 10px;margin:0;padding:12px 14px;background:rgba(244,239,229,.75);border:1px dashed var(--gilt);counter-reset:word;list-style:none}
+.stock-words li{counter-increment:word;font-family:'Geist Mono',ui-monospace,monospace;font-size:13px}
+.stock-words li::before{content:counter(word) '.';display:inline-block;min-width:2.2em;color:var(--slate)}
+.stock-card textarea{width:100%;padding:10px 12px;border:1px solid var(--rule);background:#fff;color:var(--navy);font-family:'Geist Mono',ui-monospace,monospace;font-size:13px;resize:vertical}
+.stock-card textarea:focus{outline:none;border-color:var(--or);box-shadow:0 0 0 3px rgba(184,134,43,.18)}

@@ -193,8 +193,25 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
   await restore(operator);
+  await backfill(operator,indexer).catch(error=>log('batch history backfill: '+(error as Error).message));
   status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:ark.address};
   run(prover('spend'));
+ }
+
+ /** Records published before they carried a txid and time get both once: the journal kept the txid, the indexer the time. */
+ async function backfill(operator:RollupOperator,indexer:RestIndexerProvider){
+  const path=(n:number)=>join(o.directory,'operator','batches',`${n}.json`),stale:{n:number;record:RollupRecord;txid:string}[]=[];
+  for(let n=0;n<operator.status().archive.batches;n++){
+   const record=readJson<RollupRecord>(path(n)),txid=record.txid??operator.txidOf(n);
+   if(txid&&record.at===undefined)stale.push({n,record,txid});
+  }
+  for(let i=0;i<stale.length;i+=50){
+   const chunk=stale.slice(i,i+50),{vtxos}=await indexer.getVtxos({outpoints:chunk.map(s=>({txid:s.txid,vout:0}))});
+   for(const s of chunk){
+    const created=vtxos.find(v=>v.txid===s.txid&&v.vout===0)?.createdAt;
+    if(created instanceof Date)writeFileSync(path(s.n),JSON.stringify({...s.record,txid:s.txid,at:created.getTime()}));
+   }
+  }
  }
 
  function run(spendProver:ReturnType<typeof createRollupProver>){

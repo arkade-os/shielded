@@ -134,9 +134,12 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  await op.submit(await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)}));
  op.addPadding(await pads(op.state.latestRoot(),10));
  w.clock.now=20_000;
- assert.equal(((await op.tick()) as {batch:number}).batch,1);
+ const second=await op.tick() as {batch:number;txid:string};
+ assert.equal(second.batch,1);
  assert.equal(op.status().archive.head.value,101_830);
- assert.ok(existsSync(join(w.dir,'batches','1.json')));
+ const body=JSON.parse(readFileSync(join(w.dir,'batches','1.json'),'utf8'));
+ assert.deepEqual([body.txid,body.at],[second.txid,20_000],'a published batch names its transaction and time');
+ assert.equal(op.txidOf(1),second.txid,'the journal answers for batches published before records carried a txid');
  const commitment=op.state.commitment();
  op.close();
 
