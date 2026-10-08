@@ -64,3 +64,15 @@ test('a spend is validated and handed to the operator with field elements as big
  assert.equal((await post(api.base+'/spends/'+spend.id+'/sign',{arkTx:'x',checkpoint:'y'})).status,409);
  assert.equal((await fetch(api.base+'/batches?from=-1')).status,400);
 });
+
+test('a batch record from another prover is checked for shape and handed to the operator to verify against the chain',async(t)=>{
+ const calls:unknown[]=[];
+ const api=await serve({ready:()=>true,external:async(txid:string,slots:unknown)=>{calls.push([txid,slots]);return {batch:4,txid};}});t.after(api.close);
+ const slot={root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
+ assert.equal((await post(api.base+'/external',{txid:'zz',slots:[slot]})).status,400);
+ assert.equal((await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[{...slot,nullifiers:['11','12']}]})).status,400,'a spend slot spends one note');
+ assert.equal((await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[{...slot,ciphertext:'00'}]})).status,400,'a note record has its fixed size');
+ const accepted=await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[slot,{...slot,ciphertext:undefined}]});
+ assert.deepEqual(await accepted.json(),{batch:4,txid:'ab'.repeat(32)});
+ assert.deepEqual(calls,[['ab'.repeat(32),[slot,{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0}]]]);
+});

@@ -40,7 +40,7 @@ export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
  pool?:{token:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
  network?:StockNetworkInfo;
- proving?:{spend:{wasm:string;zkey:string}};
+ proving?:{spend:{wasm:string;zkey:string};batch?:{wasm:string;zkey:string}};
 }
 export interface RollupSpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 interface Genesis {version:1;token:string;txid:string;archive:RollupArchive;serverKey:string;emulatorKey:string}
@@ -98,7 +98,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   }
   manifest=verifyKeys(keys);
   const files=manifest.circuits['spend']!.files;
-  status={...status,proving:{spend:{wasm:files['spend.wasm']!,zkey:files['spend.zkey']!}}};
+  const batch=manifest.circuits['batch-spend']?.files;
+  status={...status,proving:{spend:{wasm:files['spend.wasm']!,zkey:files['spend.zkey']!},...(batch?{batch:{wasm:batch['batch-spend.wasm']!,zkey:batch['batch-spend.zkey']!}}:{})}};
   return manifest;
  }
  let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
@@ -324,7 +325,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    }
   },
   ready:()=>!!live,
-  keyFile:(name:string)=>manifest&&(['spend.wasm','spend.zkey','spend.vkey.json'] as const).find(file=>file===name)?join(keys,name):undefined,
+  // The batch key is published too, so anyone can prove a batch, and the pool keeps moving, if this operator stops.
+  keyFile:(name:string)=>manifest&&(['manifest.json','spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json'] as const).find(file=>file===name)?join(keys,name):undefined,
   batches:(from:number,limit:number)=>{
    const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
@@ -332,6 +334,20 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   },
   /** Fills a deposit coin from the indexer; the client names the outpoint and the tree that locks it. */
   depositCoin:resolveCoin,
+  /** Follows a batch another prover got accepted; its transaction, checkpoints and reserve come from the indexer, never the caller. */
+  external:async(txid:string,slots:Parameters<RollupOperator['follow']>[0]['slots'])=>{
+   if(!live)throw new Error('The rollup pool is not open yet.');
+   const {operator,indexer}=live,txs=async(ids:string[])=>(await indexer.getVirtualTxs(ids)).txs.map(decodeStockIndexerTransaction);
+   const tx=(await txs([txid])).find(t=>t.id===txid);if(!tx)throw new Error('The indexer does not know that transaction.');
+   const ids=Array.from({length:tx.inputsLength},(_,vin)=>hex.encode(tx.getInput(vin).txid!)),found=await txs(ids),checkpoints=ids.map(id=>found.find(t=>t.id===id));
+   if(checkpoints.some(c=>!c))throw new Error('The indexer lacks a checkpoint of that transaction.');
+   const {archive}=operator.status(),[head]=(await indexer.getVtxos({outpoints:[{txid:archive.head.txid,vout:archive.head.vout}]})).vtxos;
+   if(!head?.isSpent||head.arkTxId!==txid)throw new Error("That transaction has not spent this pool's head.");
+   const second=checkpoints[1]?.getInput(0),moved=second&&Object.entries(archive.reserves).find(([,c])=>c.txid===hex.encode(second.txid!)&&c.vout===second.index)?.[0];
+   const outs=(await indexer.getVtxos({outpoints:[{txid,vout:0},{txid,vout:1}]})).vtxos,created=outs.find(v=>v.vout===0)?.createdAt;
+   const reserveAmount=moved?String(outs.find(v=>v.vout===1)?.assets?.find(a=>a.assetId===moved)?.amount??0):undefined;
+   return operator.follow({tx,checkpoints:checkpoints as Transaction[],slots,at:created instanceof Date?created.getTime():Date.now(),...(reserveAmount!==undefined?{reserveAmount}:{})});
+  },
   submit:async(spend:Omit<RollupSpend,'receivedAt'>,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');

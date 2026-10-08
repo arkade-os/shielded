@@ -10,6 +10,7 @@ import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {selectRollupBatch,type RollupSpend} from './batcher.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,type RollupCoin,type RollupLeaves} from './covenant.ts';
+import {readBatchTx,spentCoins} from './external.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
 
 export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHex:string}
@@ -240,6 +241,40 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   padding:()=>padding.length,
   status:()=>journal.status(),
   txidOf:(batch:number)=>journal.receipt('batch-'+batch)?.txid,
+  /**
+   * Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`.
+   * Every record slot must reproduce the statement the transaction carries and the replay must reach its state packet,
+   * so a record that misstates any note is refused.
+   */
+  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots:(Omit<RecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
+   if(busy)throw new Error('The operator is busy; try again.');busy=true;
+   try{
+    const {tx,slots}=external,facts=readBatchTx(tx,o.leaves),[head,second]=spentCoins(tx,external.checkpoints);
+    let archive=journal.status().archive;
+    if(head!.txid!==archive.head.txid||head!.vout!==archive.head.vout)throw new Error(`Transaction ${tx.id} spends ${head!.txid}:${head!.vout}, not this pool's head.`);
+    if(slots.length!==facts.publics.length)throw new Error('The record has the wrong number of slots.');
+    slots.forEach((s,i)=>{
+     if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...slotOf({...s,publics:[]})})!==facts.publics[i]![0])throw new Error(`Slot ${i} does not match the statement the transaction carries.`);
+     if(s.ciphertext&&ctDigestOf(hex.decode(s.ciphertext))!==BigInt(s.ctDigest))throw new Error(`Slot ${i}'s note record does not match its digest.`);
+    });
+    // Our own unaccepted batch spent the same head, so it can never land now.
+    if(journal.status().pending){
+     journal.discard();sent=undefined;
+     if(state.batchCount>archive.batches)state.undoLast();
+     padding.unshift(...inflightPadding);pending.unshift(...inflight);inflight=[];inflightPadding=[];
+    }
+    const replica=state.clone(),replay=replica.apply('spend',slots.map(s=>slotOf({...s,publics:[]})));
+    if(replica.commitment()!==facts.commitment||replay.daRoot!==facts.daRoot)throw new Error('The record does not match the state the transaction committed to.');
+    const reserveAsset=second&&Object.entries(archive.reserves).find(([,c])=>c.txid===second.txid&&c.vout===second.vout)?.[0];
+    if(reserveAsset&&external.reserveAmount===undefined)throw new Error('Following a batch that moves a reserve needs the reserve\'s new amount.');
+    const record:RollupRecord={kind:'spend',slots:slots.map((s,i)=>({...s,publics:facts.publics[i]!.map(String)})),txid:tx.id,at:external.at};
+    writeFileSync(bodyPath(archive.batches),JSON.stringify(record));
+    state.apply('spend',slots.map(s=>slotOf({...s,publics:[]})));
+    const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
+    archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
+    return {batch:archive.batches-1,txid:tx.id};
+   }finally{busy=false;}
+  },
   /** Adopts the head and reserves a renewal round moved; their state packet is unchanged. */
   relocate:(moved:Pick<RollupArchive,'head'|'reserves'>)=>journal.updateArchive(archive=>({...archive,head:moved.head,reserves:moved.reserves})),
   /** Runs at most one batch: resolves an unresolved submission first, then closes a due batch. */

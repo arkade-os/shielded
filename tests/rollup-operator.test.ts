@@ -90,6 +90,7 @@ async function world(){
   submit:async request=>{
    const r=await executeVmBinary(DEFAULT_VM_BINARY,request);
    if(!r.ok)throw new Error(r.error);
+   writeFileSync(join(dir,'landed.json'),JSON.stringify({arkTx:r.arkTx,checkpoints:r.checkpoints}));
    return {txid:Transaction.fromPSBT(base64.decode(r.arkTx!)).id,checkpointTxids:r.checkpoints!.map(c=>Transaction.fromPSBT(base64.decode(c)).id),signedArkTx:r.arkTx!,signedCheckpointTxs:r.checkpoints!,weights:{ark:0,checkpoints:[]},network:'mutinynet',finality:'operator-preconfirmed'};
   },
   lookup:async()=>undefined,verify:()=>{},unspent:async()=>true,
@@ -388,4 +389,37 @@ test('a note record is admitted only under its digest and is published with its 
  const body=JSON.parse(readFileSync(join(w.dir,'batches','0.json'),'utf8')) as {slots:{ctDigest:string;ciphertext?:string}[]};
  assert.equal(body.slots.find(s=>s.ctDigest===String(digest))?.ciphertext,hex.encode(record));
  assert.equal(body.slots.filter(s=>s.ciphertext).length,1,'padding publishes no record');
+});
+
+test('a batch another prover got accepted is followed from its record, and a record that disagrees with the chain is refused',async(t)=>{
+ const w=await world(),a=await w.open(t),b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-follower-'))});
+ await a.submit(await toySpend('deposit',a.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
+ a.addPadding(await pads(a.state.latestRoot(),10));
+ w.clock.now=10_000;
+ const landed=await a.tick() as {txid:string;batch:number};
+ const record=JSON.parse(readFileSync(join(w.dir,'batches','0.json'),'utf8')) as {slots:{commitments:[string,string]}[]};
+ const landedTxs=JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string;checkpoints:string[]};
+ const tx=Transaction.fromPSBT(base64.decode(landedTxs.arkTx)),checkpoints=landedTxs.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)));
+ const forged={...record,slots:record.slots.map((s,i)=>i===3?{...s,commitments:[s.commitments[1],s.commitments[0]] as [string,string]}:s)};
+ await assert.rejects(b.follow({tx,checkpoints,slots:forged.slots as never,at:1}),/does not match/,'a swapped commitment breaks the statement the chain carries');
+ assert.deepEqual(await b.follow({tx,checkpoints,slots:record.slots as never,at:1}),{batch:0,txid:landed.txid});
+ assert.equal(b.state.commitment(),a.state.commitment());
+ assert.deepEqual(b.status().archive.head,a.status().archive.head);
+ await assert.rejects(b.follow({tx,checkpoints,slots:record.slots as never,at:1}),/spends .* not this pool's head/,'the same batch cannot be followed twice');
+});
+
+test('an operator whose own batch lost the race drops it, follows the winner, and batches its spend again on the new head',async(t)=>{
+ const w=await world(),a=await w.open(t),dead={...w.transport,submit:async()=>{throw new Error('proxy timeout');}};
+ const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-loser-')),transport:dead});
+ const mine=await toySpend('withdraw',b.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)});
+ await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),20));
+ await a.submit(await toySpend('deposit',a.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));a.addPadding(await pads(a.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.ok('blocked' in (await b.tick())!,'its own batch is in flight with no outcome');
+ await a.tick();
+ const landed=JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string;checkpoints:string[]},record=JSON.parse(readFileSync(join(w.dir,'batches','0.json'),'utf8'));
+ await b.follow({tx:Transaction.fromPSBT(base64.decode(landed.arkTx)),checkpoints:landed.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c))),slots:record.slots,at:1});
+ assert.equal(b.status().pending,undefined,'the lost batch is gone');
+ assert.equal(b.state.commitment(),a.state.commitment());
+ assert.deepEqual(b.pendingIds(),[mine.id],'its spend waits for the next batch');
 });

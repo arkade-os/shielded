@@ -75,6 +75,8 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
  return {
   status:()=>({pin:structuredClone(saved.pin),archive:structuredClone(saved.archive),pending:saved.pending?{id:saved.pending.id,stage:saved.pending.stage}:undefined,blocked:!!saved.pending}),
   receipt:(id:string):R|undefined=>Object.hasOwn(saved.accepted,id)?structuredClone(saved.accepted[id]!.receipt):undefined,
+  /** Drops an unaccepted plan the caller proved can never land, because another transaction spent what it spends. */
+  discard:()=>{ensure();if(saved.pending?.stage!=='submitted')throw new Error('Only an unaccepted plan can be discarded.');const next={...saved};delete next.pending;persist(next);},
   updateArchive:async(transform:(archive:A)=>Promise<A>|A)=>{
    ensure();if(saved.pending)throw new Error('Public archive updates are blocked while a stock outcome is unresolved.');
    busy=true;try{const archive=await transform(structuredClone(saved.archive));await hooks.validateArchive(structuredClone(archive));persist({...saved,archive});return structuredClone(archive);}finally{busy=false;}

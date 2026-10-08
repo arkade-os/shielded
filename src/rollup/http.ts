@@ -37,6 +37,17 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!Number.isInteger(from)||from<0||!Number.isInteger(limit)||limit<1){res.status(400).json({error:'Invalid batch range.'});return;}
   res.setHeader('Cache-Control','no-store');res.json(service()!.batches(from,limit));
  });
+ router.post('/external',async(req,res)=>{
+  try{
+   const b=req.body??{};
+   if(typeof b.txid!=='string'||!/^[0-9a-f]{64}$/.test(b.txid)||!Array.isArray(b.slots)||b.slots.length>11)throw new Error("Expected a txid and its batch record's slots.");
+   const slots=b.slots.map((s:any)=>{
+    if(!Array.isArray(s?.nullifiers)||s.nullifiers.length!==1||!Array.isArray(s.commitments)||s.commitments.length!==2||![0,2,3].includes(s.groupSize))throw new Error('Malformed batch slot.');
+    return {root:String(decimal(s.root)),nullifiers:[String(decimal(s.nullifiers[0]))],commitments:[String(decimal(s.commitments[0])),String(decimal(s.commitments[1]))] as [string,string],ctDigest:String(decimal(s.ctDigest)),groupId:String(decimal(s.groupId)),groupSize:s.groupSize as number,...(s.ciphertext!==undefined?{ciphertext:hexOf(s.ciphertext,ROLLUP_RECORD_BYTES)}:{})};
+   });
+   res.json(await service()!.external(b.txid,slots));
+  }catch(error){res.status(400).json({error:(error as Error).message});}
+ });
  router.post('/spends',async(req,res)=>{
   try{
    const b=req.body??{},s=b.slot??{};
