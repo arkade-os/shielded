@@ -27,8 +27,9 @@ test('a spend body carries decimal field elements, the hex record, and only the 
  assert.deepEqual(spendBody('ab',built,proof),{id:'ab',slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0'],proof,ciphertext:'0102'});
  const member={...built,witness:{...built.witness,slot:{...built.witness.slot,groupId:99n,groupSize:3}}} as BuiltSpend;
  assert.deepEqual([spendBody('ab',member,proof).slot.groupId,spendBody('ab',member,proof).slot.groupSize],['99',3]);
- const withLegs=spendBody('ab',built,proof,{program:new Uint8Array(32).fill(1),coin:{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'}});
+ const withLegs=spendBody('ab',built,proof,{program:new Uint8Array(32).fill(1),coin:{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'},asset:'ee'.repeat(34)});
  assert.equal(withLegs.program,'01'.repeat(32));
+ assert.equal(withLegs.asset,'ee'.repeat(34));
  assert.deepEqual(withLegs.coin,{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'});
 });
 
