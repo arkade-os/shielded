@@ -1,74 +1,11 @@
 # Security status
 
-The current BTC stock-opcode profile keeps customer spending, viewing and native
-keys outside the Shield coordinator. The existing public Arkade emulator executes
-the pinned Groth16 verifier through stock BN254 opcodes. The [funded Mutinynet
-lifecycle and same-volume restart](validation/stock-mutinynet-lifecycle.json)
-passed for the pinned test release, with three client wallets and independently
-verified final customer payout VTXOs. This evidence is separate from the retained
-legacy and registry profiles described below.
+Shielded is unaudited research software for Mutinynet test coins. Do not use it with real funds.
 
-That acceptance does not make the profile production-ready. Its circuit-specific
-phase-2 ceremony is development-only; the reused public phase-1 transcript does
-not remove that assumption. The pool is bounded and serial. Sidecar availability
-is not enforced: a valid native transition can withhold the data other clients
-need and freeze recovery or further settlement. Foreign native prepares are not
-automatically adopted. Arkade/emulator availability remains necessary; there is
-no platform-independent note-holder pool exit or durable expiry renewal. The
-three delayed Bitcoin leaf shapes passed local execution, not funded, matured
-Bitcoin exit verification. No independent production security review is complete.
+- **Trusted setup.** The proving keys come from a development-only setup that the server runs for itself. Whoever controls that setup could forge proofs. There is no ceremony.
+- **Who enforces the rules.** The pool covenant verifies every client proof and the batch proof through the Arkade emulator's opcodes, and the Arkade operator co-signs. Bitcoin itself does not check the proofs. Both services must stay honest and online; there is no independent exit from the pool if they do not.
+- **The pool operator** orders spends into batches and stores the encrypted note records. It can delay or refuse a spend, but it cannot spend a note without a proof that only the note owner's keys can make.
+- **Recovery** needs the published records and the wallet's recovery secret. Nobody can reset a lost secret.
+- **Privacy.** Deposits and withdrawals are public, including amounts and the Arkade addresses involved. Payments inside the pool hide sender, recipient and amount, and the anonymity set is the pool's other users.
 
-This is unaudited research software. The retained legacy compact transport is an experimental,
-custodial demonstration and **does not meet Shielded's core trust goal**: users
-must not have to trust the Shielded service not to steal, inflate, or force a
-custodial exit. The server stores Alice and Bob's spending secrets and note data.
-Users do not control their own keys, and the service can access their notes.
-
-Legacy compact verification is offchain. The ordinary Ark operator checks native
-transaction rules and signatures; it does not independently verify Shielded's
-Groth16 proofs. A malicious Shielded verifier can seek an otherwise native-valid
-operator co-signature for a spend that violates the Shielded state rules; operator
-collusion is not required by this design. Bitcoin does not execute the proof
-checks either. The current verifier-controlled CSV recovery key can take an
-entire pooled resource after its timeout. Note holders have no fractional,
-holder-specific pool exit if Shielded disappears.
-
-The multi-party Groth16 ceremony, even if correctly performed, would address
-proof-system setup soundness only. It would not make the service's verification
-or signing decision enforceable by the Ark operator or Bitcoin, give users their
-own keys, or create an independent exit. This experiment is not an accepted
-replacement architecture or a completed Shielded design.
-
-The older scaffold under `contracts/` stays disabled: `PairingProduct.check4`
-rejects unconditionally. Do not fund those scaffold outputs or remove their guard
-solely because the compiler supports pairing products. The runnable profile also
-lacks pooled-funds emergency exits, refresh/expiry handling, and a production audit.
-
-Never send user spending keys or note openings to a batcher. The current demo's
-service-owned keys and whole-resource CSV recovery are explicit custodial test
-arrangements, not acceptable properties of a future user-facing design. A
-replacement must put keys in user wallets, make spending validity enforceable
-without trusting Shielded, and provide holder-specific recovery when Shielded
-is unavailable. A verifier-controlled whole-pool exit does not satisfy that
-requirement. Native asset provenance is not established by packet-declared
-quantities alone. Emulator signatures do not make the extra opcodes Bitcoin
-consensus.
-
-The isolated client-owned lab is a separate synthetic profile. It keeps user
-spend/view/native withdrawal secrets in the browser and requires the independent
-registered emulator VM to execute the full original Groth16 covenants. The
-coordinator receives public descriptors, ciphertext, proofs and receipts. Its
-registry and known client recipient directory freeze after registration.
-
-That local enforcement does not establish live Ark inclusion, Bitcoin proof
-verification, independent pooled-BTC exits or production readiness. The emulator
-extension is undeployed, the proof setup is single-party development material,
-and the bounded lab has no external customer deposit rail. Recovery also needs
-canonical Ark checkpoints and authentic independently distributed wallet code.
-Initial peer identity must be verified independently; the two named lab slots
-are not a production recipient discovery or identity system. See
-[the exact lab scope](spec/NONCUSTODIAL-LAB.md).
-
-Report issues privately to maintainers in this private repository. Do not reproduce
-private application details in public dependency issues or PRs without approval.
-No license or publication grant is selected by this scaffold.
+Report issues privately to the maintainers. Do not post private details in public dependency issues or PRs.

@@ -3,7 +3,6 @@ import {CSVMultisigTapscript,MultisigTapscript,RestEmulatorProvider,RestIndexerP
 import {TaprootControlBlock} from '@scure/btc-signer/psbt.js';
 import {tapLeafHash} from '@scure/btc-signer/payment.js';
 import {assertStockWeightBudget,type StockNetworkInfo} from './network.ts';
-import type {StockBuiltSpend} from './sdk.ts';
 import {decodeStockIndexerTransaction} from './indexer.ts';
 
 export interface StockWireRequest {arkTx:string;checkpoints:string[]}
@@ -132,5 +131,5 @@ export function createStockMutinynetTransport(network:StockNetworkInfo,providers
   assertStockWeightBudget(network,stockSignedWeights(request,true));
   verifyStockCustomerSignatures(request,network.serverKey);
   return verifyStockResponse(request,await emulator.submitTx(request.arkTx,request.checkpoints),network);
- },request:(spend:StockBuiltSpend):StockWireRequest=>({arkTx:spend.arkTxPsbt,checkpoints:spend.checkpointPsbts})};
+ }};
 }

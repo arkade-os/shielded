@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "artifacts": {
-    "intent.wasm": { "size": 4878749, "sha256": "dd885eeea44894bd664d596b9c5bf0007cca64f78600525a42c846c897adc661" },
-    "intent.zkey": { "size": 12691730, "sha256": "4ad76a5ad68adef2eaa97e209abe167050f78f63d3908cc90a4e5b9343cf231b" },
-    "transition.wasm": { "size": 3077656, "sha256": "5dcf2c9b6e51ddee5e4d22e3ab461e8569533779b764e1bac2989f05ca0f6763" },
-    "transition.zkey": { "size": 12413702, "sha256": "86056409073fc3e0ac3597ec3dc8497e9bde5cb86b778ebb5876d701c04f14c6" }
-  }
-}

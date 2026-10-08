@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {base64,hex} from '@scure/base';
-import {offlineNativeFixture} from '../src/sdk/adapter.ts';
+import {offlineNativeFixture} from './fixtures/native.ts';
 import {decodeStockIndexerTransaction} from '../src/stock/indexer.ts';
 
 test('stock indexer reads the SDK base64 PSBT format and preserves transaction identity',()=>{

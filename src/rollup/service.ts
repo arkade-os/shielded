@@ -3,7 +3,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {copyFileSync,existsSync,mkdirSync,readFileSync,renameSync,rmSync,writeFileSync} from 'node:fs';
 import {freemem,totalmem} from 'node:os';
 import {join} from 'node:path';
-import {ArkAddress,Extension,RestIndexerProvider,SingleKey,Transaction,VtxoScript} from '@arkade-os/sdk';
+import {ArkAddress,Extension,RestArkProvider,RestIndexerProvider,SingleKey,Transaction,VtxoScript} from '@arkade-os/sdk';
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
@@ -12,8 +12,10 @@ import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
-import {createStockBootstrapAdapter} from '../stock/bootstrap-adapter.ts';
+import {openCustomerArkWallet} from '../stock/ark-wallet.ts';
+import {validateStockCheckpoint} from '../stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
+import {isStorageLocked} from '../storage.ts';
 import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts';
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
@@ -78,7 +80,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(o.bundled&&existsSync(join(o.bundled,'manifest.json'))){mkdirSync(keys,{mode:0o700});for(const name of ROLLUP_KEY_FILES)copyFileSync(join(o.bundled,name),join(keys,name));}
    else{
     const memory=process.constrainedMemory()||totalmem(),gib=(bytes:number)=>(bytes/1024**3).toFixed(1)+' GiB';
-    // The batch key setup holds gigabytes; refuse a small host and back off after failures rather than starve v1.
+    // The batch key setup holds gigabytes; refuse a small host and back off after failures.
     if(memory<SETUP_MEMORY_BYTES){status={...status,phase:'blocked',message:`Key setup needs ${gib(SETUP_MEMORY_BYTES)} of memory; this host has ${gib(memory)}.`};return undefined;}
     if(!setup&&setupFailures>=SETUP_ATTEMPTS){status={...status,phase:'blocked',message:`Key setup failed ${setupFailures} times; see the server log. Free memory: ${gib(freemem())}.`};return undefined;}
     if(!setup&&Date.now()>=setupRetryAt){
@@ -135,8 +137,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
 
  /** Issues the pool token and sends the head with the genesis state packet; a crash in between re-finds the head by its script. */
  async function genesis(network:StockNetworkInfo):Promise<Genesis|undefined> {
-  const adapter=await createStockBootstrapAdapter(network,identity),wallet=adapter.ark.wallet,balance=await wallet.getBalance();
-  status={...status,phase:'funding',fundingAddress:adapter.ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool.`};
+  const ark=await openCustomerArkWallet(identity,network),wallet=ark.wallet,balance=await wallet.getBalance();
+  status={...status,phase:'funding',fundingAddress:ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool.`};
   const tokenPath=join(o.directory,'genesis-token.json');
   if(!existsSync(tokenPath)){
    if(balance.available<MINIMUM_FUNDING_SATS)return undefined;
@@ -180,17 +182,18 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
 
  async function open(network:StockNetworkInfo,saved:Genesis){
   const leaves=await spec(saved.token),pool=rollupPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
-  const adapter=await createStockBootstrapAdapter(network,identity),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
+  const ark=await openCustomerArkWallet(identity,network),info=await new RestArkProvider(network.arkUrl).getInfo();
+  const checkpoint=validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
   const prover=(name:string)=>createRollupProver({wasm:join(keys,`${name}.wasm`),zkey:join(keys,`${name}.zkey`)},o.rapidsnark);
   const operator=await openRollupOperator({directory:join(o.directory,'operator'),
-   pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-spend'),programsHash:sha(leaves.batch),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(adapter.checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
-   genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint:adapter.checkpoint,
+   pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-spend'),programsHash:sha(leaves.batch),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
+   genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint,
    clientKey:readJson(join(keys,'spend.vkey.json')),hash,prover:prover('batch-spend'),transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
    onDrop:(ids,reason)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});}});
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
   await restore(operator);
-  status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:adapter.ark.address};
+  status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:ark.address};
   run(prover('spend'));
  }
 
@@ -280,7 +283,12 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     const network=await preflightStockMutinynet({...o.endpoints,...(known?{expected:{serverKey:known.serverKey,emulatorKey:known.emulatorKey}}:{})});
     const saved=known??await genesis(network);
     if(saved)await open(network,saved);
-   }catch(error){status={...status,phase:status.phase==='starting'?'blocked':status.phase,message:(error as Error).message};log((error as Error).message);}
+   }catch(error){
+    // A deploy starts the new instance before stopping the old one, which still holds the pool's journal.
+    const locked=isStorageLocked(error);
+    status=locked?{...status,message:'Waiting for the previous instance to release the pool.'}:{...status,phase:status.phase==='starting'?'blocked':status.phase,message:(error as Error).message};
+    log(status.message);
+   }
   },
   ready:()=>!!live,
   keyFile:(name:string)=>manifest&&(['spend.wasm','spend.zkey','spend.vkey.json'] as const).find(file=>file===name)?join(keys,name):undefined,

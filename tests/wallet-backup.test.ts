@@ -1,4 +1,0 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import {encryptWallet,decryptWallet} from '../app/src/wallet-backup.ts';
-test('encrypted client backups authenticate keys and reject wrong passwords or ciphertext',async()=>{const original={spend:'private-spending-value',view:'private-viewing-value'};const encrypted=await encryptWallet(original,'correct wallet passphrase');assert.ok(!JSON.stringify(encrypted).includes(original.spend));assert.deepEqual(await decryptWallet(encrypted,'correct wallet passphrase'),original);await assert.rejects(decryptWallet(encrypted,'different wallet password'),/authenticated/);const corrupt={...encrypted,ciphertext:(encrypted.ciphertext[0]==='0'?'1':'0')+encrypted.ciphertext.slice(1)};await assert.rejects(decryptWallet(corrupt,'correct wallet passphrase'),/authenticated/);});

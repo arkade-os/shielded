@@ -14,12 +14,11 @@ import {clientWitness} from '../packages/protocol/src/rollup/client.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,nullifierOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
-import {offlineNativeFixture} from '../src/sdk/adapter.ts';
-import {DEFAULT_VM_BINARY,executeVmBinary} from '../src/sdk/runtime.ts';
+import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
 import type {RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {loadRollupLeaves} from '../src/rollup/leaves.ts';
+import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
 
 const poseidon=await buildPoseidon();

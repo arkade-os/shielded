@@ -22,7 +22,7 @@ type rollupKey struct {
 }
 
 func loadRollupKey(path string, publicInputs int) (rollupKey, error) {
-	var raw stockSnarkJSVerificationKey
+	var raw snarkJSVerificationKey
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return rollupKey{}, err
@@ -33,7 +33,7 @@ func loadRollupKey(path string, publicInputs int) (rollupKey, error) {
 	return parseRollupKey(raw, publicInputs)
 }
 
-func parseRollupKey(raw stockSnarkJSVerificationKey, publicInputs int) (rollupKey, error) {
+func parseRollupKey(raw snarkJSVerificationKey, publicInputs int) (rollupKey, error) {
 	if raw.Protocol != "groth16" || raw.Curve != "bn128" || raw.NPublic != publicInputs || len(raw.IC) != publicInputs+1 {
 		return rollupKey{}, fmt.Errorf("rollup key must be Groth16 bn128 with %d public inputs", publicInputs)
 	}
@@ -67,7 +67,7 @@ func rollupG1Of(point []string, label string) (rollupG1, error) {
 	}
 	var out rollupG1
 	for i := range out {
-		v, err := stockCoordinate(point[i], stockBaseField, label)
+		v, err := fieldCoordinate(point[i], baseField, label)
 		if err != nil {
 			return rollupG1{}, err
 		}
@@ -82,12 +82,12 @@ func rollupG2Of(point [][]string, label string, negate bool) (rollupG2, error) {
 	}
 	var c [4]*big.Int
 	for i, text := range []string{point[0][0], point[0][1], point[1][0], point[1][1]} {
-		v, err := stockCoordinate(text, stockBaseField, label)
+		v, err := fieldCoordinate(text, baseField, label)
 		if err != nil {
 			return rollupG2{}, err
 		}
 		if negate && i >= 2 && v.Sign() != 0 {
-			v = new(big.Int).Sub(stockBaseField, v)
+			v = new(big.Int).Sub(baseField, v)
 		}
 		c[i] = v
 	}
@@ -135,7 +135,7 @@ func rollupProofItems(a []string, b [][]string, c []string) ([][]byte, error) {
 	}
 	var items [][]byte
 	for _, v := range []*big.Int{pa[0], pa[1], pb[0], pb[1], pb[2], pb[3], pc[0], pc[1]} {
-		items = append(items, stockScriptNumBytes(v))
+		items = append(items, scriptNumBytes(v))
 	}
 	return items, nil
 }

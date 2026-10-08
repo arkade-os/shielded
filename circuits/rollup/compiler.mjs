@@ -6,6 +6,6 @@ export function pinnedCircom(root){
  const deps=path.join(root,'.deps','native-circom-2.2.2'),metadata=JSON.parse(readFileSync(path.join(deps,'compiler.json'),'utf8'));
  const compiler=path.join(deps,metadata.file);
  if(metadata.version!=='2.2.2'||pins[metadata.file]!==metadata.sha256||createHash('sha256').update(readFileSync(compiler)).digest('hex')!==metadata.sha256)
-  throw new Error('Pinned circom 2.2.2 is missing or altered. Run: npm run stock:tools -- --compiler-only');
+  throw new Error('Pinned circom 2.2.2 is missing or altered. Run: npm run circom');
  return compiler;
 }

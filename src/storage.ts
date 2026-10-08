@@ -8,6 +8,10 @@ const keyFor = (value: string) => {
   return Buffer.from(value, 'hex');
 };
 
+/** Whether opening failed only because another process still owns the store, as during a rolling deploy. */
+export const isStorageLocked = (error: unknown): boolean =>
+  error instanceof Error && (/database is locked/i.test(error.message) || isStorageLocked(error.cause));
+
 export class EngineStore {
   private readonly db: DatabaseSync;
   private closed = false;

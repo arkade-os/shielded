@@ -1,9 +1,7 @@
 .git
 .github
 .deps
-circuits/stock/build
-stock-release
-data-stock
+circuits/rollup/build
 .recovery
 node_modules
 /build
@@ -18,8 +16,6 @@ coverage
 *.sqlite
 *.sqlite-*
 *.log
-__pycache__
-*.pyc
 .env
 .env.*
 !.env.example

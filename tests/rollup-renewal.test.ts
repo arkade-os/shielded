@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {asset,SingleKey,UnknownPacket} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
-import {offlineNativeFixture} from '../src/sdk/adapter.ts';
+import {offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
 import {renewedRollupPoolCoins,renewRollupPool,rollupRenewalDigest,rollupRenewalSignature} from '../src/rollup/renewal.ts';

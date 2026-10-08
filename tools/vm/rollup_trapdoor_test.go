@@ -74,7 +74,7 @@ func (t *rollupTrapdoor) prove(rng *rand.Rand, x []*big.Int) rollupProof {
 func (p rollupProof) items() [][]byte {
 	var out [][]byte
 	for _, v := range []*big.Int{p.A[0], p.A[1], p.B[0], p.B[1], p.B[2], p.B[3], p.C[0], p.C[1]} {
-		out = append(out, stockScriptNumBytes(v))
+		out = append(out, scriptNumBytes(v))
 	}
 	return out
 }

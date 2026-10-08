@@ -1,6 +1,0 @@
-pragma arkade ^0.1.0;
-struct G1 { int x; int y; }
-struct G2 { int xc1; int xc0; int yc1; int yc0; }
-struct Proof { G1 a; G2 b; G1 c; }
-struct IntentKey { G1 alpha; G2 betaNeg; G2 gammaNeg; G2 deltaNeg; int[26] icX; int[26] icY; }
-struct TransitionKey { G1 alpha; G2 betaNeg; G2 gammaNeg; G2 deltaNeg; int[31] icX; int[31] icY; }

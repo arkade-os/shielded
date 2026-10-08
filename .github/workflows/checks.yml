@@ -1,20 +1,9 @@
-name: Research checks
+name: Checks
 on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  reference-and-wire:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: python model/reference_model.py
-      - run: python -m unittest discover -s tests -v
-  executable-poc:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,79 +18,10 @@ jobs:
           cache-dependency-path: tools/vm/go.sum
       - run: npm ci
       - run: npm run vm:build
-      - run: npm run vm:registry:build
-      - run: npm run registry:build
-      - run: npm run test:registry
       - run: go test ./...
         working-directory: tools/vm
-      - run: node tools/plonk-comparison.mjs
       - run: npm test
       - run: npm run build
-      - run: npm run test:e2e
-  container-deployment:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        transport: [inline, compact]
-    env:
-      SHIELDED_SMOKE_TRANSPORT: ${{ matrix.transport }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - run: npm ci
-      - run: npm run test:deployment
-  client-owned-container:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - run: npm ci
-      - run: npm run test:noncustodial:deployment
-  registered-verifier-container:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - run: docker build --file Dockerfile.registry-server --tag shielded-registry:ci .
-      - run: docker run --rm --network none shielded-registry:ci --help
-  stock-proof-lifecycle:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.26.6'
-          cache-dependency-path: tools/vm/go.sum
-      - uses: actions/cache@v4
-        with:
-          path: .deps
-          key: stock-circom-2.2.2-linux-phase1-7e6a9c2e5f05
-      - run: npm ci
-      - run: npm run stock:tools
-      - run: npm run stock:compile
-      - run: npm run test:stock:witness
-      - run: npm run stock:setup -- --development-only
-      - run: npm run vm:build
-      - run: npm run test:stock:lifecycle
-      - run: npm run test:stock:baseline-ten
-      - run: npm run stock:qualify -- --local-only
-      - run: docker build --file Dockerfile.stock --tag shielded-stock:ci .
-      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-stock:ci node --import tsx src/stock/server.ts --help
   rollup-circuits:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -117,10 +37,10 @@ jobs:
           path: .deps
           key: rollup-circom-2.2.2-linux-compiler-e976b5e8
       - run: npm ci
-      - run: npm run stock:tools -- --compiler-only
+      - run: npm run circom
       - run: npm run rollup:compile
       - run: npm run test:rollup:witness
-  dokploy-installation-image:
+  dokploy-image:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -128,4 +48,5 @@ jobs:
         with:
           persist-credentials: false
       - run: docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
-      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node --experimental-eventsource --import tsx src/stock/install-server.ts --help
+      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci bin/shielded-vm -info
+      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node -e "for(const f of ['src/server.ts','bin/rapidsnark','rollup-circuits/batch-spend.r1cs','app/dist/index.html','tools/rollup-setup.mjs'])require('fs').accessSync(f)"

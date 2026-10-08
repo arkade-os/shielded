@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {hex} from '@scure/base';
 import {MultisigTapscript,Transaction,VtxoScript} from '@arkade-os/sdk';
-import {offlineNativeFixture} from '../src/sdk/adapter.ts';
+import {offlineNativeFixture} from './fixtures/native.ts';
 import {assertUniqueCustomerVtxos,customerVtxoSourceMatches} from '../src/stock/ark-wallet.ts';
 
 const txid='12'.repeat(32);

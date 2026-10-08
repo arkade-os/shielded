@@ -5,10 +5,9 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {asset,CSVMultisigTapscript,MultisigTapscript,SingleKey,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {offlineNativeFixture} from '../src/sdk/adapter.ts';
-import {DEFAULT_VM_BINARY,executeVmBinary} from '../src/sdk/runtime.ts';
+import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
-import {loadRollupLeaves} from '../src/rollup/leaves.ts';
+import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 

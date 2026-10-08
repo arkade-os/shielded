@@ -8,13 +8,13 @@ import (
 
 // rollupSnarkJSKey writes a key in snarkjs's JSON layout: G2 as
 // [[x.c0, x.c1], [y.c0, y.c1], [1, 0]], not negated.
-func rollupSnarkJSKey(k rollupKey) stockSnarkJSVerificationKey {
+func rollupSnarkJSKey(k rollupKey) snarkJSVerificationKey {
 	g1 := func(p rollupG1) []string { return []string{p[0].String(), p[1].String(), "1"} }
 	g2 := func(p rollupG2) [][]string {
-		y1, y0 := new(big.Int).Sub(stockBaseField, p[2]), new(big.Int).Sub(stockBaseField, p[3])
+		y1, y0 := new(big.Int).Sub(baseField, p[2]), new(big.Int).Sub(baseField, p[3])
 		return [][]string{{p[1].String(), p[0].String()}, {y0.String(), y1.String()}, {"1", "0"}}
 	}
-	raw := stockSnarkJSVerificationKey{Protocol: "groth16", Curve: "bn128", NPublic: len(k.IC) - 1,
+	raw := snarkJSVerificationKey{Protocol: "groth16", Curve: "bn128", NPublic: len(k.IC) - 1,
 		Alpha1: g1(k.Alpha), Beta2: g2(k.NegBeta), Gamma2: g2(k.NegGamma), Delta2: g2(k.NegDelta)}
 	for _, p := range k.IC {
 		raw.IC = append(raw.IC, g1(p))

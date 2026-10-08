@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {base64,hex} from '@scure/base';
 import {buildOffchainTx,CSVMultisigTapscript,MultisigTapscript,SingleKey,Transaction,VtxoScript} from '@arkade-os/sdk';
-import {offlineNativeFixture} from '../src/sdk/adapter.ts';
+import {offlineNativeFixture} from './fixtures/native.ts';
 import {createStockMutinynetTransport,stockSignedWeights,verifyStockResponse,type StockWireRequest,type StockSignedResponse} from '../src/stock/transport.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 const server=SingleKey.fromPrivateKey(new Uint8Array(32).fill(11)),customer=SingleKey.fromPrivateKey(new Uint8Array(32).fill(12));

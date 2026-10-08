@@ -40,7 +40,7 @@ func rollupProgram(tag byte) []byte { return bytes.Repeat([]byte{tag}, 32) }
 
 func rollupP2TR(program []byte) []byte { return append([]byte{txscript.OP_1, 0x20}, program...) }
 
-func rollupLE32(v *big.Int) []byte { return stockFieldLE(v) }
+func rollupLE32(v *big.Int) []byte { return fieldLE(v) }
 
 // rollupLeg is one slot. inSats/inAsset describe the deposit input the slot
 // brings; an asset payout's carrier sats come from the next slot.
@@ -208,9 +208,9 @@ func rollupPublicItems(x []*big.Int) [][]byte {
 		if fixed {
 			return rollupLE32(v)
 		}
-		return stockScriptNumBytes(v)
+		return scriptNumBytes(v)
 	}
-	return [][]byte{stockScriptNumBytes(x[0]), optional(x[1], false), optional(x[2], false), optional(x[3], true), optional(x[4], true)}
+	return [][]byte{scriptNumBytes(x[0]), optional(x[1], false), optional(x[2], false), optional(x[3], true), optional(x[4], true)}
 }
 
 func (b *rollupBatch) buildTx() {

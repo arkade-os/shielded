@@ -2,12 +2,11 @@ import {hkdf} from '@noble/hashes/hkdf.js';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import {secp256k1} from '@noble/curves/secp256k1.js';
-import type {WalletKeys} from './types.js';
 import {ROLLUP_FIELD} from './rollup/constants.ts';
 
 export const WALLET_KEY_DERIVATION_VERSION=1 as const;
 export const MUTINYNET_KEY_NETWORK='mutinynet' as const;
-export interface WalletKeyMaterial {keys:WalletKeys;nativeSecret:string}
+export interface WalletKeyMaterial {keys:{spend:string;view:string};nativeSecret:string}
 const BABYJUB_SUBORDER=2736030358979909402780800718157159386076813972158567259200215660948447373041n;
 const SECP256K1_ORDER=secp256k1.Point.Fn.ORDER;
 const DOMAIN='arkade-shielded:wallet-key-derivation:v1';

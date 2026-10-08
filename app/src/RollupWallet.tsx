@@ -124,7 +124,7 @@ export default function RollupWallet(){
  const shown=assetId?assetNotes[assetId]??[]:notes,balance=notes.reduce((sum,n)=>sum+n.amount,0n);
  const maxSend=[...shown].sort((a,b)=>a.amount<b.amount?1:-1).slice(0,3).reduce((sum,n)=>sum+n.amount,0n);
  const ready=pool?.phase==='ready',unit=assetId?'units':'sats';
- return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>v2 pool</span></a><a className="stock-home" href="/">Home</a></header>
+ return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Development proving keys and test funds only. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
   {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{poolError||pool?.message}</p></div></section>}
   {ready&&<>

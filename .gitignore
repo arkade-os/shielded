@@ -13,27 +13,12 @@ bin/
 .deps/
 .recovery/
 app/dist/
-validation/demo-run.*
 data/
 backups/
 private-backups/
 *.sqlite
 *.sqlite-*
 
-!circuits/build/
-circuits/build/*
-!circuits/build/intent.zkey
-!circuits/build/intent.vkey.json
-!circuits/build/transition.zkey
-!circuits/build/transition.vkey.json
-!circuits/build/intent_js/
-circuits/build/intent_js/*
-!circuits/build/intent_js/intent.wasm
-!circuits/build/intent_js/witness_calculator.js
-!circuits/build/transition_js/
-circuits/build/transition_js/*
-!circuits/build/transition_js/transition.wasm
-!circuits/build/transition_js/witness_calculator.js
 circuits/stock/build/
 data-stock/
 stock-release/

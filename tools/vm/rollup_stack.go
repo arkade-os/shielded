@@ -62,7 +62,7 @@ func (s *rollupStack) roll(name string) {
 func (s *rollupStack) rename(from, to string) { s.items[len(s.items)-1-s.depth(from)] = to }
 
 func (s *rollupStack) number(v *big.Int, as string) {
-	s.b.AddData(stockScriptNumBytes(v))
+	s.b.AddData(scriptNumBytes(v))
 	s.push(as)
 }
 

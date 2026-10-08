@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { EngineStore } from '../src/storage.ts';
+import { EngineStore, isStorageLocked } from '../src/storage.ts';
 
 const key = '11'.repeat(32);
 test('encrypted checkpoints survive reopen and fail closed on a wrong key', () => {
@@ -34,6 +34,18 @@ test('a second process owner cannot open the same engine directory', () => {
     assert.equal(child.status, 2);
     assert.match(child.stderr, /Storage is locked/);
   } finally { store?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a store held by another process is told apart from other open failures', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'shielded-held-'));
+  const store = EngineStore.open(directory, key);
+  try {
+    const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+      `import { EngineStore, isStorageLocked } from './src/storage.ts'; try { EngineStore.open(${JSON.stringify(directory)}, '${key}'); } catch (error) { console.log(isStorageLocked(error)); }`],
+    { cwd: process.cwd(), encoding: 'utf8' });
+    assert.equal(child.stdout.trim(), 'true', child.stderr);
+    assert.equal(isStorageLocked(new Error('Storage is locked or unavailable.', { cause: new Error('disk I/O error') })), false);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('an abrupt process exit releases SQLite ownership for restart', () => {

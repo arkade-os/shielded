@@ -1,17 +1,3 @@
-FROM --platform=linux/amd64 node:24-bookworm AS proof-build
-WORKDIR /app
-COPY package.json package-lock.json ./
-COPY patches/ ./patches/
-COPY tools/patch-sdk.mjs ./tools/patch-sdk.mjs
-RUN npm ci
-RUN mkdir -p circuits/stock tools packages/protocol/src
-COPY circuits/common.circom circuits/intent.circom circuits/transition.circom ./circuits/
-COPY circuits/stock/generate.mjs circuits/stock/indexed-nullifiers.circom circuits/stock/stock-transition.circom circuits/stock/stock-template.circom ./circuits/stock/
-COPY tools/prepare-stock-tools.mjs tools/stock-setup.mjs ./tools/
-COPY packages/protocol/src/stock-native.ts packages/protocol/src/types.ts ./packages/protocol/src/
-RUN npm run stock:tools && npm run stock:compile && npm run stock:setup -- --development-only \
- && mkdir -p /out && cp -a circuits/stock/build/compiled /out/stock-artifacts
-
 # The rapidsnark release binary needs GLIBCXX_3.4.32, newer than bookworm's, so build the pinned tag here.
 FROM --platform=linux/amd64 debian:bookworm AS rapidsnark-build
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates curl m4 nasm libgmp-dev libsodium-dev && rm -rf /var/lib/apt/lists/*
@@ -21,15 +7,15 @@ RUN git clone --depth 1 --branch v0.0.8 https://github.com/iden3/rapidsnark.git 
  && git submodule update --init --recursive --depth 1 \
  && ./build_gmp.sh host && make host && mkdir -p /out && install -m 0755 package/bin/prover /out/rapidsnark
 
-# v2 rollup circuits; their proving keys are generated once at runtime and kept on the volume.
+# Rollup circuits; their proving keys are generated once at runtime and kept on the volume.
 FROM --platform=linux/amd64 node:24-bookworm AS rollup-build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY patches/ ./patches/
 COPY tools/patch-sdk.mjs ./tools/patch-sdk.mjs
 RUN npm ci
-COPY tools/prepare-stock-tools.mjs ./tools/prepare-stock-tools.mjs
-RUN npm run stock:tools -- --compiler-only
+COPY tools/prepare-circom.mjs ./tools/prepare-circom.mjs
+RUN npm run circom
 COPY circuits/rollup/compiler.mjs circuits/rollup/generate.mjs circuits/rollup/lib.circom circuits/rollup/spend.circom circuits/rollup/join.circom ./circuits/rollup/
 RUN node circuits/rollup/generate.mjs spend batch-spend \
  && mkdir -p /out/rollup-circuits/spend_js /out/rollup-circuits/batch-spend_js \
@@ -51,9 +37,7 @@ WORKDIR /src/tools/vm
 COPY tools/vm/go.mod tools/vm/go.sum ./
 RUN go mod download
 COPY tools/vm/ ./
-RUN mkdir -p /out \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/shielded-vm . \
- && CGO_ENABLED=0 go test -c -trimpath -o /out/stock-onchain-qualification .
+RUN mkdir -p /out && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/shielded-vm .
 
 FROM --platform=linux/amd64 node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8792 SHIELDED_DATA_DIR=/data
@@ -63,11 +47,8 @@ COPY --from=app-build --chown=node:node /app/package.json ./package.json
 COPY --from=app-build --chown=node:node /app/src ./src
 COPY --from=app-build --chown=node:node /app/packages ./packages
 COPY --from=app-build --chown=node:node /app/app/dist ./app/dist
-COPY --from=app-build --chown=node:node /app/tools/stock-profile-gate.ts ./tools/stock-profile-gate.ts
-COPY --from=proof-build --chown=node:node /out/stock-artifacts ./stock-artifacts
-COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
-COPY --from=vm-build --chown=node:node /out/stock-onchain-qualification ./bin/stock-onchain-qualification
 COPY --from=app-build --chown=node:node /app/tools/rollup-setup.mjs ./tools/rollup-setup.mjs
+COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
 COPY --from=rollup-build --chown=node:node /out/rollup-circuits ./rollup-circuits
 COPY --from=rapidsnark-build --chown=node:node /out/rapidsnark ./bin/rapidsnark
 RUN mkdir -p /data && chown node:node /data
@@ -76,4 +57,4 @@ USER node
 EXPOSE 8792
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8792)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-CMD ["node", "--experimental-eventsource", "--import", "tsx", "src/stock/install-server.ts"]
+CMD ["node", "--experimental-eventsource", "--import", "tsx", "src/server.ts"]

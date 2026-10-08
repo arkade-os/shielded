@@ -14,12 +14,15 @@ native BTC overspending. Original output indices come from checkpoint inputs;
 an Ark transaction's checkpoint output index is always zero and cannot be
 used to look up the original output's assets.
 
-The local demo supplies synthetic genesis resources. This bridge checks their
-transaction and checkpoint consistency; it does not consult a live arkd
-indexer to establish canonical acceptance, finality, or current unspent status.
-The app's local ledger supplies that boundary for the showcase. A funded
-deployment must obtain canonical resources from arkd and use its real operator
-and emulator signing services.
+The bridge checks transaction and checkpoint consistency only; it does not
+consult an arkd indexer for acceptance, finality, or unspent status. Tests run
+spends through it with synthetic parent transactions. The service uses the
+binary only to build the pool covenant; live spends go to the public Arkade
+emulator and operator.
+
+`-rollup-leaves spec.json` prints the pool's batch, reserve and renewal leaves
+as hex. The spec names the client and batch verification keys, relative to the
+spec file, plus the batch size, pool token and operator key.
 
 ## Build and run
 
@@ -77,6 +80,6 @@ entries must belong to this PoC emulator; foreign-signing inputs fail closed.
 zero, fabricated reserve quantities, omitted assets, substituted identities,
 settlement issuance/reissuance, burns, invalid extension payouts, BTC
 overspending, negative output values, substituted or missing original
-transactions, and malformed request envelopes. The app's end-to-end tests
-exercise the compiled Program, real Groth16 proofs, SDK transaction builder,
-and this signing path together.
+transactions, and malformed request envelopes. The rollup tests check the
+covenant leaves against real snarkjs proofs, boundary and attack batches,
+renewal, and the live weight limit.

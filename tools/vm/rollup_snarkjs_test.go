@@ -24,8 +24,8 @@ type rollupSnarkJSProof struct {
 }
 
 type rollupSnarkJSFixture struct {
-	ClientKey     stockSnarkJSVerificationKey `json:"clientKey"`
-	BatchKey      stockSnarkJSVerificationKey `json:"batchKey"`
+	ClientKey     snarkJSVerificationKey `json:"clientKey"`
+	BatchKey      snarkJSVerificationKey `json:"batchKey"`
 	OldPacket     string                      `json:"oldPacket"`
 	NewPacket     string                      `json:"newPacket"`
 	PayoutProgram string                      `json:"payoutProgram"`
