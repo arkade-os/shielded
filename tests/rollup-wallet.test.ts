@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {buildPoseidon} from 'circomlibjs';
 import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {noteOf} from '../packages/protocol/src/rollup/notes.ts';
-import {ctDigestOf,openRollupNotes,parseRollupAddress,rollupAddressOf,rollupRecipientOf,sealRollupNotes,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
+import {ctDigestOf,openRollupNotes,parseRollupAddress,rollupAddressOf,rollupRecipientOf,sealRollupNotes,viewEcdh,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
 
 const poseidon=await buildPoseidon();
@@ -36,4 +36,14 @@ test('each recipient opens only its own output, and the commitment checks out',a
  const tampered=record.slice();tampered[40]!^=1;
  assert.deepEqual(await openRollupNotes(tampered,bob.viewSecret),[undefined,undefined]);
  assert.notEqual(ctDigestOf(record),ctDigestOf(tampered));
+});
+
+test('records open the same through WebCrypto X25519 as through the pure-JS curve, bad keys included',async()=>{
+ const keys=deriveRollupKeyMaterial('44'.repeat(32),'mutinynet'),poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const me=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret),record=await sealRollupNotes([me,me],[{amount:5n,asset:0n,rho:9n},{amount:0n,asset:0n,rho:10n}]);
+ const fast=await viewEcdh(keys.viewSecret);
+ assert.deepEqual(await openRollupNotes(record,keys.viewSecret,fast),await openRollupNotes(record,keys.viewSecret));
+ assert.deepEqual((await openRollupNotes(record,keys.viewSecret,fast))[0],{amount:5n,asset:0n,rho:9n});
+ const lowOrder=Uint8Array.from(record);lowOrder.fill(0,0,32);
+ assert.deepEqual(await openRollupNotes(lowOrder,keys.viewSecret,fast),[undefined,undefined],'a low-order ephemeral key opens nothing');
 });

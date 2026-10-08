@@ -15,7 +15,7 @@ import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/a
 import {checkSigningRequest,DUST,pickNote,rollupApi,shieldPlan,signDeposit,spendBody,syncAccount,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
-const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1';
+const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 // The pool refuses deposit coins that expire within 24 hours; the extra hour covers the batch wait.
 const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000;
@@ -43,7 +43,7 @@ export default function RollupWallet(){
  const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false),hashRef=useRef<Hash|undefined>(undefined);
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined),arkRef=useRef<Ark|undefined>(undefined),retryAt=useRef(0),used=useRef(new Set<string>());
 
- useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);setSecret(fresh);}},[secret]);
+ useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);localStorage.setItem(BORN,'new');setSecret(fresh);}},[secret]);
  useEffect(()=>{
   let stop=false;
   // Keeps polling after the wallet opens: listings and the batch count change while the page stays up.
@@ -131,7 +131,8 @@ export default function RollupWallet(){
   let stop=false,timer:ReturnType<typeof setTimeout>|undefined,arkAt=0;
   void (async()=>{
    const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeyMaterial(secret,'mutinynet');
-   hashRef.current=hash;account.current=new RollupAccount(hash,keys);self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
+   if(localStorage.getItem(BORN)==='new')localStorage.setItem(BORN,String(poolRef.current?.pool?.batches??0));
+   hashRef.current=hash;account.current=new RollupAccount(hash,keys,{frontier:true,bornAt:Number(localStorage.getItem(BORN)??0)||0});self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
    const loop=async()=>{
     if(stop)return;
     try{
@@ -183,9 +184,10 @@ export default function RollupWallet(){
  const revealEntry=(key:string,e:HistoryEntry)=>{
   let to:string=rollupAddressOf(self.current!),notes:DisclosedNote[];
   if(e.kind==='send'){
-   const parts=e.spent.map(nf=>sent[String(nf)]).filter(p=>p?.note);if(!parts.length)return;
-   to=parts[0]!.to;const owner=parseRollupAddress(to).owner;
-   notes=parts.map(p=>{const note={amount:BigInt(p!.note!.amount),asset:BigInt(p!.note!.asset),rho:BigInt(p!.note!.rho)};return {index:account.current!.locate(note,owner),...note};}).filter(n=>n.index>=0);
+   // A payment's note for the recipient is output 0 of the slot that spent ours.
+   const parts=e.spent.map((nf,i)=>({sent:sent[String(nf)],index:e.batch*32+2*e.slots[i]!})).filter(p=>p.sent?.note);if(!parts.length)return;
+   to=parts[0]!.sent!.to;
+   notes=parts.map(({sent:p,index})=>({index,amount:BigInt(p!.note!.amount),asset:BigInt(p!.note!.asset),rho:BigInt(p!.note!.rho)}));
   }else notes=e.created.map(n=>({index:n.index,amount:n.amount,asset:n.asset,rho:n.rho}));
   if(notes.length)setRevealed(r=>({...r,[key]:`${location.origin}/verify#${encodeDisclosure({v:1,to,notes})}`}));
  };
@@ -247,7 +249,7 @@ export default function RollupWallet(){
    {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}
    {secret&&self.current&&<div className="stock-address"><small>VIEW KEY · READ ONLY</small>{viewKey?<><Copyable value={viewKey}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${viewKey}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</div>}
    <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
-   <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
+   <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));localStorage.removeItem(BORN);location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
    {restoreError&&<p className="stock-blocked">{restoreError}</p>}
   </details>
  </main></div>;

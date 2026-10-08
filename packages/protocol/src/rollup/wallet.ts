@@ -46,11 +46,24 @@ export async function sealRollupNotes(to: readonly [RollupRecipient, RollupRecip
  return record;
 }
 
+export type Ecdh = (ephemeralPublic: Uint8Array) => Promise<Uint8Array>;
+/** X25519 under this view secret: WebCrypto where the engine has it, many times faster for a full scan, else the pure-JS curve. */
+export async function viewEcdh(viewSecret: Uint8Array): Promise<Ecdh> {
+ const slow: Ecdh = async pub => x25519.getSharedSecret(viewSecret, pub);
+ try {
+  // RFC 8410 PKCS#8 wrapping of a raw X25519 private key.
+  const key = await crypto.subtle.importKey('pkcs8', Uint8Array.from([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20, ...viewSecret]), { name: 'X25519' }, false, ['deriveBits']);
+  const fast: Ecdh = async pub => new Uint8Array(await crypto.subtle.deriveBits({ name: 'X25519', public: await crypto.subtle.importKey('raw', pub.slice(), { name: 'X25519' }, false, []) } as unknown as AlgorithmIdentifier, key, 256));
+  const probe = x25519.getPublicKey(x25519.utils.randomSecretKey()), [a, b] = await Promise.all([fast(probe), slow(probe)]);
+  return a.length === b.length && a.every((byte, i) => byte === b[i]) ? fast : slow;
+ } catch { return slow; }
+}
+
 /** The outputs this view key opens; the caller still checks each against its commitment. */
-export async function openRollupNotes(record: Uint8Array, viewSecret: Uint8Array): Promise<(RollupNote | undefined)[]> {
+export async function openRollupNotes(record: Uint8Array, viewSecret: Uint8Array, ecdh?: Ecdh): Promise<(RollupNote | undefined)[]> {
  if (record.length !== ROLLUP_RECORD_BYTES) return [undefined, undefined];
  let shared: Uint8Array;
- try { shared = x25519.getSharedSecret(viewSecret, record.subarray(0, 32)); } catch { return [undefined, undefined]; }
+ try { shared = ecdh ? await ecdh(record.subarray(0, 32)) : x25519.getSharedSecret(viewSecret, record.subarray(0, 32)); } catch { return [undefined, undefined]; }
  return Promise.all([0, 1].map(async i => {
   const { tag, key } = await noteKey(shared, i);
   if (record[32 + i * SEALED] !== tag) return undefined;

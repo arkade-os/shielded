@@ -2,15 +2,16 @@ import { hex } from '@scure/base';
 import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD } from './constants.ts';
 import { clientWitness, type ClientWitness } from './client.ts';
 import { destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
+import { NoteFrontier } from './frontier.ts';
 import { RollupState, type BatchSlot } from './state.ts';
-import { ctDigestOf, openRollupNotes, sealRollupNotes, type RollupNote, type RollupRecipient } from './wallet.ts';
+import { ctDigestOf, openRollupNotes, sealRollupNotes, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
 
 /** A slot as the operator publishes it: decimal field elements plus the hex note record. */
 export interface PublishedSlot { root: string; nullifiers: string[]; commitments: [string, string]; ctDigest: string; groupId: string; groupSize: number; publics?: string[]; ciphertext?: string }
 export interface PublishedBatch { kind: 'spend'; slots: PublishedSlot[]; txid?: string; at?: number }
 export interface OwnedNote extends RollupNote { index: number; nullifier: bigint }
 /** One slot, or one whole group, that moved this wallet's notes. Amounts are per asset field, BTC being 0. */
-export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint }
+export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint; slots: number[] }
 export interface RollupKeys { spendSecret: bigint; viewSecret: Uint8Array }
 export interface SpendRequest { asset?: bigint; input?: OwnedNote; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { spendSecret: bigint; rho: bigint } }
 export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; change: bigint }
@@ -18,7 +19,10 @@ export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; ch
 export const randomField = () => BigInt('0x' + hex.encode(crypto.getRandomValues(new Uint8Array(32)))) % ROLLUP_FIELD;
 export const slotOf = (s: PublishedSlot): BatchSlot => ({ root: BigInt(s.root), nullifiers: s.nullifiers.map(BigInt), commitments: [BigInt(s.commitments[0]), BigInt(s.commitments[1])], ctDigest: BigInt(s.ctDigest), groupId: BigInt(s.groupId), groupSize: s.groupSize });
 
-/** Replays every published batch into a full state replica and keeps the unspent notes this key opens. */
+/**
+ * Replays every published batch and keeps the unspent notes this key opens. The full replica can also build a batch; a wallet
+ * only needs the note frontier, which keeps sync fast at scale.
+ */
 export class RollupAccount {
  readonly state: RollupState;
  readonly owner: bigint;
@@ -26,26 +30,38 @@ export class RollupAccount {
  readonly history: HistoryEntry[] = [];
  /** Every published batch txid, so the wallet can tell pool payouts from outside funding. */
  readonly txids = new Set<string>();
- constructor(private readonly hash: Hash, private readonly keys: RollupKeys) {
+ private readonly frontier?: NoteFrontier;
+ private blocks = 0;
+ private ecdh?: Promise<Ecdh>;
+ private readonly bornAt: number;
+ /** bornAt: the first batch that can hold this wallet's notes; a new wallet skips opening every record before it. */
+ constructor(private readonly hash: Hash, private readonly keys: RollupKeys, options: { frontier?: boolean; bornAt?: number } = {}) {
+  this.bornAt = options.bornAt ?? 0;
   this.state = RollupState.genesis(hash);
+  if (options.frontier) this.frontier = new NoteFrontier(hash);
   this.owner = ownerOf(hash, ROLLUP_DOMAIN, keys.spendSecret);
  }
 
  async apply(batch: PublishedBatch): Promise<OwnedNote[]> {
-  const base = this.state.noteCount, number = this.state.batchCount;
+  const number = this.batchCount, base = number * 32;
   if (batch.txid) this.txids.add(batch.txid);
-  this.state.apply(batch.kind, batch.slots.map(slotOf));
+  if (!this.frontier) this.state.apply(batch.kind, batch.slots.map(slotOf));
   const spent = batch.slots.map(slot => slot.nullifiers.flatMap(nf => { const note = this.owned.get(BigInt(nf)); this.owned.delete(BigInt(nf)); return note ? [note] : []; }));
   const created: OwnedNote[][] = batch.slots.map(() => []);
   for (const [i, slot] of batch.slots.entries()) {
-   if (!slot.ciphertext) continue;
-   const opened = await openRollupNotes(hex.decode(slot.ciphertext), this.keys.viewSecret);
+   if (!slot.ciphertext || number < this.bornAt) continue;
+   const opened = await openRollupNotes(hex.decode(slot.ciphertext), this.keys.viewSecret, await (this.ecdh ??= viewEcdh(this.keys.viewSecret)));
    opened.forEach((note, j) => {
     // A record can claim anything; only a note whose commitment is in the tree under our owner is ours.
     if (!note || note.amount === 0n || noteOf(this.hash, ROLLUP_DOMAIN, note.amount, note.asset, this.owner, note.rho) !== BigInt(slot.commitments[j])) return;
     const mine = { ...note, index: base + 2 * i + j, nullifier: nullifierOf(this.hash, ROLLUP_DOMAIN, this.keys.spendSecret, note.rho) };
     this.owned.set(mine.nullifier, mine); created[i]!.push(mine);
    });
+  }
+  if (this.frontier) {
+   this.frontier.append(batch.slots.flatMap(slot => slot.commitments.map(BigInt)), created.flat().map(n => n.index - base));
+   for (const note of spent.flat()) this.frontier.untrack(note.index);
+   this.blocks++;
   }
   for (let i = 0; i < batch.slots.length;) {
    let end = i + 1;
@@ -64,7 +80,7 @@ export class RollupAccount {
    for (const { asset, amount } of items) totals.set(asset, (totals.get(asset) ?? 0n) + amount);
    return [...totals].filter(([, amount]) => amount > 0n).map(([asset, amount]) => ({ asset, amount }));
   };
-  const base = { batch: number, ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), spent: spent.map(n => n.nullifier), created };
+  const base = { batch: number, slots: Array.from({ length: to - from }, (_, i) => from + i), ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), spent: spent.map(n => n.nullifier), created };
   if (created.length && legs.some(p => (p[1] ?? 0n) > 0n)) return { kind: 'shield', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[1] ?? 0n }))) };
   const payout = legs.find(p => (p[2] ?? 0n) > 0n);
   if (spent.length && payout) return { kind: 'withdraw', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[2] ?? 0n }))), destination: payout[4] ?? 0n };
@@ -75,18 +91,22 @@ export class RollupAccount {
   return created.length ? { kind: 'receive', ...base, amounts: sum(created.map(n => ({ asset: n.asset, amount: n.amount }))) } : undefined;
  }
 
+ get batchCount(): number { return this.frontier ? this.blocks : this.state.batchCount; }
+ /** The root new spends prove against: the note tree after the latest batch, 0 before the first. */
+ latestRoot(): bigint { return this.frontier ? (this.blocks ? this.frontier.root() : 0n) : this.state.latestRoot(); }
  notes(asset = BTC_ASSET): OwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.index - b.index); }
  balance(asset = BTC_ASSET): bigint { return this.notes(asset).reduce((sum, n) => sum + n.amount, 0n); }
  /** A note's leaf index, found by its commitment; -1 until its batch is replayed. */
  locate(note: RollupNote, owner: bigint): number {
+  if (this.frontier) throw new Error('Locating a note by scanning needs the full replica.');
   const commitment = noteOf(this.hash, ROLLUP_DOMAIN, note.amount, note.asset, owner, note.rho);
   for (let k = 0; k < this.state.noteCount; k++) if (this.state.notes.node(0, k) === commitment) return k;
   return -1;
  }
 
  spend(request: SpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<BuiltSpend> {
-  const path = request.input ? this.state.notes.path(request.input.index) : undefined;
-  return buildRollupSpend(this.hash, { root: this.state.latestRoot(), spendSecret: this.keys.spendSecret, self, request, ...(path ? { path } : {}), ...(group ? { group } : {}) }, random);
+  const path = request.input ? (this.frontier ? this.frontier.path(request.input.index) : this.state.notes.path(request.input.index)) : undefined;
+  return buildRollupSpend(this.hash, { root: this.latestRoot(), spendSecret: this.keys.spendSecret, self, request, ...(path ? { path } : {}), ...(group ? { group } : {}) }, random);
  }
 
  /**

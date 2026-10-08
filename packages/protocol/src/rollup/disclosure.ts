@@ -1,7 +1,7 @@
 import { base64urlnopad, bech32m, hex } from '@scure/base';
 import { ROLLUP_DOMAIN } from './constants.ts';
 import { noteOf, outputRhoOf, type Hash } from './notes.ts';
-import { fromLe, le, openRollupNotes, parseRollupAddress } from './wallet.ts';
+import { fromLe, le, openRollupNotes, parseRollupAddress, viewEcdh } from './wallet.ts';
 import type { BuiltSpend, PublishedBatch } from './account.ts';
 
 export interface DisclosedNote { index: number; amount: bigint; asset: bigint; rho: bigint }
@@ -45,10 +45,10 @@ export function parseViewKey(key: string): { owner: bigint; viewSecret: Uint8Arr
 export interface IncomingNote { batch: number; txid?: string; at?: number; index: number; amount: bigint; asset: bigint; deposit: boolean }
 /** Every note a view key opens under its owner, in order: deposits, payments and change alike. Each batch appends 32 leaves. */
 export async function incomingNotes(hash: Hash, batches: readonly PublishedBatch[], key: { owner: bigint; viewSecret: Uint8Array }, first = 0): Promise<IncomingNote[]> {
- const found: IncomingNote[] = [];
+ const found: IncomingNote[] = [], ecdh = await viewEcdh(key.viewSecret);
  for (const [b, batch] of batches.entries()) for (const [i, slot] of batch.slots.entries()) {
   if (!slot.ciphertext) continue;
-  const opened = await openRollupNotes(hex.decode(slot.ciphertext), key.viewSecret);
+  const opened = await openRollupNotes(hex.decode(slot.ciphertext), key.viewSecret, ecdh);
   opened.forEach((note, j) => {
    if (!note || note.amount === 0n || String(noteOf(hash, ROLLUP_DOMAIN, note.amount, note.asset, key.owner, note.rho)) !== slot.commitments[j]) return;
    found.push({ batch: first + b, ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), index: (first + b) * 32 + 2 * i + j, amount: note.amount, asset: note.asset, deposit: (slot.publics?.[1] ?? '0') !== '0' });

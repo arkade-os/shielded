@@ -116,3 +116,38 @@ test('each wallet keeps a history of what moved its notes, with the batch that m
  assert.deepEqual(alice.history[1]!.spent,[alice.history[0]!.created[0]!.nullifier],'a send names the notes it spent');
  assert.ok(bob.txids.has('aa'.repeat(31)+'03')&&bob.txids.size===4,'every batch txid is known, mine or not');
 });
+
+test('a wallet account that keeps only the note frontier agrees with the full replica on roots, notes, history and paths',async()=>{
+ const full=new RollupAccount(hash,aliceKeys),light=new RollupAccount(hash,aliceKeys,{frontier:true}),program=hex.decode('ad'.repeat(32));
+ const withLegs=(s:BuiltSpend)=>({...published(s),groupId:String(s.witness.slot.groupId),groupSize:s.witness.slot.groupSize,publics:s.witness.publicSignals.map(String)});
+ const apply=async(spends:BuiltSpend[])=>{
+  const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const batch={kind:'spend' as const,slots:[...spends,...padding].map(withLegs)};
+  await full.apply(batch);await light.apply(batch);
+  assert.equal(light.latestRoot(),full.latestRoot());assert.equal(light.batchCount,full.batchCount);
+ };
+ assert.equal(light.latestRoot(),full.latestRoot(),'both start from the same genesis root');
+ await apply([await full.spend({deposit:1000n},aliceTo)]);
+ await apply(await full.pay(bobTo,300n,aliceTo));
+ for(let i=0;i<5;i++)await apply([]);
+ const note=light.notes()[0]!;
+ const out=await light.spend({input:note,withdraw:330n,program},aliceTo);
+ assert.deepEqual(out.witness.input.path,full.state.notes.path(note.index),'the frontier proves the note with the replica\'s path');
+ assert.equal(out.witness.slot.root,full.latestRoot());
+ await apply([out]);
+ assert.deepEqual(light.notes(),full.notes());
+ assert.deepEqual(light.history.map(e=>[e.kind,e.batch,e.slots]),full.history.map(e=>[e.kind,e.batch,e.slots]));
+});
+
+test('a wallet born at a later batch skips opening the records before it, and still tracks the tree',async()=>{
+ const full=new RollupAccount(hash,aliceKeys),young=new RollupAccount(hash,aliceKeys,{frontier:true,bornAt:1});
+ const apply=async(spends:BuiltSpend[])=>{
+  const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const batch={kind:'spend' as const,slots:[...spends,...padding].map(published)};
+  await full.apply(batch);await young.apply(batch);
+ };
+ await apply([await full.spend({deposit:400n},aliceTo)]);
+ await apply([await full.spend({deposit:600n},aliceTo)]);
+ assert.deepEqual(young.notes().map(n=>n.amount),[600n],'the note from before its birth is never opened');
+ assert.equal(young.latestRoot(),full.latestRoot());
+});

@@ -27,9 +27,9 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
 
 export async function syncAccount(account:RollupAccount,api:Api=rollupApi){
  for(;;){
-  const page=await api<{total:number;batches:PublishedBatch[]}>(`/batches?from=${account.state.batchCount}&limit=50`);
+  const page=await api<{total:number;batches:PublishedBatch[]}>(`/batches?from=${account.batchCount}&limit=50`);
   for(const batch of page.batches)await account.apply(batch);
-  if(account.state.batchCount>=page.total||!page.batches.length)return;
+  if(account.batchCount>=page.total||!page.batches.length)return;
  }
 }
 
