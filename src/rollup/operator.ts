@@ -44,6 +44,10 @@ export interface RollupOperatorOptions {
  transport:RollupTransport;
  signDeposits(request:StockWireRequest,spends:RollupSpend[]):Promise<StockWireRequest|undefined>;
  depositFloorMs?:number;
+ /** The network's dust limit; arkd refuses a batch whose BTC payout is below it. */
+ dustSats?:number;
+ /** Told which admitted spends left without a batch, and why, so their owners can rebuild them. */
+ onDrop?(ids:string[],reason:string):void;
  weightLimit?:number;
  now?:()=>number;
 }
@@ -133,6 +137,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   if(state.windowIndex(root)<0)throw new RollupRejection('stale-root','The spend proves against a root outside the window.');
   if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...spend.slot})!==pub)throw new Error('The spend statement does not match its opening.');
   if((withdraw>0n)!==!!spend.program||(spend.program?destinationFieldOf(spend.program):0n)!==destination)throw new Error('The withdrawal destination does not match its P2TR program.');
+  if(withdraw>0n&&assetField===0n&&withdraw<BigInt(o.dustSats??330))throw new Error(`A withdrawal pays at least the ${o.dustSats??330}-sat dust limit.`);
   if((assetField!==0n)!==!!spend.asset||(spend.asset?assetFieldOfId(spend.asset):0n)!==assetField)throw new Error('The boundary asset does not match its Arkade asset id.');
   if(spend.coin&&deposit===0n)throw new Error('A deposit coin needs a deposit leg.');
   if(spend.ciphertext&&(spend.ciphertext.length!==ROLLUP_RECORD_BYTES||ctDigestOf(spend.ciphertext)!==ctDigest))throw new Error('The note record does not match the slot digest.');
@@ -148,10 +153,16 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   }catch(error){pending=pending.filter(s=>s!==admitted);throw error;}
  };
 
+ const dropped=(list:Iterable<RollupSpend>,reason:string)=>{const ids=[...list].map(s=>s.id);if(ids.length)o.onDrop?.(ids,reason);};
  const run=async():Promise<RollupTick>=>{
   const live=(s:RollupSpend)=>state.windowIndex(s.slot.root)>=0&&!s.slot.nullifiers.some(nf=>state.nullifiers.has(nf));
+  dropped(pending.filter(s=>!live(s)),'Its root left the 64-batch window or its note is already spent.');
   pending=pending.filter(live);padding=padding.filter(live);
-  for(const s of pending.filter(s=>s.coin))if(o.transport.fresh&&!await o.transport.fresh(depositFacts(s),o.depositFloorMs??72*3600_000)){const drop=unitsOf(pending,p=>p===s);pending=pending.filter(p=>!drop.has(p));}
+  const floorMs=o.depositFloorMs??72*3600_000;
+  for(const s of pending.filter(s=>s.coin))if(o.transport.fresh&&!await o.transport.fresh(depositFacts(s),floorMs)){
+   const drop=unitsOf(pending,p=>p===s);pending=pending.filter(p=>!drop.has(p));
+   dropped(drop,`The deposit coin is spent, changed, or expires within ${Math.round(floorMs/3600_000)} hours.`);
+  }
   let taken:RollupSpend[]=[];
   const selection=selectRollupBatch(pending,now(),count=>{if(padding.length<count)throw new Error('padding');taken=padding.splice(0,count);return taken;},coinCap);
   if(!selection)return undefined;
@@ -178,7 +189,8 @@ export async function openRollupOperator(o:RollupOperatorOptions){
     if(refused.length){
      const drop=unitsOf(inflight,s=>refused.includes(s));
      inflight=inflight.filter(s=>!drop.has(s));
-     throw new Error(tampered?'The signed batch is not the batch the operator built; its deposits are dropped.':'A depositor did not sign; the batch is rebuilt without their deposits.');
+     const reason=tampered?'The signed batch is not the batch the operator built; its deposits are dropped.':'A depositor did not sign; the batch is rebuilt without their deposits.';
+     dropped(drop,reason);throw new Error(reason);
     }
     verifyStockCustomerSignatures(signed!,serverKeyHex,firstDeposit);request=signed!;
    }
@@ -196,7 +208,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   }catch(error){
    if(submitted&&journal.status().pending)return {blocked:String((error as Error).message)};
    if(applied)state.undoLast();
-   padding.unshift(...inflightPadding);if(!evict)pending.unshift(...inflight);
+   padding.unshift(...inflightPadding);if(!evict)pending.unshift(...inflight);else dropped(inflight,'The batch builder refused it: '+(error as Error).message);
    inflight=[];inflightPadding=[];
    throw error;
   }
@@ -238,6 +250,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
      if(r.abandoned){
       if(state.batchCount>journal.status().archive.batches)state.undoLast();
       const refused=unitsOf(inflight,s=>!!s.coin);
+      dropped(refused,'The network kept refusing the batch with this deposit.');
       padding.unshift(...inflightPadding);pending.unshift(...inflight.filter(s=>!refused.has(s)));
       inflight=[];inflightPadding=[];sent=undefined;
       return {blocked:'A submitted batch was abandoned; its plan is kept in case it lands.'};

@@ -20,7 +20,7 @@ import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.t
 import type {RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {loadRollupLeaves} from '../src/rollup/leaves.ts';
-import {openRollupOperator,type RollupArchive,type RollupTransport} from '../src/rollup/operator.ts';
+import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
@@ -146,9 +146,9 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
 });
 
 test('a deposit that is never signed is dropped and the rest of the batch goes through',async(t)=>{
- const w=await world();
+ const w=await world(),drops:[string[],string][]=[];
  let refuse=true;
- const op=await w.open(t,{signDeposits:async(request:StockWireRequest,spends:RollupSpend[])=>refuse?undefined:w.options.signDeposits(request,spends)});
+ const op=await w.open(t,{signDeposits:async(request:StockWireRequest,spends:RollupSpend[])=>refuse?undefined:w.options.signDeposits(request,spends),onDrop:(ids:string[],reason:string)=>drops.push([ids,reason])});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
  op.addPadding(await pads(op.state.latestRoot(),10));
@@ -156,6 +156,8 @@ test('a deposit that is never signed is dropped and the rest of the batch goes t
  await assert.rejects(op.tick(),/did not sign/);
  assert.equal(op.state.batchCount,0);
  assert.equal(op.pending(),1);
+ assert.deepEqual(drops.map(([ids])=>ids),[['deposit']]);
+ assert.match(drops[0]![1],/did not sign/);
  refuse=false;
  assert.equal(((await op.tick()) as {batch:number}).batch,0);
  assert.equal(op.status().archive.head.value,100_330);
@@ -329,6 +331,26 @@ test('admission refuses forged statements, proofs and boundary legs, and double 
  await assert.rejects(op.submit({...payout,program:new Uint8Array(32).fill(2)}),/destination/);
  await op.submit(good);
  await assert.rejects(op.submit({...good,id:'again'}),/already spent or pending/);
+});
+
+test('a deposit coin that is no longer fresh is dropped before the batch, with the reason',async(t)=>{
+ const w=await world(),drops:[string[],string][]=[],floors:number[]=[];
+ const op=await w.open(t,{transport:{...w.transport,fresh:async(_coin:RollupDepositFacts,floorMs:number)=>{floors.push(floorMs);return false;}},depositFloorMs:86_400_000,onDrop:(ids:string[],reason:string)=>drops.push([ids,reason])});
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(floors,[86_400_000]);
+ assert.deepEqual(drops.map(([ids])=>ids),[['deposit']]);
+ assert.match(drops[0]![1],/expires/);
+});
+
+test('admission refuses a payout below the network dust limit, which arkd would reject',async(t)=>{
+ const w=await world(),op=await w.open(t,{dustSats:330}),root=op.state.latestRoot(),program=new Uint8Array(32).fill(0x54);
+ await assert.rejects(op.submit(await toySpend('small',root,{withdraw:300n,program})),/dust/);
+ await op.submit(await toySpend('enough',root,{withdraw:330n,program}));
+ assert.deepEqual(op.pendingIds(),['enough']);
 });
 
 test('a note record is admitted only under its digest and is published with its batch',async(t)=>{
