@@ -5,6 +5,7 @@ import {base64,hex} from '@scure/base';
 import {ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupState,type BatchSlot} from '../../packages/protocol/src/rollup/state.ts';
+import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {selectRollupBatch,type RollupSpend} from './batcher.ts';
@@ -13,7 +14,7 @@ import {verifyRollupProof,type RollupProver} from './prover.ts';
 
 export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHex:string}
 export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
-interface RecordSlot {root:string;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[]}
+interface RecordSlot {root:string;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[];ciphertext?:string}
 /** One accepted batch as published for data availability. */
 export interface RollupRecord {kind:'spend';slots:RecordSlot[]}
 interface RollupPlan {version:1;request:StockWireRequest;record:RollupRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
@@ -52,7 +53,7 @@ export type RollupTick={txid:string;batch:number}|{blocked:string}|undefined;
 export const ROLLUP_RESEND_GRACE_MS=120_000;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const slotOf=(s:RecordSlot):BatchSlot=>({root:BigInt(s.root),nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
-const recordOf=(spends:readonly RollupSpend[]):RollupRecord=>({kind:'spend',slots:spends.map(({slot,publics})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String)}))});
+const recordOf=(spends:readonly RollupSpend[]):RollupRecord=>({kind:'spend',slots:spends.map(({slot,publics,ciphertext})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})}))});
 
 const sameTx=(left:string,right:string)=>{const [a,b]=[left,right].map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));return a.id===b.id&&hex.encode(a.unsignedTx)===hex.encode(b.unsignedTx);};
 /** Signatures alone say nothing about which coins they cover, so the signed batch must be the built one, byte for byte. */
@@ -134,6 +135,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   if((withdraw>0n)!==!!spend.program||(spend.program?destinationFieldOf(spend.program):0n)!==destination)throw new Error('The withdrawal destination does not match its P2TR program.');
   if((assetField!==0n)!==!!spend.asset||(spend.asset?assetFieldOfId(spend.asset):0n)!==assetField)throw new Error('The boundary asset does not match its Arkade asset id.');
   if(spend.coin&&deposit===0n)throw new Error('A deposit coin needs a deposit leg.');
+  if(spend.ciphertext&&(spend.ciphertext.length!==ROLLUP_RECORD_BYTES||ctDigestOf(spend.ciphertext)!==ctDigest))throw new Error('The note record does not match the slot digest.');
   if(spend.asset&&!journal.status().archive.reserves[spend.asset])throw new Error(`No reserve for asset ${spend.asset}.`);
   const admitted={...spend,receivedAt:now()};
   pending.push(admitted);
@@ -217,6 +219,8 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   state,submit,
   addPadding:(spends:RollupSpend[])=>{padding.push(...spends);},
   pending:()=>pending.length,
+  pendingIds:()=>[...pending,...inflight].map(s=>s.id),
+  padding:()=>padding.length,
   status:()=>journal.status(),
   /** Adopts the head and reserves a renewal round moved; their state packet is unchanged. */
   relocate:(moved:Pick<RollupArchive,'head'|'reserves'>)=>journal.updateArchive(archive=>({...archive,head:moved.head,reserves:moved.reserves})),

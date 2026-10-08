@@ -13,6 +13,7 @@ import {BTC_ASSET,ROLLUP_DOMAIN,ROLLUP_FIELD} from '../packages/protocol/src/rol
 import {clientWitness} from '../packages/protocol/src/rollup/client.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,nullifierOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
+import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {offlineNativeFixture} from '../src/sdk/adapter.ts';
 import {DEFAULT_VM_BINARY,executeVmBinary} from '../src/sdk/runtime.ts';
 import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
@@ -33,7 +34,7 @@ const le32=(value:bigint)=>Array.from({length:32},(_,i)=>Number((value>>BigInt(8
 let counter=5000n;
 const fresh=()=>++counter;
 
-interface Leg {deposit?:bigint;withdraw?:bigint;asset?:string;program?:Uint8Array;coin?:RollupCoin&{assetAmount?:bigint};groupId?:bigint;groupSize?:number}
+interface Leg {deposit?:bigint;withdraw?:bigint;asset?:string;program?:Uint8Array;coin?:RollupCoin&{assetAmount?:bigint};groupId?:bigint;groupSize?:number;ctDigest?:bigint}
 const spendOf=async(id:string,w:ReturnType<typeof clientWitness>,root2:unknown,leg:Leg):Promise<Omit<RollupSpend,'receivedAt'>>=>{
  const [pub,deposit,withdraw,boundaryAsset,destination]=w.publicSignals.map(String);
  const {proof}=await snarkjs.groth16.fullProve({pub,deposit,withdraw,boundaryAsset,destination,w:String(root2)},toy('covenant-client.wasm'),toy('covenant-client.zkey'));
@@ -43,7 +44,7 @@ const spendOf=async(id:string,w:ReturnType<typeof clientWitness>,root2:unknown,l
 const witnessOf=(root:bigint,leg:Leg,input:{spendSecret:bigint;rho:bigint},groupId:bigint,groupSize:number)=>
  clientWitness(hash,{domain:ROLLUP_DOMAIN,root,asset:leg.asset?assetFieldOfId(leg.asset):BTC_ASSET,inputs:[{amount:leg.withdraw??0n,...input,index:0,path:Array(32).fill(0n)}],
   outputs:[{amount:leg.deposit??0n,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit:leg.deposit??0n,withdraw:leg.withdraw??0n,
-  destination:leg.program?destinationFieldOf(leg.program):0n,ctDigest:fresh(),groupId,groupSize});
+  destination:leg.program?destinationFieldOf(leg.program):0n,ctDigest:leg.ctDigest??fresh(),groupId,groupSize});
 
 /** A toy client proof for a real Poseidon statement: the toy circuit only needs pub = w^2. */
 async function toySpend(id:string,root:bigint,leg:Leg={}):Promise<Omit<RollupSpend,'receivedAt'>> {
@@ -328,4 +329,21 @@ test('admission refuses forged statements, proofs and boundary legs, and double 
  await assert.rejects(op.submit({...payout,program:new Uint8Array(32).fill(2)}),/destination/);
  await op.submit(good);
  await assert.rejects(op.submit({...good,id:'again'}),/already spent or pending/);
+});
+
+test('a note record is admitted only under its digest and is published with its batch',async(t)=>{
+ const w=await world(),op=await w.open(t),root=op.state.latestRoot();
+ const record=Uint8Array.from({length:ROLLUP_RECORD_BYTES},(_,i)=>i),digest=ctDigestOf(record);
+ const sealed=await toySpend('sealed',root,{ctDigest:digest});
+ await assert.rejects(op.submit({...sealed,ciphertext:record.map(b=>b^1)}),/note record/);
+ await assert.rejects(op.submit({...sealed,ciphertext:record.subarray(1)}),/note record/);
+ await op.submit({...sealed,ciphertext:record});
+ assert.deepEqual(op.pendingIds(),['sealed']);
+ op.addPadding(await pads(root,10));
+ w.clock.now=10_000;
+ assert.equal(((await op.tick()) as {batch:number}).batch,0);
+ assert.deepEqual(op.pendingIds(),[]);
+ const body=JSON.parse(readFileSync(join(w.dir,'batches','0.json'),'utf8')) as {slots:{ctDigest:string;ciphertext?:string}[]};
+ assert.equal(body.slots.find(s=>s.ctDigest===String(digest))?.ciphertext,hex.encode(record));
+ assert.equal(body.slots.filter(s=>s.ciphertext).length,1,'padding publishes no record');
 });

@@ -15,6 +15,8 @@ export interface RollupSpend {
  asset?:string;
  program?:Uint8Array;
  coin?:RollupCoin&{assetAmount?:bigint};
+ /** The sealed note record whose digest the slot's ctDigest commits to; padding has none. */
+ ciphertext?:Uint8Array;
 }
 export interface RollupSelection {spends:RollupSpend[];asset?:string;legs:RollupLeg[]}
 
