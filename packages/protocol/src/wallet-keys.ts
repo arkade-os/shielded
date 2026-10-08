@@ -3,6 +3,7 @@ import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import {secp256k1} from '@noble/curves/secp256k1.js';
 import type {WalletKeys} from './types.js';
+import {ROLLUP_FIELD} from './rollup/constants.ts';
 
 export const WALLET_KEY_DERIVATION_VERSION=1 as const;
 export const MUTINYNET_KEY_NETWORK='mutinynet' as const;
@@ -25,6 +26,13 @@ function scalar(master:Uint8Array,network:string,purpose:string,order:bigint):bi
   if(candidate>0n&&candidate<order)return candidate;
  }
  throw new Error('Could not derive a valid wallet key.');
+}
+
+/** Rollup v2 keys from the same recovery secret: a spend scalar in the BN254 scalar field and an X25519 view secret. */
+export function deriveRollupKeyMaterial(masterSecret:Uint8Array|string,network:string):{spendSecret:bigint;viewSecret:Uint8Array} {
+ const master=typeof masterSecret==='string'?parseMasterSecret(masterSecret):new Uint8Array(masterSecret);
+ if(master.length!==32)throw new Error('Recovery secret must contain exactly 32 bytes.');
+ return {spendSecret:scalar(master,network,'rollup-spend',ROLLUP_FIELD),viewSecret:hkdf(sha256,master,SALT,new TextEncoder().encode(`${DOMAIN}:${network}:rollup-view`),32)};
 }
 
 export function deriveWalletKeyMaterial(masterSecret:Uint8Array|string,network:string):WalletKeyMaterial {

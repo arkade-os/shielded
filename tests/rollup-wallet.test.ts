@@ -1,0 +1,39 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {buildPoseidon} from 'circomlibjs';
+import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {noteOf} from '../packages/protocol/src/rollup/notes.ts';
+import {ctDigestOf,openRollupNotes,parseRollupAddress,rollupAddressOf,rollupRecipientOf,sealRollupNotes,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
+import {deriveRollupKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
+
+const poseidon=await buildPoseidon();
+const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
+const alice=deriveRollupKeyMaterial('11'.repeat(32),'mutinynet'),bob=deriveRollupKeyMaterial('22'.repeat(32),'mutinynet');
+const aliceTo=rollupRecipientOf(hash,alice.spendSecret,alice.viewSecret),bobTo=rollupRecipientOf(hash,bob.spendSecret,bob.viewSecret);
+
+test('rollup keys are stable per secret and network, and addresses round-trip',()=>{
+ assert.equal(deriveRollupKeyMaterial('11'.repeat(32),'mutinynet').spendSecret,alice.spendSecret);
+ assert.notEqual(deriveRollupKeyMaterial('11'.repeat(32),'signet').spendSecret,alice.spendSecret);
+ const address=rollupAddressOf(bobTo);
+ assert.match(address,/^shrol1/);
+ const back=parseRollupAddress(address);
+ assert.equal(back.owner,bobTo.owner);
+ assert.deepEqual([...back.viewPublic],[...bobTo.viewPublic]);
+ assert.throws(()=>parseRollupAddress(address.slice(0,-1)+(address.endsWith('q')?'p':'q')));
+});
+
+test('each recipient opens only its own output, and the commitment checks out',async()=>{
+ const notes=[{amount:700n,asset:0n,rho:123n},{amount:300n,asset:5n,rho:456n}] as const;
+ const record=await sealRollupNotes([bobTo,aliceTo],notes);
+ assert.equal(record.length,ROLLUP_RECORD_BYTES);
+ const [forBob,notForBob]=await openRollupNotes(record,bob.viewSecret);
+ const [notForAlice,forAlice]=await openRollupNotes(record,alice.viewSecret);
+ assert.deepEqual(forBob,notes[0]);
+ assert.deepEqual(forAlice,notes[1]);
+ assert.equal(notForBob,undefined);
+ assert.equal(notForAlice,undefined);
+ assert.equal(noteOf(hash,ROLLUP_DOMAIN,forBob!.amount,forBob!.asset,bobTo.owner,forBob!.rho),noteOf(hash,ROLLUP_DOMAIN,700n,0n,bobTo.owner,123n));
+ const tampered=record.slice();tampered[40]!^=1;
+ assert.deepEqual(await openRollupNotes(tampered,bob.viewSecret),[undefined,undefined]);
+ assert.notEqual(ctDigestOf(record),ctDigestOf(tampered));
+});
