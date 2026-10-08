@@ -5,7 +5,8 @@ import * as snarkjs from 'snarkjs';
 import {ArkAddress,SingleKey,TxType,type ArkTransaction} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {hex} from '@scure/base';
-import {assetFieldOfId,destinationFieldOf} from '../../packages/protocol/src/rollup/notes.ts';
+import {assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
+import {encodeDisclosure,sentNoteOf,viewKeyOf,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
@@ -24,7 +25,10 @@ type Ark={address:string;available:number;coins:ArkCoin[];assets:{assetId:string
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 const amountOf=(value:string)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw new Error('Enter a whole number.');return BigInt(n);};
 const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Time unknown';
-const sentLog=():Record<string,string>=>{try{return JSON.parse(localStorage.getItem(SENT)??'{}');}catch{return {};}};
+// Keyed by the spent nullifier: where it went and, for a private payment, the recipient's note so it can be revealed later.
+type Sent={to:string;note?:{amount:string;asset:string;rho:string}};
+const sentLog=():Record<string,Sent>=>{try{return Object.fromEntries(Object.entries(JSON.parse(localStorage.getItem(SENT)??'{}') as Record<string,Sent|string>).map(([k,v])=>[k,typeof v==='string'?{to:v}:v]));}catch{return {};}};
+const logSent=(entries:[string,Sent][])=>localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(entries)}));
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 // Key URLs carry their hashes, so a browser cache can only ever hold the keys this pool proves with.
 const prove=async(built:BuiltSpend,keys:{wasm:string;zkey:string})=>(await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),`/api/rollup/proving/spend.wasm?v=${keys.wasm}`,`/api/rollup/proving/spend.zkey?v=${keys.zkey}`,undefined,undefined,{singleThread:true})).proof;
@@ -34,9 +38,9 @@ export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [notes,setNotes]=useState<OwnedNote[]>([]),[assetNotes,setAssetNotes]=useState<Record<string,OwnedNote[]>>({}),[history,setHistory]=useState<HistoryEntry[]>([]),[synced,setSynced]=useState(false);
- const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState('');
+ const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[revealed,setRevealed]=useState<Record<string,string>>({}),[showView,setShowView]=useState(false);
  const [tab,setTab]=useState<Tab>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[activity,setActivity]=useState<Activity>(),[busy,setBusy]=useState(false);
- const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false);
+ const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false),hashRef=useRef<Hash|undefined>(undefined);
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined),arkRef=useRef<Ark|undefined>(undefined),retryAt=useRef(0),used=useRef(new Set<string>());
 
  useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);setSecret(fresh);}},[secret]);
@@ -127,7 +131,7 @@ export default function RollupWallet(){
   let stop=false,timer:ReturnType<typeof setTimeout>|undefined,arkAt=0;
   void (async()=>{
    const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeyMaterial(secret,'mutinynet');
-   account.current=new RollupAccount(hash,keys);self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
+   hashRef.current=hash;account.current=new RollupAccount(hash,keys);self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
    const loop=async()=>{
     if(stop)return;
     try{
@@ -146,12 +150,12 @@ export default function RollupWallet(){
 
  const send=()=>void run('Sending privately',['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
   step(0);const recipient=to.trim(),spends=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n);
-  localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(spends.map(s=>[String(s.witness.slot.nullifiers[0]),recipient]))}));
+  logSent(spends.map(s=>{const note=sentNoteOf(hashRef.current!,s);return [String(s.witness.slot.nullifiers[0]),{to:recipient,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}];}));
   return submitAll(spends.map(built=>({built})),step,1);
  });
  const withdraw=()=>void run('Withdrawing',['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
   step(0);const value=amountOf(amount),address=to.trim()||ark!.address,program=ArkAddress.decode(address).pkScript.subarray(2);
-  const remember=(spends:BuiltSpend[])=>localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(spends.map(s=>[String(s.witness.slot.nullifiers[0]),address]))}));
+  const remember=(spends:BuiltSpend[])=>logSent(spends.map(s=>[String(s.witness.slot.nullifiers[0]),{to:address}]));
   if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!);remember([payout,carrier]);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
   if(value<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
   const input=pickNote(account.current!.notes(),value,new Set());if(!input)throw new Error('No single note covers this amount.');
@@ -174,7 +178,17 @@ export default function RollupWallet(){
   ...history.map(e=>({key:`r${e.batch}-${e.spent[0]??e.created[0]?.nullifier}`,at:e.at??0,rollup:e})),
   ...(ark?.history??[]).filter(t=>t.amount>0&&!account.current?.txids.has(t.key.arkTxid)).map(t=>({key:`a${t.key.arkTxid||t.key.commitmentTxid||t.key.boardingTxid}-${t.type}`,at:t.createdAt,arkade:t})),
  ].sort((a,b)=>b.at-a.at);
- const phrase=secret?recoveryPhraseOf(secret):'';
+ const phrase=secret?recoveryPhraseOf(secret):'',viewKey=showView&&secret&&self.current?viewKeyOf(self.current.owner,deriveRollupKeyMaterial(secret,'mutinynet').viewSecret):'';
+ /** A link that opens one entry's notes, for whoever needs to see that one payment and nothing else. */
+ const revealEntry=(key:string,e:HistoryEntry)=>{
+  let to:string=rollupAddressOf(self.current!),notes:DisclosedNote[];
+  if(e.kind==='send'){
+   const parts=e.spent.map(nf=>sent[String(nf)]).filter(p=>p?.note);if(!parts.length)return;
+   to=parts[0]!.to;const owner=parseRollupAddress(to).owner;
+   notes=parts.map(p=>{const note={amount:BigInt(p!.note!.amount),asset:BigInt(p!.note!.asset),rho:BigInt(p!.note!.rho)};return {index:account.current!.locate(note,owner),...note};}).filter(n=>n.index>=0);
+  }else notes=e.created.map(n=>({index:n.index,amount:n.amount,asset:n.asset,rho:n.rho}));
+  if(notes.length)setRevealed(r=>({...r,[key]:`${location.origin}/verify#${encodeDisclosure({v:1,to,notes})}`}));
+ };
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Development proving keys and test funds only. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
   {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{poolError||pool?.message}</p></div></section>}
@@ -206,7 +220,7 @@ export default function RollupWallet(){
    </section>
    <section className="stock-card stock-history"><h2>History</h2>
     {!timeline.length?<p className="stock-muted">{synced?'Nothing yet. Fund your Arkade address and it shows up here.':'Reading the pool…'}</p>:<ul>{timeline.map(item=>{
-     if('rollup' in item){const e=item.rollup,recipient=e.spent.map(nf=>sent[String(nf)]).find(Boolean),incoming=e.kind==='shield'||e.kind==='receive';
+     if('rollup' in item){const e=item.rollup,recipient=e.spent.map(nf=>sent[String(nf)]?.to).find(Boolean),incoming=e.kind==='shield'||e.kind==='receive';
       return <li key={item.key}><details><summary><span className={'stock-kind '+e.kind}>{kinds[e.kind]}</span><b className={incoming?'in':'out'}>{incoming?'+':'−'}{amountText(e.amounts)}</b><time>{when(e.at)}</time></summary>
        <dl>
         <dt>Where</dt><dd>{e.kind==='shield'?'From your Arkade coins into the pool; the amount is public.':e.kind==='withdraw'?(recipient?`To ${recipient}`:e.destination===ownField?'To your Arkade address':'To another Arkade address')+'; the amount is public.':e.kind==='send'?`Inside the pool${recipient?` to ${recipient}`:''}; amount and parties stay private.`:'Inside the pool; amount and sender stay private.'}</dd>
@@ -214,6 +228,7 @@ export default function RollupWallet(){
         {e.spent.length>0&&<><dt>Notes spent</dt><dd>{e.spent.length}</dd></>}
         {e.created.length>0&&<><dt>{incoming?'Notes received':'Change'}</dt><dd>{e.created.map(n=>n.asset===0n?`${sats(n.amount)} sats`:`${sats(n.amount)} units`).join(', ')}</dd></>}
         {e.txid&&<><dt>Transaction</dt><dd><Copyable value={e.txid}/></dd></>}
+        {e.kind!=='withdraw'&&(e.kind!=='send'||e.spent.some(nf=>sent[String(nf)]?.note))&&<><dt>Reveal</dt><dd>{revealed[item.key]?<><Copyable value={revealed[item.key]!}/><p className="stock-muted">Anyone with this link can check this payment's amount and recipient against the pool, and learns nothing else.</p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>revealEntry(item.key,e)}>Create a reveal link</button>}</dd></>}
        </dl></details></li>;}
      const t=item.arkade,id=t.key.arkTxid||t.key.commitmentTxid,received=t.type===TxType.TxReceived;
      return <li key={item.key}><details><summary><span className="stock-kind arkade">{received?'Arkade funding':'Arkade payment'}</span><b className={received?'in':'out'}>{received?'+':'−'}{sats(t.amount)} sats</b><time>{when(t.createdAt)}</time></summary>
@@ -230,6 +245,7 @@ export default function RollupWallet(){
   {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore this wallet and its Arkade balance in any browser. Anyone who has them can spend your funds.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
   <details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
    {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}
+   {secret&&self.current&&<div className="stock-address"><small>VIEW KEY · READ ONLY</small>{viewKey?<><Copyable value={viewKey}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${viewKey}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</div>}
    <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
    <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
    {restoreError&&<p className="stock-blocked">{restoreError}</p>}

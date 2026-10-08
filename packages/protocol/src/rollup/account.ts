@@ -77,6 +77,12 @@ export class RollupAccount {
 
  notes(asset = BTC_ASSET): OwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.index - b.index); }
  balance(asset = BTC_ASSET): bigint { return this.notes(asset).reduce((sum, n) => sum + n.amount, 0n); }
+ /** A note's leaf index, found by its commitment; -1 until its batch is replayed. */
+ locate(note: RollupNote, owner: bigint): number {
+  const commitment = noteOf(this.hash, ROLLUP_DOMAIN, note.amount, note.asset, owner, note.rho);
+  for (let k = 0; k < this.state.noteCount; k++) if (this.state.notes.node(0, k) === commitment) return k;
+  return -1;
+ }
 
  spend(request: SpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<BuiltSpend> {
   const path = request.input ? this.state.notes.path(request.input.index) : undefined;

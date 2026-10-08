@@ -9,8 +9,8 @@ export interface RollupNote { amount: bigint; asset: bigint; rho: bigint }
 export interface RollupRecipient { owner: bigint; viewPublic: Uint8Array }
 
 const ADDRESS_PREFIX = 'shrol';
-const le = (value: bigint, size: number) => Uint8Array.from({ length: size }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
-const fromLe = (bytes: Uint8Array) => bytes.reduceRight((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
+export const le = (value: bigint, size: number) => Uint8Array.from({ length: size }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
+export const fromLe = (bytes: Uint8Array) => bytes.reduceRight((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
 
 export const rollupRecipientOf = (hash: Hash, spendSecret: bigint, viewSecret: Uint8Array): RollupRecipient =>
  ({ owner: ownerOf(hash, ROLLUP_DOMAIN, spendSecret), viewPublic: x25519.getPublicKey(viewSecret) });
