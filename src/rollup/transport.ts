@@ -21,6 +21,7 @@ export function createRollupTransport(network:StockNetworkInfo,providers:{emulat
    return verifyStockResponse(request,await emulator.submitTx(request.arkTx,request.checkpoints),rollup);
   },
   unspent:async coin=>live(await coinOf(coin)),
+  spentBy:async coin=>{const v=await coinOf(coin);return v?.isSpent?v.arkTxId||v.settledBy||'an unknown transaction':undefined;},
   // A client that misstates its coin's value or assets would unbalance the batch arkd checks, so compare both.
   fresh:async(coin,floorMs)=>{
    const v=await coinOf(coin);

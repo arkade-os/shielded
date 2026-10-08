@@ -26,6 +26,8 @@ export interface RollupTransport {
  lookup(request:StockWireRequest):Promise<StockNativeReceipt|undefined>;
  verify(request:StockWireRequest,receipt:StockNativeReceipt):void;
  unspent(coin:{txid:string;vout:number}):Promise<boolean>;
+ /** The transaction that spent a coin, when the network shows it spent. */
+ spentBy?(coin:{txid:string;vout:number}):Promise<string|undefined>;
  /** Unspent, exactly these facts, and expiring after now + floorMs: a batch's outputs inherit its earliest input expiry. */
  fresh?(coin:RollupDepositFacts,floorMs:number):Promise<boolean>;
 }
@@ -172,6 +174,9 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   let taken:RollupSpend[]=[];
   const selection=selectRollupBatch(pending,now(),count=>{if(padding.length<count)throw new Error('padding');taken=padding.splice(0,count);return taken;},coinCap);
   if(!selection)return undefined;
+  // run() only builds with nothing in flight, so a spent head means another prover moved it.
+  const taker=await o.transport.spentBy?.(journal.status().archive.head);
+  if(taker){padding.unshift(...taken);return {blocked:`The pool head was spent by ${taker}, a batch this operator did not build. Post that batch's record to /api/rollup/external to continue.`};}
   const clients=selection.spends.filter(s=>!taken.includes(s)),deposits=selection.spends.filter(s=>s.coin);
   pending=pending.filter(s=>!clients.includes(s));inflight=clients;inflightPadding=taken;
   const archive=journal.status().archive,reserveCoin=selection.asset?archive.reserves[selection.asset]:undefined;

@@ -49,7 +49,7 @@ SHIELDED_PHRASE="your 24 words" npm run fallback -- withdraw ./pool-mirror 5000 
 npm run fallback -- publish ./pool-mirror https://shielded.mutinynet.arkade.sh <batch>
 ```
 
-`withdraw` replays the mirrored batches, checks they reach the head the indexer shows, and proves your spend plus ten zero-value spends and the batch. It then submits the batch to the Arkade emulator. `publish` hands its record to the operator, which checks it against the chain before following.
+`withdraw` replays the mirrored batches, checks they reach the head the indexer shows, and proves your spend plus ten zero-value spends and the batch. It then submits the batch to the Arkade emulator. `publish` hands its record to the operator, which checks it against the chain before following. Without the operator nobody can renew the pool head, so the payout expires when the head does; `withdraw` prints that deadline.
 
 ## Test
 

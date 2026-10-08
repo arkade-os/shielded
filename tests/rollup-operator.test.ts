@@ -423,3 +423,15 @@ test('an operator whose own batch lost the race drops it, follows the winner, an
  assert.equal(b.state.commitment(),a.state.commitment());
  assert.deepEqual(b.pendingIds(),[mine.id],'its spend waits for the next batch');
 });
+
+test('a head someone else spent stops batching with a pointer to its record, and keeps every spend queued',async(t)=>{
+ const w=await world(),op=await w.open(t,{transport:{...w.transport,spentBy:async()=>'ee'.repeat(32)}});
+ const mine=await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)});
+ await op.submit(mine);op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ const tick=await op.tick() as {blocked:string};
+ assert.match(tick.blocked,new RegExp(`spent by ${'ee'.repeat(32)}.*/api/rollup/external`));
+ assert.deepEqual(op.pendingIds(),[mine.id]);
+ assert.equal(op.padding(),10,'padding is kept for the batch after the record arrives');
+ assert.equal(op.status().pending,undefined,'nothing was submitted on a spent head');
+});

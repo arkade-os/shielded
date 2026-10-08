@@ -70,6 +70,9 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
  const head=(await indexer.getVtxos({scripts:[pool.script],spendableOnly:true})).vtxos.find(v=>v.assets?.some(a=>a.assetId===pool.token));
  if(!head)throw new Error('The indexer shows no pool head.');
+ // Renewal needs the operator, so without it the head, and every payout made from it, expire together.
+ const expires=head.expiresAt instanceof Date?head.expiresAt.getTime():undefined;
+ if(expires!==undefined&&expires-Date.now()<30*60_000)throw new Error(`The pool head expires at ${new Date(expires).toISOString()}; a payout now would be swept before it could be moved.`);
  const source=(await indexer.getVirtualTxs([head.txid])).txs.map(decodeStockIndexerTransaction).find(t=>t.id===head.txid)!;
  const packet=Extension.fromTx(source).getPacketByType(ROLLUP_STATE_PACKET)!.serialize();
  if(fromLe(packet.subarray(0,32))!==account.state.commitment())throw new Error('The mirrored records are behind the chain; mirror again or find the missing ones.');
@@ -92,6 +95,7 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const record:PublishedBatch={kind:'spend',slots:spends.map(({built:{witness:{slot,publicSignals},ciphertext}})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publicSignals.map(String),ciphertext:hex.encode(ciphertext)})),txid:receipt.txid,at:Date.now()};
  writeFileSync(join(dir,'batches',`${numbers.length}.json`),JSON.stringify(record));
  log('landed batch',numbers.length,'as',receipt.txid,'paying',sats,'sats to',to);
+ if(expires!==undefined)log('the payout expires with the head at',new Date(expires).toISOString(),'- move or settle it on Arkade before then');
 }
 
 async function publish(dir:string,url:string,batch:number){
