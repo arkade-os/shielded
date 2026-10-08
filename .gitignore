@@ -6,6 +6,7 @@ __pycache__/
 !.env.example
 *.key
 *.zkey
+!tests/fixtures/rollup-toy/*.zkey
 *.wtns
 node_modules/
 bin/

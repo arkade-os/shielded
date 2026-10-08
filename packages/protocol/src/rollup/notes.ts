@@ -27,6 +27,12 @@ export function assetFieldOf(assetId: Uint8Array): bigint {
  if (assetId.length !== 34) throw new Error('An Arkade AssetId is 34 bytes.');
  return sha256le248(assetId);
 }
+/** From an arkd AssetId string (display-order txid, then u16 LE index) to the covenant's opcode byte order. */
+export function assetFieldOfId(id: string): bigint {
+ if (!/^[0-9a-f]{68}$/.test(id)) throw new Error('An Arkade AssetId string is 68 hex characters.');
+ const raw = Uint8Array.from(id.match(/../g)!.map(byte => parseInt(byte, 16)));
+ return assetFieldOf(Uint8Array.from([...raw.subarray(0, 32).reverse(), raw[32], raw[33]]));
+}
 export function destinationFieldOf(p2trProgram: Uint8Array): bigint {
  if (p2trProgram.length !== 32) throw new Error('A P2TR program is 32 bytes.');
  return sha256le248(p2trProgram);

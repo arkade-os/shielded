@@ -22,6 +22,8 @@ export interface StockJournalHooks<A,P,R extends StockJournalReceipt> {
  transmit(plan:P):Promise<R>;
  lookup(plan:P):Promise<R|undefined>;
  apply(archive:A,plan:P,receipt:R):Promise<A>|A;
+ /** True only when the network proves a submitted plan can never be accepted; reconcile then drops it. */
+ abandoned?(plan:P):Promise<boolean>|boolean;
 }
 function canonical(value:unknown):string {
  if(value===null||typeof value==='string'||typeof value==='boolean')return JSON.stringify(value);
@@ -92,7 +94,11 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
    ensure();if(!saved.pending)return {resolved:true,archive:structuredClone(saved.archive)};
    busy=true;try{
     const pending=saved.pending,receipt=pending.stage==='accepted'?pending.receipt:await hooks.lookup(structuredClone(pending.plan));
-    if(!receipt)return {resolved:false,archive:structuredClone(saved.archive)};
+    if(!receipt){
+     if(pending.stage!=='submitted'||!await hooks.abandoned?.(structuredClone(pending.plan)))return {resolved:false,archive:structuredClone(saved.archive)};
+     const next={...saved};delete next.pending;persist(next);
+     return {resolved:true,abandoned:true,archive:structuredClone(saved.archive)};
+    }
     const result=await finish(receipt);return {resolved:true,...result};
    }finally{busy=false;}
   },

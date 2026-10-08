@@ -40,10 +40,10 @@ const weight=(tx:Transaction)=>tx.toBytes(true,true).length+3*tx.toBytes(false,f
 export function stockSignedWeights(request:StockWireRequest,estimate=false):{ark:number;checkpoints:number[]}{
  return {ark:weight(finalized(Transaction.fromPSBT(base64.decode(request.arkTx)),estimate)),checkpoints:request.checkpoints.map(encoded=>weight(finalized(Transaction.fromPSBT(base64.decode(encoded)),estimate)))};
 }
-export function verifyStockCustomerSignatures(request:StockWireRequest,serverKey:string):void {
+export function verifyStockCustomerSignatures(request:StockWireRequest,serverKey:string,firstCustomerInput=1):void {
  const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),checkpoints=request.checkpoints.map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));
  if(checkpoints.length!==ark.inputsLength)throw new Error('Stock input/checkpoint count mismatch.');
- for(let vin=1;vin<ark.inputsLength;vin++)for(const [tx,input] of [[ark,vin],[checkpoints[vin],0]] as const){
+ for(let vin=firstCustomerInput;vin<ark.inputsLength;vin++)for(const [tx,input] of [[ark,vin],[checkpoints[vin],0]] as const){
   const leaf=tx.getInput(input).tapLeafScript?.[0];if(!leaf)throw new Error('Customer funding has no immutable spend leaf.');
   const keys=signers(leaf[1].subarray(0,-1));
   if(keys.length!==2||!keys.some(key=>hex.encode(key)===serverKey))throw new Error('Customer funding must use its owner and the pinned Arkade signer.');
