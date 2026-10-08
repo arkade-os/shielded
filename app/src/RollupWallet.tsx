@@ -39,7 +39,7 @@ export default function RollupWallet(){
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [notes,setNotes]=useState<OwnedNote[]>([]),[assetNotes,setAssetNotes]=useState<Record<string,OwnedNote[]>>({}),[history,setHistory]=useState<HistoryEntry[]>([]),[synced,setSynced]=useState(false);
  const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[revealed,setRevealed]=useState<Record<string,string>>({}),[showView,setShowView]=useState(false);
- const [tab,setTab]=useState<Tab>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[activity,setActivity]=useState<Activity>(),[busy,setBusy]=useState(false);
+ const [tab,setTab]=useState<Tab>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState(''),[activity,setActivity]=useState<Activity>(),[busy,setBusy]=useState(false);
  const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false),hashRef=useRef<Hash|undefined>(undefined);
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined),arkRef=useRef<Ark|undefined>(undefined),retryAt=useRef(0),used=useRef(new Set<string>());
 
@@ -157,7 +157,7 @@ export default function RollupWallet(){
  const withdraw=()=>void run('Withdrawing',['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
   step(0);const value=amountOf(amount),address=to.trim()||ark!.address,program=ArkAddress.decode(address).pkScript.subarray(2);
   const remember=(spends:BuiltSpend[])=>logSent(spends.map(s=>[String(s.witness.slot.nullifiers[0]),{to:address}]));
-  if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!);remember([payout,carrier]);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
+  if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!,new Set(),withSats?amountOf(withSats):BigInt(DUST));remember([payout,carrier]);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
   if(value<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
   const input=pickNote(account.current!.notes(),value,new Set());if(!input)throw new Error('No single note covers this amount.');
   const built=await account.current!.spend({input,withdraw:value,program},self.current!);remember([built]);
@@ -216,7 +216,8 @@ export default function RollupWallet(){
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
      <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder={tab==='send'?'shrol1…':'Your Arkade address, or another tark1…'} autoComplete="off" spellCheck={false}/></label>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
-     <p className="stock-muted">{tab==='send'?`Pays from up to three of your notes at once, up to ${sats(maxSend)} ${unit}; the amount and both parties stay private.`:assetId?`Pays out to an Arkade address with a ${DUST}-sat BTC note as its carrier; the amount is public.`:`Pays out to an Arkade address; the amount is public. At least ${DUST} sats.`}</p>
+     {tab==='withdraw'&&assetId&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
+     <p className="stock-muted">{tab==='send'?`Pays from up to three of your notes at once, up to ${sats(maxSend)} ${unit}; the amount and both parties stay private.`:assetId?`Pays the units and the sats out together, in one Arkade coin; both amounts are public. At least ${DUST} sats.`:`Pays out to an Arkade address; the amount is public. At least ${DUST} sats.`}</p>
      <button className="stock-primary" disabled={busy||!synced||!amount||(tab==='send'&&!to.trim())}>{busy?'Working…':tab==='send'?'Send':'Withdraw'}</button>
     </form>}
    </section>

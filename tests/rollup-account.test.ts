@@ -151,3 +151,11 @@ test('a wallet born at a later batch skips opening the records before it, and st
  assert.deepEqual(young.notes().map(n=>n.amount),[600n],'the note from before its birth is never opened');
  assert.equal(young.latestRoot(),full.latestRoot());
 });
+
+test('an asset and sats leave together: the carrier withdraws the sats, so one output holds both',async()=>{
+ const alice=new RollupAccount(hash,aliceKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ae'.repeat(32));
+ await alice.apply(await batchOf(alice.state.latestRoot(),[...await alice.depositAsset(x,1000n,330n,aliceTo),await alice.spend({deposit:2000n},aliceTo)]));
+ const out=await alice.withdrawAsset(x,100n,program,aliceTo,new Set(),1500n);
+ assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(2,4)),[[100n,x],[1500n,0n]]);
+ await assert.rejects(alice.withdrawAsset(x,100n,program,aliceTo,new Set(),329n),/at least 330/);
+});

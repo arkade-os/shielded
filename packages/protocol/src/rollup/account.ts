@@ -135,13 +135,14 @@ export class RollupAccount {
  }
 
  /** An asset payout is followed by its BTC carrier to the same program; the carrier pays the 330 sats the payout output holds. */
- async withdrawAsset(asset: bigint, units: bigint, program: Uint8Array, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set()): Promise<[BuiltSpend, BuiltSpend]> {
+ async withdrawAsset(asset: bigint, units: bigint, program: Uint8Array, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), sats = CARRIER_SATS): Promise<[BuiltSpend, BuiltSpend]> {
+  if (sats < CARRIER_SATS) throw new Error(`An asset payout carries at least ${CARRIER_SATS} sats.`);
   const smallest = (list: OwnedNote[], amount: bigint) => list.filter(n => !inFlight.has(n.nullifier) && n.amount >= amount).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0))[0];
-  const note = smallest(this.notes(asset), units), carrier = smallest(this.notes(BTC_ASSET), CARRIER_SATS);
+  const note = smallest(this.notes(asset), units), carrier = smallest(this.notes(BTC_ASSET), sats);
   if (!note) throw new Error('No single note of this asset covers the amount.');
-  if (!carrier) throw new Error(`Withdrawing an asset needs a BTC note of at least ${CARRIER_SATS} sats for its carrier.`);
+  if (!carrier) throw new Error(`Withdrawing an asset needs a BTC note of at least ${sats} sats for its carrier.`);
   const group = { id: groupIdOf(this.hash, [note.nullifier, carrier.nullifier]), size: 2 };
-  return [await this.spend({ asset, input: note, withdraw: units, program }, self, randomField, group), await this.spend({ input: carrier, withdraw: CARRIER_SATS, program }, self, randomField, group)];
+  return [await this.spend({ asset, input: note, withdraw: units, program }, self, randomField, group), await this.spend({ input: carrier, withdraw: sats, program }, self, randomField, group)];
  }
 }
 const CARRIER_SATS = 330n;
