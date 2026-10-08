@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import {mkdirSync,mkdtempSync,writeFileSync} from 'node:fs';
 import type {AddressInfo} from 'node:net';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import express from 'express';
 import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
@@ -23,6 +26,20 @@ test('the rollup API is closed until the service exists, and refuses cross-origi
  const open=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000})});t.after(open.close);
  assert.equal((await fetch(open.base+'/status')).status,200);
  assert.equal((await post(open.base+'/spends',spend,'https://evil.example')).status,403);
+});
+
+test('proving keys are served from any key directory, including one under a dot-directory',async(t)=>{
+ const dir=join(mkdtempSync(join(tmpdir(),'rollup-http-')),'.hidden','keys');mkdirSync(dir,{recursive:true});
+ writeFileSync(join(dir,'spend.wasm'),Uint8Array.of(0,0x61,0x73,0x6d));
+ const api=await serve({ready:()=>true,keyFile:(name:string)=>name.startsWith('spend.')?join(dir,name):undefined});t.after(api.close);
+ const response=await fetch(api.base+'/proving/spend.wasm');
+ assert.equal(response.status,200);
+ assert.match(response.headers.get('cache-control')??'',/immutable/);
+ assert.deepEqual([...new Uint8Array(await response.arrayBuffer())],[0,0x61,0x73,0x6d]);
+ assert.equal((await fetch(api.base+'/proving/batch-spend.zkey')).status,404);
+ const missing=await fetch(api.base+'/proving/spend.zkey');
+ assert.equal(missing.status,404);
+ assert.doesNotMatch(missing.headers.get('cache-control')??'',/immutable/,'a failed key request must not be cached');
 });
 
 test('a spend is validated and handed to the operator with field elements as bigints',async(t)=>{

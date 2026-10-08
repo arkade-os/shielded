@@ -11,7 +11,8 @@ const service=await openRollupService({directory:data,circuits:resolve('circuits
  ...(process.env.SHIELDED_ROLLUP_RENEW_HOURS?{renewBeforeMs:Number(process.env.SHIELDED_ROLLUP_RENEW_HOURS)*3600_000}:{})});
 const app=express();app.disable('x-powered-by');
 app.use('/api/rollup',createRollupRouter(()=>service));
-app.get('/rollup',(_req,res)=>res.sendFile(resolve('app/dist/index.html')));
+// A root keeps send's dotfile rule off the checkout path, which may sit under a dot-directory.
+app.get('/rollup',(_req,res)=>res.sendFile('index.html',{root:resolve('app/dist')}));
 app.use(express.static(resolve('app/dist')));
 app.listen(port,'127.0.0.1',()=>console.log(`rollup pool on http://127.0.0.1:${port} data ${data}`));
 const step=async()=>{await service.step();if(!service.ready())setTimeout(step,15000);};

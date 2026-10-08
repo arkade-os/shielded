@@ -1,3 +1,4 @@
+import {basename,dirname} from 'node:path';
 import express from 'express';
 import {hex} from '@scure/base';
 import {RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
@@ -27,7 +28,8 @@ export function createRollupRouter(service:()=>RollupService|undefined){
  router.get('/proving/:file',(req,res)=>{
   const path=service()!.keyFile(req.params.file);
   if(!path){res.status(404).json({error:'Unknown proving file.'});return;}
-  res.setHeader('Cache-Control','public, max-age=31536000, immutable');res.sendFile(path);
+  // A root keeps send's dotfile rule off the directory path; cache headers ride on success only, never on a 404.
+  res.sendFile(basename(path),{root:dirname(path),maxAge:'365d',immutable:true},error=>{if(error&&!res.headersSent)res.status(404).setHeader('Cache-Control','no-store').json({error:'Proving file unavailable.'});});
  });
  router.use((_req,res,next)=>{if(!service()!.ready()){res.status(503).json({error:'The rollup pool is not open yet; read /api/rollup/status.'});return;}next();});
  router.get('/batches',(req,res)=>{
