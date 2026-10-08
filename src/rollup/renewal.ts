@@ -35,8 +35,12 @@ export const rollupRenewalSignature=(operatorSecret:Uint8Array,cosigners:string[
  * Moves the head and every reserve, unchanged, into a fresh round; returns their new outpoints.
  * ponytail: one-shot; a crash after registration leaves an intent arkd re-queues until it is confirmed and fails.
  */
-export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
- const ark=new RestArkProvider(o.network.arkUrl),emulator=new RestEmulatorProvider(o.network.emulatorUrl),indexer=new RestIndexerProvider(o.network.indexerUrl??o.network.arkUrl);
+export interface RollupRenewalProviders {ark?:RestArkProvider;emulator?:RestEmulatorProvider;indexer?:RestIndexerProvider}
+export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive;
+ /** Called with the registered intent id before the round is joined; arkd re-queues that intent until it confirms or is cleared. */
+ onIntent?(intentId:string):Promise<void>|void;providers?:RollupRenewalProviders}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
+ const ark=o.providers?.ark??new RestArkProvider(o.network.arkUrl),emulator=o.providers?.emulator??new RestEmulatorProvider(o.network.emulatorUrl);
+ const indexer=o.providers?.indexer??new RestIndexerProvider(o.network.indexerUrl??o.network.arkUrl);
  const reserves=Object.entries(o.archive.reserves),points=[o.archive.head,...reserves.map(([,coin])=>coin)].map(({txid,vout})=>({txid,vout}));
  const found=(await indexer.getVtxos({outpoints:points})).vtxos,leaf=o.pool.findLeaf(hex.encode(o.renewLeaf));
  const coins=await withPrevTxs(points.map(p=>{
@@ -54,21 +58,25 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
  const proof=Intent.create(message,coins,[...coins.map(c=>({script:o.pool.pkScript,amount:BigInt(c.value)})),ext.txOut()]);
  const signedProof=await emulator.submitIntent({proof:Buffer.from(proof.toPSBT()).toString('base64'),message});
  const intentId=await ark.registerIntent({proof:signedProof,message});
- // Pool forfeits are signed by the emulator and arkd only, so the handler's own signer passes them through.
- const passthrough=new Proxy(o.identity,{get:(target,prop)=>prop==='sign'?async(tx:Transaction)=>tx:typeof (target as never)[prop]==='function'?((target as never)[prop] as Function).bind(target):(target as never)[prop]});
- const handler=arkade.createArkadeBatchHandler(intentId,coins.map(c=>({...c,arkadeScriptBytes:o.leaves.renew})),passthrough,signedProof,message,session,ark,emulator,networks.mutinynet);
- const abortController=new AbortController();
- let commitment:string;
- try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`)]),handler,{abortController});}
- finally{abortController.abort();}
- const live=(await indexer.getVtxos({scripts:[hex.encode(o.pool.pkScript)],spendableOnly:true})).vtxos;
- const coinOf=async(v:RenewedCoin):Promise<RollupPoolCoin>=>{
-  const raw=(await indexer.getVirtualTxs([v.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===v.txid);
-  if(!raw)throw new Error(`Renewed coin ${v.txid} is not indexed yet.`);
-  return {txid:v.txid,vout:v.vout,value:v.value,sourceTxHex:hex.encode(raw.toBytes(true,true))};
- };
- const moved=renewedRollupPoolCoins(o.token,reserves.map(([assetId,coin])=>[assetId,coin.amount] as const),live);
- const renewed:RollupArchive['reserves']={};
- for(const reserve of moved.reserves)renewed[reserve.assetId]={...await coinOf(reserve.coin),amount:reserve.amount};
- return {commitment,head:await coinOf(moved.head),reserves:renewed};
+ // Every failure past this point names the intent, which arkd re-queues until it is confirmed or cleared.
+ try{
+  await o.onIntent?.(intentId);
+  // Pool forfeits are signed by the emulator and arkd only, so the handler's own signer passes them through.
+  const passthrough=new Proxy(o.identity,{get:(target,prop)=>prop==='sign'?async(tx:Transaction)=>tx:typeof (target as never)[prop]==='function'?((target as never)[prop] as Function).bind(target):(target as never)[prop]});
+  const handler=arkade.createArkadeBatchHandler(intentId,coins.map(c=>({...c,arkadeScriptBytes:o.leaves.renew})),passthrough,signedProof,message,session,ark,emulator,networks.mutinynet);
+  const abortController=new AbortController();
+  let commitment:string;
+  try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`)]),handler,{abortController});}
+  finally{abortController.abort();}
+  const live=(await indexer.getVtxos({scripts:[hex.encode(o.pool.pkScript)],spendableOnly:true})).vtxos;
+  const coinOf=async(v:RenewedCoin):Promise<RollupPoolCoin>=>{
+   const raw=(await indexer.getVirtualTxs([v.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===v.txid);
+   if(!raw)throw new Error(`Renewed coin ${v.txid} is not indexed yet.`);
+   return {txid:v.txid,vout:v.vout,value:v.value,sourceTxHex:hex.encode(raw.toBytes(true,true))};
+  };
+  const moved=renewedRollupPoolCoins(o.token,reserves.map(([assetId,coin])=>[assetId,coin.amount] as const),live);
+  const renewed:RollupArchive['reserves']={};
+  for(const reserve of moved.reserves)renewed[reserve.assetId]={...await coinOf(reserve.coin),amount:reserve.amount};
+  return {commitment,head:await coinOf(moved.head),reserves:renewed};
+ }catch(error){throw new Error(`Rollup renewal intent ${intentId} is registered and must be confirmed or cleared: ${(error as Error).message}`,{cause:error});}
 }

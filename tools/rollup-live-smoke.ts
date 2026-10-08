@@ -113,7 +113,9 @@ operator.addPadding(await pads(operator.state.latestRoot(),8));
 await new Promise(r=>setTimeout(r,10_000));
 await batch('batch 2: BTC withdrawal and an asset payout with its carrier');
 
-const t0=Date.now(),moved=await renewRollupPool({network,identity,operatorSecret,pool:pool.tree,renewLeaf:pool.renew,leaves,token,archive:operator.status().archive});
+// The id is the only way to clear a stranded intent later (.deps/rollup-probe/flush.ts <intentId>), and arkd's are random.
+const t0=Date.now(),moved=await renewRollupPool({network,identity,operatorSecret,pool:pool.tree,renewLeaf:pool.renew,leaves,token,archive:operator.status().archive,
+ onIntent:id=>{writeFileSync(join(dir,'renewal-intent.txt'),id);log('renewal intent',id);}});
 await operator.relocate(moved);
 log('renewed in round',moved.commitment,`${Date.now()-t0} ms`,'head',moved.head.txid);
 
