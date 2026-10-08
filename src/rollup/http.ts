@@ -44,12 +44,14 @@ export function createRollupRouter(service:()=>RollupService|undefined){
    if(!Array.isArray(s.nullifiers)||!Array.isArray(s.commitments)||s.commitments.length!==2||!Array.isArray(b.publics)||b.publics.length!==5)throw new Error('Malformed spend slot.');
    const groupId=decimal(s.groupId);
    if(!(groupId===0n&&s.groupSize===0)&&!(groupId!==0n&&(s.groupSize===2||s.groupSize===3)))throw new Error('A group has a nonzero id and two or three members; a lone spend has neither.');
+   if(b.asset!==undefined&&(typeof b.asset!=='string'||!/^[0-9a-f]{68}$/.test(b.asset)))throw new Error('An asset id is 68 lowercase hex characters.');
    const coinRef=b.coin?{txid:hexOf(b.coin.txid,32),vout:Number.isInteger(b.coin.vout)&&b.coin.vout>=0?b.coin.vout:-1,tapTree:hexOf(b.coin.tapTree),leaf:hexOf(b.coin.leaf)}:undefined;
    const coin=coinRef?await service()!.depositCoin(coinRef):undefined;
+   if(coin&&coin.assetId!==b.asset)throw new Error(coin.assetId?`The deposit coin holds asset ${coin.assetId}; deposit it as that asset.`:'The deposit coin holds no asset.');
    const spend:Omit<RollupSpend,'receivedAt'>={id:b.id,
     slot:{root:decimal(s.root),nullifiers:s.nullifiers.map(decimal),commitments:[decimal(s.commitments[0]),decimal(s.commitments[1])],ctDigest:decimal(s.ctDigest),groupId,groupSize:s.groupSize},
     publics:b.publics.map(decimal) as unknown as RollupSpend['publics'],proof:proofOf(b.proof),ciphertext:hex.decode(hexOf(b.ciphertext,ROLLUP_RECORD_BYTES)),
-    ...(b.program!==undefined?{program:hex.decode(hexOf(b.program,32))}:{}),...(coin?{coin}:{})};
+    ...(b.program!==undefined?{program:hex.decode(hexOf(b.program,32))}:{}),...(b.asset?{asset:b.asset}:{}),...(coin?{coin}:{})};
    await service()!.submit(spend,coinRef);
    res.status(202).json({id:spend.id,status:'pending'});
   }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}

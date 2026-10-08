@@ -51,6 +51,10 @@ test('a spend is validated and handed to the operator with field elements as big
  assert.equal((await post(api.base+'/spends',{...spend,id:'cd'.repeat(16),slot:{...spend.slot,groupId:'5',groupSize:3}})).status,202);
  assert.deepEqual([submitted[0]!.slot.groupId,submitted[0]!.slot.groupSize],[5n,3]);
  submitted.length=0;
+ assert.equal((await post(api.base+'/spends',{...spend,id:'ef'.repeat(16),asset:'XY'})).status,400,'a malformed asset id');
+ assert.equal((await post(api.base+'/spends',{...spend,id:'ef'.repeat(16),asset:'aa'.repeat(34)})).status,202);
+ assert.equal(submitted[0]!.asset,'aa'.repeat(34));
+ submitted.length=0;
  const accepted=await post(api.base+'/spends',{...spend,program:'cd'.repeat(32)});
  assert.equal(accepted.status,202);
  assert.deepEqual(submitted[0]!.slot,{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0});

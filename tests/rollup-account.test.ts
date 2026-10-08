@@ -4,7 +4,7 @@ import {hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
-import {destinationFieldOf,noteOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
+import {assetFieldOfId,destinationFieldOf,noteOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
 
@@ -66,6 +66,25 @@ test('a payment larger than any single note goes out as one atomic group of note
  assert.equal(bob.balance(),850n);
  assert.equal(alice.balance(),150n);
  assert.deepEqual(alice.notes().map(n=>n.amount).sort(),[100n,50n],'the untouched note and the change remain');
+});
+
+test('an asset enters and leaves with its 330-sat BTC carrier, and moves privately inside',async()=>{
+ const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
+ const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);};
+ const deposit=await alice.depositAsset(x,1000n,330n,aliceTo);
+ assert.deepEqual(deposit.map(s=>s.witness.publicSignals.slice(1,4)),[[1000n,0n,x],[330n,0n,0n]]);
+ assert.ok(deposit.every(s=>s.witness.slot.groupSize===2&&s.witness.slot.groupId===deposit[0]!.witness.slot.groupId));
+ await apply(await batchOf(alice.state.latestRoot(),deposit));
+ assert.equal(alice.balance(x),1000n);assert.equal(alice.balance(),330n);
+ const pay=await alice.pay(bobTo,400n,aliceTo,new Set(),x);
+ assert.ok(pay.every(s=>s.witness.publicSignals[3]===0n),'a transfer shows no asset');
+ await apply(await batchOf(alice.state.latestRoot(),pay));
+ assert.equal(bob.balance(x),400n);assert.equal(alice.balance(x),600n);
+ const out=await alice.withdrawAsset(x,250n,program,aliceTo);
+ assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(2,5)),[[250n,x,destinationFieldOf(program)],[330n,0n,destinationFieldOf(program)]],'the payout comes first, then its carrier');
+ await apply(await batchOf(alice.state.latestRoot(),out));
+ assert.equal(alice.balance(x),350n);assert.equal(alice.balance(),0n);
+ await assert.rejects(alice.withdrawAsset(x,10n,program,aliceTo),/carrier/);
 });
 
 test('a record that opens under our view key but commits to another owner is not ours',async()=>{

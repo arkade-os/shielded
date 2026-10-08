@@ -10,7 +10,7 @@ export interface PublishedSlot { root: string; nullifiers: string[]; commitments
 export interface PublishedBatch { kind: 'spend'; slots: PublishedSlot[] }
 export interface OwnedNote extends RollupNote { index: number; nullifier: bigint }
 export interface RollupKeys { spendSecret: bigint; viewSecret: Uint8Array }
-export interface SpendRequest { asset?: bigint; input?: OwnedNote; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array }
+export interface SpendRequest { asset?: bigint; input?: OwnedNote; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { spendSecret: bigint; rho: bigint } }
 export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; change: bigint }
 
 export const randomField = () => BigInt('0x' + hex.encode(crypto.getRandomValues(new Uint8Array(32)))) % ROLLUP_FIELD;
@@ -69,7 +69,25 @@ export class RollupAccount {
   for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient, amount: part } }, self, randomField, group)); }
   return legs;
  }
+
+ /** The asset slot carries the deposit coin's units; the BTC slot deposits that coin's sats, so one coin funds the group. */
+ async depositAsset(asset: bigint, units: bigint, sats: bigint, self: RollupRecipient): Promise<[BuiltSpend, BuiltSpend]> {
+  const dummies = [{ spendSecret: randomField(), rho: randomField() }, { spendSecret: randomField(), rho: randomField() }] as const;
+  const group = { id: groupIdOf(this.hash, dummies.map(d => nullifierOf(this.hash, ROLLUP_DOMAIN, d.spendSecret, d.rho))), size: 2 };
+  return [await this.spend({ asset, deposit: units, dummy: dummies[0] }, self, randomField, group), await this.spend({ deposit: sats, dummy: dummies[1] }, self, randomField, group)];
+ }
+
+ /** An asset payout is followed by its BTC carrier to the same program; the carrier pays the 330 sats the payout output holds. */
+ async withdrawAsset(asset: bigint, units: bigint, program: Uint8Array, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set()): Promise<[BuiltSpend, BuiltSpend]> {
+  const smallest = (list: OwnedNote[], amount: bigint) => list.filter(n => !inFlight.has(n.nullifier) && n.amount >= amount).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0))[0];
+  const note = smallest(this.notes(asset), units), carrier = smallest(this.notes(BTC_ASSET), CARRIER_SATS);
+  if (!note) throw new Error('No single note of this asset covers the amount.');
+  if (!carrier) throw new Error(`Withdrawing an asset needs a BTC note of at least ${CARRIER_SATS} sats for its carrier.`);
+  const group = { id: groupIdOf(this.hash, [note.nullifier, carrier.nullifier]), size: 2 };
+  return [await this.spend({ asset, input: note, withdraw: units, program }, self, randomField, group), await this.spend({ input: carrier, withdraw: CARRIER_SATS, program }, self, randomField, group)];
+ }
 }
+const CARRIER_SATS = 330n;
 
 /** One input (a dummy for a pure deposit or padding), two sealed outputs: the payment, then change to `self`. */
 export async function buildRollupSpend(hash: Hash, o: { root: bigint; spendSecret: bigint; self: RollupRecipient; request: SpendRequest; path?: bigint[]; group?: { id: bigint; size: number } }, random = randomField): Promise<BuiltSpend> {
@@ -77,7 +95,7 @@ export async function buildRollupSpend(hash: Hash, o: { root: bigint; spendSecre
  if (request.input && (!o.path || request.input.asset !== asset)) throw new Error('A note input needs its path and the asset it holds.');
  const input = request.input
   ? { amount: request.input.amount, spendSecret: o.spendSecret, rho: request.input.rho, index: request.input.index, path: o.path! }
-  : { amount: 0n, spendSecret: random(), rho: random(), index: 0, path: Array<bigint>(NOTE_DEPTH).fill(0n) };
+  : { amount: 0n, spendSecret: request.dummy?.spendSecret ?? random(), rho: request.dummy?.rho ?? random(), index: 0, path: Array<bigint>(NOTE_DEPTH).fill(0n) };
  if ((withdraw > 0n) !== !!request.program) throw new Error('A withdrawal needs exactly one payout program.');
  const change = input.amount + deposit - withdraw - paid;
  if (change < 0n || paid < 0n || deposit < 0n || withdraw < 0n) throw new Error('The spend does not balance.');
