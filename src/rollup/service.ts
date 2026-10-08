@@ -1,0 +1,275 @@
+import {execFile,type ChildProcess} from 'node:child_process';
+import {createHash,randomBytes} from 'node:crypto';
+import {copyFileSync,existsSync,mkdirSync,readFileSync,renameSync,rmSync,writeFileSync} from 'node:fs';
+import {freemem,totalmem} from 'node:os';
+import {join} from 'node:path';
+import {ArkAddress,Extension,RestIndexerProvider,SingleKey,Transaction,VtxoScript} from '@arkade-os/sdk';
+import {schnorr} from '@noble/curves/secp256k1.js';
+import {x25519} from '@noble/curves/ed25519.js';
+import {base64,hex} from '@scure/base';
+import {buildPoseidon} from 'circomlibjs';
+import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
+import {buildRollupSpend,randomField} from '../../packages/protocol/src/rollup/account.ts';
+import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
+import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
+import {createStockBootstrapAdapter} from '../stock/bootstrap-adapter.ts';
+import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
+import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts';
+import type {StockWireRequest} from '../stock/transport.ts';
+import type {RollupSpend} from './batcher.ts';
+import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin} from './covenant.ts';
+import {loadRollupLeaves} from './leaves.ts';
+import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
+import {createRollupProver} from './prover.ts';
+import {renewRollupPool} from './renewal.ts';
+import {createRollupTransport} from './transport.ts';
+
+export const ROLLUP_KEY_FILES=['manifest.json','spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json'] as const;
+const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=BATCH_SLOTS+1;
+const SETUP_MEMORY_BYTES=4*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
+// arkd sweeps a pool coin at its batch expiry, so the head moves to a fresh round well before. A batch inherits its
+// earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
+const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000;
+
+export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
+export interface RollupStatus {
+ version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
+ pool?:{token:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number};
+ network?:StockNetworkInfo;
+ proving?:{spend:{wasm:string;zkey:string}};
+}
+export interface RollupSpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
+interface Genesis {version:1;token:string;txid:string;archive:RollupArchive;serverKey:string;emulatorKey:string}
+interface Session {arkTx:string;checkpoints:string[];vin:number;signed?:{arkTx:string;checkpoint:string}}
+
+const sha=(bytes:Uint8Array|string)=>createHash('sha256').update(bytes).digest('hex');
+const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
+const readJson=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
+
+type KeyManifest={circuits:Record<string,{files:Record<string,string>}>};
+function verifyKeys(keys:string):KeyManifest {
+ const manifest=readJson<KeyManifest>(join(keys,'manifest.json'));
+ for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files))if(sha(readFileSync(join(keys,name)))!==digest)throw new Error(`Rollup key ${name} does not match its manifest.`);
+ return manifest;
+}
+
+/**
+ * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
+ * `bundled` already holds keys. Afterwards the volume's keys define the pool, whatever later images hold.
+ */
+export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string};renewBeforeMs?:number;log?:(message:string)=>void}){
+ const log=o.log??((message:string)=>console.log('[rollup] '+message)),keys=join(o.directory,'keys');
+ mkdirSync(o.directory,{recursive:true,mode:0o700});
+ const secretsPath=join(o.directory,'secrets.json');
+ if(!existsSync(secretsPath))writeFileSync(secretsPath,JSON.stringify({wallet:randomBytes(32).toString('hex'),operator:randomBytes(32).toString('hex')}),{flag:'wx',mode:0o600});
+ const secrets=readJson<{wallet:string;operator:string}>(secretsPath),identity=SingleKey.fromHex(secrets.wallet),operatorSecret=hex.decode(secrets.operator);
+ const poseidon=await buildPoseidon(),hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
+ let status:RollupStatus={version:1,phase:'starting',message:'Starting the rollup pool.',minimumFundingSats:MINIMUM_FUNDING_SATS};
+ let manifest:KeyManifest|undefined,setup:ChildProcess|undefined,setupFailures=0,setupRetryAt=0;
+
+ /** Ready keys, or undefined while the one-time setup runs in a child process. */
+ function ensureKeys():KeyManifest|undefined {
+  if(manifest)return manifest;
+  if(!existsSync(join(keys,'manifest.json'))){
+   if(existsSync(join(o.directory,'genesis.json')))throw new Error('The rollup keys are missing from a pool that already exists; restore the volume.');
+   if(o.bundled&&existsSync(join(o.bundled,'manifest.json'))){mkdirSync(keys,{mode:0o700});for(const name of ROLLUP_KEY_FILES)copyFileSync(join(o.bundled,name),join(keys,name));}
+   else{
+    const memory=process.constrainedMemory()||totalmem(),gib=(bytes:number)=>(bytes/1024**3).toFixed(1)+' GiB';
+    // The batch key setup holds gigabytes; refuse a small host and back off after failures rather than starve v1.
+    if(memory<SETUP_MEMORY_BYTES){status={...status,phase:'blocked',message:`Key setup needs ${gib(SETUP_MEMORY_BYTES)} of memory; this host has ${gib(memory)}.`};return undefined;}
+    if(!setup&&setupFailures>=SETUP_ATTEMPTS){status={...status,phase:'blocked',message:`Key setup failed ${setupFailures} times; see the server log. Free memory: ${gib(freemem())}.`};return undefined;}
+    if(!setup&&Date.now()>=setupRetryAt){
+     const partial=keys+'.partial';rmSync(partial,{recursive:true,force:true});
+     status={...status,phase:'keys',message:`Generating the development proving keys (one time). Memory: ${gib(memory)}.`};
+     setup=execFile(process.execPath,[o.setupTool,'--development-only','--single-thread','--build',o.circuits,'--ptau',join(o.directory,'ptau','powersOfTau28_hez_final_20.ptau'),'--out',partial],{maxBuffer:16*1024*1024,windowsHide:true},error=>{
+      setup=undefined;
+      if(error){setupFailures++;setupRetryAt=Date.now()+SETUP_RETRY_MS;status={...status,message:`Key setup failed (${setupFailures}/${SETUP_ATTEMPTS}): `+error.message.slice(0,300)};log(status.message);return;}
+      renameSync(partial,keys);rmSync(join(o.directory,'ptau'),{recursive:true,force:true});log('development proving keys ready');
+     });
+     setup.stdout?.on('data',(chunk:Buffer)=>{for(const line of String(chunk).split(/\r?\n/))if(line.startsWith('ROLLUP_SETUP_PROGRESS=')){try{status={...status,message:`Generating the development proving keys (one time): ${JSON.parse(line.slice(22)).stage}.`};}catch{}}});
+    }
+    return undefined;
+   }
+  }
+  manifest=verifyKeys(keys);
+  const files=manifest.circuits['spend']!.files;
+  status={...status,proving:{spend:{wasm:files['spend.wasm']!,zkey:files['spend.zkey']!}}};
+  return manifest;
+ }
+ let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
+ let stopped=false,timers:ReturnType<typeof setTimeout>[]=[];
+ const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>();
+
+ const spec=async(token:string)=>{
+  writeFileSync(join(o.directory,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',slots:BATCH_SLOTS,kind:0,token,operator:hex.encode(schnorr.getPublicKey(operatorSecret))}));
+  return loadRollupLeaves(o.vmBinary,join(o.directory,'spec.json'));
+ };
+
+ /** Issues the pool token and sends the head with the genesis state packet; a crash in between re-finds the head by its script. */
+ async function genesis(network:StockNetworkInfo):Promise<Genesis|undefined> {
+  const adapter=await createStockBootstrapAdapter(network,identity),wallet=adapter.ark.wallet,balance=await wallet.getBalance();
+  status={...status,phase:'funding',fundingAddress:adapter.ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool.`};
+  const tokenPath=join(o.directory,'genesis-token.json');
+  if(!existsSync(tokenPath)){
+   if(balance.available<MINIMUM_FUNDING_SATS)return undefined;
+   status={...status,phase:'genesis',message:'Issuing the pool token.'};
+   writeFileSync(tokenPath,JSON.stringify({token:(await wallet.assetManager.issue({amount:1n})).assetId}),{flag:'wx'});
+  }
+  const {token}=readJson<{token:string}>(tokenPath),leaves=await spec(token);
+  const serverKey=hex.decode(network.serverKey),pool=rollupPoolTree(serverKey,hex.decode(network.emulatorKey),leaves,network.exitDelay);
+  const indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl),script=hex.encode(pool.tree.pkScript);
+  let head=(await indexer.getVtxos({scripts:[script],spendableOnly:true})).vtxos.find(v=>v.assets?.some(a=>a.assetId===token));
+  if(!head){
+   status={...status,phase:'genesis',message:'Sending the pool head.'};
+   const address=new ArkAddress(serverKey,pool.tree.pkScript.subarray(2),'tark').encode();
+   const packet=Uint8Array.from([...le32(RollupState.genesis(hash).commitment()),...le32(0n)]);
+   const txid=await wallet.send({recipients:[{address,amount:HEAD_SATS,assets:[{assetId:token,amount:1n}],tapTree:pool.tree.encode(),extensions:[{type:ROLLUP_STATE_PACKET,payload:packet}]}]});
+   for(let i=0;i<30&&!head;i++){await sleep(1000);head=(await indexer.getVtxos({scripts:[script],spendableOnly:true})).vtxos.find(v=>v.txid===txid);}
+   if(!head)throw new Error(`Genesis ${txid} is not indexed yet.`);
+  }
+  const raw=(await indexer.getVirtualTxs([head.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===head!.txid)!;
+  if(!Extension.fromTx(raw).getPacketByType(ROLLUP_STATE_PACKET))throw new Error('The pool head carries no state packet.');
+  const saved:Genesis={version:1,token,txid:head.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey,
+   archive:{version:1,head:{txid:head.txid,vout:head.vout,value:head.value,sourceTxHex:hex.encode(raw.toBytes(true,true))},reserves:{},batches:0}};
+  writeFileSync(join(o.directory,'genesis.json'),JSON.stringify(saved),{flag:'wx'});
+  log(`genesis ${head.txid}:${head.vout} token ${token}`);
+  return saved;
+ }
+
+ const signDeposits=async(request:StockWireRequest,deposits:RollupSpend[])=>{
+  const first=Transaction.fromPSBT(base64.decode(request.arkTx)).inputsLength-deposits.length;
+  deposits.forEach((d,i)=>sessions.set(d.id,{arkTx:request.arkTx,checkpoints:request.checkpoints,vin:first+i}));
+  for(const deadline=Date.now()+SIGN_TIMEOUT_MS;Date.now()<deadline&&deposits.some(d=>!sessions.get(d.id)?.signed);)await sleep(250);
+  const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),checkpoints=[...request.checkpoints];
+  for(const d of deposits){
+   const s=sessions.get(d.id);sessions.delete(d.id);
+   if(!s?.signed)continue;
+   ark.updateInput(s.vin,{tapScriptSig:Transaction.fromPSBT(base64.decode(s.signed.arkTx)).getInput(s.vin).tapScriptSig});
+   checkpoints[s.vin]=s.signed.checkpoint;
+  }
+  return {arkTx:base64.encode(ark.toPSBT()),checkpoints};
+ };
+
+ async function open(network:StockNetworkInfo,saved:Genesis){
+  const leaves=await spec(saved.token),pool=rollupPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
+  const adapter=await createStockBootstrapAdapter(network,identity),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
+  const prover=(name:string)=>createRollupProver({wasm:join(keys,`${name}.wasm`),zkey:join(keys,`${name}.zkey`)},o.rapidsnark);
+  const operator=await openRollupOperator({directory:join(o.directory,'operator'),
+   pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-spend'),programsHash:sha(leaves.batch),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(adapter.checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
+   genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint:adapter.checkpoint,
+   clientKey:readJson(join(keys,'spend.vkey.json')),hash,prover:prover('batch-spend'),transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
+   onDrop:(ids,reason)=>{for(const id of ids){const t=tracked.get(id);if(t?.status==='pending')Object.assign(t,{status:'dropped',reason});}}});
+  const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
+  live={operator,network,genesis:saved,address,pool,leaves,indexer};
+  status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:adapter.ark.address};
+  run(prover('spend'));
+ }
+
+ function run(spendProver:ReturnType<typeof createRollupProver>){
+  const {operator}=live!;let renewing=false,ticking:Promise<unknown>|undefined,lastError='';
+  const note=(message:string)=>{if(message!==lastError)log(message);lastError=message;};
+  const included=(batch:number,txid:string)=>{
+   const record=readJson<RollupRecord>(join(o.directory,'operator','batches',`${batch}.json`)),spent=new Set(record.slots.flatMap(s=>s.nullifiers));
+   for(const t of tracked.values())if(t.status==='pending'&&spent.has(t.nullifier))Object.assign(t,{status:'included',batch,txid});
+  };
+  const sweep=()=>{
+   const waiting=new Set(operator.pendingIds());
+   for(const [id,t] of tracked){
+    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id))Object.assign(t,operator.state.nullifiers.has(BigInt(t.nullifier))?{status:'included'}:{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
+    if(Date.now()-t.at>3600_000)tracked.delete(id);
+   }
+  };
+  const tick=async()=>{
+   if(stopped)return;
+   if(!renewing){
+    try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`);included(r.batch,r.txid);}else if(r)note(r.blocked);}
+    catch(error){note((error as Error).message);}
+    finally{ticking=undefined;}
+    sweep();
+   }
+   timers.push(setTimeout(tick,1000));
+  };
+  const pad=async()=>{
+   const recipient=rollupRecipientOf(hash,randomField(),x25519.utils.randomSecretKey());
+   while(!stopped){
+    if(operator.padding()>=PADDING_TARGET){await sleep(2000);continue;}
+    try{
+     const built=await buildRollupSpend(hash,{root:operator.state.latestRoot(),spendSecret:randomField(),self:recipient,request:{}});
+     const proof=await spendProver.prove(built.witness.input,built.witness.publicSignals);
+     operator.addPadding([{id:'pad-'+randomBytes(8).toString('hex'),slot:built.witness.slot,publics:built.witness.publicSignals as unknown as RollupSpend['publics'],proof,ciphertext:built.ciphertext,receivedAt:Infinity}]);
+    }catch(error){note('padding: '+(error as Error).message);await sleep(10_000);}
+   }
+  };
+  const renew=async()=>{
+   if(stopped)return;
+   try{
+    const {head}=operator.status().archive,{vtxos}=await live!.indexer.getVtxos({outpoints:[{txid:head.txid,vout:head.vout}]}),expires=vtxos[0]?.expiresAt;
+    if(expires instanceof Date&&expires.getTime()-Date.now()<(o.renewBeforeMs??RENEW_BEFORE_MS)){
+     renewing=true;await ticking?.catch(()=>{});
+     if(operator.status().pending)throw new Error('a submitted batch is unresolved; renewal waits.');
+     const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,
+      onIntent:id=>writeFileSync(join(o.directory,'renewal-intent.txt'),id)});
+     await operator.relocate(moved);log(`renewed into round ${moved.commitment}, head ${moved.head.txid}`);
+    }
+   }catch(error){note('renewal: '+(error as Error).message);}
+   finally{renewing=false;}
+   timers.push(setTimeout(renew,RENEW_CHECK_MS));
+  };
+  void tick();void pad();void renew();
+ }
+
+ return {
+  status:():RollupStatus=>{
+   if(!live)return status;
+   const {operator,genesis,address,network,pool}=live,{archive}=operator.status();
+   return {...status,network,pool:{token:genesis.token,address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.latestRoot()),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding()}};
+  },
+  /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
+  step:async()=>{
+   if(live||stopped)return;
+   try{
+    if(!ensureKeys())return;
+    const path=join(o.directory,'genesis.json'),known=existsSync(path)?readJson<Genesis>(path):undefined;
+    const network=await preflightStockMutinynet({...o.endpoints,...(known?{expected:{serverKey:known.serverKey,emulatorKey:known.emulatorKey}}:{})});
+    const saved=known??await genesis(network);
+    if(saved)await open(network,saved);
+   }catch(error){status={...status,phase:status.phase==='starting'?'blocked':status.phase,message:(error as Error).message};log((error as Error).message);}
+  },
+  ready:()=>!!live,
+  keyFile:(name:string)=>manifest&&(['spend.wasm','spend.zkey','spend.vkey.json'] as const).find(file=>file===name)?join(keys,name):undefined,
+  batches:(from:number,limit:number)=>{
+   const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
+   for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
+   return {from,total,batches:list};
+  },
+  /** Fills a deposit coin from the indexer; the client names the outpoint and the tree that locks it. */
+  depositCoin:async(c:{txid:string;vout:number;tapTree:string;leaf:string}):Promise<RollupCoin>=>{
+   const raw=(await live!.indexer.getVirtualTxs([c.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===c.txid);
+   const output=raw&&c.vout<raw.outputsLength?raw.getOutput(c.vout):undefined,tree=VtxoScript.decode(hex.decode(c.tapTree));
+   if(!raw||!output?.script||hex.encode(output.script)!==hex.encode(tree.pkScript))throw new Error('The deposit coin is not indexed under that tree.');
+   return {txid:c.txid,vout:c.vout,value:Number(output.amount),sourceTx:raw.toBytes(true,true),tapTree:tree.encode(),leaf:tree.findLeaf(c.leaf)};
+  },
+  submit:async(spend:Omit<RollupSpend,'receivedAt'>)=>{
+   if(!live)throw new Error('The rollup pool is not open yet.');
+   if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
+   await live.operator.submit(spend);
+   tracked.set(spend.id,{status:'pending',nullifier:String(spend.slot.nullifiers[0]),at:Date.now()});
+  },
+  spend:(id:string):RollupSpendStatus|undefined=>{
+   const s=sessions.get(id),t=tracked.get(id);
+   if(s&&!s.signed)return {status:'signing',arkTx:s.arkTx,checkpoint:s.checkpoints[s.vin]!,checkpoints:s.checkpoints,vin:s.vin};
+   if(!t)return undefined;
+   const {nullifier:_n,at:_a,...rest}=t;return rest;
+  },
+  sign:(id:string,signed:{arkTx:string;checkpoint:string})=>{
+   const s=sessions.get(id);
+   if(!s||s.signed)throw new Error('This spend has no open signing round.');
+   const same=(a:string,b:string)=>Transaction.fromPSBT(base64.decode(a)).id===Transaction.fromPSBT(base64.decode(b)).id;
+   if(!same(signed.arkTx,s.arkTx)||!same(signed.checkpoint,s.checkpoints[s.vin]!))throw new Error('The signed transactions are not this batch.');
+   s.signed=signed;
+  },
+  close:()=>{stopped=true;for(const t of timers)clearTimeout(t);setup?.kill();live?.operator.close();},
+ };
+}
+export type RollupService=Awaited<ReturnType<typeof openRollupService>>;

@@ -12,6 +12,23 @@ COPY packages/protocol/src/stock-native.ts packages/protocol/src/types.ts ./pack
 RUN npm run stock:tools && npm run stock:compile && npm run stock:setup -- --development-only \
  && mkdir -p /out && cp -a circuits/stock/build/compiled /out/stock-artifacts
 
+# v2 rollup circuits; their proving keys are generated once at runtime and kept on the volume. The rapidsnark
+# release binary needs GLIBCXX_3.4.32, newer than bookworm's, so batch proofs use the snarkjs CLI for now.
+FROM --platform=linux/amd64 node:24-bookworm AS rollup-build
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY patches/ ./patches/
+COPY tools/patch-sdk.mjs ./tools/patch-sdk.mjs
+RUN npm ci
+COPY tools/prepare-stock-tools.mjs ./tools/prepare-stock-tools.mjs
+RUN npm run stock:tools -- --compiler-only
+COPY circuits/rollup/compiler.mjs circuits/rollup/generate.mjs circuits/rollup/lib.circom circuits/rollup/spend.circom circuits/rollup/join.circom ./circuits/rollup/
+RUN node circuits/rollup/generate.mjs spend batch-spend \
+ && mkdir -p /out/rollup-circuits/spend_js /out/rollup-circuits/batch-spend_js \
+ && cp circuits/rollup/build/spend.r1cs circuits/rollup/build/batch-spend.r1cs /out/rollup-circuits/ \
+ && cp circuits/rollup/build/spend_js/spend.wasm /out/rollup-circuits/spend_js/ \
+ && cp circuits/rollup/build/batch-spend_js/batch-spend.wasm /out/rollup-circuits/batch-spend_js/
+
 FROM --platform=linux/amd64 node:24-bookworm-slim AS app-build
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -42,6 +59,8 @@ COPY --from=app-build --chown=node:node /app/tools/stock-profile-gate.ts ./tools
 COPY --from=proof-build --chown=node:node /out/stock-artifacts ./stock-artifacts
 COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
 COPY --from=vm-build --chown=node:node /out/stock-onchain-qualification ./bin/stock-onchain-qualification
+COPY --from=app-build --chown=node:node /app/tools/rollup-setup.mjs ./tools/rollup-setup.mjs
+COPY --from=rollup-build --chown=node:node /out/rollup-circuits ./rollup-circuits
 RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 USER node

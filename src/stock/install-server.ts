@@ -17,6 +17,8 @@ import {stockJournalFingerprint} from './journal.ts';
 import {loadStockProfile,type StockProgramManifest} from './sdk.ts';
 import {openStockMutinynetService} from './server.ts';
 import {loadStockProofArtifacts,type StockArtifactManifest} from '../../packages/protocol/src/stock-proof-node.ts';
+import {createRollupRouter} from '../rollup/http.ts';
+import {openRollupService,type RollupService} from '../rollup/service.ts';
 
 const root=fileURLToPath(new URL('../..',import.meta.url));
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
@@ -119,9 +121,10 @@ export async function openWhenUnlocked<T>(open:()=>Promise<T>,signal:AbortSignal
   }
  }
 }
-export function createStockInstallApp(status:()=>StockSetupStatus,webRoot:string){
+export function createStockInstallApp(status:()=>StockSetupStatus,webRoot:string,rollup?:express.Router){
  const app=express();app.disable('x-powered-by');let service:express.Express|undefined;
  app.get('/api/setup',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(status());});
+ if(rollup){app.use('/api/rollup',rollup);app.get('/rollup',(_req,res)=>res.sendFile(join(webRoot,'index.html')));}
  app.get('/health',(_req,res)=>{const phase=status().phase;res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
  app.get('/readyz',(_req,res)=>res.status(status().phase==='ready'?200:503).json({ready:status().phase==='ready'}));
  app.get('/',(_req,res)=>res.sendFile(join(webRoot,'index.html')));app.get('/lab',(_req,res)=>res.sendFile(join(webRoot,'index.html')));app.get('/wallet',(_req,res)=>res.redirect('/stock-wallet'));app.get('/stock-wallet',(_req,res)=>res.sendFile(join(webRoot,'index.html')));
@@ -135,11 +138,22 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  let initial:StockSetupStatus={version:1,phase:'starting',network:'mutinynet',minimumFundingSats:660,message:'Initializing the persistent test pool.'};
  const shutdown=new AbortController();
  let installation:Awaited<ReturnType<typeof openStockInstallation>>|undefined,stopping=false,timer:ReturnType<typeof setTimeout>|undefined,active:Promise<void>|undefined;
- const http=createStockInstallApp(()=>installation?.controller.status()??initial,join(root,'app/dist'));
+ let rollup:RollupService|undefined,rollupTimer:ReturnType<typeof setTimeout>|undefined;
+ const http=createStockInstallApp(()=>installation?.controller.status()??initial,join(root,'app/dist'),createRollupRouter(()=>rollup));
  const listener=http.app.listen(port,process.env.HOST??'0.0.0.0',()=>console.log('Shielded setup and wallet listening on port '+port+'. Customer keys remain client-side.'));
  const logError=(error:unknown)=>{const reasons:string[]=[];let current=error;for(let depth=0;depth<4&&current instanceof Error;depth++){reasons.push(current.message);current=current.cause;}let message=reasons.join(': ')||'Setup failed safely.';if(config.secrets.bootstrapMnemonic)message=message.replaceAll(config.secrets.bootstrapMnemonic,'[redacted]');console.error(message.replace(/\b[0-9a-f]{64}\b/gi,'[redacted 32-byte value]'));};
  const tick=()=>{active=(async()=>{try{await installation!.controller.step();}catch(error){logError(error);}if(!stopping&&installation!.controller.status().phase!=='ready')timer=setTimeout(tick,10000);})();};
- const stop=async()=>{if(stopping)return;stopping=true;shutdown.abort();if(timer)clearTimeout(timer);listener.close();await active;installation?.close();await (globalThis as any).curve_bn128?.terminate();process.exit(0);};process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
+ // v2 lives beside v1 under its own directory and opens only after v1 has claimed the volume.
+ const startRollup=async()=>{
+  try{
+   const binary=join(root,'bin',process.platform==='win32'?'shielded-vm.exe':'shielded-vm'),rapidsnark=join(root,'bin','rapidsnark');
+   rollup=await openRollupService({directory:join(resolve(config.network.dataDirectory),'rollup'),circuits:resolve(process.env.SHIELDED_ROLLUP_CIRCUITS??join(root,'rollup-circuits')),setupTool:join(root,'tools','rollup-setup.mjs'),
+    ...(process.env.SHIELDED_ROLLUP_KEYS?{bundled:resolve(process.env.SHIELDED_ROLLUP_KEYS)}:{}),vmBinary:binary,...(existsSync(rapidsnark)?{rapidsnark}:{}),
+    endpoints:{arkUrl:config.network.arkUrl,emulatorUrl:config.network.emulatorUrl,...(config.network.indexerUrl?{indexerUrl:config.network.indexerUrl}:{})}});
+   const step=async()=>{await rollup!.step();if(!stopping&&!rollup!.ready())rollupTimer=setTimeout(step,15000);};void step();
+  }catch(error){logError(error);}
+ };
+ const stop=async()=>{if(stopping)return;stopping=true;shutdown.abort();if(timer)clearTimeout(timer);if(rollupTimer)clearTimeout(rollupTimer);rollup?.close();listener.close();await active;installation?.close();await (globalThis as any).curve_bn128?.terminate();process.exit(0);};process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
  const waiting='Waiting for the previous instance to release the data volume.';
- try{installation=await openWhenUnlocked(()=>openStockInstallation(config,http.activate,{signal:shutdown.signal}),shutdown.signal,()=>{if(initial.message!==waiting){initial={...initial,message:waiting};console.log(waiting);}});if(!stopping)tick();else installation.close();}catch(error){initial={...initial,phase:'blocked',message:'Installation stopped safely. Check the server logs and preserve the data volume.'};logError(error);}
+ try{installation=await openWhenUnlocked(()=>openStockInstallation(config,http.activate,{signal:shutdown.signal}),shutdown.signal,()=>{if(initial.message!==waiting){initial={...initial,message:waiting};console.log(waiting);}});if(!stopping){tick();if(process.env.SHIELDED_ROLLUP!=='off')void startRollup();}else installation.close();}catch(error){initial={...initial,phase:'blocked',message:'Installation stopped safely. Check the server logs and preserve the data volume.'};logError(error);}
 }
