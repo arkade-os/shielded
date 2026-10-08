@@ -23,7 +23,7 @@ import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin} from './covenant.ts'
 import {loadRollupLeaves} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
 import {createRollupProver} from './prover.ts';
-import {renewRollupPool} from './renewal.ts';
+import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool} from './renewal.ts';
 import {listingsOf} from './listings.ts';
 import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
@@ -234,14 +234,28 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     }catch(error){note('padding: '+(error as Error).message);await sleep(10_000);}
    }
   };
+  const renewalPath=join(o.directory,'renewal.json');
+  const settleRenewal=async()=>{
+   if(!existsSync(renewalPath))return;
+   const pending=readJson<{intentId:string;head:{txid:string;vout:number}}>(renewalPath),{archive}=operator.status();
+   const next=leftoverRenewal(pending,archive.head,(await live!.indexer.getVtxos({outpoints:[pending.head]})).vtxos[0]);
+   if(next==='moved')throw new Error('The pool head was spent outside this operator, which cannot follow that yet.');
+   if(next==='adopt'){await operator.relocate(await renewedRollupPool(live!.indexer,live!.pool.tree,live!.genesis.token,archive));log('adopted the head an interrupted renewal created');}
+   if(next==='flush')log(`interrupted renewal intent ${pending.intentId}: ${await flushRollupIntent({arkUrl:live!.network.arkUrl,intentId:pending.intentId,topics:[archive.head,...Object.values(archive.reserves)].map(c=>`${c.txid}:${c.vout}`)})}`);
+   rmSync(renewalPath,{force:true});
+  };
   const renew=async()=>{
    if(stopped)return;
    try{
+    if(existsSync(renewalPath))await exclusive(settleRenewal);
     const {head}=operator.status().archive,{vtxos}=await live!.indexer.getVtxos({outpoints:[{txid:head.txid,vout:head.vout}]}),expires=vtxos[0]?.expiresAt;
     if(expires instanceof Date&&expires.getTime()-Date.now()<(o.renewBeforeMs??RENEW_BEFORE_MS))await exclusive(async()=>{
-     const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,
-      onIntent:id=>writeFileSync(join(o.directory,'renewal-intent.txt'),id)});
-     await operator.relocate(moved);log(`renewed into round ${moved.commitment}, head ${moved.head.txid}`);
+     const from=operator.status().archive.head;
+     try{
+      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,
+       onIntent:intentId=>writeFileSync(renewalPath,JSON.stringify({intentId,head:{txid:from.txid,vout:from.vout}}))});
+      await operator.relocate(moved);rmSync(renewalPath,{force:true});log(`renewed into round ${moved.commitment}, head ${moved.head.txid}`);
+     }catch(error){await settleRenewal().catch(e=>note('renewal: '+(e as Error).message));throw error;}
     });
    }catch(error){note('renewal: '+(error as Error).message);}
    timers.push(setTimeout(renew,RENEW_CHECK_MS));
@@ -264,7 +278,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    }catch(error){note('listing: '+(error as Error).message);}
    timers.push(setTimeout(list,LIST_CHECK_MS));
   };
-  void tick();void pad();void renew();void list();
+  const start=()=>{void tick();void pad();void renew();void list();};
+  // A batch started before the leftover intent clears would only be refused, and its deposits dropped.
+  if(existsSync(renewalPath))void exclusive(settleRenewal).catch(error=>note('renewal: '+(error as Error).message)).finally(start);else start();
  }
 
  return {

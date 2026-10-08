@@ -1,6 +1,6 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {schnorr} from '@noble/curves/secp256k1.js';
-import {arkade,asset,Batch,EmulatorPacket,Extension,Intent,networks,RestArkProvider,RestEmulatorProvider,RestIndexerProvider,Transaction,UnknownPacket,withPrevTxs,type Identity,type VtxoScript} from '@arkade-os/sdk';
+import {arkade,asset,Batch,EmulatorPacket,Extension,Intent,networks,RestArkProvider,RestEmulatorProvider,RestIndexerProvider,SettlementEventType,Transaction,UnknownPacket,withPrevTxs,type Identity,type VtxoScript} from '@arkade-os/sdk';
 import {RawWitness} from '@scure/btc-signer';
 import {hex} from '@scure/base';
 import type {StockNetworkInfo} from '../stock/network.ts';
@@ -33,7 +33,7 @@ export const rollupRenewalSignature=(operatorSecret:Uint8Array,cosigners:string[
 
 /**
  * Moves the head and every reserve, unchanged, into a fresh round; returns their new outpoints.
- * ponytail: one-shot; a crash after registration leaves an intent arkd re-queues until it is confirmed and fails.
+ * ponytail: one-shot; a crash after registration strands the intent until flushRollupIntent clears it.
  */
 export interface RollupRenewalProviders {ark?:RestArkProvider;emulator?:RestEmulatorProvider;indexer?:RestIndexerProvider}
 export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive;
@@ -68,15 +68,47 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
   let commitment:string;
   try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`)]),handler,{abortController});}
   finally{abortController.abort();}
-  const live=(await indexer.getVtxos({scripts:[hex.encode(o.pool.pkScript)],spendableOnly:true})).vtxos;
-  const coinOf=async(v:RenewedCoin):Promise<RollupPoolCoin>=>{
-   const raw=(await indexer.getVirtualTxs([v.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===v.txid);
-   if(!raw)throw new Error(`Renewed coin ${v.txid} is not indexed yet.`);
-   return {txid:v.txid,vout:v.vout,value:v.value,sourceTxHex:hex.encode(raw.toBytes(true,true))};
-  };
-  const moved=renewedRollupPoolCoins(o.token,reserves.map(([assetId,coin])=>[assetId,coin.amount] as const),live);
-  const renewed:RollupArchive['reserves']={};
-  for(const reserve of moved.reserves)renewed[reserve.assetId]={...await coinOf(reserve.coin),amount:reserve.amount};
-  return {commitment,head:await coinOf(moved.head),reserves:renewed};
+  return {commitment,...await renewedRollupPool(indexer,o.pool,o.token,o.archive)};
  }catch(error){throw new Error(`Rollup renewal intent ${intentId} is registered and must be confirmed or cleared: ${(error as Error).message}`,{cause:error});}
+}
+
+export async function renewedRollupPool(indexer:Pick<RestIndexerProvider,'getVtxos'|'getVirtualTxs'>,pool:VtxoScript,token:string,archive:Pick<RollupArchive,'reserves'>):Promise<Pick<RollupArchive,'head'|'reserves'>> {
+ const live=(await indexer.getVtxos({scripts:[hex.encode(pool.pkScript)],spendableOnly:true})).vtxos;
+ const coinOf=async(v:RenewedCoin):Promise<RollupPoolCoin>=>{
+  const raw=(await indexer.getVirtualTxs([v.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===v.txid);
+  if(!raw)throw new Error(`Renewed coin ${v.txid} is not indexed yet.`);
+  return {txid:v.txid,vout:v.vout,value:v.value,sourceTxHex:hex.encode(raw.toBytes(true,true))};
+ };
+ const moved=renewedRollupPoolCoins(token,Object.entries(archive.reserves).map(([assetId,coin])=>[assetId,coin.amount] as const),live);
+ const renewed:RollupArchive['reserves']={};
+ for(const reserve of moved.reserves)renewed[reserve.assetId]={...await coinOf(reserve.coin),amount:reserve.amount};
+ return {head:await coinOf(moved.head),reserves:renewed};
+}
+
+/** What a renewal left behind by a dead process needs, given the head it started from and that head's indexer record. */
+export function leftoverRenewal(pending:{head:{txid:string;vout:number}},archiveHead:{txid:string;vout:number},coin:{isSpent?:boolean;settledBy?:string}|undefined):'done'|'adopt'|'moved'|'flush' {
+ if(archiveHead.txid!==pending.head.txid||archiveHead.vout!==pending.head.vout)return 'done';
+ if(coin?.settledBy)return 'adopt';
+ return coin?.isSpent?'moved':'flush';
+}
+
+/**
+ * Clears an intent no live process can cosign. arkd re-queues it into every round and meanwhile refuses batch spends of the head;
+ * confirming it lets its round fail at nonce collection, after which arkd drops it. 'absent' means no round took it up.
+ */
+export async function flushRollupIntent(o:{arkUrl:string;intentId:string;topics:string[];waitMs?:number;ark?:Pick<RestArkProvider,'getEventStream'|'confirmRegistration'>}):Promise<'flushed'|'absent'> {
+ const ark=o.ark??new RestArkProvider(o.arkUrl),hash=hex.encode(sha256(new TextEncoder().encode(o.intentId))),abort=new AbortController();
+ let batch='',timer=setTimeout(()=>abort.abort(),o.waitMs??180_000);
+ try{
+  for await(const event of ark.getEventStream(abort.signal,o.topics)){
+   if(event.type===SettlementEventType.BatchStarted&&!batch&&event.intentIdHashes.includes(hash)){
+    batch=event.id;await ark.confirmRegistration(o.intentId);
+    clearTimeout(timer);timer=setTimeout(()=>abort.abort(),120_000);
+   }else if(batch&&event.type===SettlementEventType.BatchFailed&&event.id===batch)return 'flushed';
+  }
+  if(!abort.signal.aborted)throw new Error('The arkd event stream closed before the intent could be cleared.');
+ }catch(error){if(!abort.signal.aborted)throw error;}
+ finally{clearTimeout(timer);abort.abort();}
+ if(batch)throw new Error(`Renewal intent ${o.intentId} was confirmed in round ${batch}, but that round never failed.`);
+ return 'absent';
 }

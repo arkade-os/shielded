@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {test} from 'node:test';
 import {schnorr} from '@noble/curves/secp256k1.js';
+import {sha256} from '@noble/hashes/sha2.js';
 import {asset,SingleKey,UnknownPacket} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
-import {renewedRollupPoolCoins,renewRollupPool,rollupRenewalDigest,rollupRenewalSignature} from '../src/rollup/renewal.ts';
+import {flushRollupIntent,leftoverRenewal,renewedRollupPoolCoins,renewRollupPool,rollupRenewalDigest,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
 // tools/vm/rollup_renewal_test.go pins the same digest for the covenant's gate.
 test('the renewal gate signs the digest the covenant rebuilds',()=>{
@@ -51,4 +52,39 @@ test('a renewal hands out its intent id before the round, and names it when the 
  await assert.rejects(renewRollupPool({network,identity:SingleKey.fromHex('04'.repeat(32)),operatorSecret:randomBytes(32),pool:pool.tree,renewLeaf:pool.renew,
   leaves,token,archive:{version:1,head,reserves:{},batches:0},onIntent:id=>{seen.push(id);},providers:providers as never}),/intent-42/);
  assert.deepEqual(seen,['intent-42'],'the id reaches the caller before the round, so a stranded intent can be cleared');
+});
+
+test('a stranded renewal intent is confirmed in its round and cleared when that round fails',async()=>{
+ const hash=hex.encode(sha256(new TextEncoder().encode('intent-42'))),confirmed:string[]=[],topics:string[][]=[];
+ const ark={confirmRegistration:async(id:string)=>{confirmed.push(id);},getEventStream:async function*(_signal:AbortSignal,t:string[]){
+  topics.push(t);
+  yield {type:'batch_failed',id:'earlier',reason:'not enough intent confirmations received'};
+  yield {type:'batch_started',id:'other',intentIdHashes:['ff'.repeat(32)]};
+  yield {type:'batch_started',id:'ours',intentIdHashes:[hash]};
+  yield {type:'batch_failed',id:'ours',reason:'musig2 signing session timed out (nonce collection), collected 0/1 nonces'};
+ }};
+ assert.equal(await flushRollupIntent({arkUrl:'https://ark.invalid',intentId:'intent-42',topics:['ab:0'],ark:ark as never}),'flushed');
+ assert.deepEqual(confirmed,['intent-42']);
+ assert.deepEqual(topics,[['ab:0']]);
+});
+
+test('an intent no round picks up is reported absent, without confirming anything',async()=>{
+ const ark={confirmRegistration:async()=>{throw new Error('nothing to confirm');},getEventStream:async function*(signal:AbortSignal){
+  yield {type:'batch_started',id:'other',intentIdHashes:[]};
+  await new Promise(resolve=>signal.addEventListener('abort',resolve));
+ }};
+ assert.equal(await flushRollupIntent({arkUrl:'https://ark.invalid',intentId:'intent-42',topics:[],waitMs:50,ark:ark as never}),'absent');
+});
+
+test('a renewal left behind by a dead process is adopted, cleared or flushed according to the head',()=>{
+ const pending={intentId:'intent-42',head:{txid:'aa'.repeat(32),vout:0}};
+ assert.equal(leftoverRenewal(pending,{txid:'bb'.repeat(32),vout:0},undefined),'done','the head was relocated before the process died');
+ assert.equal(leftoverRenewal(pending,pending.head,{settledBy:'cc'.repeat(32)}),'adopt','the round settled the head, so its new coins exist');
+ assert.equal(leftoverRenewal(pending,pending.head,{isSpent:true}),'moved','an offchain spend is not a renewal');
+ assert.equal(leftoverRenewal(pending,pending.head,{isSpent:false}),'flush');
+});
+
+test('an event stream that closes before the wait ends proves nothing about the intent',async()=>{
+ const ark={confirmRegistration:async()=>{},getEventStream:async function*(){yield {type:'batch_started',id:'other',intentIdHashes:[]};}};
+ await assert.rejects(flushRollupIntent({arkUrl:'https://ark.invalid',intentId:'intent-42',topics:[],waitMs:5000,ark:ark as never}),/closed/);
 });
