@@ -9,6 +9,8 @@ import {offlineNativeFixture} from '../src/sdk/adapter.ts';
 import {executeVmBinary} from '../src/sdk/runtime.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
 import {loadRollupLeaves} from '../src/rollup/leaves.ts';
+import {createRollupTransport} from '../src/rollup/transport.ts';
+import type {StockNetworkInfo} from '../src/stock/network.ts';
 
 const vm=resolve('bin/shielded-vm.exe');
 const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-covenant-snarkjs.json','utf8')) as {clientKey:unknown;batchKey:unknown;oldPacket:string;newPacket:string;payoutProgram:string;slots:{proof:SnarkProof;publicSignals:string[]}[];batch:{proof:SnarkProof}};
@@ -31,7 +33,7 @@ async function world(){
  legs[3]={deposit:0n,withdraw:1000n,asset:false,program:hex.decode(fixture.payoutProgram)};
  const witness=rollupWitness(fixture.batch.proof,fixture.slots.map(s=>({proof:s.proof,publics:s.publicSignals.map(BigInt)})));
  const checkpoint=CSVMultisigTapscript.encode({pubkeys:[server],timelock:{type:'seconds',value:2048n}});
- return {leaves,legs,witness,checkpoint,head:coin(0,pool.tree,pool.batch),deposit:coin(1,userTree,userCollab)};
+ return {leaves,legs,witness,checkpoint,server,head:coin(0,pool.tree,pool.batch),deposit:coin(1,userTree,userCollab)};
 }
 const wire=(built:ReturnType<typeof buildRollupBatchTx>)=>({arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(tx=>base64.encode(tx.toPSBT()))});
 
@@ -58,3 +60,18 @@ test('the builder refuses batches that cannot balance',async()=>{
  assert.throws(()=>buildRollupBatchTx({...batch,legs:noProgram}),/32-byte P2TR program/);
 });
 
+test('the live transport refuses an over-weight batch before the emulator, and reads coin freshness from the indexer',async()=>{
+ const w=await world();
+ const built=buildRollupBatchTx({head:w.head,deposits:[w.deposit],legs:w.legs,token,leaves:w.leaves,witness:w.witness,newPacket:hex.decode(fixture.newPacket),checkpoint:w.checkpoint});
+ const coin={txid:'aa'.repeat(32),vout:0,isSpent:false,isSwept:false,isUnrolled:false,expiresAt:new Date(Date.now()+2*3600_000)};
+ let reached=false;
+ const transport=createRollupTransport({serverKey:hex.encode(w.server),operatorMaxWeight:20_000,arkUrl:'https://unused.invalid',emulatorUrl:'https://unused.invalid'} as unknown as StockNetworkInfo,{
+  emulator:{submitTx:async()=>{reached=true;throw new Error('unreachable');}},
+  indexer:{getVtxos:async({outpoints}:{outpoints:{txid:string;vout:number}[]})=>({vtxos:outpoints.some(o=>o.txid===coin.txid)?[coin]:[]}),getVirtualTxs:async()=>({txs:[]})},
+ } as never);
+ await assert.rejects(transport.submit(wire(built),1),/exceeds/);
+ assert.equal(reached,false);
+ assert.equal(await transport.fresh(coin,3600_000),true);
+ assert.equal(await transport.fresh(coin,3*3600_000),false);
+ assert.equal(await transport.unspent({txid:'bb'.repeat(32),vout:0}),false);
+});
