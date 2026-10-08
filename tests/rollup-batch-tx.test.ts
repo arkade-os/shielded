@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import {asset,CSVMultisigTapscript,MultisigTapscript,SingleKey,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {offlineNativeFixture} from '../src/sdk/adapter.ts';
-import {executeVmBinary} from '../src/sdk/runtime.ts';
+import {DEFAULT_VM_BINARY,executeVmBinary} from '../src/sdk/runtime.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
 import {loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 
-const vm=resolve('bin/shielded-vm.exe');
+const vm=DEFAULT_VM_BINARY;
 const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-covenant-snarkjs.json','utf8')) as {clientKey:unknown;batchKey:unknown;oldPacket:string;newPacket:string;payoutProgram:string;slots:{proof:SnarkProof;publicSignals:string[]}[];batch:{proof:SnarkProof}};
 const token=asset.AssetId.create('cc'.repeat(32),0).toString();
 
