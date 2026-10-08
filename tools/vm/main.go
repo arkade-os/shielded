@@ -207,11 +207,24 @@ func main() {
 	listen := flag.String("listen", "", "serve HTTP on loopback address, e.g. 127.0.0.1:8788; default is JSONL stdin/stdout")
 	registryFile := flag.String("registry", "", "immutable local program registry file; registered profiles cannot be provided in a request")
 	stockBuildFile := flag.String("stock-build", "", "build six stock-opcode program leaves from a one-public-input snarkjs Groth16 verification key and print JSON")
+	rollupLeavesFile := flag.String("rollup-leaves", "", "build the rollup pool's batch, reserve and renewal leaves from a spec JSON and print JSON")
 	printInfo := flag.Bool("info", false, "print bridge profile and deterministic PoC public keys")
 	trace := flag.Bool("trace", false, "print local diagnostic opcode trace to stderr on JSONL failure")
 	flag.Parse()
 	if *stockBuildFile != "" {
 		manifest, err := buildStockManifest(*stockBuildFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(manifest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *rollupLeavesFile != "" {
+		manifest, err := buildRollupLeaves(*rollupLeavesFile)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
