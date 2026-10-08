@@ -40,16 +40,25 @@ const weight=(tx:Transaction)=>tx.toBytes(true,true).length+3*tx.toBytes(false,f
 export function stockSignedWeights(request:StockWireRequest,estimate=false):{ark:number;checkpoints:number[]}{
  return {ark:weight(finalized(Transaction.fromPSBT(base64.decode(request.arkTx)),estimate)),checkpoints:request.checkpoints.map(encoded=>weight(finalized(Transaction.fromPSBT(base64.decode(encoded)),estimate)))};
 }
-export function verifyStockCustomerSignatures(request:StockWireRequest,serverKey:string,firstCustomerInput=1):void {
- const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),checkpoints=request.checkpoints.map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));
- if(checkpoints.length!==ark.inputsLength)throw new Error('Stock input/checkpoint count mismatch.');
- for(let vin=firstCustomerInput;vin<ark.inputsLength;vin++)for(const [tx,input] of [[ark,vin],[checkpoints[vin],0]] as const){
+function verifyCustomerInput(ark:Transaction,checkpoints:Transaction[],vin:number,serverKey:string):void {
+ for(const [tx,input] of [[ark,vin],[checkpoints[vin],0]] as const){
   const leaf=tx.getInput(input).tapLeafScript?.[0];if(!leaf)throw new Error('Customer funding has no immutable spend leaf.');
   const keys=signers(leaf[1].subarray(0,-1));
   if(keys.length!==2||!keys.some(key=>hex.encode(key)===serverKey))throw new Error('Customer funding must use its owner and the pinned Arkade signer.');
   const customer=keys.filter(key=>hex.encode(key)!==serverKey).map(key=>hex.encode(key));
   verifyTapscriptSignatures(tx,input,customer,undefined,undefined,tapLeafHash(leaf[1].subarray(0,-1),leaf[1].at(-1)!));
  }
+}
+export function verifyStockCustomerSignatures(request:StockWireRequest,serverKey:string,firstCustomerInput=1):void {
+ const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),checkpoints=request.checkpoints.map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));
+ if(checkpoints.length!==ark.inputsLength)throw new Error('Stock input/checkpoint count mismatch.');
+ for(let vin=firstCustomerInput;vin<ark.inputsLength;vin++)verifyCustomerInput(ark,checkpoints,vin,serverKey);
+}
+/** Whether this one customer input carries its owner's valid signature on both the spend and its checkpoint. */
+export function stockCustomerSigned(request:StockWireRequest,serverKey:string,vin:number):boolean {
+ const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),checkpoints=request.checkpoints.map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));
+ if(checkpoints.length!==ark.inputsLength||vin<0||vin>=ark.inputsLength)return false;
+ try{verifyCustomerInput(ark,checkpoints,vin,serverKey);return true;}catch{return false;}
 }
 function complete(actual:Transaction,expected:Transaction,serverKey:string):Transaction {
  if(actual.id!==expected.id||!same(actual.unsignedTx,expected.unsignedTx))throw new Error('Stock signer changed the exact submitted transaction.');

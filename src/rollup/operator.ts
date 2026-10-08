@@ -6,7 +6,7 @@ import {ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection} from '../../packages/protoco
 import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupState,type BatchSlot} from '../../packages/protocol/src/rollup/state.ts';
 import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
-import {stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
+import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {selectRollupBatch,type RollupSpend} from './batcher.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,type RollupCoin,type RollupLeaves} from './covenant.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
@@ -53,6 +53,11 @@ export const ROLLUP_RESEND_GRACE_MS=120_000;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const slotOf=(s:RecordSlot):BatchSlot=>({root:BigInt(s.root),nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
 const recordOf=(spends:readonly RollupSpend[]):RollupRecord=>({kind:'spend',slots:spends.map(({slot,publics})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String)}))});
+
+const sameTx=(left:string,right:string)=>{const [a,b]=[left,right].map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));return a.id===b.id&&hex.encode(a.unsignedTx)===hex.encode(b.unsignedTx);};
+/** Signatures alone say nothing about which coins they cover, so the signed batch must be the built one, byte for byte. */
+const sameRequest=(actual:StockWireRequest,expected:StockWireRequest)=>
+ actual.checkpoints.length===expected.checkpoints.length&&sameTx(actual.arkTx,expected.arkTx)&&expected.checkpoints.every((encoded,i)=>sameTx(actual.checkpoints[i]!,encoded));
 
 /** Carrier and funding rules a unit (one spend, or a complete group) must meet before it may enter a batch. */
 function checkUnit(unit:readonly RollupSpend[]):void {
@@ -166,8 +171,14 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    let request={arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(tx=>base64.encode(tx.toPSBT()))};
    if(deposits.length){
     const signed=await o.signDeposits(request,deposits);
-    if(!signed){inflight=inflight.filter(s=>!s.coin);throw new Error('A depositor did not sign; the batch is rebuilt without its deposits.');}
-    verifyStockCustomerSignatures(signed,serverKeyHex,firstDeposit);request=signed;
+    const tampered=!!signed&&!sameRequest(signed,request);
+    const refused=signed&&!tampered?deposits.filter((s,i)=>!stockCustomerSigned(signed,serverKeyHex,firstDeposit+i)):deposits;
+    if(refused.length){
+     const drop=unitsOf(inflight,s=>refused.includes(s));
+     inflight=inflight.filter(s=>!drop.has(s));
+     throw new Error(tampered?'The signed batch is not the batch the operator built; its deposits are dropped.':'A depositor did not sign; the batch is rebuilt without their deposits.');
+    }
+    verifyStockCustomerSignatures(signed!,serverKeyHex,firstDeposit);request=signed!;
    }
    const weights=stockSignedWeights(request,true),limit=o.weightLimit??40_000;
    if(weights.ark>limit||weights.checkpoints.some(w=>w>limit)){

@@ -62,7 +62,10 @@ async function toyGroup(ids:string[],root:bigint,legs:Leg[]):Promise<Omit<Rollup
   const made=legs.map((leg,i)=>witnessOf(root,leg,inputs[i]!,groupId,legs.length));
   const roots=made.map(w=>field.sqrt(w.publicSignals[0]!));
   if(roots.some(r=>r===null))continue;
-  return Promise.all(made.map((w,i)=>spendOf(ids[i]!,w,roots[i],legs[i]!)));
+  const group:Omit<RollupSpend,'receivedAt'>[]=[];
+  // One proof at a time: two concurrent first proofs race to build snarkjs's curve, and only one gets terminated.
+  for(const [i,w] of made.entries())group.push(await spendOf(ids[i]!,w,roots[i],legs[i]!));
+  return group;
  }
 }
 after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();});
@@ -101,7 +104,7 @@ async function world(){
  const options={directory:dir,pin:{version:1 as const,network:'local-stock' as const,descriptorProfileId:sha('rollup-test'),programsHash:sha(leaves.batch),artifactsHash:sha('toy'),checkpointHash:sha(checkpoint.script),genesisTxid:parent.id,serverKey:hex.encode(server),emulatorKey:hex.encode(emulator)},
   genesis,leaves,token,serverKey:server,emulatorKey:emulator,exitDelay,checkpoint,clientKey:fixture.clientKey,hash,transport,signDeposits,now:()=>clock.now,
   prover:{prove:async(_input:Record<string,unknown>,expected:readonly bigint[])=>(await snarkjs.groth16.fullProve({x:expected.map(String)},toy('covenant-batch.wasm'),toy('covenant-batch.zkey'))).proof as SnarkProof}};
- return {dir,options,clock,coin,transport,open:async(t:TestContext,overrides={})=>{const op=await openRollupOperator({...options,...overrides});t.after(()=>op.close());return op;}};
+ return {dir,options,clock,coin,transport,depositor,open:async(t:TestContext,overrides={})=>{const op=await openRollupOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 
 /** A network that accepts one batch, loses the reply, and indexes it only once the test says so. */
@@ -241,6 +244,46 @@ test('a deposit the network keeps refusing is dropped, and the honest spend stil
  assert.equal(submits,3,'the refused deposit is never proven or sent again');
  assert.equal(await op.tick(),undefined);
  assert.equal(readdirSync(join(w.dir,'abandoned')).length,0,'the kept plan is dropped once the head moves past it');
+});
+
+test('a deposit nobody signed drops only its own group, and the signed one still lands',async(t)=>{
+ const w=await world();
+ const signAllBut=(coin:number)=>async(request:StockWireRequest,spends:RollupSpend[])=>{
+  const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),first=ark.inputsLength-spends.length;
+  const vins=spends.map((_,i)=>first+i).filter((_,i)=>spends[i]!.coin!.vout!==coin);
+  const signed=await w.depositor.sign(ark,vins);
+  const checkpoints=await Promise.all(request.checkpoints.map(async(encoded,vin)=>vins.includes(vin)?base64.encode((await w.depositor.sign(Transaction.fromPSBT(base64.decode(encoded)),[0])).toPSBT()):encoded));
+  return {arkTx:base64.encode(signed.toPSBT()),checkpoints} as StockWireRequest|undefined;
+ };
+ const op=await w.open(t,{signDeposits:signAllBut(1)}),root=op.state.latestRoot();
+ for(const s of await toyGroup(['unsigned','carrier'],root,[{deposit:2500n,coin:w.coin(1)},{}]))await op.submit(s);
+ await op.submit(await toySpend('signed',root,{deposit:2500n,coin:w.coin(2)}));
+ await op.submit(await toySpend('transfer',root));
+ op.addPadding(await pads(root,9));
+ w.clock.now=10_000;
+ await assert.rejects(op.tick(),/did not sign/);
+ assert.equal(op.pending(),2,'the refused group goes, carrier included; the rest waits');
+ w.clock.now+=10_000;
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.equal(op.status().archive.head.value,102_830,'the signed deposit still lands');
+ assert.equal(op.pending(),0);
+});
+
+test('a depositor that signs another coin than the one the operator built on is refused',async(t)=>{
+ const w=await world();
+ const op=await w.open(t,{signDeposits:async(request:StockWireRequest,spends:RollupSpend[])=>{
+  const ark=Transaction.fromPSBT(base64.decode(request.arkTx)),first=ark.inputsLength-spends.length;
+  const checkpoint=Transaction.fromPSBT(base64.decode(request.checkpoints[first]!));
+  ark.updateInput(first,{index:2},true);checkpoint.updateInput(0,{index:2},true);
+  const checkpoints=[...request.checkpoints];
+  checkpoints[first]=base64.encode((await w.depositor.sign(checkpoint,[0])).toPSBT());
+  return {arkTx:base64.encode((await w.depositor.sign(ark,[first])).toPSBT()),checkpoints} as StockWireRequest|undefined;
+ }});
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ await assert.rejects(op.tick(),/not the batch the operator built/);
+ assert.equal(op.status().archive.batches,0,'the swapped coin never reaches the emulator');
 });
 
 test('admission refuses every spend the batch itself would reject',async(t)=>{
