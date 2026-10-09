@@ -74,7 +74,7 @@ const pads=(root:bigint,count:number)=>Promise.all(Array.from({length:count},()=
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-operator-'));
  writeFileSync(join(dir,'client.json'),JSON.stringify(fixture.clientKey));writeFileSync(join(dir,'batch.json'),JSON.stringify(fixture.batchKey));
- writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',slots:11,kind:0,token,operator:'aa'.repeat(32)}));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',clientJoinKey:'client.json',batchJoinKey:'batch.json',slots:11,token,operator:'aa'.repeat(32)}));
  const leaves=await loadRollupLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json'));
  const [server,emulator,user]=await Promise.all(['01','02','03'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
  const exitDelay={type:'seconds' as const,value:2048},pool=rollupPoolTree(server,emulator,leaves,exitDelay);

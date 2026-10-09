@@ -36,7 +36,7 @@ test('the renewed coins are the token head and the reserves that follow it, not 
 test('a renewal hands out its intent id before the round, and names it when the round fails',async()=>{
  const token=asset.AssetId.create('cc'.repeat(32),0).toString();
  const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
- const leaves={batch:Uint8Array.of(0x51),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
+ const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
  const pool=rollupPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
  const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fromString(token),null,[asset.AssetInput.create(0,1n)],[asset.AssetOutput.create(0,1n)],[])]);
  const parent=offlineNativeFixture([{script:pool.tree.pkScript,amount:3000n}],[tokenPacket,new UnknownPacket(ROLLUP_STATE_PACKET,new Uint8Array(64))]);

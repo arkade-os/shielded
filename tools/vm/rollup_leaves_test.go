@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -28,12 +29,52 @@ func writeRollupLeavesSpec(t *testing.T, spec rollupLeavesSpec) string {
 		}
 	}
 	spec.ClientKey, spec.BatchKey = "client.vkey.json", "batch.vkey.json"
+	spec.ClientJoinKey, spec.BatchJoinKey = "client.vkey.json", "batch.vkey.json"
 	encoded, _ := json.Marshal(spec)
 	path := filepath.Join(dir, "spec.json")
 	if err := os.WriteFile(path, encoded, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// rollupFixtureKeys parses the snarkjs fixture's client and batch keys.
+func rollupFixtureKeys(t *testing.T) (client, batch rollupKey) {
+	t.Helper()
+	raw, err := os.ReadFile(rollupSnarkJSFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f rollupSnarkJSFixture
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if client, err = parseRollupKey(f.ClientKey, 5); err != nil {
+		t.Fatal(err)
+	}
+	if batch, err = parseRollupKey(f.BatchKey, 12); err != nil {
+		t.Fatal(err)
+	}
+	return client, batch
+}
+
+// The join leaf is the spend leaf with another kind byte: same length, same budgets.
+func TestRollupJoinLeafMatchesTheSpendLeafShape(t *testing.T) {
+	client, batch := rollupFixtureKeys(t)
+	spend, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Kind: 0, Client: client, Batch: batch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	join, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Kind: 1, Client: client, Batch: batch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spend.Pairs != join.Pairs || spend.ECMul != join.ECMul {
+		t.Fatalf("budgets differ: %d/%d vs %d/%d", spend.Pairs, spend.ECMul, join.Pairs, join.ECMul)
+	}
+	if len(join.Script) != len(spend.Script) || bytes.Equal(join.Script, spend.Script) {
+		t.Fatalf("join leaf %d B vs spend leaf %d B; they must differ only in the kind byte", len(join.Script), len(spend.Script))
+	}
 }
 
 func TestRollupLeavesManifest(t *testing.T) {
@@ -45,26 +86,12 @@ func TestRollupLeavesManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(rollupSnarkJSFixturePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var f rollupSnarkJSFixture
-	if err := json.Unmarshal(raw, &f); err != nil {
-		t.Fatal(err)
-	}
-	client, err := parseRollupKey(f.ClientKey, 5)
-	if err != nil {
-		t.Fatal(err)
-	}
-	batch, err := parseRollupKey(f.BatchKey, 12)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client, batch := rollupFixtureKeys(t)
 	leaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Client: client, Batch: batch})
+	joinLeaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Kind: 1, Client: client, Batch: batch})
 	reserve, _ := buildRollupReserveLeaf(token)
 	renew, _ := buildRollupRenewalLeaf(token, operator)
-	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 41, Pairs: 16}
+	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), BatchJoin: hex.EncodeToString(joinLeaf.Script), Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 41, Pairs: 16}
 	if got != want {
 		t.Fatalf("manifest differs from the direct builds: ecmul %d pairs %d", got.ECMul, got.Pairs)
 	}

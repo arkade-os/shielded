@@ -3,7 +3,7 @@ import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
-import {asset,CSVMultisigTapscript,MultisigTapscript,SingleKey,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
+import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,SingleKey,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
@@ -18,7 +18,7 @@ const token=asset.AssetId.create('cc'.repeat(32),0).toString();
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-batch-'));
  writeFileSync(join(dir,'client.json'),JSON.stringify(fixture.clientKey));writeFileSync(join(dir,'batch.json'),JSON.stringify(fixture.batchKey));
- writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',slots:11,kind:0,token,operator:'aa'.repeat(32)}));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',clientJoinKey:'client.json',batchJoinKey:'batch.json',slots:11,token,operator:'aa'.repeat(32)}));
  const leaves=await loadRollupLeaves(vm,join(dir,'spec.json'));
  const [server,emulator,user]=await Promise.all(['01','02','03'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
  const pool=rollupPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
@@ -32,8 +32,20 @@ async function world(){
  legs[3]={deposit:0n,withdraw:1000n,asset:false,program:hex.decode(fixture.payoutProgram)};
  const witness=rollupWitness(fixture.batch.proof,fixture.slots.map(s=>({proof:s.proof,publics:s.publicSignals.map(BigInt)})));
  const checkpoint=CSVMultisigTapscript.encode({pubkeys:[server],timelock:{type:'seconds',value:2048n}});
- return {leaves,legs,witness,checkpoint,server,head:coin(0,pool.tree,pool.batch),deposit:coin(1,userTree,userCollab)};
+ return {leaves,legs,witness,checkpoint,server,pool,head:coin(0,pool.tree,pool.batch),joinHead:coin(0,pool.tree,pool.batchJoin),deposit:coin(1,userTree,userCollab)};
 }
+
+test('the pool tree keeps every leaf a batch spends at Taproot depth 2',async()=>{
+ const {pool}=await world(),depth=(script:Uint8Array)=>(pool.tree.findLeaf(hex.encode(script))[0].merklePath??[]).length;
+ assert.deepEqual([pool.batch,pool.batchJoin,pool.reserve].map(depth),[2,2,2]);
+});
+
+test('a join batch names the join leaf and carries no boundary leg',async()=>{
+ const w=await world(),zero=w.legs.map(()=>({deposit:0n,withdraw:0n,asset:false}));
+ const join={head:w.joinHead,deposits:[],legs:zero,token,leaves:w.leaves,witness:w.witness,newPacket:hex.decode(fixture.newPacket),checkpoint:w.checkpoint,kind:'join' as const};
+ assert.deepEqual(Extension.fromTx(buildRollupBatchTx(join).arkTx).getEmulatorPacket()!.entries[0]!.script,w.leaves.batchJoin);
+ assert.throws(()=>buildRollupBatchTx({...join,deposits:[w.deposit],legs:w.legs}),/join batch carries no boundary leg/);
+});
 const wire=(built:ReturnType<typeof buildRollupBatchTx>)=>({arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(tx=>base64.encode(tx.toPSBT()))});
 
 test('a batch built from real snarkjs proofs passes the covenant, and a redirected payout does not',async()=>{

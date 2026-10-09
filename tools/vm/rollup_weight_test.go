@@ -13,9 +13,10 @@ import (
 
 const rollupMaxTxWeight = 40_000
 
-// rollupLeafAndControl returns a two-key leaf and its control block in a tree
-// of the given size: the pool tree has four leaves, a user VTXO two.
-func rollupLeafAndControl(t *testing.T, leaves int) (leaf, control []byte) {
+// rollupLeafAndControl returns a two-key leaf and the control block of the
+// leaf at index in a tree of the given size: the pool tree has five leaves, a
+// user VTXO two. Every pool leaf is a two-key script, so only the depth varies.
+func rollupLeafAndControl(t *testing.T, leaves, index int) (leaf, control []byte) {
 	t.Helper()
 	server, _ := btcec.NewPrivateKey()
 	key, _ := btcec.NewPrivateKey()
@@ -28,7 +29,7 @@ func rollupLeafAndControl(t *testing.T, leaves int) (leaf, control []byte) {
 		tree = append(tree, txscript.NewBaseTapLeaf(append(append([]byte(nil), leaf...), txscript.OP_NOP, byte(i))))
 	}
 	internal, _ := btcec.NewPrivateKey()
-	block := txscript.AssembleTaprootScriptTree(tree...).LeafMerkleProofs[0].ToControlBlock(internal.PubKey())
+	block := txscript.AssembleTaprootScriptTree(tree...).LeafMerkleProofs[index].ToControlBlock(internal.PubKey())
 	if control, err = block.ToBytes(); err != nil {
 		t.Fatal(err)
 	}
@@ -40,12 +41,16 @@ func rollupLeafAndControl(t *testing.T, leaves int) (leaf, control []byte) {
 func (b *rollupBatch) signedWeight(t *testing.T) int {
 	t.Helper()
 	tx := b.finalTx()
-	headLeaf, headControl := rollupLeafAndControl(t, 4)
-	userLeaf, userControl := rollupLeafAndControl(t, 2)
+	// Indices follow rollupPoolTree in src/rollup/covenant.ts: [batch, batchJoin, exit, renew, reserve].
+	headLeaf, headControl := rollupLeafAndControl(t, 5, int(b.batchKind))
+	reserveLeaf, reserveControl := rollupLeafAndControl(t, 5, 4)
+	userLeaf, userControl := rollupLeafAndControl(t, 2, 0)
 	for i := range tx.TxIn {
 		leaf, control := userLeaf, userControl
-		if i == 0 || (b.reserve && i == int(b.reserveVin)) {
+		if i == 0 {
 			leaf, control = headLeaf, headControl
+		} else if b.reserve && i == int(b.reserveVin) {
+			leaf, control = reserveLeaf, reserveControl
 		}
 		tx.TxIn[i].Witness = wire.TxWitness{make([]byte, 64), make([]byte, 64), leaf, control}
 	}
@@ -82,7 +87,7 @@ func rollupDeposits(inputs int, reserve bool) []rollupLeg {
 func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 	w := newRollupWorld(t, 11, 0, 11)
 	w.headIn = 10_000_000_000
-	weigh := func(name string, legs []rollupLeg, reserve bool) int {
+	weigh := func(w *rollupWorld, name string, legs []rollupLeg, reserve bool) int {
 		b := w.batchOf(legs, reserve)
 		if err := b.execute(); err != nil {
 			t.Fatalf("%s: rejected: %v", name, err)
@@ -95,6 +100,8 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 	for i := range payouts {
 		payouts[i] = rollupLeg{wd: 100_000_000, dest: rollupProgram(byte(0x30 + i))}
 	}
+	baseline := map[string]int{"transfers only": 34788, "deposits, payouts and an asset": 38066,
+		"11 deposits of 1 BTC": 39694, "11 payouts of 1 BTC": 38260, "reserve and 8 deposit inputs": 39594}
 	for _, mix := range []struct {
 		name    string
 		legs    []rollupLeg
@@ -106,12 +113,21 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 		{"11 payouts of 1 BTC", payouts, false},
 		{fmt.Sprintf("reserve and %d deposit inputs", rollupReserveDepositInputs), rollupDeposits(rollupReserveDepositInputs, true), true},
 	} {
-		if weight := weigh(mix.name, mix.legs, mix.reserve); weight > rollupMaxTxWeight {
+		weight := weigh(w, mix.name, mix.legs, mix.reserve)
+		if weight > rollupMaxTxWeight {
 			t.Errorf("%s: %d WU is over the live %d WU limit", mix.name, weight, rollupMaxTxWeight)
 		}
+		if want, ok := baseline[mix.name]; ok && weight != want {
+			t.Errorf("%s: %d WU, was %d with four pool leaves", mix.name, weight, want)
+		}
+	}
+	join := newRollupWorld(t, 11, 1, 11)
+	join.headIn = w.headIn
+	if weight := weigh(join, "join batch, no legs", make([]rollupLeg, 11), false); weight > rollupMaxTxWeight-5_000 {
+		t.Errorf("join batch: %d WU leaves under 5,000 WU of headroom", weight)
 	}
 	if next := rollupReserveDepositInputs + 1; next <= 10 {
-		if weight := weigh(fmt.Sprintf("reserve and %d deposit inputs", next), rollupDeposits(next, true), true); weight <= rollupMaxTxWeight {
+		if weight := weigh(w, fmt.Sprintf("reserve and %d deposit inputs", next), rollupDeposits(next, true), true); weight <= rollupMaxTxWeight {
 			t.Errorf("the reserve deposit budget is stale: %d inputs fit at %d WU", next, weight)
 		}
 	}
