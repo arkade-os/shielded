@@ -5,7 +5,7 @@ include "lib.circom";
 template Join(DEPTH) {
  signal input pub; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
  signal input domain; signal input root; signal input ctDigest; signal input groupId; signal input groupSize; signal input asset;
- signal input inAmount[2]; signal input inRho[2]; signal input spendSecret[2];
+ signal input inAmount[2]; signal input inRho[2]; signal input ask[2]; signal input nk[2];
  signal input path[2][DEPTH]; signal input bits[2][DEPTH];
  signal input outAmount[2]; signal input outOwner[2]; signal input outRandom[2];
 
@@ -14,16 +14,16 @@ template Join(DEPTH) {
  range[0].in <== inAmount[0]; range[1].in <== inAmount[1]; range[2].in <== outAmount[0];
  range[3].in <== outAmount[1]; range[4].in <== deposit; range[5].in <== withdraw;
 
- component owner[2]; component note[2]; component merkle[2]; component dummy[2]; component nf[2];
+ var DUMMY_TAG=20261009301; component owner[2]; component note[2]; component merkle[2]; component dummy[2]; component nf[2];
  for(var k=0;k<2;k++) {
-  owner[k]=Poseidon(2); owner[k].inputs[0] <== domain; owner[k].inputs[1] <== spendSecret[k];
+  owner[k]=Poseidon(3); owner[k].inputs[0] <== domain; owner[k].inputs[1] <== ask[k]; owner[k].inputs[2] <== nk[k];
   note[k]=Poseidon(5); note[k].inputs[0] <== domain; note[k].inputs[1] <== inAmount[k]; note[k].inputs[2] <== asset;
   note[k].inputs[3] <== owner[k].out; note[k].inputs[4] <== inRho[k];
   merkle[k]=MerkleRoot(DEPTH); merkle[k].leaf <== note[k].out;
   for(var i=0;i<DEPTH;i++) { merkle[k].siblings[i] <== path[k][i]; merkle[k].bits[i] <== bits[k][i]; }
   dummy[k]=IsZero(); dummy[k].in <== inAmount[k];
   (merkle[k].root-root)*(1-dummy[k].out) === 0;
-  nf[k]=Poseidon(3); nf[k].inputs[0] <== domain; nf[k].inputs[1] <== spendSecret[k]; nf[k].inputs[2] <== inRho[k];
+  nf[k]=Poseidon(3); nf[k].inputs[0] <== domain+dummy[k].out*(DUMMY_TAG-domain); nf[k].inputs[1] <== nk[k]; nf[k].inputs[2] <== inRho[k];
  }
  component distinct=IsZero(); distinct.in <== nf[0].out-nf[1].out; distinct.out === 0;
 

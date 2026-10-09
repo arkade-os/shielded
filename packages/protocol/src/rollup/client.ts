@@ -3,7 +3,7 @@ import { noteOf, nullifierOf, outputRhoOf, statementOf, type Hash } from './note
 import type { BatchSlot } from './state.ts';
 import { pathBits } from './tree.ts';
 
-export interface ClientInput { amount: bigint; spendSecret: bigint; rho: bigint; index: number; path: bigint[] }
+export interface ClientInput { amount: bigint; ask: bigint; nk: bigint; rho: bigint; index: number; path: bigint[] }
 export interface ClientOutput { amount: bigint; owner: bigint; random: bigint }
 export interface ClientSpend {
  domain: bigint; root: bigint; asset: bigint;
@@ -13,11 +13,13 @@ export interface ClientSpend {
 }
 export interface ClientWitness { input: Record<string, unknown>; slot: BatchSlot; publicSignals: bigint[] }
 
+export const inputNullifierOf = (hash: Hash, domain: bigint, input: Pick<ClientInput, 'amount' | 'nk' | 'rho'>) => nullifierOf(hash, domain, input.nk, input.rho, input.amount === 0n);
+
 // One input proves with circuits/rollup/spend.circom, two with join.circom; an amount-0 input is a dummy.
 export function clientWitness(hash: Hash, spend: ClientSpend): ClientWitness {
  const m = spend.inputs.length;
  if (m !== 1 && m !== 2) throw new Error('A spend has one input and a join has two.');
- const nullifiers = spend.inputs.map(input => nullifierOf(hash, spend.domain, input.spendSecret, input.rho));
+ const nullifiers = spend.inputs.map(input => inputNullifierOf(hash, spend.domain, input));
  const commitments = spend.outputs.map((output, index) => noteOf(hash, spend.domain, output.amount, spend.asset, output.owner, outputRhoOf(hash, spend.domain, output.random, nullifiers, index))) as [bigint, bigint];
  const slot: BatchSlot = { root: spend.root, nullifiers, commitments, ctDigest: spend.ctDigest, groupId: spend.groupId, groupSize: spend.groupSize };
  const pub = statementOf(hash, { domain: spend.domain, ...slot });
@@ -27,7 +29,7 @@ export function clientWitness(hash: Hash, spend: ClientSpend): ClientWitness {
  const input = {
   pub, deposit: spend.deposit, withdraw: spend.withdraw, boundaryAsset, asset: spend.asset, destination: spend.destination,
   domain: spend.domain, root: spend.root, ctDigest: spend.ctDigest, groupId: spend.groupId, groupSize: BigInt(spend.groupSize),
-  inAmount: per(input => input.amount), inRho: per(input => input.rho), spendSecret: per(input => input.spendSecret),
+  inAmount: per(input => input.amount), inRho: per(input => input.rho), ask: per(input => input.ask), nk: per(input => input.nk),
   path: per(input => input.path), bits: per(input => pathBits(input.index, NOTE_DEPTH)),
   outAmount: spend.outputs.map(output => output.amount), outOwner: spend.outputs.map(output => output.owner), outRandom: spend.outputs.map(output => output.random),
  };

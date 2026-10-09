@@ -12,8 +12,8 @@ const ADDRESS_PREFIX = 'shrol';
 export const le = (value: bigint, size: number) => Uint8Array.from({ length: size }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
 export const fromLe = (bytes: Uint8Array) => bytes.reduceRight((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
 
-export const rollupRecipientOf = (hash: Hash, spendSecret: bigint, viewSecret: Uint8Array): RollupRecipient =>
- ({ owner: ownerOf(hash, ROLLUP_DOMAIN, spendSecret), viewPublic: x25519.getPublicKey(viewSecret) });
+export const rollupRecipientOf = (hash: Hash, ask: bigint, nk: bigint, viewSecret: Uint8Array): RollupRecipient =>
+ ({ owner: ownerOf(hash, ROLLUP_DOMAIN, ask, nk), viewPublic: x25519.getPublicKey(viewSecret) });
 export const rollupAddressOf = (r: RollupRecipient) => bech32m.encode(ADDRESS_PREFIX, bech32m.toWords(Uint8Array.from([...le(r.owner, 32), ...r.viewPublic])), false);
 export function parseRollupAddress(address: string): RollupRecipient {
  const { prefix, words } = bech32m.decode(address as `${string}1${string}`, false);

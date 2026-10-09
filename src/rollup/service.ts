@@ -244,11 +244,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    timers.push(setTimeout(tick,1000));
   };
   const pad=async()=>{
-   const recipient=rollupRecipientOf(hash,randomField(),x25519.utils.randomSecretKey());
+   const recipient=rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey());
    while(!stopped){
     if(operator.padding()>=PADDING_TARGET){await sleep(2000);continue;}
     try{
-     const built=await buildRollupSpend(hash,{root:operator.state.latestRoot(),spendSecret:randomField(),self:recipient,request:{}});
+     const built=await buildRollupSpend(hash,{root:operator.state.latestRoot(),ask:randomField(),nk:randomField(),self:recipient,request:{}});
      const proof=await spendProver.prove(built.witness.input,built.witness.publicSignals);
      operator.addPadding([{id:'pad-'+randomBytes(8).toString('hex'),slot:built.witness.slot,publics:built.witness.publicSignals as unknown as RollupSpend['publics'],proof,ciphertext:built.ciphertext,receivedAt:Infinity}]);
     }catch(error){note('padding: '+(error as Error).message);await sleep(10_000);}

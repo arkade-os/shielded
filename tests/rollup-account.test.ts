@@ -6,17 +6,17 @@ import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constan
 import {buildRollupSpend,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {assetFieldOfId,destinationFieldOf,noteOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
-import {deriveRollupKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
-const keys=(byte:string)=>deriveRollupKeyMaterial(byte.repeat(32),'mutinynet');
+const keys=(byte:string)=>deriveRollupKeys2(byte.repeat(32),'mutinynet');
 const [aliceKeys,bobKeys,padKeys]=[keys('11'),keys('22'),keys('33')];
-const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf(hash,k.spendSecret,k.viewSecret));
+const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));
 
 const published=({witness,ciphertext}:BuiltSpend)=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:'0',groupSize:0,ciphertext:hex.encode(ciphertext)});
 async function batchOf(root:bigint,spends:BuiltSpend[]):Promise<PublishedBatch> {
- const padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+ const padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
  return {kind:'spend',slots:[...spends,...padding].map(published)};
 }
 
@@ -90,7 +90,7 @@ test('an asset enters and leaves with its 330-sat BTC carrier, and moves private
 test('a record that opens under our view key but commits to another owner is not ours',async()=>{
  const alice=new RollupAccount(hash,aliceKeys);
  // Sealed to Alice's view key, but the commitment names Bob as owner: Alice cannot spend it.
- const forged=await buildRollupSpend(hash,{root:alice.state.latestRoot(),spendSecret:bobKeys.spendSecret,self:{owner:bobTo.owner,viewPublic:aliceTo.viewPublic},request:{deposit:500n}});
+ const forged=await buildRollupSpend(hash,{root:alice.state.latestRoot(),ask:bobKeys.ask,nk:bobKeys.nk,self:{owner:bobTo.owner,viewPublic:aliceTo.viewPublic},request:{deposit:500n}});
  await alice.apply(await batchOf(alice.state.latestRoot(),[forged]));
  assert.equal(alice.balance(),0n);
 });
@@ -100,7 +100,7 @@ test('each wallet keeps a history of what moved its notes, with the batch that m
  const full=(s:BuiltSpend)=>({...published(s),groupId:String(s.witness.slot.groupId),groupSize:s.witness.slot.groupSize,publics:s.witness.publicSignals.map(String)});
  let n=0;
  const apply=async(spends:BuiltSpend[])=>{
-  const root=alice.state.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const root=alice.state.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
   const batch={kind:'spend' as const,slots:[...spends,...padding].map(full),txid:'aa'.repeat(31)+String(n).padStart(2,'0'),at:1000*n++};
   await alice.apply(batch);await bob.apply(batch);
  };
@@ -121,7 +121,7 @@ test('a wallet account that keeps only the note frontier agrees with the full re
  const full=new RollupAccount(hash,aliceKeys),light=new RollupAccount(hash,aliceKeys,{frontier:true}),program=hex.decode('ad'.repeat(32));
  const withLegs=(s:BuiltSpend)=>({...published(s),groupId:String(s.witness.slot.groupId),groupSize:s.witness.slot.groupSize,publics:s.witness.publicSignals.map(String)});
  const apply=async(spends:BuiltSpend[])=>{
-  const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
   const batch={kind:'spend' as const,slots:[...spends,...padding].map(withLegs)};
   await full.apply(batch);await light.apply(batch);
   assert.equal(light.latestRoot(),full.latestRoot());assert.equal(light.batchCount,full.batchCount);
@@ -142,7 +142,7 @@ test('a wallet account that keeps only the note frontier agrees with the full re
 test('a wallet born at a later batch skips opening the records before it, and still tracks the tree',async()=>{
  const full=new RollupAccount(hash,aliceKeys),young=new RollupAccount(hash,aliceKeys,{frontier:true,bornAt:1});
  const apply=async(spends:BuiltSpend[])=>{
-  const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
   const batch={kind:'spend' as const,slots:[...spends,...padding].map(published)};
   await full.apply(batch);await young.apply(batch);
  };

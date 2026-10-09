@@ -10,7 +10,7 @@ import {encodeDisclosure,sentNoteOf,viewKeyOf,type DisclosedNote} from '../../pa
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
-import {deriveRollupKeyMaterial,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/ark-wallet.ts';
 import {checkSigningRequest,DUST,pickNote,rollupApi,shieldPlan,signDeposit,spendBody,syncAccount,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
@@ -130,9 +130,9 @@ export default function RollupWallet(){
   if(pool?.phase!=='ready'||!secret)return;
   let stop=false,timer:ReturnType<typeof setTimeout>|undefined,arkAt=0;
   void (async()=>{
-   const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeyMaterial(secret,'mutinynet');
+   const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeys2(secret,'mutinynet');
    if(localStorage.getItem(BORN)==='new')localStorage.setItem(BORN,String(poolRef.current?.pool?.batches??0));
-   hashRef.current=hash;account.current=new RollupAccount(hash,keys,{frontier:true,bornAt:Number(localStorage.getItem(BORN)??0)||0});self.current=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
+   hashRef.current=hash;account.current=new RollupAccount(hash,keys,{frontier:true,bornAt:Number(localStorage.getItem(BORN)??0)||0});self.current=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
    const loop=async()=>{
     if(stop)return;
     try{
@@ -179,7 +179,7 @@ export default function RollupWallet(){
   ...history.map(e=>({key:`r${e.batch}-${e.spent[0]??e.created[0]?.nullifier}`,at:e.at??0,rollup:e})),
   ...(ark?.history??[]).filter(t=>t.amount>0&&!account.current?.txids.has(t.key.arkTxid)).map(t=>({key:`a${t.key.arkTxid||t.key.commitmentTxid||t.key.boardingTxid}-${t.type}`,at:t.createdAt,arkade:t})),
  ].sort((a,b)=>b.at-a.at);
- const phrase=secret?recoveryPhraseOf(secret):'',viewKey=showView&&secret&&self.current?viewKeyOf(self.current.owner,deriveRollupKeyMaterial(secret,'mutinynet').viewSecret):'';
+ const phrase=secret?recoveryPhraseOf(secret):'',viewKey=showView&&secret&&self.current?viewKeyOf(self.current.owner,deriveRollupKeys2(secret,'mutinynet').viewSecret):'';
  /** A link that opens one entry's notes, for whoever needs to see that one payment and nothing else. */
  const revealEntry=(key:string,e:HistoryEntry)=>{
   let to:string=rollupAddressOf(self.current!),notes:DisclosedNote[];

@@ -14,7 +14,7 @@ import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,randomField,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../packages/protocol/src/rollup/client.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
-import {deriveRollupKeyMaterial,parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeys2,parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {validateStockCheckpoint} from '../src/stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../src/stock/indexer.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
@@ -60,7 +60,7 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const pool=json<Pool>(join(dir,'pool.json')),network=pool.network,phrase=process.env.SHIELDED_PHRASE;
  if(!phrase)throw new Error('Set SHIELDED_PHRASE to the wallet\'s 24-word recovery phrase.');
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
- const keys=deriveRollupKeyMaterial(parseMasterSecret(phrase),'mutinynet'),self=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret);
+ const keys=deriveRollupKeys2(parseMasterSecret(phrase),'mutinynet'),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
  const account=new RollupAccount(hash,keys),numbers=batchesIn(dir);
  if(numbers.some((n,i)=>n!==i))throw new Error('The mirrored batch records have a gap.');
  for(const n of numbers)await account.apply(json<PublishedBatch>(join(dir,'batches',`${n}.json`)));
@@ -82,7 +82,7 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const prove=async(built:BuiltSpend)=>(await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),join(dir,'keys','spend.wasm'),join(dir,'keys','spend.zkey'))).proof as SnarkProof;
  const mine=await account.spend({input:note,withdraw:sats,program:ArkAddress.decode(to).pkScript.subarray(2)},self),spends=[{built:mine,proof:await prove(mine)}];
  // Our own zero-value spends fill the slots, as the operator's padding does.
- for(let i=1;i<BATCH_SLOTS;i++){const pad=await buildRollupSpend(hash,{root:account.state.latestRoot(),spendSecret:randomField(),self:rollupRecipientOf(hash,randomField(),x25519.utils.randomSecretKey()),request:{}});spends.push({built:pad,proof:await prove(pad)});}
+ for(let i=1;i<BATCH_SLOTS;i++){const pad=await buildRollupSpend(hash,{root:account.state.latestRoot(),ask:randomField(),nk:randomField(),self:rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey()),request:{}});spends.push({built:pad,proof:await prove(pad)});}
  log('proved',spends.length,'spends; proving the batch');
  const replica=account.state.clone(),result=replica.apply('spend',spends.map(s=>s.built.witness.slot));
  const batchProof=await createRollupProver({wasm:join(dir,'keys','batch-spend.wasm'),zkey:join(dir,'keys','batch-spend.zkey')}).prove(result.witness,result.publicSignals);

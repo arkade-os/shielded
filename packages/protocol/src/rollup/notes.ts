@@ -1,11 +1,11 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-import { GROUP_TAG } from './constants.ts';
+import { DUMMY_NULLIFIER_TAG, GROUP_TAG } from './constants.ts';
 
 export type Hash = (values: bigint[]) => bigint;
 
-export const ownerOf = (hash: Hash, domain: bigint, spendSecret: bigint) => hash([domain, spendSecret]);
+export const ownerOf = (hash: Hash, domain: bigint, ask: bigint, nk: bigint) => hash([domain, ask, nk]);
 export const noteOf = (hash: Hash, domain: bigint, amount: bigint, asset: bigint, owner: bigint, rho: bigint) => hash([domain, amount, asset, owner, rho]);
-export const nullifierOf = (hash: Hash, domain: bigint, spendSecret: bigint, rho: bigint) => hash([domain, spendSecret, rho]);
+export const nullifierOf = (hash: Hash, domain: bigint, nk: bigint, rho: bigint, dummy = false) => hash([dummy ? DUMMY_NULLIFIER_TAG : domain, nk, rho]);
 export const outputRhoOf = (hash: Hash, domain: bigint, random: bigint, nullifiers: bigint[], index: number) => hash([domain, random, ...nullifiers, BigInt(index)]);
 
 export function groupIdOf(hash: Hash, firstNullifiers: bigint[]): bigint {

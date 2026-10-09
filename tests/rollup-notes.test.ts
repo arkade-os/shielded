@@ -3,10 +3,17 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
 import { GROUP_TAG, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
-import { assetFieldOf, destinationFieldOf, groupIdOf, sha256le248, statementOf } from '../packages/protocol/src/rollup/notes.ts';
+import { assetFieldOf, destinationFieldOf, groupIdOf, nullifierOf, ownerOf, sha256le248, statementOf } from '../packages/protocol/src/rollup/notes.ts';
 
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
+
+test('a note\'s nullifier is unique in its rho and separated from dummy nullifiers', () => {
+ const nk = 5n, rho = 9n;
+ assert.notEqual(nullifierOf(hash, ROLLUP_DOMAIN, nk, rho), nullifierOf(hash, ROLLUP_DOMAIN, nk, rho, true));
+ assert.notEqual(nullifierOf(hash, ROLLUP_DOMAIN, nk, rho), nullifierOf(hash, ROLLUP_DOMAIN, nk + 1n, rho));
+ assert.notEqual(ownerOf(hash, ROLLUP_DOMAIN, 1n, 2n), ownerOf(hash, ROLLUP_DOMAIN, 2n, 1n));
+});
 
 test('sha256-le-248 reads the first 31 digest bytes little-endian', () => {
  const bytes = new TextEncoder().encode('rollup');

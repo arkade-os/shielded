@@ -40,6 +40,13 @@ export function deriveRollupKeyMaterial(masterSecret:Uint8Array|string,network:s
  return {spendSecret:scalar(master,network,'rollup-spend',ROLLUP_FIELD),viewSecret:hkdf(sha256,master,SALT,new TextEncoder().encode(`${DOMAIN}:${network}:rollup-view`),32)};
 }
 
+/** Genesis-2 rollup keys: spend authority, the nullifier key a full viewing key shares, and the X25519 view secret. */
+export function deriveRollupKeys2(masterSecret:Uint8Array|string,network:string):{ask:bigint;nk:bigint;viewSecret:Uint8Array} {
+ const master=typeof masterSecret==='string'?parseMasterSecret(masterSecret):new Uint8Array(masterSecret);
+ if(master.length!==32)throw new Error('Recovery secret must contain exactly 32 bytes.');
+ return {ask:scalar(master,network,'rollup2-ask',ROLLUP_FIELD),nk:scalar(master,network,'rollup2-nk',ROLLUP_FIELD),viewSecret:hkdf(sha256,master,SALT,new TextEncoder().encode(`${DOMAIN}:${network}:rollup2-view`),32)};
+}
+
 export function deriveWalletKeyMaterial(masterSecret:Uint8Array|string,network:string):WalletKeyMaterial {
  const master=typeof masterSecret==='string'?parseMasterSecret(masterSecret):new Uint8Array(masterSecret);
  if(master.length!==32)throw new Error('Recovery secret must contain exactly 32 bytes.');

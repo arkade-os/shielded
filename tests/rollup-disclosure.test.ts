@@ -6,19 +6,19 @@ import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {decodeDisclosure,encodeDisclosure,incomingNotes,parseViewKey,sentNoteOf,verifyDisclosure,viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
-import {deriveRollupKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
-const keys=(byte:string)=>deriveRollupKeyMaterial(byte.repeat(32),'mutinynet');
+const keys=(byte:string)=>deriveRollupKeys2(byte.repeat(32),'mutinynet');
 const [aliceKeys,bobKeys,padKeys]=[keys('11'),keys('22'),keys('33')];
-const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf(hash,k.spendSecret,k.viewSecret));
+const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));
 const published=({witness,ciphertext}:BuiltSpend)=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:String(witness.slot.groupId),groupSize:witness.slot.groupSize,publics:witness.publicSignals.map(String),ciphertext:hex.encode(ciphertext)});
 
 async function world(){
  const alice=new RollupAccount(hash,aliceKeys),batches:PublishedBatch[]=[];
  const apply=async(spends:BuiltSpend[])=>{
-  const root=alice.state.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,spendSecret:padKeys.spendSecret,self:padTo,request:{}})));
+  const root=alice.state.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
   const batch:PublishedBatch={kind:'spend',slots:[...spends,...padding].map(published),txid:String(batches.length).padStart(64,'0'),at:batches.length};
   batches.push(batch);await alice.apply(batch);
  };

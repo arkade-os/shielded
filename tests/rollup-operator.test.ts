@@ -10,8 +10,8 @@ import {buildPoseidon} from 'circomlibjs';
 import {F1Field} from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
 import {BTC_ASSET,ROLLUP_DOMAIN,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
-import {clientWitness} from '../packages/protocol/src/rollup/client.ts';
-import {assetFieldOfId,destinationFieldOf,groupIdOf,nullifierOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
+import {clientWitness,inputNullifierOf} from '../packages/protocol/src/rollup/client.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
@@ -27,7 +27,7 @@ const field=new F1Field(ROLLUP_FIELD);
 const toy=(name:string)=>join('tests','fixtures','rollup-toy',name);
 const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-covenant-snarkjs.json','utf8')) as {clientKey:unknown;batchKey:unknown};
 const token=asset.AssetId.create('cc'.repeat(32),0).toString(),x=asset.AssetId.create('dd'.repeat(32),0).toString();
-const owner=ownerOf(hash,ROLLUP_DOMAIN,7n);
+const owner=ownerOf(hash,ROLLUP_DOMAIN,7n,8n);
 const sha=(text:string|Uint8Array)=>createHash('sha256').update(text).digest('hex');
 const le32=(value:bigint)=>Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 let counter=5000n;
@@ -40,7 +40,7 @@ const spendOf=async(id:string,w:ReturnType<typeof clientWitness>,root2:unknown,l
  return {id,slot:w.slot,publics:w.publicSignals as unknown as RollupSpend['publics'],proof:proof as SnarkProof,
   ...(leg.asset&&(leg.deposit||leg.withdraw)?{asset:leg.asset}:{}),...(leg.program?{program:leg.program}:{}),...(leg.coin?{coin:leg.coin}:{})};
 };
-const witnessOf=(root:bigint,leg:Leg,input:{spendSecret:bigint;rho:bigint},groupId:bigint,groupSize:number)=>
+const witnessOf=(root:bigint,leg:Leg,input:{ask:bigint;nk:bigint;rho:bigint},groupId:bigint,groupSize:number)=>
  clientWitness(hash,{domain:ROLLUP_DOMAIN,root,asset:leg.asset?assetFieldOfId(leg.asset):BTC_ASSET,inputs:[{amount:leg.withdraw??0n,...input,index:0,path:Array(32).fill(0n)}],
   outputs:[{amount:leg.deposit??0n,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit:leg.deposit??0n,withdraw:leg.withdraw??0n,
   destination:leg.program?destinationFieldOf(leg.program):0n,ctDigest:leg.ctDigest??fresh(),groupId,groupSize});
@@ -48,7 +48,7 @@ const witnessOf=(root:bigint,leg:Leg,input:{spendSecret:bigint;rho:bigint},group
 /** A toy client proof for a real Poseidon statement: the toy circuit only needs pub = w^2. */
 async function toySpend(id:string,root:bigint,leg:Leg={}):Promise<Omit<RollupSpend,'receivedAt'>> {
  for(;;){
-  const w=witnessOf(root,leg,{spendSecret:fresh(),rho:fresh()},leg.groupId??0n,leg.groupSize??0);
+  const w=witnessOf(root,leg,{ask:fresh(),nk:fresh(),rho:fresh()},leg.groupId??0n,leg.groupSize??0);
   const root2=field.sqrt(w.publicSignals[0]!);
   if(root2===null)continue;
   return spendOf(id,w,root2,leg);
@@ -57,8 +57,8 @@ async function toySpend(id:string,root:bigint,leg:Leg={}):Promise<Omit<RollupSpe
 /** A toy group, whose id commits to its members' first nullifiers as the batch requires. */
 async function toyGroup(ids:string[],root:bigint,legs:Leg[]):Promise<Omit<RollupSpend,'receivedAt'>[]> {
  for(;;){
-  const inputs=legs.map(()=>({spendSecret:fresh(),rho:fresh()}));
-  const groupId=groupIdOf(hash,inputs.map(i=>nullifierOf(hash,ROLLUP_DOMAIN,i.spendSecret,i.rho)));
+  const inputs=legs.map(()=>({ask:fresh(),nk:fresh(),rho:fresh()}));
+  const groupId=groupIdOf(hash,inputs.map((i,k)=>inputNullifierOf(hash,ROLLUP_DOMAIN,{amount:legs[k]!.withdraw??0n,...i})));
   const made=legs.map((leg,i)=>witnessOf(root,leg,inputs[i]!,groupId,legs.length));
   const roots=made.map(w=>field.sqrt(w.publicSignals[0]!));
   if(roots.some(r=>r===null))continue;

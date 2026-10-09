@@ -4,16 +4,16 @@ import {buildPoseidon} from 'circomlibjs';
 import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {ctDigestOf,openRollupNotes,parseRollupAddress,rollupAddressOf,rollupRecipientOf,sealRollupNotes,viewEcdh,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
-import {deriveRollupKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
-const alice=deriveRollupKeyMaterial('11'.repeat(32),'mutinynet'),bob=deriveRollupKeyMaterial('22'.repeat(32),'mutinynet');
-const aliceTo=rollupRecipientOf(hash,alice.spendSecret,alice.viewSecret),bobTo=rollupRecipientOf(hash,bob.spendSecret,bob.viewSecret);
+const alice=deriveRollupKeys2('11'.repeat(32),'mutinynet'),bob=deriveRollupKeys2('22'.repeat(32),'mutinynet');
+const aliceTo=rollupRecipientOf(hash,alice.ask,alice.nk,alice.viewSecret),bobTo=rollupRecipientOf(hash,bob.ask,bob.nk,bob.viewSecret);
 
 test('rollup keys are stable per secret and network, and addresses round-trip',()=>{
- assert.equal(deriveRollupKeyMaterial('11'.repeat(32),'mutinynet').spendSecret,alice.spendSecret);
- assert.notEqual(deriveRollupKeyMaterial('11'.repeat(32),'signet').spendSecret,alice.spendSecret);
+ assert.deepEqual(deriveRollupKeys2('11'.repeat(32),'mutinynet'),alice);
+ assert.notEqual(deriveRollupKeys2('11'.repeat(32),'signet').ask,alice.ask);
  const address=rollupAddressOf(bobTo);
  assert.match(address,/^shrol1/);
  const back=parseRollupAddress(address);
@@ -39,8 +39,8 @@ test('each recipient opens only its own output, and the commitment checks out',a
 });
 
 test('records open the same through WebCrypto X25519 as through the pure-JS curve, bad keys included',async()=>{
- const keys=deriveRollupKeyMaterial('44'.repeat(32),'mutinynet'),poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
- const me=rollupRecipientOf(hash,keys.spendSecret,keys.viewSecret),record=await sealRollupNotes([me,me],[{amount:5n,asset:0n,rho:9n},{amount:0n,asset:0n,rho:10n}]);
+ const keys=deriveRollupKeys2('44'.repeat(32),'mutinynet'),poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const me=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret),record=await sealRollupNotes([me,me],[{amount:5n,asset:0n,rho:9n},{amount:0n,asset:0n,rho:10n}]);
  const fast=await viewEcdh(keys.viewSecret);
  assert.deepEqual(await openRollupNotes(record,keys.viewSecret,fast),await openRollupNotes(record,keys.viewSecret));
  assert.deepEqual((await openRollupNotes(record,keys.viewSecret,fast))[0],{amount:5n,asset:0n,rho:9n});

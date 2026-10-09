@@ -9,10 +9,10 @@ import {RollupState,type BatchResult,type BatchSlot} from '../packages/protocol/
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
-const owner=ownerOf(hash,ROLLUP_DOMAIN,7n);
+const owner=ownerOf(hash,ROLLUP_DOMAIN,7n,8n);
 let counter=1000n;
 const fresh=()=>++counter;
-const slot=(state:RollupState,amount:bigint):BatchSlot=>clientWitness(hash,{domain:ROLLUP_DOMAIN,root:state.latestRoot(),asset:BTC_ASSET,inputs:[{amount:0n,spendSecret:fresh(),rho:fresh(),index:0,path:Array(32).fill(0n)}],
+const slot=(state:RollupState,amount:bigint):BatchSlot=>clientWitness(hash,{domain:ROLLUP_DOMAIN,root:state.latestRoot(),asset:BTC_ASSET,inputs:[{amount:0n,ask:fresh(),nk:fresh(),rho:fresh(),index:0,path:Array(32).fill(0n)}],
  outputs:[{amount,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit:amount,withdraw:0n,destination:0n,ctDigest:fresh(),groupId:0n,groupSize:0}).slot;
 const digest=(r:Pick<BatchResult,'witness'|'publicSignals'|'binding'|'daRoot'>)=>createHash('sha256').update(JSON.stringify({w:r.witness,p:r.publicSignals,b:[...r.binding],d:r.daRoot},(_,v)=>typeof v==='bigint'?v.toString():v)).digest('hex');
 
@@ -28,4 +28,4 @@ test('incremental state reproduces the reference witnesses',()=>{
  }
  assert.deepEqual(out,GOLDEN);
 });
-const GOLDEN=['07d9702e315825727e5a702132baa278d49b67072db3c289abb4cebbfd6dc21b','426e5b1e896f0e554157d0f1d3f1c1ea2a26b725ab2296cac033f922b378b95c','bbe0e7d46d40aa4899caf3fe01db4f28dcdfee7d60f6698dd9ec6ae08b5bc486'];
+const GOLDEN=['ed6b93f609d343b77bf36a385b48a5f5e94d2032e10e392065ea0821d9dae903','0d65c4010f0b6a5892b8da54670b26c6ea53777c6671db29e09cc43155bfc220','e1e2cf502b28af81a534a9ce194f0e35d5af69e9089aeb7af3d8efaf3a7b2e2c'];

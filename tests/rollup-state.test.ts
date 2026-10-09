@@ -3,16 +3,16 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
 import { BATCH_SLOTS, BTC_ASSET, ROLLUP_DOMAIN, ROLLUP_FIELD, RollupRejection } from '../packages/protocol/src/rollup/constants.ts';
-import { clientWitness, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
-import { groupIdOf, nullifierOf, ownerOf } from '../packages/protocol/src/rollup/notes.ts';
+import { clientWitness, inputNullifierOf, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
+import { groupIdOf, ownerOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupState, type BatchSlot } from '../packages/protocol/src/rollup/state.ts';
 
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
-const owner = ownerOf(hash, ROLLUP_DOMAIN, 7n);
+const owner = ownerOf(hash, ROLLUP_DOMAIN, 7n, 8n);
 let counter = 100n;
 const fresh = () => ++counter;
-const dummyInput = () => ({ amount: 0n, spendSecret: fresh(), rho: fresh(), index: 0, path: Array(32).fill(0n) });
+const dummyInput = () => ({ amount: 0n, ask: fresh(), nk: fresh(), rho: fresh(), index: 0, path: Array(32).fill(0n) });
 const deposit = (state: RollupState, amount: bigint, extra: Partial<ClientSpend> = {}) => clientWitness(hash, {
  domain: ROLLUP_DOMAIN, root: state.latestRoot(), asset: BTC_ASSET, inputs: [dummyInput()],
  outputs: [{ amount, owner, random: fresh() }, { amount: 0n, owner, random: fresh() }],
@@ -89,7 +89,7 @@ test('batch shape and capacity are exact', () => {
 test('groups must be complete, consecutive and commit to their members', () => {
  const state = RollupState.genesis(hash);
  const inputs = [dummyInput(), dummyInput()];
- const groupId = groupIdOf(hash, inputs.map(input => nullifierOf(hash, ROLLUP_DOMAIN, input.spendSecret, input.rho)));
+ const groupId = groupIdOf(hash, inputs.map(input => inputNullifierOf(hash, ROLLUP_DOMAIN, input)));
  const [a, b] = inputs.map(input => deposit(state, 1n, { inputs: [input], groupId, groupSize: 2 }).slot);
  assert.doesNotThrow(() => state.apply('spend', fill(state, [a, b])));
  state.undoLast();

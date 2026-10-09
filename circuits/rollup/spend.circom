@@ -6,7 +6,7 @@ include "lib.circom";
 template Spend(DEPTH) {
  signal input pub; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
  signal input domain; signal input root; signal input ctDigest; signal input groupId; signal input groupSize; signal input asset;
- signal input inAmount; signal input inRho; signal input spendSecret;
+ signal input inAmount; signal input inRho; signal input ask; signal input nk;
  signal input path[DEPTH]; signal input bits[DEPTH];
  signal input outAmount[2]; signal input outOwner[2]; signal input outRandom[2];
 
@@ -15,14 +15,15 @@ template Spend(DEPTH) {
  range[0].in <== inAmount; range[1].in <== outAmount[0]; range[2].in <== outAmount[1];
  range[3].in <== deposit; range[4].in <== withdraw;
 
- component owner=Poseidon(2); owner.inputs[0] <== domain; owner.inputs[1] <== spendSecret;
+ component owner=Poseidon(3); owner.inputs[0] <== domain; owner.inputs[1] <== ask; owner.inputs[2] <== nk;
  component note=Poseidon(5); note.inputs[0] <== domain; note.inputs[1] <== inAmount; note.inputs[2] <== asset;
  note.inputs[3] <== owner.out; note.inputs[4] <== inRho;
  component merkle=MerkleRoot(DEPTH); merkle.leaf <== note.out;
  for(var i=0;i<DEPTH;i++) { merkle.siblings[i] <== path[i]; merkle.bits[i] <== bits[i]; }
  component dummy=IsZero(); dummy.in <== inAmount;
  (merkle.root-root)*(1-dummy.out) === 0;
- component nf=Poseidon(3); nf.inputs[0] <== domain; nf.inputs[1] <== spendSecret; nf.inputs[2] <== inRho;
+ // A full viewing key shares nk and a dummy skips membership, so a dummy's nullifier is tagged apart from real ones.
+ var DUMMY_TAG=20261009301; component nf=Poseidon(3); nf.inputs[0] <== domain+dummy.out*(DUMMY_TAG-domain); nf.inputs[1] <== nk; nf.inputs[2] <== inRho;
 
  component rho[2]; component cm[2];
  for(var o=0;o<2;o++) {

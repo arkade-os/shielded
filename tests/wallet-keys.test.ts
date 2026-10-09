@@ -1,7 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {schnorr} from '@noble/curves/secp256k1.js';
-import {deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
+import {deriveRollupKeyMaterial,deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
+
+test('genesis-2 rollup keys are independent of the genesis-1 key from the same secret, and stable',()=>{
+ const secret='ab'.repeat(32),v1=deriveRollupKeyMaterial(secret,'mutinynet'),v2=deriveRollupKeys2(secret,'mutinynet');
+ assert.equal(new Set([v2.ask,v2.nk,v1.spendSecret]).size,3);
+ assert.notEqual(Buffer.from(v2.viewSecret).toString('hex'),Buffer.from(v1.viewSecret).toString('hex'));
+ assert.deepEqual(deriveRollupKeys2(parseMasterSecret(secret),'mutinynet'),v2);
+ assert.notDeepEqual(deriveRollupKeys2(secret,'signet'),v2);
+});
 
 test('master-secret derivation is stable, domain separated and produces valid key material',()=>{
  const secret='0000000000000000000000000000000000000000000000000000000000000001';
