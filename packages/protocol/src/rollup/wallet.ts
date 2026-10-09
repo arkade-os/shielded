@@ -3,7 +3,7 @@ import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bech32m } from '@scure/base';
 import { ROLLUP_DOMAIN } from './constants.ts';
-import { ownerOf, sha256le248, type Hash } from './notes.ts';
+import { akOf, ownerOf, sha256le248, type Hash } from './notes.ts';
 
 export interface RollupNote { amount: bigint; asset: bigint; rho: bigint }
 export interface RollupRecipient { owner: bigint; viewPublic: Uint8Array }
@@ -13,7 +13,7 @@ export const le = (value: bigint, size: number) => Uint8Array.from({ length: siz
 export const fromLe = (bytes: Uint8Array) => bytes.reduceRight((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
 
 export const rollupRecipientOf = (hash: Hash, ask: bigint, nk: bigint, viewSecret: Uint8Array): RollupRecipient =>
- ({ owner: ownerOf(hash, ROLLUP_DOMAIN, ask, nk), viewPublic: x25519.getPublicKey(viewSecret) });
+ ({ owner: ownerOf(hash, ROLLUP_DOMAIN, akOf(hash, ask), nk), viewPublic: x25519.getPublicKey(viewSecret) });
 export const rollupAddressOf = (r: RollupRecipient) => bech32m.encode(ADDRESS_PREFIX, bech32m.toWords(Uint8Array.from([...le(r.owner, 32), ...r.viewPublic])), false);
 export function parseRollupAddress(address: string): RollupRecipient {
  const { prefix, words } = bech32m.decode(address as `${string}1${string}`, false);

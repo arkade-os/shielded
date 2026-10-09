@@ -5,14 +5,14 @@ import * as snarkjs from 'snarkjs';
 import {ArkAddress,SingleKey,TxType,type ArkTransaction} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {hex} from '@scure/base';
-import {assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
+import {akOf,assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {encodeDisclosure,fullViewKeyOf,sentNoteOf,viewKeyOf,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/ark-wallet.ts';
-import {checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
+import {bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
@@ -20,7 +20,7 @@ const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-walle
 const JOIN_READY='shielded-rollup-join-ready-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 // The pool refuses deposit coins that expire within 24 hours; the extra hour covers the batch wait.
-const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000;
+const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000,MERGE_WAIT_MS=10*60_000;
 type Tab='receive'|'send'|'withdraw';
 type Activity={title:string;steps:string[];current:number;done?:boolean;error?:string};
 type Ark={address:string;available:number;coins:ArkCoin[];assets:{assetId:string;amount:bigint}[];history:ArkTransaction[]};
@@ -33,10 +33,15 @@ const sentLog=():Record<string,Sent>=>{try{return Object.fromEntries(Object.entr
 const logSent=(entries:[string,Sent][])=>localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(entries)}));
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 // Key URLs carry their hashes, so a browser cache can only ever hold the keys this pool proves with.
-const prove=async(built:BuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>)=>{
- const urls=provingUrls(built,proving),{proof}=await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),urls.wasm,urls.zkey,undefined,undefined,{singleThread:true});
- if(built.witness.slot.nullifiers.length===2)localStorage.setItem(JOIN_READY,'1');
- return proof;
+// A background merge can overlap a payment; snarkjs races when two first proofs build its curve at once, so proofs queue.
+let proving:Promise<unknown>=Promise.resolve();
+const prove=(built:BuiltSpend,keys:NonNullable<RollupPoolStatus['proving']>)=>{
+ const next=proving.then(async()=>{
+  const urls=provingUrls(built,keys),{proof}=await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),urls.wasm,urls.zkey,undefined,undefined,{singleThread:true});
+  if(built.witness.slot.nullifiers.length===2)localStorage.setItem(JOIN_READY,'1');
+  return proof;
+ });
+ proving=next.catch(()=>{});return next;
 };
 const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 
@@ -44,10 +49,12 @@ export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [notes,setNotes]=useState<OwnedNote[]>([]),[assetNotes,setAssetNotes]=useState<Record<string,OwnedNote[]>>({}),[history,setHistory]=useState<HistoryEntry[]>([]),[synced,setSynced]=useState(false);
- const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[revealed,setRevealed]=useState<Record<string,string>>({}),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false);
+ const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[revealed,setRevealed]=useState<Record<string,string>>({}),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[merge,setMerge]=useState(false);
  const [tab,setTab]=useState<Tab>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState(''),[activity,setActivity]=useState<Activity>(),[busy,setBusy]=useState(false);
  const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false),hashRef=useRef<Hash|undefined>(undefined);
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined),arkRef=useRef<Ark|undefined>(undefined),retryAt=useRef(0),used=useRef(new Set<string>());
+ // The notes a background merge is spending; payments leave them alone until it lands or gives up.
+ const merging=useRef(new Set<bigint>()),mergeRetryAt=useRef(0);
 
  useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);localStorage.setItem(BORN,'new');setSecret(fresh);}},[secret]);
  useEffect(()=>{
@@ -131,14 +138,22 @@ export default function RollupWallet(){
   const plan=planFor(arkRef.current.coins.filter(c=>!payout(c)));
   if(plan&&!await shieldWith(plan))retryAt.current=Date.now()+RETRY_MS;
  };
- /** Above eight notes of an asset, merges the two smallest in the background, one merge at a time. */
+ /** Above eight notes of an asset, merges the two smallest without holding the wallet, one merge at a time. */
  const tidy=async()=>{
-  if(busyRef.current||Date.now()<retryAt.current||!account.current||!self.current)return;
+  if(busyRef.current||merging.current.size||Date.now()<mergeRetryAt.current||!account.current||!self.current)return;
   for(const field of [0n,...Object.keys(poolRef.current?.pool?.reserves??{}).map(assetFieldOfId)]){
    const plan=await account.current.consolidate(self.current,field);
    if(!plan)continue;
-   const ok=await run('Tidying your notes',['Pick the two smallest notes','Prove the merge on this device','Submit to the pool','Wait for the next batch','Included'],step=>{step(0);return submitAll([{built:plan.built}],step,1);});
-   if(!ok)retryAt.current=Date.now()+RETRY_MS;
+   plan.inputs.forEach(n=>merging.current.add(n.nullifier));setMerge(true);
+   void (async()=>{
+    try{
+     const proof=await prove(plan.built,poolRef.current!.proving!),id=bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+     await rollupApi('/spends',transferBody(id,plan.built,proof));
+     const final=await waitForSpend(id,async()=>{throw new Error('A merge has no deposit to sign.');},rollupApi,1000,MERGE_WAIT_MS);
+     if(final.status==='dropped')throw new Error(final.reason??'The pool dropped the merge.');
+    }catch{mergeRetryAt.current=Date.now()+RETRY_MS;}
+    finally{merging.current.clear();setMerge(false);}
+   })();
    return;
   }
  };
@@ -148,8 +163,8 @@ export default function RollupWallet(){
   let stop=false,timer:ReturnType<typeof setTimeout>|undefined,arkAt=0;
   void (async()=>{
    const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeys2(secret,'mutinynet');
-   if(localStorage.getItem(BORN)==='new')localStorage.setItem(BORN,String(poolRef.current?.pool?.batches??0));
-   hashRef.current=hash;account.current=RollupAccount.owning(hash,keys,{frontier:true,bornAt:Number(localStorage.getItem(BORN)??0)||0});self.current=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
+   const bornAt=bornAtFor(localStorage,BORN,{token:poolRef.current!.pool!.token,batches:poolRef.current!.pool!.batches});
+   hashRef.current=hash;account.current=RollupAccount.owning(hash,keys,{frontier:true,bornAt});self.current=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
    const loop=async()=>{
     if(stop)return;
     try{
@@ -168,16 +183,16 @@ export default function RollupWallet(){
  },[pool?.phase,secret]);
 
  const send=()=>void run('Sending privately',['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
-  step(0);const recipient=to.trim(),{spends}=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n,{join:localStorage.getItem(JOIN_READY)==='1'});
+  step(0);const recipient=to.trim(),{spends}=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,merging.current,assetId?assetFieldOfId(assetId):0n,{join:localStorage.getItem(JOIN_READY)==='1'});
   logSent(spends.map(s=>{const note=sentNoteOf(hashRef.current!,s);return [String(s.witness.slot.nullifiers[0]),{to:recipient,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}];}));
   return submitAll(spends.map(built=>({built})),step,1);
  });
  const withdraw=()=>void run('Withdrawing',['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
   step(0);const value=amountOf(amount),address=to.trim()||ark!.address,program=ArkAddress.decode(address).pkScript.subarray(2);
   const remember=(spends:BuiltSpend[])=>logSent(spends.map(s=>[String(s.witness.slot.nullifiers[0]),{to:address}]));
-  if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!,new Set(),withSats?amountOf(withSats):BigInt(DUST));remember([payout,carrier]);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
+  if(assetId){const [payout,carrier]=await account.current!.withdrawAsset(assetFieldOfId(assetId),value,program,self.current!,merging.current,withSats?amountOf(withSats):BigInt(DUST));remember([payout,carrier]);return submitAll([{built:payout,extra:{program,asset:assetId}},{built:carrier,extra:{program}}],step,1);}
   if(value<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
-  const input=pickNote(account.current!.notes(),value,new Set());if(!input)throw new Error('No single note covers this amount.');
+  const input=pickNote(account.current!.notes(),value,merging.current);if(!input)throw new Error('No single note covers this amount.');
   const built=await account.current!.spend({input,withdraw:value,program},self.current!);remember([built]);
   return submitAll([{built,extra:{program}}],step,1);
  });
@@ -198,7 +213,7 @@ export default function RollupWallet(){
   ...(ark?.history??[]).filter(t=>t.amount>0&&!account.current?.txids.has(t.key.arkTxid)).map(t=>({key:`a${t.key.arkTxid||t.key.commitmentTxid||t.key.boardingTxid}-${t.type}`,at:t.createdAt,arkade:t})),
  ].sort((a,b)=>b.at-a.at);
  const phrase=secret?recoveryPhraseOf(secret):'',keys2=secret&&self.current&&(showView||showFull)?deriveRollupKeys2(secret,'mutinynet'):undefined;
- const viewKey=showView&&keys2?viewKeyOf(self.current!.owner,keys2.viewSecret):'',fullKey=showFull&&keys2?fullViewKeyOf(self.current!.owner,keys2.nk,keys2.viewSecret):'';
+ const viewKey=showView&&keys2?viewKeyOf(self.current!.owner,keys2.viewSecret):'',fullKey=showFull&&keys2&&hashRef.current?fullViewKeyOf(akOf(hashRef.current,keys2.ask),keys2.nk,keys2.viewSecret):'';
  /** A link that opens one entry's notes, for whoever needs to see that one payment and nothing else. */
  const revealEntry=(key:string,e:HistoryEntry)=>{
   let to:string=rollupAddressOf(self.current!),notes:DisclosedNote[];
@@ -219,6 +234,7 @@ export default function RollupWallet(){
     <div><small>SHIELDED BALANCE{!synced&&' · SYNCING'}</small><strong>{sats(balance)} <em>sats</em></strong></div>
     <div className="stock-balance-side"><div><small>ARKADE · NOT SHIELDED</small><b>{ark?`${sats(ark.available)} sats`:'Loading…'}</b></div><div><small>POOL</small><b>{pool!.pool!.batches} batches</b></div>
      {reserves.filter(id=>(assetNotes[id]??[]).length).map(id=><div key={id}><small>ASSET {short(id)}</small><b>{sats((assetNotes[id]??[]).reduce((sum,n)=>sum+n.amount,0n))} units</b></div>)}</div>
+    {merge&&<p className="stock-muted">Merging two small notes in the background; they come back as one spendable note once it lands.</p>}
    </section>
    {activity&&<section className={'stock-card stock-activity'+(activity.done?' finished':activity.error?' failed':'')}><div className="stock-activity-head"><h2>{activity.title}</h2></div>
     <ol className="stock-steps">{activity.steps.map((label,i)=><li key={label} className={activity.error&&i===activity.current?'error':i<activity.current||activity.done?'done':i===activity.current?'active':''}><i/>{label}</li>)}</ol>
@@ -271,7 +287,7 @@ export default function RollupWallet(){
    {secret&&self.current&&<div className="stock-address"><small>VIEW KEY · READ ONLY</small>{viewKey?<><Copyable value={viewKey}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${viewKey}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</div>}
    {secret&&self.current&&<div className="stock-address"><small>FULL VIEWING KEY · SEES SPENDS</small>{fullKey?<><Copyable value={fullKey}/><p className="stock-muted">Shows every note this wallet received and which ones it spent, so also how much each payment out sent, forever. It cannot spend and cannot freeze your notes. <a className="stock-txlink" href={`/watch#${fullKey}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowFull(true)}>Show full viewing key</button>}</div>}
    <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
-   <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));localStorage.removeItem(BORN);location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
+   <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));for(const k of Object.keys(localStorage))if(k.startsWith(BORN))localStorage.removeItem(k);location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
    {restoreError&&<p className="stock-blocked">{restoreError}</p>}
   </details>
  </main></div>;

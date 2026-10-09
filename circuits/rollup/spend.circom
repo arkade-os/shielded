@@ -15,7 +15,7 @@ template Spend(DEPTH) {
  range[0].in <== inAmount; range[1].in <== outAmount[0]; range[2].in <== outAmount[1];
  range[3].in <== deposit; range[4].in <== withdraw;
 
- component owner=Poseidon(3); owner.inputs[0] <== domain; owner.inputs[1] <== ask; owner.inputs[2] <== nk;
+ var AK_TAG=20261009101; component ak=Poseidon(2); ak.inputs[0] <== AK_TAG; ak.inputs[1] <== ask; component owner=Poseidon(3); owner.inputs[0] <== domain; owner.inputs[1] <== ak.out; owner.inputs[2] <== nk;
  component note=Poseidon(5); note.inputs[0] <== domain; note.inputs[1] <== inAmount; note.inputs[2] <== asset;
  note.inputs[3] <== owner.out; note.inputs[4] <== inRho;
  component merkle=MerkleRoot(DEPTH); merkle.leaf <== note.out;

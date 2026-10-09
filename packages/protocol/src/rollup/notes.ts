@@ -1,9 +1,11 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-import { DUMMY_NULLIFIER_TAG, GROUP_TAG } from './constants.ts';
+import { AK_TAG, DUMMY_NULLIFIER_TAG, GROUP_TAG } from './constants.ts';
 
 export type Hash = (values: bigint[]) => bigint;
 
-export const ownerOf = (hash: Hash, domain: bigint, ask: bigint, nk: bigint) => hash([domain, ask, nk]);
+/** The public half of the spend authority: a full viewing key carries it, so a watcher can rebuild the owner and check nk. */
+export const akOf = (hash: Hash, ask: bigint) => hash([AK_TAG, ask]);
+export const ownerOf = (hash: Hash, domain: bigint, ak: bigint, nk: bigint) => hash([domain, ak, nk]);
 export const noteOf = (hash: Hash, domain: bigint, amount: bigint, asset: bigint, owner: bigint, rho: bigint) => hash([domain, amount, asset, owner, rho]);
 export const nullifierOf = (hash: Hash, domain: bigint, nk: bigint, rho: bigint, dummy = false) => hash([dummy ? DUMMY_NULLIFIER_TAG : domain, nk, rho]);
 export const outputRhoOf = (hash: Hash, domain: bigint, random: bigint, nullifiers: bigint[], index: number) => hash([domain, random, ...nullifiers, BigInt(index)]);

@@ -1,7 +1,7 @@
 import { hex } from '@scure/base';
 import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, type BatchKind } from './constants.ts';
 import { clientWitness, inputNullifierOf, type ClientWitness } from './client.ts';
-import { destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
+import { akOf, destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
 import { NoteFrontier } from './frontier.ts';
 import { RollupState, type BatchSlot } from './state.ts';
 import { ctDigestOf, openRollupNotes, sealRollupNotes, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
@@ -43,7 +43,7 @@ export class RollupAccount {
   this.owner = keys.owner;
  }
  static owning(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, options: { frontier?: boolean; bornAt?: number } = {}): RollupAccount {
-  return new RollupAccount(hash, { ...keys, owner: ownerOf(hash, ROLLUP_DOMAIN, keys.ask, keys.nk) }, options);
+  return new RollupAccount(hash, { ...keys, owner: ownerOf(hash, ROLLUP_DOMAIN, akOf(hash, keys.ask), keys.nk) }, options);
  }
 
  async apply(batch: PublishedBatch): Promise<OwnedNote[]> {

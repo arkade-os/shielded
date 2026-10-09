@@ -27,7 +27,7 @@ export default function Disclose(){
   try{
    const hash=await hashFn();
    if(watch&&value.trim().startsWith('shfvk')){
-    const key=parseFullViewKey(value),account=new RollupAccount(hash,key,{frontier:true});
+    const key=parseFullViewKey(hash,value),account=new RollupAccount(hash,key,{frontier:true});
     await syncAccount(account);
     setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),entries:[...account.history]});
    }else if(watch){

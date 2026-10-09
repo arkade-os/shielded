@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import * as snarkjs from 'snarkjs';
 import { buildPoseidon } from 'circomlibjs';
 import { BATCH_SLOTS, BTC_ASSET, ROLLUP_DOMAIN, type BatchKind } from '../packages/protocol/src/rollup/constants.ts';
-import { assetFieldOf, destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, statementOf } from '../packages/protocol/src/rollup/notes.ts';
+import { akOf, assetFieldOf, destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, statementOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { RollupState, type BatchSlot } from '../packages/protocol/src/rollup/state.ts';
 import { buildRollupTransfer } from '../packages/protocol/src/rollup/account.ts';
@@ -38,7 +38,7 @@ function forced(state: RollupState, kind: BatchKind, slots: BatchSlot[]) {
 }
 
 interface Owned { amount: bigint; ask: bigint; nk: bigint; rho: bigint; index: number }
-const aliceAsk = 7n, aliceNk = 8n, aliceOwner = ownerOf(hash, ROLLUP_DOMAIN, aliceAsk, aliceNk);
+const aliceAsk = 7n, aliceNk = 8n, aliceOwner = ownerOf(hash, ROLLUP_DOMAIN, akOf(hash, aliceAsk), aliceNk);
 const dummyInput = (): ClientInput => ({ amount: 0n, ask: fresh(), nk: fresh(), rho: fresh(), index: 0, path: Array(32).fill(0n) });
 const zeroOutputs = (): ClientSpend['outputs'] => [{ amount: 0n, owner: aliceOwner, random: fresh() }, { amount: 0n, owner: aliceOwner, random: fresh() }];
 const spend = (s: Partial<ClientSpend> & Pick<ClientSpend, 'root' | 'inputs' | 'outputs'>): ClientSpend =>

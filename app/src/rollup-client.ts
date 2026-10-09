@@ -33,6 +33,13 @@ export async function syncAccount(account:RollupAccount,api:Api=rollupApi){
  }
 }
 
+/** First batch a wallet opens: a fresh ('new') wallet skips older ones; kept per pool, as a new genesis restarts the count. */
+export function bornAtFor(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>,key:string,pool:{token:string;batches:number}):number {
+ const mine=`${key}:${pool.token}`;
+ if(storage.getItem(key)==='new'){storage.setItem(mine,String(pool.batches));storage.removeItem(key);}
+ return Number(storage.getItem(mine)??0)||0;
+}
+
 /** A spend takes one note, so it needs a single note that covers the amount. */
 export const pickNote=(notes:OwnedNote[],amount:bigint,inFlight:Set<bigint>)=>
  notes.filter(n=>!inFlight.has(n.nullifier)&&n.amount>=amount).sort((a,b)=>a.amount<b.amount?-1:a.amount>b.amount?1:0)[0];
@@ -64,10 +71,11 @@ export async function signDeposit(identity:Identity,request:SpendStatus){
  return {arkTx:base64.encode(ark.toPSBT()),checkpoint:base64.encode(checkpoint.toPSBT())};
 }
 
-/** Polls a spend until it is settled; a rebuilt batch asks the depositor to sign again. */
-export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:Api=rollupApi,pollMs=1000):Promise<SpendStatus>{
+/** Polls a spend until it is settled or the deadline passes; a rebuilt batch asks the depositor to sign again. */
+export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:Api=rollupApi,pollMs=1000,deadlineMs=Infinity):Promise<SpendStatus>{
  let signed='';
- for(;;){
+ for(const end=Date.now()+deadlineMs;;){
+  if(Date.now()>end)throw new Error('The spend did not settle in time; the pool may still include it.');
   const status=await api<SpendStatus>('/spends/'+id);
   if(status.status==='included'||status.status==='dropped')return status;
   if(status.status==='signing'&&status.arkTx!==signed){await onSigning(status);signed=status.arkTx!;}

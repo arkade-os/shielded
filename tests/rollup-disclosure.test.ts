@@ -5,6 +5,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {decodeDisclosure,encodeDisclosure,fullViewKeyOf,incomingNotes,parseFullViewKey,parseViewKey,sentNoteOf,verifyDisclosure,viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
+import {akOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 
@@ -55,20 +56,26 @@ test('a view key finds every note a wallet received, and nothing it could spend 
 });
 
 test('a frontier watcher holding the full viewing key reports the same notes and history as the owner',async()=>{
- const {alice,batches}=await world(),watcher=new RollupAccount(hash,parseFullViewKey(fullViewKeyOf(aliceTo.owner,aliceKeys.nk,aliceKeys.viewSecret)),{frontier:true});
+ const {alice,batches}=await world(),watcher=new RollupAccount(hash,parseFullViewKey(hash,fullViewKeyOf(akOf(hash,aliceKeys.ask),aliceKeys.nk,aliceKeys.viewSecret)),{frontier:true});
  for(const batch of batches)await watcher.apply(batch);
  assert.deepEqual(watcher.notes().map(n=>n.index),alice.notes().map(n=>n.index));
  assert.deepEqual(watcher.history.map(h=>[h.kind,h.batch]),alice.history.map(h=>[h.kind,h.batch]));
 });
 
 test('a full viewing key sees which notes were spent, and cannot spend',async()=>{
- const {alice,batches}=await world(),key=fullViewKeyOf(aliceTo.owner,aliceKeys.nk,aliceKeys.viewSecret);
+ const {alice,batches}=await world(),key=fullViewKeyOf(akOf(hash,aliceKeys.ask),aliceKeys.nk,aliceKeys.viewSecret);
  assert.match(key,/^shfvk21/);
- const watcher=new RollupAccount(hash,parseFullViewKey(key));
+ const watcher=new RollupAccount(hash,parseFullViewKey(hash,key));
  for(const batch of batches)await watcher.apply(batch);
  assert.deepEqual(watcher.notes().map(n=>n.amount),[700n],'the 1000-sat deposit shows as spent');
  assert.deepEqual(watcher.notes(),alice.notes());
  await assert.rejects(()=>watcher.spend({input:watcher.notes()[0]!},aliceTo),/spend authority/);
- assert.throws(()=>parseFullViewKey(viewKeyOf(aliceTo.owner,aliceKeys.viewSecret)),/full viewing key/);
+ assert.throws(()=>parseFullViewKey(hash,viewKeyOf(aliceTo.owner,aliceKeys.viewSecret)),/full viewing key/);
  assert.throws(()=>parseViewKey(key),/view key/);
+});
+
+test('a full viewing key binds its nullifier key: a swapped nk derives another owner, so a watcher can tell',()=>{
+ const ak=akOf(hash,aliceKeys.ask);
+ assert.equal(parseFullViewKey(hash,fullViewKeyOf(ak,aliceKeys.nk,aliceKeys.viewSecret)).owner,aliceTo.owner);
+ assert.notEqual(parseFullViewKey(hash,fullViewKeyOf(ak,aliceKeys.nk+1n,aliceKeys.viewSecret)).owner,aliceTo.owner);
 });

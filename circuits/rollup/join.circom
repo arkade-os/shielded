@@ -14,9 +14,9 @@ template Join(DEPTH) {
  range[0].in <== inAmount[0]; range[1].in <== inAmount[1]; range[2].in <== outAmount[0];
  range[3].in <== outAmount[1]; range[4].in <== deposit; range[5].in <== withdraw;
 
- var DUMMY_TAG=20261009301; component owner[2]; component note[2]; component merkle[2]; component dummy[2]; component nf[2];
+ var DUMMY_TAG=20261009301, AK_TAG=20261009101; component ak[2]; component owner[2]; component note[2]; component merkle[2]; component dummy[2]; component nf[2];
  for(var k=0;k<2;k++) {
-  owner[k]=Poseidon(3); owner[k].inputs[0] <== domain; owner[k].inputs[1] <== ask[k]; owner[k].inputs[2] <== nk[k];
+  ak[k]=Poseidon(2); ak[k].inputs[0] <== AK_TAG; ak[k].inputs[1] <== ask[k]; owner[k]=Poseidon(3); owner[k].inputs[0] <== domain; owner[k].inputs[1] <== ak[k].out; owner[k].inputs[2] <== nk[k];
   note[k]=Poseidon(5); note[k].inputs[0] <== domain; note[k].inputs[1] <== inAmount[k]; note[k].inputs[2] <== asset;
   note[k].inputs[3] <== owner[k].out; note[k].inputs[4] <== inRho[k];
   merkle[k]=MerkleRoot(DEPTH); merkle[k].leaf <== note[k].out;

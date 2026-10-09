@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {checkSigningRequest,pickNote,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
+import {bornAtFor,checkSigningRequest,pickNote,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
@@ -21,6 +21,16 @@ test('a join body carries both nullifiers and proves with the join artifacts, wh
  const proving={spend:{wasm:'s1',zkey:'s2'},join:{wasm:'j1',zkey:'j2'},batch:{wasm:'b1',zkey:'b2'},batchJoin:{wasm:'k1',zkey:'k2'}};
  assert.deepEqual(provingUrls(spend,proving),{wasm:'/api/rollup/proving/spend.wasm?v=s1',zkey:'/api/rollup/proving/spend.zkey?v=s2'});
  assert.deepEqual(provingUrls(join,proving),{wasm:'/api/rollup/proving/join.wasm?v=j1',zkey:'/api/rollup/proving/join.zkey?v=j2'});
+});
+
+test('a wallet skips the history before its birth in one pool, and reads every batch of the next',()=>{
+ const store=new Map<string,string>(),storage={getItem:(k:string)=>store.get(k)??null,setItem:(k:string,v:string)=>{store.set(k,v);},removeItem:(k:string)=>{store.delete(k);}};
+ store.set('born','new');
+ assert.equal(bornAtFor(storage,'born',{token:'g1',batches:13}),13,'a fresh wallet skips what came before it');
+ assert.equal(bornAtFor(storage,'born',{token:'g1',batches:20}),13,'and remembers where it was born');
+ assert.equal(bornAtFor(storage,'born',{token:'g2',batches:4}),0,'a new pool is read from its first batch');
+ store.clear();store.set('born','13');
+ assert.equal(bornAtFor(storage,'born',{token:'g2',batches:5}),0,'a genesis-1 marker does not carry over');
 });
 
 test('a spend takes the smallest single note that covers it, skipping notes already in flight',()=>{
@@ -78,4 +88,11 @@ test('auto-shield takes every spendable coin the pool will still accept, BTC fir
  assert.deepEqual(shieldPlan(fresh,new Set([x]),now,25*3600_000),{kind:'btc',coins:[fresh[0],fresh[1]],amount:1100},'expiring and asset coins stay out of the BTC deposit');
  assert.deepEqual(shieldPlan(fresh.slice(2),new Set([x]),now,25*3600_000),{kind:'asset',coin:fresh[2],assetId:x,units:9n},'only a listed asset');
  assert.equal(shieldPlan([coin(1,329,100),coin(5,900,20)],new Set(),now,25*3600_000),undefined,'below the dust, or expiring');
+});
+
+test('waiting on a spend gives up at its deadline, so a stalled batch cannot hold the wallet',async()=>{
+ let polls=0;
+ const api=(async()=>{polls++;return {status:'pending'};}) as never;
+ await assert.rejects(waitForSpend('ab',async()=>{},api,1,20),/did not settle/);
+ assert.ok(polls>1);
 });

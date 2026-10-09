@@ -1,6 +1,6 @@
 import { base64urlnopad, bech32m, hex } from '@scure/base';
 import { ROLLUP_DOMAIN } from './constants.ts';
-import { noteOf, outputRhoOf, type Hash } from './notes.ts';
+import { noteOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
 import { fromLe, le, openRollupNotes, parseRollupAddress, viewEcdh } from './wallet.ts';
 import type { BuiltSpend, PublishedBatch } from './account.ts';
 
@@ -47,12 +47,12 @@ export function parseViewKey(key: string): { owner: bigint; viewSecret: Uint8Arr
  const bytes = decodeKey(key, VIEW_PREFIX, 64, 'view key');
  return { owner: fromLe(bytes.subarray(0, 32)), viewSecret: bytes.slice(32) };
 }
-/** Adds the nullifier key, so the holder also sees which notes were spent and how much each payment out sent. It cannot spend. */
-export const fullViewKeyOf = (owner: bigint, nk: bigint, viewSecret: Uint8Array) =>
- bech32m.encode(FULL_VIEW_PREFIX, bech32m.toWords(Uint8Array.from([...le(owner, 32), ...le(nk, 32), ...viewSecret])), false);
-export function parseFullViewKey(key: string): { owner: bigint; nk: bigint; viewSecret: Uint8Array } {
- const bytes = decodeKey(key, FULL_VIEW_PREFIX, 96, 'full viewing key');
- return { owner: fromLe(bytes.subarray(0, 32)), nk: fromLe(bytes.subarray(32, 64)), viewSecret: bytes.slice(64) };
+/** Adds nk, so the holder also sees spends; it carries ak, not the owner, so a forged nk derives another address. */
+export const fullViewKeyOf = (ak: bigint, nk: bigint, viewSecret: Uint8Array) =>
+ bech32m.encode(FULL_VIEW_PREFIX, bech32m.toWords(Uint8Array.from([...le(ak, 32), ...le(nk, 32), ...viewSecret])), false);
+export function parseFullViewKey(hash: Hash, key: string): { owner: bigint; ak: bigint; nk: bigint; viewSecret: Uint8Array } {
+ const bytes = decodeKey(key, FULL_VIEW_PREFIX, 96, 'full viewing key'), ak = fromLe(bytes.subarray(0, 32)), nk = fromLe(bytes.subarray(32, 64));
+ return { owner: ownerOf(hash, ROLLUP_DOMAIN, ak, nk), ak, nk, viewSecret: bytes.slice(64) };
 }
 export interface IncomingNote { batch: number; txid?: string; at?: number; index: number; amount: bigint; asset: bigint; deposit: boolean }
 /** Every note a view key opens under its owner, in order: deposits, payments and change alike. Each batch appends 32 leaves. */

@@ -13,9 +13,9 @@ const steps=[
 const parties={you:'Your browser',op:'Pool operator',ark:'Arkade'} as const;
 type Party=keyof typeof parties;
 const stations:{name:string;by:Party;text:React.ReactNode}[]=[
- {name:'Keys',by:'you',text:<>One recovery secret derives a spend secret <var>sk</var> and an X25519 view key. Your bech32m address, <code>shrol1…</code>, carries your owner hash and the public view key.</>},
- {name:'Prove',by:'you',text:<>Each output is sealed to its recipient’s view key with ECDH and AES-GCM. A Groth16 proof then shows the spend is valid; its statement binds one nullifier, two new commitments and the sealed record’s digest.</>},
- {name:'Batch',by:'op',text:<>Spends wait for eleven, or ten seconds after the first. The operator fills empty slots with its own zero-value spends, so no batch shows how full it was, then proves the whole state update at once.</>},
+ {name:'Keys',by:'you',text:<>One recovery secret derives a spend key <var>ask</var>, a nullifier key <var>nk</var> and an X25519 view key. Your bech32m address, <code>shrol21…</code>, carries your owner hash and the public view key.</>},
+ {name:'Prove',by:'you',text:<>Each output is sealed to its recipient’s view key with ECDH and AES-GCM. A Groth16 proof then shows the spend is valid; its statement binds the nullifiers it spends (one, or two for a merge), two new commitments and the sealed record’s digest.</>},
+ {name:'Batch',by:'op',text:<>Spends wait for eleven, or ten seconds after the first; merges of two notes wait up to a minute. The operator fills empty slots with its own zero-value spends, so no batch shows how full it was, then proves the whole state update at once.</>},
  {name:'Verify',by:'ark',text:<>One Arkade transaction spends the pool’s head VTXO through its batch leaf. The Arkade emulator checks all twelve proofs in one <code>OP_ECPAIRING</code> and the amounts against the real outputs, then co-signs, as does arkd. <a href="#sh-fig-2">See Fig. 2.</a></>},
  {name:'Sync',by:'you',text:<>Every wallet replays each published batch into its own copy of the state, trial-decrypts the records with its view key to find its notes, and computes its own Merkle paths. It never asks anyone for one.</>},
 ];
@@ -23,14 +23,14 @@ type Part={name:string;text:React.ReactNode;maybe?:boolean;packet?:boolean};
 const txIn:Part[]=[{name:'Pool head',text:'The pool’s sats and its supply-1 pool token.'},{name:'Asset reserve',text:'The reserve of the one asset this batch moves.',maybe:true},{name:'Deposits',text:'Coins entering the pool. Amount and source are public.',maybe:true}];
 const txOut:Part[]=[{name:'New head',text:'Carries the pool token and the updated sats.'},{name:'Asset reserve',text:'Back beside the new head, its amount updated.',maybe:true},{name:'Withdrawals',text:'Public, and at least 330 sats each.',maybe:true},{name:'State packet',text:<>Extension packet <code>0x87</code>:</>,packet:true}];
 const defs:[React.ReactNode,React.ReactNode,React.ReactNode][]=[
- ['owner',<>Poseidon(domain, sk)</>,'Goes in your address. sk never leaves your browser.'],
+ ['owner',<>Poseidon(domain, ak, nk)</>,'Goes in your address. ak = Poseidon(tag, ask), and ask never leaves your browser.'],
  ['cm',<>Poseidon(domain, amount, asset, owner, ρ)</>,'A note’s commitment, appended to the note tree.'],
- ['nf',<>Poseidon(domain, sk, ρ)</>,'Revealed when the note is spent; a repeat is refused.'],
+ ['nf',<>Poseidon(domain, nk, ρ)</>,'Revealed when the note is spent; a repeat is refused. A zero-value placeholder input hashes under its own tag, so it can never reveal a real note’s nullifier.'],
  ['asset',<>SHA-256<sub>248</sub>(AssetId)</>,'Any Arkade asset, as the circuit sees it.'],
  ['ctDigest',<>SHA-256<sub>248</sub>(sealed record)</>,'Binds the encrypted outputs, so no one can swap them.'],
  ['groupId',<>Poseidon(tag, nf<sub>0</sub>, nf<sub>1</sub>, nf<sub>2</sub>)</>,'Up to three notes pay as one, in consecutive slots.'],
- ['statement',<>Poseidon(domain, root, nf, cm<sub>0</sub>, cm<sub>1</sub>, ctDigest, groupId, groupSize)</>,'Public input one of five. The other four, deposit, withdraw, asset and destination, are zero for a private payment.'],
- [<>da<sub>i</sub></>,<>Poseidon(da<sub>i−1</sub>, nf<sub>i</sub>, cm<sub>i,0</sub>, cm<sub>i,1</sub>, ctDigest<sub>i</sub>)</>,<>Chained over the eleven slots from da<sub>0</sub>{' = 0'}. The last link is the DA root.</>],
+ ['statement',<>Poseidon(domain, root, nf…, cm<sub>0</sub>, cm<sub>1</sub>, ctDigest, groupId, groupSize)</>,'Public input one of five. The other four, deposit, withdraw, asset and destination, are zero for a private payment.'],
+ [<>da<sub>i</sub></>,<>Poseidon(da<sub>i−1</sub>, nf<sub>i</sub>…, cm<sub>i,0</sub>, cm<sub>i,1</sub>, ctDigest<sub>i</sub>)</>,<>Chained over the eleven slots from da<sub>0</sub>{' = 0'}. The last link is the DA root.</>],
  [<>statement<sub>batch</sub></>,<>SHA-256<sub>248</sub>(header || old || new || da<sub>11</sub>)</>,'Binds the old and new state commitments to the DA root. The batch proof’s twelfth public input.'],
 ];
 const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
