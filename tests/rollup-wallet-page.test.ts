@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,bornAtFor,checkSigningRequest,pickNote,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,bornAtFor,checkSigningRequest,pickNote,provingUrls,rollupApi,sheetLine,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
@@ -95,6 +95,13 @@ test('waiting on a spend gives up at its deadline, so a stalled batch cannot hol
  const api=(async()=>{polls++;return {status:'pending'};}) as never;
  await assert.rejects(waitForSpend('ab',async()=>{},api,1,20),/did not settle/);
  assert.ok(polls>1);
+});
+
+test('the status sheet names the step in progress, then the outcome',()=>{
+ const a={steps:['Pick notes','Prove the payment on this device','Submit to the pool'],current:1};
+ assert.equal(sheetLine(a),'Step 2 of 3: Prove the payment on this device');
+ assert.equal(sheetLine({...a,current:3,done:true}),'Done');
+ assert.equal(sheetLine({...a,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{

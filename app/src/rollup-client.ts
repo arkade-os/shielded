@@ -93,6 +93,8 @@ export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,n
  const coin=usable.find(c=>c.assets?.length===1&&listed.has(c.assets[0]!.assetId));
  return coin?{kind:'asset',coin,assetId:coin.assets![0]!.assetId,units:coin.assets![0]!.amount}:undefined;
 }
+/** One line for the mobile status sheet: the step in progress, or how the action ended. */
+export const sheetLine=(a:{steps:readonly string[];current:number;done?:boolean;error?:string})=>a.error??(a.done?'Done':`Step ${a.current+1} of ${a.steps.length}: ${a.steps[a.current]}`);
 /** Arkade asset units by asset, with the coins the pool paid out kept apart, since auto-shield leaves those alone. */
 export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=>boolean){
  const rows=new Map<string,{assetId:string;payout:boolean;units:bigint;coins:ArkCoin[]}>();

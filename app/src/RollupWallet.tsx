@@ -12,7 +12,7 @@ import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {openCustomerArkWallet,walletIntentLeafScriptHex,withArkWallet} from '../../src/stock/ark-wallet.ts';
-import {arkAssetHoldings,bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
+import {arkAssetHoldings,bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,sheetLine,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
@@ -242,6 +242,12 @@ export default function RollupWallet(){
     <ol className="stock-steps">{activity.steps.map((label,i)=><li key={label} className={activity.error&&i===activity.current?'error':i<activity.current||activity.done?'done':i===activity.current?'active':''}><i/>{label}</li>)}</ol>
     {activity.error&&<p className="stock-blocked">{activity.error}{activity.title.startsWith('Shielding')&&' It tries again in a minute.'}</p>}
    </section>}
+   {(activity||merge)&&<div className={'stock-sheet'+(activity?.error?' failed':activity?.done&&!merge?' finished':'')} role="status" aria-live="polite">
+    {activity&&<><b>{activity.title}</b><span>{sheetLine(activity)}</span>
+     {!activity.done&&!activity.error&&<div className="stock-progress"><div><span style={{width:`${Math.round(100*(activity.current+1)/activity.steps.length)}%`}}/></div></div>}
+     {activity.error&&<button className="stock-ghost stock-mini" onClick={()=>setActivity(undefined)}>Dismiss</button>}</>}
+    {merge&&<small>Merging two notes in the background.</small>}
+   </div>}
    <section className="stock-card stock-panel">
     <div className="stock-tabs" role="tablist" style={{gridTemplateColumns:'repeat(3,1fr)'}}>{(['receive','send','withdraw'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>{setTab(name);setTo('');}}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>
     {tab==='receive'?<div className="stock-receive">
