@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {selectRollupBatch,type RollupSpend} from '../src/rollup/batcher.ts';
+import {JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSpend} from '../src/rollup/batcher.ts';
 
 let next=0;
 function spend(extra:{at?:number;group?:[bigint,number];asset?:string;deposit?:bigint;coin?:boolean}={}):RollupSpend {
@@ -20,6 +20,11 @@ test('a batch closes at 11 spends, or after 10 s padded with zero spends',()=>{
  assert.deepEqual(ids(closed.spends.slice(0,2)),ids(few));
  const full=Array.from({length:12},()=>spend());
  assert.deepEqual(ids(selectRollupBatch(full,0,pad)!.spends),ids(full.slice(0,11)));
+});
+
+test('a join batch waits its own, longer window',()=>{
+ assert.equal(selectRollupBatch([spend()],JOIN_BATCH_WAIT_MS-1,pad,11,JOIN_BATCH_WAIT_MS),undefined);
+ assert.equal(selectRollupBatch([spend()],JOIN_BATCH_WAIT_MS,pad,11,JOIN_BATCH_WAIT_MS)!.spends.length,11);
 });
 
 test('a group goes in whole and consecutive, or waits',()=>{

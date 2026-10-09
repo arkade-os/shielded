@@ -4,7 +4,7 @@ import {existsSync,mkdtempSync,readdirSync,readFileSync,writeFileSync} from 'nod
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after,test,type TestContext} from 'node:test';
-import {asset,CSVMultisigTapscript,MultisigTapscript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
+import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {F1Field} from 'ffjavascript';
@@ -16,7 +16,7 @@ import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
-import type {RollupSpend} from '../src/rollup/batcher.ts';
+import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,type RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
@@ -68,8 +68,20 @@ async function toyGroup(ids:string[],root:bigint,legs:Leg[]):Promise<Omit<Rollup
   return group;
  }
 }
+/** A toy join: two dummy inputs and no legs; the toy client circuit only needs pub = w^2. */
+async function toyJoin(id:string,root:bigint):Promise<Omit<RollupSpend,'receivedAt'>> {
+ for(;;){
+  const inputs=[0,1].map(()=>({amount:0n,ask:fresh(),nk:fresh(),rho:fresh(),index:0,path:Array(32).fill(0n)}));
+  const w=clientWitness(hash,{domain:ROLLUP_DOMAIN,root,asset:BTC_ASSET,inputs,outputs:[{amount:0n,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit:0n,withdraw:0n,destination:0n,ctDigest:fresh(),groupId:0n,groupSize:0});
+  const root2=field.sqrt(w.publicSignals[0]!);
+  if(root2!==null)return spendOf(id,w,root2,{});
+ }
+}
+const toyProver={prove:async(_input:Record<string,unknown>,expected:readonly bigint[])=>(await snarkjs.groth16.fullProve({x:expected.map(String)},toy('covenant-batch.wasm'),toy('covenant-batch.zkey'))).proof as SnarkProof};
 after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();});
 const pads=(root:bigint,count:number)=>Promise.all(Array.from({length:count},()=>toySpend('pad',root))).then(list=>list.map(s=>({...s,receivedAt:Infinity})));
+const joinPads=async(root:bigint,count:number)=>{const list=[];for(let i=0;i<count;i++)list.push({...await toyJoin('pad',root),receivedAt:Infinity});return list;};
+const recordAt=(dir:string,n:number)=>JSON.parse(readFileSync(join(dir,'batches',`${n}.json`),'utf8')) as {kind:string;slots:{nullifiers:string[]}[]};
 
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-operator-'));
@@ -103,8 +115,8 @@ async function world(){
  };
  const clock={now:0};
  const options={directory:dir,pin:{version:1 as const,network:'local-stock' as const,descriptorProfileId:sha('rollup-test'),programsHash:sha(leaves.batch),artifactsHash:sha('toy'),checkpointHash:sha(checkpoint.script),genesisTxid:parent.id,serverKey:hex.encode(server),emulatorKey:hex.encode(emulator)},
-  genesis,leaves,token,serverKey:server,emulatorKey:emulator,exitDelay,checkpoint,clientKey:fixture.clientKey,hash,transport,signDeposits,now:()=>clock.now,
-  prover:{prove:async(_input:Record<string,unknown>,expected:readonly bigint[])=>(await snarkjs.groth16.fullProve({x:expected.map(String)},toy('covenant-batch.wasm'),toy('covenant-batch.zkey'))).proof as SnarkProof}};
+  genesis,leaves,token,serverKey:server,emulatorKey:emulator,exitDelay,checkpoint,clientKey:{spend:fixture.clientKey,join:fixture.clientKey},hash,transport,signDeposits,now:()=>clock.now,
+  prover:{spend:toyProver,join:toyProver}};
  return {dir,options,clock,coin,transport,depositor,open:async(t:TestContext,overrides={})=>{const op=await openRollupOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 
@@ -434,4 +446,48 @@ test('a head someone else spent stops batching with a pointer to its record, and
  assert.deepEqual(op.pendingIds(),[mine.id]);
  assert.equal(op.padding(),10,'padding is kept for the batch after the record arrives');
  assert.equal(op.status().pending,undefined,'nothing was submitted on a spent head');
+});
+
+test('a join batch lands through the join leaf, inserts two nullifiers per slot, and records its kind',async(t)=>{
+ const w=await world(),op=await w.open(t),before=op.state.nullifiers.count();
+ for(let i=0;i<11;i++)await op.submit(await toyJoin('join'+i,op.state.latestRoot()));
+ assert.equal((await op.tick() as {batch:number}).batch,0,'eleven joins fill a batch without waiting');
+ assert.equal(op.state.nullifiers.count()-before,22);
+ assert.equal(recordAt(w.dir,0).kind,'join');
+ const landed=JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string};
+ assert.deepEqual(Extension.fromTx(Transaction.fromPSBT(base64.decode(landed.arkTx))).getEmulatorPacket()!.entries[0]!.script,w.options.leaves.batchJoin);
+});
+
+test('a join carrying a boundary leg, a group or one note twice is refused at admission',async(t)=>{
+ const w=await world(),op=await w.open(t),aJoin=await toyJoin('j',op.state.latestRoot()),[nf]=aJoin.slot.nullifiers;
+ await assert.rejects(op.submit({...aJoin,id:'leg',publics:[aJoin.publics[0],1000n,0n,0n,0n]}),/join carries no deposit/i);
+ await assert.rejects(op.submit({...aJoin,id:'group',slot:{...aJoin.slot,groupId:7n,groupSize:2}}),/join is never part of a group/i);
+ await assert.rejects(op.submit({...aJoin,id:'twice',slot:{...aJoin.slot,nullifiers:[nf!,nf!]}}),/two different notes/i);
+ await assert.rejects(op.submit({...aJoin,id:'three',slot:{...aJoin.slot,nullifiers:[nf!,nf!+1n,nf!+2n]}}),/one note .* or two/i);
+});
+
+test('a spend never rides a join batch and a join never rides a spend batch',async(t)=>{
+ const w=await world(),op=await w.open(t),root=op.state.latestRoot();
+ await op.submit(await toySpend('spend',root));await op.submit(await toyJoin('join',root));
+ op.addPadding(await pads(root,10));op.addPadding(await joinPads(root,10));
+ assert.deepEqual([op.padding('spend'),op.padding('join'),op.padding()],[10,10,20]);
+ w.clock.now=BATCH_WAIT_MS;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ assert.deepEqual([recordAt(w.dir,0).kind,recordAt(w.dir,0).slots.every(s=>s.nullifiers.length===1)],['spend',true]);
+ assert.equal(await op.tick(),undefined,'the join waits its longer window');
+ w.clock.now=JOIN_BATCH_WAIT_MS;
+ assert.equal((await op.tick() as {batch:number}).batch,1);
+ assert.equal(recordAt(w.dir,1).kind,'join');
+});
+
+test('a join batch another prover landed is followed, and a record that misstates a nullifier is refused',async(t)=>{
+ const w=await world(),a=await w.open(t),b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-join-follower-'))});
+ for(let i=0;i<11;i++)await a.submit(await toyJoin('join'+i,a.state.latestRoot()));
+ const landed=await a.tick() as {txid:string;batch:number},record=recordAt(w.dir,0) as unknown as {slots:{nullifiers:string[]}[]};
+ const txs=JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string;checkpoints:string[]};
+ const tx=Transaction.fromPSBT(base64.decode(txs.arkTx)),checkpoints=txs.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)));
+ const misstated=record.slots.map((s,i)=>i===2?{...s,nullifiers:[s.nullifiers[1]!,s.nullifiers[0]!]}:s);
+ await assert.rejects(b.follow({tx,checkpoints,slots:misstated as never,at:1}),/does not match the statement/);
+ assert.deepEqual(await b.follow({tx,checkpoints,slots:record.slots as never,at:1}),{batch:0,txid:landed.txid});
+ assert.equal(b.state.commitment(),a.state.commitment());
 });

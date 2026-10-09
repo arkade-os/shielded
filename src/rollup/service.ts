@@ -191,7 +191,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const operator=await openRollupOperator({directory:join(o.directory,'operator'),
    pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-spend'),programsHash:sha(leaves.batch),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
    genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint,
-   clientKey:readJson(join(keys,'spend.vkey.json')),hash,prover:prover('batch-spend'),transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
+   clientKey:{spend:readJson(join(keys,'spend.vkey.json')),join:readJson(join(keys,'join.vkey.json'))},hash,prover:{spend:prover('batch-spend'),join:prover('batch-join')},transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
    onDrop:(ids,reason)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});}});
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};

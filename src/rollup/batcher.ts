@@ -4,6 +4,8 @@ import type {RollupCoin,RollupLeg,SnarkProof} from './covenant.ts';
 
 export const RESERVE_DEPOSIT_INPUTS=8;
 export const BATCH_WAIT_MS=10_000;
+/** A join batch costs a 908,989-constraint proof, so one consolidation waits longer for company. */
+export const JOIN_BATCH_WAIT_MS=60_000;
 
 /** One slot as the operator receives it: the opening, its five public inputs, the client proof and boundary details. */
 export interface RollupSpend {
@@ -37,7 +39,7 @@ function units(pending:readonly RollupSpend[]):RollupSpend[][] {
 }
 
 /** The next batch, or undefined while it should keep waiting. `padding` fills empty slots with operator zero spends. */
-export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padding:(count:number)=>RollupSpend[],maxCoins=BATCH_SLOTS):RollupSelection|undefined {
+export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padding:(count:number)=>RollupSpend[],maxCoins=BATCH_SLOTS,waitMs=BATCH_WAIT_MS):RollupSelection|undefined {
  if(!pending.length)return undefined;
  const chosen:RollupSpend[]=[];
  let asset:string|undefined,coins=0;
@@ -50,7 +52,7 @@ export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padd
  }
  if(!chosen.length)return undefined;
  const oldest=Math.min(...pending.map(s=>s.receivedAt));
- if(chosen.length<BATCH_SLOTS&&now-oldest<BATCH_WAIT_MS)return undefined;
+ if(chosen.length<BATCH_SLOTS&&now-oldest<waitMs)return undefined;
  const spends=[...chosen,...padding(BATCH_SLOTS-chosen.length)];
  return {spends,...(asset?{asset}:{}),legs:spends.map(legOf)};
 }
