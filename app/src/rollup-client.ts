@@ -2,7 +2,7 @@ import {Transaction,type Identity} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import type {BuiltSpend,OwnedNote,PublishedBatch,RollupAccount} from '../../packages/protocol/src/rollup/account.ts';
 
-export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:{spend:{wasm:string;zkey:string}};pool?:{token:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>}}
+export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:{spend:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 type Api=<T>(path:string,body?:unknown)=>Promise<T>;

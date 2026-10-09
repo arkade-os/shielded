@@ -38,7 +38,7 @@ const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
- pool?:{token:string;operator:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
+ pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
  network?:StockNetworkInfo;
  proving?:{spend:{wasm:string;zkey:string};batch?:{wasm:string;zkey:string}};
 }
@@ -104,6 +104,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  }
  let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
  let stopped=false,timers:ReturnType<typeof setTimeout>[]=[];
+ // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
+ let blocked:{message:string;since:number}|undefined;
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
  /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. */
  const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
@@ -234,8 +236,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const tick=async()=>{
    if(stopped)return;
    if(!paused){
-    try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`);included(r.batch,r.txid);}else if(r)note(r.blocked);}
-    catch(error){note((error as Error).message);}
+    try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`);included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
+    catch(error){note((error as Error).message);blocked={message:(error as Error).message,since:blocked?.since??Date.now()};}
     finally{ticking=undefined;}
     sweep();
    }
@@ -305,7 +307,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   status:():RollupStatus=>{
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,{archive}=operator.status();
-   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.latestRoot()),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.latestRoot()),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
     reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount]))}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
