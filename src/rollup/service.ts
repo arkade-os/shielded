@@ -62,11 +62,13 @@ export function verifyRollupKeys(keys:string):KeyManifest {
  }
  return manifest;
 }
+/** Moves a finished key set over a leftover incomplete one; a set with a manifest may be a live pool's, so it is never replaced. */
+const promoteRollupKeys=(partial:string,keys:string)=>{if(!existsSync(join(keys,'manifest.json')))rmSync(keys,{recursive:true,force:true});renameSync(partial,keys);};
 /** Installs a pre-built key set whole or not at all, so a broken mount is fixed by mounting again. */
 export function installRollupKeys(from:string,keys:string){
  const partial=keys+'.partial';rmSync(partial,{recursive:true,force:true});mkdirSync(partial,{recursive:true,mode:0o700});
  for(const name of ROLLUP_KEY_FILES)copyFileSync(join(from,name),join(partial,name));
- verifyRollupKeys(partial);renameSync(partial,keys);
+ verifyRollupKeys(partial);promoteRollupKeys(partial,keys);
 }
 export const rollupKeyPath=(keys:string,name:string)=>(ROLLUP_KEY_FILES as readonly string[]).includes(name)?join(keys,name):undefined;
 /** The journal pin's programs hash: every leaf hashed on its own, so no byte can move between leaves unnoticed. */
@@ -103,7 +105,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
      setup=execFile(process.execPath,[o.setupTool,'--development-only','--single-thread','--build',o.circuits,'--ptau',join(o.directory,'ptau','powersOfTau28_hez_final_20.ptau'),'--out',partial],{maxBuffer:16*1024*1024,windowsHide:true},error=>{
       setup=undefined;
       if(error){setupFailures++;setupRetryAt=Date.now()+SETUP_RETRY_MS;status={...status,message:`Key setup failed (${setupFailures}/${SETUP_ATTEMPTS}): `+error.message.slice(0,300)};log(status.message);return;}
-      renameSync(partial,keys);rmSync(join(o.directory,'ptau'),{recursive:true,force:true});log('development proving keys ready');
+      promoteRollupKeys(partial,keys);rmSync(join(o.directory,'ptau'),{recursive:true,force:true});log('development proving keys ready');
      });
      setup.stdout?.on('data',(chunk:Buffer)=>{for(const line of String(chunk).split(/\r?\n/))if(line.startsWith('ROLLUP_SETUP_PROGRESS=')){try{status={...status,message:`Generating the development proving keys (one time): ${JSON.parse(line.slice(22)).stage}.`};}catch{}}});
     }

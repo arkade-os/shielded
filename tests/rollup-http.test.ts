@@ -78,12 +78,13 @@ test('a batch record from another prover is checked for shape and handed to the 
  assert.deepEqual(calls,[['ab'.repeat(32),[slot,{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0}]],['ab'.repeat(32),[{...slot,nullifiers:['11','12']}]]]);
 });
 
-test('each address gets a budget of writes per minute, and reads are not counted',async(t)=>{
+test('each address gets a budget of submissions per minute; reads and deposit signatures are not counted',async(t)=>{
  let submitted=0;
- const api=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000}),submit:async()=>{submitted++;}});t.after(api.close);
+ const api=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000}),submit:async()=>{submitted++;},sign:()=>{throw new Error('This spend has no open signing round.');}});t.after(api.close);
  const codes:number[]=[];
  for(let i=0;i<61;i++)codes.push((await post(api.base+'/spends',{...spend,id:String(i).padStart(32,'0')})).status);
  assert.deepEqual([codes.slice(0,60).every(c=>c===202),codes[60]],[true,429]);
  assert.equal(submitted,60);
  assert.equal((await fetch(api.base+'/status')).status,200,'reads stay open');
+ assert.equal((await post(api.base+'/spends/'+spend.id+'/sign',{arkTx:'x',checkpoint:'y'})).status,409,'a signature still reaches its round');
 });

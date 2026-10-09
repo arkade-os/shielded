@@ -60,8 +60,9 @@ if (ceremony) {
       progress(`${name} contribution`);
       const hash = await snarkjs.zKey.contribute(from, at(name, count + 1), contributor, randomBytes(64).toString('hex'));
       entry.contributions.push({ name: contributor, hash: Buffer.from(hash).toString('hex') });
+      await writeFile(transcriptPath + '.partial', JSON.stringify(transcript, null, 1) + '\n');
+      renameSync(transcriptPath + '.partial', transcriptPath);
       rmSync(from);
-      await writeFile(transcriptPath, JSON.stringify(transcript, null, 1) + '\n');
     } else if (stage === 'finish') {
       const beacon = option('--beacon'), label = option('--beacon-label');
       if (!/^[0-9a-f]{64}$/.test(beacon ?? '') || !label || !count) throw new Error('finish needs a contribution, --beacon <32-byte hex> and --beacon-label.');

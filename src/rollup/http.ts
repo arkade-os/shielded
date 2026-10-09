@@ -19,10 +19,10 @@ const proofOf=(p:any):SnarkProof=>{
 const POSTS_PER_MINUTE=60;
 export function createRollupRouter(service:()=>RollupService|undefined){
  const router=express.Router();
- // Every submission costs a proof check, so each address gets a budget of writes; reads stay open.
+ // Every submission costs a proof check, so each address gets a budget; reads and signatures, which an admitted deposit owes within its round, stay open.
  const writes=new Map<string,{count:number;since:number}>();
  router.use((req,res,next)=>{
-  if(req.method!=='POST')return next();
+  if(req.method!=='POST'||/^\/spends\/[^/]+\/sign$/.test(req.path))return next();
   const now=Date.now(),key=req.ip??'',seen=writes.get(key);
   if(!seen||now-seen.since>60_000){if(writes.size>10_000)writes.clear();writes.set(key,{count:1,since:now});return next();} // ponytail: crude reset, an LRU if the map ever matters
   if(++seen.count>POSTS_PER_MINUTE){res.status(429).json({error:'Too many requests from this address; try again in a minute.'});return;}

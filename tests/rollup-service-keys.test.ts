@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
@@ -35,14 +35,28 @@ test('the journal pin changes when any leaf changes, or when a byte moves betwee
  assert.notEqual(rollupProgramsHash({...leaves,batch:Uint8Array.of(1,2),batchJoin:new Uint8Array()}),base);
 });
 
-test('a pre-built key set is installed whole or not at all, so a broken mount can be fixed by mounting again',()=>{
- const from=mkdtempSync(join(tmpdir(),'rollup-bundle-')),keys=join(mkdtempSync(join(tmpdir(),'rollup-data-')),'keys'),files:Record<string,string>={};
- for(const name of ROLLUP_KEY_FILES.filter(n=>n!=='manifest.json')){writeFileSync(join(from,name),name);files[name]=sha(name);}
+const bundle=(tag='')=>{
+ const from=mkdtempSync(join(tmpdir(),'rollup-bundle-')),files:Record<string,string>={};
+ for(const name of ROLLUP_KEY_FILES.filter(n=>n!=='manifest.json')){writeFileSync(join(from,name),name+tag);files[name]=sha(name+tag);}
  writeFileSync(join(from,'manifest.json'),JSON.stringify({circuits:{all:{files}}}));
+ return from;
+};
+
+test('a pre-built key set is installed whole or not at all, so a broken mount can be fixed by mounting again',()=>{
+ const from=bundle(),keys=join(mkdtempSync(join(tmpdir(),'rollup-data-')),'keys');
  rmSync(join(from,'join.zkey'));
  assert.throws(()=>installRollupKeys(from,keys));
  assert.equal(existsSync(keys),false,'nothing half-copied is left where the service looks');
  writeFileSync(join(from,'join.zkey'),'join.zkey');
  installRollupKeys(from,keys);
  assert.doesNotThrow(()=>verifyRollupKeys(keys));
+});
+
+test('an install replaces a leftover key directory that has no manifest, but never a key set that has one',()=>{
+ const keys=join(mkdtempSync(join(tmpdir(),'rollup-data-')),'keys');
+ mkdirSync(keys);writeFileSync(join(keys,'spend.zkey'),'stale');
+ installRollupKeys(bundle(),keys);
+ assert.doesNotThrow(()=>verifyRollupKeys(keys));
+ assert.throws(()=>installRollupKeys(bundle('other'),keys));
+ assert.equal(readFileSync(join(keys,'spend.zkey'),'utf8'),'spend.zkey');
 });
