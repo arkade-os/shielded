@@ -120,6 +120,8 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  // One batch is in flight at a time (the journal holds one plan), so a single in-flight pair carries its kind.
  const pending:Record<BatchKind,RollupSpend[]>={spend:[],join:[]},padding:Record<BatchKind,RollupSpend[]>={spend:[],join:[]};
  let inflight:RollupSpend[]=[],inflightPadding:RollupSpend[]=[],inflightKind:BatchKind='spend',busy=false,coinCap:number|undefined;
+ // The kind that goes first next tick: after a batch of one kind the other leads, so neither can starve.
+ let lead:BatchKind='spend';
  const queued=(q:Record<BatchKind,RollupSpend[]>)=>[...q.spend,...q.join];
  const kindOf=(s:{slot:BatchSlot}):BatchKind=>{
   const n=s.slot.nullifiers.length;
@@ -324,8 +326,8 @@ export async function openRollupOperator(o:RollupOperatorOptions){
     }
     const adopted=await adopt();if(adopted)return adopted;
     let short:BatchKind|undefined;
-    for(const kind of ['spend','join'] as const){
-     try{const ran=await run(kind);if(ran)return ran;}catch(error){if((error as Error).message!=='padding')throw error;short??=kind;}
+    for(const kind of lead==='spend'?['spend','join'] as const:['join','spend'] as const){
+     try{const ran=await run(kind);if(ran){if('txid' in ran)lead=kind==='spend'?'join':'spend';return ran;}}catch(error){if((error as Error).message!=='padding')throw error;short??=kind;}
     }
     return short?{blocked:`Not enough padding ${short==='join'?'joins':'spends'}.`}:undefined;
    }finally{busy=false;}

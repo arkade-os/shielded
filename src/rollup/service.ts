@@ -62,6 +62,12 @@ export function verifyRollupKeys(keys:string):KeyManifest {
  }
  return manifest;
 }
+/** Installs a pre-built key set whole or not at all, so a broken mount is fixed by mounting again. */
+export function installRollupKeys(from:string,keys:string){
+ const partial=keys+'.partial';rmSync(partial,{recursive:true,force:true});mkdirSync(partial,{recursive:true,mode:0o700});
+ for(const name of ROLLUP_KEY_FILES)copyFileSync(join(from,name),join(partial,name));
+ verifyRollupKeys(partial);renameSync(partial,keys);
+}
 export const rollupKeyPath=(keys:string,name:string)=>(ROLLUP_KEY_FILES as readonly string[]).includes(name)?join(keys,name):undefined;
 /** The journal pin's programs hash: every leaf hashed on its own, so no byte can move between leaves unnoticed. */
 export const rollupProgramsHash=(leaves:Pick<RollupLeaves,'batch'|'batchJoin'|'reserve'|'renew'>)=>sha([leaves.batch,leaves.batchJoin,leaves.reserve,leaves.renew].map(leaf=>sha(leaf)).join(''));
@@ -85,7 +91,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   if(manifest)return manifest;
   if(!existsSync(join(keys,'manifest.json'))){
    if(existsSync(join(o.directory,'genesis.json')))throw new Error('The rollup keys are missing from a pool that already exists; restore the volume.');
-   if(o.bundled&&existsSync(join(o.bundled,'manifest.json'))){mkdirSync(keys,{mode:0o700});for(const name of ROLLUP_KEY_FILES)copyFileSync(join(o.bundled,name),join(keys,name));}
+   if(o.bundled&&existsSync(join(o.bundled,'manifest.json')))installRollupKeys(o.bundled,keys);
    else{
     const memory=process.constrainedMemory()||totalmem(),gib=(bytes:number)=>(bytes/1024**3).toFixed(1)+' GiB';
     // The batch key setup holds gigabytes; refuse a small host and back off after failures.

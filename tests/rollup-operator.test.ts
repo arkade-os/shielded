@@ -491,3 +491,12 @@ test('a join batch another prover landed is followed, and a record that misstate
  assert.deepEqual(await b.follow({tx,checkpoints,slots:record.slots as never,at:1}),{batch:0,txid:landed.txid});
  assert.equal(b.state.commitment(),a.state.commitment());
 });
+
+test('a steady stream of spends cannot starve a due join batch',async(t)=>{
+ const w=await world(),op=await w.open(t),root=op.state.latestRoot();
+ for(let i=0;i<22;i++)await op.submit(await toySpend('spend'+i,root));
+ for(let i=0;i<11;i++)await op.submit(await toyJoin('join'+i,root));
+ const kinds:string[]=[];
+ for(let i=0;i<3;i++)kinds.push(recordAt(w.dir,(await op.tick() as {batch:number}).batch).kind);
+ assert.deepEqual(kinds,['spend','join','spend']);
+});

@@ -260,14 +260,14 @@ export default function RollupWallet(){
    <section className="stock-card stock-history"><h2>History</h2>
     {!timeline.length?<p className="stock-muted">{synced?'Nothing yet. Fund your Arkade address and it shows up here.':'Reading the pool…'}</p>:<ul>{timeline.map(item=>{
      if('rollup' in item){const e=item.rollup,recipient=e.spent.map(nf=>sent[String(nf)]?.to).find(Boolean),incoming=e.kind==='shield'||e.kind==='receive';
-      return <li key={item.key}><details><summary><span className={'stock-kind '+e.kind}>{kinds[e.kind]}</span><b className={incoming?'in':'out'}>{incoming?'+':'−'}{amountText(e.amounts)}</b><time>{when(e.at)}</time></summary>
+      return <li key={item.key}><details><summary><span className={'stock-kind '+e.kind}>{kinds[e.kind]}</span>{e.kind==='merge'?<b>{e.spent.length} notes into {e.created.length}</b>:<b className={incoming?'in':'out'}>{incoming?'+':'−'}{amountText(e.amounts)}</b>}<time>{when(e.at)}</time></summary>
        <dl>
-        <dt>Where</dt><dd>{e.kind==='shield'?'From your Arkade coins into the pool; the amount is public.':e.kind==='withdraw'?(recipient?`To ${recipient}`:e.destination===ownField?'To your Arkade address':'To another Arkade address')+'; the amount is public.':e.kind==='send'?`Inside the pool${recipient?` to ${recipient}`:''}; amount and parties stay private.`:'Inside the pool; amount and sender stay private.'}</dd>
+        <dt>Where</dt><dd>{e.kind==='shield'?'From your Arkade coins into the pool; the amount is public.':e.kind==='withdraw'?(recipient?`To ${recipient}`:e.destination===ownField?'To your Arkade address':'To another Arkade address')+'; the amount is public.':e.kind==='send'?`Inside the pool${recipient?` to ${recipient}`:''}; amount and parties stay private.`:e.kind==='merge'?'Inside the pool: your own notes, merged into one. Nothing left the wallet.':'Inside the pool; amount and sender stay private.'}</dd>
         <dt>Batch</dt><dd>#{e.batch}{e.txid&&<> · <TxLink txid={e.txid}/></>}</dd>
         {e.spent.length>0&&<><dt>Notes spent</dt><dd>{e.spent.length}</dd></>}
-        {e.created.length>0&&<><dt>{incoming?'Notes received':'Change'}</dt><dd>{e.created.map(n=>n.asset===0n?`${sats(n.amount)} sats`:`${sats(n.amount)} units`).join(', ')}</dd></>}
+        {e.created.length>0&&<><dt>{e.kind==='merge'?'Merged into':incoming?'Notes received':'Change'}</dt><dd>{e.created.map(n=>n.asset===0n?`${sats(n.amount)} sats`:`${sats(n.amount)} units`).join(', ')}</dd></>}
         {e.txid&&<><dt>Transaction</dt><dd><Copyable value={e.txid}/></dd></>}
-        {e.kind!=='withdraw'&&(e.kind!=='send'||e.spent.some(nf=>sent[String(nf)]?.note))&&<><dt>Reveal</dt><dd>{revealed[item.key]?<><Copyable value={revealed[item.key]!}/><p className="stock-muted">Anyone with this link can check this payment's amount and recipient against the pool, and learns nothing else.</p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>revealEntry(item.key,e)}>Create a reveal link</button>}</dd></>}
+        {e.kind!=='withdraw'&&e.kind!=='merge'&&(e.kind!=='send'||e.spent.some(nf=>sent[String(nf)]?.note))&&<><dt>Reveal</dt><dd>{revealed[item.key]?<><Copyable value={revealed[item.key]!}/><p className="stock-muted">Anyone with this link can check this payment's amount and recipient against the pool, and learns nothing else.</p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>revealEntry(item.key,e)}>Create a reveal link</button>}</dd></>}
        </dl></details></li>;}
      const t=item.arkade,id=t.key.arkTxid||t.key.commitmentTxid,received=t.type===TxType.TxReceived;
      return <li key={item.key}><details><summary><span className="stock-kind arkade">{received?'Arkade funding':'Arkade payment'}</span><b className={received?'in':'out'}>{received?'+':'−'}{sats(t.amount)} sats</b><time>{when(t.createdAt)}</time></summary>
@@ -277,8 +277,8 @@ export default function RollupWallet(){
     })}</ul>}
    </section>
    {(notes.length>0||Object.values(assetNotes).some(list=>list.length))&&<section className="stock-card"><h2>Notes</h2><div className="stock-notes">
-    {notes.map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} sats</span><span className="ok">Spendable</span></div>)}
-    {Object.entries(assetNotes).flatMap(([id,list])=>list.map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} units</span><span className="ok">Asset {short(id)}</span></div>))}
+    {notes.map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} sats</span>{merging.current.has(n.nullifier)?<span className="wait">Merging</span>:<span className="ok">Spendable</span>}</div>)}
+    {Object.entries(assetNotes).flatMap(([id,list])=>list.map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} units</span><span className={merging.current.has(n.nullifier)?'wait':'ok'}>{merging.current.has(n.nullifier)?'Merging':`Asset ${short(id)}`}</span></div>))}
    </div></section>}
   </>}
   {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore this wallet and its Arkade balance in any browser. Anyone who has them can spend your funds.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}

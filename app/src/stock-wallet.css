@@ -29,6 +29,7 @@
 .stock-kind.receive::before{background:var(--vert)}
 .stock-kind.send::before{background:var(--purpure)}
 .stock-kind.withdraw::before{background:var(--gules)}
+.stock-kind.merge::before{background:var(--slate)}
 .stock-kind.arkade::before{background:transparent;box-shadow:inset 0 0 0 1.5px var(--slate)}
 .stock-history dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 16px;margin:0 0 14px;padding:12px 14px;background:rgba(244,239,229,.75);border:1px dashed var(--gilt);font-size:13px}
 .stock-history dt{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--slate)}

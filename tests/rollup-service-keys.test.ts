@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {mkdtempSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdtempSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
-import {ROLLUP_KEY_FILES,rollupKeyPath,rollupProgramsHash,verifyRollupKeys} from '../src/rollup/service.ts';
+import {installRollupKeys,ROLLUP_KEY_FILES,rollupKeyPath,rollupProgramsHash,verifyRollupKeys} from '../src/rollup/service.ts';
 
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
 
@@ -33,4 +33,16 @@ test('the journal pin changes when any leaf changes, or when a byte moves betwee
  const leaves={batch:Uint8Array.of(1),batchJoin:Uint8Array.of(2),reserve:Uint8Array.of(3),renew:Uint8Array.of(4)},base=rollupProgramsHash(leaves);
  for(const name of ['batch','batchJoin','reserve','renew'] as const)assert.notEqual(rollupProgramsHash({...leaves,[name]:Uint8Array.of(9)}),base,name);
  assert.notEqual(rollupProgramsHash({...leaves,batch:Uint8Array.of(1,2),batchJoin:new Uint8Array()}),base);
+});
+
+test('a pre-built key set is installed whole or not at all, so a broken mount can be fixed by mounting again',()=>{
+ const from=mkdtempSync(join(tmpdir(),'rollup-bundle-')),keys=join(mkdtempSync(join(tmpdir(),'rollup-data-')),'keys'),files:Record<string,string>={};
+ for(const name of ROLLUP_KEY_FILES.filter(n=>n!=='manifest.json')){writeFileSync(join(from,name),name);files[name]=sha(name);}
+ writeFileSync(join(from,'manifest.json'),JSON.stringify({circuits:{all:{files}}}));
+ rmSync(join(from,'join.zkey'));
+ assert.throws(()=>installRollupKeys(from,keys));
+ assert.equal(existsSync(keys),false,'nothing half-copied is left where the service looks');
+ writeFileSync(join(from,'join.zkey'),'join.zkey');
+ installRollupKeys(from,keys);
+ assert.doesNotThrow(()=>verifyRollupKeys(keys));
 });
