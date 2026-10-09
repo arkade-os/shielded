@@ -47,6 +47,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Pull base images through mirror.gcr.io (shared runner IPs hit Docker Hub's anonymous rate limit)
+        run: |
+          sudo sh -c 'f=/etc/docker/daemon.json; [ -s $f ] || echo "{}" > $f; jq ". + {\"registry-mirrors\": [\"https://mirror.gcr.io\"]}" $f > /tmp/daemon.json && mv /tmp/daemon.json $f'
+          sudo systemctl restart docker
+          docker info --format '{{.RegistryConfig.Mirrors}}'
       - run: docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci bin/shielded-vm -info
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node -e "for(const f of ['src/server.ts','bin/rapidsnark','rollup-keys/manifest.json','rollup-keys/batch-join.zkey','app/dist/index.html'])require('fs').accessSync(f)"
