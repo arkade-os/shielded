@@ -6,6 +6,8 @@ import { BATCH_SLOTS, BTC_ASSET, ROLLUP_DOMAIN, type BatchKind } from '../packag
 import { assetFieldOf, destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, statementOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { RollupState, type BatchSlot } from '../packages/protocol/src/rollup/state.ts';
+import { buildRollupTransfer } from '../packages/protocol/src/rollup/account.ts';
+import { x25519 } from '@noble/curves/ed25519.js';
 import { clientWitness, inputNullifierOf, toCircuitInput, type ClientInput, type ClientSpend, type ClientWitness } from '../packages/protocol/src/rollup/client.ts';
 
 const build = process.argv[2] ?? join(process.cwd(), 'circuits', 'rollup', 'build');
@@ -150,5 +152,10 @@ await rejects('client join with a swapped nullifier key', 'join', joinSwappedNk,
 const joinFrozen = forge({ ...pair, inputs: [input(notes[5]), { ...dummyInput(), nk: aliceNk, rho: victim.rho }], outputs: [{ ...pair.outputs[0], amount: notes[5].amount }, pair.outputs[1]] },
  [nullifierOf(hash, ROLLUP_DOMAIN, aliceNk, notes[5].rho), realNullifier]);
 await rejects('dummy join input publishing a real note\'s nullifier', 'join', joinFrozen.input, /Join_\d+ line: 45/);
+const aliceSelf = { owner: aliceOwner, viewPublic: x25519.getPublicKey(x25519.utils.randomSecretKey()) };
+const ownedOf = (n: Owned) => ({ amount: n.amount, asset: BTC_ASSET, rho: n.rho, index: n.index, nullifier: nullifierOf(hash, ROLLUP_DOMAIN, aliceNk, n.rho) });
+const walletJoin = await buildRollupTransfer(hash, { root: state.latestRoot(), ask: aliceAsk, nk: aliceNk, self: aliceSelf, request: { inputs: [ownedOf(notes[5]), ownedOf(notes[6])] }, paths: [state.notes.path(notes[5].index), state.notes.path(notes[6].index)] });
+await accepts('wallet-built join of two notes', 'join', walletJoin.witness.input);
+await accepts('wallet-built join padding', 'join', (await buildRollupTransfer(hash, { root: state.latestRoot(), ask: fresh(), nk: fresh(), self: aliceSelf, request: {}, width: 2 })).witness.input);
 console.log(`after three batches: ${state.noteCount} note slots, ${state.nullifiers.count()} nullifier leaves`);
 process.exit(0);

@@ -150,7 +150,7 @@ export default function RollupWallet(){
  },[pool?.phase,secret]);
 
  const send=()=>void run('Sending privately',['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
-  step(0);const recipient=to.trim(),spends=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n);
+  step(0);const recipient=to.trim(),{spends}=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n);
   logSent(spends.map(s=>{const note=sentNoteOf(hashRef.current!,s);return [String(s.witness.slot.nullifiers[0]),{to:recipient,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}];}));
   return submitAll(spends.map(built=>({built})),step,1);
  });
@@ -174,7 +174,7 @@ export default function RollupWallet(){
  const ownField=ark?destinationFieldOf(ArkAddress.decode(ark.address).pkScript.subarray(2)):undefined,sent=sentLog();
  const assetName=(field:bigint)=>{const id=reserves.find(r=>assetFieldOfId(r)===field);return id?`asset ${short(id)}`:'an asset';};
  const amountText=(amounts:{asset:bigint;amount:bigint}[])=>amounts.map(a=>a.asset===0n?`${sats(a.amount)} sats`:`${sats(a.amount)} units of ${assetName(a.asset)}`).join(' + ');
- const kinds={shield:'Shielded',receive:'Received privately',send:'Sent privately',withdraw:'Withdrew'} as const;
+ const kinds={shield:'Shielded',receive:'Received privately',send:'Sent privately',withdraw:'Withdrew',merge:'Merged notes'} as const;
  const timeline=[
   ...history.map(e=>({key:`r${e.batch}-${e.spent[0]??e.created[0]?.nullifier}`,at:e.at??0,rollup:e})),
   ...(ark?.history??[]).filter(t=>t.amount>0&&!account.current?.txids.has(t.key.arkTxid)).map(t=>({key:`a${t.key.arkTxid||t.key.commitmentTxid||t.key.boardingTxid}-${t.type}`,at:t.createdAt,arkade:t})),

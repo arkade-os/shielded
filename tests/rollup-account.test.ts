@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
-import {buildRollupSpend,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
+import {buildRollupSpend,buildRollupTransfer,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {assetFieldOfId,destinationFieldOf,noteOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
@@ -15,10 +15,46 @@ const [aliceKeys,bobKeys,padKeys]=[keys('11'),keys('22'),keys('33')];
 const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));
 
 const published=({witness,ciphertext}:BuiltSpend)=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:'0',groupSize:0,ciphertext:hex.encode(ciphertext)});
-async function batchOf(root:bigint,spends:BuiltSpend[]):Promise<PublishedBatch> {
- const padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
- return {kind:'spend',slots:[...spends,...padding].map(published)};
+async function batchOf(root:bigint,spends:BuiltSpend[],kind:'spend'|'join'='spend'):Promise<PublishedBatch> {
+ const padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupTransfer(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{},width:kind==='join'?2:1})));
+ return {kind,slots:[...spends,...padding].map(published)};
 }
+/** Alice after one batch of nine deposits: 100, 200, ... 900 sats. */
+async function nineNotes(){
+ const alice=RollupAccount.owning(hash,aliceKeys),deposits:BuiltSpend[]=[];
+ for(let i=1;i<=9;i++)deposits.push(await alice.spend({deposit:BigInt(100*i)},aliceTo));
+ await alice.apply(await batchOf(alice.state.latestRoot(),deposits));
+ return alice;
+}
+
+test('a join merges two notes into one and the account follows it',async()=>{
+ const alice=await nineNotes(),before=alice.balance(),[a,b]=alice.notes();
+ const built=await alice.join([a!,b!],aliceTo);
+ assert.equal(built.witness.slot.nullifiers.length,2);
+ assert.deepEqual(built.witness.publicSignals.slice(1),[0n,0n,0n,0n]);
+ await alice.apply(await batchOf(alice.state.latestRoot(),[built],'join'));
+ assert.equal(alice.balance(),before);
+ assert.deepEqual(alice.notes().map(n=>n.amount),[300n,400n,500n,600n,700n,800n,900n,300n]);
+ const entry=alice.history.at(-1)!;
+ assert.equal(entry.kind,'merge');
+ assert.deepEqual(entry.spent,[a!.nullifier,b!.nullifier]);
+});
+
+test('a join refuses one note in both slots, and any boundary leg',async()=>{
+ const alice=await nineNotes(),[a,b]=alice.notes();
+ await assert.rejects(()=>alice.join([a!,a!],aliceTo),/two different notes/i);
+ await assert.rejects(()=>alice.spend({inputs:[a!,b!],withdraw:100n,program:new Uint8Array(32)},aliceTo),/no deposit, withdrawal or group/i);
+});
+
+test('consolidation picks the two smallest notes, and pay takes a join over a group when asked',async()=>{
+ const alice=await nineNotes();
+ assert.deepEqual((await alice.consolidate(aliceTo))!.inputs.map(n=>n.amount),[100n,200n]);
+ assert.equal(await alice.consolidate(aliceTo,0n,new Set(),9),undefined,'nine notes are not above nine');
+ const joined=await alice.pay(bobTo,1500n,aliceTo,new Set(),0n,{join:true});
+ assert.deepEqual([joined.kind,joined.spends.length],['join',1]);
+ const grouped=await alice.pay(bobTo,1500n,aliceTo,new Set(),0n,{join:false});
+ assert.deepEqual([grouped.kind,grouped.spends.length],['spend',2]);
+});
 
 test('a deposit, a transfer and a withdrawal move notes between replicas that agree on the state',async()=>{
  const alice=RollupAccount.owning(hash,aliceKeys),bob=RollupAccount.owning(hash,bobKeys);
@@ -55,11 +91,11 @@ test('a payment larger than any single note goes out as one atomic group of note
  const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);};
  await apply(await batchOf(alice.state.latestRoot(),[await alice.spend({deposit:600n},aliceTo),await alice.spend({deposit:300n},aliceTo),await alice.spend({deposit:100n},aliceTo)]));
  assert.equal(alice.balance(),1000n);
- const single=await alice.pay(bobTo,250n,aliceTo);
+ const {spends:single}=await alice.pay(bobTo,250n,aliceTo);
  assert.equal(single.length,1,'one note covers it, so no group');
  assert.equal(single[0]!.witness.slot.groupSize,0);
  await assert.rejects(alice.pay(bobTo,1001n,aliceTo),/cover/);
- const group=await alice.pay(bobTo,850n,aliceTo);
+ const {spends:group}=await alice.pay(bobTo,850n,aliceTo);
  assert.equal(group.length,2);
  assert.ok(group.every(s=>s.witness.slot.groupSize===2&&s.witness.slot.groupId===group[0]!.witness.slot.groupId&&s.witness.slot.groupId!==0n));
  await apply(await batchOf(alice.state.latestRoot(),group));
@@ -76,7 +112,7 @@ test('an asset enters and leaves with its 330-sat BTC carrier, and moves private
  assert.ok(deposit.every(s=>s.witness.slot.groupSize===2&&s.witness.slot.groupId===deposit[0]!.witness.slot.groupId));
  await apply(await batchOf(alice.state.latestRoot(),deposit));
  assert.equal(alice.balance(x),1000n);assert.equal(alice.balance(),330n);
- const pay=await alice.pay(bobTo,400n,aliceTo,new Set(),x);
+ const {spends:pay}=await alice.pay(bobTo,400n,aliceTo,new Set(),x);
  assert.ok(pay.every(s=>s.witness.publicSignals[3]===0n),'a transfer shows no asset');
  await apply(await batchOf(alice.state.latestRoot(),pay));
  assert.equal(bob.balance(x),400n);assert.equal(alice.balance(x),600n);
@@ -105,7 +141,7 @@ test('each wallet keeps a history of what moved its notes, with the batch that m
   await alice.apply(batch);await bob.apply(batch);
  };
  await apply([await alice.spend({deposit:1000n},aliceTo)]);
- await apply(await alice.pay(bobTo,300n,aliceTo));
+ await apply((await alice.pay(bobTo,300n,aliceTo)).spends);
  await apply(await alice.depositAsset(x,50n,330n,aliceTo));
  await apply([await bob.spend({input:bob.notes()[0]!,withdraw:100n,program},bobTo)]);
  const view=(account:RollupAccount)=>account.history.map(e=>[e.kind,e.batch,e.amounts.map(a=>`${a.amount}${a.asset===0n?'':'x'}`).join('+')]);
@@ -128,7 +164,7 @@ test('a wallet account that keeps only the note frontier agrees with the full re
  };
  assert.equal(light.latestRoot(),full.latestRoot(),'both start from the same genesis root');
  await apply([await full.spend({deposit:1000n},aliceTo)]);
- await apply(await full.pay(bobTo,300n,aliceTo));
+ await apply((await full.pay(bobTo,300n,aliceTo)).spends);
  for(let i=0;i<5;i++)await apply([]);
  const note=light.notes()[0]!;
  const out=await light.spend({input:note,withdraw:330n,program},aliceTo);

@@ -1,5 +1,5 @@
 import { hex } from '@scure/base';
-import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD } from './constants.ts';
+import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, type BatchKind } from './constants.ts';
 import { clientWitness, inputNullifierOf, type ClientWitness } from './client.ts';
 import { destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
 import { NoteFrontier } from './frontier.ts';
@@ -8,13 +8,13 @@ import { ctDigestOf, openRollupNotes, sealRollupNotes, viewEcdh, type Ecdh, type
 
 /** A slot as the operator publishes it: decimal field elements plus the hex note record. */
 export interface PublishedSlot { root: string; nullifiers: string[]; commitments: [string, string]; ctDigest: string; groupId: string; groupSize: number; publics?: string[]; ciphertext?: string }
-export interface PublishedBatch { kind: 'spend'; slots: PublishedSlot[]; txid?: string; at?: number }
+export interface PublishedBatch { kind: BatchKind; slots: PublishedSlot[]; txid?: string; at?: number }
 export interface OwnedNote extends RollupNote { index: number; nullifier: bigint }
 /** One slot, or one whole group, that moved this wallet's notes. Amounts are per asset field, BTC being 0. */
-export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint; slots: number[] }
+export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw' | 'merge'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint; slots: number[] }
 /** Without `ask` the account watches: it sees notes and spends but cannot build a spend. */
 export interface RollupKeys { owner: bigint; nk: bigint; viewSecret: Uint8Array; ask?: bigint }
-export interface SpendRequest { asset?: bigint; input?: OwnedNote; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { nk: bigint; rho: bigint } }
+export interface SpendRequest { asset?: bigint; input?: OwnedNote; inputs?: [OwnedNote, OwnedNote]; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { nk: bigint; rho: bigint } }
 export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; change: bigint }
 
 export const randomField = () => BigInt('0x' + hex.encode(crypto.getRandomValues(new Uint8Array(32)))) % ROLLUP_FIELD;
@@ -90,7 +90,8 @@ export class RollupAccount {
   if (spent.length && payout) return { kind: 'withdraw', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[2] ?? 0n }))), destination: payout[4] ?? 0n };
   if (spent.length) {
    const amounts = sum([...spent.map(n => ({ asset: n.asset, amount: n.amount })), ...created.map(n => ({ asset: n.asset, amount: -n.amount }))]);
-   return amounts.length ? { kind: 'send', ...base, amounts } : undefined;
+   if (amounts.length) return { kind: 'send', ...base, amounts };
+   return batch.kind === 'join' ? { kind: 'merge', ...base, amounts: [] } : undefined;
   }
   return created.length ? { kind: 'receive', ...base, amounts: sum(created.map(n => ({ asset: n.asset, amount: n.amount }))) } : undefined;
  }
@@ -110,18 +111,33 @@ export class RollupAccount {
 
  spend(request: SpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<BuiltSpend> {
   if (this.keys.ask === undefined) return Promise.reject(new Error('This wallet holds a full viewing key, not the spend authority.'));
-  const path = request.input ? (this.frontier ? this.frontier.path(request.input.index) : this.state.notes.path(request.input.index)) : undefined;
-  return buildRollupSpend(this.hash, { root: this.latestRoot(), ask: this.keys.ask, nk: this.keys.nk, self, request, ...(path ? { path } : {}), ...(group ? { group } : {}) }, random);
+  const paths = (request.inputs ?? (request.input ? [request.input] : [])).map(n => this.frontier ? this.frontier.path(n.index) : this.state.notes.path(n.index));
+  return buildRollupTransfer(this.hash, { root: this.latestRoot(), ask: this.keys.ask, nk: this.keys.nk, self, request, paths, ...(group ? { group } : {}) }, random);
+ }
+
+ /** Two notes into one: output 0 pays `to`, or without it holds the whole sum for `self`. */
+ join(inputs: [OwnedNote, OwnedNote], self: RollupRecipient, to?: SpendRequest['to']): Promise<BuiltSpend> {
+  return this.spend({ asset: inputs[0].asset, inputs, ...(to ? { to } : {}) }, self);
+ }
+
+ /** Above `above` unspent notes of an asset, joins the two smallest. */
+ async consolidate(self: RollupRecipient, asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set(), above = CONSOLIDATE_ABOVE): Promise<{ inputs: [OwnedNote, OwnedNote]; built: BuiltSpend } | undefined> {
+  const notes = this.notes(asset).filter(n => !inFlight.has(n.nullifier)).sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
+  if (notes.length <= above) return undefined;
+  const inputs: [OwnedNote, OwnedNote] = [notes[0]!, notes[1]!];
+  return { inputs, built: await this.join(inputs, self) };
  }
 
  /**
-  * Pays from one note when one covers the amount, else from up to three notes as one atomic group: the batch takes
-  * every member or none. Members must be submitted in the returned order, the order the group id commits to.
+  * Pays from one note when one covers the amount, else from the two largest in one join when `prefer.join`, else from up
+  * to three notes as one atomic group: the batch takes every member or none. Members must be submitted in the returned
+  * order, the order the group id commits to.
   */
- async pay(recipient: RollupRecipient, amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET): Promise<BuiltSpend[]> {
+ async pay(recipient: RollupRecipient, amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: BatchKind; spends: BuiltSpend[] }> {
   const notes = this.notes(asset).filter(n => !inFlight.has(n.nullifier)).sort((a, b) => (a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0));
   const single = notes.filter(n => n.amount >= amount).pop();
-  if (single) return [await this.spend({ asset, input: single, to: { recipient, amount } }, self)];
+  if (single) return { kind: 'spend', spends: [await this.spend({ asset, input: single, to: { recipient, amount } }, self)] };
+  if (prefer.join && notes.length > 1 && notes[0]!.amount + notes[1]!.amount >= amount) return { kind: 'join', spends: [await this.join([notes[0]!, notes[1]!], self, { recipient, amount })] };
   const chosen: OwnedNote[] = [];
   for (const note of notes) { if (chosen.reduce((sum, n) => sum + n.amount, 0n) >= amount || chosen.length === 3) break; chosen.push(note); }
   if (chosen.length < 2 || chosen.reduce((sum, n) => sum + n.amount, 0n) < amount) throw new Error('No three notes together cover this amount.');
@@ -129,7 +145,7 @@ export class RollupAccount {
   let left = amount;
   const legs: BuiltSpend[] = [];
   for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient, amount: part } }, self, randomField, group)); }
-  return legs;
+  return { kind: 'spend', spends: legs };
  }
 
  /** The asset slot carries the deposit coin's units; the BTC slot deposits that coin's sats, so one coin funds the group. */
@@ -150,26 +166,33 @@ export class RollupAccount {
   return [await this.spend({ asset, input: note, withdraw: units, program }, self, randomField, group), await this.spend({ input: carrier, withdraw: sats, program }, self, randomField, group)];
  }
 }
-const CARRIER_SATS = 330n;
+const CARRIER_SATS = 330n, CONSOLIDATE_ABOVE = 8;
 
-/** One input (a dummy for a pure deposit or padding), two sealed outputs: the payment, then change to `self`. */
-export async function buildRollupSpend(hash: Hash, o: { root: bigint; ask: bigint; nk: bigint; self: RollupRecipient; request: SpendRequest; path?: bigint[]; group?: { id: bigint; size: number } }, random = randomField): Promise<BuiltSpend> {
+/**
+ * One input (spend circuit) or two (join circuit); dummies fill a pure deposit or a padding slot of `width`. Two sealed
+ * outputs: the payment, then change to `self`.
+ */
+export async function buildRollupTransfer(hash: Hash, o: { root: bigint; ask: bigint; nk: bigint; self: RollupRecipient; request: SpendRequest; paths?: bigint[][]; width?: 1 | 2; group?: { id: bigint; size: number } }, random = randomField): Promise<BuiltSpend> {
  const { request } = o, asset = request.asset ?? BTC_ASSET, deposit = request.deposit ?? 0n, withdraw = request.withdraw ?? 0n, paid = request.to?.amount ?? 0n;
- if (request.input && (!o.path || request.input.asset !== asset)) throw new Error('A note input needs its path and the asset it holds.');
- const input = request.input
-  ? { amount: request.input.amount, ask: o.ask, nk: o.nk, rho: request.input.rho, index: request.input.index, path: o.path! }
-  : { amount: 0n, ask: random(), nk: request.dummy?.nk ?? random(), rho: request.dummy?.rho ?? random(), index: 0, path: Array<bigint>(NOTE_DEPTH).fill(0n) };
+ const owned = request.inputs ?? (request.input ? [request.input] : []), width = o.width ?? (owned.length === 2 ? 2 : 1);
+ if (owned.length > width || owned.some((n, k) => !o.paths?.[k] || n.asset !== asset)) throw new Error('A note input needs its path and the asset it holds.');
+ if (width === 2 && (deposit || withdraw || o.group)) throw new Error('A join carries no deposit, withdrawal or group.');
+ if (owned.length === 2 && owned[0]!.index === owned[1]!.index) throw new Error('A join spends two different notes.');
+ const inputs = Array.from({ length: width }, (_, k) => owned[k]
+  ? { amount: owned[k]!.amount, ask: o.ask, nk: o.nk, rho: owned[k]!.rho, index: owned[k]!.index, path: o.paths![k]! }
+  : { amount: 0n, ask: random(), nk: request.dummy?.nk ?? random(), rho: request.dummy?.rho ?? random(), index: 0, path: Array<bigint>(NOTE_DEPTH).fill(0n) });
  if ((withdraw > 0n) !== !!request.program) throw new Error('A withdrawal needs exactly one payout program.');
- const change = input.amount + deposit - withdraw - paid;
+ const change = inputs.reduce((sum, i) => sum + i.amount, 0n) + deposit - withdraw - paid;
  if (change < 0n || paid < 0n || deposit < 0n || withdraw < 0n) throw new Error('The spend does not balance.');
  const outputs = request.to ? [{ amount: paid, to: request.to.recipient }, { amount: change, to: o.self }] : [{ amount: change, to: o.self }, { amount: 0n, to: o.self }];
- const randoms = [random(), random()], nullifiers = [inputNullifierOf(hash, ROLLUP_DOMAIN, input)];
+ const randoms = [random(), random()], nullifiers = inputs.map(i => inputNullifierOf(hash, ROLLUP_DOMAIN, i));
  const notes = outputs.map((out, j) => ({ amount: out.amount, asset, rho: outputRhoOf(hash, ROLLUP_DOMAIN, randoms[j]!, nullifiers, j) })) as [RollupNote, RollupNote];
  const ciphertext = await sealRollupNotes([outputs[0]!.to, outputs[1]!.to], notes);
  const witness = clientWitness(hash, {
-  domain: ROLLUP_DOMAIN, root: o.root, asset, inputs: [input],
+  domain: ROLLUP_DOMAIN, root: o.root, asset, inputs,
   outputs: [{ amount: outputs[0]!.amount, owner: outputs[0]!.to.owner, random: randoms[0]! }, { amount: outputs[1]!.amount, owner: outputs[1]!.to.owner, random: randoms[1]! }],
   deposit, withdraw, destination: request.program ? destinationFieldOf(request.program) : 0n, ctDigest: ctDigestOf(ciphertext), groupId: o.group?.id ?? 0n, groupSize: o.group?.size ?? 0,
  });
  return { witness, ciphertext, change };
 }
+export const buildRollupSpend = buildRollupTransfer;

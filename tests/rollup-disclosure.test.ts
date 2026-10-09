@@ -23,7 +23,7 @@ async function world(){
   batches.push(batch);await alice.apply(batch);
  };
  await apply([await alice.spend({deposit:1000n},aliceTo)]);
- const [payment]=await alice.pay(bobTo,300n,aliceTo);
+ const {spends:[payment]}=await alice.pay(bobTo,300n,aliceTo);
  await apply([payment!]);
  return {alice,batches,payment:payment!};
 }
