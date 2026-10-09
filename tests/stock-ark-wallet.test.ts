@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {hex} from '@scure/base';
 import {MultisigTapscript,Transaction,VtxoScript} from '@arkade-os/sdk';
 import {offlineNativeFixture} from './fixtures/native.ts';
-import {assertUniqueCustomerVtxos,customerVtxoSourceMatches} from '../src/stock/ark-wallet.ts';
+import {assertUniqueCustomerVtxos,customerVtxoSourceMatches,withArkWallet} from '../src/stock/ark-wallet.ts';
 
 const txid='12'.repeat(32);
 function fixture(){
@@ -28,4 +28,12 @@ test('duplicate or malformed wallet outpoints fail closed before funding selecti
  assert.throws(()=>assertUniqueCustomerVtxos([{txid,vout:0},{txid:txid.toUpperCase(),vout:0}]),/duplicate/);
  assert.throws(()=>assertUniqueCustomerVtxos([{txid:'not-a-txid',vout:0}]),/invalid/);
  assert.throws(()=>assertUniqueCustomerVtxos([{txid,vout:-1}]),/invalid/);
+});
+
+test('an Arkade wallet opened for one call is disposed after it, even when the call fails',async()=>{
+ let disposed=0;
+ const open=async()=>({address:'tark1x',wallet:{dispose:async()=>{disposed++;}}});
+ assert.equal(await withArkWallet(open,async w=>w.address),'tark1x');
+ await assert.rejects(withArkWallet(open,async()=>{throw new Error('send refused');}),/send refused/);
+ assert.equal(disposed,2);
 });

@@ -11,8 +11,8 @@ import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '..
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
-import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/ark-wallet.ts';
-import {arkAssetHoldings,bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,withArkWallet,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
+import {openCustomerArkWallet,walletIntentLeafScriptHex,withArkWallet} from '../../src/stock/ark-wallet.ts';
+import {arkAssetHoldings,bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
@@ -197,7 +197,7 @@ export default function RollupWallet(){
   const input=pickNote(account.current!.notes(),value,merging.current);if(!input)throw new Error('No single note covers this amount.');
   const built=await account.current!.spend({input,withdraw:value,program},self.current!);remember([built]);
   return submitAll([{built,extra:{program}}],step,1);
- });
+ }).then(ok=>{if(ok)setTab('receive');});
  const list=async(id:string)=>{try{await withArk(wallet=>wallet.wallet.send({recipients:[{address:poolRef.current!.pool!.address,amount:DUST,assets:[{assetId:id,amount:1n}]}]}));setListed(id);void refreshArk();}catch(error){setPoolError((error as Error).message);}};
 
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=self.current?rollupAddressOf(self.current):'';

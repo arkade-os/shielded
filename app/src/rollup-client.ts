@@ -102,9 +102,3 @@ export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=
  }
  return [...rows.values()];
 }
-/** Opens an Arkade wallet for one call and disposes it after; an open wallet keeps an event stream and timers running. */
-export async function withArkWallet<W extends {wallet:{dispose():Promise<void>}},T>(open:()=>Promise<W>,use:(wallet:W)=>Promise<T>):Promise<T>{
- const wallet=await open();
- // Not awaited: dispose waits out an in-flight poll, up to 30 s.
- try{return await use(wallet);}finally{void wallet.wallet.dispose().catch(()=>{});}
-}

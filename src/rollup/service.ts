@@ -12,7 +12,7 @@ import {BATCH_SLOTS,type BatchKind} from '../../packages/protocol/src/rollup/con
 import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
-import {openCustomerArkWallet} from '../stock/ark-wallet.ts';
+import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
 import {validateStockCheckpoint} from '../stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
 import {isStorageLocked} from '../storage.ts';
@@ -153,9 +153,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   return loadRollupLeaves(o.vmBinary,join(o.directory,'spec.json'));
  };
 
+ const genesis=(network:StockNetworkInfo)=>withArkWallet(()=>openCustomerArkWallet(identity,network),ark=>firstGenesis(ark,network));
  /** Issues the pool token and sends the head with the genesis state packet; a crash in between re-finds the head by its script. */
- async function genesis(network:StockNetworkInfo):Promise<Genesis|undefined> {
-  const ark=await openCustomerArkWallet(identity,network),wallet=ark.wallet,balance=await wallet.getBalance();
+ async function firstGenesis(ark:Awaited<ReturnType<typeof openCustomerArkWallet>>,network:StockNetworkInfo):Promise<Genesis|undefined> {
+  const wallet=ark.wallet,balance=await wallet.getBalance();
   status={...status,phase:'funding',fundingAddress:ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool.`};
   const tokenPath=join(o.directory,'genesis-token.json');
   if(!existsSync(tokenPath)){
@@ -200,7 +201,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
 
  async function open(network:StockNetworkInfo,saved:Genesis){
   const leaves=await spec(saved.token),pool=rollupPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
-  const ark=await openCustomerArkWallet(identity,network),info=await new RestArkProvider(network.arkUrl).getInfo();
+  const fundingAddress=await withArkWallet(()=>openCustomerArkWallet(identity,network),async ark=>ark.address),info=await new RestArkProvider(network.arkUrl).getInfo();
   const checkpoint=validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
   const prover=(name:string)=>createRollupProver({wasm:join(keys,`${name}.wasm`),zkey:join(keys,`${name}.zkey`)},o.rapidsnark);
   const operator=await openRollupOperator({directory:join(o.directory,'operator'),
@@ -212,7 +213,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
   await restore(operator);
   await backfill(operator,indexer).catch(error=>log('batch history backfill: '+(error as Error).message));
-  status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:ark.address};
+  status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress};
   run({spend:prover('spend'),join:prover('join')});
  }
 
