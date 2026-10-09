@@ -21,6 +21,7 @@ import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
+import {ROLLUP_KEY_FILES} from '../src/rollup/service.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
 
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo}
@@ -39,8 +40,8 @@ async function mirror(url:string,dir:string){
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token:status.pool.token,operator:status.pool.operator,script:status.pool.script,network:status.network} satisfies Pool));
  const manifest=await (await get('/proving/manifest.json')).json() as {circuits:Record<string,{files:Record<string,string>}>};
  writeFileSync(join(dir,'keys','manifest.json'),JSON.stringify(manifest));
- // The manifest comes from the pool, so its file names are untrusted: only the six key files are written.
- const known=new Set(['spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json']);
+ // The manifest comes from the pool, so its file names are untrusted: only the service's allowlisted key files are written.
+ const known=new Set<string>(ROLLUP_KEY_FILES.filter(name=>name!=='manifest.json'));
  for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files)){
   if(!known.has(name))throw new Error(`The key manifest names an unexpected file: ${JSON.stringify(name)}.`);
   const path=join(dir,'keys',name);if(existsSync(path)&&sha(readFileSync(path))===digest)continue;
@@ -64,7 +65,7 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const account=RollupAccount.owning(hash,keys),numbers=batchesIn(dir);
  if(numbers.some((n,i)=>n!==i))throw new Error('The mirrored batch records have a gap.');
  for(const n of numbers)await account.apply(json<PublishedBatch>(join(dir,'batches',`${n}.json`)));
- writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',slots:BATCH_SLOTS,kind:0,token:pool.token,operator:pool.operator}));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',clientJoinKey:'keys/join.vkey.json',batchJoinKey:'keys/batch-join.vkey.json',slots:BATCH_SLOTS,token:pool.token,operator:pool.operator}));
  const leaves=await loadRollupLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json')),tree=rollupPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
  if(hex.encode(tree.tree.pkScript)!==pool.script)throw new Error('The rebuilt pool script is not the pool\'s.');
  const indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
