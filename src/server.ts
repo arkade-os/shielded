@@ -13,7 +13,8 @@ const data=resolve(process.env.SHIELDED_DATA_DIR??'/data'),port=Number(process.e
 const rapidsnark=join(root,'bin','rapidsnark');
 let service:RollupService|undefined,stopping=false,timer:ReturnType<typeof setTimeout>|undefined;
 
-const app=express();app.disable('x-powered-by');
+// Dokploy's proxy sits on a private network; only such a hop may name the client, so a direct caller cannot.
+const app=express();app.disable('x-powered-by');app.set('trust proxy','loopback, linklocal, uniquelocal');
 // Health stays green while waiting for a previous instance's volume lock, or the rollout would never finish.
 app.get('/health',(_req,res)=>{const phase=service?.status().phase??'starting';res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
 app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!!service?.ready()}));

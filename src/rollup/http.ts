@@ -16,8 +16,18 @@ const proofOf=(p:any):SnarkProof=>{
 };
 
 /** The v2 wallet API: status, proving keys, published batches, spend submission and the deposit signing round. */
+const POSTS_PER_MINUTE=60;
 export function createRollupRouter(service:()=>RollupService|undefined){
  const router=express.Router();
+ // Every submission costs a proof check, so each address gets a budget of writes; reads stay open.
+ const writes=new Map<string,{count:number;since:number}>();
+ router.use((req,res,next)=>{
+  if(req.method!=='POST')return next();
+  const now=Date.now(),key=req.ip??'',seen=writes.get(key);
+  if(!seen||now-seen.since>60_000){if(writes.size>10_000)writes.clear();writes.set(key,{count:1,since:now});return next();} // ponytail: crude reset, an LRU if the map ever matters
+  if(++seen.count>POSTS_PER_MINUTE){res.status(429).json({error:'Too many requests from this address; try again in a minute.'});return;}
+  next();
+ });
  router.use(express.json({limit:'64kb',strict:true}));
  router.use((req,res,next)=>{
   if(req.method==='POST'&&req.get('origin')){let origin:string;try{origin=new URL(req.get('origin')!).host;}catch{res.status(403).json({error:'Invalid origin'});return;}if(origin!==req.get('host')){res.status(403).json({error:'Same-origin request required'});return;}}

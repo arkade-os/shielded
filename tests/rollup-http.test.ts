@@ -77,3 +77,13 @@ test('a batch record from another prover is checked for shape and handed to the 
  assert.equal((await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[{...slot,nullifiers:['11','12']}]})).status,200,'a join slot spends two');
  assert.deepEqual(calls,[['ab'.repeat(32),[slot,{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0}]],['ab'.repeat(32),[{...slot,nullifiers:['11','12']}]]]);
 });
+
+test('each address gets a budget of writes per minute, and reads are not counted',async(t)=>{
+ let submitted=0;
+ const api=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000}),submit:async()=>{submitted++;}});t.after(api.close);
+ const codes:number[]=[];
+ for(let i=0;i<61;i++)codes.push((await post(api.base+'/spends',{...spend,id:String(i).padStart(32,'0')})).status);
+ assert.deepEqual([codes.slice(0,60).every(c=>c===202),codes[60]],[true,429]);
+ assert.equal(submitted,60);
+ assert.equal((await fetch(api.base+'/status')).status,200,'reads stay open');
+});
