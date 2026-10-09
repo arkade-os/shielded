@@ -42,7 +42,7 @@ const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
 const trust:{title:string;by?:Party;text:string}[]=[
  {title:'A test network',text:'Mutinynet test coins only. The proving keys come from a development setup, not a public ceremony.'},
  {title:'Arkade checks the proofs',by:'ark',text:'The Arkade emulator verifies the proofs and arkd must co-sign; Bitcoin itself does not verify them. Both must stay honest and online. If they do not, there is no independent exit from the pool.'},
- {title:'The operator keeps order',by:'op',text:'The pool operator orders batches and can delay or refuse a spend, but cannot spend a note without its owner’s proof. Deposits and withdrawals are public, amount and address; payments inside the pool hide sender, recipient and amount.'},
+ {title:'The operator keeps order',by:'op',text:'The pool operator orders batches and can delay or refuse a spend, but cannot spend a note without its owner’s proof. If it refuses you or stops, anyone holding the published batch key can prove a batch without it, until the pool head expires. Deposits and withdrawals are public, amount and address.'},
 ];
 const pt=(r:number,deg:number)=>[(r*Math.sin(deg*Math.PI/180)).toFixed(1),(-r*Math.cos(deg*Math.PI/180)).toFixed(1)].join(' ');
 const studPaths=Array.from({length:4},(_,k)=>wave(8.5,2.2,8,k*Math.PI/4,72));
