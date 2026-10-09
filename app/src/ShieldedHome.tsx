@@ -34,7 +34,7 @@ const defs:[React.ReactNode,React.ReactNode,React.ReactNode][]=[
  [<>statement<sub>batch</sub></>,<>SHA-256<sub>248</sub>(header || old || new || da<sub>11</sub>)</>,'Binds the old and new state commitments to the DA root. The batch proof’s twelfth public input.'],
 ];
 const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
- {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','10,559'],['Public inputs','5'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','7.9 MB, cached by hash']]},
+ {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','10,818'],['Public inputs','5'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','8.1 MB, cached by hash']]},
  {title:'Batch',by:'op',rows:[['Slots','11'],['Closes','10 s after the first'],['Constraints','509,799'],['Public inputs','12']]},
  {title:'State',rows:[['Note tree','depth 32, 4.29 billion'],['Per batch','one 32-leaf subtree'],['Nullifiers','indexed tree, depth 32'],['Root window','last 64 batches']]},
  {title:'On Arkade',by:'ark',rows:[['Transaction','8,665 bytes'],['Weight','34,660 of 40,000 WU'],['Per payment','about 3,150 WU'],['State packet','64 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
