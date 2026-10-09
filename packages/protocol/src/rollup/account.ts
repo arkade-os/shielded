@@ -12,7 +12,8 @@ export interface PublishedBatch { kind: 'spend'; slots: PublishedSlot[]; txid?: 
 export interface OwnedNote extends RollupNote { index: number; nullifier: bigint }
 /** One slot, or one whole group, that moved this wallet's notes. Amounts are per asset field, BTC being 0. */
 export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint; slots: number[] }
-export interface RollupKeys { ask: bigint; nk: bigint; viewSecret: Uint8Array }
+/** Without `ask` the account watches: it sees notes and spends but cannot build a spend. */
+export interface RollupKeys { owner: bigint; nk: bigint; viewSecret: Uint8Array; ask?: bigint }
 export interface SpendRequest { asset?: bigint; input?: OwnedNote; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { nk: bigint; rho: bigint } }
 export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; change: bigint }
 
@@ -39,7 +40,10 @@ export class RollupAccount {
   this.bornAt = options.bornAt ?? 0;
   this.state = RollupState.genesis(hash);
   if (options.frontier) this.frontier = new NoteFrontier(hash);
-  this.owner = ownerOf(hash, ROLLUP_DOMAIN, keys.ask, keys.nk);
+  this.owner = keys.owner;
+ }
+ static owning(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, options: { frontier?: boolean; bornAt?: number } = {}): RollupAccount {
+  return new RollupAccount(hash, { ...keys, owner: ownerOf(hash, ROLLUP_DOMAIN, keys.ask, keys.nk) }, options);
  }
 
  async apply(batch: PublishedBatch): Promise<OwnedNote[]> {
@@ -105,6 +109,7 @@ export class RollupAccount {
  }
 
  spend(request: SpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<BuiltSpend> {
+  if (this.keys.ask === undefined) return Promise.reject(new Error('This wallet holds a full viewing key, not the spend authority.'));
   const path = request.input ? (this.frontier ? this.frontier.path(request.input.index) : this.state.notes.path(request.input.index)) : undefined;
   return buildRollupSpend(this.hash, { root: this.latestRoot(), ask: this.keys.ask, nk: this.keys.nk, self, request, ...(path ? { path } : {}), ...(group ? { group } : {}) }, random);
  }

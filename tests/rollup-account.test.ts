@@ -21,7 +21,7 @@ async function batchOf(root:bigint,spends:BuiltSpend[]):Promise<PublishedBatch> 
 }
 
 test('a deposit, a transfer and a withdrawal move notes between replicas that agree on the state',async()=>{
- const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys);
+ const alice=RollupAccount.owning(hash,aliceKeys),bob=RollupAccount.owning(hash,bobKeys);
  const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);assert.equal(alice.state.commitment(),bob.state.commitment());};
 
  const deposit=await alice.spend({deposit:1000n},aliceTo);
@@ -51,7 +51,7 @@ test('a deposit, a transfer and a withdrawal move notes between replicas that ag
 });
 
 test('a payment larger than any single note goes out as one atomic group of notes',async()=>{
- const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys);
+ const alice=RollupAccount.owning(hash,aliceKeys),bob=RollupAccount.owning(hash,bobKeys);
  const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);};
  await apply(await batchOf(alice.state.latestRoot(),[await alice.spend({deposit:600n},aliceTo),await alice.spend({deposit:300n},aliceTo),await alice.spend({deposit:100n},aliceTo)]));
  assert.equal(alice.balance(),1000n);
@@ -69,7 +69,7 @@ test('a payment larger than any single note goes out as one atomic group of note
 });
 
 test('an asset enters and leaves with its 330-sat BTC carrier, and moves privately inside',async()=>{
- const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
+ const alice=RollupAccount.owning(hash,aliceKeys),bob=RollupAccount.owning(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
  const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);};
  const deposit=await alice.depositAsset(x,1000n,330n,aliceTo);
  assert.deepEqual(deposit.map(s=>s.witness.publicSignals.slice(1,4)),[[1000n,0n,x],[330n,0n,0n]]);
@@ -88,7 +88,7 @@ test('an asset enters and leaves with its 330-sat BTC carrier, and moves private
 });
 
 test('a record that opens under our view key but commits to another owner is not ours',async()=>{
- const alice=new RollupAccount(hash,aliceKeys);
+ const alice=RollupAccount.owning(hash,aliceKeys);
  // Sealed to Alice's view key, but the commitment names Bob as owner: Alice cannot spend it.
  const forged=await buildRollupSpend(hash,{root:alice.state.latestRoot(),ask:bobKeys.ask,nk:bobKeys.nk,self:{owner:bobTo.owner,viewPublic:aliceTo.viewPublic},request:{deposit:500n}});
  await alice.apply(await batchOf(alice.state.latestRoot(),[forged]));
@@ -96,7 +96,7 @@ test('a record that opens under our view key but commits to another owner is not
 });
 
 test('each wallet keeps a history of what moved its notes, with the batch that moved them',async()=>{
- const alice=new RollupAccount(hash,aliceKeys),bob=new RollupAccount(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
+ const alice=RollupAccount.owning(hash,aliceKeys),bob=RollupAccount.owning(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
  const full=(s:BuiltSpend)=>({...published(s),groupId:String(s.witness.slot.groupId),groupSize:s.witness.slot.groupSize,publics:s.witness.publicSignals.map(String)});
  let n=0;
  const apply=async(spends:BuiltSpend[])=>{
@@ -118,7 +118,7 @@ test('each wallet keeps a history of what moved its notes, with the batch that m
 });
 
 test('a wallet account that keeps only the note frontier agrees with the full replica on roots, notes, history and paths',async()=>{
- const full=new RollupAccount(hash,aliceKeys),light=new RollupAccount(hash,aliceKeys,{frontier:true}),program=hex.decode('ad'.repeat(32));
+ const full=RollupAccount.owning(hash,aliceKeys),light=RollupAccount.owning(hash,aliceKeys,{frontier:true}),program=hex.decode('ad'.repeat(32));
  const withLegs=(s:BuiltSpend)=>({...published(s),groupId:String(s.witness.slot.groupId),groupSize:s.witness.slot.groupSize,publics:s.witness.publicSignals.map(String)});
  const apply=async(spends:BuiltSpend[])=>{
   const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
@@ -140,7 +140,7 @@ test('a wallet account that keeps only the note frontier agrees with the full re
 });
 
 test('a wallet born at a later batch skips opening the records before it, and still tracks the tree',async()=>{
- const full=new RollupAccount(hash,aliceKeys),young=new RollupAccount(hash,aliceKeys,{frontier:true,bornAt:1});
+ const full=RollupAccount.owning(hash,aliceKeys),young=RollupAccount.owning(hash,aliceKeys,{frontier:true,bornAt:1});
  const apply=async(spends:BuiltSpend[])=>{
   const root=full.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
   const batch={kind:'spend' as const,slots:[...spends,...padding].map(published)};
@@ -153,7 +153,7 @@ test('a wallet born at a later batch skips opening the records before it, and st
 });
 
 test('an asset and sats leave together: the carrier withdraws the sats, so one output holds both',async()=>{
- const alice=new RollupAccount(hash,aliceKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ae'.repeat(32));
+ const alice=RollupAccount.owning(hash,aliceKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ae'.repeat(32));
  await alice.apply(await batchOf(alice.state.latestRoot(),[...await alice.depositAsset(x,1000n,330n,aliceTo),await alice.spend({deposit:2000n},aliceTo)]));
  const out=await alice.withdrawAsset(x,100n,program,aliceTo,new Set(),1500n);
  assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(2,4)),[[100n,x],[1500n,0n]]);

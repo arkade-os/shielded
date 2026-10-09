@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {bech32m} from '@scure/base';
 import {test} from 'node:test';
 import {buildPoseidon} from 'circomlibjs';
 import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
@@ -15,7 +16,8 @@ test('rollup keys are stable per secret and network, and addresses round-trip',(
  assert.deepEqual(deriveRollupKeys2('11'.repeat(32),'mutinynet'),alice);
  assert.notEqual(deriveRollupKeys2('11'.repeat(32),'signet').ask,alice.ask);
  const address=rollupAddressOf(bobTo);
- assert.match(address,/^shrol1/);
+ assert.match(address,/^shrol21/);
+ assert.throws(()=>parseRollupAddress(bech32m.encode('shrol',bech32m.toWords(new Uint8Array(64).fill(1)),false)),/genesis.1/i);
  const back=parseRollupAddress(address);
  assert.equal(back.owner,bobTo.owner);
  assert.deepEqual([...back.viewPublic],[...bobTo.viewPublic]);

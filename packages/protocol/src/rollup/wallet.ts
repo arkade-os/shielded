@@ -8,7 +8,7 @@ import { ownerOf, sha256le248, type Hash } from './notes.ts';
 export interface RollupNote { amount: bigint; asset: bigint; rho: bigint }
 export interface RollupRecipient { owner: bigint; viewPublic: Uint8Array }
 
-const ADDRESS_PREFIX = 'shrol';
+const ADDRESS_PREFIX = 'shrol2';
 export const le = (value: bigint, size: number) => Uint8Array.from({ length: size }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
 export const fromLe = (bytes: Uint8Array) => bytes.reduceRight((acc, byte) => (acc << 8n) | BigInt(byte), 0n);
 
@@ -18,6 +18,7 @@ export const rollupAddressOf = (r: RollupRecipient) => bech32m.encode(ADDRESS_PR
 export function parseRollupAddress(address: string): RollupRecipient {
  const { prefix, words } = bech32m.decode(address as `${string}1${string}`, false);
  const bytes = bech32m.fromWords(words);
+ if (prefix === 'shrol') throw new Error('That is a genesis-1 address; this pool takes shrol2 addresses.');
  if (prefix !== ADDRESS_PREFIX || bytes.length !== 64) throw new Error('Not a shielded rollup address.');
  return { owner: fromLe(bytes.subarray(0, 32)), viewPublic: bytes.subarray(32) };
 }

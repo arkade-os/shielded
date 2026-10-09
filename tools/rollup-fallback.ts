@@ -61,7 +61,7 @@ async function withdraw(dir:string,sats:bigint,to:string){
  if(!phrase)throw new Error('Set SHIELDED_PHRASE to the wallet\'s 24-word recovery phrase.');
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
  const keys=deriveRollupKeys2(parseMasterSecret(phrase),'mutinynet'),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
- const account=new RollupAccount(hash,keys),numbers=batchesIn(dir);
+ const account=RollupAccount.owning(hash,keys),numbers=batchesIn(dir);
  if(numbers.some((n,i)=>n!==i))throw new Error('The mirrored batch records have a gap.');
  for(const n of numbers)await account.apply(json<PublishedBatch>(join(dir,'batches',`${n}.json`)));
  writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',slots:BATCH_SLOTS,kind:0,token:pool.token,operator:pool.operator}));

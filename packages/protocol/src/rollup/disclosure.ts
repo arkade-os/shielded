@@ -32,15 +32,27 @@ export function sentNoteOf(hash: Hash, spend: BuiltSpend) {
  return { amount: input.outAmount[0]!, asset: input.asset, rho: outputRhoOf(hash, ROLLUP_DOMAIN, input.outRandom[0]!, spend.witness.slot.nullifiers, 0) };
 }
 
-const VIEW_PREFIX = 'shview';
-/** Sees every note sent to the owner; spending, and telling which notes are spent, need the spend secret it leaves out. */
+const VIEW_PREFIX = 'shview2', FULL_VIEW_PREFIX = 'shfvk2';
+function decodeKey(key: string, prefix: string, size: number, what: string): Uint8Array {
+ let decoded: { prefix: string; words: number[] };
+ try { decoded = bech32m.decode(key.trim() as `${string}1${string}`, false); } catch { throw new Error(`Not a shielded ${what}.`); }
+ const bytes = bech32m.fromWords(decoded.words);
+ if (decoded.prefix === prefix.slice(0, -1)) throw new Error(`That is a genesis-1 ${what}; this pool takes ${prefix} keys.`);
+ if (decoded.prefix !== prefix || bytes.length !== size) throw new Error(`Not a shielded ${what}.`);
+ return bytes;
+}
+/** Sees every note sent to the owner. Telling which are spent needs the full viewing key; spending needs the spend key. */
 export const viewKeyOf = (owner: bigint, viewSecret: Uint8Array) => bech32m.encode(VIEW_PREFIX, bech32m.toWords(Uint8Array.from([...le(owner, 32), ...viewSecret])), false);
 export function parseViewKey(key: string): { owner: bigint; viewSecret: Uint8Array } {
- let decoded: { prefix: string; words: number[] };
- try { decoded = bech32m.decode(key.trim() as `${string}1${string}`, false); } catch { throw new Error('Not a shielded view key.'); }
- const bytes = bech32m.fromWords(decoded.words);
- if (decoded.prefix !== VIEW_PREFIX || bytes.length !== 64) throw new Error('Not a shielded view key.');
+ const bytes = decodeKey(key, VIEW_PREFIX, 64, 'view key');
  return { owner: fromLe(bytes.subarray(0, 32)), viewSecret: bytes.slice(32) };
+}
+/** Adds the nullifier key, so the holder also sees which notes were spent and how much each payment out sent. It cannot spend. */
+export const fullViewKeyOf = (owner: bigint, nk: bigint, viewSecret: Uint8Array) =>
+ bech32m.encode(FULL_VIEW_PREFIX, bech32m.toWords(Uint8Array.from([...le(owner, 32), ...le(nk, 32), ...viewSecret])), false);
+export function parseFullViewKey(key: string): { owner: bigint; nk: bigint; viewSecret: Uint8Array } {
+ const bytes = decodeKey(key, FULL_VIEW_PREFIX, 96, 'full viewing key');
+ return { owner: fromLe(bytes.subarray(0, 32)), nk: fromLe(bytes.subarray(32, 64)), viewSecret: bytes.slice(64) };
 }
 export interface IncomingNote { batch: number; txid?: string; at?: number; index: number; amount: bigint; asset: bigint; deposit: boolean }
 /** Every note a view key opens under its owner, in order: deposits, payments and change alike. Each batch appends 32 leaves. */

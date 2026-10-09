@@ -132,7 +132,7 @@ export default function RollupWallet(){
   void (async()=>{
    const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),keys=deriveRollupKeys2(secret,'mutinynet');
    if(localStorage.getItem(BORN)==='new')localStorage.setItem(BORN,String(poolRef.current?.pool?.batches??0));
-   hashRef.current=hash;account.current=new RollupAccount(hash,keys,{frontier:true,bornAt:Number(localStorage.getItem(BORN)??0)||0});self.current=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
+   hashRef.current=hash;account.current=RollupAccount.owning(hash,keys,{frontier:true,bornAt:Number(localStorage.getItem(BORN)??0)||0});self.current=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
    const loop=async()=>{
     if(stop)return;
     try{

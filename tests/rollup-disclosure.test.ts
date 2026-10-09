@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {hex} from '@scure/base';
+import {bech32m,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
-import {decodeDisclosure,encodeDisclosure,incomingNotes,parseViewKey,sentNoteOf,verifyDisclosure,viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
+import {decodeDisclosure,encodeDisclosure,fullViewKeyOf,incomingNotes,parseFullViewKey,parseViewKey,sentNoteOf,verifyDisclosure,viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 
@@ -16,7 +16,7 @@ const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf
 const published=({witness,ciphertext}:BuiltSpend)=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:String(witness.slot.groupId),groupSize:witness.slot.groupSize,publics:witness.publicSignals.map(String),ciphertext:hex.encode(ciphertext)});
 
 async function world(){
- const alice=new RollupAccount(hash,aliceKeys),batches:PublishedBatch[]=[];
+ const alice=RollupAccount.owning(hash,aliceKeys),batches:PublishedBatch[]=[];
  const apply=async(spends:BuiltSpend[])=>{
   const root=alice.state.latestRoot(),padding=await Promise.all(Array.from({length:BATCH_SLOTS-spends.length},()=>buildRollupSpend(hash,{root,ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{}})));
   const batch:PublishedBatch={kind:'spend',slots:[...spends,...padding].map(published),txid:String(batches.length).padStart(64,'0'),at:batches.length};
@@ -44,11 +44,24 @@ test('a sender can reveal one private payment, and anyone can check it against t
 
 test('a view key finds every note a wallet received, and nothing it could spend with',async()=>{
  const {batches}=await world(),key=viewKeyOf(bobTo.owner,bobKeys.viewSecret);
- assert.match(key,/^shview1/);
+ assert.match(key,/^shview21/);
  const parsed=parseViewKey(key);
  assert.equal(parsed.owner,bobTo.owner);
  const found=await incomingNotes(hash,batches,parsed);
  assert.deepEqual(found.map(n=>[n.batch,n.amount,n.index]),[[1,300n,32]]);
  assert.deepEqual((await incomingNotes(hash,batches,parseViewKey(viewKeyOf(aliceTo.owner,aliceKeys.viewSecret)))).map(n=>n.amount),[1000n,700n],'alice sees her deposit and her change');
  assert.throws(()=>parseViewKey(rollupAddressOf(bobTo)),/view key/);
+ assert.throws(()=>parseViewKey(bech32m.encode('shview',bech32m.toWords(new Uint8Array(64)),false)),/genesis.1/i);
+});
+
+test('a full viewing key sees which notes were spent, and cannot spend',async()=>{
+ const {alice,batches}=await world(),key=fullViewKeyOf(aliceTo.owner,aliceKeys.nk,aliceKeys.viewSecret);
+ assert.match(key,/^shfvk21/);
+ const watcher=new RollupAccount(hash,parseFullViewKey(key));
+ for(const batch of batches)await watcher.apply(batch);
+ assert.deepEqual(watcher.notes().map(n=>n.amount),[700n],'the 1000-sat deposit shows as spent');
+ assert.deepEqual(watcher.notes(),alice.notes());
+ await assert.rejects(()=>watcher.spend({input:watcher.notes()[0]!},aliceTo),/spend authority/);
+ assert.throws(()=>parseFullViewKey(viewKeyOf(aliceTo.owner,aliceKeys.viewSecret)),/full viewing key/);
+ assert.throws(()=>parseViewKey(key),/view key/);
 });
