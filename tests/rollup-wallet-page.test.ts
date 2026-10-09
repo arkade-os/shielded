@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {checkSigningRequest,pickNote,rollupApi,shieldPlan,spendBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
+import {checkSigningRequest,pickNote,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
@@ -14,6 +14,15 @@ const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
 };
 const psbt=(t:Transaction)=>base64.encode(t.toPSBT());
 
+test('a join body carries both nullifiers and proves with the join artifacts, which a spend never fetches',()=>{
+ const spend={witness:{slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0},publicSignals:[1n,0n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1),change:0n} as unknown as BuiltSpend;
+ const join={...spend,witness:{...spend.witness,slot:{...spend.witness.slot,nullifiers:[11n,21n]}}} as BuiltSpend;
+ assert.deepEqual(transferBody('ab',join,{pi_a:[],pi_b:[],pi_c:[]}).slot.nullifiers,['11','21']);
+ const proving={spend:{wasm:'s1',zkey:'s2'},join:{wasm:'j1',zkey:'j2'},batch:{wasm:'b1',zkey:'b2'},batchJoin:{wasm:'k1',zkey:'k2'}};
+ assert.deepEqual(provingUrls(spend,proving),{wasm:'/api/rollup/proving/spend.wasm?v=s1',zkey:'/api/rollup/proving/spend.zkey?v=s2'});
+ assert.deepEqual(provingUrls(join,proving),{wasm:'/api/rollup/proving/join.wasm?v=j1',zkey:'/api/rollup/proving/join.zkey?v=j2'});
+});
+
 test('a spend takes the smallest single note that covers it, skipping notes already in flight',()=>{
  const notes=[note(500n,1n),note(120n,2n),note(300n,3n)];
  assert.equal(pickNote(notes,250n,new Set())?.amount,300n);
@@ -24,10 +33,10 @@ test('a spend takes the smallest single note that covers it, skipping notes alre
 test('a spend body carries decimal field elements, the hex record, and only the legs it has',()=>{
  const built={witness:{slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0},publicSignals:[1n,2n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1,2),change:0n} as unknown as BuiltSpend;
  const proof={pi_a:['1'],pi_b:[['2']],pi_c:['3']};
- assert.deepEqual(spendBody('ab',built,proof),{id:'ab',slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0'],proof,ciphertext:'0102'});
+ assert.deepEqual(transferBody('ab',built,proof),{id:'ab',slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0'],proof,ciphertext:'0102'});
  const member={...built,witness:{...built.witness,slot:{...built.witness.slot,groupId:99n,groupSize:3}}} as BuiltSpend;
- assert.deepEqual([spendBody('ab',member,proof).slot.groupId,spendBody('ab',member,proof).slot.groupSize],['99',3]);
- const withLegs=spendBody('ab',built,proof,{program:new Uint8Array(32).fill(1),coin:{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'},asset:'ee'.repeat(34)});
+ assert.deepEqual([transferBody('ab',member,proof).slot.groupId,transferBody('ab',member,proof).slot.groupSize],['99',3]);
+ const withLegs=transferBody('ab',built,proof,{program:new Uint8Array(32).fill(1),coin:{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'},asset:'ee'.repeat(34)});
  assert.equal(withLegs.program,'01'.repeat(32));
  assert.equal(withLegs.asset,'ee'.repeat(34));
  assert.deepEqual(withLegs.coin,{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'});

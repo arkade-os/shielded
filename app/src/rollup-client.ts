@@ -2,7 +2,7 @@ import {Transaction,type Identity} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import type {BuiltSpend,OwnedNote,PublishedBatch,RollupAccount} from '../../packages/protocol/src/rollup/account.ts';
 
-export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:{spend:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>}}
+export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 type Api=<T>(path:string,body?:unknown)=>Promise<T>;
@@ -37,11 +37,18 @@ export async function syncAccount(account:RollupAccount,api:Api=rollupApi){
 export const pickNote=(notes:OwnedNote[],amount:bigint,inFlight:Set<bigint>)=>
  notes.filter(n=>!inFlight.has(n.nullifier)&&n.amount>=amount).sort((a,b)=>a.amount<b.amount?-1:a.amount>b.amount?1:0)[0];
 
-export function spendBody(id:string,built:BuiltSpend,proof:Groth16Proof,extra:{program?:Uint8Array;coin?:{txid:string;vout:number;tapTree:string;leaf:string};asset?:string}={}){
+/** One nullifier for a spend, two for a join; the pool reads the kind from that count. */
+export function transferBody(id:string,built:BuiltSpend,proof:Groth16Proof,extra:{program?:Uint8Array;coin?:{txid:string;vout:number;tapTree:string;leaf:string};asset?:string}={}){
  const s=built.witness.slot;
  return {id,slot:{root:String(s.root),nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize},
   publics:built.witness.publicSignals.map(String),proof:{pi_a:proof.pi_a,pi_b:proof.pi_b,pi_c:proof.pi_c},ciphertext:hex.encode(built.ciphertext),
   ...(extra.program?{program:hex.encode(extra.program)}:{}),...(extra.coin?{coin:extra.coin}:{}),...(extra.asset?{asset:extra.asset}:{})};
+}
+
+/** A two-nullifier slot proves with the join circuit, so a wallet that never merges never downloads it. */
+export function provingUrls(built:BuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>){
+ const circuit=built.witness.slot.nullifiers.length===2?'join':'spend',keys=proving[circuit];
+ return {wasm:`/api/rollup/proving/${circuit}.wasm?v=${keys.wasm}`,zkey:`/api/rollup/proving/${circuit}.zkey?v=${keys.zkey}`};
 }
 
 /** Batch inputs spend checkpoint outputs, so the pool head is checkpoint 0's input and our coin is our checkpoint's. */

@@ -54,6 +54,13 @@ test('a view key finds every note a wallet received, and nothing it could spend 
  assert.throws(()=>parseViewKey(bech32m.encode('shview',bech32m.toWords(new Uint8Array(64)),false)),/genesis.1/i);
 });
 
+test('a frontier watcher holding the full viewing key reports the same notes and history as the owner',async()=>{
+ const {alice,batches}=await world(),watcher=new RollupAccount(hash,parseFullViewKey(fullViewKeyOf(aliceTo.owner,aliceKeys.nk,aliceKeys.viewSecret)),{frontier:true});
+ for(const batch of batches)await watcher.apply(batch);
+ assert.deepEqual(watcher.notes().map(n=>n.index),alice.notes().map(n=>n.index));
+ assert.deepEqual(watcher.history.map(h=>[h.kind,h.batch]),alice.history.map(h=>[h.kind,h.batch]));
+});
+
 test('a full viewing key sees which notes were spent, and cannot spend',async()=>{
  const {alice,batches}=await world(),key=fullViewKeyOf(aliceTo.owner,aliceKeys.nk,aliceKeys.viewSecret);
  assert.match(key,/^shfvk21/);

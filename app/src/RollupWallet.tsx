@@ -6,16 +6,18 @@ import {ArkAddress,SingleKey,TxType,type ArkTransaction} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {hex} from '@scure/base';
 import {assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
-import {encodeDisclosure,sentNoteOf,viewKeyOf,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
+import {encodeDisclosure,fullViewKeyOf,sentNoteOf,viewKeyOf,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/ark-wallet.ts';
-import {checkSigningRequest,DUST,pickNote,rollupApi,shieldPlan,signDeposit,spendBody,syncAccount,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
+import {checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
+// Set once this device has proved a join, so its artifacts are cached and a payment may use one.
+const JOIN_READY='shielded-rollup-join-ready-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 // The pool refuses deposit coins that expire within 24 hours; the extra hour covers the batch wait.
 const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000;
@@ -31,14 +33,18 @@ const sentLog=():Record<string,Sent>=>{try{return Object.fromEntries(Object.entr
 const logSent=(entries:[string,Sent][])=>localStorage.setItem(SENT,JSON.stringify({...sentLog(),...Object.fromEntries(entries)}));
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 // Key URLs carry their hashes, so a browser cache can only ever hold the keys this pool proves with.
-const prove=async(built:BuiltSpend,keys:{wasm:string;zkey:string})=>(await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),`/api/rollup/proving/spend.wasm?v=${keys.wasm}`,`/api/rollup/proving/spend.zkey?v=${keys.zkey}`,undefined,undefined,{singleThread:true})).proof;
+const prove=async(built:BuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>)=>{
+ const urls=provingUrls(built,proving),{proof}=await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),urls.wasm,urls.zkey,undefined,undefined,{singleThread:true});
+ if(built.witness.slot.nullifiers.length===2)localStorage.setItem(JOIN_READY,'1');
+ return proof;
+};
 const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [notes,setNotes]=useState<OwnedNote[]>([]),[assetNotes,setAssetNotes]=useState<Record<string,OwnedNote[]>>({}),[history,setHistory]=useState<HistoryEntry[]>([]),[synced,setSynced]=useState(false);
- const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[revealed,setRevealed]=useState<Record<string,string>>({}),[showView,setShowView]=useState(false);
+ const [ark,setArk]=useState<Ark>(),[listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[revealed,setRevealed]=useState<Record<string,string>>({}),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false);
  const [tab,setTab]=useState<Tab>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState(''),[activity,setActivity]=useState<Activity>(),[busy,setBusy]=useState(false);
  const account=useRef<RollupAccount|undefined>(undefined),self=useRef<RollupRecipient|undefined>(undefined),busyRef=useRef(false),hashRef=useRef<Hash|undefined>(undefined);
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined),arkRef=useRef<Ark|undefined>(undefined),retryAt=useRef(0),used=useRef(new Set<string>());
@@ -78,12 +84,12 @@ export default function RollupWallet(){
   }catch(error){setActivity(a=>({...(a??{title,steps,current:0}),error:(error as Error).message}));return false;}
   finally{busyRef.current=false;setBusy(false);}
  };
- type Member={built:BuiltSpend;extra?:Parameters<typeof spendBody>[3];coin?:{txid:string;vout:number}};
+ type Member={built:BuiltSpend;extra?:Parameters<typeof transferBody>[3];coin?:{txid:string;vout:number}};
  /** Proves every member, submits them in the order a group id commits to, and waits for all; only a coin's member signs. */
  const submitAll=async(members:Member[],step:(n:number)=>void,first:number)=>{
-  step(first);const proofs=[];for(const m of members)proofs.push(await prove(m.built,poolRef.current!.proving!.spend));
+  step(first);const proofs=[];for(const m of members)proofs.push(await prove(m.built,poolRef.current!.proving!));
   step(first+1);const ids:string[]=[];
-  for(const [i,m] of members.entries()){const id=bytesToHex(crypto.getRandomValues(new Uint8Array(16)));await rollupApi('/spends',spendBody(id,m.built,proofs[i]!,m.extra));ids.push(id);}
+  for(const [i,m] of members.entries()){const id=bytesToHex(crypto.getRandomValues(new Uint8Array(16)));await rollupApi('/spends',transferBody(id,m.built,proofs[i]!,m.extra));ids.push(id);}
   step(first+2);
   const finals=await Promise.all(ids.map((id,i)=>waitForSpend(id,async request=>{
    const coin=members[i]!.coin;if(!coin)throw new Error('The pool asked to sign a spend with no deposit coin.');
@@ -125,6 +131,17 @@ export default function RollupWallet(){
   const plan=planFor(arkRef.current.coins.filter(c=>!payout(c)));
   if(plan&&!await shieldWith(plan))retryAt.current=Date.now()+RETRY_MS;
  };
+ /** Above eight notes of an asset, merges the two smallest in the background, one merge at a time. */
+ const tidy=async()=>{
+  if(busyRef.current||Date.now()<retryAt.current||!account.current||!self.current)return;
+  for(const field of [0n,...Object.keys(poolRef.current?.pool?.reserves??{}).map(assetFieldOfId)]){
+   const plan=await account.current.consolidate(self.current,field);
+   if(!plan)continue;
+   const ok=await run('Tidying your notes',['Pick the two smallest notes','Prove the merge on this device','Submit to the pool','Wait for the next batch','Included'],step=>{step(0);return submitAll([{built:plan.built}],step,1);});
+   if(!ok)retryAt.current=Date.now()+RETRY_MS;
+   return;
+  }
+ };
 
  useEffect(()=>{
   if(pool?.phase!=='ready'||!secret)return;
@@ -140,6 +157,7 @@ export default function RollupWallet(){
       await sync();
       if(Date.now()-arkAt>15_000){arkAt=Date.now();await refreshArk();}
       await autoShield();
+      await tidy();
      }
     }catch(error){setPoolError((error as Error).message);}
     timer=setTimeout(loop,5000);
@@ -150,7 +168,7 @@ export default function RollupWallet(){
  },[pool?.phase,secret]);
 
  const send=()=>void run('Sending privately',['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],async step=>{
-  step(0);const recipient=to.trim(),{spends}=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n);
+  step(0);const recipient=to.trim(),{spends}=await account.current!.pay(parseRollupAddress(recipient),amountOf(amount),self.current!,new Set(),assetId?assetFieldOfId(assetId):0n,{join:localStorage.getItem(JOIN_READY)==='1'});
   logSent(spends.map(s=>{const note=sentNoteOf(hashRef.current!,s);return [String(s.witness.slot.nullifiers[0]),{to:recipient,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}];}));
   return submitAll(spends.map(built=>({built})),step,1);
  });
@@ -179,7 +197,8 @@ export default function RollupWallet(){
   ...history.map(e=>({key:`r${e.batch}-${e.spent[0]??e.created[0]?.nullifier}`,at:e.at??0,rollup:e})),
   ...(ark?.history??[]).filter(t=>t.amount>0&&!account.current?.txids.has(t.key.arkTxid)).map(t=>({key:`a${t.key.arkTxid||t.key.commitmentTxid||t.key.boardingTxid}-${t.type}`,at:t.createdAt,arkade:t})),
  ].sort((a,b)=>b.at-a.at);
- const phrase=secret?recoveryPhraseOf(secret):'',viewKey=showView&&secret&&self.current?viewKeyOf(self.current.owner,deriveRollupKeys2(secret,'mutinynet').viewSecret):'';
+ const phrase=secret?recoveryPhraseOf(secret):'',keys2=secret&&self.current&&(showView||showFull)?deriveRollupKeys2(secret,'mutinynet'):undefined;
+ const viewKey=showView&&keys2?viewKeyOf(self.current!.owner,keys2.viewSecret):'',fullKey=showFull&&keys2?fullViewKeyOf(self.current!.owner,keys2.nk,keys2.viewSecret):'';
  /** A link that opens one entry's notes, for whoever needs to see that one payment and nothing else. */
  const revealEntry=(key:string,e:HistoryEntry)=>{
   let to:string=rollupAddressOf(self.current!),notes:DisclosedNote[];
@@ -215,7 +234,7 @@ export default function RollupWallet(){
       {reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool, so it moves in on its own.</p>:listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>:<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void list(a.assetId)}>List in the pool</button></>}</div>)}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();(tab==='send'?send:withdraw)();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
-     <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder={tab==='send'?'shrol1…':'Your Arkade address, or another tark1…'} autoComplete="off" spellCheck={false}/></label>
+     <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder={tab==='send'?'shrol21…':'Your Arkade address, or another tark1…'} autoComplete="off" spellCheck={false}/></label>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {tab==='withdraw'&&assetId&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
      <p className="stock-muted">{tab==='send'?`Pays from up to three of your notes at once, up to ${sats(maxSend)} ${unit}; the amount and both parties stay private.`:assetId?`Pays the units and the sats out together, in one Arkade coin; both amounts are public. At least ${DUST} sats.`:`Pays out to an Arkade address; the amount is public. At least ${DUST} sats.`}</p>
@@ -250,6 +269,7 @@ export default function RollupWallet(){
   <details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
    {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}
    {secret&&self.current&&<div className="stock-address"><small>VIEW KEY · READ ONLY</small>{viewKey?<><Copyable value={viewKey}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${viewKey}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</div>}
+   {secret&&self.current&&<div className="stock-address"><small>FULL VIEWING KEY · SEES SPENDS</small>{fullKey?<><Copyable value={fullKey}/><p className="stock-muted">Shows every note this wallet received and which ones it spent, so also how much each payment out sent, forever. It cannot spend and cannot freeze your notes. <a className="stock-txlink" href={`/watch#${fullKey}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowFull(true)}>Show full viewing key</button>}</div>}
    <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
    <button disabled={busy||!restore.trim()} onClick={()=>{try{localStorage.setItem(SECRET,bytesToHex(parseMasterSecret(restore)));localStorage.removeItem(BORN);location.reload();}catch(error){setRestoreError((error as Error).message);}}}>Restore wallet</button>
    {restoreError&&<p className="stock-blocked">{restoreError}</p>}

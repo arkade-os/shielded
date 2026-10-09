@@ -2,10 +2,10 @@ import {useEffect,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
 import {x25519} from '@noble/curves/ed25519.js';
-import type {PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
-import {decodeDisclosure,incomingNotes,parseViewKey,verifyDisclosure,type Disclosure,type IncomingNote} from '../../packages/protocol/src/rollup/disclosure.ts';
+import {RollupAccount,type HistoryEntry,type PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
+import {decodeDisclosure,incomingNotes,parseFullViewKey,parseViewKey,verifyDisclosure,type Disclosure,type IncomingNote} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {rollupAddressOf} from '../../packages/protocol/src/rollup/wallet.ts';
-import {rollupApi} from './rollup-client.ts';
+import {rollupApi,syncAccount} from './rollup-client.ts';
 
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
@@ -15,7 +15,8 @@ const batchOf=async(n:number)=>(await rollupApi<{batches:PublishedBatch[]}>(`/ba
 const hashFn=async()=>{const poseidon=await buildPoseidon();return (v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));};
 
 type Checked={disclosure:Disclosure;ok:boolean[];batches:Record<number,PublishedBatch|undefined>};
-type Watched={address:string;notes:IncomingNote[]};
+type Watched={address:string;notes:IncomingNote[]}|{address:string;entries:HistoryEntry[]};
+const kinds={shield:'Shielded',receive:'Received',send:'Sent',withdraw:'Withdrew',merge:'Merged notes'} as const;
 
 /** /verify#<disclosure> checks one revealed payment; /watch#<view key> lists every note a view key can see. */
 export default function Disclose(){
@@ -25,7 +26,11 @@ export default function Disclose(){
   setError('');setChecked(undefined);setWatched(undefined);if(!value.trim())return;setWorking(true);
   try{
    const hash=await hashFn();
-   if(watch){
+   if(watch&&value.trim().startsWith('shfvk')){
+    const key=parseFullViewKey(value),account=new RollupAccount(hash,key,{frontier:true});
+    await syncAccount(account);
+    setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),entries:[...account.history]});
+   }else if(watch){
     const key=parseViewKey(value),all:PublishedBatch[]=[];
     for(;;){const page=await rollupApi<{total:number;batches:PublishedBatch[]}>(`/batches?from=${all.length}&limit=100`);all.push(...page.batches);if(all.length>=page.total||!page.batches.length)break;}
     setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),notes:await incomingNotes(hash,all,key)});
@@ -45,9 +50,9 @@ export default function Disclose(){
  const totals=(items:{asset:bigint;amount:bigint}[])=>{const m=new Map<bigint,bigint>();for(const i of items)m.set(i.asset,(m.get(i.asset)??0n)+i.amount);return [...m].map(([asset,amount])=>`${sats(amount)} ${unit(asset)}`).join(' + ');};
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>{watch?'View key':'Verify'}</span></a><a className="stock-home" href="/wallet">Wallet</a></header>
   <section className="stock-card"><h2>{watch?'Watch a wallet with its view key':'Check a revealed payment'}</h2>
-   <p className="stock-muted">{watch?'A view key shows every note a wallet received, its own deposits and change included. It cannot spend, and it cannot tell which notes were spent.':'A revealed payment opens the notes of one private payment, so anyone can check its amount and recipient against what the pool published. It shows nothing else about either wallet.'}</p>
+   <p className="stock-muted">{watch?'A view key (shview2…) shows every note a wallet received, its own deposits and change included. A full viewing key (shfvk2…) also shows which of them were spent. Neither can spend.':'A revealed payment opens the notes of one private payment, so anyone can check its amount and recipient against what the pool published. It shows nothing else about either wallet.'}</p>
    <form className="stock-send" onSubmit={e=>{e.preventDefault();history.replaceState(null,'',`#${input.trim()}`);void run(input);}}>
-    <label>{watch?'View key':'Revealed payment link'}<input value={input} onChange={e=>setInput(e.target.value)} placeholder={watch?'shview1…':'https://…/verify#…'} autoComplete="off" spellCheck={false}/></label>
+    <label>{watch?'View key':'Revealed payment link'}<input value={input} onChange={e=>setInput(e.target.value)} placeholder={watch?'shview21… or shfvk21…':'https://…/verify#…'} autoComplete="off" spellCheck={false}/></label>
     <button className="stock-primary" disabled={working||!input.trim()}>{working?'Checking…':watch?'Show received notes':'Check payment'}</button>
    </form>
    {error&&<p className="stock-blocked">{error}</p>}
@@ -60,7 +65,15 @@ export default function Disclose(){
      return <div key={i} className="stock-fact-row"><dt>Note {i+1}</dt><dd>{checked.ok[i]?'✓':'✗'} {sats(note.amount)} {unit(note.asset)} · batch #{batch}{record?.at?` · ${when(record.at)}`:''}{record?.txid&&<> · <a className="stock-txlink" href={`${EXPLORER}/tx/${record.txid}`} target="_blank" rel="noreferrer">{short(record.txid)} ↗</a></>}</dd></div>;})}
    </dl>
   </section>}
-  {watched&&<section className="stock-card stock-history"><h2>{watched.notes.length?`Received ${totals(watched.notes)}`:'No notes received yet'}</h2>
+  {watched&&'entries' in watched&&(()=>{
+   const spentIn=new Map(watched.entries.flatMap(e=>e.spent.map(nf=>[nf,e.batch] as const)));
+   return <section className="stock-card stock-history"><h2>{watched.entries.length?'Notes and spends':'No activity yet'}</h2>
+    <p className="stock-muted">For <code>{watched.address}</code></p>
+    <ul>{watched.entries.slice().reverse().map(e=><li key={`${e.batch}-${e.slots[0]}`}><details><summary><span className={'stock-kind '+e.kind}>{kinds[e.kind]}</span><b className={e.kind==='shield'||e.kind==='receive'?'in':'out'}>{e.amounts.length?totals(e.amounts):'No net change'}</b><time>{when(e.at)}</time></summary>
+     <dl><dt>Batch</dt><dd>#{e.batch}{e.txid&&<> · <a className="stock-txlink" href={`${EXPLORER}/tx/${e.txid}`} target="_blank" rel="noreferrer">{short(e.txid)} ↗</a></>}</dd>
+      {e.created.map(n=><div key={n.index} className="stock-fact-row"><dt>Note {n.index}</dt><dd>{sats(n.amount)} {unit(n.asset)} · {spentIn.has(n.nullifier)?`Spent in batch #${spentIn.get(n.nullifier)}`:'Unspent'}</dd></div>)}</dl></details></li>)}</ul>
+   </section>;})()}
+  {watched&&'notes' in watched&&<section className="stock-card stock-history"><h2>{watched.notes.length?`Received ${totals(watched.notes)}`:'No notes received yet'}</h2>
    <p className="stock-muted">For <code>{watched.address}</code></p>
    <ul>{watched.notes.slice().reverse().map(note=><li key={note.index}><details><summary><span className={'stock-kind '+(note.deposit?'shield':'receive')}>{note.deposit?'Shielded':'Received'}</span><b className="in">+{sats(note.amount)} {unit(note.asset)}</b><time>{when(note.at)}</time></summary>
     <dl><dt>Batch</dt><dd>#{note.batch}{note.txid&&<> · <a className="stock-txlink" href={`${EXPLORER}/tx/${note.txid}`} target="_blank" rel="noreferrer">{short(note.txid)} ↗</a></>}</dd><dt>Leaf</dt><dd>{note.index}</dd></dl></details></li>)}</ul>
