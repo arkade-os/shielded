@@ -49,4 +49,4 @@ jobs:
           persist-credentials: false
       - run: docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci bin/shielded-vm -info
-      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node -e "for(const f of ['src/server.ts','bin/rapidsnark','rollup-circuits/batch-spend.r1cs','app/dist/index.html','tools/rollup-setup.mjs'])require('fs').accessSync(f)"
+      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node -e "for(const f of ['src/server.ts','bin/rapidsnark','rollup-keys/manifest.json','rollup-keys/batch-join.zkey','app/dist/index.html'])require('fs').accessSync(f)"
