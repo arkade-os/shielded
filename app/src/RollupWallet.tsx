@@ -242,7 +242,7 @@ export default function RollupWallet(){
     <ol className="stock-steps">{activity.steps.map((label,i)=><li key={label} className={activity.error&&i===activity.current?'error':i<activity.current||activity.done?'done':i===activity.current?'active':''}><i/>{label}</li>)}</ol>
     {activity.error&&<p className="stock-blocked">{activity.error}{activity.title.startsWith('Shielding')&&' It tries again in a minute.'}</p>}
    </section>}
-   {(activity||merge)&&<div className={'stock-sheet'+(activity?.error?' failed':activity?.done&&!merge?' finished':'')} role="status" aria-live="polite">
+   {(activity||merge)&&<div className={'stock-sheet'+(activity?.error?' failed':activity?.done&&!merge?' finished':'')} role="status" aria-live="polite" aria-atomic="true">
     {activity&&<><b>{activity.title}</b><span>{sheetLine(activity)}</span>
      {!activity.done&&!activity.error&&<div className="stock-progress"><div><span style={{width:`${Math.round(100*(activity.current+1)/activity.steps.length)}%`}}/></div></div>}
      {activity.error&&<button className="stock-ghost stock-mini" onClick={()=>setActivity(undefined)}>Dismiss</button>}</>}
