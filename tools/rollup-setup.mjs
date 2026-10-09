@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -38,8 +38,51 @@ if (!existsSync(ptau) || await digest(ptau, 'blake2b512') !== PTAU_BLAKE2B512) {
   renameSync(partial, ptau);
 }
 
-mkdirSync(out, { recursive: true });
+// A phase-2 ceremony: --stage contribute adds one contribution per circuit (repeatable, by different people); --stage finish
+// seals it with a public beacon, verifies every key against its r1cs and the pinned phase-1 transcript, and writes --out.
+const ceremony = option('--ceremony'), stage = option('--stage');
+const writeKey = async (name, zkey, extra) => {
+  await writeFile(join(out, `${name}.vkey.json`), JSON.stringify(await snarkjs.zKey.exportVerificationKey(zkey)) + '\n');
+  copyFileSync(join(build, `${name}_js`, `${name}.wasm`), join(out, `${name}.wasm`));
+  manifest.circuits[name] = { r1cs: await digest(join(build, `${name}.r1cs`)), files: Object.fromEntries(await Promise.all(['zkey', 'vkey.json', 'wasm'].map(async ext => [`${name}.${ext}`, await digest(join(out, `${name}.${ext}`))]))), ...extra };
+};
 const manifest = { version: 1, setup: { phase1: PTAU, phase1Blake2b512: PTAU_BLAKE2B512, phase2: 'development-only' }, circuits: {} };
+if (ceremony) {
+  mkdirSync(ceremony, { recursive: true });
+  const transcriptPath = join(ceremony, 'transcript.json'), at = (name, i) => join(ceremony, `${name}.${String(i).padStart(4, '0')}.zkey`);
+  const transcript = existsSync(transcriptPath) ? JSON.parse(readFileSync(transcriptPath, 'utf8')) : { circuits: {} };
+  for (const name of circuits) {
+    const entry = transcript.circuits[name] ??= { contributions: [] }, count = entry.contributions.length, from = at(name, count);
+    if (stage === 'contribute') {
+      const contributor = option('--contributor');
+      if (!contributor) throw new Error('Name the contributor with --contributor.');
+      if (!existsSync(from)) { if (count) throw new Error(`Missing ${from}.`); progress(`${name} key`); await snarkjs.zKey.newZKey(join(build, `${name}.r1cs`), ptau, from); }
+      progress(`${name} contribution`);
+      const hash = await snarkjs.zKey.contribute(from, at(name, count + 1), contributor, randomBytes(64).toString('hex'));
+      entry.contributions.push({ name: contributor, hash: Buffer.from(hash).toString('hex') });
+      rmSync(from);
+      await writeFile(transcriptPath, JSON.stringify(transcript, null, 1) + '\n');
+    } else if (stage === 'finish') {
+      const beacon = option('--beacon'), label = option('--beacon-label');
+      if (!/^[0-9a-f]{64}$/.test(beacon ?? '') || !label || !count) throw new Error('finish needs a contribution, --beacon <32-byte hex> and --beacon-label.');
+      mkdirSync(out, { recursive: true });
+      const zkey = join(out, `${name}.zkey`);
+      progress(`${name} beacon`);
+      const sealed = await snarkjs.zKey.beacon(from, zkey, label, beacon, 10);
+      progress(`${name} verification`);
+      if (!await snarkjs.zKey.verifyFromR1cs(join(build, `${name}.r1cs`), ptau, zkey)) throw new Error(`${name}.zkey does not verify against its r1cs and the phase-1 transcript.`);
+      await writeKey(name, zkey, { contributions: entry.contributions, beacon: Buffer.from(sealed).toString('hex') });
+    } else throw new Error('--ceremony needs --stage contribute or --stage finish.');
+  }
+  if (stage === 'finish') {
+    manifest.setup.phase2 = { beacon: { label: option('--beacon-label'), hash: option('--beacon'), iterationsExp: 10 } };
+    await writeFile(join(out, 'manifest.json'), JSON.stringify(manifest, null, 1) + '\n');
+  }
+  await globalThis.curve_bn128?.terminate();
+  console.log(`Ceremony stage ${stage} done in ${ceremony}`);
+  process.exit(0);
+}
+mkdirSync(out, { recursive: true });
 for (const name of circuits) {
   const r1cs = join(build, `${name}.r1cs`), initial = join(out, `${name}.initial.zkey`), zkey = join(out, `${name}.zkey`);
   if (existsSync(zkey)) throw new Error(`Refusing to overwrite existing setup artifact: ${zkey}`);
@@ -48,9 +91,7 @@ for (const name of circuits) {
   progress(`${name} contribution`);
   await snarkjs.zKey.contribute(initial, zkey, 'Local development-only contribution; not a production ceremony', randomBytes(32).toString('hex'));
   rmSync(initial);
-  await writeFile(join(out, `${name}.vkey.json`), JSON.stringify(await snarkjs.zKey.exportVerificationKey(zkey)) + '\n');
-  copyFileSync(join(build, `${name}_js`, `${name}.wasm`), join(out, `${name}.wasm`));
-  manifest.circuits[name] = { r1cs: await digest(r1cs), files: Object.fromEntries(await Promise.all(['zkey', 'vkey.json', 'wasm'].map(async ext => [`${name}.${ext}`, await digest(join(out, `${name}.${ext}`))]))) };
+  await writeKey(name, zkey, {});
 }
 await writeFile(join(out, 'manifest.json'), JSON.stringify(manifest, null, 1) + '\n');
 await globalThis.curve_bn128?.terminate();
