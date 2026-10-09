@@ -93,3 +93,18 @@ export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,n
  const coin=usable.find(c=>c.assets?.length===1&&listed.has(c.assets[0]!.assetId));
  return coin?{kind:'asset',coin,assetId:coin.assets![0]!.assetId,units:coin.assets![0]!.amount}:undefined;
 }
+/** Arkade asset units by asset, with the coins the pool paid out kept apart, since auto-shield leaves those alone. */
+export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=>boolean){
+ const rows=new Map<string,{assetId:string;payout:boolean;units:bigint;coins:ArkCoin[]}>();
+ for(const coin of coins)for(const {assetId,amount} of coin.assets??[]){
+  const paid=payout(coin),row=rows.get(assetId+paid)??{assetId,payout:paid,units:0n,coins:[]};
+  row.units+=amount;row.coins.push(coin);rows.set(assetId+paid,row);
+ }
+ return [...rows.values()];
+}
+/** Opens an Arkade wallet for one call and disposes it after; an open wallet keeps an event stream and timers running. */
+export async function withArkWallet<W extends {wallet:{dispose():Promise<void>}},T>(open:()=>Promise<W>,use:(wallet:W)=>Promise<T>):Promise<T>{
+ const wallet=await open();
+ // Not awaited: dispose waits out an in-flight poll, up to 30 s.
+ try{return await use(wallet);}finally{void wallet.wallet.dispose().catch(()=>{});}
+}

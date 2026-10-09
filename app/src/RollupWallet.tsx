@@ -12,7 +12,7 @@ import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {openCustomerArkWallet,walletIntentLeafScriptHex} from '../../src/stock/ark-wallet.ts';
-import {bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
+import {arkAssetHoldings,bornAtFor,checkSigningRequest,DUST,pickNote,provingUrls,rollupApi,shieldPlan,signDeposit,syncAccount,transferBody,waitForSpend,withArkWallet,type ArkCoin,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './rollup-client.ts';
 import {CopyButton} from './components.tsx';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BACKED_UP='shielded-rollup-wallet-backed-up-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
@@ -23,7 +23,7 @@ const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000,MERGE_WAIT_MS=10*60_000;
 type Tab='receive'|'send'|'withdraw';
 type Activity={title:string;steps:string[];current:number;done?:boolean;error?:string};
-type Ark={address:string;available:number;coins:ArkCoin[];assets:{assetId:string;amount:bigint}[];history:ArkTransaction[]};
+type Ark={address:string;available:number;coins:ArkCoin[];history:ArkTransaction[]};
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 const amountOf=(value:string)=>{const n=Number(value);if(!Number.isSafeInteger(n)||n<1)throw new Error('Enter a whole number.');return BigInt(n);};
 const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Time unknown';
@@ -64,13 +64,15 @@ export default function RollupWallet(){
   void poll();return()=>{stop=true;};
  },[]);
  const native=()=>SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret);
- const openArk=()=>openCustomerArkWallet(native(),poolRef.current!.network);
+ const withArk=<T,>(use:(wallet:Awaited<ReturnType<typeof openCustomerArkWallet>>)=>Promise<T>)=>withArkWallet(()=>openCustomerArkWallet(native(),poolRef.current!.network),use);
  const refreshArk=async()=>{
   if(!poolRef.current?.network)return;
-  const wallet=await openArk(),[balance,vtxos,txs]=await Promise.all([wallet.wallet.getBalance(),wallet.wallet.getSpendableVtxos(),wallet.wallet.getTransactionHistory().catch(()=>[] as ArkTransaction[])]);
-  const coins=vtxos.map(v=>({txid:v.txid,vout:v.vout,value:v.value,...(v.expiresAt instanceof Date?{expiresAt:v.expiresAt.getTime()}:{}),...(v.assets?.length?{assets:v.assets.map(a=>({assetId:a.assetId,amount:BigInt(a.amount)}))}:{})}));
-  const next={address:wallet.address,available:balance.available,coins,assets:(balance.availableAssets??[]).map(a=>({assetId:a.assetId,amount:BigInt(a.amount)})),history:txs};
-  arkRef.current=next;setArk(next);return wallet;
+  await withArk(async wallet=>{
+   const [balance,vtxos,txs]=await Promise.all([wallet.wallet.getBalance(),wallet.wallet.getSpendableVtxos(),wallet.wallet.getTransactionHistory().catch(()=>[] as ArkTransaction[])]);
+   const coins=vtxos.map(v=>({txid:v.txid,vout:v.vout,value:v.value,...(v.expiresAt instanceof Date?{expiresAt:v.expiresAt.getTime()}:{}),...(v.assets?.length?{assets:v.assets.map(a=>({assetId:a.assetId,amount:BigInt(a.amount)}))}:{})}));
+   const next={address:wallet.address,available:balance.available,coins,history:txs};
+   arkRef.current=next;setArk(next);
+  });
  };
  const sync=async()=>{
   const current=account.current;if(!current)return;await syncAccount(current);setNotes(current.notes());setHistory([...current.history]);
@@ -109,7 +111,7 @@ export default function RollupWallet(){
  const depositCoin=async(txid:string,value:number,asset?:{assetId:string;amount:bigint})=>{
   for(let i=0;i<30;i++){
    await new Promise(r=>setTimeout(r,1000));
-   const wallet=await openArk(),found=(await wallet.wallet.getSpendableVtxos()).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
+   const found=(await withArk(wallet=>wallet.wallet.getSpendableVtxos())).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
    if(found?.tapTree&&found.intentTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.intentTapLeafScript)};
   }
   throw new Error('The deposit coin did not appear in your Arkade wallet.');
@@ -126,8 +128,8 @@ export default function RollupWallet(){
     const [assetSlot,btcSlot]=await account.current!.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),self.current!);
     return submitAll([{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}],step,1);
    }
-   const single=plan.coins.length===1?plan.coins[0]!:undefined,wallet=single?undefined:await openArk();
-   const coin=single?await depositCoin(single.txid,single.value):await depositCoin(await wallet!.wallet.send({recipients:[{address:wallet!.address,amount:plan.amount}]}),plan.amount);
+   const single=plan.coins.length===1?plan.coins[0]!:undefined;
+   const coin=single?await depositCoin(single.txid,single.value):await depositCoin(await withArk(wallet=>wallet.wallet.send({recipients:[{address:wallet.address,amount:plan.amount}]})),plan.amount);
    taken.push(outpoint(coin));used.current.add(outpoint(coin));
    return submitAll([{built:await account.current!.spend({deposit:BigInt(plan.amount)},self.current!),extra:{coin},coin}],step,1);
   }).then(ok=>{if(!ok)taken.forEach(o=>used.current.delete(o));return ok;});
@@ -196,7 +198,7 @@ export default function RollupWallet(){
   const built=await account.current!.spend({input,withdraw:value,program},self.current!);remember([built]);
   return submitAll([{built,extra:{program}}],step,1);
  });
- const list=async(id:string)=>{try{const wallet=(await refreshArk())!;await wallet.wallet.send({recipients:[{address:poolRef.current!.pool!.address,amount:DUST,assets:[{assetId:id,amount:1n}]}]});setListed(id);void refreshArk();}catch(error){setPoolError((error as Error).message);}};
+ const list=async(id:string)=>{try{await withArk(wallet=>wallet.wallet.send({recipients:[{address:poolRef.current!.pool!.address,amount:DUST,assets:[{assetId:id,amount:1n}]}]}));setListed(id);void refreshArk();}catch(error){setPoolError((error as Error).message);}};
 
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=self.current?rollupAddressOf(self.current):'';
  const shown=assetId?assetNotes[assetId]??[]:notes,balance=notes.reduce((sum,n)=>sum+n.amount,0n);
@@ -246,8 +248,8 @@ export default function RollupWallet(){
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{ark?<Copyable value={ark.address}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`}</p></div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>{const plan=planFor(paidOut);if(plan)void shieldWith(plan);}}>Shield again</button></div>}
-     {ark?.assets.map(a=><div key={a.assetId} className="stock-address"><small>ARKADE ASSET {short(a.assetId)}</small><b>{sats(a.amount)} units</b>
-      {reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool, so it moves in on its own.</p>:listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>:<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void list(a.assetId)}>List in the pool</button></>}</div>)}
+     {arkAssetHoldings(ark?.coins??[],payout).map(a=><div key={a.assetId+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
+      {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>{const plan=planFor(a.coins);if(plan)void shieldWith(plan);}}>Shield again</button></>:reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool, so it moves in on its own.</p>:listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>:<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void list(a.assetId)}>List in the pool</button></>}</div>)}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();(tab==='send'?send:withdraw)();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
      <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder={tab==='send'?'shrol21…':'Your Arkade address, or another tark1…'} autoComplete="off" spellCheck={false}/></label>
