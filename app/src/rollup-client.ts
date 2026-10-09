@@ -97,8 +97,8 @@ export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,n
 export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=>boolean){
  const rows=new Map<string,{assetId:string;payout:boolean;units:bigint;coins:ArkCoin[]}>();
  for(const coin of coins)for(const {assetId,amount} of coin.assets??[]){
-  const paid=payout(coin),row=rows.get(assetId+paid)??{assetId,payout:paid,units:0n,coins:[]};
-  row.units+=amount;row.coins.push(coin);rows.set(assetId+paid,row);
+  const paid=payout(coin),key=assetId+':'+paid,row=rows.get(key)??{assetId,payout:paid,units:0n,coins:[]};
+  row.units+=amount;row.coins.push(coin);rows.set(key,row);
  }
  return [...rows.values()];
 }

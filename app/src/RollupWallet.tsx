@@ -108,14 +108,14 @@ export default function RollupWallet(){
   return finals.find(f=>f.status==='dropped')??finals[0]!;
  };
  /** Waits for a coin with the value and asset holding a deposit needs, and returns how to spend it. */
- const depositCoin=async(txid:string,value:number,asset?:{assetId:string;amount:bigint})=>{
+ const depositCoin=(txid:string,value:number,asset?:{assetId:string;amount:bigint})=>withArk(async wallet=>{
   for(let i=0;i<30;i++){
    await new Promise(r=>setTimeout(r,1000));
-   const found=(await withArk(wallet=>wallet.wallet.getSpendableVtxos())).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
+   const found=(await wallet.wallet.getSpendableVtxos()).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
    if(found?.tapTree&&found.intentTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.intentTapLeafScript)};
   }
   throw new Error('The deposit coin did not appear in your Arkade wallet.');
- };
+ });
  const shieldWith=(plan:ShieldPlan)=>{
   const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(outpoint);taken.forEach(o=>used.current.add(o));
   const title=plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
@@ -248,7 +248,7 @@ export default function RollupWallet(){
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{ark?<Copyable value={ark.address}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`}</p></div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>{const plan=planFor(paidOut);if(plan)void shieldWith(plan);}}>Shield again</button></div>}
-     {arkAssetHoldings(ark?.coins??[],payout).map(a=><div key={a.assetId+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
+     {arkAssetHoldings(ark?.coins??[],payout).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>{const plan=planFor(a.coins);if(plan)void shieldWith(plan);}}>Shield again</button></>:reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool, so it moves in on its own.</p>:listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>:<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void list(a.assetId)}>List in the pool</button></>}</div>)}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();(tab==='send'?send:withdraw)();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
