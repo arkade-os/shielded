@@ -17,11 +17,9 @@ RUN npm ci
 COPY tools/prepare-circom.mjs ./tools/prepare-circom.mjs
 RUN npm run circom
 COPY circuits/rollup/compiler.mjs circuits/rollup/generate.mjs circuits/rollup/lib.circom circuits/rollup/spend.circom circuits/rollup/join.circom ./circuits/rollup/
-RUN node circuits/rollup/generate.mjs spend batch-spend \
- && mkdir -p /out/rollup-circuits/spend_js /out/rollup-circuits/batch-spend_js \
- && cp circuits/rollup/build/spend.r1cs circuits/rollup/build/batch-spend.r1cs /out/rollup-circuits/ \
- && cp circuits/rollup/build/spend_js/spend.wasm /out/rollup-circuits/spend_js/ \
- && cp circuits/rollup/build/batch-spend_js/batch-spend.wasm /out/rollup-circuits/batch-spend_js/
+RUN node circuits/rollup/generate.mjs spend join batch-spend batch-join \
+ && for c in spend join batch-spend batch-join; do mkdir -p /out/rollup-circuits/${c}_js \
+  && cp circuits/rollup/build/${c}.r1cs /out/rollup-circuits/ && cp circuits/rollup/build/${c}_js/${c}.wasm /out/rollup-circuits/${c}_js/; done
 
 FROM --platform=linux/amd64 node:24-bookworm-slim AS app-build
 WORKDIR /app

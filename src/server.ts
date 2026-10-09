@@ -26,7 +26,7 @@ const listener=app.listen(port,process.env.HOST??'0.0.0.0',()=>console.log(`Shie
 const stop=async()=>{if(stopping)return;stopping=true;if(timer)clearTimeout(timer);service?.close();listener.close();await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();process.exit(0);};
 process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
 
-service=await openRollupService({directory:join(data,'rollup'),circuits:resolve(process.env.SHIELDED_ROLLUP_CIRCUITS??join(root,'rollup-circuits')),setupTool:join(root,'tools','rollup-setup.mjs'),
+service=await openRollupService({directory:join(data,'rollup2'),circuits:resolve(process.env.SHIELDED_ROLLUP_CIRCUITS??join(root,'rollup-circuits')),setupTool:join(root,'tools','rollup-setup.mjs'),
  ...(process.env.SHIELDED_ROLLUP_KEYS?{bundled:resolve(process.env.SHIELDED_ROLLUP_KEYS)}:{}),...(process.env.SHIELDED_ROLLUP_RENEW_HOURS?{renewBeforeMs:Number(process.env.SHIELDED_ROLLUP_RENEW_HOURS)*3600_000}:{}),vmBinary:DEFAULT_VM_BINARY,...(existsSync(rapidsnark)?{rapidsnark}:{}),
  endpoints:{...(process.env.SHIELDED_ARK_URL?{arkUrl:process.env.SHIELDED_ARK_URL}:{}),...(process.env.SHIELDED_EMULATOR_URL?{emulatorUrl:process.env.SHIELDED_EMULATOR_URL}:{}),...(process.env.SHIELDED_INDEXER_URL?{indexerUrl:process.env.SHIELDED_INDEXER_URL}:{})}});
 const step=async()=>{

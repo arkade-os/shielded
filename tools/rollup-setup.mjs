@@ -15,7 +15,7 @@ const args = process.argv.slice(2), option = name => { const i = args.indexOf(na
 if (!args.includes('--development-only')) throw new Error('This setup is development-only. Pass --development-only explicitly.');
 const build = resolve(option('--build') ?? join(root, 'circuits', 'rollup', 'build'));
 const out = resolve(option('--out') ?? join(build, 'keys')), ptau = resolve(option('--ptau') ?? join(root, '.deps', 'rollup-ceremony', PTAU));
-const circuits = (option('--circuits') ?? 'spend,batch-spend').split(',');
+const circuits = (option('--circuits') ?? 'spend,join,batch-spend,batch-join').split(',');
 const progress = stage => console.log('ROLLUP_SETUP_PROGRESS=' + JSON.stringify({ stage }));
 // One thread bounds memory on a shared host; the global curve is the one snarkjs reuses.
 if (args.includes('--single-thread')) globalThis.curve_bn128 = await buildBn128(true);

@@ -8,8 +8,8 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
-import {buildRollupSpend,randomField} from '../../packages/protocol/src/rollup/account.ts';
+import {BATCH_SLOTS,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openCustomerArkWallet} from '../stock/ark-wallet.ts';
@@ -19,7 +19,7 @@ import {isStorageLocked} from '../storage.ts';
 import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts';
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
-import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin} from './covenant.ts';
+import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupLeaves} from './covenant.ts';
 import {loadRollupLeaves} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
 import {createRollupProver} from './prover.ts';
@@ -28,9 +28,10 @@ import {listingsOf} from './listings.ts';
 import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
 
-export const ROLLUP_KEY_FILES=['manifest.json','spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json'] as const;
+export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend','batch-join'].flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])] as const;
 const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=BATCH_SLOTS+1;
-const SETUP_MEMORY_BYTES=4*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
+// The batch-join setup alone peaked at 4.11 GiB single-threaded; the server process needs room beside it.
+const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the head moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
@@ -40,7 +41,7 @@ export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
  pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
  network?:StockNetworkInfo;
- proving?:{spend:{wasm:string;zkey:string};batch?:{wasm:string;zkey:string}};
+ proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;
 }
 export interface RollupSpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 interface Genesis {version:1;token:string;txid:string;archive:RollupArchive;serverKey:string;emulatorKey:string}
@@ -52,11 +53,18 @@ const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255
 const readJson=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 
 type KeyManifest={circuits:Record<string,{files:Record<string,string>}>};
-function verifyKeys(keys:string):KeyManifest {
- const manifest=readJson<KeyManifest>(join(keys,'manifest.json'));
- for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files))if(sha(readFileSync(join(keys,name)))!==digest)throw new Error(`Rollup key ${name} does not match its manifest.`);
+/** Every served file must be in the manifest and match it, so a key set that lacks a circuit fails closed. */
+export function verifyRollupKeys(keys:string):KeyManifest {
+ const manifest=readJson<KeyManifest>(join(keys,'manifest.json')),listed:Record<string,string>=Object.assign({},...Object.values(manifest.circuits).map(c=>c.files));
+ for(const name of ROLLUP_KEY_FILES.filter(n=>n!=='manifest.json')){
+  if(!listed[name])throw new Error(`Rollup key ${name} is missing from the manifest.`);
+  if(sha(readFileSync(join(keys,name)))!==listed[name])throw new Error(`Rollup key ${name} does not match its manifest.`);
+ }
  return manifest;
 }
+export const rollupKeyPath=(keys:string,name:string)=>(ROLLUP_KEY_FILES as readonly string[]).includes(name)?join(keys,name):undefined;
+/** The journal pin's programs hash: every leaf hashed on its own, so no byte can move between leaves unnoticed. */
+export const rollupProgramsHash=(leaves:Pick<RollupLeaves,'batch'|'batchJoin'|'reserve'|'renew'>)=>sha([leaves.batch,leaves.batchJoin,leaves.reserve,leaves.renew].map(leaf=>sha(leaf)).join(''));
 
 /**
  * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
@@ -96,10 +104,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     return undefined;
    }
   }
-  manifest=verifyKeys(keys);
-  const files=manifest.circuits['spend']!.files;
-  const batch=manifest.circuits['batch-spend']?.files;
-  status={...status,proving:{spend:{wasm:files['spend.wasm']!,zkey:files['spend.zkey']!},...(batch?{batch:{wasm:batch['batch-spend.wasm']!,zkey:batch['batch-spend.zkey']!}}:{})}};
+  manifest=verifyRollupKeys(keys);
+  const files:Record<string,string>=Object.assign({},...Object.values(manifest.circuits).map(c=>c.files)),pair=(c:string)=>({wasm:files[`${c}.wasm`]!,zkey:files[`${c}.zkey`]!});
+  status={...status,proving:{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')}};
   return manifest;
  }
  let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
@@ -134,7 +141,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  }
 
  const spec=async(token:string)=>{
-  writeFileSync(join(o.directory,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',slots:BATCH_SLOTS,kind:0,token,operator:hex.encode(schnorr.getPublicKey(operatorSecret))}));
+  writeFileSync(join(o.directory,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',clientJoinKey:'keys/join.vkey.json',batchJoinKey:'keys/batch-join.vkey.json',slots:BATCH_SLOTS,token,operator:hex.encode(schnorr.getPublicKey(operatorSecret))}));
   return loadRollupLeaves(o.vmBinary,join(o.directory,'spec.json'));
  };
 
@@ -189,7 +196,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const checkpoint=validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
   const prover=(name:string)=>createRollupProver({wasm:join(keys,`${name}.wasm`),zkey:join(keys,`${name}.zkey`)},o.rapidsnark);
   const operator=await openRollupOperator({directory:join(o.directory,'operator'),
-   pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-spend'),programsHash:sha(leaves.batch),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
+   pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-genesis2'),programsHash:rollupProgramsHash(leaves),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
    genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint,
    clientKey:{spend:readJson(join(keys,'spend.vkey.json')),join:readJson(join(keys,'join.vkey.json'))},hash,prover:{spend:prover('batch-spend'),join:prover('batch-join')},transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
    onDrop:(ids,reason)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});}});
@@ -198,7 +205,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   await restore(operator);
   await backfill(operator,indexer).catch(error=>log('batch history backfill: '+(error as Error).message));
   status={...status,phase:'ready',message:'The rollup pool is open.',fundingAddress:ark.address};
-  run(prover('spend'));
+  run({spend:prover('spend'),join:prover('join')});
  }
 
  /** Records published before they carried a txid and time get both once: the journal kept the txid, the indexer the time. */
@@ -217,7 +224,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   }
  }
 
- function run(spendProver:ReturnType<typeof createRollupProver>){
+ function run(clientProvers:Record<BatchKind,ReturnType<typeof createRollupProver>>){
   const {operator}=live!;let paused=false,ticking:Promise<unknown>|undefined,lastError='',lock:Promise<unknown>=Promise.resolve();
   /** Renewal and listing move the head or reserves, so batches pause and they run one at a time. */
   const exclusive=(work:()=>Promise<void>)=>{const turn=lock.then(async()=>{paused=true;try{await ticking?.catch(()=>{});if(operator.status().pending)throw new Error('a submitted batch is unresolved; this waits.');await work();}finally{paused=false;}});lock=turn.catch(()=>{});return turn;};
@@ -243,15 +250,16 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    }
    timers.push(setTimeout(tick,1000));
   };
-  const pad=async()=>{
+  /** Keeps a batch's worth of zero spends (one dummy input) or zero joins (two) proved and ready. */
+  const pad=async(kind:BatchKind)=>{
    const recipient=rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey());
    while(!stopped){
-    if(operator.padding()>=PADDING_TARGET){await sleep(2000);continue;}
+    if(operator.padding(kind)>=PADDING_TARGET){await sleep(2000);continue;}
     try{
-     const built=await buildRollupSpend(hash,{root:operator.state.latestRoot(),ask:randomField(),nk:randomField(),self:recipient,request:{}});
-     const proof=await spendProver.prove(built.witness.input,built.witness.publicSignals);
+     const built=await buildRollupTransfer(hash,{root:operator.state.latestRoot(),ask:randomField(),nk:randomField(),self:recipient,request:{},width:kind==='join'?2:1});
+     const proof=await clientProvers[kind].prove(built.witness.input,built.witness.publicSignals);
      operator.addPadding([{id:'pad-'+randomBytes(8).toString('hex'),slot:built.witness.slot,publics:built.witness.publicSignals as unknown as RollupSpend['publics'],proof,ciphertext:built.ciphertext,receivedAt:Infinity}]);
-    }catch(error){note('padding: '+(error as Error).message);await sleep(10_000);}
+    }catch(error){note(`${kind} padding: `+(error as Error).message);await sleep(10_000);}
    }
   };
   const renewalPath=join(o.directory,'renewal.json');
@@ -298,7 +306,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    }catch(error){note('listing: '+(error as Error).message);}
    timers.push(setTimeout(list,LIST_CHECK_MS));
   };
-  const start=()=>{void tick();void pad();void renew();void list();};
+  const start=()=>{void tick();void pad('spend');void pad('join');void renew();void list();};
   // A batch started before the leftover intent clears would only be refused, and its deposits dropped.
   if(existsSync(renewalPath))void exclusive(settleRenewal).catch(error=>note('renewal: '+(error as Error).message)).finally(start);else start();
  }
@@ -328,7 +336,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   },
   ready:()=>!!live,
   // The batch key is published too, so anyone can prove a batch, and the pool keeps moving, if this operator stops.
-  keyFile:(name:string)=>manifest&&(['manifest.json','spend.wasm','spend.zkey','spend.vkey.json','batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json'] as const).find(file=>file===name)?join(keys,name):undefined,
+  keyFile:(name:string)=>manifest?rollupKeyPath(keys,name):undefined,
   batches:(from:number,limit:number)=>{
    const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
