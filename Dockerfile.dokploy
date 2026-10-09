@@ -7,19 +7,12 @@ RUN git clone --depth 1 --branch v0.0.8 https://github.com/iden3/rapidsnark.git 
  && git submodule update --init --recursive --depth 1 \
  && ./build_gmp.sh host && make host && mkdir -p /out && install -m 0755 package/bin/prover /out/rapidsnark
 
-# Rollup circuits; their proving keys are generated once at runtime and kept on the volume.
-FROM --platform=linux/amd64 node:24-bookworm AS rollup-build
-WORKDIR /app
-COPY package.json package-lock.json ./
-COPY patches/ ./patches/
-COPY tools/patch-sdk.mjs ./tools/patch-sdk.mjs
-RUN npm ci
-COPY tools/prepare-circom.mjs ./tools/prepare-circom.mjs
-RUN npm run circom
-COPY circuits/rollup/compiler.mjs circuits/rollup/generate.mjs circuits/rollup/lib.circom circuits/rollup/spend.circom circuits/rollup/join.circom ./circuits/rollup/
-RUN node circuits/rollup/generate.mjs spend join batch-spend batch-join \
- && for c in spend join batch-spend batch-join; do mkdir -p /out/rollup-circuits/${c}_js \
-  && cp circuits/rollup/build/${c}.r1cs /out/rollup-circuits/ && cp circuits/rollup/build/${c}_js/${c}.wasm /out/rollup-circuits/${c}_js/; done
+# The ceremony's proving keys, each checked against the manifest pinned in the repo; the host never runs a setup.
+FROM --platform=linux/amd64 node:24-bookworm-slim AS rollup-keys
+ARG SHIELDED_ROLLUP_KEYS_URL=https://github.com/arkade-os/shielded/releases/download/rollup-genesis-2-keys
+WORKDIR /keys
+COPY tools/fetch-rollup-keys.mjs rollup-keys/genesis-2.json ./
+RUN node fetch-rollup-keys.mjs genesis-2.json "$SHIELDED_ROLLUP_KEYS_URL" /out/rollup-keys
 
 FROM --platform=linux/amd64 node:24-bookworm-slim AS app-build
 WORKDIR /app
@@ -38,16 +31,15 @@ COPY tools/vm/ ./
 RUN mkdir -p /out && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/shielded-vm .
 
 FROM --platform=linux/amd64 node:24-bookworm-slim AS runtime
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=8792 SHIELDED_DATA_DIR=/data
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=8792 SHIELDED_DATA_DIR=/data SHIELDED_ROLLUP_KEYS=/app/rollup-keys
 WORKDIR /app
 COPY --from=app-build --chown=node:node /app/node_modules ./node_modules
 COPY --from=app-build --chown=node:node /app/package.json ./package.json
 COPY --from=app-build --chown=node:node /app/src ./src
 COPY --from=app-build --chown=node:node /app/packages ./packages
 COPY --from=app-build --chown=node:node /app/app/dist ./app/dist
-COPY --from=app-build --chown=node:node /app/tools/rollup-setup.mjs ./tools/rollup-setup.mjs
 COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
-COPY --from=rollup-build --chown=node:node /out/rollup-circuits ./rollup-circuits
+COPY --from=rollup-keys --chown=node:node /out/rollup-keys ./rollup-keys
 COPY --from=rapidsnark-build --chown=node:node /out/rapidsnark ./bin/rapidsnark
 RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]

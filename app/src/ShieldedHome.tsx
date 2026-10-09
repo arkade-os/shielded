@@ -40,7 +40,7 @@ const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
  {title:'On Arkade',by:'ark',rows:[['Transaction','8,665 bytes'],['Weight','34,660 of 40,000 WU'],['Per payment','about 3,150 WU'],['State packet','64 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
 ];
 const trust:{title:string;by?:Party;text:string}[]=[
- {title:'A test network',text:'Mutinynet test coins only. The proving keys come from a development setup, not a public ceremony.'},
+ {title:'A test network',text:'Mutinynet test coins only. The proving keys come from a small testnet ceremony over the shared Hermez powers of tau, sealed with a Bitcoin block hash; the README shows how to verify them.'},
  {title:'Arkade checks the proofs',by:'ark',text:'The Arkade emulator verifies the proofs and arkd must co-sign; Bitcoin itself does not verify them. Both must stay honest and online. If they do not, there is no independent exit from the pool.'},
  {title:'The operator keeps order',by:'op',text:'The pool operator orders batches and can delay or refuse a spend, but cannot spend a note without its owner’s proof. If it refuses you or stops, anyone holding the published batch key can prove a batch without it, until the pool head expires. Deposits and withdrawals are public, amount and address.'},
 ];

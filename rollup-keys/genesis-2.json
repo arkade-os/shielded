@@ -1,0 +1,76 @@
+{
+ "version": 1,
+ "setup": {
+  "phase1": "powersOfTau28_hez_final_20.ptau",
+  "phase1Blake2b512": "89a66eb5590a1c94e3f1ee0e72acf49b1669e050bb5f93c73b066b564dca4e0c7556a52b323178269d64af325d8fdddb33da3a27c34409b821de82aa2bf1a27b",
+  "phase2": {
+   "beacon": {
+    "label": "Bitcoin block 970597",
+    "hash": "00000000000000000001c4253bf4ea6bc9af4e684de97bf9d22acf0802d3fd9c",
+    "iterationsExp": 10
+   }
+  }
+ },
+ "circuits": {
+  "spend": {
+   "r1cs": "ae92805e330af6aa8c6dfacab3df47c407fce53cd5f828631f55de77e4a7ca5a",
+   "files": {
+    "spend.zkey": "be0415ba664a769c013beff5fd32eea1d902a01fee6c68f9ed3b0564c3bffe64",
+    "spend.vkey.json": "8a17ae7b5b32a4bb8c67824daebe212597794a8afa13ddb8c3ebad36dc30316f",
+    "spend.wasm": "b23efc0802a7a90046d6c1c8a0707808d56e240c82bd71948f6dfacbaa96997a"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 2, contribution 1",
+     "hash": "d16ec1a7111a3abe4913d919ed49a0000f71076321e22278e3011c2fc480066fb453239dfb123ab46882619c2c1416b8cb66284edcc2f630a7f1803c7f37c56e"
+    }
+   ],
+   "beacon": "bac8533528990b031a9ad0acb4a8403d39a26a0c4f43a5e9460602501de856d91a46e97f6bfa5f17608a30e1af3108e765e69287df3b5f513664adbb5da006e9"
+  },
+  "join": {
+   "r1cs": "0db7abf326b8a1d82f566f9aad2b2f5b0c882839d5a27190cb12133b56e37702",
+   "files": {
+    "join.zkey": "f26c1b2d9d6fa76f09318a2ce308002c1e97dcfe132f7893f59b03d8d37eaae6",
+    "join.vkey.json": "7c336b7288b7365315d81e0c304e30826ab9bb9c63549a00908c6319f15506f9",
+    "join.wasm": "a0143fa3b6f3e714c995e9e17a87bba44b6f970b17d1d7e0abd66f05ac0dba6c"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 2, contribution 1",
+     "hash": "95640a34827c567a789f7a255ba0204b6c60637d3ebe15d7bae4da186c0ae47b34b290eb49a8fc042cbbcf5b79b681aff5966fe2ec162b663d15cc56c68c1d80"
+    }
+   ],
+   "beacon": "7b7368b7f050d7bb3689b02de9855c864f45f0af151d34f84f870cd3af8866fa11f8712dbd6dc0fc74487d5cf6da2087395e935137bf67be9fa9ab7c82b49980"
+  },
+  "batch-spend": {
+   "r1cs": "fed642a82015c65d8814a28fbf83bdea5cf312ffb96a7a355940e2aa68611cb9",
+   "files": {
+    "batch-spend.zkey": "52979a572404768afe1c71f9a5f83f6b12d6cdb35a19c9b2b487967677cee377",
+    "batch-spend.vkey.json": "23cba1e1ff1086daff6954ade977c0419e855c79410ef99bab71e98f63b807d8",
+    "batch-spend.wasm": "b36a6de9c79caf73f56ae44aea5597555fb85475c7b30ef8ce6d61a8798d3e96"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 2, contribution 1",
+     "hash": "8ece3d3e2b28eb8775995ef0456acb322a49972f82ef7690c03200cb17875bb6710f305a15f6eccc41f2157d14947c99f0270b966e205c109983f402300c3b86"
+    }
+   ],
+   "beacon": "79045b3512f13353ebf0a23304f82ef94cbe538f4df68af0fe57dab221627bf4c5f6745598849432630766ab6054109b7c17bd78142d03bd62a95f6309aef9be"
+  },
+  "batch-join": {
+   "r1cs": "a81543301ef1f176525b241325f7daf49071f3056dd1898ea9239f7e49747750",
+   "files": {
+    "batch-join.zkey": "ef60588e5e906b92160cb7dbad2014cc8915b3ace10c6689d19684582c1615c6",
+    "batch-join.vkey.json": "b942bcaa67398a52689d8632d376139c0f63db37f10ff6c3473f1e395855ca6e",
+    "batch-join.wasm": "4ef5bb34a5127f6a3dcf055551063af2efa3fdef4a42024eff927bd5ef0fb162"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 2, contribution 1",
+     "hash": "5253c5dbeb9bffc8e997c292dd2175f2fad5e66803ece6179a38434789e0ec0cd3d150efd28afe6083af1dfb6db056ffff5ab4e2a387678afa29698fc1d03b2e"
+    }
+   ],
+   "beacon": "10dd5c94440d0f443ed07c18f180cfc1095204968c429a33d2e6d0a23c80a7f8841028096fdd44f3e42b8a03649ea7da48c2e3ba74f5c03c9729e7fffb7b3273"
+  }
+ }
+}
