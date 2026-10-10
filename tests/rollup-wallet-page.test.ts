@@ -114,3 +114,10 @@ test('withdrawn asset units are listed apart from the rest, so the wallet never 
  const rows=arkAssetHoldings([coin('paid',a,39n),coin('own',a,10n),coin('own2',b,5n),coin('sats')],c=>c.txid==='paid');
  assert.deepEqual(rows.map(r=>[r.assetId,r.payout,r.units,r.coins.map(c=>c.txid)]),[[a,true,39n,['paid']],[a,false,10n,['own']],[b,false,5n,['own2']]]);
 });
+
+test('the status sheet renders a step state the handle produced, title and all',()=>{
+ const state={title:'Sending privately',steps:['Pick notes','Prove the payment on this device','Submit to the pool'],current:1};
+ assert.equal(sheetLine(state),'Step 2 of 3: Prove the payment on this device');
+ assert.equal(sheetLine({...state,current:2,done:true}),'Done');
+ assert.equal(sheetLine({...state,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
+});
