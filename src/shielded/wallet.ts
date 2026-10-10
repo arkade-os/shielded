@@ -93,6 +93,7 @@ export class ShieldedWallet extends Wallet {
  private derived!:ReturnType<typeof shieldedKeysOf>;
  private token!:string;
  private poolScript!:string;
+ private ownPoolAddress!:string;
  private sent:Record<string,SentRecord>={};
  private readonly listings=new Set<string>();
  private readonly changeListeners=new Set<()=>void>();
@@ -113,7 +114,7 @@ export class ShieldedWallet extends Wallet {
   try{
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
-   wallet.poolScript=config.pool.status.pool!.script;
+   wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;
    const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    for(const txid of loaded.listings)wallet.listings.add(txid);
@@ -123,6 +124,7 @@ export class ShieldedWallet extends Wallet {
  }
 
  get inFlight():ReadonlySet<bigint>{return this.notes.inFlight;}
+ get poolAddress():string{return this.ownPoolAddress;}
  router():PaymentRouter{
   return new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
    .use(shieldedRail(this)).use(shieldedWithdrawRail(this))

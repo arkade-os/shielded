@@ -21,8 +21,9 @@ export function shieldedTargetOf(raw:string):string|undefined{
 const requestOf=(req:PaymentRequest)=>{
  try{
   if(req.selectedVtxos!==undefined)return undefined;
-  const assets=req.assets??[],sats=tryResolveSendAmount(req.raw,req.amount);
-  if(assets.length>1||(req.amount!==undefined&&sats===undefined)||(sats!==undefined&&!Number.isSafeInteger(sats)))return undefined;
+  const assets=req.assets??[],raw=req.raw.trim(),sats=tryResolveSendAmount(raw,req.amount);
+  const hasAmount=req.amount!==undefined||(/^bitcoin:/i.test(raw)&&new URLSearchParams(raw.split('?')[1]??'').has('amount'));
+  if(assets.length>1||(hasAmount&&sats===undefined)||(sats!==undefined&&!Number.isSafeInteger(sats)))return undefined;
   const asset=assets[0];
   if(asset){
    if(typeof asset.amount!=='bigint'||asset.amount<=0n||asset.amount>=(1n<<64n))return undefined;
@@ -52,7 +53,7 @@ export function shieldedRail(wallet:ShieldedWallet):PaymentRail{
  };
 }
 export function shieldedWithdrawRail(wallet:ShieldedWallet):PaymentRail{
- const target=(raw:string)=>{try{const found=arkTarget(raw.trim());return found&&isValidArkAddress(found)&&found.toLowerCase()!==wallet.pool.status.pool?.address.toLowerCase()?found:undefined;}catch{return undefined;}};
+ const target=(raw:string)=>{try{const found=arkTarget(raw.trim());return found&&isValidArkAddress(found)&&found.toLowerCase()!==wallet.poolAddress.toLowerCase()?found:undefined;}catch{return undefined;}};
  return {
   id:'shielded-withdraw',
   match:req=>target(req.raw)!==undefined,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,type SendParams} from '@arkade-os/sdk';
+import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,type SendParams} from '@arkade-os/sdk';
 import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
@@ -485,6 +485,24 @@ async function fundPrivate(wallet:ShieldedWallet,notes:{amount:bigint;asset?:big
  await wallet.account.apply({kind:'spend',slots:deposits.map(publishSpend),txid:'de'.repeat(32)});
 }
 const recipient=shieldedKeysOf(hash,'22'.repeat(32));
+
+test('existing and new routers keep the original pool excluded after status loses or changes its address',async()=>{
+ const wallet=await open(),router=wallet.router(),decoded=ArkAddress.decode(POOL_ADDRESS);
+ const elsewhere=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();
+ try{
+  await fundPrivate(wallet,[{amount:500n}]);
+  assert.equal(wallet.canWithdraw(500n),true);
+  assert.equal((await router.route({raw:POOL_ADDRESS,amount:500})).railId,'ark');
+  for(const latest of [{phase:'starting',message:'restart'} as RollupPoolStatus,{...status(1),pool:{...status(1).pool!,address:elsewhere}}]){
+   wallet.pool.status=latest;
+   for(const current of [router,wallet.router()]){
+    for(const raw of [POOL_ADDRESS,POOL_ADDRESS.toUpperCase(),`bitcoin:?ark=${POOL_ADDRESS}`])
+     assert.equal((await current.route({raw,amount:500})).railId,'ark');
+    assert.equal((await current.route({raw:elsewhere,amount:500})).railId,'shielded-withdraw');
+   }
+  }
+ }finally{await wallet.dispose();}
+});
 
 test('pay and withdraw announce handles before a shortfall fails at the note selection step',async()=>{
  const wallet=await open(),announced:ShieldedPaymentHandle[]=[];

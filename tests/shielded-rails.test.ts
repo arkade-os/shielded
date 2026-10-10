@@ -19,6 +19,7 @@ const ASSET='ee'.repeat(34);
 const paid:{to:string;amount:bigint;asset?:string}[]=[],exited:{to:string;amount:bigint;opts:unknown}[]=[];
 const fake=(o:{canWithdraw?:boolean|(()=>never)}={})=>({
  pool:{status:{pool:{address:POOL}}},
+ poolAddress:POOL,
  canWithdraw:typeof o.canWithdraw==='function'?o.canWithdraw:()=>o.canWithdraw??true,
  pay:async(to:string,amount:bigint,asset?:string)=>{paid.push({to,amount,...(asset?{asset}:{})});return {id:'h',status:'pending'};},
  withdraw:async(to:string,amount:bigint,opts:unknown)=>{exited.push({to,amount,opts});return {id:'h',status:'pending'};},
@@ -182,4 +183,22 @@ test('an asset withdrawal defaults to a 330-sat carrier while preserving exact u
  assert.deepEqual(quote.assets,{delivered:asset,spent:asset});
  await quote.send();
  assert.deepEqual(exited,[{to:ELSEWHERE,amount:9007199254740993n,opts:{asset:ASSET,sats:330n}}]);
+});
+
+test('explicit invalid URI carriers are rejected unless a valid request amount overrides them',async()=>{
+ const wallet=fake(),c=ctx(wallet),assets=[{assetId:ASSET,amount:9n}];
+ for(const [rail,target] of [[shieldedRail(wallet),`shielded=${SHROL}`],[shieldedWithdrawRail(wallet),`ark=${ELSEWHERE}`]] as const){
+  for(const amount of ['bad','-1','0','','90071992.54740992','0.000000001']){
+   const raw=`bitcoin:?${target}&amount=${amount}`,request={raw,assets};
+   assert.equal(await rail.available!(request,c),false,`${rail.id}: encoded ${JSON.stringify(amount)}`);
+   await assert.rejects(rail.quote(request,c),/whole number of sats/);
+   const override={...request,amount:500};
+   assert.equal(await rail.available!(override,c),true);
+   const quote=await rail.quote(override,c);
+   assert.equal(quote.amount,rail.id==='shielded'?0:500);
+  }
+  const encoded={raw:`bitcoin:?${target}&amount=0.000005`,assets};
+  assert.equal(await rail.available!(encoded,c),true);
+  assert.equal((await rail.quote(encoded,c)).amount,rail.id==='shielded'?0:500);
+ }
 });
