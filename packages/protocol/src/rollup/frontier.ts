@@ -2,6 +2,7 @@ import { NOTE_DEPTH, SUBTREE_DEPTH } from './constants.ts';
 import type { Hash } from './notes.ts';
 
 const BLOCK = 2 ** SUBTREE_DEPTH, UPPER = NOTE_DEPTH - SUBTREE_DEPTH;
+export interface FrontierSnapshot { v: 1; blocks: number; top: string; filled: string[]; tracked: [number, string[]][] }
 
 /**
  * The note tree as a wallet needs it: the root, plus current paths for the leaves it tracks, as each batch appends a
@@ -18,6 +19,18 @@ export class NoteFrontier {
   this.top = this.zeros[NOTE_DEPTH]!;
  }
  root(): bigint { return this.top; }
+ snapshot(): FrontierSnapshot {
+  return { v: 1, blocks: this.blocks, top: String(this.top), filled: this.filled.map(String), tracked: [...this.tracked].map(([index, siblings]) => [index, siblings.map(String)]) };
+ }
+ static fromSnapshot(hash: Hash, snapshot: FrontierSnapshot): NoteFrontier {
+  if (snapshot.v !== 1) throw new Error(`Unknown frontier snapshot version ${snapshot.v}.`);
+  const frontier = new NoteFrontier(hash);
+  frontier.blocks = snapshot.blocks;
+  frontier.top = BigInt(snapshot.top);
+  frontier.filled.push(...snapshot.filled.map(BigInt));
+  for (const [index, siblings] of snapshot.tracked) frontier.tracked.set(index, siblings.map(BigInt));
+  return frontier;
+ }
 
  append(leaves: readonly bigint[], track: readonly number[] = []): void {
   if (leaves.length > BLOCK) throw new Error('A batch appends at most 32 leaves.');
