@@ -92,7 +92,7 @@ export class ShieldedWallet extends Wallet {
   try{await this.repository.saveAccount(token,{v:1,token,account:this.account.snapshot(),sent:this.sent,listings:[...this.listings]});}
   catch(error){this.repositoryError??=(error as Error).message;}
  }
- sentOf(nullifier:bigint){return this.sent[String(nullifier)];}
+ sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
  recordSent(entries:[bigint,SentRecord][]){for(const [nullifier,record] of entries)this.sent[String(nullifier)]=record;}
  override async dispose():Promise<void>{this.changeListeners.clear();await super.dispose();}
 }
