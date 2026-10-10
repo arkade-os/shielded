@@ -271,7 +271,7 @@ export class ShieldedWallet extends Wallet {
   const handle=shieldedHandle({title:shieldTitle(plan),steps:shieldedSteps.shield,railId:'shielded-deposit'},async step=>{
    step(0);
    if(plan.kind==='asset'){
-    const coin=await this.depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units});
+    const coin=await this.depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units},plan.coin.vout);
     const [assetSlot,btcSlot]=await this.account.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),this.self);
     return this.submit([{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}],step);
    }
@@ -290,7 +290,7 @@ export class ShieldedWallet extends Wallet {
      this.usedTxids.add(txid);sentTxids.push(txid);
     }finally{this.selfSending=false;}
    }
-   const coin=await this.depositCoin(txid!,plan.amount);
+   const coin=await this.depositCoin(txid!,plan.amount,undefined,single?.vout);
    const outpoint=`${coin.txid}:${coin.vout}`;this.used.add(outpoint);taken.push(outpoint);
    return this.submit([{built:await this.account.spend({deposit:BigInt(plan.amount)},this.self),extra:{coin},coin}],step);
   });
@@ -382,12 +382,12 @@ export class ShieldedWallet extends Wallet {
   return txid;
  }
  /** Waits for the coin a deposit needs with its value and asset, and returns how to spend it. */
- private async depositCoin(txid:string,value:number,asset?:{assetId:string;amount:bigint}){
+ private async depositCoin(txid:string,value:number,asset?:{assetId:string;amount:bigint},vout?:number){
   for(let i=0;i<30;i++){
    this.assertOpen();
    await new Promise(r=>setTimeout(r,1000));
    this.assertOpen();
-   const found=(await this.getSpendableVtxos()).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
+   const found=(await this.getSpendableVtxos()).find(v=>v.txid===txid&&(vout===undefined||v.vout===vout)&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
    if(found?.tapTree&&found.intentTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.intentTapLeafScript)};
   }
   throw new Error('The deposit coin did not appear in your Arkade wallet.');

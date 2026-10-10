@@ -11,6 +11,7 @@ import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {catchUp} from '../src/shielded/sync.ts';
+import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {RollupPoolStatus} from '../src/shielded/pool.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
@@ -139,6 +140,53 @@ function readyDeposit(wallet:ShieldedWallet){
  wallet.account.spend=async()=>fakeSpend();
  wallet.account.depositAsset=async()=>[fakeSpend(),fakeSpend()];
 }
+
+for(const asset of [false,true]){
+ test(`${asset?'asset':'BTC'} shielding submits each reserved sibling outpoint`,async()=>{
+  const wallet=await open(),a={...coin(),...(asset?{assets:[{assetId:TOKEN,amount:5n}]}:{}),tapTree:new Uint8Array([1]),intentTapLeafScript:[{},new Uint8Array([0x51,0xc0])]},b={...a,vout:1};
+  const submitted:number[]=[];
+  wallet.pool.status.pool!.reserves={[TOKEN]:'10'};
+  wallet.getSpendableVtxos=async()=>[b,a] as never;
+  (wallet as any).submit=async(members:SubmitMember[])=>{const vout=members[0]!.coin!.vout;submitted.push(vout);return {txid:String(vout)};};
+  try{
+   const one=(await wallet.shield([a]))!,two=(await wallet.shield([b]))!;
+   assert.ok(one);assert.ok(two);assert.equal(await wallet.shield([a,b]),undefined);
+   assert.deepEqual(new Set((wallet as any).used),new Set([`${a.txid}:0`,`${a.txid}:1`]));
+   assert.deepEqual((await Promise.all([one.settled(),two.settled()])).map(result=>result.txid),['0','1']);
+   assert.deepEqual(submitted.sort(),[0,1]);
+  }finally{await wallet.dispose();}
+ });
+
+ test(`${asset?'asset':'BTC'} shielding waits for its exact output while an equal sibling is visible`,async()=>{
+  const wallet=await open(),sibling={...coin(),...(asset?{assets:[{assetId:TOKEN,amount:5n}]}:{}),tapTree:new Uint8Array([1]),intentTapLeafScript:[{},new Uint8Array([0x51,0xc0])]},selected={...sibling,vout:1};
+  let reads=0;const submitted:number[]=[];
+  wallet.pool.status.pool!.reserves={[TOKEN]:'10'};
+  wallet.getSpendableVtxos=async()=>{
+   reads++;assert.deepEqual(submitted,[],'no deposit is submitted before the selected output appears');
+   return (reads===1?[sibling]:[sibling,selected]) as never;
+  };
+  (wallet as any).submit=async(members:SubmitMember[])=>{submitted.push(members[0]!.coin!.vout);return {};};
+  try{
+   const handle=(await wallet.shield([selected]))!;assert.ok(handle);await handle.settled();
+   assert.equal(reads,2);assert.deepEqual(submitted,[1]);
+  }finally{await wallet.dispose();}
+ });
+}
+
+test('consolidated shielding discovers an unknown output vout under its whole transaction reservation',async t=>{
+ const wallet=await open(),a=coin('a'.repeat(64),200),b=coin('b'.repeat(64),300),output={...coin(),vout:3,tapTree:new Uint8Array([1]),intentTapLeafScript:[{},new Uint8Array([0x51,0xc0])]};
+ let sent=false;const submitted:number[]=[];
+ wallet.getSpendableVtxos=async()=>{
+  if(sent){assert.ok((wallet as any).usedTxids.has(output.txid));return [output] as never;}
+  return [a,b] as never;
+ };
+ t.mock.method(Wallet.prototype,'send',async()=>{sent=true;return output.txid;});
+ (wallet as any).submit=async(members:SubmitMember[])=>{submitted.push(members[0]!.coin!.vout);return {};};
+ try{
+  const handle=(await wallet.shield([a,b]))!;assert.ok(handle);await handle.settled();
+  assert.deepEqual(submitted,[3]);assert.equal(wallet.planFor([output],false),undefined);
+ }finally{await wallet.dispose();}
+});
 
 test('self-send selects exactly the plan inputs and reserves its output before discovery',async t=>{
  const wallet=await open(),a=coin('a'.repeat(64),200),b=coin('b'.repeat(64),300),output=coin();
