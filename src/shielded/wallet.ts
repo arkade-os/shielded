@@ -65,6 +65,10 @@ export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(
 export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number})=>
  shieldPlan(coins.filter(c=>!o.skip(c)&&!o.used.has(`${c.txid}:${c.vout}`)),o.listed,o.now,o.floorMs);
 export const needsRenewal=(coins:readonly ArkCoin[],now:number,floorMs:number)=>coins.some(c=>c.expiresAt!==undefined&&c.expiresAt-now<=floorMs);
+class ReservationFailure extends Error {
+ constructor(error:unknown,readonly release:boolean){super(reasonOf(error),{cause:error});}
+}
+const canRelease=(error:unknown)=>!(error instanceof ReservationFailure)||error.release;
 
 export class ShieldedWallet extends Wallet {
  pool!:ShieldedPoolConfig;
@@ -79,11 +83,14 @@ export class ShieldedWallet extends Wallet {
  repositoryError?:string;
  private derived!:ReturnType<typeof shieldedKeysOf>;
  private token!:string;
+ private poolScript!:string;
  private sent:Record<string,SentRecord>={};
  private readonly listings=new Set<string>();
  private readonly changeListeners=new Set<()=>void>();
  private readonly used=new Set<string>();
+ private readonly usedTxids=new Set<string>();
  private readonly actionListeners=new Set<(h:ShieldedPaymentHandle)=>void>();
+ private latestAction?:ShieldedPaymentHandle;
  private unwatch:(()=>void)[]=[];
  private timer?:ReturnType<typeof setTimeout>;
  private retryAt=0;
@@ -94,6 +101,7 @@ export class ShieldedWallet extends Wallet {
   try{
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
+   wallet.poolScript=config.pool.status.pool!.script;
    const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    for(const txid of loaded.listings)wallet.listings.add(txid);
@@ -113,9 +121,9 @@ export class ShieldedWallet extends Wallet {
  assetIdOf(field:bigint):string|undefined{return Object.keys(this.pool.status.pool?.reserves??{}).find(id=>assetFieldOfId(id)===field);}
  onShieldedChange(cb:()=>void):()=>void{this.changeListeners.add(cb);return()=>{this.changeListeners.delete(cb);};}
  /** Every handle the wallet starts on its own — auto-shield, a background merge — so one sheet shows them all. */
- onAction(cb:(handle:ShieldedPaymentHandle)=>void):()=>void{this.actionListeners.add(cb);return()=>{this.actionListeners.delete(cb);};}
+ onAction(cb:(handle:ShieldedPaymentHandle)=>void):()=>void{this.actionListeners.add(cb);if(this.latestAction)try{cb(this.latestAction);}catch{}return()=>{this.actionListeners.delete(cb);};}
  changed(){for(const cb of [...this.changeListeners])try{cb();}catch{/* a listener's fault is not the wallet's */}}
- private announce(handle:ShieldedPaymentHandle){for(const cb of [...this.actionListeners])cb(handle);return handle;}
+ private announce(handle:ShieldedPaymentHandle){this.latestAction=handle;for(const cb of [...this.actionListeners])try{cb(handle);}catch{}return handle;}
  async save():Promise<void>{
   if(!this.repository)return;
   const {token}=this;
@@ -131,7 +139,7 @@ export class ShieldedWallet extends Wallet {
  async start():Promise<void>{
   await this.sync();
   const manager=await this.getContractManager();
-  await manager.watchScript?.(this.pool.status.pool!.script,{label:'shielded pool'});
+  await manager.watchScript?.(this.poolScript,{label:'shielded pool'});
   this.unwatch.push(manager.onContractEvent(event=>{
    // A watch-only event carries no contract, which is the point: the pool script is not ours. Any movement on it
    // means the head moved, and `connection_reset` means an event may have been missed.
@@ -139,6 +147,7 @@ export class ShieldedWallet extends Wallet {
   }));
   this.unwatch.push(await this.notifyIncomingFunds(()=>{this.changed();void this.autoShield().catch(()=>{});}));
   this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
+  await this.autoShield().catch(()=>{});
  }
  /** The safety net behind the stream: refresh the pool, catch up, then start anything waiting. Never awaits a batch. */
  private async tick():Promise<void>{
@@ -154,16 +163,25 @@ export class ShieldedWallet extends Wallet {
  }
 
  async coins():Promise<ArkCoin[]>{
+  this.assertOpen();
   return (await this.getSpendableVtxos()).map(v=>({txid:v.txid,vout:v.vout,value:v.value,...(v.expiresAt instanceof Date?{expiresAt:v.expiresAt.getTime()}:{}),...(v.assets?.length?{assets:v.assets.map(a=>({assetId:a.assetId,amount:BigInt(a.amount)}))}:{})}));
  }
  isPoolPayout(coin:{txid:string}){return this.account.txids.has(coin.txid);}
  /** `skipPayouts` is what auto-shield wants and the "Shield again" button does not: a payout is only shielded on request. */
  planFor(coins:readonly ArkCoin[],skipPayouts=true){
-  return nextShieldPlan(coins,{skip:c=>skipPayouts&&this.isPoolPayout(c),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS});
+  return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS});
  }
- private deps():SubmitDeps{return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.pool.status.pool!.script};}
- private submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs?:number){
-  return submitAll(members,{...this.deps(),step,first:1,...(deadlineMs===undefined?{}:{deadlineMs})}).then(final=>this.finish(final));
+ private deps():SubmitDeps{return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript};}
+ private async submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs=30*60_000){
+  const unresolved=new Set<string>();
+  const api:PoolApi=async<T,>(path:string,body?:unknown)=>{
+   if(path==='/spends'){this.assertOpen();unresolved.add((body as {id:string}).id);}
+   const result=await this.api<T>(path,body);
+   if(body===undefined&&path.startsWith('/spends/')&&(result as SpendStatus).status==='dropped')unresolved.delete(path.slice('/spends/'.length));
+   return result;
+  };
+  try{return await this.finish(await submitAll(members,{...this.deps(),api,step,first:1,deadlineMs}));}
+  catch(error){throw new ReservationFailure(error,unresolved.size===0);}
  }
  /** One place where a dropped spend becomes an error and a landed one triggers sync. */
  private async finish(final:SpendStatus){
@@ -172,13 +190,18 @@ export class ShieldedWallet extends Wallet {
   return {...(final.txid?{txid:final.txid}:{})};
  }
  private hold(nullifiers:readonly bigint[],handle:ShieldedPaymentHandle,onFail?:()=>void){
-  void handle.settled({timeoutMs:30*60_000}).catch(()=>onFail?.()).finally(()=>{this.notes.release(nullifiers);this.changed();});
+  const release=()=>{this.notes.release(nullifiers);this.changed();};
+  void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
+ private assertOpen(){if(this.stopped)throw new Error('The wallet was closed.');}
 
  async shield(coins?:readonly ArkCoin[]):Promise<ShieldedPaymentHandle|undefined>{
+  this.assertOpen();
   const plan=this.planFor(coins??await this.coins(),!coins);
+  this.assertOpen();
   if(!plan)return undefined;
   const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(c=>`${c.txid}:${c.vout}`);
+  const sentTxids:string[]=[];
   for(const outpoint of taken)this.used.add(outpoint);
   const handle=shieldedHandle({title:shieldTitle(plan),steps:shieldedSteps.shield,railId:'shielded-deposit'},async step=>{
    step(0);
@@ -188,15 +211,30 @@ export class ShieldedWallet extends Wallet {
     return this.submit([{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}],step);
    }
    const single=plan.coins.length===1?plan.coins[0]!:undefined;
-   const coin=single?await this.depositCoin(single.txid,single.value):await this.depositCoin(await this.send({recipients:[{address:await this.getAddress(),amount:plan.amount}]}),plan.amount);
-   this.used.add(`${coin.txid}:${coin.vout}`);
+   let txid=single?.txid;
+   if(!single){
+    this.assertOpen();
+    const available=await this.getSpendableVtxos();
+    const selectedVtxos=plan.coins.map(c=>available.find(v=>v.txid===c.txid&&v.vout===c.vout));
+    if(selectedVtxos.some(v=>!v))throw new Error('A selected deposit coin is no longer spendable.');
+    this.assertOpen();const address=await this.getAddress();this.assertOpen();
+    try{txid=await this.send({recipients:[{address,amount:plan.amount}],selectedVtxos:selectedVtxos.map(v=>v!)});}
+    catch(error){throw new ReservationFailure(error,false);}
+    this.usedTxids.add(txid);sentTxids.push(txid);
+   }
+   const coin=await this.depositCoin(txid!,plan.amount);
+   const outpoint=`${coin.txid}:${coin.vout}`;this.used.add(outpoint);taken.push(outpoint);
    return this.submit([{built:await this.account.spend({deposit:BigInt(plan.amount)},this.self),extra:{coin},coin}],step);
   });
-  // A failed attempt hands its coins back so the retry can use them; a landed one keeps them out while the indexer catches up.
-  void handle.settled({timeoutMs:30*60_000}).catch(()=>{for(const outpoint of taken)this.used.delete(outpoint);this.retryAt=Date.now()+RETRY_MS;});
+  void handle.settled().catch(error=>{
+   if(canRelease(error)){for(const outpoint of taken)this.used.delete(outpoint);for(const txid of sentTxids)this.usedTxids.delete(txid);}
+   this.retryAt=Date.now()+RETRY_MS;
+  });
   return this.announce(handle);
  }
  private async autoShield(){
+  if(this.stopped||Date.now()<this.retryAt)return;
+  await this.sync();
   if(this.stopped||Date.now()<this.retryAt)return;
   await this.shield();
  }
@@ -210,7 +248,9 @@ export class ShieldedWallet extends Wallet {
  /** Waits for the coin a deposit needs with its value and asset, and returns how to spend it. */
  private async depositCoin(txid:string,value:number,asset?:{assetId:string;amount:bigint}){
   for(let i=0;i<30;i++){
+   this.assertOpen();
    await new Promise(r=>setTimeout(r,1000));
+   this.assertOpen();
    const found=(await this.getSpendableVtxos()).find(v=>v.txid===txid&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
    if(found?.tapTree&&found.intentTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.intentTapLeafScript)};
   }
@@ -221,7 +261,7 @@ export class ShieldedWallet extends Wallet {
   if(this.timer)clearTimeout(this.timer);
   this.timer=undefined;
   for(const off of this.unwatch)try{off();}catch{/* a torn-down manager is already stopped */}
-  this.unwatch=[];this.changeListeners.clear();this.actionListeners.clear();
+  this.unwatch=[];this.changeListeners.clear();this.actionListeners.clear();this.latestAction=undefined;
   await super.dispose();
  }
 }
