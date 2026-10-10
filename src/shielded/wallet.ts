@@ -1,4 +1,4 @@
-import {Wallet,type WalletConfig} from '@arkade-os/sdk';
+import {ReadonlyWallet,Wallet,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -95,6 +95,7 @@ export class ShieldedWallet extends Wallet {
  private timer?:ReturnType<typeof setTimeout>;
  private retryAt=0;
  private stopped=false;
+ private selfSending=false;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const wallet=await super.create(config) as ShieldedWallet;
@@ -194,11 +195,21 @@ export class ShieldedWallet extends Wallet {
   void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
  private assertOpen(){if(this.stopped)throw new Error('The wallet was closed.');}
+ override async getContractManager(){
+  this.assertOpen();
+  const manager=await super.getContractManager();
+  // Full Wallet disposal can await restore work that is itself waiting for this manager.
+  if(this.stopped){manager.dispose();await ReadonlyWallet.prototype.dispose.call(this);this.assertOpen();}
+  return manager;
+ }
 
  async shield(coins?:readonly ArkCoin[]):Promise<ShieldedPaymentHandle|undefined>{
   this.assertOpen();
-  const plan=this.planFor(coins??await this.coins(),!coins);
+  if(this.selfSending)return undefined;
+  const available=coins??await this.coins();
   this.assertOpen();
+  if(this.selfSending)return undefined;
+  const plan=this.planFor(available,!coins);
   if(!plan)return undefined;
   const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(c=>`${c.txid}:${c.vout}`);
   const sentTxids:string[]=[];
@@ -213,14 +224,17 @@ export class ShieldedWallet extends Wallet {
    const single=plan.coins.length===1?plan.coins[0]!:undefined;
    let txid=single?.txid;
    if(!single){
-    this.assertOpen();
-    const available=await this.getSpendableVtxos();
-    const selectedVtxos=plan.coins.map(c=>available.find(v=>v.txid===c.txid&&v.vout===c.vout));
-    if(selectedVtxos.some(v=>!v))throw new Error('A selected deposit coin is no longer spendable.');
-    this.assertOpen();const address=await this.getAddress();this.assertOpen();
-    try{txid=await this.send({recipients:[{address,amount:plan.amount}],selectedVtxos:selectedVtxos.map(v=>v!)});}
-    catch(error){throw new ReservationFailure(error,false);}
-    this.usedTxids.add(txid);sentTxids.push(txid);
+    this.selfSending=true;
+    try{
+     this.assertOpen();
+     const available=await this.getSpendableVtxos();
+     const selectedVtxos=plan.coins.map(c=>available.find(v=>v.txid===c.txid&&v.vout===c.vout));
+     if(selectedVtxos.some(v=>!v))throw new Error('A selected deposit coin is no longer spendable.');
+     this.assertOpen();const address=await this.getAddress();this.assertOpen();
+     try{txid=await this.send({recipients:[{address,amount:plan.amount}],selectedVtxos:selectedVtxos.map(v=>v!)});}
+     catch(error){throw new ReservationFailure(error,false);}
+     this.usedTxids.add(txid);sentTxids.push(txid);
+    }finally{this.selfSending=false;}
    }
    const coin=await this.depositCoin(txid!,plan.amount);
    const outpoint=`${coin.txid}:${coin.vout}`;this.used.add(outpoint);taken.push(outpoint);

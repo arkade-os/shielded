@@ -301,3 +301,65 @@ test('note holds survive timeouts and unknown submission failures and isolate on
   }
  }finally{pending.resolve({});t.mock.timers.reset();await wallet.dispose();}
 });
+
+test('a contract manager finishing creation across disposal is closed and never returned',async()=>{
+ const wallet=await open(),ready=deferred<Awaited<ReturnType<Wallet['getContractManager']>>>(),resume=deferred<void>();
+ await Wallet.prototype.dispose.call(wallet);
+ const initialize=(wallet as any).initializeContractManager;
+ (wallet as any).initializeContractManager=async()=>{
+  const manager=await initialize.call(wallet);ready.resolve(manager);await resume.promise;return manager;
+ };
+ const acquiring=wallet.getContractManager(),follower=wallet.getContractManager();
+ const manager=await ready.promise;
+ (wallet as any)._restoreInFlight=acquiring;
+ const disposing=wallet.dispose();resume.resolve();
+ try{
+  await Promise.all([assert.rejects(acquiring,/closed/),assert.rejects(follower,/closed/)]);await disposing;
+  assert.equal(await manager.isWatching(),false);assert.equal((wallet as any)._contractManager,undefined);
+  await assert.rejects(wallet.getContractManager(),/closed/);
+ }finally{resume.resolve();await disposing;manager.dispose();await wallet.dispose();}
+});
+
+test('SDK self-send output events cannot plan another shield before its database update returns',async()=>{
+ const wallet=await open(),a=coin('aa'.repeat(32),200),b=coin('bb'.repeat(32),300),output=coin('cc'.repeat(32)),other=coin('dd'.repeat(32));
+ const database=deferred<void>(),entered=deferred<void>(),verdict=deferred<{status:string}>(),lookup=deferred<ReturnType<typeof coin>[]>();
+ readyDeposit(wallet);wallet.getSpendableVtxos=async()=>lookup.promise as never;
+ const earlier=wallet.shield();
+ wallet.getSpendableVtxos=async()=>[a,b] as never;
+ wallet.buildAndSubmitOffchainTx=async()=>({arkTxid:output.txid,signedCheckpointTxs:[]}) as never;
+ (wallet as any).updateDbAfterOffchainTx=async()=>{entered.resolve();await database.promise;};
+ wallet.send=async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{});
+ wallet.api=(async(path:string)=>path==='/spends'?{}:path.startsWith('/spends/')?verdict.promise:{total:0,batches:[]}) as never;
+ const announced:ShieldedPaymentHandle[]=[];wallet.onAction(h=>{announced.push(h);});
+ try{
+  const first=(await wallet.shield([a,b]))!;await entered.promise;
+  wallet.getSpendableVtxos=async()=>[output] as never;
+  lookup.resolve([output]);assert.equal(await earlier,undefined,'coin reads begun before self-send must recheck the guard');
+  await (wallet as any).autoShield();
+  assert.equal(announced.length,1,'the SDK tail has not returned the self-send txid yet');
+  assert.equal(await wallet.shield([other]),undefined,'explicit planning is guarded too');
+  database.resolve();await flush();
+  assert.equal(await wallet.shield([output]),undefined,'the txid reservation takes over before planning resumes');
+  const second=await wallet.shield([other]);assert.ok(second,'unrelated coins can shield during the original pool wait');
+  verdict.resolve({status:'included'});await Promise.all([first.settled(),second.settled()]);
+ }finally{lookup.resolve([]);database.resolve();verdict.resolve({status:'included'});await flush();await wallet.dispose();}
+});
+
+test('real SDK persistence after an in-flight self-send cannot reopen a disposed wallet',async t=>{
+ const wallet=await open(),a=coin('aa'.repeat(32),200),b=coin('bb'.repeat(32),300),entered=deferred<void>();
+ const transport=deferred<{arkTxid:string;signedCheckpointTxs:string[]}>();
+ wallet.getSpendableVtxos=async()=>[a,b] as never;
+ wallet.buildAndSubmitOffchainTx=async()=>{entered.resolve();return transport.promise;};
+ wallet.send=async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{
+  offchainTapscript:(wallet as any).offchainTapscript,serverPubKey:(wallet as any).arkServerPublicKey,changeAmount:0n,sentAmount:500,changeVout:0,
+ });
+ t.mock.method(console,'warn',()=>{});
+ try{
+  const handle=(await wallet.shield([a,b]))!;await entered.promise;
+  await wallet.dispose();assert.equal((wallet as any)._contractManager,undefined);
+  transport.resolve({arkTxid:'cc'.repeat(32),signedCheckpointTxs:[]});
+  await assert.rejects(handle.settled(),/closed/);
+  assert.equal((wallet as any)._contractManager,undefined,'real updateDbAfterOffchainTx must not recreate a watcher');
+  await assert.rejects(wallet.getContractManager(),/closed/);
+ }finally{transport.resolve({arkTxid:'cc'.repeat(32),signedCheckpointTxs:[]});await wallet.dispose();}
+});
