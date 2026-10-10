@@ -11,11 +11,13 @@ export interface ShieldedNoteRepository extends AsyncDisposable {
 }
 export const SHIELDED_DB='shielded-rollup',SHIELDED_STORE='accounts';
 const checked=(token:string,snapshot:ShieldedSnapshot|undefined)=>snapshot&&snapshot.v===1&&snapshot.token===token?snapshot:undefined;
+// A garbled row is a miss the next save replaces; a rejected read must still reject, or save() would write unmerged.
+const parsed=(row:string)=>{try{return JSON.parse(row) as ShieldedSnapshot;}catch{return undefined;}};
 
 export class InMemoryShieldedNoteRepository implements ShieldedNoteRepository {
  readonly version=1 as const;
  private readonly rows=new Map<string,string>();
- async getAccount(poolToken:string){const row=this.rows.get(poolToken);return row?checked(poolToken,JSON.parse(row) as ShieldedSnapshot):undefined;}
+ async getAccount(poolToken:string){const row=this.rows.get(poolToken);return row?checked(poolToken,parsed(row)):undefined;}
  async saveAccount(poolToken:string,snapshot:ShieldedSnapshot){this.rows.set(poolToken,JSON.stringify(snapshot));}
  async clear(){this.rows.clear();}
  // Process-lifetime cache: disposing it drops the rows. The IndexedDB one only closes its handle.
@@ -41,7 +43,7 @@ export class IndexedDBShieldedNoteRepository implements ShieldedNoteRepository {
   });
  }
  // Stored as a JSON string: the snapshot is already JSON-safe, and a string needs nothing of structured clone.
- async getAccount(poolToken:string){const row=await this.run<string|undefined>('readonly',store=>store.get(poolToken));return row?checked(poolToken,JSON.parse(row) as ShieldedSnapshot):undefined;}
+ async getAccount(poolToken:string){const row=await this.run<string|undefined>('readonly',store=>store.get(poolToken));return row?checked(poolToken,parsed(row)):undefined;}
  async saveAccount(poolToken:string,snapshot:ShieldedSnapshot){await this.run('readwrite',store=>store.put(JSON.stringify(snapshot),poolToken));}
  async clear(){await this.run('readwrite',store=>store.clear());}
  async [Symbol.asyncDispose](){const db=this.db;this.db=undefined;if(db)(await db).close();}

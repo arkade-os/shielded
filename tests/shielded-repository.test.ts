@@ -49,3 +49,11 @@ test('disposing the in-memory repository drops its rows, since it only ever cach
  await repo[Symbol.asyncDispose]();
  assert.equal(await repo.getAccount('g2'),undefined);
 });
+
+test('an unparseable row reads as absent, so the next save replaces it',async()=>{
+ const repo=new InMemoryShieldedNoteRepository();
+ (repo as unknown as {rows:Map<string,string>}).rows.set('g2','{"v":1,"tok');
+ assert.equal(await repo.getAccount('g2'),undefined);
+ await repo.saveAccount('g2',snapshot('g2',3));
+ assert.equal((await repo.getAccount('g2'))?.account.blocks,3);
+});
