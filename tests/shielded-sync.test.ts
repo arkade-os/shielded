@@ -44,7 +44,8 @@ test('a wrong-version, wrong-token or unreadable snapshot all fall back to a ful
  const wrongVersion=repoOf(async()=>({...snapshotOf(),v:2 as unknown as 1}));
  const wrongToken=repoOf(async()=>snapshotOf(aliceKeys,'g3'));
  const throwing=repoOf(async()=>{throw new Error('IndexedDB is unavailable');});
- for(const repository of [wrongVersion,wrongToken,throwing]){
+ const undefinedThrow=repoOf(async()=>{throw undefined;});
+ for(const repository of [wrongVersion,wrongToken,throwing,undefinedThrow]){
   const loaded=await loadAccount(hash,aliceKeys,{repository,token:'g2',bornAt:9});
   assert.equal(loaded.resumed,false,'anything unreadable means a full sync');
   assert.equal(loaded.account.batchCount,0);

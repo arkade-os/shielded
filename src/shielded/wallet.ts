@@ -34,6 +34,7 @@ export class NoteReservation {
 }
 
 export interface LoadedAccount {account:RollupAccount;sent:Record<string,SentRecord>;listings:string[];resumed:boolean;error?:string}
+const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
 /** Never throws: a cache that cannot be read is a full sync, reported once, not a wallet that will not open. */
 export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;bornAt:number}):Promise<LoadedAccount>{
  const fresh=(error?:string):LoadedAccount=>({account:RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],resumed:false,...(error?{error}:{})});
@@ -44,7 +45,7 @@ export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecre
   if(stored.v!==1)return fresh(`Ignoring a version ${String(stored.v)} shielded snapshot; syncing from the pool.`);
   if(stored.token!==o.token)return fresh('Ignoring a snapshot from another pool; syncing from the pool.');
   return {account:RollupAccount.fromSnapshot(hash,keys,stored.account),sent:{...stored.sent},listings:[...(stored.listings??[])],resumed:true};
- }catch(error){return fresh((error as Error).message);}
+ }catch(error){return fresh(reasonOf(error));}
 }
 
 export class ShieldedWallet extends Wallet {
@@ -89,8 +90,12 @@ export class ShieldedWallet extends Wallet {
  async save():Promise<void>{
   if(!this.repository)return;
   const token=this.pool.status.pool!.token;
-  try{await this.repository.saveAccount(token,{v:1,token,account:this.account.snapshot(),sent:this.sent,listings:[...this.listings]});}
-  catch(error){this.repositoryError??=(error as Error).message;}
+  try{
+   const account=this.account.snapshot(),stored=await this.repository.getAccount(token);
+   // ponytail: read-merge-write keeps other tabs' entries but is not atomic; merge inside saveAccount's transaction if tabs ever race.
+   this.sent={...stored?.sent,...this.sent};for(const txid of stored?.listings??[])this.listings.add(txid);
+   await this.repository.saveAccount(token,{v:1,token,account,sent:this.sent,listings:[...this.listings]});
+  }catch(error){this.repositoryError??=reasonOf(error);}
  }
  sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
  recordSent(entries:[bigint,SentRecord][]){for(const [nullifier,record] of entries)this.sent[String(nullifier)]=record;}
