@@ -1,4 +1,4 @@
-import {TxType,type Activity,type PaymentHandle} from '@arkade-os/sdk';
+import {TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
@@ -81,4 +81,31 @@ export function pageSheet(render:(state:StepState|undefined)=>void){
   clear(){generation++;off();off=()=>{};state=undefined;render(undefined);},
   stop(){generation++;off();off=()=>{};},
  };
+}
+
+type QuoteContext={wallet:object;revision:number;key:string};
+export function pageQuotes(render:()=>void){
+ let generation=0,selected:{context:QuoteContext;quote?:RouteQuote;error?:string}|undefined;
+ const matches=(a:QuoteContext,b:QuoteContext)=>a.wallet===b.wallet&&a.revision===b.revision&&a.key===b.key;
+ const clear=()=>{generation++;selected=undefined;};
+ return {
+  clear,
+  read(context:QuoteContext):{quote?:RouteQuote;error?:string}{return selected&&matches(selected.context,context)?selected:{};},
+  load(context:QuoteContext,route:()=>Promise<RouteQuote>){
+   const mine=++generation;selected={context};
+   void Promise.resolve().then(route).then(quote=>{if(mine===generation){selected={context,quote};render();}},error=>{if(mine===generation){selected={context,error:errorText(error)};render();}});
+   return()=>{if(mine===generation)clear();};
+  },
+  async send(context:QuoteContext,quote:RouteQuote){
+   if(!selected||!matches(selected.context,context)||selected.quote!==quote)throw new Error('The payment changed. Review its route again.');
+   clear();return quote.send();
+  },
+ };
+}
+
+export async function renewPageCoins(renew:()=>Promise<string|undefined>,sheet:ReturnType<typeof pageSheet>){
+ const owner=sheet.begin('Renewing your coins');
+ owner.update(()=>({title:'Renewing your coins',steps:['Join the next batch swap','Renewed'],current:0}));
+ try{const txid=await renew();owner.update(s=>({...s,current:1,done:true}));return txid;}
+ catch(error){owner.fail(error);throw error;}
 }

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ActivityRegistry,makeHandle,TxType,Wallet,type Activity,type ArkTransaction} from '@arkade-os/sdk';
+import {ActivityRegistry,makeHandle,TxType,Wallet,type Activity,type ArkTransaction,type RouteQuote} from '@arkade-os/sdk';
 import {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {catchUp,idle} from '../src/shielded/sync.ts';
-import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageSheet,restorePageWallet} from '../app/src/shielded-page.ts';
+import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from '../app/src/shielded-page.ts';
 
 const deferred=<T=void>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
@@ -116,4 +116,64 @@ test('zero-sat asset activities preserve the actual SDK sent and received direct
   const rows=await Wallet.prototype.getActivityHistory.call(wallet as never) as Activity[];
   assert.equal(rows[0]!.amount,0);assert.equal(activityReceived(rows[0]!),type===TxType.TxReceived);
  }
+});
+
+const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({railId,amount:500,fee:0,total:500,send}) as RouteQuote;
+
+test('a pending quote cannot publish after the request, funds or wallet changes',async()=>{
+ const quotes=pageQuotes(()=>{}),wallet={},context={wallet,revision:1,key:'alice:500'},first=deferred<RouteQuote>();
+ const stop=quotes.load(context,()=>first.promise);
+ assert.equal(quotes.read(context).quote,undefined);
+ const next={...context,key:'bob:500'},second=quoteOf('shielded');
+ stop();quotes.load(next,async()=>second);await flush();first.resolve(quoteOf('ark'));await flush();
+ assert.equal(quotes.read(next).quote,second);assert.equal(quotes.read(context).quote,undefined);
+ assert.equal(quotes.read({...next,revision:2}).quote,undefined);
+ assert.equal(quotes.read({...next,wallet:{}}).quote,undefined);
+ let reject!:(error:unknown)=>void;
+ const old=quotes.load(context,()=>new Promise<RouteQuote>((_,fail)=>{reject=fail;}));await flush();old();
+ quotes.load(next,async()=>second);await flush();reject('obsolete refusal');await flush();
+ assert.equal(quotes.read(next).quote,second);assert.equal(quotes.read(next).error,undefined);
+});
+
+test('confirmation sends only the displayed quote and cannot reroute or reuse an invalidated quote',async()=>{
+ let routes=0,privateSends=0,publicSends=0;
+ const context={wallet:{},revision:1,key:'recipient:500'},quotes=pageQuotes(()=>{});
+ const privateQuote=quoteOf('shielded-withdraw',async()=>{privateSends++;return 'private';});
+ const route=async()=>{routes++;return routes===1?privateQuote:quoteOf('ark',async()=>{publicSends++;});};
+ quotes.load(context,route);await flush();const displayed=quotes.read(context).quote!;
+ await assert.rejects(quotes.send({...context,key:'different:500'},displayed),/changed/);
+ await assert.rejects(quotes.send({...context,revision:2},displayed),/changed/);
+ assert.equal(await quotes.send(context,displayed),'private');
+ assert.deepEqual([routes,privateSends,publicSends],[1,1,0]);
+ await assert.rejects(quotes.send(context,displayed),/changed/);
+ quotes.load(context,route);await flush();quotes.clear();
+ await assert.rejects(quotes.send(context,displayed),/changed/);
+ assert.deepEqual([routes,privateSends,publicSends],[2,1,0]);
+});
+
+test('a funds notification clears the displayed quote before a replacement route resolves',async()=>{
+ const context={wallet:{},revision:1,key:'recipient:500'},quotes=pageQuotes(()=>{}),replacement=deferred<RouteQuote>();
+ const first=quoteOf('shielded-withdraw');quotes.load(context,async()=>first);await flush();
+ quotes.clear();assert.equal(quotes.read(context).quote,undefined);
+ const current={...context,revision:2};quotes.load(current,()=>replacement.promise);
+ await assert.rejects(quotes.send(context,first),/changed/);
+ replacement.resolve(quoteOf('ark'));await flush();assert.equal(quotes.read(current).quote?.railId,'ark');
+});
+
+test('late renewal success and failure leave a replacement action sheet untouched',async()=>{
+ for(const failed of [false,true]){
+  const states:any[]=[],sheet=pageSheet(s=>states.push(s)),release=deferred();
+  const renewing=renewPageCoins(async()=>{await release.promise;if(failed)throw 'renew refused';return 'renewed';},sheet);
+  assert.equal(states.at(-1).title,'Renewing your coins');assert.equal(states.at(-1).current,0);
+  const replacement=sheet.begin('Shielding');replacement.update(s=>({...s,steps:['Prove','Done'],current:0}));
+  release.resolve();if(failed)await assert.rejects(renewing,error=>error==='renew refused');else assert.equal(await renewing,'renewed');
+  assert.equal(states.at(-1).title,'Shielding');assert.equal(states.at(-1).done,undefined);assert.equal(states.at(-1).error,undefined);
+ }
+});
+
+test('renewal shows its own completed step or string error when it still owns the sheet',async()=>{
+ const states:any[]=[],sheet=pageSheet(s=>states.push(s));
+ assert.equal(await renewPageCoins(async()=>'tx',sheet),'tx');assert.equal(states.at(-1).done,true);assert.equal(states.at(-1).current,1);
+ await assert.rejects(renewPageCoins(async()=>{throw 'renew refused';},sheet),error=>error==='renew refused');
+ assert.equal(states.at(-1).error,'renew refused');assert.equal(states.at(-1).done,undefined);
 });

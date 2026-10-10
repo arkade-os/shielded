@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
@@ -120,4 +120,14 @@ test('the status sheet renders a step state the handle produced, title and all',
  assert.equal(sheetLine(state),'Step 2 of 3: Prove the payment on this device');
  assert.equal(sheetLine({...state,current:2,done:true}),'Done');
  assert.equal(sheetLine({...state,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
+});
+
+test('the route preview names what each rail makes public, and never leaves a rail unexplained',()=>{
+ assert.deepEqual(routeCopy('shielded'),{title:'Private payment',detail:'The amount and both parties stay private.'});
+ assert.equal(routeCopy('shielded-withdraw').title,'Withdraw from the pool');
+ assert.match(routeCopy('shielded-withdraw').detail,/become public/);
+ assert.equal(routeCopy('ark').title,'Arkade payment');
+ assert.equal(routeCopy('ark-asset').title,'Arkade payment');
+ assert.equal(routeCopy('onchain').title,'On-chain exit');
+ assert.match(routeCopy('lightning').detail,/public/);
 });

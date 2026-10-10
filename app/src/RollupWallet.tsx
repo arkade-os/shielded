@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
-import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Activity,type PaymentHandle} from '@arkade-os/sdk';
+import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Activity,type PaymentHandle,type PaymentRequest} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
@@ -10,9 +10,9 @@ import type {StepState} from '../../src/shielded/handle.ts';
 import {idle} from '../../src/shielded/sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {arkAssetHoldings,sheetLine} from './rollup-client.ts';
+import {arkAssetHoldings,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver} from './shielded-prover.ts';
-import {BORN,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageSheet,restorePageWallet} from './shielded-page.ts';
+import {BORN,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
@@ -41,6 +41,10 @@ export default function RollupWallet(){
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false);
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false);
+ const [,setQuoteRevision]=useState(0);
+ const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined),fundsRevision=useRef(0);
+ if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
+ const quotes=quoteRef.current;
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined);
  const busyRef=useRef(false),restoring=useRef(false),mounted=useRef(false);
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
@@ -49,7 +53,7 @@ export default function RollupWallet(){
  if(!sheetRef.current)sheetRef.current=pageSheet(setSheet);
  const sheetOwner=sheetRef.current;
 
- useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();};},[]);
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
 
  useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);localStorage.setItem(BORN,'new');setSecret(fresh);}},[secret]);
  // One read before the wallet exists: it needs the pool phase, network and token to be created at all.
@@ -84,11 +88,19 @@ export default function RollupWallet(){
   finally{if(mounted.current&&!restoring.current){busyRef.current=false;setBusy(false);setTick(t=>t+1);}}
  };
 
+ const renew=async()=>{
+  if(busyRef.current||restoring.current||!wallet)return;
+  busyRef.current=true;setBusy(true);quotes.clear();
+  try{const txid=await renewPageCoins(()=>wallet.renew(),sheetOwner);if(!txid&&mounted.current&&!restoring.current)setPoolError('Nothing needed renewing.');}
+  catch{}
+  finally{if(mounted.current&&!restoring.current){busyRef.current=false;setBusy(false);fundsRevision.current++;setTick(t=>t+1);}}
+ };
+
  const restoreWallet=async()=>{
   if(busyRef.current)return;
   try{
    await restorePageWallet(restore,{cache:cacheRef.current!,storage:localStorage,reload:()=>location.reload(),stop:async()=>{
-    restoring.current=true;busyRef.current=true;setBusy(true);setRestoreError('');sheetOwner.stop();
+    restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);
    }});
   }catch(error){if(mounted.current)setRestoreError(errorText(error));}
@@ -121,7 +133,7 @@ export default function RollupWallet(){
   sessions.current.add(close);
   void session.ready.then(created=>{
    if(!created||!current())return;
-   unwatch.push(created.onShieldedChange(()=>{if(current())setTick(t=>t+1);}));
+   unwatch.push(created.onShieldedChange(()=>{if(current()){fundsRevision.current++;quotes.clear();setTick(t=>t+1);}}));
    unwatch.push(created.onAction(handle=>{if(current())sheetOwner.watch(handle,handle.title);}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes could not be read, so the wallet is reading the pool again: ${created.repositoryError}`);
@@ -144,6 +156,17 @@ export default function RollupWallet(){
   return()=>{stop=true;};
  },[wallet,tick]);
 
+ const requestKey=JSON.stringify([tab,to,amount,assetId,withSats,tick]);
+ const quoteContext={wallet:wallet??quotes,revision:fundsRevision.current,key:requestKey};
+ const {quote,error:quoteError}=quotes.read(quoteContext);
+ useEffect(()=>{
+  if(!wallet||tab!=='send'||!to.trim()||!amount||busyRef.current||restoring.current){quotes.clear();return;}
+  return quotes.load(quoteContext,()=>{
+   const request:PaymentRequest={raw:to.trim(),amount:assetId?Number(withSats||DUST):Number(amount),...(assetId?{assets:[{assetId,amount:BigInt(amount)}]}:{})};
+   return wallet.router().route(request);
+  });
+ },[wallet,requestKey,tick,busy]);
+
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=wallet?.shieldedAddress()??'';
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
  const assetUnits=(id:string)=>wallet?.shieldedBalance(assetFieldOfId(id))??0n;
@@ -155,10 +178,7 @@ export default function RollupWallet(){
  const phrase=secret?recoveryPhraseOf(secret):'';
  const assetName=(id:string)=>`asset ${short(id)}`;
 
- const submit=()=>void run(async()=>{
-  const request={raw:to.trim(),amount:assetId?Number(withSats||DUST):Number(amount),...(assetId?{assets:[{assetId,amount:BigInt(amount)}]}:{})};
-  return (await wallet!.router().route(request)).send();
- },'Sending');
+ const submit=()=>{if(quote)void run(()=>quotes.send({...quoteContext,revision:fundsRevision.current},quote),routeCopy(quote.railId).title);};
 
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Test funds only, with proving keys from a small testnet ceremony. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
@@ -185,7 +205,7 @@ export default function RollupWallet(){
     <div className="stock-tabs" role="tablist">{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>{setTab(name);setTo('');}}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>
     {tab==='receive'?<div className="stock-receive">
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
-     <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Need test sats? The <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> sends Arkade sats to this address after a GitHub sign-in.</p></div>
+     <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Need test sats? The <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> sends Arkade sats to this address after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
      {arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(a.coins),'Shielding again')}>Shield again</button></>
@@ -198,7 +218,10 @@ export default function RollupWallet(){
      <label>Amount ({unit})<input inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {assetId&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
      <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public.</p>
-     <button className="stock-primary" disabled={busy||!synced||!amount||!to.trim()}>{busy?'Working…':'Send'}</button>
+     {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
+      {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
+     {quoteError&&<p className="stock-blocked">{quoteError}</p>}
+     <button className="stock-primary" disabled={busy||restoring.current||!synced||!quote}>{busy?'Working…':quote?routeCopy(quote.railId).title:'Send'}</button>
     </form>}
    </section>
    <section className="stock-card stock-history"><h2>History</h2>

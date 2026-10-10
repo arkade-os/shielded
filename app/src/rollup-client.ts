@@ -13,3 +13,9 @@ export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=
  }
  return [...rows.values()];
 }
+
+export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private payment',detail:'The amount and both parties stay private.'}
+ :railId==='shielded-withdraw'?{title:'Withdraw from the pool',detail:'The amount and the destination become public.'}
+ :railId==='onchain'?{title:'On-chain exit',detail:'From your unshielded Arkade funds, to the Bitcoin chain.'}
+ :railId==='ark'||railId==='ark-asset'?{title:'Arkade payment',detail:'From your unshielded Arkade funds; the amount is public.'}
+ :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};

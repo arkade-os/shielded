@@ -48,3 +48,6 @@
 @keyframes stock-sheet-fade{to{opacity:0;visibility:hidden}}
 @media(max-width:600px){.stock-sheet{position:fixed;left:10px;right:10px;bottom:10px;z-index:30;width:auto;height:auto;overflow:visible;clip-path:none;white-space:normal;display:grid;gap:6px;padding:14px 16px;background:var(--card);box-shadow:inset 0 0 0 1px var(--gilt),0 12px 32px rgba(16,53,84,.22);animation:stock-sheet-in .3s ease}.stock-sheet b{font-size:15px;color:var(--navy)}.stock-sheet span,.stock-sheet small{font-size:13px;color:var(--slate)}.stock-sheet .stock-progress{display:grid}.stock-sheet button{display:inline-flex;justify-self:start}.stock-sheet.failed{box-shadow:inset 0 0 0 1px var(--gules),0 12px 32px rgba(16,53,84,.22)}.stock-sheet.finished{box-shadow:inset 0 0 0 1px var(--vert),0 12px 32px rgba(16,53,84,.22);animation:stock-sheet-out .4s ease 4s forwards}}
 @media(max-width:600px) and (prefers-reduced-motion:reduce){.stock-sheet{animation:none}.stock-sheet.finished{animation:stock-sheet-fade .4s linear 4s forwards}}
+
+.stock-route{display:grid;gap:.15rem;padding:.6rem .75rem;border:1px solid var(--rule);border-radius:.5rem}
+.stock-route small{color:var(--slate)}
