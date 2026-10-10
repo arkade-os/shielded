@@ -30,6 +30,7 @@ test('a failing action ends failed and the step state keeps the step it failed o
  const state=handle.stepState();
  assert.equal(state.current,1,'the sheet keeps the step it failed on');
  assert.equal(state.done,undefined);
+ assert.equal(state.error,'No single note covers this amount.');
 });
 
 test('steps advance in order and a late subscriber sees only the current one',()=>{
@@ -73,4 +74,30 @@ test('watchHandle renders a plain SDK handle as statuses and a shielded one as i
  await plain.settled({timeoutMs:1000});
  assert.equal(fromPlain.at(-1)!.done,true);
  assert.equal(fromPlain.at(-1)!.current,2);
+});
+
+test('a failed plain handle keeps the step it failed on and its error text',async()=>{
+ let open=()=>{};
+ const gate=()=>new Promise<void>(resolve=>{open=()=>resolve();});
+ const early=makeHandle('onchain:1',async emit=>{emit({status:'pending'});await gate();throw new Error('insufficient funds');});
+ const fromEarly:StepState[]=[];
+ watchHandle(early,'Onchain payment',s=>fromEarly.push(s));
+ open();
+ await assert.rejects(early.settled({timeoutMs:1000}),/insufficient funds/);
+ assert.deepEqual([fromEarly.at(-1)!.current,fromEarly.at(-1)!.error,fromEarly.at(-1)!.done],[0,'insufficient funds',undefined]);
+ const late=makeHandle('onchain:2',async emit=>{emit({status:'pending'});await gate();emit({status:'sent'});await gate();throw 'route refused';});
+ const fromLate:StepState[]=[];
+ watchHandle(late,'Onchain payment',s=>fromLate.push(s));
+ open();
+ await new Promise(resolve=>setTimeout(resolve,0));
+ open();
+ await assert.rejects(late.settled({timeoutMs:1000}),(e:unknown)=>e==='route refused');
+ assert.deepEqual([fromLate.at(-1)!.current,fromLate.at(-1)!.error,fromLate.at(-1)!.done],[1,'route refused',undefined]);
+});
+
+test('a throwing step listener cannot fail the action',async()=>{
+ const handle=shieldedHandle({title:'Sending privately',steps,railId:'shielded'},async step=>{step(1);return {};});
+ assert.equal(typeof handle.subscribeSteps(()=>{throw new Error('listener bug');}),'function');
+ await handle.settled({timeoutMs:1000});
+ assert.equal(handle.status,'settled');
 });
