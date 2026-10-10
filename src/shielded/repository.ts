@@ -37,7 +37,7 @@ export class IndexedDBShieldedNoteRepository implements ShieldedNoteRepository {
   const db=await this.open();
   return new Promise<T>((resolve,reject)=>{
    const tx=db.transaction(SHIELDED_STORE,mode),request=work(tx.objectStore(SHIELDED_STORE));
-   request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);tx.onabort=()=>reject(tx.error);
+   tx.oncomplete=()=>resolve(request.result);request.onerror=()=>reject(request.error);tx.onabort=()=>reject(tx.error);
   });
  }
  // Stored as a JSON string: the snapshot is already JSON-safe, and a string needs nothing of structured clone.
