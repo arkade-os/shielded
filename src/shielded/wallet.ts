@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -7,6 +7,7 @@ import {akOf,assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
+import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
@@ -94,6 +95,7 @@ export class ShieldedWallet extends Wallet {
  private token!:string;
  private poolScript!:string;
  private ownPoolAddress!:string;
+ private rows!:ShieldedRowIndex;
  private sent:Record<string,SentRecord>={};
  private readonly listings=new Set<string>();
  private readonly changeListeners=new Set<()=>void>();
@@ -118,6 +120,8 @@ export class ShieldedWallet extends Wallet {
    const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    for(const txid of loaded.listings)wallet.listings.add(txid);
+   wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field));
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid)}));
    await wallet.start();
    return wallet;
   }catch(error){await wallet.dispose().catch(()=>{});throw error;}
@@ -133,6 +137,18 @@ export class ShieldedWallet extends Wallet {
  shieldedBalance(asset=BTC_ASSET):bigint{return this.account.balance(asset);}
  shieldedNotes(asset=BTC_ASSET):OwnedNote[]{return this.account.notes(asset);}
  shieldedHistory():readonly HistoryEntry[]{return this.account.history;}
+ override async getTransactionHistory():Promise<ArkTransaction[]>{
+  const sdk=await super.getTransactionHistory();
+  return [...sdk,...this.rows.rows()].sort((a,b)=>b.createdAt-a.createdAt);
+ }
+ private origin(){return typeof location==='undefined'?this.pool.origin:location.origin;}
+ revealLink(payment:HistoryEntry):string|undefined{
+  return revealLinkOf(this.origin(),payment,{self:this.shieldedAddress(),sentOf:n=>this.sentOf(n)});
+ }
+ revealLinkOfActivity(item:Activity):string|undefined{
+  const entry=entryForActivity(item,{index:this.rows,entries:this.account.history});
+  return entry&&this.revealLink(entry);
+ }
  shieldedAddress():string{return this.derived.address;}
  viewKey():string{return this.derived.viewKey;}
  fullViewingKey():string{return this.derived.fullViewingKey;}
