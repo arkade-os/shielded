@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,bornAtFor,checkSigningRequest,pickNote,provingUrls,rollupApi,sheetLine,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,sheetLine} from '../app/src/rollup-client.ts';
+import {bornAtFor,checkSigningRequest,pickNote,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
