@@ -4,9 +4,9 @@ import {InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Wallet} fr
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
+import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,type ShieldedProver} from '../src/shielded/wallet.ts';
 import type {RollupPoolStatus} from '../src/shielded/pool.ts';
-import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../src/shielded/repository.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
@@ -32,11 +32,11 @@ function poolFetcher(batches:number){
  }) as unknown as typeof fetch;
  return {fetcher,paths};
 }
-const open=(o:{batches?:number;fetcher?:typeof fetch;secret?:string;shieldedRepository?:ShieldedNoteRepository}={})=>
+const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:indexer,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
-  pool:{origin:'',status:status(o.batches??0)},secret:o.secret??'11'.repeat(32),hash,prover,shieldedRepository:o.shieldedRepository,
-  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher});
+  pool:{origin:'',status:status(o.batches??0)},secret:o.secret??'11'.repeat(32),hash,prover,
+  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher,...(o.repository?{shieldedRepository:o.repository}:{})});
 
 // The spec's written-first test: the inherited factory must produce the subclass against the patched SDK.
 test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',async()=>{
@@ -50,17 +50,60 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
   assert.match(wallet.fullViewingKey(),/^shfvk2/);
   assert.equal(wallet.shieldedBalance(),0n);
   assert.equal(wallet.batchCount(),0);
+  assert.equal(wallet.resumed,false);
+  assert.equal(wallet.repositoryError,undefined);
   assert.ok((await wallet.getAddress()).startsWith('tark1'));
  }finally{await wallet.dispose();}
 });
 
 test("two wallets on one repository keep each other's sent entries",async()=>{
- const shieldedRepository=new InMemoryShieldedNoteRepository();
- const [a,b]=await Promise.all([open({shieldedRepository}),open({shieldedRepository})]);
+ const repository=new InMemoryShieldedNoteRepository();
+ const [a,b]=await Promise.all([open({repository}),open({repository})]);
  try{
   a.recordSent([[1n,{to:'shrol21a'}]]);await a.save();
   b.recordSent([[2n,{to:'shrol21b'}]]);await b.save();
-  assert.deepEqual(Object.keys((await shieldedRepository.getAccount(TOKEN))!.sent).sort(),['1','2']);
+  assert.deepEqual(Object.keys((await repository.getAccount(TOKEN))!.sent).sort(),['1','2']);
   assert.equal(b.sentOf(1n)?.to,'shrol21a');
  }finally{await Promise.all([a.dispose(),b.dispose()]);}
+});
+
+test('a second open resumes from the repository and does not re-read the published batches',async()=>{
+ const repository=new InMemoryShieldedNoteRepository();
+ const first=await open({repository,batches:3});
+ try{await first.save();}finally{await first.dispose();}
+ const stored=await repository.getAccount(TOKEN);
+ assert.ok(stored,'the snapshot is keyed by the pool token');
+ assert.equal(stored!.account.v,1);
+ const {fetcher,paths}=poolFetcher(0);
+ const second=await open({repository,fetcher});
+ try{
+  assert.equal(second.resumed,true);
+  assert.equal(second.repositoryError,undefined);
+  assert.equal(second.batchCount(),0,'the stored cursor, not a replay from zero');
+  assert.deepEqual(paths.filter(p=>p.startsWith('/batches')),['/batches?from=0&limit=50'],'one page to check the head, no backfill');
+ }finally{await second.dispose();}
+});
+
+test('a snapshot from another seed is ignored, reported once, and the wallet syncs instead',async()=>{
+ const repository=new InMemoryShieldedNoteRepository();
+ const theirs=await open({repository,secret:'22'.repeat(32)});
+ try{await theirs.save();}finally{await theirs.dispose();}
+ const mine=await open({repository,secret:'11'.repeat(32)});
+ try{
+  assert.equal(mine.resumed,false);
+  assert.match(mine.repositoryError!,/another key/i);
+  assert.equal(mine.shieldedBalance(),0n);
+ }finally{await mine.dispose();}
+});
+
+test('a pool that will not answer leaves no live wallet behind',async()=>{
+ const fetcher=(async()=>{throw new TypeError('fetch failed');}) as unknown as typeof fetch;
+ await assert.rejects(open({fetcher}),/fetch failed|did not answer/);
+});
+
+test('disposal stops the watchdog, so the process can exit',async()=>{
+ const wallet=await open();
+ await wallet.dispose();
+ await wallet.dispose();
+ assert.equal(wallet.batchCount(),0);
 });
