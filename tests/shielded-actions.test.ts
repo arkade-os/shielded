@@ -8,7 +8,7 @@ import {buildRollupTransfer,RollupAccount,type BuiltSpend,type PublishedBatch} f
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {submitAll} from '../src/shielded/submit.ts';
-import {NoteReservation,mergeAssetFields,needsRenewal,nextShieldPlan,shieldTitle,shieldedSteps} from '../src/shielded/wallet.ts';
+import {NoteReservation,coversWithdrawal,mergeAssetFields,needsRenewal,nextShieldPlan,programOf,shieldTitle,shieldedSteps,topThree} from '../src/shielded/wallet.ts';
 
 const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>({witness:{slot:{root:7n,nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize},publicSignals:[1n,0n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1),change:0n} as unknown as BuiltSpend);
 const prover={prove:async(_b:BuiltSpend,circuit:'spend'|'join')=>({pi_a:[circuit],pi_b:[],pi_c:[]})};
@@ -151,4 +151,36 @@ test('a merge and a payment share one reservation, so neither can take the notes
  assert.equal(reservation.inFlight.size,0);
  const after=await reservation.pick(()=>account.pay(bobTo,300n,aliceTo,reservation.inFlight),chosen=>chosen.spends.map(s=>s.witness.slot.nullifiers[0]!));
  assert.equal(after.spends.length,1,'and the notes are usable again once the merge lets go');
+});
+
+const owned=(amount:bigint,nullifier:bigint)=>({amount,nullifier});
+test('a withdrawal needs one covering note, the BTC dust floor, and an asset carrier',()=>{
+ const btc=[owned(500n,1n),owned(120n,2n)],units=[owned(40n,3n)];
+ assert.equal(coversWithdrawal(btc,btc,400n,new Set(),false,330n),true);
+ assert.equal(coversWithdrawal(btc,btc,600n,new Set(),false,330n),false);
+ assert.equal(coversWithdrawal(btc,btc,400n,new Set([1n]),false,330n),false);
+ assert.equal(coversWithdrawal(btc,btc,120n,new Set(),false,330n),false);
+ assert.equal(coversWithdrawal(btc,btc,0n,new Set(),false,330n),false);
+ assert.equal(coversWithdrawal(units,btc,40n,new Set(),true,330n),true);
+ assert.equal(coversWithdrawal(units,[owned(200n,4n)],40n,new Set(),true,330n),false);
+ assert.equal(coversWithdrawal(units,[owned(330n,4n)],40n,new Set(),true,330n),true);
+ assert.equal(coversWithdrawal(units,btc,40n,new Set(),true,1000n),false);
+ assert.equal(coversWithdrawal(units,btc,40n,new Set([1n]),true,330n),false);
+ assert.equal(coversWithdrawal(units,btc,40n,new Set(),true,329n),false);
+ assert.equal(coversWithdrawal([],btc,1n,new Set(),true,330n),false);
+});
+
+test('a private payment can reach the three largest notes, and no further',()=>{
+ const notes=[{amount:100n},{amount:900n},{amount:500n},{amount:700n}];
+ assert.equal(topThree(notes),2100n);
+ assert.deepEqual(notes.map(n=>n.amount),[100n,900n,500n,700n]);
+ assert.equal(topThree([{amount:100n}]),100n);
+ assert.equal(topThree([]),0n);
+});
+
+test('a payout program is the Arkade address script without its taproot prefix',()=>{
+ const address='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mcfz88xtqfr9pxprckm7tkha23m0d0tnqzpw0r8gqtwfz8ete';
+ assert.deepEqual(programOf(address),hex.decode('e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e'));
+ assert.equal(hex.encode(ArkAddress.decode(address).pkScript),'5120e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e');
+ assert.throws(()=>programOf('not-an-address'));
 });

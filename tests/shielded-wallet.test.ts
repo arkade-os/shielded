@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,type SendParams} from '@arkade-os/sdk';
-import {bech32} from '@scure/base';
+import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
-import {RollupAccount,type BuiltSpend} from '../packages/protocol/src/rollup/account.ts';
+import {RollupAccount,type BuiltSpend,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
+import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {assetFieldOfId,noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
-import {ShieldedWallet,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {catchUp} from '../src/shielded/sync.ts';
 import type {RollupPoolStatus} from '../src/shielded/pool.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
@@ -465,4 +468,134 @@ test('Ramps refuses an exit input reserved by shielding while it awaits a change
   await entered.promise;handle=await wallet.shield([input]);assert.ok(handle);
   change.resolve(POOL_ADDRESS);await refused;assert.equal(settled,0);
  }finally{change.resolve(POOL_ADDRESS);proof.resolve();if(handle)await assert.rejects(handle.settled(),/proof cancelled/);await wallet.dispose();}
+});
+
+const publishSpend=({witness,ciphertext}:BuiltSpend):PublishedSlot=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:String(witness.slot.groupId),groupSize:witness.slot.groupSize,publics:witness.publicSignals.map(String),ciphertext:hex.encode(ciphertext)});
+async function fundPrivate(wallet:ShieldedWallet,notes:{amount:bigint;asset?:bigint}[]){
+ const deposits=await Promise.all(notes.map(n=>wallet.account.spend({deposit:n.amount,asset:n.asset},wallet.self)));
+ await wallet.account.apply({kind:'spend',slots:deposits.map(publishSpend),txid:'de'.repeat(32)});
+}
+const recipient=shieldedKeysOf(hash,'22'.repeat(32));
+
+test('pay and withdraw announce handles before a shortfall fails at the note selection step',async()=>{
+ const wallet=await open(),announced:ShieldedPaymentHandle[]=[];
+ wallet.onAction(h=>{announced.push(h);assert.equal(h.stepState().current,0);});
+ try{
+  for(const run of [()=>wallet.pay(recipient.address,500n),()=>wallet.withdraw(POOL_ADDRESS,500n),()=>wallet.withdraw(POOL_ADDRESS,1n,{asset:TOKEN})]){
+   const handle=await run();assert.equal(announced.at(-1),handle);
+   await assert.rejects(handle.settled(),/No (three|single) note/);
+   assert.equal(handle.status,'failed');assert.equal(handle.stepState().current,0);assert.match(handle.stepState().error!,/No (three|single) note/);
+  }
+  assert.equal(wallet.inFlight.size,0);
+ }finally{await wallet.dispose();}
+});
+
+test('a joined payment holds both inputs against a queued payment and records one recipient output',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),proof=deferred<void>(),started=deferred<BuiltSpend>();
+ let published:PublishedSlot|undefined;
+ wallet.prover={joinReady:()=>true,prove:async(built,circuit)=>{assert.equal(circuit,'join');started.resolve(built);await proof.promise;return {pi_a:[],pi_b:[],pi_c:[]};}};
+ wallet.api=(async(path:string)=>{
+  if(path==='/spends')return {};
+  if(path.startsWith('/spends/'))return {status:'included',txid:'ef'.repeat(32)};
+  const slots=published?[published]:[];published=undefined;
+  return {total:2,batches:slots.length?[{kind:'join',slots,txid:'ef'.repeat(32)}]:[]};
+ }) as never;
+ try{
+  await fundPrivate(wallet,[{amount:400n},{amount:500n}]);
+  assert.equal(wallet.maxPrivatePayment(),900n);assert.equal(wallet.canWithdraw(400n),true);
+  const first=await wallet.pay(recipient.address,800n),built=await started.promise;
+  assert.equal(wallet.inFlight.size,2);assert.deepEqual(new Set(built.witness.slot.nullifiers),wallet.inFlight);
+  assert.equal(wallet.maxPrivatePayment(),0n);assert.equal(wallet.canWithdraw(330n),false);
+  const second=await wallet.pay(recipient.address,300n);await assert.rejects(second.settled(),/No three notes/);
+  assert.equal(wallet.inFlight.size,2,'the rejected second action must not release the first action inputs');
+  const stored=(await repository.getAccount(TOKEN))!,[firstNf,secondNf]=built.witness.slot.nullifiers;
+  assert.deepEqual(Object.keys(stored.sent),[String(firstNf)]);assert.equal(wallet.sentOf(secondNf!),undefined);
+  const sent=stored.sent[String(firstNf)]!;assert.equal(sent.to,recipient.address);assert.equal(sent.note!.amount,'800');
+  assert.equal(noteOf(hash,ROLLUP_DOMAIN,BigInt(sent.note!.amount),BigInt(sent.note!.asset),recipient.self.owner,BigInt(sent.note!.rho)),built.witness.slot.commitments[0]);
+  published=publishSpend(built);proof.resolve();await first.settled();await flush();
+  assert.equal(wallet.inFlight.size,0);assert.equal(wallet.shieldedBalance(),100n);assert.equal(wallet.shieldedHistory().at(-1)!.slots.length,1);
+  assert.equal(wallet.shieldedHistory().at(-1)!.spent.length,2);
+ }finally{proof.resolve();await wallet.dispose();}
+});
+
+test('private action reservations release only after a safe outcome',async()=>{
+ for(const action of ['pay','withdraw','withdraw-btc'] as const)for(const outcome of ['proof','post','poll','signing','dropped','included-sync'] as const){
+  const wallet=await open();let posts=0;
+  try{
+   await fundPrivate(wallet,action==='pay'?[{amount:400n},{amount:500n}]:action==='withdraw'?[{amount:40n,asset:assetFieldOfId(TOKEN)},{amount:500n}]:[{amount:500n}]);
+   wallet.prover={joinReady:()=>true,prove:async()=>{if(outcome==='proof')throw new Error('proof');return {pi_a:[],pi_b:[],pi_c:[]};}};
+   wallet.api=(async(path:string,body?:{program?:string;asset?:string;publics:string[];slot:{groupSize:number}})=>{
+    if(path==='/spends'){
+     if(action!=='pay'){
+      assert.equal(body!.program,'e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e');
+      assert.equal(body!.asset,action==='withdraw'&&posts===0?TOKEN:undefined);
+      assert.equal(body!.publics[2],action==='withdraw'?(posts===0?'40':'400'):'400');
+      assert.equal(body!.slot.groupSize,action==='withdraw'?2:0);
+     }
+     posts++;if(outcome==='post')throw new Error('post');return {};
+    }
+    if(path.startsWith('/spends/')){
+     if(outcome==='poll')throw new Error('poll');
+     return outcome==='signing'?{status:'signing',arkTx:'unexpected'}:{status:outcome==='dropped'?'dropped':'included',reason:'dropped'};
+    }
+    throw new Error('included-sync');
+   }) as never;
+   const handle=await (action==='pay'?wallet.pay(recipient.address,800n):action==='withdraw'?wallet.withdraw(POOL_ADDRESS,40n,{asset:TOKEN,sats:400n}):wallet.withdraw(POOL_ADDRESS,400n));
+   await assert.rejects(handle.settled(),outcome==='signing'?/no deposit coin/:new RegExp(outcome));await flush();
+   const safe=outcome==='proof'||outcome==='dropped';
+   assert.equal(wallet.inFlight.size,safe?0:action==='withdraw-btc'?1:2,`${action}: ${outcome}`);
+   assert.equal(action==='pay'?wallet.maxPrivatePayment():action==='withdraw'?wallet.canWithdraw(40n,{asset:TOKEN}):wallet.canWithdraw(400n),action==='pay'?(safe?900n:0n):safe);
+  }finally{await wallet.dispose();}
+ }
+});
+
+test('withdrawal availability is total and respects asset and carrier reservations',async()=>{
+ const wallet=await open();
+ try{
+  await fundPrivate(wallet,[{amount:40n,asset:assetFieldOfId(TOKEN)},{amount:500n}]);
+  assert.equal(wallet.canWithdraw(1n,{asset:'bad'}),false);
+  assert.equal(wallet.canWithdraw(0n,{asset:TOKEN}),false);assert.equal(wallet.canWithdraw(329n),false);
+  assert.equal(wallet.canWithdraw(40n,{asset:TOKEN}),true);assert.equal(wallet.canWithdraw(41n,{asset:TOKEN}),false);
+  assert.equal(wallet.canWithdraw(40n,{asset:TOKEN,sats:501n}),false);
+  wallet.notes.inFlight.add(wallet.account.notes()[0]!.nullifier);
+  assert.equal(wallet.canWithdraw(40n,{asset:TOKEN}),false);
+  const handle=await wallet.withdraw(POOL_ADDRESS,40n,{asset:TOKEN});await assert.rejects(handle.settled(),/BTC note/);
+  assert.equal(handle.stepState().current,0);
+ }finally{await wallet.dispose();}
+});
+
+test('pay and withdraw cannot select notes after disposal or persist a selection that finishes after disposal',async()=>{
+ for(const action of ['pay','withdraw'] as const){
+  const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),picked=deferred<void>(),resume=deferred<void>();
+  await fundPrivate(wallet,[{amount:500n}]);
+  const spend=wallet.account.spend.bind(wallet.account);
+  wallet.account.spend=async(...args)=>{const built=await spend(...args);picked.resolve();await resume.promise;return built;};
+  const run=()=>action==='pay'?wallet.pay(recipient.address,400n):wallet.withdraw(POOL_ADDRESS,400n);
+  try{
+   const handle=await run();await picked.promise;await wallet.dispose();resume.resolve();
+   await assert.rejects(handle.settled(),/closed/);await flush();
+   assert.equal(wallet.inFlight.size,0);assert.equal(await repository.getAccount(TOKEN),undefined);
+   const after=await run();await assert.rejects(after.settled(),/closed/);assert.equal(after.stepState().current,0);
+  }finally{resume.resolve();await wallet.dispose();}
+ }
+});
+
+test('private persistence waits for catch-up and refuses a new snapshot after disposal',async()=>{
+ for(const action of ['pay','withdraw'] as const)for(const closed of [false,true]){
+  const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),resume=deferred<void>(),picked=deferred<void>();
+  await fundPrivate(wallet,[{amount:500n}]);
+  const barrier=catchUp(wallet.account,(async()=>{await resume.promise;return {total:1,batches:[]};}) as never);
+  const spend=wallet.account.spend.bind(wallet.account);let snapshots=0,posts=0;
+  wallet.account.spend=async(...args)=>{const result=await spend(...args);picked.resolve();return result;};
+  const snapshot=wallet.account.snapshot.bind(wallet.account);wallet.account.snapshot=()=>{snapshots++;return snapshot();};
+  wallet.api=(async(path:string)=>{assert.equal(path,'/spends');posts++;throw new Error('post');}) as never;
+  try{
+   const handle=await (action==='pay'?wallet.pay(recipient.address,400n):wallet.withdraw(POOL_ADDRESS,400n));await picked.promise;await flush();
+   assert.equal(snapshots,0);assert.equal(posts,0);
+   if(closed)await wallet.dispose();resume.resolve();await barrier;
+   await assert.rejects(handle.settled(),closed?/closed/:/post/);await flush();
+   assert.equal(snapshots,closed?0:1);assert.equal(posts,closed?0:1);assert.equal(wallet.inFlight.size,closed?0:1);
+   assert.equal(!!await repository.getAccount(TOKEN),!closed);
+  }finally{resume.resolve();await barrier;await wallet.dispose();}
+ }
 });

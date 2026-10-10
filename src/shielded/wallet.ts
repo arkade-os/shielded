@@ -1,14 +1,14 @@
-import {ReadonlyWallet,Wallet,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,ReadonlyWallet,Wallet,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
-import {fullViewKeyOf,viewKeyOf} from '../../packages/protocol/src/rollup/disclosure.ts';
+import {fullViewKeyOf,sentNoteOf,viewKeyOf} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {akOf,assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
-import {rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
+import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
-import {DUST,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
 import {submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 import {WATCHDOG_MS,catchUp,idle} from './sync.ts';
@@ -66,6 +66,13 @@ export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boole
  shieldPlan(coins.filter(c=>!o.skip(c)&&!o.used.has(`${c.txid}:${c.vout}`)),o.listed,o.now,o.floorMs);
 export const needsRenewal=(coins:readonly ArkCoin[],now:number,floorMs:number)=>coins.some(c=>c.expiresAt!==undefined&&c.expiresAt-now<=floorMs);
 export const mergeAssetFields=(reserves:Record<string,string>|undefined)=>[BTC_ASSET,...Object.keys(reserves??{}).map(assetFieldOfId)];
+export const programOf=(address:string)=>ArkAddress.decode(address).pkScript.subarray(2);
+export const topThree=(notes:{amount:bigint}[])=>[...notes].sort((a,b)=>a.amount<b.amount?1:a.amount>b.amount?-1:0).slice(0,3).reduce((sum,n)=>sum+n.amount,0n);
+export const coversWithdrawal=(notes:{amount:bigint;nullifier:bigint}[],carriers:{amount:bigint;nullifier:bigint}[],amount:bigint,inFlight:ReadonlySet<bigint>,asset:boolean,sats_:bigint)=>{
+ const has=(list:{amount:bigint;nullifier:bigint}[],least:bigint)=>list.some(n=>!inFlight.has(n.nullifier)&&n.amount>=least);
+ if(amount<=0n)return false;
+ return asset?sats_>=BigInt(DUST)&&has(notes,amount)&&has(carriers,sats_):amount>=BigInt(DUST)&&has(notes,amount);
+};
 class ReservationFailure extends Error {
  constructor(error:unknown,readonly release:boolean){super(reasonOf(error),{cause:error});}
 }
@@ -139,7 +146,7 @@ export class ShieldedWallet extends Wallet {
   }catch(error){this.repositoryError??=reasonOf(error);}
  }
  sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
- private persist(){return idle(this.account,()=>this.save());}
+ private persist(){return idle(this.account,()=>{this.assertOpen();return this.save();});}
  recordSent(entries:[bigint,SentRecord][]){for(const [nullifier,record] of entries)this.sent[String(nullifier)]=record;}
  async start():Promise<void>{
   await this.sync();
@@ -295,6 +302,51 @@ export class ShieldedWallet extends Wallet {
   const txid=await this.send({recipients:[{address:pool.address,amount:DUST,assets:[{assetId,amount:1n}]}]});
   this.listings.add(txid);await this.persist();this.changed();
   return txid;
+ }
+ maxPrivatePayment(asset=BTC_ASSET){return topThree(this.account.notes(asset).filter(n=>!this.notes.inFlight.has(n.nullifier)));}
+ canWithdraw(amount:bigint,opts:{asset?:string;sats?:bigint}={}){
+  try{
+   const field=opts.asset?assetFieldOfId(opts.asset):BTC_ASSET;
+   return coversWithdrawal(this.account.notes(field),this.account.notes(BTC_ASSET),amount,this.notes.inFlight,!!opts.asset,opts.sats??BigInt(DUST));
+  }catch{return false;}
+ }
+ async pay(to:string,amount:bigint,asset?:string):Promise<ShieldedPaymentHandle>{
+  const held:bigint[]=[];
+  const handle=shieldedHandle({title:'Sending privately',steps:shieldedSteps.send,railId:'shielded'},async step=>{
+   step(0);this.assertOpen();
+   const recipient=parseRollupAddress(to),field=asset?assetFieldOfId(asset):BTC_ASSET;
+   const {spends}=await this.notes.pick(()=>this.account.pay(recipient,amount,this.self,this.notes.inFlight,field,{join:this.prover.joinReady?.()??false}),
+    chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
+   held.push(...spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
+   this.recordSent(spends.map(s=>{const note=sentNoteOf(this.hash,s);return [s.witness.slot.nullifiers[0]!,{to,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}] as [bigint,SentRecord];}));
+   await this.persist();
+   return this.submit(spends.map(built=>({built})),step);
+  });
+  this.hold(held,handle);
+  return this.announce(handle);
+ }
+ async withdraw(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):Promise<ShieldedPaymentHandle>{
+  const held:bigint[]=[];
+  const handle=shieldedHandle({title:'Withdrawing',steps:shieldedSteps.withdraw,railId:'shielded-withdraw'},async step=>{
+   step(0);this.assertOpen();
+   const program=programOf(to);
+   const members=await this.notes.pick(async()=>{
+    if(opts.asset){
+     const [payout,carrier]=await this.account.withdrawAsset(assetFieldOfId(opts.asset),amount,program,this.self,this.notes.inFlight,opts.sats??BigInt(DUST));
+     return [{built:payout,extra:{program,asset:opts.asset}},{built:carrier,extra:{program}}] as SubmitMember[];
+    }
+    if(amount<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
+    const input=pickNote(this.account.notes(),amount,this.notes.inFlight);
+    if(!input)throw new Error('No single note covers this amount.');
+    return [{built:await this.account.spend({input,withdraw:amount,program},this.self),extra:{program}}] as SubmitMember[];
+   },chosen=>chosen.flatMap(m=>m.built.witness.slot.nullifiers));
+   held.push(...members.flatMap(m=>m.built.witness.slot.nullifiers));this.assertOpen();
+   this.recordSent(members.map(m=>[m.built.witness.slot.nullifiers[0]!,{to}] as [bigint,SentRecord]));
+   await this.persist();
+   return this.submit(members,step);
+  });
+  this.hold(held,handle);
+  return this.announce(handle);
  }
  /** The pool refuses coins near expiry; a batch swap renews them, after which auto-shield picks them up. */
  async renew():Promise<string|undefined>{
