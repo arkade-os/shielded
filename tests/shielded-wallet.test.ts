@@ -61,6 +61,15 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
  }finally{await wallet.dispose();}
 });
 
+test('the router carries the shielded rails ahead of the public ones',async()=>{
+ const wallet=await open();
+ try{
+  const router=wallet.router();
+  assert.deepEqual((await router.options({raw:wallet.shieldedAddress(),amount:500})).map(o=>o.railId),['shielded']);
+  assert.deepEqual((await router.options({raw:POOL_ADDRESS,amount:500})).map(o=>o.railId),['ark'],'the pool itself is never a withdrawal');
+ }finally{await wallet.dispose();}
+});
+
 test("two wallets on one repository keep each other's sent entries",async()=>{
  const repository=new InMemoryShieldedNoteRepository();
  const [a,b]=await Promise.all([open({repository}),open({repository})]);

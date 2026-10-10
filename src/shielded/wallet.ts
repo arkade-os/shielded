@@ -1,4 +1,4 @@
-import {ArkAddress,ReadonlyWallet,Wallet,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -9,6 +9,7 @@ import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/s
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
 import {submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 import {WATCHDOG_MS,catchUp,idle} from './sync.ts';
@@ -122,6 +123,11 @@ export class ShieldedWallet extends Wallet {
  }
 
  get inFlight():ReadonlySet<bigint>{return this.notes.inFlight;}
+ router():PaymentRouter{
+  return new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
+   .use(shieldedRail(this)).use(shieldedWithdrawRail(this))
+   .use(arkRail()).use(arkAssetRail()).use(onchainRail({feeInfo:walletFeeSource(this)}));
+ }
  shieldedBalance(asset=BTC_ASSET):bigint{return this.account.balance(asset);}
  shieldedNotes(asset=BTC_ASSET):OwnedNote[]{return this.account.notes(asset);}
  shieldedHistory():readonly HistoryEntry[]{return this.account.history;}
