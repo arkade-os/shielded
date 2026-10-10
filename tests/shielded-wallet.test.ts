@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Wallet} from '@arkade-os/sdk';
+import {InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,type SendParams} from '@arkade-os/sdk';
+import {bech32} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {RollupAccount,type BuiltSpend} from '../packages/protocol/src/rollup/account.ts';
@@ -127,12 +128,12 @@ function readyDeposit(wallet:ShieldedWallet){
  wallet.account.depositAsset=async()=>[fakeSpend(),fakeSpend()];
 }
 
-test('self-send selects exactly the plan inputs and reserves its output before discovery',async()=>{
+test('self-send selects exactly the plan inputs and reserves its output before discovery',async t=>{
  const wallet=await open(),a=coin('a'.repeat(64),200),b=coin('b'.repeat(64),300),output=coin();
  const discovered=deferred<void>();let selected:unknown,announced=0;
  readyDeposit(wallet);
  wallet.getSpendableVtxos=async()=>[a,b,coin('c'.repeat(64),800)] as never;
- wallet.send=async(...args)=>{const params=args[0];assert.ok('recipients' in params);selected=params.selectedVtxos;return output.txid;};
+ t.mock.method(Wallet.prototype,'send',async(...args:Parameters<Wallet['send']>)=>{const params=args[0];assert.ok('recipients' in params);selected=params.selectedVtxos;return output.txid;});
  (wallet as any).depositCoin=async()=>{await discovered.promise;return {...output,tapTree:'aa',leaf:'bb'};};
  wallet.prover={prove:async()=>{throw new Error('proof failed');}};
  wallet.onAction(()=>{announced++;});
@@ -320,7 +321,7 @@ test('a contract manager finishing creation across disposal is closed and never 
  }finally{resume.resolve();await disposing;manager.dispose();await wallet.dispose();}
 });
 
-test('SDK self-send output events cannot plan another shield before its database update returns',async()=>{
+test('SDK self-send output events cannot plan another shield before its database update returns',async t=>{
  const wallet=await open(),a=coin('aa'.repeat(32),200),b=coin('bb'.repeat(32),300),output=coin('cc'.repeat(32)),other=coin('dd'.repeat(32));
  const database=deferred<void>(),entered=deferred<void>(),verdict=deferred<{status:string}>(),lookup=deferred<ReturnType<typeof coin>[]>();
  readyDeposit(wallet);wallet.getSpendableVtxos=async()=>lookup.promise as never;
@@ -328,7 +329,7 @@ test('SDK self-send output events cannot plan another shield before its database
  wallet.getSpendableVtxos=async()=>[a,b] as never;
  wallet.buildAndSubmitOffchainTx=async()=>({arkTxid:output.txid,signedCheckpointTxs:[]}) as never;
  (wallet as any).updateDbAfterOffchainTx=async()=>{entered.resolve();await database.promise;};
- wallet.send=async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{});
+ t.mock.method(Wallet.prototype,'send',async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{}));
  wallet.api=(async(path:string)=>path==='/spends'?{}:path.startsWith('/spends/')?verdict.promise:{total:0,batches:[]}) as never;
  const announced:ShieldedPaymentHandle[]=[];wallet.onAction(h=>{announced.push(h);});
  try{
@@ -350,9 +351,9 @@ test('real SDK persistence after an in-flight self-send cannot reopen a disposed
  const transport=deferred<{arkTxid:string;signedCheckpointTxs:string[]}>();
  wallet.getSpendableVtxos=async()=>[a,b] as never;
  wallet.buildAndSubmitOffchainTx=async()=>{entered.resolve();return transport.promise;};
- wallet.send=async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{
+ t.mock.method(Wallet.prototype,'send',async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{
   offchainTapscript:(wallet as any).offchainTapscript,serverPubKey:(wallet as any).arkServerPublicKey,changeAmount:0n,sentAmount:500,changeVout:0,
- });
+ }));
  t.mock.method(console,'warn',()=>{});
  try{
   const handle=(await wallet.shield([a,b]))!;await entered.promise;
@@ -362,4 +363,106 @@ test('real SDK persistence after an in-flight self-send cannot reopen a disposed
   assert.equal((wallet as any)._contractManager,undefined,'real updateDbAfterOffchainTx must not recreate a watcher');
   await assert.rejects(wallet.getContractManager(),/closed/);
  }finally{transport.resolve({arkTxid:'cc'.repeat(32),signedCheckpointTxs:[]});await wallet.dispose();}
+});
+
+test('native entrypoints reject shield reservations and the unknown self-send output phase before reaching the SDK',async t=>{
+ const wallet=await open(),input=coin(),sameTxid={...input,vout:1};let submitted=0;
+ for(const name of ['send','settle','sendBitcoin','sendSelectedVtxosToSelf'] as const)t.mock.method(Wallet.prototype,name,async()=>{submitted++;return 'native';});
+ const attempts=(selected:typeof input)=>[
+  ()=>wallet.send({recipients:[{address:POOL_ADDRESS,amount:330}],selectedVtxos:[selected] as never}),
+  ()=>wallet.settle({inputs:[selected] as never,outputs:[]}),
+  ()=>wallet.sendBitcoin({address:POOL_ADDRESS,amount:330,selectedVtxos:[selected] as never}),
+  ()=>wallet.sendSelectedVtxosToSelf([selected] as never),
+ ];
+ try{
+  (wallet as any).used.add(`${input.txid}:0`);
+  for(const attempt of attempts(input))await assert.rejects(attempt(),/reserved/i);
+  (wallet as any).usedTxids.add(input.txid);
+  for(const attempt of attempts(sameTxid))await assert.rejects(attempt(),/reserved/i);
+  (wallet as any).used.clear();(wallet as any).usedTxids.clear();(wallet as any).selfSending=true;
+  for(const attempt of attempts(input))await assert.rejects(attempt(),/prepar/i);
+  (wallet as any).selfSending=false;await wallet.dispose();
+  for(const attempt of attempts(input))await assert.rejects(attempt(),/closed/i);
+  assert.equal(submitted,0);
+ }finally{await wallet.dispose();}
+});
+
+test('generic native selection excludes shield inputs and output txids while discovery still sees them',async t=>{
+ const wallet=await open(),input=coin(),output=coin('bb'.repeat(32)),other=coin('cc'.repeat(32)),proof=deferred<void>();
+ readyDeposit(wallet);wallet.prover={prove:async()=>{await proof.promise;throw new Error('proof cancelled');}};
+ const filters:unknown[]=[];
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async(filter:unknown)=>{filters.push(filter);return [input,output,other] as never;});
+ const handle=(await wallet.shield([input]))!,finished=assert.rejects(handle.settled(),/proof cancelled/);
+ try{
+  (wallet as any).usedTxids.add(output.txid);
+  const filter={genericallySpendableOnly:true,requireSynced:true,maxSyncAgeMs:5};
+  assert.deepEqual(await wallet.getSpendableVtxos(filter),[other]);assert.equal(filters.at(-1),filter);
+  assert.deepEqual(await wallet.getSpendableVtxos(),[input,output,other]);
+  assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:false}),[input,output,other]);
+ }finally{proof.resolve();await finished;await wallet.dispose();}
+});
+
+test('overlapping native operations block shielding across coin lookup and keep the guard until both finish',async t=>{
+ const wallet=await open(),input=coin(),lookup=deferred<ReturnType<typeof coin>[]>(),sent=deferred<string>(),settled=deferred<string>();
+ readyDeposit(wallet);wallet.prover={prove:async()=>{throw new Error('unexpected shield');}};
+ let sendArgs:unknown,settleArgs:unknown,coinReads=0;
+ wallet.coins=async()=>{coinReads++;return lookup.promise;};
+ t.mock.method(Wallet.prototype,'send',async(...args:unknown[])=>{sendArgs=args;return sent.promise;});
+ t.mock.method(Wallet.prototype,'settle',async(...args:unknown[])=>{settleArgs=args;return settled.promise;});
+ const earlier=wallet.shield(),recipient={address:POOL_ADDRESS,amount:330},callback=()=>{};
+ const sending=wallet.send(recipient),settling=wallet.settle(undefined,callback);
+ try{
+  lookup.resolve([input]);assert.equal(await earlier,undefined,'coin reads begun first must recheck native activity');
+  assert.equal(await wallet.shield([input]),undefined);assert.equal(await wallet.renew(),undefined);assert.equal(coinReads,1);
+  sent.resolve('sent');assert.equal(await sending,'sent');assert.equal(await wallet.shield([input]),undefined);
+  settled.resolve('settled');assert.equal(await settling,'settled');
+  assert.deepEqual(sendArgs,[recipient]);assert.deepEqual(settleArgs,[undefined,callback]);
+  const handle=await wallet.shield([input]);assert.ok(handle);await assert.rejects(handle.settled(),/unexpected shield/);
+ }finally{lookup.resolve([]);sent.resolve('sent');settled.resolve('settled');await Promise.all([sending,settling]);await wallet.dispose();}
+});
+
+test('each native entrypoint releases its guard on failure and forwards explicit arguments unchanged',async t=>{
+ const wallet=await open(),input=coin(),now={type:'height',value:1} as never;
+ const send:SendParams={recipients:[{address:POOL_ADDRESS,amount:330}],selectedVtxos:[input] as never};
+ const settle={inputs:[input] as never,outputs:[]};
+ const bitcoin={address:POOL_ADDRESS,amount:330,selectedVtxos:[input]} as Parameters<Wallet['sendBitcoin']>[0];
+ const cases:[keyof Wallet,unknown[],()=>Promise<string>][]=[
+  ['send',[send],()=>wallet.send(send)],['settle',[settle],()=>wallet.settle(settle)],
+  ['sendBitcoin',[bitcoin],()=>wallet.sendBitcoin(bitcoin)],['sendSelectedVtxosToSelf',[[input],now],()=>wallet.sendSelectedVtxosToSelf([input] as never,now)],
+ ];
+ try{
+  for(const [name,args,run] of cases){
+   const stub=t.mock.method(Wallet.prototype,name as 'send',async(...received:unknown[])=>{assert.deepEqual(received,args);throw new Error('native failed');});
+   await assert.rejects(run(),/native failed/);assert.equal((wallet as any).nativeOperations,0);stub.mock.restore();
+  }
+ }finally{await wallet.dispose();}
+});
+
+test('listing captures its pool, persists the transaction and refuses missing or closed pools before sending',async t=>{
+ const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),sent=deferred<string>();let sends=0,request:unknown;
+ t.mock.method(Wallet.prototype,'send',async(...args:unknown[])=>{sends++;request=args[0];return sent.promise;});
+ try{
+  const listing=wallet.listAsset(TOKEN);wallet.pool.status={phase:'starting',message:'restart'};
+  sent.resolve('listed');assert.equal(await listing,'listed');
+  assert.deepEqual(request,{recipients:[{address:POOL_ADDRESS,amount:330,assets:[{assetId:TOKEN,amount:1n}]}]});
+  assert.deepEqual((await repository.getAccount(TOKEN))!.listings,['listed']);
+  await assert.rejects(wallet.listAsset(TOKEN),/pool.*not available/i);
+  await wallet.dispose();await assert.rejects(wallet.listAsset(TOKEN),/closed/);assert.equal(sends,1);
+ }finally{sent.resolve('listed');await wallet.dispose();}
+});
+
+test('Ramps refuses an exit input reserved by shielding while it awaits a change address',async t=>{
+ const wallet=await open(),input=coin('aa'.repeat(32),1000),entered=deferred<void>(),change=deferred<string>(),proof=deferred<void>();
+ readyDeposit(wallet);wallet.prover={prove:async()=>{await proof.promise;throw new Error('proof cancelled');}};
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async()=>[input] as never);
+ t.mock.method(wallet,'getAddress',async()=>{entered.resolve();return change.promise;});
+ let settled=0;t.mock.method(Wallet.prototype,'settle',async()=>{settled++;return 'exit';});
+ const destinationAddress=bech32.encode('tb',[0,...bech32.toWords(new Uint8Array(20).fill(1))]);
+ const exiting=new Ramps(wallet).offboardExact({destinationAddress,amount:400n,feeInfo:{intentFee:{},txFeeRate:'0'}});
+ const refused=assert.rejects(exiting,/reserved/i);
+ let handle:ShieldedPaymentHandle|undefined;
+ try{
+  await entered.promise;handle=await wallet.shield([input]);assert.ok(handle);
+  change.resolve(POOL_ADDRESS);await refused;assert.equal(settled,0);
+ }finally{change.resolve(POOL_ADDRESS);proof.resolve();if(handle)await assert.rejects(handle.settled(),/proof cancelled/);await wallet.dispose();}
 });

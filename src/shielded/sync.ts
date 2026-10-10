@@ -5,6 +5,14 @@ export const WATCHDOG_MS=60_000;
 export interface BatchPage {total:number;batches:PublishedBatch[]}
 const running=new WeakMap<RollupAccount,Promise<number>>();
 
+export async function idle<T>(account:RollupAccount,use:()=>T|Promise<T>):Promise<T>{
+ for(;;){
+  const current=running.get(account);
+  if(!current)return use();
+  await current.then(()=>undefined,()=>undefined);
+ }
+}
+
 /**
  * Applies every batch after the account's cursor. Single-flight per account: watchScript is at-least-once, so a
  * duplicate event must not replay a batch, and the cursor is the only thing that decides what is new.

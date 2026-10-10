@@ -8,10 +8,10 @@ import {rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../pack
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
-import {poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {DUST,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
 import {submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {WATCHDOG_MS,catchUp} from './sync.ts';
+import {WATCHDOG_MS,catchUp,idle} from './sync.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:BuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
@@ -65,6 +65,7 @@ export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(
 export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number})=>
  shieldPlan(coins.filter(c=>!o.skip(c)&&!o.used.has(`${c.txid}:${c.vout}`)),o.listed,o.now,o.floorMs);
 export const needsRenewal=(coins:readonly ArkCoin[],now:number,floorMs:number)=>coins.some(c=>c.expiresAt!==undefined&&c.expiresAt-now<=floorMs);
+export const mergeAssetFields=(reserves:Record<string,string>|undefined)=>[BTC_ASSET,...Object.keys(reserves??{}).map(assetFieldOfId)];
 class ReservationFailure extends Error {
  constructor(error:unknown,readonly release:boolean){super(reasonOf(error),{cause:error});}
 }
@@ -94,8 +95,10 @@ export class ShieldedWallet extends Wallet {
  private unwatch:(()=>void)[]=[];
  private timer?:ReturnType<typeof setTimeout>;
  private retryAt=0;
+ private mergeRetryAt=0;
  private stopped=false;
  private selfSending=false;
+ private nativeOperations=0;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const wallet=await super.create(config) as ShieldedWallet;
@@ -136,6 +139,7 @@ export class ShieldedWallet extends Wallet {
   }catch(error){this.repositoryError??=reasonOf(error);}
  }
  sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
+ private persist(){return idle(this.account,()=>this.save());}
  recordSent(entries:[bigint,SentRecord][]){for(const [nullifier,record] of entries)this.sent[String(nullifier)]=record;}
  async start():Promise<void>{
   await this.sync();
@@ -155,6 +159,7 @@ export class ShieldedWallet extends Wallet {
   if(this.stopped)return;
   try{this.pool={...this.pool,status:await this.api('/status')};await this.sync();}catch{/* the next tick retries */}
   void this.autoShield().catch(()=>{});
+  void this.merge().catch(()=>{});
   this.changed();
   if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
  }
@@ -195,6 +200,24 @@ export class ShieldedWallet extends Wallet {
   void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
  private assertOpen(){if(this.stopped)throw new Error('The wallet was closed.');}
+ private reserved(coin:{txid:string;vout:number}){return this.used.has(`${coin.txid}:${coin.vout}`)||this.usedTxids.has(coin.txid);}
+ private async nativeSpend(inputs:readonly {txid:string;vout:number}[]|undefined,run:()=>Promise<string>){
+  this.assertOpen();
+  if(this.selfSending)throw new Error('A shield deposit coin is being prepared. Try again when it is ready.');
+  if(inputs?.some(coin=>this.reserved(coin)))throw new Error('A selected coin is reserved for shielding.');
+  this.nativeOperations++;
+  try{return await run();}finally{this.nativeOperations--;}
+ }
+ override async getSpendableVtxos(...args:Parameters<Wallet['getSpendableVtxos']>){
+  const coins=await super.getSpendableVtxos(...args);
+  return args[0]?.genericallySpendableOnly?coins.filter(coin=>!this.reserved(coin)):coins;
+ }
+ override send(...args:Parameters<Wallet['send']>){
+  return this.nativeSpend('recipients' in args[0]?args[0].selectedVtxos:undefined,()=>super.send(...args));
+ }
+ override settle(...args:Parameters<Wallet['settle']>){return this.nativeSpend(args[0]?.inputs,()=>super.settle(...args));}
+ override sendBitcoin(...args:Parameters<Wallet['sendBitcoin']>){return this.nativeSpend(args[0].selectedVtxos,()=>super.sendBitcoin(...args));}
+ override sendSelectedVtxosToSelf(...args:Parameters<Wallet['sendSelectedVtxosToSelf']>){return this.nativeSpend(args[0],()=>super.sendSelectedVtxosToSelf(...args));}
  override async getContractManager(){
   this.assertOpen();
   const manager=await super.getContractManager();
@@ -205,10 +228,10 @@ export class ShieldedWallet extends Wallet {
 
  async shield(coins?:readonly ArkCoin[]):Promise<ShieldedPaymentHandle|undefined>{
   this.assertOpen();
-  if(this.selfSending)return undefined;
+  if(this.selfSending||this.nativeOperations)return undefined;
   const available=coins??await this.coins();
   this.assertOpen();
-  if(this.selfSending)return undefined;
+  if(this.selfSending||this.nativeOperations)return undefined;
   const plan=this.planFor(available,!coins);
   if(!plan)return undefined;
   const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(c=>`${c.txid}:${c.vout}`);
@@ -231,7 +254,7 @@ export class ShieldedWallet extends Wallet {
      const selectedVtxos=plan.coins.map(c=>available.find(v=>v.txid===c.txid&&v.vout===c.vout));
      if(selectedVtxos.some(v=>!v))throw new Error('A selected deposit coin is no longer spendable.');
      this.assertOpen();const address=await this.getAddress();this.assertOpen();
-     try{txid=await this.send({recipients:[{address,amount:plan.amount}],selectedVtxos:selectedVtxos.map(v=>v!)});}
+     try{txid=await super.send({recipients:[{address,amount:plan.amount}],selectedVtxos:selectedVtxos.map(v=>v!)});}
      catch(error){throw new ReservationFailure(error,false);}
      this.usedTxids.add(txid);sentTxids.push(txid);
     }finally{this.selfSending=false;}
@@ -252,9 +275,32 @@ export class ShieldedWallet extends Wallet {
   if(this.stopped||Date.now()<this.retryAt)return;
   await this.shield();
  }
+ mergeableAssets(){return mergeAssetFields(this.pool.status.pool?.reserves);}
+ async merge(asset?:bigint):Promise<ShieldedPaymentHandle|undefined>{
+  if(this.stopped||Date.now()<this.mergeRetryAt)return undefined;
+  for(const field of asset===undefined?this.mergeableAssets():[asset]){
+   const plan=await this.notes.pick(()=>this.account.consolidate(this.self,field,this.notes.inFlight),chosen=>chosen?chosen.inputs.map(n=>n.nullifier):[]);
+   if(!plan)continue;
+   const nullifiers=plan.inputs.map(n=>n.nullifier);
+   const handle=shieldedHandle({title:'Merging two notes',steps:shieldedSteps.merge,railId:'shielded-merge'},step=>this.submit([{built:plan.built}],step,MERGE_WAIT_MS));
+   this.hold(nullifiers,handle,()=>{this.mergeRetryAt=Date.now()+RETRY_MS;});
+   return this.announce(handle);
+  }
+  return undefined;
+ }
+ async listAsset(assetId:string):Promise<string>{
+  this.assertOpen();
+  const pool=this.pool.status.pool;
+  if(!pool)throw new Error('The pool is not available for asset listing.');
+  const txid=await this.send({recipients:[{address:pool.address,amount:DUST,assets:[{assetId,amount:1n}]}]});
+  this.listings.add(txid);await this.persist();this.changed();
+  return txid;
+ }
  /** The pool refuses coins near expiry; a batch swap renews them, after which auto-shield picks them up. */
  async renew():Promise<string|undefined>{
-  if(!needsRenewal(await this.coins(),Date.now(),SHIELD_FLOOR_MS))return undefined;
+  if(this.nativeOperations||this.selfSending)return undefined;
+  const coins=await this.coins();
+  if(this.nativeOperations||this.selfSending||!needsRenewal(coins,Date.now(),SHIELD_FLOOR_MS))return undefined;
   const txid=await this.settle();
   this.retryAt=0;await this.sync();this.changed();
   return txid;

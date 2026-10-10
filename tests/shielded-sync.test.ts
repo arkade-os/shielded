@@ -4,7 +4,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
-import {catchUp,WATCHDOG_MS} from '../src/shielded/sync.ts';
+import {catchUp,idle,WATCHDOG_MS} from '../src/shielded/sync.ts';
 import {loadAccount} from '../src/shielded/wallet.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
@@ -105,4 +105,29 @@ test('a failing page rejects, leaves the cursor where it got to, and does not bl
  assert.equal(account.batchCount,1);
  assert.equal(await catchUp(account,api),0,'the single-flight slot is released even on a rejection');
  assert.equal(WATCHDOG_MS,60_000);
+});
+
+for(const rejects of [false,true])test(`idle saves after a queued follower finishes behind a ${rejects?'rejected':'successful'} leader`,async()=>{
+ const gate=()=>{let resolve!:()=>void;return {promise:new Promise<void>(r=>{resolve=r;}),resolve:()=>resolve()};};
+ const leaderReady=gate(),followerReady=gate(),finishLeader=gate(),finishFollower=gate();
+ let partial=false,saved=false,calls=0;
+ const account={batchCount:0,apply:async()=>{
+  partial=true;followerReady.resolve();await finishFollower.promise;
+  (account as {batchCount:number}).batchCount++;partial=false;return [];
+ }} as unknown as RollupAccount;
+ const api=(async()=>{
+  if(calls++===0){leaderReady.resolve();await finishLeader.promise;if(rejects)throw new Error('leader failed');return {total:0,batches:[]};}
+  return {total:1,batches:[{txid:'follower'}]};
+ }) as never;
+ const leader=catchUp(account,api),checkedLeader=rejects?assert.rejects(leader,/leader failed/):leader;
+ await leaderReady.promise;
+ const follower=catchUp(account,api),snapshot=idle(account,()=>{saved=true;assert.equal(partial,false);return account.batchCount;});
+ await Promise.resolve();assert.equal(saved,false,'the current run is still pending');
+ finishLeader.resolve();await followerReady.promise;
+ await new Promise(r=>setImmediate(r));
+ try{assert.equal(saved,false,'the follower is halfway through apply');}
+ finally{finishFollower.resolve();}
+ await checkedLeader;assert.equal(await follower,1);assert.equal(await snapshot,1);
+ let synchronous=false;const immediate=idle(account,()=>{synchronous=true;return 9;});
+ assert.equal(synchronous,true,'the callback shares the final no-running check');assert.equal(await immediate,9);
 });

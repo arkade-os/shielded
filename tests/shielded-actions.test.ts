@@ -8,7 +8,7 @@ import {buildRollupTransfer,RollupAccount,type BuiltSpend,type PublishedBatch} f
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {submitAll} from '../src/shielded/submit.ts';
-import {NoteReservation,needsRenewal,nextShieldPlan,shieldTitle,shieldedSteps} from '../src/shielded/wallet.ts';
+import {NoteReservation,mergeAssetFields,needsRenewal,nextShieldPlan,shieldTitle,shieldedSteps} from '../src/shielded/wallet.ts';
 
 const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>({witness:{slot:{root:7n,nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize},publicSignals:[1n,0n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1),change:0n} as unknown as BuiltSpend);
 const prover={prove:async(_b:BuiltSpend,circuit:'spend'|'join')=>({pi_a:[circuit],pi_b:[],pi_c:[]})};
@@ -128,4 +128,27 @@ test('a rejected pick releases the queue and reserves nothing',async()=>{
  assert.equal(reservation.inFlight.size,0);
  assert.deepEqual(await reservation.pick(async()=>[2n],chosen=>chosen),[2n],'the next pick still runs');
  assert.deepEqual([...reservation.inFlight],[2n]);
+});
+
+test('merge considers BTC first and then every listed asset, so one pass covers the wallet',()=>{
+ const a='ee'.repeat(34),b='ff'.repeat(34);
+ const fields=mergeAssetFields({[a]:'10',[b]:'4'});
+ assert.equal(fields[0],0n,'BTC first');
+ assert.equal(fields.length,3);
+ assert.deepEqual(mergeAssetFields(undefined),[0n]);
+});
+
+test('a merge and a payment share one reservation, so neither can take the notes the other holds',async()=>{
+ const account=await fundedAccount([400n,500n]);
+ const reservation=new NoteReservation();
+ const merged=await reservation.pick(()=>account.consolidate(aliceTo,0n,reservation.inFlight,1),
+  chosen=>chosen?chosen.inputs.map(n=>n.nullifier):[]);
+ assert.ok(merged,'two notes above a threshold of one');
+ assert.equal(reservation.inFlight.size,2,'a merge holds both of its inputs');
+ await assert.rejects(reservation.pick(()=>account.pay(bobTo,300n,aliceTo,reservation.inFlight),
+  chosen=>chosen.spends.map(s=>s.witness.slot.nullifiers[0]!)),/No three notes/,'nothing is left for the payment');
+ reservation.release(merged.inputs.map(n=>n.nullifier));
+ assert.equal(reservation.inFlight.size,0);
+ const after=await reservation.pick(()=>account.pay(bobTo,300n,aliceTo,reservation.inFlight),chosen=>chosen.spends.map(s=>s.witness.slot.nullifiers[0]!));
+ assert.equal(after.spends.length,1,'and the notes are usable again once the merge lets go');
 });
