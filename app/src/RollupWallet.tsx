@@ -38,7 +38,7 @@ export default function RollupWallet(){
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
- const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false);
+ const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false);
  const [,setQuoteRevision]=useState(0);
@@ -177,6 +177,13 @@ export default function RollupWallet(){
  const inFlight=(wallet?.inFlight.size??0)>0;
  const phrase=secret?recoveryPhraseOf(secret):'';
  const assetName=(id:string)=>`asset ${short(id)}`;
+ const revealFor=(item:Activity)=>{
+  const link=wallet?.revealLinkOfActivity(item);
+  if(!link)return null;
+  return <><dt>Reveal</dt><dd>{revealed[item.id]
+   ?<><Copyable value={revealed[item.id]!}/><p className="stock-muted">Anyone with this link can check this payment&apos;s amount and recipient against the pool, and learns nothing else.</p></>
+   :<button type="button" className="stock-ghost stock-mini" onClick={()=>setRevealed(r=>({...r,[item.id]:link}))}>Create a reveal link</button>}</dd></>;
+ };
 
  const submit=()=>{if(quote)void run(()=>quotes.send({...quoteContext,revision:fundsRevision.current},quote),routeCopy(quote.railId).title);};
 
@@ -236,6 +243,7 @@ export default function RollupWallet(){
        {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
        {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={newest.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
        <dt>Status</dt><dd>{item.settled?'Settled':'Preconfirmed'}</dd>
+       {revealFor(item)}
       </dl></details></li>;
     })}</ul>}
    </section>
