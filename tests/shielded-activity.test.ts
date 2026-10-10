@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {ActivityRegistry,ReadonlyWallet,TxType,type Activity,type ArkTransaction} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
-import {decodeDisclosure} from '../packages/protocol/src/rollup/disclosure.ts';
-import type {HistoryEntry,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
+import {hex} from '@scure/base';
+import {decodeDisclosure,sentNoteOf,verifyDisclosure} from '../packages/protocol/src/rollup/disclosure.ts';
+import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,SHIELDED_TAG} from '../src/shielded/activity.ts';
+import type {SentRecord} from '../src/shielded/repository.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const address=(byte:string)=>{const k=deriveRollupKeys2(byte.repeat(32),'mutinynet');return rollupAddressOf(rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));};
@@ -114,4 +116,29 @@ test('a reveal link opens the recipient note for a send and your own notes other
  assert.equal(revealLinkOf('https://example.test',entry({kind:'merge',created:[]}),{self:SELF,sentOf}),undefined);
  assert.equal(revealLinkOf('https://example.test',entry({kind:'send',spent:[99n]}),{self:SELF,sentOf}),undefined,'no remembered note, no link');
  assert.ok(revealLinkOf('https://example.test',entry({kind:'shield',spent:[],created:[note(900n,12n,5)]}),{self:SELF,sentOf}),'a shield discloses the note it created');
+});
+
+test('a joined payment reveal excludes a failed payment recorded on its second input',async()=>{
+ const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
+ const recipients=['22','33'].map(byte=>{const k=deriveRollupKeys2(byte.repeat(32),'mutinynet');return rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret);});
+ const [bob,carol]=recipients,account=RollupAccount.owning(hash,keys,{frontier:true}),sent=new Map<bigint,SentRecord>();
+ const publish=({witness,ciphertext}:BuiltSpend):PublishedSlot=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:String(witness.slot.groupId),groupSize:witness.slot.groupSize,publics:witness.publicSignals.map(String),ciphertext:hex.encode(ciphertext)});
+ const remember=(built:BuiltSpend,to:string)=>{const n=sentNoteOf(hash,built);sent.set(built.witness.slot.nullifiers[0]!,{to,note:{amount:String(n.amount),asset:String(n.asset),rho:String(n.rho)}});};
+ const deposits=await Promise.all([400n,500n].map(amount=>account.spend({deposit:amount},self)));
+ await account.apply({kind:'spend',slots:deposits.map(publish),txid:'ab'.repeat(32)});
+ const failed=await account.pay(bob!,300n,self);remember(failed.spends[0]!,rollupAddressOf(bob!));
+ const joined=await account.pay(carol!,800n,self,new Set(),0n,{join:true});remember(joined.spends[0]!,rollupAddressOf(carol!));
+ assert.equal(joined.spends.length,1);
+ assert.equal(joined.spends[0]!.witness.slot.nullifiers[1],failed.spends[0]!.witness.slot.nullifiers[0]);
+ assert.equal(sent.size,2,'the unapplied failed payment leaves its sent record behind');
+ const slots=joined.spends.map(publish);
+ await account.apply({kind:'join',slots,txid:'cd'.repeat(32)});
+ const payment=account.history.at(-1)!;
+ assert.equal(payment.kind,'send');assert.equal(payment.spent.length,2);assert.equal(payment.slots.length,1);
+ const link=revealLinkOf('https://example.test',payment,{self:SELF,sentOf:n=>sent.get(n)});
+ assert.ok(link);
+ const disclosed=decodeDisclosure(link.split('#')[1]!);
+ assert.equal(disclosed.to,rollupAddressOf(carol!));assert.equal(disclosed.notes.length,1);
+ assert.equal(disclosed.notes[0]!.index,32);assert.equal(disclosed.notes[0]!.amount,800n);
+ assert.deepEqual(await verifyDisclosure(hash,disclosed,index=>index===32?slots[0]!.commitments[0]:undefined),[true]);
 });

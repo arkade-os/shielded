@@ -59,7 +59,7 @@ export function revealLinkOf(origin:string,e:HistoryEntry,o:{self:string;sentOf:
  if(e.kind==='withdraw'||e.kind==='merge')return undefined;
  let to=o.self,notes:DisclosedNote[];
  if(e.kind==='send'){
-  const parts=e.spent.map((nf,i)=>({sent:o.sentOf(nf),index:e.batch*32+2*e.slots[i]!})).filter(p=>p.sent?.note);
+  const parts=e.slots.map((slot,i)=>({sent:o.sentOf(e.spent[i]!),index:e.batch*32+2*slot})).filter(p=>p.sent?.note);
   if(!parts.length)return undefined;
   to=parts[0]!.sent!.to;
   notes=parts.map(({sent,index})=>({index,amount:BigInt(sent!.note!.amount),asset:BigInt(sent!.note!.asset),rho:BigInt(sent!.note!.rho)}));
