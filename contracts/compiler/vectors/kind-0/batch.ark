@@ -1,0 +1,420 @@
+pragma arkade ^0.1.0;
+struct Proof { int ax; int ay; int bxc1; int bxc0; int byc1; int byc0; int cx; int cy; }
+struct Slot { Proof proof; int pub; int dep; int wd; bytes a; bytes d; }
+contract RollupBatch() {
+  function batch(Proof bp, Slot[11] slots) {
+    require(this.activeInputIndex == 0);
+    bytes newp = tx.packet(135);
+    require(size(newp) == 64);
+    bytes h = sha256(0x534802000b + substr(tx.inputs[0].packet(135), 0, 32) + newp);
+    int st = bin2num(substr(h, 0, 31) + 0x00);
+    bytes seed = sha256(h + tx.inputs[0].arkadeWitnessHash);
+    bool has = tx.numInputs > 1 && tx.inputs[1].scriptPubKey == tx.inputs[0].scriptPubKey && tx.inputs[1].witnessVersion == tx.inputs[0].witnessVersion;
+    AssetId xid = tx.inputs[0].assets[0].assetId;
+    int xin = 0;
+    bytes f = "";
+    int o_0 = 1;
+    if (has) {
+      AssetId rid = tx.inputs[1].assets[0].assetId;
+      xid.txid = rid.txid;
+      xid.gidx = rid.gidx;
+      xin = tx.inputs[1].assets[0].amount;
+      f = substr(sha256(xid.txid + substr(num2bin(xid.gidx + 65536, 3), 0, 2)), 0, 31) + 0x00;
+      o_0 = 2;
+    } else {
+      require(true);
+    }
+    int r0 = abs(bin2num(substr(sha256(seed + 0x01), 0, 16)));
+    ECPoint pa0 = { x: slots[0].proof.ax, y: slots[0].proof.ay };
+    ECPoint ra0 = ecMul(pa0, r0, 2);
+    ECPoint pc0 = { x: slots[0].proof.cx, y: slots[0].proof.cy };
+    ECPoint ic0 = { x: 20712425260824690555085471591351703331044631736557830393049481539417559481264, y: 15794086649334762449221234570013132043117909319280863813926098161110893758938 };
+    ECPoint sc_0 = ecMul(pc0, r0, 2);
+    ECPoint bs_0 = ecMul(ic0, slots[0].pub, 2);
+    int s0_0 = slots[0].pub * r0;
+    int s1_0 = slots[0].dep * r0;
+    int s2_0 = slots[0].wd * r0;
+    int s3_0 = bin2num(slots[0].a) * r0;
+    int s4_0 = bin2num(slots[0].d) * r0;
+    int sr_0 = r0;
+    bool ia0 = size(slots[0].a) != 0;
+    require(!ia0 || slots[0].a == f);
+    require(slots[0].dep >= 0);
+    int net0 = slots[0].dep - slots[0].wd;
+    int nall_0 = net0;
+    int nbtc_0 = net0 * (1 - int(ia0));
+    bool pend_0 = slots[0].wd != 0 && ia0;
+    if (slots[0].wd != 0) {
+      require(tx.outputs[o_0].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_0].scriptPubKey), 0, 31) + 0x00 == slots[0].d);
+      if (ia0) {
+        require(tx.outputs[o_0].assets.lookup(xid.txid, xid.gidx) == slots[0].wd);
+      } else {
+        require(tx.outputs[o_0].value == slots[0].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_1 = o_0 + int(slots[0].wd != 0) * (1 - int(ia0));
+    int r1 = abs(bin2num(substr(sha256(seed + 0x02), 0, 16)));
+    ECPoint pa1 = { x: slots[1].proof.ax, y: slots[1].proof.ay };
+    ECPoint ra1 = ecMul(pa1, r1, 2);
+    ECPoint pc1 = { x: slots[1].proof.cx, y: slots[1].proof.cy };
+    ECPoint ic1 = { x: 17893074889373636359563534864329143519955886853259999133891325311397082767642, y: 15736728175702670253208194236416727800203429120910623275859335867567590915185 };
+    ECPoint sc_1 = ecAdd(sc_0, ecMul(pc1, r1, 2), 2);
+    ECPoint bs_1 = ecAdd(bs_0, ecMul(ic1, slots[1].pub, 2), 2);
+    int s0_1 = s0_0 + slots[1].pub * r1;
+    int s1_1 = s1_0 + slots[1].dep * r1;
+    int s2_1 = s2_0 + slots[1].wd * r1;
+    int s3_1 = s3_0 + bin2num(slots[1].a) * r1;
+    int s4_1 = s4_0 + bin2num(slots[1].d) * r1;
+    int sr_1 = sr_0 + r1;
+    bool ia1 = size(slots[1].a) != 0;
+    require(!pend_0 || (slots[1].wd != 0 && !ia1));
+    require(!ia1 || slots[1].a == f);
+    require(slots[1].dep >= 0);
+    int net1 = slots[1].dep - slots[1].wd;
+    int nall_1 = nall_0 + net1;
+    int nbtc_1 = nbtc_0 + net1 * (1 - int(ia1));
+    bool pend_1 = slots[1].wd != 0 && ia1;
+    if (slots[1].wd != 0) {
+      require(tx.outputs[o_1].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_1].scriptPubKey), 0, 31) + 0x00 == slots[1].d);
+      if (ia1) {
+        require(tx.outputs[o_1].assets.lookup(xid.txid, xid.gidx) == slots[1].wd);
+      } else {
+        require(tx.outputs[o_1].value == slots[1].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_2 = o_1 + int(slots[1].wd != 0) * (1 - int(ia1));
+    int r2 = abs(bin2num(substr(sha256(seed + 0x03), 0, 16)));
+    ECPoint pa2 = { x: slots[2].proof.ax, y: slots[2].proof.ay };
+    ECPoint ra2 = ecMul(pa2, r2, 2);
+    ECPoint pc2 = { x: slots[2].proof.cx, y: slots[2].proof.cy };
+    ECPoint ic2 = { x: 2305193291306576957943064372372105745560801681650617451823888380899676897959, y: 8135902446381143734774322755441891391553322852114452928442404508780684554803 };
+    ECPoint sc_2 = ecAdd(sc_1, ecMul(pc2, r2, 2), 2);
+    ECPoint bs_2 = ecAdd(bs_1, ecMul(ic2, slots[2].pub, 2), 2);
+    int s0_2 = s0_1 + slots[2].pub * r2;
+    int s1_2 = s1_1 + slots[2].dep * r2;
+    int s2_2 = s2_1 + slots[2].wd * r2;
+    int s3_2 = s3_1 + bin2num(slots[2].a) * r2;
+    int s4_2 = s4_1 + bin2num(slots[2].d) * r2;
+    int sr_2 = sr_1 + r2;
+    bool ia2 = size(slots[2].a) != 0;
+    require(!pend_1 || (slots[2].wd != 0 && !ia2));
+    require(!ia2 || slots[2].a == f);
+    require(slots[2].dep >= 0);
+    int net2 = slots[2].dep - slots[2].wd;
+    int nall_2 = nall_1 + net2;
+    int nbtc_2 = nbtc_1 + net2 * (1 - int(ia2));
+    bool pend_2 = slots[2].wd != 0 && ia2;
+    if (slots[2].wd != 0) {
+      require(tx.outputs[o_2].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_2].scriptPubKey), 0, 31) + 0x00 == slots[2].d);
+      if (ia2) {
+        require(tx.outputs[o_2].assets.lookup(xid.txid, xid.gidx) == slots[2].wd);
+      } else {
+        require(tx.outputs[o_2].value == slots[2].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_3 = o_2 + int(slots[2].wd != 0) * (1 - int(ia2));
+    int r3 = abs(bin2num(substr(sha256(seed + 0x04), 0, 16)));
+    ECPoint pa3 = { x: slots[3].proof.ax, y: slots[3].proof.ay };
+    ECPoint ra3 = ecMul(pa3, r3, 2);
+    ECPoint pc3 = { x: slots[3].proof.cx, y: slots[3].proof.cy };
+    ECPoint ic3 = { x: 213169003069535947285821396437385202358295029050929780852267638264338847171, y: 5757569568974205166975453185746497369415262870216391512805776587639889812911 };
+    ECPoint sc_3 = ecAdd(sc_2, ecMul(pc3, r3, 2), 2);
+    ECPoint bs_3 = ecAdd(bs_2, ecMul(ic3, slots[3].pub, 2), 2);
+    int s0_3 = s0_2 + slots[3].pub * r3;
+    int s1_3 = s1_2 + slots[3].dep * r3;
+    int s2_3 = s2_2 + slots[3].wd * r3;
+    int s3_3 = s3_2 + bin2num(slots[3].a) * r3;
+    int s4_3 = s4_2 + bin2num(slots[3].d) * r3;
+    int sr_3 = sr_2 + r3;
+    bool ia3 = size(slots[3].a) != 0;
+    require(!pend_2 || (slots[3].wd != 0 && !ia3));
+    require(!ia3 || slots[3].a == f);
+    require(slots[3].dep >= 0);
+    int net3 = slots[3].dep - slots[3].wd;
+    int nall_3 = nall_2 + net3;
+    int nbtc_3 = nbtc_2 + net3 * (1 - int(ia3));
+    bool pend_3 = slots[3].wd != 0 && ia3;
+    if (slots[3].wd != 0) {
+      require(tx.outputs[o_3].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_3].scriptPubKey), 0, 31) + 0x00 == slots[3].d);
+      if (ia3) {
+        require(tx.outputs[o_3].assets.lookup(xid.txid, xid.gidx) == slots[3].wd);
+      } else {
+        require(tx.outputs[o_3].value == slots[3].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_4 = o_3 + int(slots[3].wd != 0) * (1 - int(ia3));
+    int r4 = abs(bin2num(substr(sha256(seed + 0x05), 0, 16)));
+    ECPoint pa4 = { x: slots[4].proof.ax, y: slots[4].proof.ay };
+    ECPoint ra4 = ecMul(pa4, r4, 2);
+    ECPoint pc4 = { x: slots[4].proof.cx, y: slots[4].proof.cy };
+    ECPoint ic4 = { x: 15706377604673009274562934719880659255319800380117445688133352472677095018780, y: 21474772332676230009397767207174211452094166302054083871758642175353597331622 };
+    ECPoint sc_4 = ecAdd(sc_3, ecMul(pc4, r4, 2), 2);
+    ECPoint bs_4 = ecAdd(bs_3, ecMul(ic4, slots[4].pub, 2), 2);
+    int s0_4 = s0_3 + slots[4].pub * r4;
+    int s1_4 = s1_3 + slots[4].dep * r4;
+    int s2_4 = s2_3 + slots[4].wd * r4;
+    int s3_4 = s3_3 + bin2num(slots[4].a) * r4;
+    int s4_4 = s4_3 + bin2num(slots[4].d) * r4;
+    int sr_4 = sr_3 + r4;
+    bool ia4 = size(slots[4].a) != 0;
+    require(!pend_3 || (slots[4].wd != 0 && !ia4));
+    require(!ia4 || slots[4].a == f);
+    require(slots[4].dep >= 0);
+    int net4 = slots[4].dep - slots[4].wd;
+    int nall_4 = nall_3 + net4;
+    int nbtc_4 = nbtc_3 + net4 * (1 - int(ia4));
+    bool pend_4 = slots[4].wd != 0 && ia4;
+    if (slots[4].wd != 0) {
+      require(tx.outputs[o_4].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_4].scriptPubKey), 0, 31) + 0x00 == slots[4].d);
+      if (ia4) {
+        require(tx.outputs[o_4].assets.lookup(xid.txid, xid.gidx) == slots[4].wd);
+      } else {
+        require(tx.outputs[o_4].value == slots[4].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_5 = o_4 + int(slots[4].wd != 0) * (1 - int(ia4));
+    int r5 = abs(bin2num(substr(sha256(seed + 0x06), 0, 16)));
+    ECPoint pa5 = { x: slots[5].proof.ax, y: slots[5].proof.ay };
+    ECPoint ra5 = ecMul(pa5, r5, 2);
+    ECPoint pc5 = { x: slots[5].proof.cx, y: slots[5].proof.cy };
+    ECPoint ic5 = { x: 10056137273714330219111571037167237807861692818302259235422254729904176434321, y: 7929602827293521563895685095110985277021566632450804959793296045926013858103 };
+    ECPoint sc_5 = ecAdd(sc_4, ecMul(pc5, r5, 2), 2);
+    ECPoint bs_5 = ecAdd(bs_4, ecMul(ic5, slots[5].pub, 2), 2);
+    int s0_5 = s0_4 + slots[5].pub * r5;
+    int s1_5 = s1_4 + slots[5].dep * r5;
+    int s2_5 = s2_4 + slots[5].wd * r5;
+    int s3_5 = s3_4 + bin2num(slots[5].a) * r5;
+    int s4_5 = s4_4 + bin2num(slots[5].d) * r5;
+    int sr_5 = sr_4 + r5;
+    bool ia5 = size(slots[5].a) != 0;
+    require(!pend_4 || (slots[5].wd != 0 && !ia5));
+    require(!ia5 || slots[5].a == f);
+    require(slots[5].dep >= 0);
+    int net5 = slots[5].dep - slots[5].wd;
+    int nall_5 = nall_4 + net5;
+    int nbtc_5 = nbtc_4 + net5 * (1 - int(ia5));
+    bool pend_5 = slots[5].wd != 0 && ia5;
+    if (slots[5].wd != 0) {
+      require(tx.outputs[o_5].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_5].scriptPubKey), 0, 31) + 0x00 == slots[5].d);
+      if (ia5) {
+        require(tx.outputs[o_5].assets.lookup(xid.txid, xid.gidx) == slots[5].wd);
+      } else {
+        require(tx.outputs[o_5].value == slots[5].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_6 = o_5 + int(slots[5].wd != 0) * (1 - int(ia5));
+    int r6 = abs(bin2num(substr(sha256(seed + 0x07), 0, 16)));
+    ECPoint pa6 = { x: slots[6].proof.ax, y: slots[6].proof.ay };
+    ECPoint ra6 = ecMul(pa6, r6, 2);
+    ECPoint pc6 = { x: slots[6].proof.cx, y: slots[6].proof.cy };
+    ECPoint ic6 = { x: 15268286924353872865565582444128518641101809461855106898820832123149955356168, y: 17942781358287396209538138479841839474212176211367948871751167661439630600689 };
+    ECPoint sc_6 = ecAdd(sc_5, ecMul(pc6, r6, 2), 2);
+    ECPoint bs_6 = ecAdd(bs_5, ecMul(ic6, slots[6].pub, 2), 2);
+    int s0_6 = s0_5 + slots[6].pub * r6;
+    int s1_6 = s1_5 + slots[6].dep * r6;
+    int s2_6 = s2_5 + slots[6].wd * r6;
+    int s3_6 = s3_5 + bin2num(slots[6].a) * r6;
+    int s4_6 = s4_5 + bin2num(slots[6].d) * r6;
+    int sr_6 = sr_5 + r6;
+    bool ia6 = size(slots[6].a) != 0;
+    require(!pend_5 || (slots[6].wd != 0 && !ia6));
+    require(!ia6 || slots[6].a == f);
+    require(slots[6].dep >= 0);
+    int net6 = slots[6].dep - slots[6].wd;
+    int nall_6 = nall_5 + net6;
+    int nbtc_6 = nbtc_5 + net6 * (1 - int(ia6));
+    bool pend_6 = slots[6].wd != 0 && ia6;
+    if (slots[6].wd != 0) {
+      require(tx.outputs[o_6].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_6].scriptPubKey), 0, 31) + 0x00 == slots[6].d);
+      if (ia6) {
+        require(tx.outputs[o_6].assets.lookup(xid.txid, xid.gidx) == slots[6].wd);
+      } else {
+        require(tx.outputs[o_6].value == slots[6].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_7 = o_6 + int(slots[6].wd != 0) * (1 - int(ia6));
+    int r7 = abs(bin2num(substr(sha256(seed + 0x08), 0, 16)));
+    ECPoint pa7 = { x: slots[7].proof.ax, y: slots[7].proof.ay };
+    ECPoint ra7 = ecMul(pa7, r7, 2);
+    ECPoint pc7 = { x: slots[7].proof.cx, y: slots[7].proof.cy };
+    ECPoint ic7 = { x: 13936732526557281361983440511407067509605447333953066625415012747021991779002, y: 2551228574319945446988290768103048307617060078838576494072470438374742627547 };
+    ECPoint sc_7 = ecAdd(sc_6, ecMul(pc7, r7, 2), 2);
+    ECPoint bs_7 = ecAdd(bs_6, ecMul(ic7, slots[7].pub, 2), 2);
+    int s0_7 = s0_6 + slots[7].pub * r7;
+    int s1_7 = s1_6 + slots[7].dep * r7;
+    int s2_7 = s2_6 + slots[7].wd * r7;
+    int s3_7 = s3_6 + bin2num(slots[7].a) * r7;
+    int s4_7 = s4_6 + bin2num(slots[7].d) * r7;
+    int sr_7 = sr_6 + r7;
+    bool ia7 = size(slots[7].a) != 0;
+    require(!pend_6 || (slots[7].wd != 0 && !ia7));
+    require(!ia7 || slots[7].a == f);
+    require(slots[7].dep >= 0);
+    int net7 = slots[7].dep - slots[7].wd;
+    int nall_7 = nall_6 + net7;
+    int nbtc_7 = nbtc_6 + net7 * (1 - int(ia7));
+    bool pend_7 = slots[7].wd != 0 && ia7;
+    if (slots[7].wd != 0) {
+      require(tx.outputs[o_7].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_7].scriptPubKey), 0, 31) + 0x00 == slots[7].d);
+      if (ia7) {
+        require(tx.outputs[o_7].assets.lookup(xid.txid, xid.gidx) == slots[7].wd);
+      } else {
+        require(tx.outputs[o_7].value == slots[7].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_8 = o_7 + int(slots[7].wd != 0) * (1 - int(ia7));
+    int r8 = abs(bin2num(substr(sha256(seed + 0x09), 0, 16)));
+    ECPoint pa8 = { x: slots[8].proof.ax, y: slots[8].proof.ay };
+    ECPoint ra8 = ecMul(pa8, r8, 2);
+    ECPoint pc8 = { x: slots[8].proof.cx, y: slots[8].proof.cy };
+    ECPoint ic8 = { x: 10606066640950751771149852277555619571357874381478180768588846005185656099117, y: 15347240646607333744428771437155234059608884540646333739565019161295072502304 };
+    ECPoint sc_8 = ecAdd(sc_7, ecMul(pc8, r8, 2), 2);
+    ECPoint bs_8 = ecAdd(bs_7, ecMul(ic8, slots[8].pub, 2), 2);
+    int s0_8 = s0_7 + slots[8].pub * r8;
+    int s1_8 = s1_7 + slots[8].dep * r8;
+    int s2_8 = s2_7 + slots[8].wd * r8;
+    int s3_8 = s3_7 + bin2num(slots[8].a) * r8;
+    int s4_8 = s4_7 + bin2num(slots[8].d) * r8;
+    int sr_8 = sr_7 + r8;
+    bool ia8 = size(slots[8].a) != 0;
+    require(!pend_7 || (slots[8].wd != 0 && !ia8));
+    require(!ia8 || slots[8].a == f);
+    require(slots[8].dep >= 0);
+    int net8 = slots[8].dep - slots[8].wd;
+    int nall_8 = nall_7 + net8;
+    int nbtc_8 = nbtc_7 + net8 * (1 - int(ia8));
+    bool pend_8 = slots[8].wd != 0 && ia8;
+    if (slots[8].wd != 0) {
+      require(tx.outputs[o_8].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_8].scriptPubKey), 0, 31) + 0x00 == slots[8].d);
+      if (ia8) {
+        require(tx.outputs[o_8].assets.lookup(xid.txid, xid.gidx) == slots[8].wd);
+      } else {
+        require(tx.outputs[o_8].value == slots[8].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_9 = o_8 + int(slots[8].wd != 0) * (1 - int(ia8));
+    int r9 = abs(bin2num(substr(sha256(seed + 0x0a), 0, 16)));
+    ECPoint pa9 = { x: slots[9].proof.ax, y: slots[9].proof.ay };
+    ECPoint ra9 = ecMul(pa9, r9, 2);
+    ECPoint pc9 = { x: slots[9].proof.cx, y: slots[9].proof.cy };
+    ECPoint ic9 = { x: 8438043949881714471310700224897947064836297071931880117805688634347141423588, y: 14853759945474282271706660053280572592374555061049331416870171400956947725975 };
+    ECPoint sc_9 = ecAdd(sc_8, ecMul(pc9, r9, 2), 2);
+    ECPoint bs_9 = ecAdd(bs_8, ecMul(ic9, slots[9].pub, 2), 2);
+    int s0_9 = s0_8 + slots[9].pub * r9;
+    int s1_9 = s1_8 + slots[9].dep * r9;
+    int s2_9 = s2_8 + slots[9].wd * r9;
+    int s3_9 = s3_8 + bin2num(slots[9].a) * r9;
+    int s4_9 = s4_8 + bin2num(slots[9].d) * r9;
+    int sr_9 = sr_8 + r9;
+    bool ia9 = size(slots[9].a) != 0;
+    require(!pend_8 || (slots[9].wd != 0 && !ia9));
+    require(!ia9 || slots[9].a == f);
+    require(slots[9].dep >= 0);
+    int net9 = slots[9].dep - slots[9].wd;
+    int nall_9 = nall_8 + net9;
+    int nbtc_9 = nbtc_8 + net9 * (1 - int(ia9));
+    bool pend_9 = slots[9].wd != 0 && ia9;
+    if (slots[9].wd != 0) {
+      require(tx.outputs[o_9].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_9].scriptPubKey), 0, 31) + 0x00 == slots[9].d);
+      if (ia9) {
+        require(tx.outputs[o_9].assets.lookup(xid.txid, xid.gidx) == slots[9].wd);
+      } else {
+        require(tx.outputs[o_9].value == slots[9].wd);
+      }
+    } else {
+      require(true);
+    }
+    int o_10 = o_9 + int(slots[9].wd != 0) * (1 - int(ia9));
+    int r10 = abs(bin2num(substr(sha256(seed + 0x0b), 0, 16)));
+    ECPoint pa10 = { x: slots[10].proof.ax, y: slots[10].proof.ay };
+    ECPoint ra10 = ecMul(pa10, r10, 2);
+    ECPoint pc10 = { x: slots[10].proof.cx, y: slots[10].proof.cy };
+    ECPoint ic10 = { x: 9998466654269090780154412861764702119882551761648472007156062990602121770216, y: 10175560279823261102101182892955040423768124465854640704589934008260310548438 };
+    ECPoint sc_10 = ecAdd(sc_9, ecMul(pc10, r10, 2), 2);
+    ECPoint bs_10 = ecAdd(bs_9, ecMul(ic10, slots[10].pub, 2), 2);
+    int s0_10 = s0_9 + slots[10].pub * r10;
+    int s1_10 = s1_9 + slots[10].dep * r10;
+    int s2_10 = s2_9 + slots[10].wd * r10;
+    int s3_10 = s3_9 + bin2num(slots[10].a) * r10;
+    int s4_10 = s4_9 + bin2num(slots[10].d) * r10;
+    int sr_10 = sr_9 + r10;
+    bool ia10 = size(slots[10].a) != 0;
+    require(!pend_9 || (slots[10].wd != 0 && !ia10));
+    require(!ia10 || slots[10].a == f);
+    require(slots[10].dep >= 0);
+    int net10 = slots[10].dep - slots[10].wd;
+    int nall_10 = nall_9 + net10;
+    int nbtc_10 = nbtc_9 + net10 * (1 - int(ia10));
+    bool pend_10 = slots[10].wd != 0 && ia10;
+    if (slots[10].wd != 0) {
+      require(tx.outputs[o_10].witnessVersion == 1);
+      require(substr(sha256(tx.outputs[o_10].scriptPubKey), 0, 31) + 0x00 == slots[10].d);
+      if (ia10) {
+        require(tx.outputs[o_10].assets.lookup(xid.txid, xid.gidx) == slots[10].wd);
+      } else {
+        require(tx.outputs[o_10].value == slots[10].wd);
+      }
+    } else {
+      require(true);
+    }
+    require(!pend_10);
+    ECPoint bpa = { x: bp.ax, y: bp.ay };
+    ECPoint bpc = { x: bp.cx, y: bp.cy };
+    ECPoint alpha = { x: 17124930453310749670146260042721400923234369183080586948112532128355919965815, y: 8370228666511808998597325266786301348392898484526506480489247612414830774636 };
+    int q = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    ECPoint ga = ecMul(alpha, (sr_10 + 1) % q, 2);
+    ECPoint cic0 = { x: 19868351674973159501775586111964852124589542668390463233411858098751188947382, y: 16878554977626556631752852844584890049505203480856829751765513286213712966556 };
+    ECPoint cic1 = { x: 296973416326963112727569273810243651291789578107048114367846980726176777481, y: 780268292571855866012910636265016158889310156126573895658216433942437207606 };
+    ECPoint cic2 = { x: 2129992493716015075496881194048062336941338605052288385631402844689616349310, y: 18355620258907851808229131401686180726894254501174234792322316562637565685968 };
+    ECPoint cic3 = { x: 20126086140981541975178484385534594197330767620203416761984090785134313489015, y: 12852342344641681136394681874146252485806278588517839797340030100306887699244 };
+    ECPoint cic4 = { x: 21286377549051689530781638415375008053978276778644742420663522631613221549682, y: 7518717250451245149202208059118702387401665794981831484973185656577465012068 };
+    ECPoint cic5 = { x: 6044479798809457040847492781011845338197004076817144772993962267736936274460, y: 10073596985325604996303469341415963288037681334109839784230578955528441240211 };
+    ECPoint bic0 = { x: 14202808473569903180989586725293360712504380407739785264685291016692157239541, y: 9210458138520771368961538202728078232137896956760951183977419205469771221507 };
+    ECPoint bicst = { x: 19020461981870718874390571933175041145376519297023464544721746056299636014887, y: 9083962901065977150763533104190700447074094881666902736805181842584966057320 };
+    ECPoint lx = ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecMul(cic0, sr_10 % q, 2), ecMul(cic1, s0_10 % q, 2), 2), ecMul(cic2, s1_10 % q, 2), 2), ecMul(cic3, s2_10 % q, 2), 2), ecMul(cic4, s3_10 % q, 2), 2), ecMul(cic5, s4_10 % q, 2), 2), bs_10, 2), bic0, 2), ecMul(bicst, st, 2), 2);
+    ECPoint[16] g1 = [ra0, ra1, ra2, ra3, ra4, ra5, ra6, ra7, ra8, ra9, ra10, bpa, ga, lx, sc_10, bpc];
+    G2Point[16] g2 = [{ xC1: slots[0].proof.bxc1, xC0: slots[0].proof.bxc0, yC1: slots[0].proof.byc1, yC0: slots[0].proof.byc0 }, { xC1: slots[1].proof.bxc1, xC0: slots[1].proof.bxc0, yC1: slots[1].proof.byc1, yC0: slots[1].proof.byc0 }, { xC1: slots[2].proof.bxc1, xC0: slots[2].proof.bxc0, yC1: slots[2].proof.byc1, yC0: slots[2].proof.byc0 }, { xC1: slots[3].proof.bxc1, xC0: slots[3].proof.bxc0, yC1: slots[3].proof.byc1, yC0: slots[3].proof.byc0 }, { xC1: slots[4].proof.bxc1, xC0: slots[4].proof.bxc0, yC1: slots[4].proof.byc1, yC0: slots[4].proof.byc0 }, { xC1: slots[5].proof.bxc1, xC0: slots[5].proof.bxc0, yC1: slots[5].proof.byc1, yC0: slots[5].proof.byc0 }, { xC1: slots[6].proof.bxc1, xC0: slots[6].proof.bxc0, yC1: slots[6].proof.byc1, yC0: slots[6].proof.byc0 }, { xC1: slots[7].proof.bxc1, xC0: slots[7].proof.bxc0, yC1: slots[7].proof.byc1, yC0: slots[7].proof.byc0 }, { xC1: slots[8].proof.bxc1, xC0: slots[8].proof.bxc0, yC1: slots[8].proof.byc1, yC0: slots[8].proof.byc0 }, { xC1: slots[9].proof.bxc1, xC0: slots[9].proof.bxc0, yC1: slots[9].proof.byc1, yC0: slots[9].proof.byc0 }, { xC1: slots[10].proof.bxc1, xC0: slots[10].proof.bxc0, yC1: slots[10].proof.byc1, yC0: slots[10].proof.byc0 }, { xC1: bp.bxc1, xC0: bp.bxc0, yC1: bp.byc1, yC0: bp.byc0 }, { xC1: 6465305508147559554188507992126724828073222407358721183125648308874526368115, xC0: 21729737425305472374157339803282535461534938919859646743733504855428128289172, yC1: 10756681742234319695540721216883919962305429587472898362748983524977966296981, yC0: 8379897193327354275198337152615785282903698424642989026836713287568790519353 }, { xC1: 11582481836892374063198901799339574277848212373472137397261776814453819380967, xC0: 21410070994618274429126064534645883860110033641159761031641959105521148483420, yC1: 2575401210716703365943980659250053292738894509323597439509527733327303129397, yC0: 656267390297269005747168719883863524334173867398775360091341865323728468732 }, { xC1: 16953325574807890813765429395969466482837933086725871918537659188396557077874, xC0: 2905053654593703872547435230315270953576802599259650652725436377036816847728, yC1: 4734251528500975220169943943459152313808194677308039787037419604209731445026, yC0: 6479922793795918903997763346030694235201153435939216712020901465867540892610 }, { xC1: 6189299819874542252547093294863462153759837121442976093247494568189061593832, xC0: 3037118203203874114554796893490023402894884258155877046841864946180973212288, yC1: 3020231191548685444312789308591314246662832466316341784669701282499962629882, yC0: 4133287115369086194538705236659631108267484043621844975019141958295513654726 }];
+    require(ecPairing(g1, g2, 2));
+    require(tx.outputs[0].value == tx.inputs[0].value + nbtc_10);
+    if (has) {
+      int kept = 0;
+      if (tx.outputs[1].assets.has(xid.txid, xid.gidx)) {
+        kept = tx.outputs[1].assets.lookup(xid.txid, xid.gidx);
+      } else {
+        require(true);
+      }
+      require(kept == xin + nall_10 - nbtc_10);
+    } else {
+      require(true);
+    }
+    require(this.tunnel(0, { scriptPubKey: true, value: false, assets: true }));
+  }
+}

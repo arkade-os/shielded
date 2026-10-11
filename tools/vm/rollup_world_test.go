@@ -53,6 +53,7 @@ type rollupLeg struct {
 }
 
 type rollupWorld struct {
+	compiled           bool
 	slots              int
 	kind               byte
 	rng                *rand.Rand
@@ -69,20 +70,30 @@ type rollupWorld struct {
 }
 
 func newRollupWorld(t *testing.T, slots int, kind byte, seed int64) *rollupWorld {
+	return newRollupWorldVariant(t, slots, kind, seed, compilerVariantEnabled())
+}
+
+func newRollupWorldVariant(t *testing.T, slots int, kind byte, seed int64, compiled bool) *rollupWorld {
 	t.Helper()
 	rng := rand.New(rand.NewSource(seed))
 	client := newRollupTrapdoor(rng, nil, 5)
 	batch := newRollupTrapdoor(rng, client, slots+1)
-	w := &rollupWorld{slots: slots, kind: kind, rng: rng, client: client, batch: batch}
+	w := &rollupWorld{compiled: compiled, slots: slots, kind: kind, rng: rng, client: client, batch: batch}
 	leaf, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: slots, Kind: kind, Client: client.key, Batch: batch.key})
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.leaf = leaf
+	if compiled {
+		w.leaf = compilerBatchLeaf(t, slots, kind, client.key, batch.key)
+	}
 	w.x = asset.AssetId{Txid: chainhash.Hash{0xaa, 1}, Index: 2}
 	w.token = asset.AssetId{Txid: chainhash.Hash{0xcc, 3}, Index: 0}
 	if w.reserveLeaf, err = buildRollupReserveLeaf(w.token); err != nil {
 		t.Fatal(err)
+	}
+	if compiled {
+		w.reserveLeaf = compilerReserveLeaf(t, w.token)
 	}
 	w.headIn, w.xIn = 100_330, 10_000
 	state := func() []byte { b := make([]byte, 32); rng.Read(b[:31]); return b }
@@ -173,7 +184,12 @@ func (b *rollupBatch) publics(i int) []*big.Int {
 
 // slotItem is the witness index of slot i's field f: 0-7 proof, 8 pub, 9
 // deposit, 10 withdraw, 11 boundaryAsset, 12 destination.
-func (b *rollupBatch) slotItem(i, f int) int { return 8 + (b.w.slots-1-i)*13 + f }
+func (b *rollupBatch) slotItem(i, f int) int {
+	if b.w.compiled {
+		return len(b.witness) - 1 - (8 + i*13 + f)
+	}
+	return 8 + (b.w.slots-1-i)*13 + f
+}
 
 func (b *rollupBatch) prove() {
 	b.proofs = nil
@@ -196,6 +212,9 @@ func (b *rollupBatch) buildWitness() {
 		wit = append(wit, rollupPublicItems(b.publics(i))...)
 	}
 	b.witness = wit
+	if b.w.compiled {
+		b.witness = compilerWitness(wit, b.w.slots)
+	}
 }
 
 // rollupPublicItems encodes pub, deposit and withdraw as script numbers, and

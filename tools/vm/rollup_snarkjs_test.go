@@ -86,6 +86,9 @@ func TestRollupBatchLeafVerifiesSnarkJSProofs(t *testing.T) {
 	if w.leaf, err = buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Client: client, Batch: batch}); err != nil {
 		t.Fatal(err)
 	}
+	if w.compiled {
+		w.leaf = compilerBatchLeaf(t, 11, 0, client, batch)
+	}
 	newPacket := decode(f.NewPacket)
 	w.oldPacket, w.newState, w.newDA = decode(f.OldPacket), newPacket[:32], newPacket[32:]
 	legs := make([]rollupLeg, 11)
@@ -93,10 +96,16 @@ func TestRollupBatchLeafVerifiesSnarkJSProofs(t *testing.T) {
 	legs[3] = rollupLeg{wd: 1000, dest: decode(f.PayoutProgram)}
 	b := w.batchOf(legs, false)
 	b.witness = rollupFixtureWitness(t, f)
+	if w.compiled {
+		b.witness = compilerWitness(b.witness, 11)
+	}
 	if err := b.execute(); err != nil {
 		t.Fatalf("real snarkjs batch rejected: %v", err)
 	}
 	f.Slots[0].PublicSignals[0] = "5"
 	b.witness = rollupFixtureWitness(t, f)
+	if w.compiled {
+		b.witness = compilerWitness(b.witness, 11)
+	}
 	rollupExpectReject(t, "a pub the proofs did not sign", b, "OP_VERIFY")
 }

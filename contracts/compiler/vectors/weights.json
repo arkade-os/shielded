@@ -1,0 +1,74 @@
+[
+  {
+    "name": "transfers only",
+    "kind": 0,
+    "goWeightWU": 34788,
+    "compilerWeightWU": 39916,
+    "limitWU": 40000,
+    "goFits": true,
+    "compilerFits": true,
+    "goScriptBytes": 4795,
+    "compilerScriptBytes": 6077,
+    "reserve": false
+  },
+  {
+    "name": "deposits, payouts and an asset",
+    "kind": 0,
+    "goWeightWU": 38066,
+    "compilerWeightWU": 43202,
+    "limitWU": 40000,
+    "goFits": true,
+    "compilerFits": false,
+    "goScriptBytes": 4795,
+    "compilerScriptBytes": 6077,
+    "reserve": true
+  },
+  {
+    "name": "11 deposits of 1 BTC",
+    "kind": 0,
+    "goWeightWU": 39694,
+    "compilerWeightWU": 44822,
+    "limitWU": 40000,
+    "goFits": true,
+    "compilerFits": false,
+    "goScriptBytes": 4795,
+    "compilerScriptBytes": 6077,
+    "reserve": false
+  },
+  {
+    "name": "11 payouts of 1 BTC",
+    "kind": 0,
+    "goWeightWU": 38260,
+    "compilerWeightWU": 43388,
+    "limitWU": 40000,
+    "goFits": true,
+    "compilerFits": false,
+    "goScriptBytes": 4795,
+    "compilerScriptBytes": 6077,
+    "reserve": false
+  },
+  {
+    "name": "reserve and 8 deposit inputs",
+    "kind": 0,
+    "goWeightWU": 39594,
+    "compilerWeightWU": 44730,
+    "limitWU": 40000,
+    "goFits": true,
+    "compilerFits": false,
+    "goScriptBytes": 4795,
+    "compilerScriptBytes": 6077,
+    "reserve": true
+  },
+  {
+    "name": "join transfers only",
+    "kind": 1,
+    "goWeightWU": 34788,
+    "compilerWeightWU": 39916,
+    "limitWU": 40000,
+    "goFits": true,
+    "compilerFits": true,
+    "goScriptBytes": 4795,
+    "compilerScriptBytes": 6077,
+    "reserve": false
+  }
+]

@@ -1,0 +1,25 @@
+{
+  "compilerRevision": "89a1ff73b24441699095c9135d6429f7dc6cb6ab",
+  "fixture": "synthetic public test verification keys and proofs; seed 11; not production signing material",
+  "hashEncoding": "UTF-8 with CRLF normalized to LF",
+  "files": {
+    "kind-0/batch.ark": "f257403bded83515ad537c73fd1f9d74af60277a5717a308e1ce2d2bed21f9c8",
+    "kind-0/batch.compiled.hex": "e7f3b4a009921da893002470aba201719aeda689d99d72ae43510ee058aac062",
+    "kind-0/batch.go.hex": "b39cc08d6d590e417646f9b2731a0edda76f69f7a90f70f3ee2fdc2fbfdcc0d1",
+    "kind-0/metadata.json": "19ab53f1387245003d724e730302e201d677eeb24bcc89e41e37d103ffc4f0e0",
+    "kind-0/public-vk-bindings.json": "23973e125e4f40160b53b26b4bb3530505f2ed0bde120412f98d03700e73c584",
+    "kind-0/reserve.compiled.hex": "38b04126c85a9473eb5caa9de179bbe106addb78e597434b58320220609f2b6b",
+    "kind-0/reserve.go.hex": "fd62e5ca6565d630e2820f1b436f32a8a4e7e89a6b8e87fd7ba158f06e00ad55",
+    "kind-0/transfer-vector.json": "ed849a4c1a3e2c207de7872d81eabf01c60640c0883ff8633f1825994a6ce4ed",
+    "kind-1/batch.ark": "04f9449a467f461b1a7c75abdfeaa7b3a64211e36ff8781c6ab496de9a1e50ed",
+    "kind-1/batch.compiled.hex": "b62110902a261f491f90c0b9a72df333d79c3477800de2a1162edbc5b8bf721a",
+    "kind-1/batch.go.hex": "65863a62ce68ec11cb31beee4619d46ac8bab1565c315037b0974269190cc6d4",
+    "kind-1/metadata.json": "36d5d3629f3f073763ce602a85bdc9f045cdfb186c3447e5750184b9fcda5ed9",
+    "kind-1/public-vk-bindings.json": "23973e125e4f40160b53b26b4bb3530505f2ed0bde120412f98d03700e73c584",
+    "kind-1/reserve.compiled.hex": "38b04126c85a9473eb5caa9de179bbe106addb78e597434b58320220609f2b6b",
+    "kind-1/reserve.go.hex": "fd62e5ca6565d630e2820f1b436f32a8a4e7e89a6b8e87fd7ba158f06e00ad55",
+    "kind-1/transfer-vector.json": "9165e2058e24334cb95e57a0f3b01ae623d071aa829e1092064f293b1f70e1fe",
+    "reproducibility.json": "109584217fba44cbee2a79ef3b8d903ac1510cdae9cc7e04558edcb166c0b06c",
+    "weights.json": "dfc3a0b4acd478e0da5ef788299f5a4074b1aadf6e0b168f4d7497cafaa7cc0c"
+  }
+}

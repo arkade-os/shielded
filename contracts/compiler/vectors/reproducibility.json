@@ -1,0 +1,15 @@
+{
+  "excluded": {
+    "batch.raw.json": "raw compiler artifact retains createdAt and temporary source path metadata",
+    "toolchain.json": "compiler binary hash and local candidate provenance vary by build"
+  },
+  "fixtureSeed": 11,
+  "stable": [
+    "batch.ark",
+    "public-vk-bindings.json",
+    "*.hex",
+    "metadata.json",
+    "transfer-vector.json",
+    "weights.json"
+  ]
+}

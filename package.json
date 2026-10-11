@@ -12,6 +12,7 @@
     "app": "vite --config app/vite.config.ts --host 127.0.0.1",
     "build": "tsc --noEmit && vite build --config app/vite.config.ts",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:compiler": "node tools/test-compiler-variant.mjs",
     "vm:build": "node --import tsx tools/build-vm.ts",
     "circom": "node tools/prepare-circom.mjs",
     "rollup:compile": "node circuits/rollup/generate.mjs",

@@ -80,6 +80,8 @@ npm run test:rollup:witness
 
 `npm test` needs the VM binary from `npm run vm:build`; the witness test needs the compiled circuits.
 
+The draft [compiler covenant comparison](docs/COMPILER-VARIANT.md) runs the same VM cases against `.ark` batch and reserve leaves and exports vectors for compiler optimization.
+
 ## Deploy
 
 See [docs/DOKPLOY.md](docs/DOKPLOY.md). Read [SECURITY.md](SECURITY.md) first: this is unaudited test software.

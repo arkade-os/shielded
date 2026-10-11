@@ -1,0 +1,35 @@
+name: Compiler variant
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  compiler-variant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: arkade-os/compiler
+          ref: 89a1ff73b24441699095c9135d6429f7dc6cb6ab
+          path: .deps/compiler
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: tools/vm/go.sum
+      - name: Build pinned compiler and exercise compiled leaves
+        run: npm run test:compiler
+        env:
+          SHIELDED_COMPILER_SOURCE: .deps/compiler
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compiler-vectors-${{ github.sha }}
+          path: .recovery/compiler-variant/vectors
+          if-no-files-found: error
