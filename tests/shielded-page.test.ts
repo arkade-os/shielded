@@ -55,7 +55,7 @@ test('restore parses before stopping and preserves the secret and sent log on a 
  assert.ok(await repo.getAccount('pool'));await assert.rejects(cache.repository.saveAccount('pool',snapshot),/closed/i);
 });
 
-test('restore waits for pending creation, catch-up and legacy save before clearing',async()=>{
+for(const perPage of [false,true])test(`restore waits for pending creation, ${perPage?'page':'batch'} checkpoint and legacy save before clearing`,async()=>{
  const applying=deferred(),release=deferred(),created=deferred(),events:string[]=[];
  const store=storageOf(),repo=new InMemoryShieldedNoteRepository(),cache=pageCache(repo);
  store.setItem(SECRET,'old');store.setItem(SENT,JSON.stringify({'7':{to:'recipient'}}));
@@ -64,7 +64,8 @@ test('restore waits for pending creation, catch-up and legacy save before cleari
  const wallet={account,repositoryError:undefined as string|undefined,recordSent:()=>{},dispose:async()=>{events.push('disposed');},save:async()=>{
   try{await cache.repository.saveAccount('pool',snapshot);}catch{wallet.repositoryError='cache closed';}events.push('save returned');
  }};
- const syncing=catchUp(account,async()=>({total:1,batches:[{}]}) as never,()=>wallet.save());
+ const checkpoint=()=>wallet.save();
+ const syncing=catchUp(account,async()=>({total:1,batches:[{}]}) as never,perPage?undefined:checkpoint,perPage?checkpoint:undefined);
  await applying.promise;let restoring=false;
  const legacy=importLegacySent(wallet,store,()=>!restoring);
  const session=openPageWallet(async()=>undefined,async()=>{await created.promise;return wallet;});await flush();

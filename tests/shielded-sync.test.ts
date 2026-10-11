@@ -131,3 +131,24 @@ for(const rejects of [false,true])test(`idle saves after a queued follower finis
  let synchronous=false;const immediate=idle(account,()=>{synchronous=true;return 9;});
  assert.equal(synchronous,true,'the callback shares the final no-running check');assert.equal(await immediate,9);
 });
+
+for(const rejects of [false,true])test(`page checkpoints hold the flight through a ${rejects?'rejected':'successful'} leader and its queued follower`,async()=>{
+ const gate=()=>{let resolve!:()=>void;return {promise:new Promise<void>(r=>{resolve=r;}),resolve:()=>resolve()};};
+ const checkpoint=gate(),applying=gate(),finishApply=gate();
+ const pages:number[]=[],events:string[]=[];let calls=0,saved=false;
+ const mutable={batchCount:0,apply:async()=>{
+  if(mutable.batchCount===1){events.push('applying');applying.resolve();await finishApply.promise;}
+  mutable.batchCount++;
+ }};
+ const account=mutable as unknown as RollupAccount;
+ const api=(async()=>{calls++;return {total:calls,batches:[{txid:String(calls)}]};}) as never;
+ const onPage=async(cursor:number)=>{pages.push(cursor);if(cursor===1){await checkpoint.promise;if(rejects)throw new Error('checkpoint failed');}};
+ const leader=catchUp(account,api,undefined,onPage),checkedLeader=rejects?assert.rejects(leader,/checkpoint failed/):leader;
+ const follower=catchUp(account,api,undefined,onPage),snapshot=idle(account,()=>{saved=true;return account.batchCount;});
+ try{
+  await new Promise(r=>setImmediate(r));assert.deepEqual(pages,[1]);assert.equal(calls,1);assert.equal(saved,false);
+  checkpoint.resolve();await applying.promise;await new Promise(r=>setImmediate(r));
+  assert.equal(saved,false);assert.deepEqual(events,['applying']);
+  finishApply.resolve();await checkedLeader;assert.equal(await follower,1);assert.equal(await snapshot,2);assert.deepEqual(pages,[1,2]);
+ }finally{checkpoint.resolve();finishApply.resolve();await Promise.allSettled([checkedLeader,follower,snapshot]);}
+});

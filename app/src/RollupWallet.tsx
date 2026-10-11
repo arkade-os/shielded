@@ -260,6 +260,7 @@ export default function RollupWallet(){
    <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
    <button disabled={busy||!restore.trim()} onClick={()=>void restoreWallet()}>Restore wallet</button>
    {restoreError&&<p className="stock-blocked">{restoreError}</p>}
+   {restoreError&&restoring.current&&<button type="button" className="stock-ghost stock-mini" onClick={()=>location.reload()}>Reload wallet</button>}
   </details>
  </main></div>;
 }

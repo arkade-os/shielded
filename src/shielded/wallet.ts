@@ -195,7 +195,7 @@ export class ShieldedWallet extends Wallet {
   if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
  }
  async sync():Promise<void>{
-  const applied=await catchUp(this.account,this.api,()=>this.save());
+  const applied=await catchUp(this.account,this.api,undefined,()=>this.save());
   if(applied)this.changed();
  }
 

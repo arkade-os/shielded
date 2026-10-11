@@ -4,7 +4,7 @@ import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,Sin
 import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
-import {RollupAccount,type BuiltSpend,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
+import {RollupAccount,type BuiltSpend,type PublishedBatch,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
 import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {assetFieldOfId,noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
@@ -673,4 +673,42 @@ test('private persistence waits for catch-up and refuses a new snapshot after di
    assert.equal(!!await repository.getAccount(TOKEN),!closed);
   }finally{resume.resolve();await barrier;await wallet.dispose();}
  }
+});
+
+for(const failure of ['none','fetch','apply'] as const)test(`sync checkpoints complete pages with ${failure} failure`,async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository});
+ const batches:PublishedBatch[]=Array.from({length:123},(_,i)=>({kind:'spend',slots:[],txid:String(i+1)}));
+ if(failure==='apply')batches[51]={kind:'spend',txid:'malformed',slots:[{root:'0',nullifiers:['not a field'],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:0}]};
+ const save=repository.saveAccount.bind(repository),read=repository.getAccount.bind(repository),saved:number[]=[],requested:number[]=[];
+ let reads=0,changed=0;
+ repository.getAccount=async token=>{reads++;return read(token);};
+ repository.saveAccount=async(token,snapshot)=>{saved.push(snapshot.account.blocks);await save(token,snapshot);};
+ wallet.onShieldedChange(()=>{changed++;});
+ (wallet as any).api=async(path:string)=>{
+  const from=Number(/from=(\d+)/.exec(path)![1]);requested.push(from);
+  if(failure==='fetch'&&from===50)throw new Error('next page failed');
+  return {total:batches.length,batches:batches.slice(from,from+50)};
+ };
+ try{
+  if(failure==='none')await wallet.sync();else await assert.rejects(wallet.sync(),failure==='fetch'?/next page failed/:/BigInt/);
+  assert.deepEqual(saved,failure==='none'?[50,100,123]:[50]);
+  assert.equal(reads,saved.length,'one repository merge read per checkpoint');
+  assert.equal(changed,failure==='none'?1:0);
+  const stored=(await read(TOKEN))!.account;
+  assert.equal(stored.blocks,failure==='none'?123:50);
+  assert.equal(wallet.batchCount(),failure==='none'?123:failure==='fetch'?50:51);
+  if(failure==='apply'){
+   assert.ok(wallet.account.txids.has('malformed'),'the rejected real apply already mutated the live account');
+   assert.ok(!stored.txids.includes('malformed'));assert.ok(!stored.txids.includes('51'));
+  }
+  const reopened=await open({repository});
+  try{
+   assert.equal(reopened.resumed,true);assert.deepEqual(reopened.account.snapshot(),stored);
+   if(failure==='none')assert.deepEqual(reopened.account.snapshot(),wallet.account.snapshot());
+  }finally{await reopened.dispose();}
+  if(failure==='none'){
+   const before=reads;await wallet.sync();assert.equal(reads,before);assert.deepEqual(saved,[50,100,123]);assert.equal(changed,1);
+   assert.deepEqual(requested,[0,50,100,123]);
+  }
+ }finally{await wallet.dispose();}
 });
