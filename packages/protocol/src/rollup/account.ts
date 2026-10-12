@@ -2,7 +2,7 @@ import { hex } from '@scure/base';
 import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, type BatchKind } from './constants.ts';
 import { clientWitness, inputNullifierOf, type ClientWitness } from './client.ts';
 import { akOf, destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
-import { NoteFrontier } from './frontier.ts';
+import { NoteFrontier, type FrontierSnapshot } from './frontier.ts';
 import { RollupState, type BatchSlot } from './state.ts';
 import { ctDigestOf, openRollupNotes, sealRollupNotes, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
 
@@ -14,9 +14,14 @@ export interface OwnedNote extends RollupNote { index: number; nullifier: bigint
 export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw' | 'merge'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint; slots: number[] }
 /** Without `ask` the account watches: it sees notes and spends but cannot build a spend. */
 export interface RollupKeys { owner: bigint; nk: bigint; viewSecret: Uint8Array; ask?: bigint }
+export interface SnapshotNote { amount: string; asset: string; rho: string; index: number; nullifier: string }
+export interface SnapshotEntry { kind: HistoryEntry['kind']; batch: number; txid?: string; at?: number; amounts: [string, string][]; spent: string[]; created: SnapshotNote[]; destination?: string; slots: number[] }
+export interface AccountSnapshot { v: 1; owner: string; bornAt: number; blocks: number; frontier: FrontierSnapshot; owned: SnapshotNote[]; history: SnapshotEntry[]; txids: string[] }
 export interface SpendRequest { asset?: bigint; input?: OwnedNote; inputs?: [OwnedNote, OwnedNote]; to?: { recipient: RollupRecipient; amount: bigint }; deposit?: bigint; withdraw?: bigint; program?: Uint8Array; dummy?: { nk: bigint; rho: bigint } }
 export interface BuiltSpend { witness: ClientWitness; ciphertext: Uint8Array; change: bigint }
 
+const noteOut = (n: OwnedNote): SnapshotNote => ({ amount: String(n.amount), asset: String(n.asset), rho: String(n.rho), index: n.index, nullifier: String(n.nullifier) });
+const noteIn = (n: SnapshotNote): OwnedNote => ({ amount: BigInt(n.amount), asset: BigInt(n.asset), rho: BigInt(n.rho), index: n.index, nullifier: BigInt(n.nullifier) });
 export const randomField = () => BigInt('0x' + hex.encode(crypto.getRandomValues(new Uint8Array(32)))) % ROLLUP_FIELD;
 export const slotOf = (s: PublishedSlot): BatchSlot => ({ root: BigInt(s.root), nullifiers: s.nullifiers.map(BigInt), commitments: [BigInt(s.commitments[0]), BigInt(s.commitments[1])], ctDigest: BigInt(s.ctDigest), groupId: BigInt(s.groupId), groupSize: s.groupSize });
 
@@ -31,7 +36,7 @@ export class RollupAccount {
  readonly history: HistoryEntry[] = [];
  /** Every published batch txid, so the wallet can tell pool payouts from outside funding. */
  readonly txids = new Set<string>();
- private readonly frontier?: NoteFrontier;
+ private frontier?: NoteFrontier;
  private blocks = 0;
  private ecdh?: Promise<Ecdh>;
  private readonly bornAt: number;
@@ -101,6 +106,29 @@ export class RollupAccount {
  latestRoot(): bigint { return this.frontier ? (this.blocks ? this.frontier.root() : 0n) : this.state.latestRoot(); }
  notes(asset = BTC_ASSET): OwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.index - b.index); }
  balance(asset = BTC_ASSET): bigint { return this.notes(asset).reduce((sum, n) => sum + n.amount, 0n); }
+ /** The wallet's whole replayable state, JSON-safe. Frontier mode only: a full replica also holds a nullifier tree. */
+ snapshot(): AccountSnapshot {
+  if (!this.frontier) throw new Error('Only a frontier account can snapshot; a full replica must replay.');
+  return {
+   v: 1, owner: String(this.owner), bornAt: this.bornAt, blocks: this.blocks, frontier: this.frontier.snapshot(),
+   owned: [...this.owned.values()].map(noteOut), txids: [...this.txids],
+   history: this.history.map(e => ({ kind: e.kind, batch: e.batch, ...(e.txid ? { txid: e.txid } : {}), ...(e.at !== undefined ? { at: e.at } : {}), amounts: e.amounts.map(a => [String(a.asset), String(a.amount)] as [string, string]), spent: e.spent.map(String), created: e.created.map(noteOut), ...(e.destination !== undefined ? { destination: String(e.destination) } : {}), slots: e.slots })),
+  };
+ }
+ static fromSnapshot(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, snapshot: AccountSnapshot): RollupAccount {
+  if (snapshot.v !== 1) throw new Error(`Unknown account snapshot version ${snapshot.v}.`);
+  const account = RollupAccount.owning(hash, keys, { frontier: true, bornAt: snapshot.bornAt });
+  if (String(account.owner) !== snapshot.owner) throw new Error('That snapshot belongs to another key; sync from the pool instead.');
+  account.restore(NoteFrontier.fromSnapshot(hash, snapshot.frontier), snapshot);
+  return account;
+ }
+ private restore(frontier: NoteFrontier, snapshot: AccountSnapshot): void {
+  this.frontier = frontier;
+  this.blocks = snapshot.blocks;
+  for (const note of snapshot.owned.map(noteIn)) this.owned.set(note.nullifier, note);
+  for (const txid of snapshot.txids) this.txids.add(txid);
+  for (const e of snapshot.history) this.history.push({ kind: e.kind, batch: e.batch, ...(e.txid ? { txid: e.txid } : {}), ...(e.at !== undefined ? { at: e.at } : {}), amounts: e.amounts.map(([asset, amount]) => ({ asset: BigInt(asset), amount: BigInt(amount) })), spent: e.spent.map(BigInt), created: e.created.map(noteIn), ...(e.destination !== undefined ? { destination: BigInt(e.destination) } : {}), slots: e.slots });
+ }
  /** A note's leaf index, found by its commitment; -1 until its batch is replayed. */
  locate(note: RollupNote, owner: bigint): number {
   if (this.frontier) throw new Error('Locating a note by scanning needs the full replica.');

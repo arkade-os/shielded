@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,bornAtFor,checkSigningRequest,pickNote,provingUrls,rollupApi,sheetLine,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
@@ -21,6 +22,7 @@ test('a join body carries both nullifiers and proves with the join artifacts, wh
  const proving={spend:{wasm:'s1',zkey:'s2'},join:{wasm:'j1',zkey:'j2'},batch:{wasm:'b1',zkey:'b2'},batchJoin:{wasm:'k1',zkey:'k2'}};
  assert.deepEqual(provingUrls(spend,proving),{wasm:'/api/rollup/proving/spend.wasm?v=s1',zkey:'/api/rollup/proving/spend.zkey?v=s2'});
  assert.deepEqual(provingUrls(join,proving),{wasm:'/api/rollup/proving/join.wasm?v=j1',zkey:'/api/rollup/proving/join.zkey?v=j2'});
+ assert.deepEqual(provingUrls(join,proving,'http://pool.test'),{wasm:'http://pool.test/api/rollup/proving/join.wasm?v=j1',zkey:'http://pool.test/api/rollup/proving/join.zkey?v=j2'});
 });
 
 test('a wallet skips the history before its birth in one pool, and reads every batch of the next',()=>{
@@ -79,6 +81,9 @@ test('the API client retries outages, but reports a refusal at once',async()=>{
  assert.equal(calls,3);
  const refusing=(async()=>new Response('{"error":"Invalid client proof."}',{status:400})) as unknown as typeof fetch;
  await assert.rejects(rollupApi('/spends',{},refusing,0),/Invalid client proof/);
+ const seen:string[]=[],spy=(async(url:string)=>{seen.push(url);return new Response('{}');}) as unknown as typeof fetch;
+ await rollupApi('/status',undefined,spy,0);await rollupApi('/status',undefined,spy,0,'http://pool.test');await poolApiOf('http://pool.test',spy)('/status');
+ assert.deepEqual(seen,['/api/rollup/status','http://pool.test/api/rollup/status','http://pool.test/api/rollup/status'],'a page keeps relative URLs; a Node caller names the pool by origin');
 });
 
 test('auto-shield takes every spendable coin the pool will still accept, BTC first, then listed assets one coin at a time',()=>{
@@ -108,4 +113,21 @@ test('withdrawn asset units are listed apart from the rest, so the wallet never 
  const a='aa'.repeat(34),b='bb'.repeat(34),coin=(txid:string,assetId?:string,amount=0n)=>({txid,vout:0,value:330,...(assetId?{assets:[{assetId,amount}]}:{})});
  const rows=arkAssetHoldings([coin('paid',a,39n),coin('own',a,10n),coin('own2',b,5n),coin('sats')],c=>c.txid==='paid');
  assert.deepEqual(rows.map(r=>[r.assetId,r.payout,r.units,r.coins.map(c=>c.txid)]),[[a,true,39n,['paid']],[a,false,10n,['own']],[b,false,5n,['own2']]]);
+});
+
+test('the status sheet renders a step state the handle produced, title and all',()=>{
+ const state={title:'Sending privately',steps:['Pick notes','Prove the payment on this device','Submit to the pool'],current:1};
+ assert.equal(sheetLine(state),'Step 2 of 3: Prove the payment on this device');
+ assert.equal(sheetLine({...state,current:2,done:true}),'Done');
+ assert.equal(sheetLine({...state,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
+});
+
+test('the route preview names what each rail makes public, and never leaves a rail unexplained',()=>{
+ assert.deepEqual(routeCopy('shielded'),{title:'Private payment',detail:'The amount and both parties stay private.'});
+ assert.equal(routeCopy('shielded-withdraw').title,'Withdraw from the pool');
+ assert.match(routeCopy('shielded-withdraw').detail,/become public/);
+ assert.equal(routeCopy('ark').title,'Arkade payment');
+ assert.equal(routeCopy('ark-asset').title,'Arkade payment');
+ assert.equal(routeCopy('onchain').title,'On-chain exit');
+ assert.match(routeCopy('lightning').detail,/public/);
 });
