@@ -67,14 +67,15 @@ test('a wallet with no repository at all still gets a fresh account',async()=>{
 const pageOf=(batches:{txid:string}[],from:number,limit:number)=>({total:batches.length,batches:batches.slice(from,from+limit)});
 
 test('catch-up pages from the account cursor and applies each batch once',async()=>{
- const applied:number[]=[],saves:number[]=[];
+ const applied:number[]=[],saves:number[]=[],seen:string[]=[];
  const account={batchCount:0,apply:async(b:{txid:string})=>{applied.push(Number(b.txid));(account as {batchCount:number}).batchCount++;return [];}} as unknown as RollupAccount;
  const batches=Array.from({length:7},(_,i)=>({txid:String(i)}));
  let pages=0;
  const api=(async(path:string)=>{pages++;return pageOf(batches,Number(/from=(\d+)/.exec(path)![1]),Number(/limit=(\d+)/.exec(path)![1]));}) as never;
- assert.equal(await catchUp(account,api,n=>{saves.push(n);}),7);
+ assert.equal(await catchUp(account,api,(n,batch)=>{saves.push(n);seen.push((batch as {txid:string}).txid);}),7);
  assert.deepEqual(applied,[0,1,2,3,4,5,6]);
  assert.deepEqual(saves,[1,2,3,4,5,6,7],'the hook fires once per applied batch, with the new cursor');
+ assert.deepEqual(seen,['0','1','2','3','4','5','6'],'and hands it the batch it applied');
  assert.equal(pages,1,'one page covers them all and the total says so, so no empty page is fetched');
  assert.equal(await catchUp(account,api),0,'a second run at the head applies nothing');
 });
