@@ -8,7 +8,7 @@ import {hex} from '@scure/base';
 import {offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
-import {flushRollupIntent,leftoverRenewal,renewedRollupPoolCoins,renewRollupPool,rollupRenewalDigest,rollupRenewalSignature} from '../src/rollup/renewal.ts';
+import {flushRollupIntent,leftoverRenewal,renewedRollupPoolCoins,renewRollupPool,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
 // tools/vm/rollup_renewal_test.go pins the same digest for the covenant's gate.
 test('the renewal gate signs the digest the covenant rebuilds',()=>{
@@ -31,6 +31,17 @@ test('the renewed coins are the token head and the reserves that follow it, not 
  assert.throws(()=>renewedRollupPoolCoins(token,[[x,'10000']],[head,{...reserve,assets:[{assetId:x,amount:9000n}]}]),/does not hold/,'a reserve short of the amount it tracked');
  assert.throws(()=>renewedRollupPoolCoins(token,[[x,'10000']],[head,{...reserve,assets:[...reserve.assets,{assetId:token,amount:1n}]}]),/does not hold/,'a reserve carrying something else too');
  assert.throws(()=>renewedRollupPoolCoins(token,[[x,'10000']],[{...head,assets:[{assetId:token,amount:2n}]},reserve]),/head is not indexed/,'a token that is not the supply-1 pool token');
+});
+
+test('renewal comes due on the soonest expiry among the head and every reserve',()=>{
+ const x='bb'.repeat(34),coin=(txid:string,vout:number)=>({txid:txid.repeat(32),vout,value:330,sourceTxHex:''});
+ const archive={version:1 as const,head:coin('aa',0),reserves:{[x]:{...coin('cc',1),amount:'5'}},batches:0};
+ const points=rollupPoolPoints(archive);
+ assert.deepEqual(points,[{txid:'aa'.repeat(32),vout:0},{txid:'cc'.repeat(32),vout:1}],'the head leads and every reserve follows, as the intent orders them');
+ const now=Date.now(),window=48*3600_000,at=(p:{txid:string;vout:number},hours:number)=>({...p,expiresAt:new Date(now+hours*3600_000)});
+ assert.equal(rollupRenewalDue([at(points[0]!,120),at(points[1]!,30)],window,now),true,'a reserve arkd sweeps first pulls renewal forward');
+ assert.equal(rollupRenewalDue([at(points[0]!,120),at(points[1]!,120)],window,now),false);
+ assert.equal(rollupRenewalDue([at(points[0]!,120)],window,now),false,'a coin the indexer did not return cannot pull it forward');
 });
 
 test('a renewal hands out its intent id before the round, and names it when the round fails',async()=>{

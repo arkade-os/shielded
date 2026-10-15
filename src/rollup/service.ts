@@ -24,7 +24,7 @@ import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupLeaves} fr
 import {loadRollupLeaves} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
 import {createRollupProver} from './prover.ts';
-import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool} from './renewal.ts';
+import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
 import {listingsOf} from './listings.ts';
 import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
@@ -33,7 +33,7 @@ export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend',
 const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=BATCH_SLOTS+1;
 // The batch-join setup alone peaked at 4.11 GiB single-threaded; the server process needs room beside it.
 const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
-// arkd sweeps a pool coin at its batch expiry, so the head moves to a fresh round well before. A batch inherits its
+// arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
 
@@ -286,8 +286,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(stopped)return;
    try{
     if(existsSync(renewalPath))await exclusive(settleRenewal);
-    const {head}=operator.status().archive,{vtxos}=await live!.indexer.getVtxos({outpoints:[{txid:head.txid,vout:head.vout}]}),expires=vtxos[0]?.expiresAt;
-    if(expires instanceof Date&&expires.getTime()-Date.now()<(o.renewBeforeMs??RENEW_BEFORE_MS))await exclusive(async()=>{
+    const {vtxos}=await live!.indexer.getVtxos({outpoints:rollupPoolPoints(operator.status().archive)});
+    if(rollupRenewalDue(vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))await exclusive(async()=>{
      const from=operator.status().archive.head;
      try{
       const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,

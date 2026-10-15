@@ -31,6 +31,13 @@ export function renewedRollupPoolCoins<T extends RenewedCoin>(token:string,reser
 }
 export const rollupRenewalSignature=(operatorSecret:Uint8Array,cosigners:string[],head:{txid:string;vout:number})=>schnorr.sign(rollupRenewalDigest(cosigners,head),operatorSecret);
 
+/** The pool's coins in the order a renewal intent carries them: the head, then each reserve. */
+export const rollupPoolPoints=(archive:Pick<RollupArchive,'head'|'reserves'>)=>
+ [archive.head,...Object.values(archive.reserves)].map(({txid,vout})=>({txid,vout}));
+/** arkd sweeps each pool coin at its own expiry, so the soonest one among them sets the deadline for the whole pool. */
+export const rollupRenewalDue=(coins:readonly {expiresAt?:Date}[],beforeMs:number,now:number)=>
+ coins.some(c=>c.expiresAt instanceof Date&&c.expiresAt.getTime()-now<beforeMs);
+
 /**
  * Moves the head and every reserve, unchanged, into a fresh round; returns their new outpoints.
  * ponytail: one-shot; a crash after registration strands the intent until flushRollupIntent clears it.
@@ -41,7 +48,7 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
  onIntent?(intentId:string):Promise<void>|void;providers?:RollupRenewalProviders}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
  const ark=o.providers?.ark??new RestArkProvider(o.network.arkUrl),emulator=o.providers?.emulator??new RestEmulatorProvider(o.network.emulatorUrl);
  const indexer=o.providers?.indexer??new RestIndexerProvider(o.network.indexerUrl??o.network.arkUrl);
- const reserves=Object.entries(o.archive.reserves),points=[o.archive.head,...reserves.map(([,coin])=>coin)].map(({txid,vout})=>({txid,vout}));
+ const reserves=Object.entries(o.archive.reserves),points=rollupPoolPoints(o.archive);
  const found=(await indexer.getVtxos({outpoints:points})).vtxos,leaf=o.pool.findLeaf(hex.encode(o.renewLeaf));
  const coins=await withPrevTxs(points.map(p=>{
   const v=found.find(c=>c.txid===p.txid&&c.vout===p.vout);
