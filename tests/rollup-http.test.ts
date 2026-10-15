@@ -101,12 +101,16 @@ test('checkpoints are served only for the batch counts the operator vouches for'
 
 test('spends admitted at once are capped across all addresses, and the cap frees as checks finish',async(t)=>{
  let release=()=>{};const held=new Promise<void>(r=>{release=r;});let admitted=0;
- const api=await serve({ready:()=>true,submit:async()=>{admitted++;await held;}});t.after(api.close);
- const posts=Array.from({length:8},(_,i)=>post(api.base+'/spends',{...spend,id:String(i).padStart(32,'a')}));
- while(admitted<8)await new Promise(r=>setTimeout(r,5));
- const refused=await post(api.base+'/spends',{...spend,id:'f'.repeat(32)});
- assert.equal(refused.status,503,'a ninth check waits for one of eight to finish');
- release();
- assert.deepEqual((await Promise.all(posts)).map(r=>r.status),Array(8).fill(202));
- assert.equal((await post(api.base+'/spends',{...spend,id:'e'.repeat(32)})).status,202);
+ const api=await serve({ready:()=>true,submit:async s=>{if(s.id==='d'.repeat(32))throw new Error('Invalid client proof.');admitted++;await held;}});t.after(api.close);
+ try{
+  assert.equal((await post(api.base+'/spends',{...spend,id:'d'.repeat(32)})).status,400);
+  const posts=Array.from({length:8},(_,i)=>post(api.base+'/spends',{...spend,id:String(i).padStart(32,'a')}));
+  for(let i=0;i<400&&admitted<8;i++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(admitted,8,'a refused check gave its place back');
+  const refused=await post(api.base+'/spends',{...spend,id:'f'.repeat(32)});
+  assert.equal(refused.status,503,'a ninth check waits for one of eight to finish');
+  release();
+  assert.deepEqual((await Promise.all(posts)).map(r=>r.status),Array(8).fill(202));
+  assert.equal((await post(api.base+'/spends',{...spend,id:'e'.repeat(32)})).status,202);
+ }finally{release();}
 });
