@@ -64,8 +64,10 @@ test('a quote the withdrawal outlived is replaced before sending, and refused if
 
 test('a Lightning address whose Arkade destination the pool cannot pay hands over to its Lightning option',async t=>{
  const foreign=new ArkAddress(await SingleKey.fromPrivateKey(new Uint8Array(32).fill(5)).xOnlyPublicKey(),new Uint8Array(32).fill(7),decoded.hrp).encode();
+ let offline=false;
  t.mock.method(globalThis,'fetch',async(url:string|URL)=>{
   const u=new URL(String(url));
+  if(offline&&u.searchParams.get('paymentOption')==='arkade')throw new TypeError('network down');
   const body=u.pathname.endsWith('/alice')?{tag:'payRequest',callback:'https://pay.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',
    paymentOptions:[{id:'arkade',type:'arkade'},{id:'lightning',type:'lightning'}]}
    :u.searchParams.get('paymentOption')==='arkade'?{status:'OK',paymentOption:'arkade',paymentDestination:foreign}:{pr:INVOICE,routes:[]};
@@ -77,6 +79,8 @@ test('a Lightning address whose Arkade destination the pool cannot pay hands ove
  for(const rail of lightningRails(wallet,swaps))router.use(rail);
  const quote=await router.route(req('alice@pay.example',21));
  assert.deepEqual([quote.railId,quote.total],['lnurl-lightning',22],'another operator\'s Arkade address is never paid from the pool');
+ offline=true;
+ await assert.rejects(router.route(req('alice@pay.example',21)),/Request failed/,'a network blip is reported, not paid around with a swap fee');
 });
 
 test('the wallet router sends an invoice to lightning, and a Lightning address to its Arkade option before Lightning',async t=>{

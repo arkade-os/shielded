@@ -1,5 +1,5 @@
 import type {PaymentRail} from '@arkade-os/sdk';
-import {createLnurlClient} from '@arkade-os/lnurl-client';
+import {LnurlError,LnurlTransportError,createLnurlClient} from '@arkade-os/lnurl-client';
 import {lnurlRails} from '@arkade-os/lnurl-client/arkade';
 import {lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap';
 import {DUST} from './pool.ts';
@@ -9,6 +9,8 @@ import type {ShieldedWallet} from './wallet.ts';
 export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
 const QUOTE_MARGIN_MS=10_000;
 const sats=(value:number)=>value.toLocaleString('en-US');
+// A network blip is not a refusal: falling back on one would charge a swap fee for a payment the pool could make free.
+const transient=(error:unknown)=>error instanceof LnurlTransportError||(error instanceof LnurlError&&(error.retryable||(error.httpStatus??0)>=500));
 
 /**
  * A swap rail funds from the Arkade balance, which auto-shield keeps near empty, so the shortfall leaves the pool first.
@@ -22,7 +24,7 @@ export function poolFunded(wallet:ShieldedWallet,rail:PaymentRail):PaymentRail{
    const expiresAt=(quote.meta as {expiresAt?:number}|undefined)?.expiresAt;
    if(expiresAt===undefined||expiresAt*1000>Date.now()+QUOTE_MARGIN_MS)return quote;
    const fresh=await rail.quote(req,ctx);
-   if(fresh.total>quote.total)throw new Error(`The swap now costs ${sats(fresh.total)} sats, not ${sats(quote.total)}. Review the payment again.`);
+   if(fresh.total>quote.total)throw new Error(`The swap now costs ${sats(fresh.total)} sats, not ${sats(quote.total)}. Review the payment again; any sats withdrawn for it stay on your Arkade balance.`);
    return fresh;
   };
   if(lacking<=0)return {...quote,send:async()=>(await live()).send()};
@@ -41,6 +43,6 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
  // cannot pay in one note, or under another operator, hands over to the Lightning option here.
  const lnurlArkade:PaymentRail={...arkade,
   available:async(req,ctx)=>Number.isSafeInteger(req.amount)&&wallet.canWithdraw(BigInt(req.amount!))&&await arkade.available!(req,ctx),
-  quote:async(req,ctx)=>{try{return await arkade.quote(req,ctx);}catch(error){if(await Promise.resolve().then(()=>viaLightning.available!(req,ctx)).catch(()=>false))return viaLightning.quote(req,ctx);throw error;}}};
+  quote:async(req,ctx)=>{try{return await arkade.quote(req,ctx);}catch(error){if(!transient(error)&&await Promise.resolve().then(()=>viaLightning.available!(req,ctx)).catch(()=>false))return viaLightning.quote(req,ctx);throw error;}}};
  return [lightning,lnurlArkade,viaLightning];
 }
