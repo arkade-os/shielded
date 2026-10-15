@@ -95,11 +95,13 @@ test('auto-shield takes every spendable coin the pool will still accept, BTC fir
  assert.equal(shieldPlan([coin(1,329,100),coin(5,900,20)],new Set(),now,25*3600_000),undefined,'below the dust, or expiring');
 });
 
-test('waiting on a spend gives up at its deadline, so a stalled batch cannot hold the wallet',async()=>{
+test('waiting on a spend gives up at its deadline, so a stalled batch cannot hold the wallet',async(t)=>{
+ // Only the clock is faked, and each poll moves it: a loaded runner can no longer fit just one poll inside the deadline.
+ t.mock.timers.enable({apis:['Date']});
  let polls=0;
- const api=(async()=>{polls++;return {status:'pending'};}) as never;
+ const api=(async()=>{polls++;t.mock.timers.tick(15);return {status:'pending'};}) as never;
  await assert.rejects(waitForSpend('ab',async()=>{},api,1,20),/did not settle/);
- assert.ok(polls>1);
+ assert.equal(polls,2);
 });
 
 test('an invoice takes a typed amount only when it pins none, and Lightning addresses are not invoices',()=>{
