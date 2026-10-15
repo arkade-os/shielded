@@ -17,8 +17,6 @@ RUN node fetch-rollup-keys.mjs genesis-2.json "$SHIELDED_ROLLUP_KEYS_URL" /out/r
 FROM --platform=linux/amd64 node:24-bookworm-slim AS app-build
 WORKDIR /app
 COPY package.json package-lock.json ./
-COPY patches/ ./patches/
-COPY tools/patch-sdk.mjs ./tools/patch-sdk.mjs
 RUN npm ci
 COPY . .
 RUN npm run build

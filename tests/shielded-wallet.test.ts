@@ -427,11 +427,10 @@ test('real SDK persistence after an in-flight self-send cannot reopen a disposed
 
 test('native entrypoints reject shield reservations and the unknown self-send output phase before reaching the SDK',async t=>{
  const wallet=await open(),input=coin(),sameTxid={...input,vout:1};let submitted=0;
- for(const name of ['send','settle','sendBitcoin','sendSelectedVtxosToSelf'] as const)t.mock.method(Wallet.prototype,name,async()=>{submitted++;return 'native';});
+ for(const name of ['send','settle','sendSelectedVtxosToSelf'] as const)t.mock.method(Wallet.prototype,name,async()=>{submitted++;return 'native';});
  const attempts=(selected:typeof input)=>[
   ()=>wallet.send({recipients:[{address:POOL_ADDRESS,amount:330}],selectedVtxos:[selected] as never}),
   ()=>wallet.settle({inputs:[selected] as never,outputs:[]}),
-  ()=>wallet.sendBitcoin({address:POOL_ADDRESS,amount:330,selectedVtxos:[selected] as never}),
   ()=>wallet.sendSelectedVtxosToSelf([selected] as never),
  ];
  try{
@@ -485,10 +484,9 @@ test('each native entrypoint releases its guard on failure and forwards explicit
  const wallet=await open(),input=coin(),now={type:'height',value:1} as never;
  const send:SendParams={recipients:[{address:POOL_ADDRESS,amount:330}],selectedVtxos:[input] as never};
  const settle={inputs:[input] as never,outputs:[]};
- const bitcoin={address:POOL_ADDRESS,amount:330,selectedVtxos:[input]} as Parameters<Wallet['sendBitcoin']>[0];
  const cases:[keyof Wallet,unknown[],()=>Promise<string>][]=[
   ['send',[send],()=>wallet.send(send)],['settle',[settle],()=>wallet.settle(settle)],
-  ['sendBitcoin',[bitcoin],()=>wallet.sendBitcoin(bitcoin)],['sendSelectedVtxosToSelf',[[input],now],()=>wallet.sendSelectedVtxosToSelf([input] as never,now)],
+  ['sendSelectedVtxosToSelf',[[input],now],()=>wallet.sendSelectedVtxosToSelf([input] as never,now)],
  ];
  try{
   for(const [name,args,run] of cases){
