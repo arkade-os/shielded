@@ -379,8 +379,10 @@ export class ShieldedWallet extends Wallet {
   this.hold(held,handle);
   return handle;
  }
- /** Sats spendable outside the pool, shield reservations excluded. */
- async arkadeSats():Promise<number>{return (await this.getSpendableVtxos({genericallySpendableOnly:true})).reduce((sum,v)=>sum+v.value,0);}
+ /** Sats a swap can fund from: never more than the SDK's `available`, which leaves out recoverable coins and asset carriers. */
+ async arkadeSats():Promise<number>{
+  return (await this.getSpendableVtxos({genericallySpendableOnly:true,withRecoverable:false})).filter(v=>!v.assets?.length).reduce((sum,v)=>sum+v.value,0);
+ }
  /** Pays `need` sats from the Arkade balance, first withdrawing what it lacks (at least the dust) to this wallet's own address. */
  topUp(need:number,title:string,pay:()=>Promise<PaymentHandle>):ShieldedPaymentHandle{
   return this.announce(shieldedHandle({title,steps:shieldedSteps.topUp,railId:'shielded-topup'},async step=>{

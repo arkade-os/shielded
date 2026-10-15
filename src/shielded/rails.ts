@@ -1,4 +1,5 @@
-import {arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {ArkAddress,arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {hex} from '@scure/base';
 import {assetFieldOfId} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
 import {DUST} from './pool.ts';
@@ -53,7 +54,9 @@ export function shieldedRail(wallet:ShieldedWallet):PaymentRail{
  };
 }
 export function shieldedWithdrawRail(wallet:ShieldedWallet):PaymentRail{
- const target=(raw:string)=>{try{const found=arkTarget(raw.trim());return found&&isValidArkAddress(found)&&found.toLowerCase()!==wallet.poolAddress.toLowerCase()?found:undefined;}catch{return undefined;}};
+ // A payout pays only the address's program, so another network's or operator's address would get sats it never sees.
+ const sameOperator=(found:string)=>{const to=ArkAddress.decode(found),pool=ArkAddress.decode(wallet.poolAddress);return to.hrp===pool.hrp&&hex.encode(to.serverPubKey)===hex.encode(pool.serverPubKey);};
+ const target=(raw:string)=>{try{const found=arkTarget(raw.trim());return found&&isValidArkAddress(found)&&found.toLowerCase()!==wallet.poolAddress.toLowerCase()&&sameOperator(found)?found:undefined;}catch{return undefined;}};
  return {
   id:'shielded-withdraw',
   match:req=>target(req.raw)!==undefined,

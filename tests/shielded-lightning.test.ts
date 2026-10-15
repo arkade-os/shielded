@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {ArkAddress,PaymentRouter,makeHandle,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
-import {QuoteExpired,type SwapRailClient} from '@arkade-os/swap';
+import type {SwapRailClient} from '@arkade-os/swap';
 import {lightningRails,poolFunded} from '../src/shielded/lightning.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
@@ -21,20 +21,20 @@ function fakeWallet(o:{arkade:number;canWithdraw?:boolean}){
  } as unknown as ShieldedWallet;
  return {wallet,topUps,checked};
 }
-function fakeRail(quotes:{total:number;send:()=>Promise<never>|ReturnType<typeof handle>}[]){
- let quoted=0;
+const later=()=>Math.floor(Date.now()/1000)+600;
+function fakeRail(quotes:{total:number;send:()=>ReturnType<typeof handle>;expiresAt?:number}[]){
+ let quoted=0;const sent:number[]=[];
  const rail:PaymentRail={id:'lightning',match:()=>true,available:async()=>true,
-  quote:async()=>{const q=quotes[Math.min(quoted++,quotes.length-1)]!;return {railId:'lightning',amount:q.total-3,fee:3,total:q.total,send:q.send} as RouteQuote;}};
- return {rail,quoted:()=>quoted};
+  quote:async()=>{const i=Math.min(quoted++,quotes.length-1),q=quotes[i]!;
+   return {railId:'lightning',amount:q.total-3,fee:3,total:q.total,meta:{expiresAt:q.expiresAt??later()},send:async()=>{sent.push(i);return q.send();}} as RouteQuote;}};
+ return {rail,quoted:()=>quoted,sent};
 }
 const req=(raw:string,amount?:number):PaymentRequest=>({raw,...(amount!==undefined?{amount}:{})});
 
 test('a payment the Arkade balance covers goes straight to the swap, with no withdrawal',async()=>{
- const {wallet,topUps}=fakeWallet({arkade:5000}),inner={total:1003,send:handle};
- const quote=await poolFunded(wallet,fakeRail([inner]).rail).quote(req(INVOICE),{} as never);
- assert.equal(quote.send,inner.send);
- await quote.send();
- assert.deepEqual(topUps,[]);
+ const {wallet,topUps}=fakeWallet({arkade:5000}),inner=fakeRail([{total:1003,send:handle}]);
+ await (await (await poolFunded(wallet,inner.rail).quote(req(INVOICE),{} as never)).send()).settled();
+ assert.deepEqual([topUps,inner.sent],[[],[0]]);
 });
 
 test('a short balance tops up the whole need, refusing at quote time when no single note covers the dust-floored shortfall',async()=>{
@@ -46,16 +46,17 @@ test('a short balance tops up the whole need, refusing at quote time when no sin
  await assert.rejects(poolFunded(poor.wallet,fakeRail([{total:5003,send:handle}]).rail).quote(req(INVOICE),{} as never),/holds 0, and no single note in the pool covers the other 5,003/);
 });
 
-test('a quote that expired during the withdrawal is re-quoted once, and refused if the total rose',async()=>{
- const expired=()=>Promise.reject(new QuoteExpired('q',1,2)) as Promise<never>;
- const same=fakeRail([{total:1003,send:expired},{total:1003,send:handle}]),{wallet}=fakeWallet({arkade:0});
- await (await (await poolFunded(wallet,same.rail).quote(req(INVOICE),{} as never)).send()).settled();
- assert.equal(same.quoted(),2);
- const dearer=fakeRail([{total:1003,send:expired},{total:1010,send:handle}]);
+test('a quote the withdrawal outlived is replaced before sending, and refused if the total rose',async()=>{
+ const {wallet}=fakeWallet({arkade:0}),past=Math.floor(Date.now()/1000)-1;
+ const fresh=fakeRail([{total:1003,send:handle},{total:1003,send:handle}]);
+ await (await (await poolFunded(wallet,fresh.rail).quote(req(INVOICE),{} as never)).send()).settled();
+ assert.deepEqual([fresh.quoted(),fresh.sent],[1,[0]],'a live quote is sent as it is');
+ const stale=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1003,send:handle}]);
+ await (await (await poolFunded(wallet,stale.rail).quote(req(INVOICE),{} as never)).send()).settled();
+ assert.deepEqual([stale.quoted(),stale.sent],[2,[1]],'the expired one never reaches accept');
+ const dearer=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1010,send:handle}]);
  await assert.rejects((await poolFunded(wallet,dearer.rail).quote(req(INVOICE),{} as never)).send(),/now costs 1,010 sats, not 1,003/);
- const broken=fakeRail([{total:1003,send:()=>Promise.reject(new Error('solver refused')) as Promise<never>}]);
- await assert.rejects((await poolFunded(wallet,broken.rail).quote(req(INVOICE),{} as never)).send(),/solver refused/);
- assert.equal(broken.quoted(),1,'only an expiry is re-quoted');
+ assert.deepEqual(dearer.sent,[]);
 });
 
 test('the wallet router sends an invoice to lightning, and a Lightning address to its Arkade option before Lightning',async t=>{
@@ -67,10 +68,15 @@ test('the wallet router sends an invoice to lightning, and a Lightning address t
   return new Response(JSON.stringify({tag:'payRequest',callback:'https://pay.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',
    paymentOptions:[{id:'arkade',type:'arkade'},{id:'lightning',type:'lightning'}]}),{headers:{'content-type':'application/json'}});
  });
- const {wallet}=fakeWallet({arkade:0}),router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never)
-  .use(shieldedRail(wallet)).use(shieldedWithdrawRail(wallet));
- for(const rail of lightningRails(wallet,swaps))router.use(rail);
+ const routerOf=(canWithdraw:boolean)=>{
+  const {wallet}=fakeWallet({arkade:0,canWithdraw}),router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never)
+   .use(shieldedRail(wallet)).use(shieldedWithdrawRail(wallet));
+  for(const rail of lightningRails(wallet,swaps))router.use(rail);
+  return router;
+ };
+ const router=routerOf(true);
  assert.deepEqual((await router.options(req(INVOICE))).map(o=>o.railId),['lightning'],'the registry is fetched before the offline resolve');
  assert.deepEqual((await router.options(req('alice@pay.example',2000))).map(o=>o.railId),['lnurl-arkade','lnurl-lightning']);
  assert.deepEqual((await router.options(req(PAYEE,2000))).map(o=>o.railId),['shielded-withdraw'],'an Arkade address still leaves the pool directly');
+ assert.deepEqual((await routerOf(false).options(req('alice@pay.example',2000))).map(o=>o.railId),['lnurl-lightning'],'a pool that cannot pay it whole leaves the Lightning option first');
 });

@@ -1,12 +1,13 @@
 import type {PaymentRail} from '@arkade-os/sdk';
 import {createLnurlClient} from '@arkade-os/lnurl-client';
 import {lnurlRails} from '@arkade-os/lnurl-client/arkade';
-import {QuoteExpired,lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap';
+import {lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap';
 import {DUST} from './pool.ts';
 import {shieldedWithdrawRail} from './rails.ts';
 import type {ShieldedWallet} from './wallet.ts';
 
 export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
+const QUOTE_MARGIN_MS=10_000;
 const sats=(value:number)=>value.toLocaleString('en-US');
 
 /**
@@ -19,16 +20,15 @@ export function poolFunded(wallet:ShieldedWallet,rail:PaymentRail):PaymentRail{
   if(lacking<=0)return quote;
   const withdrawn=Math.max(lacking,DUST);
   if(!wallet.canWithdraw(BigInt(withdrawn)))throw new Error(`This payment needs ${sats(quote.total)} sats on your Arkade balance, which holds ${sats(have)}, and no single note in the pool covers the other ${sats(withdrawn)}.`);
-  const pay=async()=>{
-   try{return await quote.send();}
-   catch(error){
-    if(!(error instanceof QuoteExpired))throw error;
-    const fresh=await rail.quote(req,ctx);
-    if(fresh.total>quote.total)throw new Error(`The swap now costs ${sats(fresh.total)} sats, not ${sats(quote.total)}. Review the payment again.`);
-    return fresh.send();
-   }
+  // An expired quote is refused inside the handle, after send() has returned, so the check has to come first.
+  const live=async()=>{
+   const expiresAt=(quote.meta as {expiresAt?:number}|undefined)?.expiresAt;
+   if(expiresAt===undefined||expiresAt*1000>Date.now()+QUOTE_MARGIN_MS)return quote;
+   const fresh=await rail.quote(req,ctx);
+   if(fresh.total>quote.total)throw new Error(`The swap now costs ${sats(fresh.total)} sats, not ${sats(quote.total)}. Review the payment again.`);
+   return fresh;
   };
-  return {...quote,send:async()=>wallet.topUp(quote.total,`Paying ${sats(quote.amount)} sats over Lightning`,pay)};
+  return {...quote,send:async()=>wallet.topUp(quote.total,`Paying ${sats(quote.amount)} sats over Lightning`,async()=>(await live()).send())};
  }};
 }
 
@@ -36,5 +36,7 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
  const base=lightningRail(swaps);
  // `available` resolves offline against the cached registry, which nothing has fetched on a fresh page.
  const lightning=poolFunded(wallet,{...base,available:async(req,ctx)=>{await swaps.markets().catch(()=>{});return base.available!(req,ctx);}});
- return [lightning,...lnurlRails({client:createLnurlClient(),arkade:shieldedWithdrawRail(wallet),lightning})];
+ // The router quotes only its top option and lnurl's `available` never asks the inner rail, so the pool check goes here.
+ return [lightning,...lnurlRails({client:createLnurlClient(),arkade:shieldedWithdrawRail(wallet),lightning}).map((rail):PaymentRail=>rail.id!=='lnurl-arkade'?rail:{...rail,
+  available:async(req,ctx)=>Number.isSafeInteger(req.amount)&&wallet.canWithdraw(BigInt(req.amount!))&&await rail.available!(req,ctx)})];
 }

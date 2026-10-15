@@ -78,6 +78,15 @@ test('a top-up withdraws what the Arkade balance lacks to the wallet itself, hol
  }finally{await wallet.dispose();}
 });
 
+test('a swap is funded only from recoverable-free coins carrying no assets',async t=>{
+ const wallet=await open(),filters:unknown[]=[],plain=coin('aa'.repeat(32),700),carrier={...coin('bb'.repeat(32),330),assets:[{assetId:TOKEN,amount:1n}]};
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async(filter:unknown)=>{filters.push(filter);return [plain,carrier] as never;});
+ try{
+  assert.equal(await wallet.arkadeSats(),700);
+  assert.deepEqual(filters,[{genericallySpendableOnly:true,withRecoverable:false}]);
+ }finally{await wallet.dispose();}
+});
+
 test('the router carries the shielded rails ahead of the public ones',async()=>{
  const wallet=await open();
  try{

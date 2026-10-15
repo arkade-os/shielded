@@ -13,7 +13,7 @@ import {LNURL_BASE} from '../../src/shielded/lightning.ts';
 import {idle} from '../../src/shielded/sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {arkAssetHoldings,routeCopy,sheetLine} from './rollup-client.ts';
+import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver} from './shielded-prover.ts';
 import {BORN,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
@@ -39,7 +39,6 @@ type Invoice={id:string;bolt11:string;outcome:Outcome;pays:bigint;fee:bigint;fai
 const INVOICE:Partial<Record<Outcome,string>>={funding:'Paid. Claiming the sats.',funded:'Paid. Claiming the sats.',claimed:'Received. The sats move into the pool shortly.',lapsed:'It expired unpaid.'};
 const invoiceLine=(i:Invoice)=>i.outcome==='accepted'||i.outcome==='open'?`Waiting for a payment of ${sats(i.pays)} sats, of which the swap keeps ${sats(i.fee)}.`
  :INVOICE[i.outcome]??`The swap ${i.outcome==='needs_recovery'?'needs recovery':'failed'}${i.failure?`: ${i.failure}`:'.'}`;
-const isInvoice=(raw:string)=>/^(lightning:)?ln(bc|tb|bcrt)/i.test(raw.trim());
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
@@ -149,8 +148,10 @@ export default function RollupWallet(){
     pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
     shieldedRepository:cacheRef.current!.repository,bornAt,
    });
-   // One store per wallet: swap records hold claim secrets, and another wallet's drive could only fail on them.
-   created.swaps=createSwapClient({wallet:created,repository:new IndexedDbAssetSwapRepository(`shielded-swaps-${await created.getAddress()}`)});
+   try{
+    // One store per wallet: swap records hold claim secrets, and another wallet's drive could only fail on them.
+    created.swaps=createSwapClient({wallet:created,repository:new IndexedDbAssetSwapRepository(`shielded-swaps-${await created.getAddress()}`)});
+   }catch(error){await created.dispose().catch(()=>{});throw error;}
    return created;
   });
   let legacy=Promise.resolve(),closing:Promise<void>|undefined;
@@ -197,8 +198,7 @@ export default function RollupWallet(){
  useEffect(()=>{
   if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current){quotes.clear();return;}
   return quotes.load(quoteContext,()=>{
-   // An invoice that carries its amount refuses a second one, so only an amountless invoice takes the field.
-   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(withSats||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount?{amount:Number(amount)}:{})};
+   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(withSats||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
    return wallet.router().route(request);
   });
  },[wallet,requestKey,tick,busy]);
@@ -251,7 +251,7 @@ export default function RollupWallet(){
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Need test sats? The <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> sends Arkade sats to this address after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
      <div className="stock-address"><small>LIGHTNING</small>
       {lnAddress?<Copyable value={lnAddress}/>:<button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button>}
-      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Invoice amount, sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet||!lnAmount}>Create invoice</button></form>
+      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet||!lnAmount}>Create invoice</button></form>
       {invoice&&<><Copyable value={invoice.bolt11}/><p className="stock-muted">{invoiceLine(invoice)}</p></>}
       {lnError&&<p className="stock-blocked">{lnError}</p>}
       <p className="stock-muted">Lightning payments reach your Arkade address through a swap, then move into the pool. Keep this page open until an invoice is paid; the Lightning address takes payments even while it is closed, and its payers can see your Arkade address.</p></div>
@@ -264,7 +264,7 @@ export default function RollupWallet(){
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
      <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
-     <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={isInvoice(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
+     <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {assetId&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
      <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning pays through a swap from your Arkade balance.</p>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
