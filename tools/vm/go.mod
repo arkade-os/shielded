@@ -1,16 +1,17 @@
 module github.com/arkade-os/shielded/tools/vm
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260901090427-f863e4847193
-	github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260925153657-d928b6ed57ee
-	github.com/arkade-os/emulator/pkg/emulator v0.0.0-20260925153657-d928b6ed57ee
+	github.com/arkade-os/emulator/pkg/arkade v0.1.0
+	github.com/arkade-os/emulator/pkg/emulator v0.1.2
 	github.com/btcsuite/btcd/btcec/v2 v2.5.0
 	github.com/btcsuite/btcd/chainhash/v2 v2.0.0
 	github.com/btcsuite/btcd/psbt/v2 v2.0.0
 	github.com/btcsuite/btcd/txscript/v2 v2.0.0
 	github.com/btcsuite/btcd/wire/v2 v2.0.1
+	github.com/consensys/gnark-crypto v0.19.2
 )
 
 require (
@@ -21,7 +22,6 @@ require (
 	github.com/btcsuite/btcd/btcutil/v2 v2.0.1 // indirect
 	github.com/btcsuite/btcd/chaincfg/v2 v2.0.0 // indirect
 	github.com/btcsuite/btclog v1.0.0 // indirect
-	github.com/consensys/gnark-crypto v0.19.2 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/kcalvinalvin/anet v0.0.0-20251112173137-d8ddc1f6dbee // indirect

@@ -4,10 +4,10 @@ github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260901090427-f863e4847193 h1:MK
 github.com/arkade-os/arkd/pkg/ark-lib v0.8.1-0.20260901090427-f863e4847193/go.mod h1:PYUq0KIVEBp6nmPAQP+A6hFtXDixjvpYGrBWsMaRCLY=
 github.com/arkade-os/arkd/pkg/errors v0.0.0-20260901090427-f863e4847193 h1:8Mk7Lhh5NIpZlz196sjIyBcNuVIAs5ttngi8/rWzKUY=
 github.com/arkade-os/arkd/pkg/errors v0.0.0-20260901090427-f863e4847193/go.mod h1:IkmgARWvC8q/Qt7Jf1y+1agVruapEnWxtMV0g028TTQ=
-github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260925153657-d928b6ed57ee h1:5M2P8dqLVTnQJMYDOBgh4ysCwfJs1ekj158fK+tdOsw=
-github.com/arkade-os/emulator/pkg/arkade v0.0.0-20260925153657-d928b6ed57ee/go.mod h1:M2/KO8zZaCknLf4eosIuyO1/JVdIqZ0whW5iolzLaWs=
-github.com/arkade-os/emulator/pkg/emulator v0.0.0-20260925153657-d928b6ed57ee h1:Pjrl4vAPolqJN6FOkUukOT4RDfcw6bMFsw6Np3NX3iU=
-github.com/arkade-os/emulator/pkg/emulator v0.0.0-20260925153657-d928b6ed57ee/go.mod h1:QunJ1XJgQiHOPSCcGDBXWumQjfVIS0KU9yRxGj1kUgQ=
+github.com/arkade-os/emulator/pkg/arkade v0.1.0 h1:HeNZluQHgc7mWcsavmpHLMJ7KJ7wGAxGqCsRLFD0Mwk=
+github.com/arkade-os/emulator/pkg/arkade v0.1.0/go.mod h1:M2/KO8zZaCknLf4eosIuyO1/JVdIqZ0whW5iolzLaWs=
+github.com/arkade-os/emulator/pkg/emulator v0.1.2 h1:JbyEvcOeHj0ql6OAPn2hjZ7kGXBYXIpBMQPulKsJYJg=
+github.com/arkade-os/emulator/pkg/emulator v0.1.2/go.mod h1:5ubsbMahD84OlJZaxdf6vDuXy4zDfpww/WEbHyV79qw=
 github.com/bits-and-blooms/bitset v1.20.0 h1:2F+rfL86jE2d/bmw7OhqUg2Sj/1rURkBn3MdfoPyRVU=
 github.com/bits-and-blooms/bitset v1.20.0/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
 github.com/btcsuite/btcd v0.26.2 h1:hPXzICjUZOsW2JwBLg9nHwGabc/D7pJDlna2vTB/SWI=
