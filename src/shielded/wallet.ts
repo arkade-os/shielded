@@ -1,13 +1,15 @@
 import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
-import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
+import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote,type PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
+import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {fullViewKeyOf,sentNoteOf,viewKeyOf} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {akOf,assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
-import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/src/wallet-keys.ts';
+import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2,parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
+import {bearerAccount,bearerKeysOf,bearerOf,claimSpends,linkOf,type LinkRecord} from './bearer.ts';
 import {freshAccount} from './checkpoint.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {SwapClient} from '@arkade-os/swap';
@@ -43,18 +45,20 @@ export class NoteReservation {
  release(nullifiers:readonly bigint[]){for(const n of nullifiers)this.inFlight.delete(n);}
 }
 
-export interface LoadedAccount {account:RollupAccount;sent:Record<string,SentRecord>;listings:string[];resumed:boolean;error?:string}
+export interface LoadedAccount {account:RollupAccount;sent:Record<string,SentRecord>;listings:string[];links:LinkRecord[];resumed:boolean;error?:string}
+export type LinkState='unclaimed'|'claimed'|'taken-back';
+export interface ClaimLink extends LinkRecord {token:string;state:LinkState}
 const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
 /** Never throws: a cache that cannot be read is a full sync, reported once, not a wallet that will not open. */
 export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;bornAt:number;api?:PoolApi}):Promise<LoadedAccount>{
- const fresh=async(error?:string):Promise<LoadedAccount>=>({account:o.api?await freshAccount(hash,keys,o.bornAt,o.api):RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],resumed:false,...(error?{error}:{})});
+ const fresh=async(error?:string):Promise<LoadedAccount>=>({account:o.api?await freshAccount(hash,keys,o.bornAt,o.api):RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],links:[],resumed:false,...(error?{error}:{})});
  if(!o.repository)return fresh();
  try{
   const stored=await o.repository.getAccount(o.token);
   if(!stored)return await fresh();
   if(stored.v!==1)return await fresh(`Ignoring a version ${String(stored.v)} shielded snapshot; syncing from the pool.`);
   if(stored.token!==o.token)return await fresh('Ignoring a snapshot from another pool; syncing from the pool.');
-  return {account:RollupAccount.fromSnapshot(hash,keys,stored.account),sent:{...stored.sent},listings:[...(stored.listings??[])],resumed:true};
+  return {account:RollupAccount.fromSnapshot(hash,keys,stored.account),sent:{...stored.sent},listings:[...(stored.listings??[])],links:[...(stored.links??[])],resumed:true};
  }catch(error){return fresh(reasonOf(error));}
 }
 
@@ -65,6 +69,8 @@ export const shieldedSteps={
  withdraw:['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],
  merge:['Pick two notes','Prove the merge on this device','Submit to the pool','Wait for the next batch','Included'],
  topUp:['Withdraw the missing sats from the pool','Wait for them on your Arkade balance','Pay','Wait for the payment','Done'],
+ link:['Pick notes','Prove the link on this device','Submit to the pool','Wait for the next batch','Ready to share'],
+ claim:['Read the link','Prove the claim on this device','Submit to the pool','Wait for the next batch','Received'],
 } as const;
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
@@ -83,6 +89,7 @@ class ReservationFailure extends Error {
  constructor(error:unknown,readonly release:boolean){super(reasonOf(error),{cause:error});}
 }
 const canRelease=(error:unknown)=>!(error instanceof ReservationFailure)||error.release;
+const rejected=(error:unknown,code:string):boolean=>typeof error==='object'&&error!==null&&((error as {code?:unknown}).code===code||rejected((error as {cause?:unknown}).cause,code));
 
 export class ShieldedWallet extends Wallet {
  pool!:ShieldedPoolConfig;
@@ -104,6 +111,8 @@ export class ShieldedWallet extends Wallet {
  private rows!:ShieldedRowIndex;
  private sent:Record<string,SentRecord>={};
  private readonly listings=new Set<string>();
+ private master!:Uint8Array;
+ private readonly linkRecords=new Map<string,LinkRecord>();
  private readonly changeListeners=new Set<()=>void>();
  private readonly used=new Set<string>();
  private readonly usedTxids=new Set<string>();
@@ -126,6 +135,7 @@ export class ShieldedWallet extends Wallet {
    const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0,api:wallet.api});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    for(const txid of loaded.listings)wallet.listings.add(txid);
+   wallet.master=parseMasterSecret(config.secret);for(const link of loaded.links)wallet.linkRecords.set(link.key,link);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field));
    wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid)}));
    await wallet.start();
@@ -174,7 +184,8 @@ export class ShieldedWallet extends Wallet {
    const account=this.account.snapshot(),stored=await this.repository.getAccount(token);
    // ponytail: read-merge-write keeps other tabs' entries but is not atomic; merge inside saveAccount's transaction if tabs ever race.
    this.sent={...stored?.sent,...this.sent};for(const txid of stored?.listings??[])this.listings.add(txid);
-   await this.repository.saveAccount(token,{v:1,token,account,sent:this.sent,listings:[...this.listings]});
+   for(const link of stored?.links??[])if(!this.linkRecords.has(link.key))this.linkRecords.set(link.key,link);
+   await this.repository.saveAccount(token,{v:1,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()]});
   }catch(error){this.repositoryError??=reasonOf(error);}
  }
  sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
@@ -203,8 +214,60 @@ export class ShieldedWallet extends Wallet {
   if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
  }
  async sync():Promise<void>{
-  const applied=await catchUp(this.account,this.api,undefined,()=>this.save());
+  const applied=await catchUp(this.account,this.api,(cursor,batch)=>this.watchLinks(cursor-1,batch),()=>this.save());
   if(applied)this.changed();
+ }
+ /** Finds the links a batch minted and marks those it claimed; replaying the pool rebuilds them, so a restore needs nothing else. */
+ private async watchLinks(number:number,batch:PublishedBatch){
+  const history=this.account.history,entries:HistoryEntry[]=[];
+  for(let i=history.length-1;i>=0&&history[i]!.batch===number;i--)entries.push(history[i]!);
+  for(const [index,slot] of batch.slots.entries())for(const link of this.linkRecords.values()){
+   if(!slot.nullifiers.some(nf=>link.open.includes(nf)))continue;
+   link.open=link.open.filter(nf=>!slot.nullifiers.includes(nf));
+   if(entries.some(e=>e.kind==='receive'&&e.slots.includes(index)))link.tookBack=true;
+  }
+  for(const entry of entries){const link=await linkOf(this.hash,this.master,entry,batch);if(link)this.linkRecords.set(link.key,link);}
+ }
+ /** The claim links this wallet minted, newest first. */
+ links():ClaimLink[]{
+  return [...this.linkRecords.values()].sort((a,b)=>b.batch-a.batch).map(link=>({...link,
+   token:encodeClaimToken({secret:bearerOf(this.master,BigInt(link.key)),batch:link.batch}),
+   state:link.open.length?'unclaimed':link.tookBack?'taken-back':'claimed'}));
+ }
+ private mine(token:string){const decoded=decodeClaimToken(token),normal=encodeClaimToken(decoded);return {decoded,mine:this.links().some(l=>l.token===normal)};}
+ /** Pays privately to a bearer key derived from the first note it spends; the link shows in `links()` once its batch lands. */
+ async mintLink(amount:bigint,asset?:string):Promise<ShieldedPaymentHandle>{
+  const held:bigint[]=[];
+  const handle=shieldedHandle({title:'Creating a claim link',steps:shieldedSteps.link,railId:'shielded-link'},async step=>{
+   step(0);this.assertOpen();
+   const bearer=(nullifier:bigint)=>{const keys=bearerKeysOf(bearerOf(this.master,nullifier));return rollupRecipientOf(this.hash,keys.ask,keys.nk,keys.viewSecret);};
+   const {spends}=await this.notes.pick(()=>this.account.pay(bearer,amount,this.self,this.notes.inFlight,asset?assetFieldOfId(asset):BTC_ASSET,{join:this.prover.joinReady?.()??false}),
+    chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
+   held.push(...spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
+   return this.submit(spends.map(built=>({built})),step);
+  });
+  this.hold(held,handle);
+  return this.announce(handle);
+ }
+ /** What a link holds now, and whether this wallet minted it; a malformed token throws before anything is fetched. */
+ async inspectLink(token:string):Promise<{notes:{asset:bigint;amount:bigint}[];mine:boolean}>{
+  const {decoded,mine}=this.mine(token);
+  const {notes}=await bearerAccount(this.hash,decoded,this.api,this.mergeableAssets());
+  return {notes:notes.map(n=>({asset:n.asset,amount:n.amount})),mine};
+ }
+ /** Claims everything a link holds into this wallet; on one of its own links, that takes it back. */
+ async claimLink(token:string):Promise<ShieldedPaymentHandle>{
+  const {decoded,mine}=this.mine(token);
+  const handle=shieldedHandle({title:mine?'Taking back a link':'Claiming a link',steps:shieldedSteps.claim,railId:'shielded-claim'},async step=>{
+   step(0);this.assertOpen();
+   const link=await bearerAccount(this.hash,decoded,this.api,this.mergeableAssets());
+   if(!link.notes.length)throw new Error('This link is empty or already claimed.');
+   const spends=await claimSpends(this.hash,link,this.self);this.assertOpen();
+   try{return await this.submit(spends.map(built=>({built})),step);}
+   // A racing claim of the same notes carries the same group id, so the pool may refuse it as a full group instead.
+   catch(error){throw rejected(error,'double-spend')||rejected(error,'group-invalid')?new Error('Someone claimed this link first, or an earlier claim of it is still pending.'):error;}
+  });
+  return this.announce(handle);
  }
 
  async coins():Promise<ArkCoin[]>{

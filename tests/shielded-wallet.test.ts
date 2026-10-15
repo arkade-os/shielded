@@ -12,7 +12,7 @@ import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {catchUp} from '../src/shielded/sync.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
-import type {RollupPoolStatus} from '../src/shielded/pool.ts';
+import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
@@ -734,4 +734,86 @@ for(const failure of ['none','fetch','apply'] as const)test(`sync checkpoints co
    assert.deepEqual(requested,[0,50,100,123]);
   }
  }finally{await wallet.dispose();}
+});
+
+/** One pool several wallets share: posted spends join the next batch, which the first poll closes; a reused nullifier is refused as the operator would. */
+function sharedPool(){
+ const batches:PublishedBatch[]=[];let queued:PublishedSlot[]=[];
+ const txid=()=>batches.length.toString(16).padStart(64,'0');
+ const api=(async(path:string,body?:{id:string;slot:Omit<PublishedSlot,'publics'|'ciphertext'>;publics:string[];ciphertext:string})=>{
+  if(path==='/spends'){
+   const used=new Set([...batches.flatMap(b=>b.slots),...queued].flatMap(s=>s.nullifiers));
+   if(body!.slot.nullifiers.some(nf=>used.has(nf)))throw Object.assign(new Error('The note is already spent or pending.'),{status:400,code:'double-spend'});
+   queued.push({...body!.slot,publics:body!.publics,ciphertext:body!.ciphertext});return {id:body!.id,status:'pending'};
+  }
+  if(path.startsWith('/spends/')){if(queued.length){batches.push({kind:'spend',slots:queued,txid:txid()});queued=[];}return {status:'included',txid:batches.at(-1)!.txid};}
+  const page=/from=(\d+)&limit=(\d+)/.exec(path);
+  if(page)return {total:batches.length,batches:batches.slice(Number(page[1]),Number(page[1])+Number(page[2]))};
+  throw Object.assign(new Error('Not found'),{status:404});
+ }) as PoolApi;
+ return {api,batches,
+  async fund(wallet:ShieldedWallet,notes:{amount:bigint;asset?:bigint}[]){
+   const deposits=await Promise.all(notes.map(n=>wallet.account.spend({deposit:n.amount,asset:n.asset},wallet.self)));
+   batches.push({kind:'spend',slots:deposits.map(publishSpend),txid:txid()});await wallet.sync();
+  }};
+}
+const listed=(wallet:ShieldedWallet)=>{wallet.pool={...wallet.pool,status:{...status(0),pool:{...status(0).pool!,reserves:{[TOKEN]:'100'}}}};};
+
+test('a claim link goes to whoever claims it first, and its minter sees it claimed',async()=>{
+ const pool=sharedPool(),alice=await open(),bob=await open({secret:'22'.repeat(32)}),carol=await open({secret:'33'.repeat(32)});
+ for(const w of [alice,bob,carol])w.api=pool.api;
+ try{
+  await pool.fund(alice,[{amount:600n},{amount:500n}]);
+  await (await alice.pay(bob.shieldedAddress(),50n)).settled();
+  assert.deepEqual(alice.links(),[],'an ordinary private payment is not a link');
+  await (await alice.mintLink(1000n)).settled();
+  const [link]=alice.links();
+  assert.deepEqual([link!.state,link!.amount,link!.asset,link!.batch,alice.links().length],['unclaimed','1000','0',2,1]);
+  assert.match(link!.token,/^shnote21/);
+  const seen=await bob.inspectLink(link!.token);
+  assert.deepEqual([seen.mine,seen.notes.reduce((sum,n)=>sum+n.amount,0n)],[false,1000n]);
+  assert.equal((await alice.inspectLink(link!.token)).mine,true);
+  for(const code of ['double-spend','group-invalid']){
+   carol.api=(async(path:string,body?:unknown)=>path==='/spends'?Promise.reject(Object.assign(new Error('Refused by the pool.'),{status:400,code})):pool.api(path,body)) as PoolApi;
+   await assert.rejects((await carol.claimLink(link!.token)).settled(),/Someone claimed this link first/,code);
+  }
+  await (await bob.claimLink(link!.token)).settled();
+  const claim=pool.batches.at(-1)!.slots;
+  assert.ok(claim.length===2&&claim.every(s=>s.groupSize===2&&s.groupId===claim[0]!.groupId&&s.groupId!=='0'),'bob\'s claim landed as one group');
+  assert.equal(bob.shieldedBalance(),1050n);
+  await alice.sync();
+  assert.equal(alice.links()[0]!.state,'claimed');
+  carol.api=pool.api;
+  await assert.rejects((await carol.claimLink(link!.token)).settled(),/empty or already claimed/);
+  await assert.rejects(bob.inspectLink('shnote21qqqq'),/Not a claim link/);
+ }finally{for(const w of [alice,bob,carol])await w.dispose();}
+});
+
+test('a minter takes an asset link back, and the phrase alone rebuilds the link list',async()=>{
+ const pool=sharedPool(),repository=new InMemoryShieldedNoteRepository(),alice=await open({repository});alice.api=pool.api;listed(alice);
+ try{
+  await pool.fund(alice,[{amount:40n,asset:assetFieldOfId(TOKEN)},{amount:500n}]);
+  await (await alice.mintLink(9n,TOKEN)).settled();
+  const [link]=alice.links();
+  assert.deepEqual([link!.asset,link!.amount],[String(assetFieldOfId(TOKEN)),'9']);
+  const handle=await alice.claimLink(link!.token);
+  assert.equal(handle.title,'Taking back a link');
+  await handle.settled();
+  assert.deepEqual([alice.links()[0]!.state,alice.shieldedBalance(assetFieldOfId(TOKEN))],['taken-back',40n]);
+  const resumed=await open({repository});
+  try{assert.deepEqual(resumed.links().map(l=>[l.key,l.state]),[[link!.key,'taken-back']],'a resumed wallet keeps its links');}finally{await resumed.dispose();}
+  const restored=await open();restored.api=pool.api;
+  try{await restored.sync();assert.deepEqual(restored.links().map(l=>[l.key,l.state,l.token]),[[link!.key,'taken-back',link!.token]]);}finally{await restored.dispose();}
+ }finally{await alice.dispose();}
+});
+
+test('a mint the pool drops lists no link and frees its notes',async()=>{
+ const pool=sharedPool(),alice=await open();alice.api=pool.api;
+ try{
+  await pool.fund(alice,[{amount:500n}]);
+  alice.api=(async(path:string,body?:unknown)=>path.startsWith('/spends/')?{status:'dropped',reason:'The batch builder refused it.'}:pool.api(path,body)) as PoolApi;
+  await assert.rejects((await alice.mintLink(100n)).settled(),/refused/);
+  await flush();
+  assert.deepEqual([alice.links(),alice.inFlight.size],[[],0]);
+ }finally{await alice.dispose();}
 });
