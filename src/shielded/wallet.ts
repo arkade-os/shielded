@@ -58,6 +58,8 @@ export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecre
   if(!stored)return await fresh();
   if(stored.v!==1)return await fresh(`Ignoring a version ${String(stored.v)} shielded snapshot; syncing from the pool.`);
   if(stored.token!==o.token)return await fresh('Ignoring a snapshot from another pool; syncing from the pool.');
+  // An older client saves no `links`, and its cursor is past the mints; replaying finds them again.
+  if(stored.links===undefined&&stored.account.history.some(e=>e.kind==='send'))return await fresh();
   return {account:RollupAccount.fromSnapshot(hash,keys,stored.account),sent:{...stored.sent},listings:[...(stored.listings??[])],links:[...(stored.links??[])],resumed:true};
  }catch(error){return fresh(reasonOf(error));}
 }
@@ -182,7 +184,9 @@ export class ShieldedWallet extends Wallet {
   if(!this.repository)return;
   const {token}=this;
   try{
-   const account=this.account.snapshot(),stored=await this.repository.getAccount(token);
+   const account=this.account.snapshot(),found=await this.repository.getAccount(token);
+   // A row another key wrote (a tab restored to another phrase) is replaced, never merged in.
+   const stored=found?.account.owner===account.owner?found:undefined;
    // ponytail: read-merge-write keeps other tabs' entries but is not atomic; merge inside saveAccount's transaction if tabs ever race.
    this.sent={...stored?.sent,...this.sent};for(const txid of stored?.listings??[])this.listings.add(txid);
    // Spends are final, so what either tab has seen spent or taken back holds for both.
@@ -242,6 +246,7 @@ export class ShieldedWallet extends Wallet {
   const held:bigint[]=[];
   const handle=shieldedHandle({title:'Creating a claim link',steps:shieldedSteps.link,railId:'shielded-link'},async step=>{
    step(0);this.assertOpen();
+   if(amount<=0n)throw new Error('A claim link needs an amount above zero.');
    const bearer=(nullifier:bigint)=>{const keys=bearerKeysOf(bearerOf(this.master,nullifier));return rollupRecipientOf(this.hash,keys.ask,keys.nk,keys.viewSecret);};
    const {spends}=await this.notes.pick(()=>this.account.pay(bearer,amount,this.self,this.notes.inFlight,asset?assetFieldOfId(asset):BTC_ASSET,{join:this.prover.joinReady?.()??false}),
     chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));

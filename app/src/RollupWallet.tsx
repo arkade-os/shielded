@@ -214,6 +214,11 @@ export default function RollupWallet(){
   void wallet.inspectLink(claim).then(view=>{if(!stop)setClaimView(view);},error=>{if(!stop)setClaimView({error:errorText(error)});});
   return()=>{stop=true;};
  },[wallet,claim,claimRead]);
+ // Opening another link in this tab changes only the hash, so the page does not reload.
+ useEffect(()=>{
+  const changed=()=>{if(location.pathname.replace(/\/+$/,'')==='/claim')setClaim(location.hash.slice(1));};
+  addEventListener('hashchange',changed);return()=>removeEventListener('hashchange',changed);
+ },[]);
  const leaveClaim=()=>{setClaim('');history.replaceState(null,'','/wallet');};
  const claimNow=async()=>{if(await run(()=>wallet!.claimLink(claim),claimView&&'mine' in claimView&&claimView.mine?'Taking back a link':'Claiming a link'))leaveClaim();else setClaimRead(n=>n+1);};
  const mintLink=async()=>{
@@ -323,7 +328,7 @@ export default function RollupWallet(){
    </section>
    {links.length>0&&<section className="stock-card"><h2>Your claim links</h2><div className="stock-notes">
     {links.map(link=><div key={link.key}><span>{holdingsText([{asset:BigInt(link.asset),amount:BigInt(link.amount)}],field=>wallet?.assetIdOf(field))}</span><span className={link.state==='unclaimed'?'wait':'ok'}>{LINK_STATE[link.state]}</span>
-     {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link')}>Take back</button></div>}</div>)}
+     {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
    </div></section>}
    {((wallet?.shieldedNotes().length??0)>0||reserves.some(id=>assetUnits(id)>0n))&&<section className="stock-card"><h2>Notes</h2><div className="stock-notes">
     {(wallet?.shieldedNotes()??[]).map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} sats</span>{wallet!.inFlight.has(n.nullifier)?<span className="wait">In flight</span>:<span className="ok">Spendable</span>}</div>)}

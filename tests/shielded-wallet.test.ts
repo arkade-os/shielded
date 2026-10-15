@@ -821,9 +821,36 @@ test('saving keeps what another tab has already seen of a link',async()=>{
  }finally{await alice.dispose();}
 });
 
+test('a snapshot an older client saved without links is replayed, so the link list comes back',async()=>{
+ const pool=sharedPool(),repository=new InMemoryShieldedNoteRepository(),alice=await open({repository});alice.api=pool.api;
+ try{
+  await pool.fund(alice,[{amount:500n}]);
+  await (await alice.mintLink(100n)).settled();
+  const {links:_,...old}=(await repository.getAccount(TOKEN))!;
+  await repository.saveAccount(TOKEN,old);
+  const reopened=await open({repository});
+  try{
+   reopened.api=pool.api;await reopened.sync();
+   assert.deepEqual([reopened.resumed,reopened.links().map(l=>l.key)],[false,alice.links().map(l=>l.key)]);
+  }finally{await reopened.dispose();}
+ }finally{await alice.dispose();}
+});
+
+test('saving never merges another key\'s links or sends',async()=>{
+ const pool=sharedPool(),repository=new InMemoryShieldedNoteRepository(),alice=await open({repository});alice.api=pool.api;
+ try{
+  await pool.fund(alice,[{amount:500n}]);
+  const stored=(await repository.getAccount(TOKEN))!;
+  await repository.saveAccount(TOKEN,{...stored,account:{...stored.account,owner:'1'},sent:{'9':{to:'x'}},links:[{key:'5',batch:0,asset:'0',amount:'1',nullifiers:['6'],open:['6']}]});
+  await alice.save();
+  assert.deepEqual([alice.links(),alice.sentOf(9n),(await repository.getAccount(TOKEN))!.links],[[],undefined,[]]);
+ }finally{await alice.dispose();}
+});
+
 test('a mint the pool drops lists no link and frees its notes',async()=>{
  const pool=sharedPool(),alice=await open();alice.api=pool.api;
  try{
+  await assert.rejects((await alice.mintLink(0n)).settled(),/above zero/);
   await pool.fund(alice,[{amount:500n}]);
   alice.api=(async(path:string,body?:unknown)=>path.startsWith('/spends/')?{status:'dropped',reason:'The batch builder refused it.'}:pool.api(path,body)) as PoolApi;
   await assert.rejects((await alice.mintLink(100n)).settled(),/refused/);
