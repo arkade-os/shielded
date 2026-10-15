@@ -98,3 +98,15 @@ test('checkpoints are served only for the batch counts the operator vouches for'
  for(const path of ['/checkpoints/192','/checkpoints/0','/checkpoints/abc','/checkpoints/-64','/checkpoints/0128','/checkpoints/99999999999'])assert.equal((await fetch(api.base+path)).status,404,path);
  assert.deepEqual(asked,[128,192],'a malformed number never reaches the operator');
 });
+
+test('spends admitted at once are capped across all addresses, and the cap frees as checks finish',async(t)=>{
+ let release=()=>{};const held=new Promise<void>(r=>{release=r;});let admitted=0;
+ const api=await serve({ready:()=>true,submit:async()=>{admitted++;await held;}});t.after(api.close);
+ const posts=Array.from({length:8},(_,i)=>post(api.base+'/spends',{...spend,id:String(i).padStart(32,'a')}));
+ while(admitted<8)await new Promise(r=>setTimeout(r,5));
+ const refused=await post(api.base+'/spends',{...spend,id:'f'.repeat(32)});
+ assert.equal(refused.status,503,'a ninth check waits for one of eight to finish');
+ release();
+ assert.deepEqual((await Promise.all(posts)).map(r=>r.status),Array(8).fill(202));
+ assert.equal((await post(api.base+'/spends',{...spend,id:'e'.repeat(32)})).status,202);
+});

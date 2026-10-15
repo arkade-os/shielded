@@ -17,8 +17,11 @@ const proofOf=(p:any):SnarkProof=>{
 
 /** The v2 wallet API: status, proving keys, published batches, spend submission and the deposit signing round. */
 const POSTS_PER_MINUTE=60;
+/** Each admission checks a Groth16 proof in this process; past this many at once, a flood from many addresses would stall batching. */
+const ADMITTING_AT_ONCE=8;
 export function createRollupRouter(service:()=>RollupService|undefined){
  const router=express.Router();
+ let admitting=0;
  // Every submission costs a proof check, so each address gets a budget; reads and signatures, which an admitted deposit owes within its round, stay open.
  const writes=new Map<string,{count:number;since:number}>();
  router.use((req,res,next)=>{
@@ -65,6 +68,8 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   }catch(error){res.status(400).json({error:(error as Error).message});}
  });
  router.post('/spends',async(req,res)=>{
+  if(admitting>=ADMITTING_AT_ONCE){res.status(503).json({error:'The pool is busy checking other spends; try again in a moment.'});return;}
+  admitting++;
   try{
    const b=req.body??{},s=b.slot??{};
    if(typeof b.id!=='string'||!/^[0-9a-f]{16,64}$/.test(b.id))throw new Error('A spend id is 8 to 32 random bytes in hex.');
@@ -82,6 +87,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
    await service()!.submit(spend,coinRef);
    res.status(202).json({id:spend.id,status:'pending'});
   }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}
+  finally{admitting--;}
  });
  router.get('/spends/:id',(req,res)=>{
   const status=service()!.spend(req.params.id);
