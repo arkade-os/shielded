@@ -35,8 +35,13 @@ export const rollupRenewalSignature=(operatorSecret:Uint8Array,cosigners:string[
 export const rollupPoolPoints=(archive:Pick<RollupArchive,'head'|'reserves'>)=>
  [archive.head,...Object.values(archive.reserves)].map(({txid,vout})=>({txid,vout}));
 /** arkd sweeps each pool coin at its own expiry, so the soonest one among them sets the deadline for the whole pool. */
-export const rollupRenewalDue=(coins:readonly {expiresAt?:Date}[],beforeMs:number,now:number)=>
- coins.some(c=>c.expiresAt instanceof Date&&c.expiresAt.getTime()-now<beforeMs);
+export function rollupRenewalDue(points:readonly {txid:string;vout:number}[],found:readonly {txid:string;vout:number;expiresAt?:Date}[],beforeMs:number,now:number){
+ const missing=points.find(p=>!found.some(c=>c.txid===p.txid&&c.vout===p.vout));
+ if(missing)throw new Error(`Pool coin ${missing.txid}:${missing.vout} is not indexed, so its expiry is unknown.`);
+ const expiries=found.flatMap(c=>c.expiresAt instanceof Date?[c.expiresAt.getTime()]:[]);
+ if(!expiries.length)throw new Error('The indexer reports no expiry for any pool coin.');
+ return expiries.some(t=>t-now<beforeMs);
+}
 
 /**
  * Moves the head and every reserve, unchanged, into a fresh round; returns their new outpoints.

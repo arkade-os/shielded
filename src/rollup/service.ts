@@ -286,8 +286,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(stopped)return;
    try{
     if(existsSync(renewalPath))await exclusive(settleRenewal);
-    const {vtxos}=await live!.indexer.getVtxos({outpoints:rollupPoolPoints(operator.status().archive)});
-    if(rollupRenewalDue(vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))await exclusive(async()=>{
+    const points=rollupPoolPoints(operator.status().archive),{vtxos}=await live!.indexer.getVtxos({outpoints:points});
+    if(rollupRenewalDue(points,vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))await exclusive(async()=>{
      const from=operator.status().archive.head;
      try{
       const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,

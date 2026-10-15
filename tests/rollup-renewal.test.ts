@@ -39,9 +39,10 @@ test('renewal comes due on the soonest expiry among the head and every reserve',
  const points=rollupPoolPoints(archive);
  assert.deepEqual(points,[{txid:'aa'.repeat(32),vout:0},{txid:'cc'.repeat(32),vout:1}],'the head leads and every reserve follows, as the intent orders them');
  const now=Date.now(),window=48*3600_000,at=(p:{txid:string;vout:number},hours:number)=>({...p,expiresAt:new Date(now+hours*3600_000)});
- assert.equal(rollupRenewalDue([at(points[0]!,120),at(points[1]!,30)],window,now),true,'a reserve arkd sweeps first pulls renewal forward');
- assert.equal(rollupRenewalDue([at(points[0]!,120),at(points[1]!,120)],window,now),false);
- assert.equal(rollupRenewalDue([at(points[0]!,120)],window,now),false,'a coin the indexer did not return cannot pull it forward');
+ assert.equal(rollupRenewalDue(points,[at(points[0]!,120),at(points[1]!,30)],window,now),true,'a reserve arkd sweeps first pulls renewal forward');
+ assert.equal(rollupRenewalDue(points,[at(points[1]!,120),at(points[0]!,120)],window,now),false);
+ assert.throws(()=>rollupRenewalDue(points,[at(points[0]!,120)],window,now),/c{64}:1 is not indexed/,'an unreturned coin may be the one about to expire');
+ assert.throws(()=>rollupRenewalDue(points,points,window,now),/no expiry/);
 });
 
 test('a renewal hands out its intent id before the round, and names it when the round fails',async()=>{
