@@ -16,6 +16,7 @@ export const bearerKeysOf=(secret:Uint8Array)=>deriveRollupKeys2(secret,MUTINYNE
 
 /** A send whose payment outputs open under the key its first input derives is a link this wallet minted. */
 export async function linkOf(hash:Hash,master:Uint8Array,entry:HistoryEntry,batch:PublishedBatch):Promise<LinkRecord|undefined>{
+ // pay() derives the key from its first chosen note, and history keeps slot and nullifier order, so that is spent[0].
  const first=entry.spent[0];
  if(entry.kind!=='send'||first===undefined)return undefined;
  const keys=bearerKeysOf(bearerOf(master,first)),owner=ownerOf(hash,ROLLUP_DOMAIN,akOf(hash,keys.ask),keys.nk),notes:RollupNote[]=[];
