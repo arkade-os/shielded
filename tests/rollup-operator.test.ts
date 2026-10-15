@@ -202,6 +202,19 @@ test('a close while an applied batch waits for signatures keeps the snapshot at 
  assert.deepEqual([op.state.batchCount,savedAt(w)],[1,1],'the unsigned batch is undone and was never persisted');
 });
 
+test('a full replay that disagrees with the head is refused rather than opened on a wrong state',async(t)=>{
+ const w=await world(),op=await w.open(t);
+ await op.submit(await toySpend('a',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ const commitment=op.state.commitment(),path=join(w.dir,'batches','0.json'),original=readFileSync(path,'utf8'),body=JSON.parse(original);
+ op.close();rmSync(join(w.dir,'snapshot.bin'));
+ body.slots[3].commitments.reverse();writeFileSync(path,JSON.stringify(body));
+ await assert.rejects(w.open(t),/head commits to/);
+ writeFileSync(path,original);
+ assert.equal((await w.open(t)).state.commitment(),commitment,'the refusal released the journal');
+});
+
 test('a deposit that is never signed is dropped and the rest of the batch goes through',async(t)=>{
  const w=await world(),drops:[string[],string][]=[];
  let refuse=true;

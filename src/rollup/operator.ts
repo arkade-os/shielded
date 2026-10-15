@@ -135,7 +135,11 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    return ignore(`resumed at batch ${from} it reaches commitment ${reached}, but the head commits to ${committed}`);
   }catch(error){return ignore((error as Error).message);}
  };
- state=resumed()??replay(state);
+ try{
+  state=resumed()??replay(state);
+  if(committed!==undefined&&state.commitment()!==committed)throw new Error(`Replaying ${atOpen.batches} batches gives commitment ${state.commitment()}, but the pool head commits to ${committed}; a batch record is wrong, so the pool does not open.`);
+ // Released so the service's retry meets this error again, not its own journal lock.
+ }catch(error){journal.close();throw error;}
  // run() applies a batch long before the journal holds it, and undoLast() may still take it back: only accepted state is written.
  const snapshot=(every:number)=>{
   try{
