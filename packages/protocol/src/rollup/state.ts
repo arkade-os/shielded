@@ -36,7 +36,12 @@ export class RollupState {
   for (let k = 0; k < 2 ** WINDOW_DEPTH; k++) if (this.window.node(0, k) === root) return k;
   return -1;
  }
- latestRoot(): bigint { return this.window.node(0, (this.batchCount + 2 ** WINDOW_DEPTH - 1) % 2 ** WINDOW_DEPTH); }
+ latestRoot(): bigint { return this.rootAfter(this.batchCount); }
+ /** The root after the first `batches` batches, while the window still holds it: the committed one while a later batch is proved. */
+ rootAfter(batches: number): bigint {
+  if (batches > this.batchCount || batches + 2 ** WINDOW_DEPTH <= this.batchCount) throw new Error('That root is not in the window.');
+  return this.window.node(0, (batches + 2 ** WINDOW_DEPTH - 1) % 2 ** WINDOW_DEPTH);
+ }
 
  apply(kind: BatchKind, slots: BatchSlot[]): BatchResult {
   const m = kind === 'spend' ? 1 : 2;

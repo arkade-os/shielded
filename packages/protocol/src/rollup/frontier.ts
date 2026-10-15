@@ -1,8 +1,16 @@
 import { NOTE_DEPTH, SUBTREE_DEPTH } from './constants.ts';
 import type { Hash } from './notes.ts';
+import type { DeepTree } from './tree.ts';
 
 const BLOCK = 2 ** SUBTREE_DEPTH, UPPER = NOTE_DEPTH - SUBTREE_DEPTH;
 export interface FrontierSnapshot { v: 1; blocks: number; top: string; filled: string[]; tracked: [number, string[]][] }
+export interface FrontierCheckpoint { blocks: number; filled: string[] }
+/**
+ * The frontier after `blocks` blocks, read off a full tree at any later time: a subtree wholly left of block `blocks` never
+ * changes again. Where bit u of `blocks` is clear, the next append overwrites `filled[u]` before reading it, so it is sent as 0.
+ */
+export const checkpointOf = (tree: Pick<DeepTree, 'node'>, blocks: number): FrontierCheckpoint =>
+ ({ blocks, filled: Array.from({ length: UPPER }, (_, u) => { const i = Math.floor(blocks / 2 ** u); return String(i % 2 ? tree.node(SUBTREE_DEPTH + u, i - 1) : 0n); }) });
 
 /**
  * The note tree as a wallet needs it: the root, plus current paths for the leaves it tracks, as each batch appends a
@@ -29,6 +37,17 @@ export class NoteFrontier {
   frontier.top = BigInt(snapshot.top);
   frontier.filled.push(...snapshot.filled.map(BigInt));
   for (const [index, siblings] of snapshot.tracked) frontier.tracked.set(index, siblings.map(BigInt));
+  return frontier;
+ }
+ static at(hash: Hash, checkpoint: FrontierCheckpoint): NoteFrontier {
+  const { blocks, filled } = checkpoint;
+  if (!Number.isSafeInteger(blocks) || blocks < 0 || blocks >= 2 ** UPPER || !Array.isArray(filled) || filled.length !== UPPER) throw new Error('Malformed frontier checkpoint.');
+  const frontier = new NoteFrontier(hash);
+  frontier.filled.push(...filled.map(BigInt));
+  let node = frontier.zeros[SUBTREE_DEPTH]!;
+  for (let u = 0; u < UPPER; u++) node = Math.floor(blocks / 2 ** u) % 2 ? hash([frontier.filled[u]!, node]) : hash([node, frontier.zeros[SUBTREE_DEPTH + u]!]);
+  frontier.blocks = blocks;
+  frontier.top = node;
   return frontier;
  }
 

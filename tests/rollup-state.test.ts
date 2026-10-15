@@ -113,3 +113,17 @@ test('a join batch inserts two nullifiers per slot', () => {
  assert.equal(state.nullifiers.count(), 1 + 2 * BATCH_SLOTS);
  assert.equal(result.binding[3], 1);
 });
+
+test('a committed root stays readable while the next batch is applied but not yet accepted', () => {
+ const state = RollupState.genesis(hash);
+ assert.equal(state.rootAfter(0), 0n);
+ state.apply('spend', fill(state));
+ const committed = state.latestRoot();
+ state.apply('spend', fill(state, [deposit(state, 5n).slot]));
+ assert.equal(state.rootAfter(1), committed);
+ assert.equal(state.rootAfter(2), state.latestRoot());
+ assert.throws(() => state.rootAfter(3), /window/);
+ for (let i = 0; i < 63; i++) state.apply('spend', fill(state));
+ assert.throws(() => state.rootAfter(1), /window/, 'its slot was reused 64 batches later');
+ assert.equal(state.rootAfter(2), state.window.node(0, 1));
+});
