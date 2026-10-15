@@ -47,6 +47,14 @@ export function deriveRollupKeys2(masterSecret:Uint8Array|string,network:string)
  return {ask:scalar(master,network,'rollup2-ask',ROLLUP_FIELD),nk:scalar(master,network,'rollup2-nk',ROLLUP_FIELD),viewSecret:hkdf(sha256,master,SALT,new TextEncoder().encode(`${DOMAIN}:${network}:rollup2-view`),32)};
 }
 
+/** A claim link's seed, keyed by the nullifier of the note that funded it: unique per link, and re-derivable from the phrase. */
+export function bearerSecretOf(masterSecret:Uint8Array|string,network:string,nullifier:bigint):Uint8Array {
+ const master=typeof masterSecret==='string'?parseMasterSecret(masterSecret):new Uint8Array(masterSecret);
+ if(master.length!==32)throw new Error('Recovery secret must contain exactly 32 bytes.');
+ if(!/^[a-z0-9][a-z0-9.-]{0,62}$/.test(network))throw new Error('Invalid wallet network label.');
+ return hkdf(sha256,master,SALT,new TextEncoder().encode(`${DOMAIN}:${network}:rollup2-bearer:${nullifier}`),32);
+}
+
 export function deriveWalletKeyMaterial(masterSecret:Uint8Array|string,network:string):WalletKeyMaterial {
  const master=typeof masterSecret==='string'?parseMasterSecret(masterSecret):new Uint8Array(masterSecret);
  if(master.length!==32)throw new Error('Recovery secret must contain exactly 32 bytes.');
