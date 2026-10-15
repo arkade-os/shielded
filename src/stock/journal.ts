@@ -14,7 +14,10 @@ export interface StockReleasePin {
 }
 export interface StockJournalReceipt {txid:string;checkpointTxids:string[]}
 interface Pending<P,R> {id:string;fingerprint:string;plan:P;stage:'submitted'|'accepted';receipt?:R}
-interface Saved<A,P,R> {version:1;pin:StockReleasePin;archive:A;accepted:Record<string,{fingerprint:string;receipt:R}>;pending?:Pending<P,R>}
+type Accepted<R>={fingerprint:string;receipt:R}|{fingerprint:string;receipt:StockJournalReceipt;compact:true};
+interface Saved<A,P,R> {version:1;pin:StockReleasePin;archive:A;accepted:Record<string,Accepted<R>>;pending?:Pending<P,R>}
+/** One whole receipt per batch whose root a spend can still prove against. */
+const WHOLE_RECEIPTS=64;
 export interface StockJournalHooks<A,P,R extends StockJournalReceipt> {
  validateArchive(archive:A):Promise<void>|void;
  validatePlan(plan:P,archive:A):Promise<void>|void;
@@ -36,6 +39,17 @@ function canonical(value:unknown):string {
  throw new Error('Stock journal values must contain only canonical public JSON data.');
 }
 export const stockJournalFingerprint=(value:unknown)=>createHash('sha256').update(canonical(value)).digest('hex');
+/**
+ * Older receipts keep only what is still read of them, the txid and their plan's fingerprint: whole ones carry the
+ * signed transactions, so keeping every one rewrites the entire row on each save until no stringify of it can be made.
+ */
+function bounded<R extends StockJournalReceipt>(accepted:Record<string,Accepted<R>>):Record<string,Accepted<R>>{
+ const ids=Object.keys(accepted).slice(0,-WHOLE_RECEIPTS);
+ if(!ids.some(id=>!('compact' in accepted[id]!)))return accepted;
+ const next={...accepted};
+ for(const id of ids){const {fingerprint,receipt}=next[id]!;next[id]={fingerprint,receipt:{txid:receipt.txid,checkpointTxids:[...receipt.checkpointTxids]},compact:true};}
+ return next;
+}
 function validatePin(pin:StockReleasePin):void {
  if(!pin||pin.version!==1||!['mutinynet','local-stock'].includes(pin.network))throw new Error('Unsupported stock release pin.');
  for(const name of ['descriptorProfileId','programsHash','artifactsHash','checkpointHash','genesisTxid','serverKey','emulatorKey'] as const)if(!/^[0-9a-f]{64}$/.test(pin[name]))throw new Error('Invalid stock release '+name+'.');
@@ -60,7 +74,7 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
   }
   if(!previous)store.save(saved);
  }catch(error){store.close();throw error;}
- const persist=(next:Saved<A,P,R>)=>{store.save(next);saved=next;};
+ const persist=(next:Saved<A,P,R>)=>{const value={...next,accepted:bounded(next.accepted)};store.save(value);saved=value;};
  const ensure=()=>{if(closed)throw new Error('Stock journal is closed.');if(busy)throw new Error('Another stock operation is in flight.');};
  const finish=async(receipt:R)=>{
   const pending=saved.pending!;
@@ -74,7 +88,8 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
  };
  return {
   status:()=>({pin:structuredClone(saved.pin),archive:structuredClone(saved.archive),pending:saved.pending?{id:saved.pending.id,stage:saved.pending.stage}:undefined,blocked:!!saved.pending}),
-  receipt:(id:string):R|undefined=>Object.hasOwn(saved.accepted,id)?structuredClone(saved.accepted[id]!.receipt):undefined,
+  /** Only the base fields are promised: an older batch answers with the txid its receipt was compacted to. */
+  receipt:(id:string):StockJournalReceipt|undefined=>Object.hasOwn(saved.accepted,id)?structuredClone(saved.accepted[id]!.receipt):undefined,
   /** Drops an unaccepted plan the caller proved can never land, because another transaction spent what it spends. */
   discard:()=>{ensure();if(saved.pending?.stage!=='submitted')throw new Error('Only an unaccepted plan can be discarded.');const next={...saved};delete next.pending;persist(next);},
   updateArchive:async(transform:(archive:A)=>Promise<A>|A)=>{
