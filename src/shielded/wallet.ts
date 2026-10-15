@@ -8,6 +8,7 @@ import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipien
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
+import {freshAccount} from './checkpoint.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {SwapClient} from '@arkade-os/swap';
 import {lightningRails} from './lightning.ts';
@@ -45,14 +46,14 @@ export class NoteReservation {
 export interface LoadedAccount {account:RollupAccount;sent:Record<string,SentRecord>;listings:string[];resumed:boolean;error?:string}
 const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
 /** Never throws: a cache that cannot be read is a full sync, reported once, not a wallet that will not open. */
-export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;bornAt:number}):Promise<LoadedAccount>{
- const fresh=(error?:string):LoadedAccount=>({account:RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],resumed:false,...(error?{error}:{})});
+export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;bornAt:number;api?:PoolApi}):Promise<LoadedAccount>{
+ const fresh=async(error?:string):Promise<LoadedAccount>=>({account:o.api?await freshAccount(hash,keys,o.bornAt,o.api):RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],resumed:false,...(error?{error}:{})});
  if(!o.repository)return fresh();
  try{
   const stored=await o.repository.getAccount(o.token);
-  if(!stored)return fresh();
-  if(stored.v!==1)return fresh(`Ignoring a version ${String(stored.v)} shielded snapshot; syncing from the pool.`);
-  if(stored.token!==o.token)return fresh('Ignoring a snapshot from another pool; syncing from the pool.');
+  if(!stored)return await fresh();
+  if(stored.v!==1)return await fresh(`Ignoring a version ${String(stored.v)} shielded snapshot; syncing from the pool.`);
+  if(stored.token!==o.token)return await fresh('Ignoring a snapshot from another pool; syncing from the pool.');
   return {account:RollupAccount.fromSnapshot(hash,keys,stored.account),sent:{...stored.sent},listings:[...(stored.listings??[])],resumed:true};
  }catch(error){return fresh(reasonOf(error));}
 }
@@ -122,7 +123,7 @@ export class ShieldedWallet extends Wallet {
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
    wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;
-   const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0});
+   const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0,api:wallet.api});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    for(const txid of loaded.listings)wallet.listings.add(txid);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field));

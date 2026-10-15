@@ -88,3 +88,13 @@ test('each address gets a budget of submissions per minute; reads and deposit si
  assert.equal((await fetch(api.base+'/status')).status,200,'reads stay open');
  assert.equal((await post(api.base+'/spends/'+spend.id+'/sign',{arkTx:'x',checkpoint:'y'})).status,409,'a signature still reaches its round');
 });
+
+test('checkpoints are served only for the batch counts the operator vouches for',async(t)=>{
+ const asked:number[]=[];
+ const api=await serve({ready:()=>true,checkpoint:(blocks:number)=>{asked.push(blocks);return blocks===128?{blocks,filled:['5']}:undefined;}});t.after(api.close);
+ const found=await fetch(api.base+'/checkpoints/128');
+ assert.equal(found.status,200);
+ assert.deepEqual(await found.json(),{blocks:128,filled:['5']});
+ for(const path of ['/checkpoints/192','/checkpoints/0','/checkpoints/abc','/checkpoints/-64','/checkpoints/0128','/checkpoints/99999999999'])assert.equal((await fetch(api.base+path)).status,404,path);
+ assert.deepEqual(asked,[128,192],'a malformed number never reaches the operator');
+});

@@ -8,8 +8,9 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
+import {checkpointOf} from '../../packages/protocol/src/rollup/frontier.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
@@ -324,7 +325,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   status:():RollupStatus=>{
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,{archive}=operator.status();
-   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.latestRoot()),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
     reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount]))}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
@@ -350,6 +351,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
    return {from,total,batches:list};
+  },
+  /** The note frontier after a committed multiple of CHECKPOINT_EVERY batches; it never changes once served. */
+  checkpoint:(blocks:number)=>{
+   const operator=live?.operator;
+   return operator&&blocks>0&&blocks%CHECKPOINT_EVERY===0&&blocks<=operator.status().archive.batches?checkpointOf(operator.state.notes,blocks):undefined;
   },
   /** Fills a deposit coin from the indexer; the client names the outpoint and the tree that locks it. */
   depositCoin:resolveCoin,
