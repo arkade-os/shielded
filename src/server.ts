@@ -2,6 +2,7 @@
 import {existsSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import compression from 'compression';
 import express from 'express';
 import {dropLegacyData} from './legacy.ts';
 import {createRollupRouter} from './rollup/http.ts';
@@ -14,13 +15,14 @@ const rapidsnark=join(root,'bin','rapidsnark');
 let service:RollupService|undefined,stopping=false,timer:ReturnType<typeof setTimeout>|undefined;
 
 // Dokploy's proxy sits on a private network; only such a hop may name the client, so a direct caller cannot.
-const app=express();app.disable('x-powered-by');app.set('trust proxy','loopback, linklocal, uniquelocal');
+const app=express();app.disable('x-powered-by');app.set('trust proxy','loopback, linklocal, uniquelocal');app.use(compression());
 // Health stays green while waiting for a previous instance's volume lock, or the rollout would never finish.
 app.get('/health',(_req,res)=>{const phase=service?.status().phase??'starting';res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
 app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!!service?.ready()}));
 app.use('/api/rollup',createRollupRouter(()=>service));
 for(const old of ['/stock-wallet','/rollup','/lab'])app.get(old,(_req,res)=>res.redirect(301,'/wallet'));
 app.get(['/','/wallet','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web}));
+app.use('/assets',express.static(join(web,'assets'),{immutable:true,maxAge:'365d'}));
 app.use(express.static(web));
 const listener=app.listen(port,process.env.HOST??'0.0.0.0',()=>console.log(`Shielded listening on port ${port}.`));
 
