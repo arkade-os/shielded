@@ -1,11 +1,14 @@
 import {createHash} from 'node:crypto';
 import {closeSync,fsyncSync,openSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
+import {Extension,Transaction} from '@arkade-os/sdk';
+import {hex} from '@scure/base';
 import {NOTE_DEPTH,NULLIFIER_DEPTH,ROLLUP_FIELD,SUBTREE_DEPTH,WINDOW_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
 import {DeepTree} from '../../packages/protocol/src/rollup/tree.ts';
 import {stockJournalFingerprint,type StockReleasePin} from '../stock/journal.ts';
+import {ROLLUP_STATE_PACKET} from './covenant.ts';
 
 export const SNAPSHOT_VERSION=1;
 const MAGIC=Buffer.from('SHRS'),HEADER=4+2+3+32+3*4,SHIFTS=[0n,64n,128n,192n],U64=(1n<<64n)-1n;
@@ -56,6 +59,14 @@ export function writeSnapshot(path:string,bytes:Uint8Array):void {
  const fd=openSync(path+'.tmp','w');
  try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}
  renameSync(path+'.tmp',path);
+}
+
+/** The state commitment in a pool head's state packet, or undefined when the transaction carries no readable one. */
+export function headCommitment(sourceTxHex:string):bigint|undefined {
+ try{
+  const packet=Extension.fromTx(Transaction.fromRaw(hex.decode(sourceTxHex),{allowUnknownOutputs:true})).getPacketByType(ROLLUP_STATE_PACKET)?.serialize();
+  return packet?.length===64?get(Buffer.from(packet),0):undefined;
+ }catch{return undefined;}
 }
 
 export function readSnapshot(path:string,hash:Hash,pin:StockReleasePin,batches:number):RollupState|undefined {

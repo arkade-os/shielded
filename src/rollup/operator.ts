@@ -1,4 +1,4 @@
-import {mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
@@ -12,6 +12,7 @@ import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSpend} fro
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,type RollupCoin,type RollupLeaves} from './covenant.ts';
 import {readBatchTx,spentCoins} from './external.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
+import {headCommitment,readSnapshot} from './snapshot.ts';
 
 export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHex:string}
 export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
@@ -86,7 +87,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
- const state=RollupState.genesis(o.hash);
+ let state=RollupState.genesis(o.hash);
  const poolCoin=(c:RollupPoolCoin,leaf:Uint8Array):RollupCoin=>({txid:c.txid,vout:c.vout,value:c.value,sourceTx:hex.decode(c.sourceTxHex),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(leaf))});
  const headOf=(plan:RollupPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
  const keptPath=(plan:RollupPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
@@ -116,7 +117,21 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    return {...archive,head:coin(0),reserves,batches:archive.batches+1};
   },
  });
- for(let n=0;n<journal.status().archive.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;state.apply(body.kind,body.slots.map(slotOf));}
+ const atOpen=journal.status().archive,committed=headCommitment(atOpen.head.sourceTxHex),snapshotPath=join(o.directory,'snapshot.bin');
+ const replay=(s:RollupState)=>{for(let n=s.batchCount;n<atOpen.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;s.apply(body.kind,body.slots.map(slotOf));}return s;};
+ if(committed===undefined)console.warn(`[rollup] The pool head ${atOpen.head.txid} carries no readable state packet; the state is replayed from genesis and cannot be checked against it.`);
+ /** A snapshot is used only once the batches after it replay to the commitment the head carries; anything else replays from genesis. */
+ const resumed=():RollupState|undefined=>{
+  if(committed===undefined||!existsSync(snapshotPath))return undefined;
+  const ignore=(why:string)=>{console.warn(`[rollup] Ignoring ${snapshotPath}: ${why}; replaying ${atOpen.batches} batches from genesis.`);return undefined;};
+  try{
+   const s=readSnapshot(snapshotPath,o.hash,o.pin,atOpen.batches);
+   if(!s)return ignore('it is damaged, from another pool or format, or ahead of the journal');
+   const from=s.batchCount,reached=replay(s).commitment();
+   return reached===committed?s:ignore(`resumed at batch ${from} it reaches commitment ${reached}, but the head commits to ${committed}`);
+  }catch(error){return ignore((error as Error).message);}
+ };
+ state=resumed()??replay(state);
  // One batch is in flight at a time (the journal holds one plan), so a single in-flight pair carries its kind.
  const pending:Record<BatchKind,RollupSpend[]>={spend:[],join:[]},padding:Record<BatchKind,RollupSpend[]>={spend:[],join:[]};
  let inflight:RollupSpend[]=[],inflightPadding:RollupSpend[]=[],inflightKind:BatchKind='spend',busy=false,coinCap:number|undefined;
