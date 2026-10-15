@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ArkAddress,PaymentRouter,arkAssetRail,arkRail,isValidArkAddress,type PaymentRequest} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,SingleKey,arkAssetRail,arkRail,isValidArkAddress,type PaymentRequest} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
@@ -77,6 +77,16 @@ test('the withdraw rail is available only when the shielded balance covers the a
  assert.equal(await broken.available!(req(ELSEWHERE,500),ctx(fake())),false,'a thrown answer is a false answer, not a dropped rail');
  assert.equal(await rich.available!(req(ELSEWHERE),ctx(fake())),false,'no amount, no availability');
  assert.equal(await rich.available!(req(POOL,500),ctx(fake())),false,'and never for the pool itself');
+});
+
+test('the withdraw rail refuses an Arkade address on another network or under another operator',async()=>{
+ const rail=shieldedWithdrawRail(fake()),c=ctx(fake());
+ const operator=await SingleKey.fromPrivateKey(new Uint8Array(32).fill(5)).xOnlyPublicKey();
+ const elsewhere=[new ArkAddress(operator,new Uint8Array(32).fill(7),decoded.hrp).encode(),new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),'ark').encode()];
+ for(const raw of elsewhere){
+  assert.equal(isValidArkAddress(raw),true,'well formed, so only the operator check stops it');
+  assert.equal(rail.match(req(raw),c),false,raw);
+ }
 });
 
 // Review Focus 5: sending to the pool is listing, not withdrawing.

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
@@ -100,6 +100,14 @@ test('waiting on a spend gives up at its deadline, so a stalled batch cannot hol
  const api=(async()=>{polls++;return {status:'pending'};}) as never;
  await assert.rejects(waitForSpend('ab',async()=>{},api,1,20),/did not settle/);
  assert.ok(polls>1);
+});
+
+test('an invoice takes a typed amount only when it pins none, and Lightning addresses are not invoices',()=>{
+ const pinned='lntbs10u1p4dpdhppp5mrkkvsl380k972sd7admdw8f2q27a3afwkz4hhcneq6ycsx62dysdqqcqzzsxqyz5vqsp5vga9lqg0c6dlele06x7zduqwjeevhwyur8erfhr073vttlsrwh0s9qxpqysgq';
+ const open='lntbs1p4dpdhppp5mrkkvsl380k972sd7admdw8f2q27a3afwkz4hhcneq6ycsx62dysdqqcqzzsxqyz5vqsp5vga9lqg0c6dlele06x7zduqwjeevhwyur8erfhr073vttlsrwh0s9qxpqysgq';
+ assert.deepEqual([pinned,`lightning:${pinned}`,'LNBCRT2500U1PXYZ'].map(invoiceCarriesAmount),[true,true,true]);
+ assert.deepEqual([open,'lnbc1pxyz','alice@lnurl.mutinynet.arkade.sh','LNURL1DP68GURN8GHJ7','tark1qq'].map(invoiceCarriesAmount),[false,false,false,false,false]);
+ assert.deepEqual(['alice@pay.example','LNURL1DP68GURN8GHJ7',open].map(isInvoice),[false,false,true]);
 });
 
 test('the status sheet names the step in progress, then the outcome',()=>{

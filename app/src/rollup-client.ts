@@ -14,8 +14,14 @@ export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=
  return [...rows.values()];
 }
 
+export const isInvoice=(raw:string)=>/^(lightning:)?ln(bc|tb|bcrt)/i.test(raw.trim());
+/** An invoice that pins its amount refuses a second one, even an equal one; the amount sits before bech32's last `1`. */
+export const invoiceCarriesAmount=(raw:string)=>{const t=raw.trim().replace(/^lightning:/i,'');return isInvoice(t)&&/\d/.test(t.slice(0,t.lastIndexOf('1')));};
+
 export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private payment',detail:'The amount and both parties stay private.'}
  :railId==='shielded-withdraw'?{title:'Withdraw from the pool',detail:'The amount and the destination become public.'}
  :railId==='onchain'?{title:'On-chain exit',detail:'From your unshielded Arkade funds, to the Bitcoin chain.'}
  :railId==='ark'||railId==='ark-asset'?{title:'Arkade payment',detail:'From your unshielded Arkade funds; the amount is public.'}
+ :railId==='lightning'||railId==='lnurl-lightning'?{title:'Pay over Lightning',detail:'Through a swap, from your Arkade balance; whatever it lacks first leaves the pool, publicly.'}
+ :railId==='lnurl-arkade'?{title:'Pay the Lightning address on Arkade',detail:'Straight from the pool to the Arkade address its owner gave; the amount and destination become public.'}
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};
