@@ -16,7 +16,7 @@ export interface StockJournalReceipt {txid:string;checkpointTxids:string[]}
 interface Pending<P,R> {id:string;fingerprint:string;plan:P;stage:'submitted'|'accepted';receipt?:R}
 type Accepted<R>={fingerprint:string;receipt:R}|{fingerprint:string;receipt:StockJournalReceipt;compact:true};
 interface Saved<A,P,R> {version:1;pin:StockReleasePin;archive:A;accepted:Record<string,Accepted<R>>;pending?:Pending<P,R>}
-/** One whole receipt per batch whose root a spend can still prove against: the rollup's 2^WINDOW_DEPTH root window. */
+/** Only `.txid` of an accepted receipt is ever read back; the newest stay whole for inspection, as many as the rollup's root window. */
 const WHOLE_RECEIPTS=64;
 export interface StockJournalHooks<A,P,R extends StockJournalReceipt> {
  validateArchive(archive:A):Promise<void>|void;
@@ -45,7 +45,7 @@ export const stockJournalFingerprint=(value:unknown)=>createHash('sha256').updat
  */
 function bounded<R extends StockJournalReceipt>(accepted:Record<string,Accepted<R>>):Record<string,Accepted<R>>{
  const ids=Object.keys(accepted).slice(0,-WHOLE_RECEIPTS);
- if(!ids.some(id=>!('compact' in accepted[id]!)))return accepted;
+ if(ids.every(id=>'compact' in accepted[id]!))return accepted;
  const next={...accepted};
  for(const id of ids){const {fingerprint,receipt}=next[id]!;next[id]={fingerprint,receipt:{txid:receipt.txid,checkpointTxids:[...receipt.checkpointTxids]},compact:true};}
  return next;
