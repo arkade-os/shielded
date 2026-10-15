@@ -548,6 +548,7 @@ test('a note being verified is still reserved against a second spend of it',asyn
  const admission=op.submit(good);
  await assert.rejects(op.submit({...good}),/Duplicate rollup spend id/);
  await assert.rejects(op.submit({...good,id:'again'}),/already spent or pending/);
+ assert.deepEqual(op.pendingIds(),['a'],'it waits in the queue while it verifies, so the service never settles it as dropped');
  held.release(good.proof);await admission;
  assert.deepEqual(op.pendingIds(),['a']);
 });
