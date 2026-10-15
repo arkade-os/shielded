@@ -39,6 +39,11 @@ test('a fresh account starts at the checkpoint before its birth and never reads 
  assert.deepEqual(asked,['/checkpoints/128','/batches?from=128&limit=50','/status']);
 });
 
+test('a checkpoint catch-up hands the hook each batch it applies, with the account it returns',async()=>{
+ const seen:unknown[][]=[],account=await freshAccount(hash,keys,130,pool(140).api,(...call)=>{seen.push(call);});
+ assert.deepEqual(seen.map(([cursor,batch,a])=>[cursor,(batch as {slots:{commitments:string[]}[]}).slots[0]!.commitments[0],a===account]),Array.from({length:12},(_,i)=>[129+i,String(leaf(128+i,0)),true]));
+});
+
 test('a batch landing between the catch-up and the status read gets another try',async()=>{
  const {tree,api,asked}=pool(140,{landing:true}),account=await freshAccount(hash,keys,130,api);
  assert.deepEqual([account.batchCount,account.latestRoot()],[141,tree.root()]);
@@ -53,9 +58,9 @@ test('without a checkpoint, with one the pool\'s root refutes, or with another o
 });
 
 test('a new wallet without a snapshot starts from the checkpoint; one with a snapshot resumes it',async()=>{
- const {api,asked}=pool(140),repository=new InMemoryShieldedNoteRepository();
- const fresh=await loadAccount(hash,keys,{repository,token:'g2',bornAt:130,api});
- assert.deepEqual([fresh.resumed,fresh.account.batchCount],[false,140]);
+ const {api,asked}=pool(140),repository=new InMemoryShieldedNoteRepository();let hooked=0;
+ const fresh=await loadAccount(hash,keys,{repository,token:'g2',bornAt:130,api,onBatch:()=>{hooked++;}});
+ assert.deepEqual([fresh.resumed,fresh.account.batchCount,hooked],[false,140,12]);
  await repository.saveAccount('g2',{v:1,token:'g2',account:fresh.account.snapshot(),sent:{},listings:[]});
  asked.length=0;
  const resumed=await loadAccount(hash,keys,{repository,token:'g2',bornAt:130,api});

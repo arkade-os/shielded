@@ -215,12 +215,12 @@ export default function RollupWallet(){
   return()=>{stop=true;};
  },[wallet,claim,claimRead]);
  const leaveClaim=()=>{setClaim('');history.replaceState(null,'','/wallet');};
- const claimNow=async()=>{if(await run(()=>wallet!.claimLink(claim),'Claiming a link'))leaveClaim();else setClaimRead(n=>n+1);};
+ const claimNow=async()=>{if(await run(()=>wallet!.claimLink(claim),claimView&&'mine' in claimView&&claimView.mine?'Taking back a link':'Claiming a link'))leaveClaim();else setClaimRead(n=>n+1);};
  const mintLink=async()=>{
   const before=new Set(wallet?.links().map(l=>l.key));
   if(await run(()=>wallet!.mintLink(BigInt(amount),assetId||undefined),'Creating a claim link'))setMinted(wallet!.links().find(l=>!before.has(l.key))?.token??'');
  };
- const links=wallet?.links()??[],claimProblem=claim?claimTokenError(claim):'';
+ const links=wallet?.links()??[],mintedLink=links.find(l=>l.token===minted),claimProblem=claim?claimTokenError(claim):'';
 
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=wallet?.shieldedAddress()??'';
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
@@ -253,7 +253,7 @@ export default function RollupWallet(){
      :'error' in claimView?<p className="stock-blocked">{claimView.error}</p>
      :!claimView.notes.length?<p className="stock-muted">This link is empty or already claimed.</p>
      :<><p><b>{holdingsText(claimView.notes,field=>wallet?.assetIdOf(field))}</b></p>
-      <p className="stock-muted">{claimView.mine?'You created this link and nobody has claimed it yet. Taking it back returns it to your shielded balance.':'Claiming moves it privately into this wallet. Nobody learns the amount, who sent it, or who claimed it.'}</p>
+      <p className="stock-muted">{claimView.mine?'You created this link and nobody has claimed it yet. Taking it back returns it to your shielded balance.':'Claiming moves it privately into this wallet. Onlookers see neither the amount nor who claimed it; whoever made the link sees only that it was claimed.'}</p>
       <button className="stock-primary" disabled={busy||restoring.current||!wallet} onClick={()=>void claimNow()}>{claimView.mine?'Take back':'Claim'}</button></>}
     <button className="stock-ghost stock-mini" onClick={leaveClaim}>Dismiss</button></section>}
    <section className="stock-card stock-balance">
@@ -300,7 +300,7 @@ export default function RollupWallet(){
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
      <button className="stock-primary" disabled={busy||restoring.current||!synced||!quote}>{busy?'Working…':quote?routeCopy(quote.railId).title:'Send'}</button>
      {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
-     {minted&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)}/>
+     {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)}/>
       {typeof navigator.share==='function'&&<button type="button" className="stock-ghost stock-mini" onClick={()=>void navigator.share({url:claimUrl(location.origin,minted)}).catch(()=>{})}>Share</button>}
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
     </form>}

@@ -5,8 +5,10 @@ import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {RollupAccount,type BuiltSpend,type PublishedBatch,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
-import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {NOTE_DEPTH,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {checkpointOf} from '../packages/protocol/src/rollup/frontier.ts';
 import {assetFieldOfId,noteOf} from '../packages/protocol/src/rollup/notes.ts';
+import {DeepTree} from '../packages/protocol/src/rollup/tree.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
@@ -38,11 +40,11 @@ function poolFetcher(batches:number){
  }) as unknown as typeof fetch;
  return {fetcher,paths};
 }
-const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string}={})=>
+const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:indexer,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
   pool:{origin:'',status:status(o.batches??0)},secret:o.secret??'11'.repeat(32),hash,prover,
-  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher,...(o.repository?{shieldedRepository:o.repository}:{})});
+  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{})});
 
 // The spec's written-first test: the inherited factory must produce the subclass against the patched SDK.
 test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',async()=>{
@@ -816,4 +818,22 @@ test('a mint the pool drops lists no link and frees its notes',async()=>{
   await flush();
   assert.deepEqual([alice.links(),alice.inFlight.size],[[],0]);
  }finally{await alice.dispose();}
+});
+
+test('a wallet started from a checkpoint watches for links in the batches it catches up while loading',async t=>{
+ const tree=new DeepTree(hash,NOTE_DEPTH),paths:string[]=[],batches=Array.from({length:70},(_,b)=>{
+  const commitments=[b*32+1,b*32+2].map(String) as [string,string];commitments.forEach((c,i)=>tree.set(b*32+i,BigInt(c)));
+  return {kind:'spend',slots:[{root:'0',nullifiers:[String(b+1)],commitments,ctDigest:'0',groupId:'0',groupSize:0}]};
+ });
+ const fetcher=(async(url:string)=>{
+  const path=String(url).replace('/api/rollup',''),page=/from=(\d+)&limit=(\d+)/.exec(path);paths.push(path);
+  const body=path==='/status'?{...status(70),pool:{...status(70).pool!,root:String(tree.root())}}:path==='/checkpoints/64'?checkpointOf(tree,64)
+   :page?{total:70,batches:batches.slice(Number(page[1]),Number(page[1])+Number(page[2]))}:{};
+  return new Response(JSON.stringify(body),{status:200});
+ }) as unknown as typeof fetch;
+ const watched:number[]=[],watch=(ShieldedWallet.prototype as any).watchLinks;
+ t.mock.method(ShieldedWallet.prototype as any,'watchLinks',function(this:ShieldedWallet,number:number,...rest:unknown[]){watched.push(number);return watch.call(this,number,...rest);});
+ const wallet=await open({fetcher,bornAt:66});
+ try{assert.deepEqual([watched,paths.filter(p=>p.startsWith('/batches?from=0')),wallet.batchCount()],[[64,65,66,67,68,69],[],70]);}
+ finally{await wallet.dispose();}
 });
