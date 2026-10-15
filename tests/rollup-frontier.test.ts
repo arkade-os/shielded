@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {buildPoseidon} from 'circomlibjs';
 import {buildRollupTransfer,RollupAccount,type BuiltSpend} from '../packages/protocol/src/rollup/account.ts';
-import {BATCH_SLOTS,NOTE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,NOTE_DEPTH,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 import {checkpointOf,NoteFrontier} from '../packages/protocol/src/rollup/frontier.ts';
 import {DeepTree} from '../packages/protocol/src/rollup/tree.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
@@ -40,8 +40,8 @@ test('a checkpoint read off a later full tree resumes exactly where a frontier t
   assert.equal(resumed.root(),replayed.root(),`root after appending past ${k}`);
   for(let block=k;block<k+40;block++)assert.deepEqual(resumed.path(block*32+1),replayed.path(block*32+1));
  }
- const good=checkpointOf(full,64);
- for(const bad of [{...good,blocks:-64},{...good,blocks:1.5},{...good,filled:good.filled.slice(1)}])assert.throws(()=>NoteFrontier.at(hash,bad),/Malformed/);
+ const good=checkpointOf(full,64),leading=(value:string)=>({...good,filled:[value,...good.filled.slice(1)]});
+ for(const bad of [{...good,blocks:-64},{...good,blocks:1.5},{...good,filled:good.filled.slice(1)},leading(String(ROLLUP_FIELD)),leading('0x10'),leading('-1'),leading('')])assert.throws(()=>NoteFrontier.at(hash,bad),/Malformed/);
 });
 
 test('an account started at a checkpoint has the replica\'s root and proves its later notes with the replica\'s paths',async()=>{

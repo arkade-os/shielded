@@ -14,8 +14,8 @@ const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObje
 const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet');
 const leaf=(block:number,i:number)=>BigInt(block*32+i+1);
 
-/** A pool whose batches each append two leaves. `landing` lands one more batch on the first status read. */
-function pool(batches:number,o:{checkpoints?:boolean;wrong?:boolean;landing?:boolean}={}){
+/** A pool whose batches each append two leaves. `landing` lands one more batch on the first status read; `earlier` answers with the checkpoint 64 batches before the one asked for. */
+function pool(batches:number,o:{checkpoints?:boolean;wrong?:boolean;earlier?:boolean;landing?:boolean}={}){
  const tree=new DeepTree(hash,NOTE_DEPTH),asked:string[]=[];
  let count=0,landed=!o.landing;
  const land=()=>{for(const i of [0,1])tree.set(count*32+i,leaf(count,i));count++;};
@@ -27,7 +27,7 @@ function pool(batches:number,o:{checkpoints?:boolean;wrong?:boolean;landing?:boo
   const page=/^\/batches\?from=(\d+)&limit=(\d+)$/.exec(path);
   if(page){const from=Number(page[1]),to=Math.min(count,from+Number(page[2]));return {total:count,batches:Array.from({length:Math.max(0,to-from)},(_,i)=>batch(from+i))};}
   const at=/^\/checkpoints\/(\d+)$/.exec(path);
-  if(at&&o.checkpoints!==false){const c=checkpointOf(tree,Number(at[1]));return o.wrong?{...c,filled:c.filled.map(()=>'7')}:c;}
+  if(at&&o.checkpoints!==false){const c=checkpointOf(tree,Number(at[1])-(o.earlier?64:0));return o.wrong?{...c,filled:c.filled.map(()=>'7')}:c;}
   throw Object.assign(new Error('Not found'),{status:404});
  }) as PoolApi;
  return {tree,api,asked};
@@ -45,8 +45,8 @@ test('a batch landing between the catch-up and the status read gets another try'
  assert.equal(asked.filter(p=>p==='/status').length,2);
 });
 
-test('without a checkpoint, or with one the pool\'s root refutes, the account replays from genesis',async()=>{
- for(const o of [{checkpoints:false},{wrong:true}])assert.equal((await freshAccount(hash,keys,130,pool(140,o).api)).batchCount,0,JSON.stringify(o));
+test('without a checkpoint, with one the pool\'s root refutes, or with another one than asked for, the account replays from genesis',async()=>{
+ for(const o of [{checkpoints:false},{wrong:true},{earlier:true}])assert.equal((await freshAccount(hash,keys,130,pool(140,o).api)).batchCount,0,JSON.stringify(o));
  const young=pool(140);
  assert.equal((await freshAccount(hash,keys,63,young.api)).batchCount,0);
  assert.deepEqual(young.asked,[],'no checkpoint comes before batch 64, so none is asked for');

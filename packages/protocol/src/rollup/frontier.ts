@@ -1,4 +1,4 @@
-import { NOTE_DEPTH, SUBTREE_DEPTH } from './constants.ts';
+import { NOTE_DEPTH, ROLLUP_FIELD, SUBTREE_DEPTH } from './constants.ts';
 import type { Hash } from './notes.ts';
 import type { DeepTree } from './tree.ts';
 
@@ -41,7 +41,8 @@ export class NoteFrontier {
  }
  static at(hash: Hash, checkpoint: FrontierCheckpoint): NoteFrontier {
   const { blocks, filled } = checkpoint;
-  if (!Number.isSafeInteger(blocks) || blocks < 0 || blocks >= 2 ** UPPER || !Array.isArray(filled) || filled.length !== UPPER) throw new Error('Malformed frontier checkpoint.');
+  if (!Number.isSafeInteger(blocks) || blocks < 0 || blocks >= 2 ** UPPER || !Array.isArray(filled) || filled.length !== UPPER
+   || filled.some(node => typeof node !== 'string' || !/^\d{1,78}$/.test(node) || BigInt(node) >= ROLLUP_FIELD)) throw new Error('Malformed frontier checkpoint.');
   const frontier = new NoteFrontier(hash);
   frontier.filled.push(...filled.map(BigInt));
   let node = frontier.zeros[SUBTREE_DEPTH]!;

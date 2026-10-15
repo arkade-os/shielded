@@ -22,8 +22,9 @@ export async function matchesPool(account:RollupAccount,api:PoolApi,tries=3):Pro
 export async function freshAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},bornAt:number,api:PoolApi):Promise<RollupAccount>{
  const blocks=Math.floor(bornAt/CHECKPOINT_EVERY)*CHECKPOINT_EVERY;
  if(blocks>0)try{
-  const account=RollupAccount.atCheckpoint(hash,keys,await api<FrontierCheckpoint>(`/checkpoints/${blocks}`),bornAt);
-  if(await matchesPool(account,api))return account;
+  const checkpoint=await api<FrontierCheckpoint>(`/checkpoints/${blocks}`);
+  const account=checkpoint.blocks===blocks?RollupAccount.atCheckpoint(hash,keys,checkpoint,bornAt):undefined;
+  if(account&&await matchesPool(account,api))return account;
  }catch{/* an older pool, or a checkpoint that does not parse: the replay below is always right */}
  return RollupAccount.owning(hash,keys,{frontier:true,bornAt});
 }
