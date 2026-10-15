@@ -155,4 +155,5 @@ test('the claim card reads a link\'s token and holdings without the network',()=
  assert.equal(holdingsText([{asset:0n,amount:600n},{asset:0n,amount:400n}],assetIdOf),'1,000 sats');
  assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
  assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sats');
+ assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
 });

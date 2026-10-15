@@ -185,7 +185,8 @@ export class ShieldedWallet extends Wallet {
    const account=this.account.snapshot(),stored=await this.repository.getAccount(token);
    // ponytail: read-merge-write keeps other tabs' entries but is not atomic; merge inside saveAccount's transaction if tabs ever race.
    this.sent={...stored?.sent,...this.sent};for(const txid of stored?.listings??[])this.listings.add(txid);
-   for(const link of stored?.links??[])if(!this.linkRecords.has(link.key))this.linkRecords.set(link.key,link);
+   // Spends are final, so what either tab has seen spent or taken back holds for both.
+   for(const link of stored?.links??[]){const mine=this.linkRecords.get(link.key);if(!mine){this.linkRecords.set(link.key,link);continue;}mine.open=mine.open.filter(nf=>link.open.includes(nf));if(link.tookBack)mine.tookBack=true;}
    await this.repository.saveAccount(token,{v:1,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()]});
   }catch(error){this.repositoryError??=reasonOf(error);}
  }

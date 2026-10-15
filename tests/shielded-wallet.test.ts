@@ -809,6 +809,18 @@ test('a minter takes an asset link back, and the phrase alone rebuilds the link 
  }finally{await alice.dispose();}
 });
 
+test('saving keeps what another tab has already seen of a link',async()=>{
+ const pool=sharedPool(),repository=new InMemoryShieldedNoteRepository(),alice=await open({repository});alice.api=pool.api;
+ try{
+  await pool.fund(alice,[{amount:500n}]);
+  await (await alice.mintLink(100n)).settled();
+  const stored=(await repository.getAccount(TOKEN))!;
+  await repository.saveAccount(TOKEN,{...stored,links:stored.links!.map(l=>({...l,open:[],tookBack:true}))});
+  await alice.save();
+  assert.deepEqual([alice.links().map(l=>l.state),(await repository.getAccount(TOKEN))!.links!.map(l=>[l.open,l.tookBack])],[['taken-back'],[[[],true]]]);
+ }finally{await alice.dispose();}
+});
+
 test('a mint the pool drops lists no link and frees its notes',async()=>{
  const pool=sharedPool(),alice=await open();alice.api=pool.api;
  try{

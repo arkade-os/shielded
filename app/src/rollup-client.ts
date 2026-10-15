@@ -34,7 +34,7 @@ export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],asset
  const totals=new Map<bigint,bigint>();
  for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
  return [...totals].map(([asset,amount])=>{
-  const count=Number(amount).toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
+  const count=amount.toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
   return asset===0n?`${count} sats`:`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
  }).join(' and ');
 }

@@ -37,7 +37,7 @@ export async function bearerAccount(hash:Hash,token:ClaimToken,api:PoolApi,asset
  return {account,self:rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret),notes:assets.flatMap(asset=>account.notes(asset))};
 }
 
-/** One spend per note, each paying the whole note to `to`; up to three go as one group, so a racing claimer gets all or nothing. */
+/** One spend per note, each paying the whole note to `to`. A mint makes at most three, sent as one group, so a racing claimer gets all or nothing. */
 export async function claimSpends(hash:Hash,link:Awaited<ReturnType<typeof bearerAccount>>,to:RollupRecipient):Promise<BuiltSpend[]>{
  const spends:BuiltSpend[]=[];
  for(let i=0;i<link.notes.length;i+=3){
