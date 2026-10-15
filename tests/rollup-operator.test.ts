@@ -20,7 +20,7 @@ import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,type RollupSpend} from '../src/rollup/b
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
-import {encodeSnapshot,headCommitment} from '../src/rollup/snapshot.ts';
+import {encodeSnapshot,headCommitment,readSnapshot} from '../src/rollup/snapshot.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
@@ -83,6 +83,7 @@ after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}})
 const pads=(root:bigint,count:number)=>Promise.all(Array.from({length:count},()=>toySpend('pad',root))).then(list=>list.map(s=>({...s,receivedAt:Infinity})));
 const joinPads=async(root:bigint,count:number)=>{const list=[];for(let i=0;i<count;i++)list.push({...await toyJoin('pad',root),receivedAt:Infinity});return list;};
 const recordAt=(dir:string,n:number)=>JSON.parse(readFileSync(join(dir,'batches',`${n}.json`),'utf8')) as {kind:string;slots:{nullifiers:string[]}[]};
+const savedAt=(w:Awaited<ReturnType<typeof world>>)=>readSnapshot(join(w.dir,'snapshot.bin'),hash,w.options.pin,Infinity)?.batchCount;
 
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-operator-'));
@@ -157,7 +158,9 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  assert.equal(op.txidOf(1),second.txid,'the journal answers for batches published before records carried a txid');
  const commitment=op.state.commitment();
  assert.equal(headCommitment(op.status().archive.head.sourceTxHex),commitment,'the head carries the commitment a restart is checked against');
+ assert.equal(savedAt(w),undefined,'two batches are short of the cadence');
  op.close();
+ assert.equal(savedAt(w),2,'closing persists the state');
 
  const reopened=await w.open(t);
  assert.equal(reopened.state.commitment(),commitment);
@@ -174,6 +177,29 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
   assert.equal(fallback.state.commitment(),commitment,'a damaged snapshot, or one the head disagrees with, falls back to the full replay');
   fallback.close();
  }
+});
+
+test('the operator snapshots on its cadence, but never while a submitted batch is unresolved',async(t)=>{
+ const w=await world();let down=false;
+ const op=await w.open(t,{snapshotEvery:1,transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('emulator unreachable');return w.transport.submit(request,first);}}});
+ const batch=async()=>{await op.submit(await toySpend('s'+op.state.batchCount,op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));w.clock.now+=10_000;return op.tick();};
+ for(const n of [1,2]){assert.ok('txid' in (await batch())!);assert.equal(savedAt(w),n);}
+ down=true;
+ assert.match((await batch() as {blocked:string}).blocked,/unreachable/);
+ assert.deepEqual([op.state.batchCount,op.status().archive.batches,savedAt(w)],[3,2,2]);
+ op.close();
+ assert.equal(savedAt(w),2,'nor on close');
+});
+
+test('a close while an applied batch waits for signatures keeps the snapshot at the last accepted batch',async(t)=>{
+ const w=await world(),op=await w.open(t,{snapshotEvery:1,signDeposits:async()=>{op.close();return undefined;}});
+ await op.submit(await toySpend('first',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now+=10_000;
+ await assert.rejects(op.tick(),/did not sign/);
+ assert.deepEqual([op.state.batchCount,savedAt(w)],[1,1],'the unsigned batch is undone and was never persisted');
 });
 
 test('a deposit that is never signed is dropped and the rest of the batch goes through',async(t)=>{
