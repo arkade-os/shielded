@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import { BATCH_SLOTS, BTC_ASSET, ROLLUP_DOMAIN, ROLLUP_FIELD, RollupRejection } from '../packages/protocol/src/rollup/constants.ts';
+import { BATCH_SLOTS, BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RollupRejection, WINDOW_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
 import { clientWitness, inputNullifierOf, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
 import { groupIdOf, ownerOf } from '../packages/protocol/src/rollup/notes.ts';
+import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { RollupState, type BatchSlot } from '../packages/protocol/src/rollup/state.ts';
+import { DeepTree } from '../packages/protocol/src/rollup/tree.ts';
 
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
@@ -112,6 +114,20 @@ test('a join batch inserts two nullifiers per slot', () => {
  const result = state.apply('join', slots);
  assert.equal(state.nullifiers.count(), 1 + 2 * BATCH_SLOTS);
  assert.equal(result.binding[3], 1);
+});
+
+test('a state restored from its scanned parts commits the same and applies the next batch identically', () => {
+ const state = RollupState.genesis(hash);
+ for (let i = 0; i < 3; i++) state.apply('spend', fill(state, [deposit(state, 5n).slot]));
+ const notes = new DeepTree(hash, NOTE_DEPTH), window = new DeepTree(hash, WINDOW_DEPTH), nullifiers = new RollupNullifiers(hash), leaves: { value: bigint; nextIndex: number }[] = [];
+ state.notes.scan((l, i, v) => notes.place(l, i, v)); state.window.scan((l, i, v) => window.place(l, i, v));
+ state.nullifiers.tree.scan((l, i, v) => nullifiers.tree.place(l, i, v)); state.nullifiers.scanLeaves((value, nextIndex) => leaves.push({ value, nextIndex }));
+ nullifiers.loadLeaves(leaves);
+ const restored = RollupState.restore(hash, { notes, nullifiers, window, noteCount: state.noteCount, batchCount: state.batchCount });
+ assert.equal(restored.commitment(), state.commitment());
+ const slots = fill(state, [deposit(state, 7n).slot]);
+ assert.deepEqual(restored.apply('spend', slots), state.apply('spend', slots));
+ assert.equal(restored.commitment(), state.commitment());
 });
 
 test('a committed root stays readable while the next batch is applied but not yet accepted', () => {

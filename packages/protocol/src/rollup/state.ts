@@ -28,6 +28,9 @@ export class RollupState {
  static genesis(hash: Hash): RollupState {
   return new RollupState(hash, new DeepTree(hash, NOTE_DEPTH), new RollupNullifiers(hash), new DeepTree(hash, WINDOW_DEPTH), 0, 0);
  }
+ static restore(hash: Hash, s: { notes: DeepTree; nullifiers: RollupNullifiers; window: DeepTree; noteCount: number; batchCount: number }): RollupState {
+  return new RollupState(hash, s.notes, s.nullifiers, s.window, s.noteCount, s.batchCount);
+ }
  clone(): RollupState { return new RollupState(this.hash, this.notes.clone(), this.nullifiers.clone(), this.window.clone(), this.noteCount, this.batchCount); }
  commitment(): bigint {
   return this.hash([STATE_TAG, this.notes.root(), BigInt(this.noteCount), this.nullifiers.root(), BigInt(this.nullifiers.count()), this.window.root(), BigInt(this.batchCount), 0n, 0n]);

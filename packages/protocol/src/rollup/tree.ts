@@ -12,7 +12,7 @@ export class DeepTree {
  }
  private at(level: number, index: number): bigint { return this.nodes.get(level + ':' + index) ?? this.empty[level]; }
  private check(level: number, index: number): void {
-  if (!Number.isSafeInteger(index) || index < 0 || index >= 2 ** (this.depth - level)) throw new Error('Tree index out of range.');
+  if (!Number.isInteger(level) || level < 0 || level > this.depth || !Number.isSafeInteger(index) || index < 0 || index >= 2 ** (this.depth - level)) throw new Error('Tree index out of range.');
  }
  root(): bigint { return this.at(this.depth, 0); }
  node(level: number, index: number): bigint { this.check(level, index); return this.at(level, index); }
@@ -43,6 +43,11 @@ export class DeepTree {
   this.log = undefined;
  }
  set(index: number, value: bigint): void { this.setAt(0, index, value); }
+ scan(visit: (level: number, index: number, value: bigint) => void): void {
+  for (const [key, value] of this.nodes) { const at = key.indexOf(':'); visit(Number(key.slice(0, at)), Number(key.slice(at + 1)), value); }
+ }
+ /** Sets one node and leaves its ancestors stale: only a restore placing every node another tree's scan() visited may use it. */
+ place(level: number, index: number, value: bigint): void { this.check(level, index); this.write(level + ':' + index, value); }
  clone(): DeepTree {
   const copy = new DeepTree(this.hash, this.depth, this.empty);
   copy.nodes = new Map(this.nodes);

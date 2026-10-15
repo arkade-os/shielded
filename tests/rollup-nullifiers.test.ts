@@ -40,6 +40,30 @@ test('rollback undoes every insertion since begin', () => {
  assert.deepEqual(set.insert(30n), untouched.insert(30n));
 });
 
+const restorable = () => {
+ const set = new RollupNullifiers(hash), copy = new RollupNullifiers(hash), leaves: { value: bigint; nextIndex: number }[] = [];
+ for (const value of [50n, 10n, 30n]) set.insert(value);
+ set.tree.scan((level, index, value) => copy.tree.place(level, index, value));
+ set.scanLeaves((value, nextIndex) => leaves.push({ value, nextIndex }));
+ return { set, copy, leaves };
+};
+
+test('leaves loaded over a placed tree answer as the original did, nextValue derived', () => {
+ const { set, copy, leaves } = restorable();
+ assert.deepEqual(leaves, [{ value: 0n, nextIndex: 2 }, { value: 50n, nextIndex: 0 }, { value: 10n, nextIndex: 3 }, { value: 30n, nextIndex: 1 }]);
+ copy.loadLeaves(leaves);
+ assert.deepEqual([copy.root(), copy.count(), copy.has(30n), copy.has(20n)], [set.root(), 4, true, false]);
+ assert.deepEqual(copy.insert(40n), set.insert(40n));
+});
+
+test('leaves that repeat a value, leave the sorted list or disagree with the tree are refused', () => {
+ const { copy, leaves } = restorable();
+ const edit = (i: number, leaf: Partial<{ value: bigint; nextIndex: number }>) => leaves.map((old, k) => (k === i ? { ...old, ...leaf } : old));
+ for (const bad of [edit(3, { value: 10n }), edit(2, { nextIndex: 9 }), edit(0, { value: 1n }), [...leaves, { value: 60n, nextIndex: 0 }]]) assert.throws(() => copy.loadLeaves(bad), /sorted list/);
+ assert.throws(() => new RollupNullifiers(hash).loadLeaves(leaves), /tree/);
+ assert.equal(copy.count(), 1, 'a refused load changes nothing');
+});
+
 test('clones do not share leaves', () => {
  const set = new RollupNullifiers(hash);
  set.clone().insert(9n);

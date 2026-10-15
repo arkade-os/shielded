@@ -28,6 +28,18 @@ test('setting a level-5 node equals setting its 32 leaves', () => {
  assert.deepEqual(byNode.path(2, 5), byLeaf.path(2, 5));
 });
 
+test('a tree scanned and placed node by node keeps its root and paths, and later sets agree', () => {
+ const tree = new DeepTree(hash, 32), copy = new DeepTree(hash, 32);
+ for (const index of [0, 5, 2 ** 31, 2 ** 32 - 1]) tree.set(index, BigInt(index) + 7n);
+ tree.scan((level, index, value) => copy.place(level, index, value));
+ assert.equal(copy.root(), tree.root());
+ assert.deepEqual(copy.path(5), tree.path(5));
+ tree.set(6, 1n); copy.set(6, 1n);
+ assert.equal(copy.root(), tree.root());
+ assert.throws(() => copy.place(33, 0, 1n), /out of range/);
+ assert.throws(() => copy.place(32, 1, 1n), /out of range/);
+});
+
 test('clones are independent', () => {
  const tree = new DeepTree(hash, 8);
  tree.set(3, 9n);

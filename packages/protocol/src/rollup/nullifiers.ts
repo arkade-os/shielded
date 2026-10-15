@@ -1,4 +1,4 @@
-import { NULLIFIER_DEPTH, NULLIFIER_TAG, ROLLUP_FIELD, RollupRejection } from './constants.ts';
+import { BATCH_SLOTS, NULLIFIER_DEPTH, NULLIFIER_TAG, ROLLUP_FIELD, RollupRejection } from './constants.ts';
 import type { Hash } from './notes.ts';
 import { DeepTree } from './tree.ts';
 
@@ -7,7 +7,7 @@ export interface InsertionWitness { predIdx: number; pred: [bigint, bigint, bigi
 
 // Indexed (sorted linked list) nullifier set, sentinel at index 0, as circuits/rollup/lib.circom IndexedInsert proves it.
 export class RollupNullifiers {
- private tree: DeepTree;
+ tree: DeepTree;
  private leaves: NullifierLeaf[] = [{ value: 0n, nextIndex: 0, nextValue: 0n }];
  // ponytail: sorted array with splice inserts; a B-tree once the set passes ~1e7.
  private sorted: bigint[] = [];
@@ -28,6 +28,23 @@ export class RollupNullifiers {
   copy.sorted = [...this.sorted];
   copy.index = new Map(this.index);
   return copy;
+ }
+ scanLeaves(visit: (value: bigint, nextIndex: number) => void): void { for (const leaf of this.leaves) visit(leaf.value, leaf.nextIndex); }
+ /** Restores the leaves over a tree placed node by node; a spot check (sentinel, a join batch's worth of newest) ties them to it. */
+ loadLeaves(stored: readonly { value: bigint; nextIndex: number }[]): void {
+  const unsorted = () => new Error('The nullifier leaves are not one sorted list from the sentinel.');
+  if (stored[0]?.value !== 0n) throw unsorted();
+  const sorted: bigint[] = [], index = new Map<bigint, number>();
+  for (let at = stored[0].nextIndex; at !== 0; at = stored[at].nextIndex) {
+   const value = stored[at]?.value;
+   if (value === undefined || value <= (sorted.at(-1) ?? 0n)) throw unsorted();
+   sorted.push(value); index.set(value, at);
+  }
+  if (sorted.length !== stored.length - 1) throw unsorted();
+  const leaves = stored.map(({ value, nextIndex }) => ({ value, nextIndex, nextValue: stored[nextIndex].value }));
+  const newest = Array.from({ length: Math.min(sorted.length, 2 * BATCH_SLOTS) }, (_, k) => leaves.length - 1 - k);
+  if ([0, ...newest].some(i => this.leafHash(leaves[i]) !== this.tree.node(0, i))) throw new Error('The nullifier leaves do not match the tree.');
+  this.leaves = leaves; this.sorted = sorted; this.index = index;
  }
  begin(): void { this.log = []; this.tree.begin(); }
  rollback(): void {
