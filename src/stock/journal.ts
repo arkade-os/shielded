@@ -16,7 +16,7 @@ export interface StockJournalReceipt {txid:string;checkpointTxids:string[]}
 interface Pending<P,R> {id:string;fingerprint:string;plan:P;stage:'submitted'|'accepted';receipt?:R}
 type Accepted<R>={fingerprint:string;receipt:R}|{fingerprint:string;receipt:StockJournalReceipt;compact:true};
 interface Saved<A,P,R> {version:1;pin:StockReleasePin;archive:A;accepted:Record<string,Accepted<R>>;pending?:Pending<P,R>}
-/** One whole receipt per batch whose root a spend can still prove against. */
+/** One whole receipt per batch whose root a spend can still prove against: the rollup's 2^WINDOW_DEPTH root window. */
 const WHOLE_RECEIPTS=64;
 export interface StockJournalHooks<A,P,R extends StockJournalReceipt> {
  validateArchive(archive:A):Promise<void>|void;
@@ -97,7 +97,8 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
    busy=true;try{const archive=await transform(structuredClone(saved.archive));await hooks.validateArchive(structuredClone(archive));persist({...saved,archive});return structuredClone(archive);}finally{busy=false;}
   },
   submit:async(id:string,plan:P)=>{
-   ensure();if(!/^[A-Za-z0-9._:-]{1,128}$/.test(id)||['__proto__','constructor','prototype'].includes(id))throw new Error('Invalid stock request identity.');
+   // An all-digit key would be listed ahead of older ones, and bounded() compacts by insertion order.
+   ensure();if(!/^[A-Za-z0-9._:-]{1,128}$/.test(id)||/^\d+$/.test(id)||['__proto__','constructor','prototype'].includes(id))throw new Error('Invalid stock request identity.');
    const serialized=canonical(plan);if(Buffer.byteLength(serialized)>8*1024*1024)throw new Error('Stock public plan exceeds the archive limit.');
    const fingerprint=stockJournalFingerprint(plan),known=Object.hasOwn(saved.accepted,id)?saved.accepted[id]:undefined;
    if(known){if(known.fingerprint!==fingerprint)throw new Error('Accepted stock request identity was reused for different transaction facts.');return {receipt:structuredClone(known.receipt),archive:structuredClone(saved.archive),replay:true};}

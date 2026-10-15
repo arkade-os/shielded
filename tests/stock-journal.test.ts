@@ -73,6 +73,7 @@ test('the acceptance journal keeps the newest receipts whole, compacts older one
   const stale={oldHead:head(0),txid:head(1),customerOutpoint:plan.customerOutpoint};
   assert.equal((await journal.submit('batch-0',stale)).replay,true,'a compacted id still replays');
   await assert.rejects(journal.submit('batch-0',{...stale,txid:head(2)}),/reused/);
+  await assert.rejects(journal.submit('4096',stale),/Invalid stock request identity/,'an all-digit id would sort ahead of the older entries');
   journal.close();
 
   const store=EngineStore.open(dir);
