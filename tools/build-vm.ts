@@ -6,5 +6,5 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 mkdirSync(resolve(root, 'bin'), { recursive: true });
 const name = process.platform === 'win32' ? 'shielded-vm.exe' : 'shielded-vm';
 const result = spawnSync(process.env.GO ?? 'go', ['build', '-o', resolve(root, 'bin', name), '.'], { cwd: resolve(root, 'tools/vm'), stdio: 'inherit' });
-if (result.error) throw new Error(`Go 1.26.6 or newer is required to rebuild the VM bridge: ${result.error.message}`);
+if (result.error) throw new Error(`Go 1.26.9 or newer is required to rebuild the VM bridge: ${result.error.message}`);
 process.exit(result.status ?? 1);

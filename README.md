@@ -29,7 +29,7 @@ A private pool for Bitcoin and Arkade assets on Arkade. Inside the pool, value m
 
 ## Run locally
 
-Requires Node 24 and Go 1.26.6.
+Requires Node 24 and Go 1.26.9.
 
 ```sh
 npm ci

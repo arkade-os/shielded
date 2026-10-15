@@ -88,6 +88,7 @@ test('stock reconciliation rejects incomplete, invalid, or altered indexed signa
  await assert.rejects(run(invalid));
  const altered=all.map(tx=>Transaction.fromPSBT(tx.toPSBT()));
  const witness=altered[0].getInput(0).witnessUtxo!;
- altered[0].updateInput(0,{witnessUtxo:{...witness,script:Uint8Array.of(0x51)}},true);
+ // btc-signer >=2.4 refuses a forged witnessUtxo.script against the taproot commitment, so forge the amount.
+ altered[0].updateInput(0,{witnessUtxo:{...witness,amount:witness.amount+1n}},true);
  await assert.rejects(run(altered),/authenticated stock input metadata/);
 });

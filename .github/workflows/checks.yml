@@ -14,7 +14,7 @@ jobs:
           node-version: '24'
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache-dependency-path: tools/vm/go.sum
       - run: npm ci
       - run: npm run vm:build

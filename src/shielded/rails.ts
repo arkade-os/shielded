@@ -1,10 +1,11 @@
-import {arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {ArkAddress,arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {hex} from '@scure/base';
 import {assetFieldOfId} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
 import {DUST} from './pool.ts';
 import type {ShieldedWallet} from './wallet.ts';
 
-export const SHIELDED_PRIORITY=['shielded','shielded-withdraw','ark','ark-asset','onchain'];
+export const SHIELDED_PRIORITY=['shielded','shielded-withdraw','ark','ark-asset','lnurl-arkade','lightning','lnurl-lightning','onchain'];
 export function shieldedTargetOf(raw:string):string|undefined{
  try{
   let target=raw.trim();
@@ -53,7 +54,9 @@ export function shieldedRail(wallet:ShieldedWallet):PaymentRail{
  };
 }
 export function shieldedWithdrawRail(wallet:ShieldedWallet):PaymentRail{
- const target=(raw:string)=>{try{const found=arkTarget(raw.trim());return found&&isValidArkAddress(found)&&found.toLowerCase()!==wallet.poolAddress.toLowerCase()?found:undefined;}catch{return undefined;}};
+ // A payout pays only the address's program, so another network's or operator's address would get sats it never sees.
+ const sameOperator=(found:string)=>{const to=ArkAddress.decode(found),pool=ArkAddress.decode(wallet.poolAddress);return to.hrp===pool.hrp&&hex.encode(to.serverPubKey)===hex.encode(pool.serverPubKey);};
+ const target=(raw:string)=>{try{const found=arkTarget(raw.trim());return found&&isValidArkAddress(found)&&found.toLowerCase()!==wallet.poolAddress.toLowerCase()&&sameOperator(found)?found:undefined;}catch{return undefined;}};
  return {
   id:'shielded-withdraw',
   match:req=>target(req.raw)!==undefined,
@@ -67,6 +70,7 @@ export function shieldedWithdrawRail(wallet:ShieldedWallet):PaymentRail{
    const to=target(req.raw),r=requestOf(req);
    if(!to)throw new Error('Not an Arkade address this pool can pay out to.');
    if(!r)throw new Error('A withdrawal needs a whole number of sats, or one asset and its units.');
+   if(!wallet.canWithdraw(r.units,withdrawOpts(r)))throw new Error('No single note in the pool covers this amount.');
    const amount=r.sats??DUST;
    return {railId:'shielded-withdraw',amount,fee:0,total:amount,...assetView(r),send:()=>wallet.withdraw(to,r.units,withdrawOpts(r))};
   },

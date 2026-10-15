@@ -26,7 +26,7 @@ spec file, plus the batch size, pool token and operator key.
 
 ## Build and run
 
-Requires Go 1.26.6 or newer. Dependencies are pinned in `go.mod` and `go.sum`.
+Requires Go 1.26.9 or newer. Dependencies are pinned in `go.mod` and `go.sum`.
 
 ```sh
 cd tools/vm

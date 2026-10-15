@@ -2,15 +2,18 @@ import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Activity,type PaymentHandle,type PaymentRequest} from '@arkade-os/sdk';
+import {arkadeLnurl,type ArkadeLnurl} from '@arkade-os/lnurl-client/arkade';
+import {IndexedDbAssetSwapRepository,createSwapClient,type Outcome} from '@arkade-os/swap';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {IndexedDBShieldedNoteRepository} from '../../src/shielded/repository.ts';
 import type {StepState} from '../../src/shielded/handle.ts';
+import {LNURL_BASE} from '../../src/shielded/lightning.ts';
 import {idle} from '../../src/shielded/sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {arkAssetHoldings,routeCopy,sheetLine} from './rollup-client.ts';
+import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver} from './shielded-prover.ts';
 import {BORN,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
@@ -32,6 +35,10 @@ const WHERE:Record<string,string>={
  list:'To the pool, listing this asset so anyone can shield it.',
 };
 const whereOf=(kind:string|undefined,received:boolean)=>(kind?WHERE[kind]:undefined)??(received?'Into your Arkade address, outside the pool.':'From your Arkade address, outside the pool.');
+type Invoice={id:string;bolt11:string;outcome:Outcome;pays:bigint;fee:bigint;failure?:string};
+const INVOICE:Partial<Record<Outcome,string>>={funding:'Paid. Claiming the sats.',funded:'Paid. Claiming the sats.',claimed:'Received. The sats move into the pool shortly.',lapsed:'It expired unpaid.'};
+const invoiceLine=(i:Invoice)=>i.outcome==='accepted'||i.outcome==='open'?`Waiting for a payment of ${sats(i.pays)} sats, of which the swap keeps ${sats(i.fee)}.`
+ :INVOICE[i.outcome]??`The swap ${i.outcome==='needs_recovery'?'needs recovery':'failed'}${i.failure?`: ${i.failure}`:'.'}`;
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
@@ -41,6 +48,8 @@ export default function RollupWallet(){
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false);
+ const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
+ const lnurlRef=useRef<ArkadeLnurl|undefined>(undefined);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined),fundsRevision=useRef(0);
  if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
@@ -96,6 +105,22 @@ export default function RollupWallet(){
   finally{if(mounted.current&&!restoring.current){busyRef.current=false;setBusy(false);fundsRevision.current++;setTick(t=>t+1);}}
  };
 
+ const lightning=async(action:()=>Promise<void>)=>{
+  if(!wallet?.swaps)return;
+  setLnBusy(true);setLnError('');
+  try{await action();}catch(error){if(mounted.current)setLnError(errorText(error));}
+  finally{if(mounted.current)setLnBusy(false);}
+ };
+ const createInvoice=()=>lightning(async()=>{
+  const r=await wallet!.swaps!.receive({via:'lightning',amount:BigInt(lnAmount)});
+  if(mounted.current)setInvoice({id:r.id,bolt11:r.artifact.bolt11,outcome:r.outcome,pays:r.give.amount,fee:r.fee.amount});
+ });
+ const claimAddress=()=>lightning(async()=>{
+  if(!lnurlRef.current)throw new Error('The wallet is still loading.');
+  const r=await lnurlRef.current.claim();
+  if(mounted.current)setLnAddress(r.lightningAddress??r.lnurl);
+ });
+
  const restoreWallet=async()=>{
   if(busyRef.current)return;
   try{
@@ -115,7 +140,7 @@ export default function RollupWallet(){
    return hash;
   },async hash=>{
    const bornAt=bornAtFor(localStorage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
-   return ShieldedWallet.create({
+   const created=await ShieldedWallet.create({
     identity:SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret),
     arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl),
     storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
@@ -123,6 +148,11 @@ export default function RollupWallet(){
     pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
     shieldedRepository:cacheRef.current!.repository,bornAt,
    });
+   try{
+    // One store per wallet: swap records hold claim secrets, and another wallet's drive could only fail on them.
+    created.swaps=createSwapClient({wallet:created,repository:new IndexedDbAssetSwapRepository(`shielded-swaps-${await created.getAddress()}`)});
+   }catch(error){await created.dispose().catch(()=>{});throw error;}
+   return created;
   });
   let legacy=Promise.resolve(),closing:Promise<void>|undefined;
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
@@ -137,6 +167,12 @@ export default function RollupWallet(){
    unwatch.push(created.onAction(handle=>{if(current())sheetOwner.watch(handle,handle.title);}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes could not be read, so the wallet is reading the pool again: ${created.repositoryError}`);
+   unwatch.push(created.swaps!.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
+   // Not `{wallet}`: that also registers the boarding address, whose on-chain payments this wallet never onboards.
+   void created.getAddress().then(arkadeAddress=>{
+    const lnurl=lnurlRef.current=arkadeLnurl({identity:created.identity,arkadeAddress,baseUrl:LNURL_BASE});
+    return lnurl.owned().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);});
+   }).catch(()=>{});
    setWallet(created);
   }).catch(error=>{if(current())setPoolError(errorText(error));});
   return()=>{void close().catch(()=>{});};
@@ -160,9 +196,9 @@ export default function RollupWallet(){
  const quoteContext={wallet:wallet??quotes,revision:fundsRevision.current,key:requestKey};
  const {quote,error:quoteError}=quotes.read(quoteContext);
  useEffect(()=>{
-  if(!wallet||tab!=='send'||!to.trim()||!amount||busyRef.current||restoring.current){quotes.clear();return;}
+  if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current){quotes.clear();return;}
   return quotes.load(quoteContext,()=>{
-   const request:PaymentRequest={raw:to.trim(),amount:assetId?Number(withSats||DUST):Number(amount),...(assetId?{assets:[{assetId,amount:BigInt(amount)}]}:{})};
+   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(withSats||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
    return wallet.router().route(request);
   });
  },[wallet,requestKey,tick,busy]);
@@ -213,6 +249,12 @@ export default function RollupWallet(){
     {tab==='receive'?<div className="stock-receive">
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Need test sats? The <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> sends Arkade sats to this address after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
+     <div className="stock-address"><small>LIGHTNING</small>
+      {lnAddress?<Copyable value={lnAddress}/>:<button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button>}
+      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet||!lnAmount}>Create invoice</button></form>
+      {invoice&&<><Copyable value={invoice.bolt11}/><p className="stock-muted">{invoiceLine(invoice)}</p></>}
+      {lnError&&<p className="stock-blocked">{lnError}</p>}
+      <p className="stock-muted">Lightning payments reach your Arkade address through a swap, then move into the pool. Keep this page open until an invoice is paid; the Lightning address takes payments even while it is closed, and its payers can see your Arkade address.</p></div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
      {arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(a.coins),'Shielding again')}>Shield again</button></>
@@ -221,10 +263,10 @@ export default function RollupWallet(){
        :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}</div>)}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
-     <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21… or tark1…" autoComplete="off" spellCheck={false}/></label>
-     <label>Amount ({unit})<input inputMode="numeric" value={amount} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
+     <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
+     <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {assetId&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-     <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public.</p>
+     <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning pays through a swap from your Arkade balance.</p>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}

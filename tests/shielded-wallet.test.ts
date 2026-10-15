@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,type SendParams} from '@arkade-os/sdk';
+import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,makeHandle,type SendParams} from '@arkade-os/sdk';
 import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
@@ -59,6 +59,31 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
   assert.equal(wallet.resumed,false);
   assert.equal(wallet.repositoryError,undefined);
   assert.ok((await wallet.getAddress()).startsWith('tark1'));
+ }finally{await wallet.dispose();}
+});
+
+test('a top-up withdraws what the Arkade balance lacks to the wallet itself, holds auto-shield off, then pays once',async()=>{
+ const wallet=await open(),withdrawn:[string,bigint][]=[];
+ let balance=900,during=-1,pays=0;
+ wallet.arkadeSats=async()=>balance;
+ (wallet as any).withdrawal=(to:string,amount:bigint)=>{withdrawn.push([to,amount]);return {settled:async()=>{balance+=Number(amount);return {railId:'shielded-withdraw'};}};};
+ const pay=async()=>{pays++;during=(wallet as any).nativeOperations;return makeHandle('lightning',async emit=>{const result={railId:'lightning',txid:'cd'.repeat(32)};emit({status:'settled',result});return result;});};
+ try{
+  const result=await wallet.topUp(1003,'Paying 1,000 sats over Lightning',pay).settled();
+  assert.deepEqual(withdrawn,[[await wallet.getAddress(),330n]],'103 sats short still withdraws the dust');
+  assert.equal(result.txid,'cd'.repeat(32));
+  assert.deepEqual([pays,during,(wallet as any).nativeOperations],[1,1,0]);
+  await wallet.topUp(1003,'Paying again',pay).settled();
+  assert.equal(withdrawn.length,1,'a covered balance pays without another withdrawal');
+ }finally{await wallet.dispose();}
+});
+
+test('a swap is funded only from recoverable-free coins carrying no assets',async t=>{
+ const wallet=await open(),filters:unknown[]=[],plain=coin('aa'.repeat(32),700),carrier={...coin('bb'.repeat(32),330),assets:[{assetId:TOKEN,amount:1n}]};
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async(filter:unknown)=>{filters.push(filter);return [plain,carrier] as never;});
+ try{
+  assert.equal(await wallet.arkadeSats(),700);
+  assert.deepEqual(filters,[{genericallySpendableOnly:true,withRecoverable:false}]);
  }finally{await wallet.dispose();}
 });
 
@@ -427,11 +452,10 @@ test('real SDK persistence after an in-flight self-send cannot reopen a disposed
 
 test('native entrypoints reject shield reservations and the unknown self-send output phase before reaching the SDK',async t=>{
  const wallet=await open(),input=coin(),sameTxid={...input,vout:1};let submitted=0;
- for(const name of ['send','settle','sendBitcoin','sendSelectedVtxosToSelf'] as const)t.mock.method(Wallet.prototype,name,async()=>{submitted++;return 'native';});
+ for(const name of ['send','settle','sendSelectedVtxosToSelf'] as const)t.mock.method(Wallet.prototype,name,async()=>{submitted++;return 'native';});
  const attempts=(selected:typeof input)=>[
   ()=>wallet.send({recipients:[{address:POOL_ADDRESS,amount:330}],selectedVtxos:[selected] as never}),
   ()=>wallet.settle({inputs:[selected] as never,outputs:[]}),
-  ()=>wallet.sendBitcoin({address:POOL_ADDRESS,amount:330,selectedVtxos:[selected] as never}),
   ()=>wallet.sendSelectedVtxosToSelf([selected] as never),
  ];
  try{
@@ -485,10 +509,9 @@ test('each native entrypoint releases its guard on failure and forwards explicit
  const wallet=await open(),input=coin(),now={type:'height',value:1} as never;
  const send:SendParams={recipients:[{address:POOL_ADDRESS,amount:330}],selectedVtxos:[input] as never};
  const settle={inputs:[input] as never,outputs:[]};
- const bitcoin={address:POOL_ADDRESS,amount:330,selectedVtxos:[input]} as Parameters<Wallet['sendBitcoin']>[0];
  const cases:[keyof Wallet,unknown[],()=>Promise<string>][]=[
   ['send',[send],()=>wallet.send(send)],['settle',[settle],()=>wallet.settle(settle)],
-  ['sendBitcoin',[bitcoin],()=>wallet.sendBitcoin(bitcoin)],['sendSelectedVtxosToSelf',[[input],now],()=>wallet.sendSelectedVtxosToSelf([input] as never,now)],
+  ['sendSelectedVtxosToSelf',[[input],now],()=>wallet.sendSelectedVtxosToSelf([input] as never,now)],
  ];
  try{
   for(const [name,args,run] of cases){
