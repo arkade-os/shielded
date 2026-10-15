@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 
@@ -128,6 +128,16 @@ test('the status sheet renders a step state the handle produced, title and all',
  assert.equal(sheetLine(state),'Step 2 of 3: Prove the payment on this device');
  assert.equal(sheetLine({...state,current:2,done:true}),'Done');
  assert.equal(sheetLine({...state,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
+});
+
+test('a pool whose reserves are full refuses another listing instead of swallowing it',()=>{
+ const pool=(reserves:number,maxReserves?:number)=>({token:'t',address:'a',script:'s',batches:0,root:'0',head:{txid:'ab',vout:0,value:1000},pending:0,padding:0,
+  reserves:Object.fromEntries(Array.from({length:reserves},(_,i)=>[i.toString(16).padStart(2,'0').repeat(34),'1'])),...(maxReserves===undefined?{}:{maxReserves})});
+ assert.equal(listingBlocked(pool(7,8)),undefined);
+ assert.match(listingBlocked(pool(8,8))??'',/already lists 8 assets/);
+ assert.match(listingBlocked(pool(9,8))??'',/would lose/,'a pool over its cap stays closed, not just at it');
+ assert.equal(listingBlocked(pool(8)),undefined,'a pool that does not report a cap is not second-guessed');
+ assert.equal(listingBlocked(undefined),undefined);
 });
 
 test('the route preview names what each rail makes public, and never leaves a rail unexplained',()=>{

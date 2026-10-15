@@ -7,7 +7,7 @@ interface PoolScriptCoin {txid:string;vout:number;value:number;assets?:{assetId:
 /**
  * Listings are pool-script coins that hold exactly one asset other than the pool token and at least the dust: anyone may
  * list an asset this way (spec model C). Of several listings of one asset the largest becomes its reserve; the rest stay
- * stranded, unbacked by any note.
+ * stranded, unbacked by any note. Listings past the cap are reported, since each one cost its lister a coin.
  */
 export function listingsOf<T extends PoolScriptCoin>(coins:readonly T[],token:string,reserved:ReadonlySet<string>){
  const best=new Map<string,{assetId:string;coin:T;amount:bigint}>();
@@ -19,5 +19,6 @@ export function listingsOf<T extends PoolScriptCoin>(coins:readonly T[],token:st
   const prior=best.get(assetId);
   if(!prior||amount>prior.amount)best.set(assetId,{assetId,coin,amount});
  }
- return [...best.values()].slice(0,Math.max(0,MAX_RESERVES-reserved.size));
+ const room=Math.max(0,MAX_RESERVES-reserved.size),listed=[...best.values()];
+ return {adopt:listed.slice(0,room),dropped:listed.slice(room).map(l=>l.assetId)};
 }
