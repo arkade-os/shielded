@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -9,6 +9,8 @@ import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2} from '../../packages/protocol/s
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
+import type {SwapClient} from '@arkade-os/swap';
+import {lightningRails} from './lightning.ts';
 import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
@@ -61,6 +63,7 @@ export const shieldedSteps={
  send:['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],
  withdraw:['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],
  merge:['Pick two notes','Prove the merge on this device','Submit to the pool','Wait for the next batch','Included'],
+ topUp:['Withdraw the missing sats from the pool','Wait for them on your Arkade balance','Pay','Wait for the payment','Done'],
 } as const;
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
@@ -89,6 +92,8 @@ export class ShieldedWallet extends Wallet {
  self!:RollupRecipient;
  readonly notes=new NoteReservation();
  repository?:ShieldedNoteRepository;
+ /** Set by the page once the wallet exists (the client needs it); adds the Lightning rails, and is disposed first. */
+ swaps?:SwapClient;
  resumed=false;
  repositoryError?:string;
  private derived!:ReturnType<typeof shieldedKeysOf>;
@@ -130,9 +135,11 @@ export class ShieldedWallet extends Wallet {
  get inFlight():ReadonlySet<bigint>{return this.notes.inFlight;}
  get poolAddress():string{return this.ownPoolAddress;}
  router():PaymentRouter{
-  return new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
+  const router=new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
    .use(shieldedRail(this)).use(shieldedWithdrawRail(this))
    .use(arkRail()).use(arkAssetRail()).use(onchainRail({feeInfo:walletFeeSource(this)}));
+  for(const rail of this.swaps?lightningRails(this,this.swaps):[])router.use(rail);
+  return router;
  }
  shieldedBalance(asset=BTC_ASSET):bigint{return this.account.balance(asset);}
  shieldedNotes(asset=BTC_ASSET):OwnedNote[]{return this.account.notes(asset);}
@@ -348,7 +355,8 @@ export class ShieldedWallet extends Wallet {
   this.hold(held,handle);
   return this.announce(handle);
  }
- async withdraw(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):Promise<ShieldedPaymentHandle>{
+ async withdraw(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):Promise<ShieldedPaymentHandle>{return this.announce(this.withdrawal(to,amount,opts));}
+ private withdrawal(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):ShieldedPaymentHandle{
   const held:bigint[]=[];
   const handle=shieldedHandle({title:'Withdrawing',steps:shieldedSteps.withdraw,railId:'shielded-withdraw'},async step=>{
    step(0);this.assertOpen();
@@ -369,7 +377,32 @@ export class ShieldedWallet extends Wallet {
    return this.submit(members,step);
   });
   this.hold(held,handle);
-  return this.announce(handle);
+  return handle;
+ }
+ /** Sats spendable outside the pool, shield reservations excluded. */
+ async arkadeSats():Promise<number>{return (await this.getSpendableVtxos({genericallySpendableOnly:true})).reduce((sum,v)=>sum+v.value,0);}
+ /** Pays `need` sats from the Arkade balance, first withdrawing what it lacks (at least the dust) to this wallet's own address. */
+ topUp(need:number,title:string,pay:()=>Promise<PaymentHandle>):ShieldedPaymentHandle{
+  return this.announce(shieldedHandle({title,steps:shieldedSteps.topUp,railId:'shielded-topup'},async step=>{
+   this.assertOpen();
+   // Holds auto-shield and renewal off, which would otherwise spend the coins this payment is counting on.
+   this.nativeOperations++;
+   try{
+    step(0);
+    const lacking=need-await this.arkadeSats();
+    if(lacking>0){
+     await this.withdrawal(await this.getAddress(),BigInt(Math.max(lacking,DUST))).settled();
+     step(1);
+     for(let i=0;await this.arkadeSats()<need;i++){
+      if(i>=60)throw new Error('The withdrawn sats did not reach your Arkade balance.');
+      this.assertOpen();await new Promise(r=>setTimeout(r,1000));
+     }
+    }
+    step(2);const paid=await pay();
+    step(3);const result=await paid.settled();
+    return result.txid?{txid:result.txid}:{};
+   }finally{this.nativeOperations--;}
+  }));
  }
  /** The pool refuses coins near expiry; a batch swap renews them, after which auto-shield picks them up. */
  async renew():Promise<string|undefined>{
@@ -392,6 +425,8 @@ export class ShieldedWallet extends Wallet {
   throw new Error('The deposit coin did not appear in your Arkade wallet.');
  }
  override async dispose():Promise<void>{
+  const swaps=this.swaps;this.swaps=undefined;
+  await swaps?.[Symbol.asyncDispose]().catch(()=>{});
   this.stopped=true;
   if(this.timer)clearTimeout(this.timer);
   this.timer=undefined;

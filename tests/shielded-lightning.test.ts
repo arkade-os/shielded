@@ -1,0 +1,76 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {ArkAddress,PaymentRouter,makeHandle,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {QuoteExpired,type SwapRailClient} from '@arkade-os/swap';
+import {lightningRails,poolFunded} from '../src/shielded/lightning.ts';
+import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from '../src/shielded/rails.ts';
+import type {ShieldedWallet} from '../src/shielded/wallet.ts';
+
+const INVOICE='lntbs210n1p4dpvmxpp58d4nqkxz5htt4ctfhyvfqnx0947fyp4uvdyg3g9j6xhahn2dytrqdqqcqzzsxqyz5vqsp5nxkcjl99y7h0uyp34xwgw6cldflucq8r7ssk06vylsjld60lfzps9qxpqysgqrf3yfzavh34pu5t8ee9perqp35z6534k6q3m5v5xckdrm4l869yrxrm4pxslwvqtzql96m69hq7sxwptw5fry9u8h3twyrdenungqxcqafud53';
+const POOL='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mcfz88xtqfr9pxprckm7tkha23m0d0tnqzpw0r8gqtwfz8ete';
+const decoded=ArkAddress.decode(POOL),PAYEE=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();
+const handle=()=>makeHandle('lightning',async emit=>{const result={railId:'lightning',txid:'ab'.repeat(32)};emit({status:'settled',result});return result;});
+
+function fakeWallet(o:{arkade:number;canWithdraw?:boolean}){
+ const topUps:{need:number;title:string}[]=[],checked:bigint[]=[];
+ const wallet={
+  poolAddress:POOL,
+  arkadeSats:async()=>o.arkade,
+  canWithdraw:(amount:bigint)=>{checked.push(amount);return o.canWithdraw??true;},
+  topUp:(need:number,title:string,pay:()=>Promise<unknown>)=>{topUps.push({need,title});return pay();},
+ } as unknown as ShieldedWallet;
+ return {wallet,topUps,checked};
+}
+function fakeRail(quotes:{total:number;send:()=>Promise<never>|ReturnType<typeof handle>}[]){
+ let quoted=0;
+ const rail:PaymentRail={id:'lightning',match:()=>true,available:async()=>true,
+  quote:async()=>{const q=quotes[Math.min(quoted++,quotes.length-1)]!;return {railId:'lightning',amount:q.total-3,fee:3,total:q.total,send:q.send} as RouteQuote;}};
+ return {rail,quoted:()=>quoted};
+}
+const req=(raw:string,amount?:number):PaymentRequest=>({raw,...(amount!==undefined?{amount}:{})});
+
+test('a payment the Arkade balance covers goes straight to the swap, with no withdrawal',async()=>{
+ const {wallet,topUps}=fakeWallet({arkade:5000}),inner={total:1003,send:handle};
+ const quote=await poolFunded(wallet,fakeRail([inner]).rail).quote(req(INVOICE),{} as never);
+ assert.equal(quote.send,inner.send);
+ await quote.send();
+ assert.deepEqual(topUps,[]);
+});
+
+test('a short balance tops up the whole need, refusing at quote time when no single note covers the dust-floored shortfall',async()=>{
+ const rich=fakeWallet({arkade:900}),quote=await poolFunded(rich.wallet,fakeRail([{total:1003,send:handle}]).rail).quote(req(INVOICE),{} as never);
+ assert.deepEqual(rich.checked,[330n],'103 sats short withdraws the 330-sat minimum');
+ await (await quote.send()).settled();
+ assert.deepEqual(rich.topUps,[{need:1003,title:'Paying 1,000 sats over Lightning'}]);
+ const poor=fakeWallet({arkade:0,canWithdraw:false});
+ await assert.rejects(poolFunded(poor.wallet,fakeRail([{total:5003,send:handle}]).rail).quote(req(INVOICE),{} as never),/holds 0, and no single note in the pool covers the other 5,003/);
+});
+
+test('a quote that expired during the withdrawal is re-quoted once, and refused if the total rose',async()=>{
+ const expired=()=>Promise.reject(new QuoteExpired('q',1,2)) as Promise<never>;
+ const same=fakeRail([{total:1003,send:expired},{total:1003,send:handle}]),{wallet}=fakeWallet({arkade:0});
+ await (await (await poolFunded(wallet,same.rail).quote(req(INVOICE),{} as never)).send()).settled();
+ assert.equal(same.quoted(),2);
+ const dearer=fakeRail([{total:1003,send:expired},{total:1010,send:handle}]);
+ await assert.rejects((await poolFunded(wallet,dearer.rail).quote(req(INVOICE),{} as never)).send(),/now costs 1,010 sats, not 1,003/);
+ const broken=fakeRail([{total:1003,send:()=>Promise.reject(new Error('solver refused')) as Promise<never>}]);
+ await assert.rejects((await poolFunded(wallet,broken.rail).quote(req(INVOICE),{} as never)).send(),/solver refused/);
+ assert.equal(broken.quoted(),1,'only an expiry is re-quoted');
+});
+
+test('the wallet router sends an invoice to lightning, and a Lightning address to its Arkade option before Lightning',async t=>{
+ let warmed=0;
+ const swaps={resolve:async()=>{if(!warmed)throw new Error('nothing is cached');return {eligible:1} as never;},markets:async()=>{warmed++;return [];},
+  quote:async()=>{throw new Error('not quoted here');},accept:async()=>{throw new Error('not accepted here');},onUpdate:()=>()=>{}} satisfies SwapRailClient&{markets:unknown};
+ t.mock.method(globalThis,'fetch',async(url:string|URL)=>{
+  assert.equal(String(url),'https://pay.example/.well-known/lnurlp/alice');
+  return new Response(JSON.stringify({tag:'payRequest',callback:'https://pay.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',
+   paymentOptions:[{id:'arkade',type:'arkade'},{id:'lightning',type:'lightning'}]}),{headers:{'content-type':'application/json'}});
+ });
+ const {wallet}=fakeWallet({arkade:0}),router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never)
+  .use(shieldedRail(wallet)).use(shieldedWithdrawRail(wallet));
+ for(const rail of lightningRails(wallet,swaps))router.use(rail);
+ assert.deepEqual((await router.options(req(INVOICE))).map(o=>o.railId),['lightning'],'the registry is fetched before the offline resolve');
+ assert.deepEqual((await router.options(req('alice@pay.example',2000))).map(o=>o.railId),['lnurl-arkade','lnurl-lightning']);
+ assert.deepEqual((await router.options(req(PAYEE,2000))).map(o=>o.railId),['shielded-withdraw'],'an Arkade address still leaves the pool directly');
+});

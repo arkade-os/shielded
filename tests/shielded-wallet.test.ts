@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,type SendParams} from '@arkade-os/sdk';
+import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,SingleKey,Wallet,makeHandle,type SendParams} from '@arkade-os/sdk';
 import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
@@ -59,6 +59,22 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
   assert.equal(wallet.resumed,false);
   assert.equal(wallet.repositoryError,undefined);
   assert.ok((await wallet.getAddress()).startsWith('tark1'));
+ }finally{await wallet.dispose();}
+});
+
+test('a top-up withdraws what the Arkade balance lacks to the wallet itself, holds auto-shield off, then pays once',async()=>{
+ const wallet=await open(),withdrawn:[string,bigint][]=[];
+ let balance=900,during=-1,pays=0;
+ wallet.arkadeSats=async()=>balance;
+ (wallet as any).withdrawal=(to:string,amount:bigint)=>{withdrawn.push([to,amount]);return {settled:async()=>{balance+=Number(amount);return {railId:'shielded-withdraw'};}};};
+ const pay=async()=>{pays++;during=(wallet as any).nativeOperations;return makeHandle('lightning',async emit=>{const result={railId:'lightning',txid:'cd'.repeat(32)};emit({status:'settled',result});return result;});};
+ try{
+  const result=await wallet.topUp(1003,'Paying 1,000 sats over Lightning',pay).settled();
+  assert.deepEqual(withdrawn,[[await wallet.getAddress(),330n]],'103 sats short still withdraws the dust');
+  assert.equal(result.txid,'cd'.repeat(32));
+  assert.deepEqual([pays,during,(wallet as any).nativeOperations],[1,1,0]);
+  await wallet.topUp(1003,'Paying again',pay).settled();
+  assert.equal(withdrawn.length,1,'a covered balance pays without another withdrawal');
  }finally{await wallet.dispose();}
 });
 

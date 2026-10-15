@@ -4,7 +4,7 @@ import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
 import {DUST} from './pool.ts';
 import type {ShieldedWallet} from './wallet.ts';
 
-export const SHIELDED_PRIORITY=['shielded','shielded-withdraw','ark','ark-asset','onchain'];
+export const SHIELDED_PRIORITY=['shielded','shielded-withdraw','ark','ark-asset','lnurl-arkade','lightning','lnurl-lightning','onchain'];
 export function shieldedTargetOf(raw:string):string|undefined{
  try{
   let target=raw.trim();
@@ -67,6 +67,7 @@ export function shieldedWithdrawRail(wallet:ShieldedWallet):PaymentRail{
    const to=target(req.raw),r=requestOf(req);
    if(!to)throw new Error('Not an Arkade address this pool can pay out to.');
    if(!r)throw new Error('A withdrawal needs a whole number of sats, or one asset and its units.');
+   if(!wallet.canWithdraw(r.units,withdrawOpts(r)))throw new Error('No single note in the pool covers this amount.');
    const amount=r.sats??DUST;
    return {railId:'shielded-withdraw',amount,fee:0,total:amount,...assetView(r),send:()=>wallet.withdraw(to,r.units,withdrawOpts(r))};
   },

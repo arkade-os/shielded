@@ -18,4 +18,6 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
  :railId==='shielded-withdraw'?{title:'Withdraw from the pool',detail:'The amount and the destination become public.'}
  :railId==='onchain'?{title:'On-chain exit',detail:'From your unshielded Arkade funds, to the Bitcoin chain.'}
  :railId==='ark'||railId==='ark-asset'?{title:'Arkade payment',detail:'From your unshielded Arkade funds; the amount is public.'}
+ :railId==='lightning'||railId==='lnurl-lightning'?{title:'Pay over Lightning',detail:'Through a swap, from your Arkade balance; whatever it lacks first leaves the pool, publicly.'}
+ :railId==='lnurl-arkade'?{title:'Pay the Lightning address on Arkade',detail:'Straight from the pool to the Arkade address its owner gave; the amount and destination become public.'}
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};
