@@ -6,7 +6,7 @@ import type {SentRecord} from './repository.ts';
 export const SHIELDED_TAG='shielded';
 const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge'} as const;
 type SyntheticKind=keyof typeof SYNTHETIC;
-const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received',merge:'Merged notes',shield:'Shielded',unshield:'Withdrawn from the pool',list:'Listed asset'} as const;
+const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool',list:'Listed asset'} as const;
 export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):HistoryEntry|undefined}
 
 export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(field:bigint)=>string|undefined):ShieldedRowIndex{
@@ -26,13 +26,13 @@ export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(fiel
  };
 }
 
-export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly HistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean}):ActivityResolver{
+export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly HistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:HistoryEntry)=>boolean}):ActivityResolver{
  return {
   id:SHIELDED_TAG,
   resolve(tx){
    const entry=o.index.entryOf(tx);
    if(entry){
-    const kind=SYNTHETIC[entry.kind as SyntheticKind];
+    const kind=entry.kind==='send'&&o.isLink?.(entry)?'claim-link':SYNTHETIC[entry.kind as SyntheticKind];
     return [{groupId:`${SHIELDED_TAG}:${entry.batch}:${entry.slots.join('-')}`,label:LABELS[kind],kind,metadata:{batch:entry.batch,notes:entry.created.length,spent:entry.spent.length}}];
    }
    const txid=tx.key.arkTxid||tx.key.commitmentTxid;

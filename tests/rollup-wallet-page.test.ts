@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
+import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
@@ -143,4 +144,15 @@ test('the route preview names what each rail makes public, and never leaves a ra
  assert.equal(routeCopy('ark-asset').title,'Arkade payment');
  assert.equal(routeCopy('onchain').title,'On-chain exit');
  assert.match(routeCopy('lightning').detail,/public/);
+});
+
+test('the claim card reads a link\'s token and holdings without the network',()=>{
+ const token=encodeClaimToken({secret:new Uint8Array(32).fill(1),batch:5});
+ assert.equal(claimTokenError(token),'');
+ assert.equal(claimTokenError('nonsense'),'Not a claim link.');
+ assert.equal(claimUrl('https://pool.test',token),`https://pool.test/claim#${token}`);
+ const id='1e291e28'.padEnd(64,'0')+'0000',field=7n,assetIdOf=(f:bigint)=>f===field?id:undefined;
+ assert.equal(holdingsText([{asset:0n,amount:600n},{asset:0n,amount:400n}],assetIdOf),'1,000 sats');
+ assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
+ assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sats');
 });

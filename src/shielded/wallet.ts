@@ -137,7 +137,7 @@ export class ShieldedWallet extends Wallet {
    for(const txid of loaded.listings)wallet.listings.add(txid);
    wallet.master=parseMasterSecret(config.secret);for(const link of loaded.links)wallet.linkRecords.set(link.key,link);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field));
-   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid)}));
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0]))}));
    await wallet.start();
    return wallet;
   }catch(error){await wallet.dispose().catch(()=>{});throw error;}

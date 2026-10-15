@@ -57,3 +57,4 @@
 .stock-card,.stock-sheet{overflow-wrap:anywhere}
 /* iOS zooms into any field under 16px. */
 @media(pointer:coarse){.stock-card input,.stock-card select,.stock-card textarea{font-size:16px}.stock-card button,.stock-sheet button{min-height:44px}.stock-card .icon-button{min-width:44px}.stock-home{padding-block:13px}.stock-advanced>summary{padding-block:11px}}
+.stock-notes .stock-actions{grid-column:1/-1}

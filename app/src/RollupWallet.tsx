@@ -13,7 +13,7 @@ import {LNURL_BASE} from '../../src/shielded/lightning.ts';
 import {idle} from '../../src/shielded/sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from './rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver} from './shielded-prover.ts';
 import {BORN,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
@@ -25,12 +25,13 @@ const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'me
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 // The resolver's kinds, mapped onto the swatches the history list already has.
-const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','shielded-send':'send','shielded-receive':'receive',merge:'merge',list:'arkade'};
+const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','shielded-send':'send','shielded-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
 const WHERE:Record<string,string>={
  shield:'From your Arkade coins into the pool; the amount is public.',
  unshield:'Out of the pool to an Arkade address; the amount is public.',
  'shielded-send':'Inside the pool; amount and parties stay private.',
  'shielded-receive':'Inside the pool; amount and sender stay private.',
+ 'claim-link':'Inside the pool: into a claim link. Whoever claims it gets the amount, privately.',
  merge:'Inside the pool: your own notes, merged into one. Nothing left the wallet.',
  list:'To the pool, listing this asset so anyone can shield it.',
 };
@@ -39,6 +40,8 @@ type Invoice={id:string;bolt11:string;outcome:Outcome;pays:bigint;fee:bigint;fai
 const INVOICE:Partial<Record<Outcome,string>>={funding:'Paid. Claiming the sats.',funded:'Paid. Claiming the sats.',claimed:'Received. The sats move into the pool shortly.',lapsed:'It expired unpaid.'};
 const invoiceLine=(i:Invoice)=>i.outcome==='accepted'||i.outcome==='open'?`Waiting for a payment of ${sats(i.pays)} sats, of which the swap keeps ${sats(i.fee)}.`
  :INVOICE[i.outcome]??`The swap ${i.outcome==='needs_recovery'?'needs recovery':'failed'}${i.failure?`: ${i.failure}`:'.'}`;
+const LINK_STATE={unclaimed:'Unclaimed',claimed:'Claimed','taken-back':'Taken back'} as const;
+type ClaimView={notes:{asset:bigint;amount:bigint}[];mine:boolean}|{error:string};
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
@@ -49,6 +52,7 @@ export default function RollupWallet(){
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false);
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
+ const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
  const lnurlRef=useRef<ArkadeLnurl|undefined>(undefined);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined),fundsRevision=useRef(0);
@@ -202,6 +206,21 @@ export default function RollupWallet(){
    return wallet.router().route(request);
   });
  },[wallet,requestKey,tick,busy]);
+ // Each read builds the bearer key's account, so it runs when the link or wallet changes, not on every tick.
+ useEffect(()=>{
+  setClaimView(undefined);
+  if(!wallet||!claim||claimTokenError(claim))return;
+  let stop=false;
+  void wallet.inspectLink(claim).then(view=>{if(!stop)setClaimView(view);},error=>{if(!stop)setClaimView({error:errorText(error)});});
+  return()=>{stop=true;};
+ },[wallet,claim,claimRead]);
+ const leaveClaim=()=>{setClaim('');history.replaceState(null,'','/wallet');};
+ const claimNow=async()=>{if(await run(()=>wallet!.claimLink(claim),'Claiming a link'))leaveClaim();else setClaimRead(n=>n+1);};
+ const mintLink=async()=>{
+  const before=new Set(wallet?.links().map(l=>l.key));
+  if(await run(()=>wallet!.mintLink(BigInt(amount),assetId||undefined),'Creating a claim link'))setMinted(wallet!.links().find(l=>!before.has(l.key))?.token??'');
+ };
+ const links=wallet?.links()??[],claimProblem=claim?claimTokenError(claim):'';
 
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=wallet?.shieldedAddress()??'';
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
@@ -228,6 +247,15 @@ export default function RollupWallet(){
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
   {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{poolError||pool?.message}</p></div></section>}
   {ready&&<>
+   {claim&&<section className="stock-card"><h2>{claimView&&'mine' in claimView&&claimView.mine?'Your claim link':'A claim link for you'}</h2>
+    {claimProblem?<p className="stock-blocked">{claimProblem}</p>
+     :!claimView?<p className="stock-muted">Reading the link…</p>
+     :'error' in claimView?<p className="stock-blocked">{claimView.error}</p>
+     :!claimView.notes.length?<p className="stock-muted">This link is empty or already claimed.</p>
+     :<><p><b>{holdingsText(claimView.notes,field=>wallet?.assetIdOf(field))}</b></p>
+      <p className="stock-muted">{claimView.mine?'You created this link and nobody has claimed it yet. Taking it back returns it to your shielded balance.':'Claiming moves it privately into this wallet. Nobody learns the amount, who sent it, or who claimed it.'}</p>
+      <button className="stock-primary" disabled={busy||restoring.current||!wallet} onClick={()=>void claimNow()}>{claimView.mine?'Take back':'Claim'}</button></>}
+    <button className="stock-ghost stock-mini" onClick={leaveClaim}>Dismiss</button></section>}
    <section className="stock-card stock-balance">
     <div><small>SHIELDED BALANCE{!synced&&' · SYNCING'}</small><strong>{sats(balance)} <em>sats</em></strong></div>
     <div className="stock-balance-side"><div><small>ARKADE · NOT SHIELDED</small><b>{arkAvailable===undefined?'Loading…':`${sats(arkAvailable)} sats`}</b></div><div><small>POOL</small><b>{wallet?.batchCount()??0} batches</b></div>
@@ -266,11 +294,15 @@ export default function RollupWallet(){
      <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {assetId&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-     <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning pays through a swap from your Arkade balance.</p>
+     <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning pays through a swap from your Arkade balance. Leave To empty to create a claim link instead: whoever opens it first gets the amount.</p>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
      <button className="stock-primary" disabled={busy||restoring.current||!synced||!quote}>{busy?'Working…':quote?routeCopy(quote.railId).title:'Send'}</button>
+     {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
+     {minted&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)}/>
+      {typeof navigator.share==='function'&&<button type="button" className="stock-ghost stock-mini" onClick={()=>void navigator.share({url:claimUrl(location.origin,minted)}).catch(()=>{})}>Share</button>}
+      <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
     </form>}
    </section>
    <section className="stock-card stock-history"><h2>History</h2>
@@ -289,6 +321,10 @@ export default function RollupWallet(){
       </dl></details></li>;
     })}</ul>}
    </section>
+   {links.length>0&&<section className="stock-card"><h2>Your claim links</h2><div className="stock-notes">
+    {links.map(link=><div key={link.key}><span>{holdingsText([{asset:BigInt(link.asset),amount:BigInt(link.amount)}],field=>wallet?.assetIdOf(field))}</span><span className={link.state==='unclaimed'?'wait':'ok'}>{LINK_STATE[link.state]}</span>
+     {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(location.origin,link.token)}/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link')}>Take back</button></div>}</div>)}
+   </div></section>}
    {((wallet?.shieldedNotes().length??0)>0||reserves.some(id=>assetUnits(id)>0n))&&<section className="stock-card"><h2>Notes</h2><div className="stock-notes">
     {(wallet?.shieldedNotes()??[]).map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} sats</span>{wallet!.inFlight.has(n.nullifier)?<span className="wait">In flight</span>:<span className="ok">Spendable</span>}</div>)}
     {reserves.flatMap(id=>(wallet?.shieldedNotes(assetFieldOfId(id))??[]).map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} units</span><span className={wallet!.inFlight.has(n.nullifier)?'wait':'ok'}>{wallet!.inFlight.has(n.nullifier)?'In flight':`Asset ${short(id)}`}</span></div>))}

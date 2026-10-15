@@ -55,6 +55,8 @@ test('each synthetic row resolves to its own entry even when a batch holds three
  const resolver=shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>false,isListing:()=>false});
  assert.deepEqual(rows.map(r=>resolver.resolve(r)?.[0]?.label),['Sent privately','Received','Merged notes']);
  assert.deepEqual(rows.map(r=>resolver.resolve(r)?.[0]?.kind),['shielded-send','shielded-receive','merge']);
+ const linked=shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>false,isListing:()=>false,isLink:()=>true});
+ assert.deepEqual(rows.map(r=>[linked.resolve(r)?.[0]?.kind,linked.resolve(r)?.[0]?.label]),[['claim-link','Claim link'],['shielded-receive','Received'],['merge','Merged notes']],'only a send goes into a claim link');
  const ids=rows.map(r=>resolver.resolve(r)![0]!.groupId);
  assert.equal(new Set(ids).size,3,'one group per entry, so three rows never merge into one activity');
  for(const id of ids)assert.match(id,/^shielded:/,'namespaced so it cannot collide with an SDK group');

@@ -1,4 +1,5 @@
 import type {ArkCoin} from '../../src/shielded/pool.ts';
+import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 
 export * from '../../src/shielded/pool.ts';
 
@@ -25,3 +26,15 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
  :railId==='lightning'||railId==='lnurl-lightning'?{title:'Pay over Lightning',detail:'Through a swap, from your Arkade balance; whatever it lacks first leaves the pool, publicly.'}
  :railId==='lnurl-arkade'?{title:'Pay the Lightning address on Arkade',detail:'Straight from the pool to the Arkade address its owner gave; the amount and destination become public.'}
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};
+
+/** Why a token cannot be a claim link, read before any network call; '' when it can be. */
+export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};
+export const claimUrl=(origin:string,token:string)=>`${origin}/claim#${token}`;
+export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],assetIdOf:(field:bigint)=>string|undefined){
+ const totals=new Map<bigint,bigint>();
+ for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
+ return [...totals].map(([asset,amount])=>{
+  const count=Number(amount).toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
+  return asset===0n?`${count} sats`:`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
+ }).join(' and ');
+}
