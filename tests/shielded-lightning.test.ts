@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ArkAddress,PaymentRouter,makeHandle,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,SingleKey,makeHandle,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
 import type {SwapRailClient} from '@arkade-os/swap';
 import {lightningRails,poolFunded} from '../src/shielded/lightning.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from '../src/shielded/rails.ts';
@@ -57,6 +57,26 @@ test('a quote the withdrawal outlived is replaced before sending, and refused if
  const dearer=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1010,send:handle}]);
  await assert.rejects((await poolFunded(wallet,dearer.rail).quote(req(INVOICE),{} as never)).send(),/now costs 1,010 sats, not 1,003/);
  assert.deepEqual(dearer.sent,[]);
+ const rich=fakeWallet({arkade:5000}),covered=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1003,send:handle}]);
+ await (await (await poolFunded(rich.wallet,covered.rail).quote(req(INVOICE),{} as never)).send()).settled();
+ assert.deepEqual([covered.quoted(),covered.sent,rich.topUps],[2,[1],[]],'a covered payment refreshes too, without a withdrawal');
+});
+
+test('a Lightning address whose Arkade destination the pool cannot pay hands over to its Lightning option',async t=>{
+ const foreign=new ArkAddress(await SingleKey.fromPrivateKey(new Uint8Array(32).fill(5)).xOnlyPublicKey(),new Uint8Array(32).fill(7),decoded.hrp).encode();
+ t.mock.method(globalThis,'fetch',async(url:string|URL)=>{
+  const u=new URL(String(url));
+  const body=u.pathname.endsWith('/alice')?{tag:'payRequest',callback:'https://pay.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',
+   paymentOptions:[{id:'arkade',type:'arkade'},{id:'lightning',type:'lightning'}]}
+   :u.searchParams.get('paymentOption')==='arkade'?{status:'OK',paymentOption:'arkade',paymentDestination:foreign}:{pr:INVOICE,routes:[]};
+  return new Response(JSON.stringify(body),{headers:{'content-type':'application/json'}});
+ });
+ const swaps={resolve:async()=>({eligible:1}) as never,markets:async()=>[],accept:async()=>{throw new Error('not accepted here');},onUpdate:()=>()=>{},
+  quote:async()=>({id:'q',expiresAt:Math.floor(Date.now()/1000)+600,market:{kind:'card',key:'k'},take:{amount:21n},fee:{amount:1n},give:{amount:22n}}) as never};
+ const {wallet}=fakeWallet({arkade:0}),router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never);
+ for(const rail of lightningRails(wallet,swaps))router.use(rail);
+ const quote=await router.route(req('alice@pay.example',21));
+ assert.deepEqual([quote.railId,quote.total],['lnurl-lightning',22],'another operator\'s Arkade address is never paid from the pool');
 });
 
 test('the wallet router sends an invoice to lightning, and a Lightning address to its Arkade option before Lightning',async t=>{
