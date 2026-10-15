@@ -6,7 +6,7 @@ A private pool for Bitcoin and Arkade assets on Arkade. Inside the pool, value m
 
 - The pool is one Arkade VTXO, the head, which holds a supply-1 pool token and a commitment to the pool state. Each listed asset has one reserve VTXO beside it (at most eight).
 - A wallet owns notes in a depth-32 Poseidon tree. To spend, the browser proves a spend (one input note) or a join (two input notes), each with two outputs, with Groth16, and reveals only the spent notes' nullifiers.
-- The operator collects up to eleven spends, or eleven joins, into a batch and proves the state update; a join batch waits up to a minute for company. The head's covenant checks every client proof and the batch proof with the Arkade emulator's BN254 opcodes before the pool moves.
+- The operator collects up to eleven spends, or eleven joins, into a batch and proves the state update. A batch closes as soon as a spend is pending and no batch is in flight; spends that arrive meanwhile share the next. The head's covenant checks every client proof and the batch proof with the Arkade emulator's BN254 opcodes before the pool moves.
 - Deposits come from the depositor's Arkade coins, which they sign during a short round. Withdrawals pay an Arkade address and must be at least the 330-sat dust.
 - Each output note is sealed to its recipient's view key (X25519 and AES-GCM) and published with its batch. A wallet restores from its recovery secret by scanning the published batches.
 - A payment spends one note, two notes in one join, or up to three notes as one atomic group. A wallet holding more than eight notes of an asset merges its two smallest in the background.
