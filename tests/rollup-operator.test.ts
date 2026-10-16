@@ -699,6 +699,7 @@ test('a batch whose record is withheld stops batching indefinitely, and only pub
  a.addPadding(await pads(a.state.latestRoot(),10));
  w.clock.now=BATCH_WAIT_MS;
  const landed=await a.tick() as {txid:string},genesis=w.options.genesis.head.txid,dir=mkdtempSync(join(tmpdir(),'rollup-withheld-'));
+ assert.equal(typeof landed?.txid,'string','the foreign batch lands');
  const b=await w.open(t,{directory:dir,transport:{...w.transport,spentBy:async(head:{txid:string})=>head.txid===genesis?landed.txid:undefined}});
  const mine=await toySpend('mine',b.state.latestRoot(),{withdraw:1000n,program});
  await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),10));
