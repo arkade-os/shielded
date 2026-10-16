@@ -128,7 +128,8 @@ export class ShieldedWallet extends Wallet {
  private selfSending=false;
  private nativeOperations=0;
  private statusAt=Date.now();
- private headExpiry?:number;
+ /** undefined = not looked up this outage; null = looked up but unavailable (head gone); number = the expiry. */
+ private headExpiry?:number|null;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const wallet=await super.create(config) as ShieldedWallet;
@@ -214,9 +215,9 @@ export class ShieldedWallet extends Wallet {
  }
  /** Set once the pool has missed two refreshes. Only the operator renews the head, so its expiry is the deadline to exit. */
  get operatorDown():{since:number;headExpiresAt?:number}|undefined{
-  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry}:undefined;
+  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry??undefined}:undefined;
  }
- private async headExpiresAt(){
+ private async fetchHeadExpiry(){
   const {vtxos}=await this.indexerProvider.getVtxos({scripts:[this.poolScript],spendableOnly:true});
   return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
  }
@@ -224,7 +225,8 @@ export class ShieldedWallet extends Wallet {
  private async tick():Promise<void>{
   if(this.stopped)return;
   try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;await this.sync();}
-  catch{if(this.operatorDown&&this.headExpiry===undefined)this.headExpiry=await this.headExpiresAt().catch(()=>undefined);}
+  // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
+  catch{if(this.operatorDown&&this.headExpiry===undefined)this.headExpiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;}
   void this.autoShield().catch(()=>{});
   void this.merge().catch(()=>{});
   this.changed();

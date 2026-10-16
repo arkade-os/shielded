@@ -894,3 +894,18 @@ test('a pool that stops answering is reported after two missed refreshes, with t
   assert.equal(down(),undefined,'an answer clears it');
  }finally{t.mock.timers.reset();await wallet.dispose();}
 });
+
+test('an outage whose head expiry cannot be found is still looked up only once, and the banner falls back',async t=>{
+ const wallet=await open(),down=()=>wallet.operatorDown;let lookups=0;
+ clearTimeout((wallet as any).timer);
+ wallet.api=(async()=>{throw new Error('fetch failed');}) as never;
+ // The head is gone (expired and swept), so the indexer returns no token-carrying coin.
+ (wallet as any).indexerProvider={...(indexer as object),getVtxos:async()=>{lookups++;return {vtxos:[{txid:'cd'.repeat(32),vout:0,value:330,assets:[{assetId:'ee'.repeat(34),amount:5n}]}],page:undefined};}};
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ try{
+  t.mock.timers.tick(2*WATCHDOG_MS);await (wallet as any).tick();
+  assert.equal(down()?.headExpiresAt,undefined,'no head coin means no deadline to show');
+  await (wallet as any).tick();await (wallet as any).tick();
+  assert.equal(lookups,1,'an unavailable expiry is not retried every tick');
+ }finally{t.mock.timers.reset();await wallet.dispose();}
+});
