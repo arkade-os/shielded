@@ -158,7 +158,7 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  op.addPadding(await pads(op.state.latestRoot(),10));
  assert.equal(await op.tick(),undefined,'waits for the batch window');
  w.clock.now=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,102_830);
  await op.submit(await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)}));
  op.addPadding(await pads(op.state.latestRoot(),10));
@@ -273,7 +273,7 @@ test('a deposit the network keeps refusing is dropped, and the honest spend stil
  assert.match(((await op.tick()) as {blocked:string}).blocked,/abandoned/);
  assert.equal(op.pending(),1,'the refused deposit is dropped and the transfer waits');
  assert.equal(readdirSync(join(w.dir,'abandoned')).length,1);
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,100_330,'the batch that lands carries no deposit');
  assert.equal(submits,3,'the refused deposit is never proven or sent again');
  assert.equal(await op.tick(),undefined);
@@ -298,7 +298,7 @@ test('a deposit nobody signed drops only its own group, and the signed one still
  await assert.rejects(op.tick(),/did not sign/);
  assert.equal(op.pending(),2,'the refused group goes, carrier included; the rest waits');
  w.clock.now+=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,102_830,'the signed deposit still lands');
  assert.equal(op.pending(),0);
 });
@@ -349,7 +349,7 @@ test('a selection whose asset reserve vanished is evicted and gives its padding 
  assert.equal(op.pending(),0,'the selection is evicted instead of being retried forever');
  await op.submit(await toySpend('after',root));
  w.clock.now+=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch'],'the evicted batch gave its padding back');
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings'],'the evicted batch gave its padding back');
 });
 
 test('admission refuses forged statements, proofs and boundary legs, and double spends',async(t)=>{
@@ -371,7 +371,7 @@ test('a deposit coin that is no longer fresh is dropped before the batch, with t
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
  op.addPadding(await pads(op.state.latestRoot(),10));
  w.clock.now=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.deepEqual(floors,[86_400_000]);
  assert.deepEqual(drops.map(([ids])=>ids),[['deposit']]);
  assert.match(drops[0]![1],/expires/);
@@ -462,6 +462,18 @@ test('a head someone else spent stops batching with a pointer to its record, and
  assert.deepEqual(op.pendingIds(),[mine.id]);
  assert.equal(op.padding(),10,'padding is kept for the batch after the record arrives');
  assert.equal(op.status().pending,undefined,'nothing was submitted on a spent head');
+});
+
+test('without a batch window a lone spend or join batches on the next tick, which says where the time went',async(t)=>{
+ const w=await world(),op=await w.open(t,{batchWaitMs:0,joinWaitMs:0});
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=3;
+ const spend=await op.tick() as {batch:number;timings:{waitedMs:number;proveMs:number;publishMs:number}};
+ assert.deepEqual([spend.batch,spend.timings.waitedMs],[0,3],'no clock advance needed; the wait is measured from the oldest spend');
+ await op.submit(await toyJoin('join',op.state.latestRoot()));
+ op.addPadding(await joinPads(op.state.latestRoot(),10));
+ assert.equal((await op.tick() as {batch:number}).batch,1);
 });
 
 test('a join batch lands through the join leaf, inserts two nullifiers per slot, and records its kind',async(t)=>{

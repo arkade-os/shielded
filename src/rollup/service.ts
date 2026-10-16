@@ -30,7 +30,8 @@ import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store
 import {createRollupTransport} from './transport.ts';
 
 export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend','batch-join'].flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])] as const;
-const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=BATCH_SLOTS+1;
+// A batch closes as soon as a spend is admitted, and a lone spend takes ten pads, so two batches' worth stay ready.
+const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=2*BATCH_SLOTS;
 // The batch-join setup alone peaked at 4.11 GiB single-threaded; the server process needs room beside it.
 const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the head moves to a fresh round well before. A batch inherits its
@@ -119,7 +120,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   return manifest;
  }
  let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
- let stopped=false,timers:ReturnType<typeof setTimeout>[]=[];
+ let stopped=false,kick=()=>{};
+ const timers=new Set<ReturnType<typeof setTimeout>>();
+ const later=(fn:()=>void,ms:number)=>{const t=setTimeout(()=>{timers.delete(t);fn();},ms);timers.add(t);return t;};
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
  let blocked:{message:string;since:number}|undefined;
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
@@ -208,7 +211,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const operator=await openRollupOperator({directory:join(o.directory,'operator'),
    pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-genesis2'),programsHash:rollupProgramsHash(leaves),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
    genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint,
-   clientKey:{spend:readJson(join(keys,'spend.vkey.json')),join:readJson(join(keys,'join.vkey.json'))},hash,prover:{spend:prover('batch-spend'),join:prover('batch-join')},transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,
+   clientKey:{spend:readJson(join(keys,'spend.vkey.json')),join:readJson(join(keys,'join.vkey.json'))},hash,prover:{spend:prover('batch-spend'),join:prover('batch-join')},transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,batchWaitMs:0,joinWaitMs:0,
    onDrop:(ids,reason)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});}});
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
@@ -250,16 +253,23 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     if(Date.now()-t.at>3600_000){tracked.delete(id);store.remove(id);}
    }
   };
+  let running=false,again=false,next:ReturnType<typeof setTimeout>|undefined;
+  const schedule=(ms:number)=>{if(stopped)return;if(next){clearTimeout(next);timers.delete(next);}next=later(()=>{next=undefined;void tick();},ms);};
   const tick=async()=>{
    if(stopped)return;
-   if(!paused){
-    try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`);included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
-    catch(error){note((error as Error).message);blocked={message:(error as Error).message,since:blocked?.since??Date.now()};}
-    finally{ticking=undefined;}
-    sweep();
-   }
-   timers.push(setTimeout(tick,1000));
+   running=true;again=false;
+   try{
+    if(!paused){
+     try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`+(r.timings?` (waited ${r.timings.waitedMs} ms, proved in ${r.timings.proveMs} ms, published in ${r.timings.publishMs} ms)`:''));included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
+     catch(error){note((error as Error).message);blocked={message:(error as Error).message,since:blocked?.since??Date.now()};}
+     finally{ticking=undefined;}
+     sweep();
+    }
+   }finally{running=false;}
+   schedule(again?0:1000);
   };
+  // An admitted spend can make a batch due at once; the next scheduled tick would only add up to a second.
+  kick=()=>{if(running)again=true;else schedule(0);};
   /** Keeps a batch's worth of zero spends (one dummy input) or zero joins (two) proved and ready. */
   const pad=async(kind:BatchKind)=>{
    const recipient=rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey());
@@ -296,7 +306,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
      }catch(error){await settleRenewal().catch(e=>note('renewal: '+(e as Error).message));throw error;}
     });
    }catch(error){note('renewal: '+(error as Error).message);}
-   timers.push(setTimeout(renew,RENEW_CHECK_MS));
+   later(renew,RENEW_CHECK_MS);
   };
   const list=async()=>{
    if(stopped)return;
@@ -314,7 +324,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
      await operator.relocate({head:operator.status().archive.head,reserves});
     });
    }catch(error){note('listing: '+(error as Error).message);}
-   timers.push(setTimeout(list,LIST_CHECK_MS));
+   later(list,LIST_CHECK_MS);
   };
   const start=()=>{void tick();void pad('spend');void pad('join');void renew();void list();};
   // A batch started before the leftover intent clears would only be refused, and its deposits dropped.
@@ -376,7 +386,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   submit:async(spend:Omit<RollupSpend,'receivedAt'>,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
-   await live.operator.submit(spend);
+   await live.operator.submit(spend);kick();
    const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),at:Date.now()};
    tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:encodeSpend(spend,coin)});
   },
