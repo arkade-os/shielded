@@ -171,7 +171,6 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  assert.equal(op.status().archive.head.value,101_830);
  const body=JSON.parse(readFileSync(join(w.dir,'batches','1.json'),'utf8'));
  assert.deepEqual([body.txid,body.at],[second.txid,20_000],'a published batch names its transaction and time');
- assert.equal(op.txidOf(1),second.txid,'the journal answers for batches published before records carried a txid');
  const commitment=op.state.commitment();
  assert.equal(headCommitment(op.status().archive.head.sourceTxHex),commitment,'the head carries the commitment a restart is checked against');
  assert.equal(savedAt(w),undefined,'two batches are short of the cadence');

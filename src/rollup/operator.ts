@@ -312,7 +312,6 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   pendingIds:()=>[...queued(pending),...inflight].map(s=>s.id),
   padding:(kind?:BatchKind)=>kind?padding[kind].length:queued(padding).length,
   status:()=>journal.status(),
-  txidOf:(batch:number)=>journal.receipt('batch-'+batch)?.txid,
   /**
    * Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`.
    * Every record slot must reproduce the statement the transaction carries and the replay must reach its state packet,
