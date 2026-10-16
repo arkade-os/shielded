@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {schnorr} from '@noble/curves/secp256k1.js';
-import {deriveRollupKeyMaterial,deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
+import {bearerSecretOf,deriveRollupKeyMaterial,deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 
 test('genesis-2 rollup keys are independent of the genesis-1 key from the same secret, and stable',()=>{
  const secret='ab'.repeat(32),v1=deriveRollupKeyMaterial(secret,'mutinynet'),v2=deriveRollupKeys2(secret,'mutinynet');
@@ -34,4 +34,14 @@ test('the recovery phrase is the same 32-byte secret in 24 words, so existing wa
  assert.deepEqual(deriveWalletKeyMaterial(` ${phrase.toUpperCase().replaceAll(' ','\n  ')} `,'mutinynet'),deriveWalletKeyMaterial(secret,'mutinynet'));
  assert.throws(()=>parseMasterSecret('abandon '.repeat(24).trim()),/not valid/,'a phrase with a bad checksum');
  assert.throws(()=>parseMasterSecret('abandon '.repeat(12).trim()),/24 words/,'a 12-word phrase holds too little');
+});
+
+test('a claim link seed is stable, distinct per nullifier and network, and unlike the wallet\'s own keys',()=>{
+ const secret='ab'.repeat(32),hexOf=(b:Uint8Array)=>Buffer.from(b).toString('hex'),seed=hexOf(bearerSecretOf(secret,'mutinynet',7n));
+ assert.equal(seed.length,64);
+ assert.equal(hexOf(bearerSecretOf(parseMasterSecret(secret),'mutinynet',7n)),seed);
+ assert.notEqual(hexOf(bearerSecretOf(secret,'mutinynet',8n)),seed);
+ assert.notEqual(hexOf(bearerSecretOf(secret,'signet',7n)),seed);
+ assert.notEqual(hexOf(deriveRollupKeys2(secret,'mutinynet').viewSecret),seed);
+ assert.throws(()=>bearerSecretOf(secret,'../x',7n),/network label/);
 });

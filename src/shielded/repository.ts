@@ -1,8 +1,9 @@
 import type {AccountSnapshot} from '../../packages/protocol/src/rollup/account.ts';
+import type {LinkRecord} from './bearer.ts';
 
 export interface SentRecord {to:string;note?:{amount:string;asset:string;rho:string}}
 /** The wallet's cache for one pool. The operator's published batches stay the source of truth. */
-export interface ShieldedSnapshot {v:1;token:string;account:AccountSnapshot;sent:Record<string,SentRecord>;listings:string[]}
+export interface ShieldedSnapshot {v:1;token:string;account:AccountSnapshot;sent:Record<string,SentRecord>;listings:string[];links?:LinkRecord[]}
 export interface ShieldedNoteRepository extends AsyncDisposable {
  readonly version:1;
  getAccount(poolToken:string):Promise<ShieldedSnapshot|undefined>;

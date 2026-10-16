@@ -195,3 +195,12 @@ test('an asset and sats leave together: the carrier withdraws the sats, so one o
  assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(2,4)),[[100n,x],[1500n,0n]]);
  await assert.rejects(alice.withdrawAsset(x,100n,program,aliceTo,new Set(),329n),/at least 330/);
 });
+
+test('a payment can name its recipient from its first input, for one note, a join and a group',async()=>{
+ for(const [amount,prefer,kind,count] of [[250n,{},'spend',1],[1500n,{join:true},'join',1],[1500n,{join:false},'spend',2]] as const){
+  const alice=await nineNotes(),seen:bigint[]=[];
+  const paid=await alice.pay(nullifier=>{seen.push(nullifier);return bobTo!;},amount,aliceTo!,new Set(),0n,prefer);
+  assert.deepEqual([paid.kind,paid.spends.length],[kind,count]);
+  assert.deepEqual(seen,[paid.spends[0]!.witness.slot.nullifiers[0]],'asked once, with the first nullifier of the first spend');
+ }
+});

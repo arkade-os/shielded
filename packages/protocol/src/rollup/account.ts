@@ -167,20 +167,21 @@ export class RollupAccount {
  /**
   * Pays from one note when one covers the amount, else from the two largest in one join when `prefer.join`, else from up
   * to three notes as one atomic group: the batch takes every member or none. Members must be submitted in the returned
-  * order, the order the group id commits to.
+  * order, the order the group id commits to. A recipient given as a function gets the first input's nullifier.
   */
- async pay(recipient: RollupRecipient, amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: BatchKind; spends: BuiltSpend[] }> {
+ async pay(recipient: RollupRecipient | ((firstNullifier: bigint) => RollupRecipient), amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: BatchKind; spends: BuiltSpend[] }> {
   const notes = this.notes(asset).filter(n => !inFlight.has(n.nullifier)).sort((a, b) => (a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0));
+  const to = (first: OwnedNote) => (typeof recipient === 'function' ? recipient(first.nullifier) : recipient);
   const single = notes.filter(n => n.amount >= amount).pop();
-  if (single) return { kind: 'spend', spends: [await this.spend({ asset, input: single, to: { recipient, amount } }, self)] };
-  if (prefer.join && notes.length > 1 && notes[0]!.amount + notes[1]!.amount >= amount) return { kind: 'join', spends: [await this.join([notes[0]!, notes[1]!], self, { recipient, amount })] };
+  if (single) return { kind: 'spend', spends: [await this.spend({ asset, input: single, to: { recipient: to(single), amount } }, self)] };
+  if (prefer.join && notes.length > 1 && notes[0]!.amount + notes[1]!.amount >= amount) return { kind: 'join', spends: [await this.join([notes[0]!, notes[1]!], self, { recipient: to(notes[0]!), amount })] };
   const chosen: OwnedNote[] = [];
   for (const note of notes) { if (chosen.reduce((sum, n) => sum + n.amount, 0n) >= amount || chosen.length === 3) break; chosen.push(note); }
   if (chosen.length < 2 || chosen.reduce((sum, n) => sum + n.amount, 0n) < amount) throw new Error('No three notes together cover this amount.');
-  const group = { id: groupIdOf(this.hash, chosen.map(n => n.nullifier)), size: chosen.length };
+  const group = { id: groupIdOf(this.hash, chosen.map(n => n.nullifier)), size: chosen.length }, payee = to(chosen[0]!);
   let left = amount;
   const legs: BuiltSpend[] = [];
-  for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient, amount: part } }, self, randomField, group)); }
+  for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient: payee, amount: part } }, self, randomField, group)); }
   return { kind: 'spend', spends: legs };
  }
 

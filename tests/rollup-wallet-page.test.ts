@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
+import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
@@ -86,6 +87,11 @@ test('the API client retries outages, but reports a refusal at once',async()=>{
  assert.deepEqual(seen,['/api/rollup/status','http://pool.test/api/rollup/status','http://pool.test/api/rollup/status'],'a page keeps relative URLs; a Node caller names the pool by origin');
 });
 
+test('a refusal keeps the pool\'s rejection code, so a lost race reads differently from other errors',async()=>{
+ const refusing=(async()=>new Response(JSON.stringify({error:'The note is already spent or pending.',code:'double-spend'}),{status:400})) as unknown as typeof fetch;
+ await assert.rejects(rollupApi('/spends',{},refusing,0),(error:Error&{status?:number;code?:string})=>error.status===400&&error.code==='double-spend'&&/already spent/.test(error.message));
+});
+
 test('auto-shield takes every spendable coin the pool will still accept, BTC first, then listed assets one coin at a time',()=>{
  const now=1_000_000,x='ee'.repeat(34),y='ff'.repeat(34);
  const coin=(n:number,value:number,hours:number,assets?:{assetId:string;amount:bigint}[])=>({txid:String(n).repeat(64).slice(0,64),vout:0,value,expiresAt:now+hours*3600_000,...(assets?{assets}:{})});
@@ -149,4 +155,16 @@ test('the route preview names what each rail makes public, and never leaves a ra
  assert.equal(routeCopy('ark-asset').title,'Arkade payment');
  assert.equal(routeCopy('onchain').title,'On-chain exit');
  assert.match(routeCopy('lightning').detail,/public/);
+});
+
+test('the claim card reads a link\'s token and holdings without the network',()=>{
+ const token=encodeClaimToken({secret:new Uint8Array(32).fill(1),batch:5});
+ assert.equal(claimTokenError(token),'');
+ assert.equal(claimTokenError('nonsense'),'Not a claim link.');
+ assert.equal(claimUrl('https://pool.test',token),`https://pool.test/claim#${token}`);
+ const id='1e291e28'.padEnd(64,'0')+'0000',field=7n,assetIdOf=(f:bigint)=>f===field?id:undefined;
+ assert.equal(holdingsText([{asset:0n,amount:600n},{asset:0n,amount:400n}],assetIdOf),'1,000 sats');
+ assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
+ assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sats');
+ assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
 });

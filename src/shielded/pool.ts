@@ -18,7 +18,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   catch(error){if(attempt>=4)throw error;}
   if(response&&response.status<500){
    const json=await response.json().catch(()=>({}));
-   if(!response.ok)throw Object.assign(new Error(json.error??`The pool answered ${response.status}.`),{status:response.status});
+   if(!response.ok)throw Object.assign(new Error(json.error??`The pool answered ${response.status}.`),{status:response.status,...(typeof json.code==='string'?{code:json.code}:{})});
    return json as T;
   }
   if(attempt>=4)throw new Error(`The pool did not answer (${response?.status??'network error'}).`);
