@@ -39,8 +39,7 @@ export async function catchUpAfterEvent(run:()=>Promise<number>,stopped:()=>bool
  for(const ms of delays){
   if(ms)await new Promise(resolve=>setTimeout(resolve,ms));
   if(stopped())return 0;
-  const applied=await run();
-  if(applied)return applied;
+  try{const applied=await run();if(applied)return applied;}catch{/* the next delay looks again */}
  }
  return 0;
 }

@@ -163,4 +163,6 @@ test('a pool event that finds no new batch looks again shortly, until one lands,
  let stopped=false;calls=0;
  assert.equal(await catchUpAfterEvent(async()=>{calls++;stopped=true;return 0;},()=>stopped,[0,1,1]),0);
  assert.equal(calls,1,'a stopped wallet does not look again');
+ calls=0;
+ assert.equal(await catchUpAfterEvent(async()=>{if(++calls===1)throw new Error('The pool did not answer (502).');return 1;},()=>false,[0,1]),1,'a failed look is retried at the next delay');
 });
