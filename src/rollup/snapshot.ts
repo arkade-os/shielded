@@ -32,7 +32,7 @@ export function encodeSnapshot(state:RollupState,pin:StockReleasePin):Buffer {
  return out;
 }
 
-/** The state a snapshot holds, or undefined for anything unusable; it never throws and never returns part of a state. */
+/** The operator state a snapshot holds, which splices note subtrees and so serves no note path, or undefined for anything unusable; it never throws and never returns part of a state. */
 export function decodeSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,batches:number):RollupState|undefined {
  try{
   const body=bytes.length-32;

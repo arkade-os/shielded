@@ -133,12 +133,14 @@ test('a state restored from its scanned parts commits the same and applies the n
 
 test('an operator state splices each note subtree: it batches and checkpoints like the leaf state but stores no node below the subtree', () => {
  const leaves = RollupState.genesis(hash), spliced = RollupState.genesis(hash, false);
+ let slots: BatchSlot[] = [];
  for (let i = 0; i < 3; i++) {
-  const slots = fill(leaves, [deposit(leaves, 1000n).slot]);
+  slots = fill(leaves, [deposit(leaves, 1000n).slot]);
   assert.deepEqual(spliced.apply('spend', slots), leaves.apply('spend', slots));
  }
  spliced.undoLast(); leaves.undoLast();
  assert.equal(spliced.commitment(), leaves.commitment());
+ assert.deepEqual(spliced.apply('spend', slots), leaves.apply('spend', slots), 'an undone batch applies again identically');
  assert.deepEqual(checkpointOf(spliced.notes, 2), checkpointOf(leaves.notes, 2));
  const copy = spliced.clone();
  copy.apply('spend', fill(copy));

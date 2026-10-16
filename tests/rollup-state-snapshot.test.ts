@@ -16,7 +16,7 @@ let next=0n;
 // Scattered, so nullifiers land all over the sorted list rather than only at its end.
 const fresh=()=>(++next*0x2f1b9a8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0n)%ROLLUP_FIELD;
 const slots=(s:RollupState,kind:BatchKind):BatchSlot[]=>Array.from({length:BATCH_SLOTS},()=>({root:s.latestRoot(),nullifiers:kind==='join'?[fresh(),fresh()]:[fresh()],commitments:[fresh(),fresh()],ctDigest:fresh(),groupId:0n,groupSize:0}));
-const grown=(batches:number)=>{const s=RollupState.genesis(hash,false);for(let i=0;i<batches;i++){const kind=i%5===4?'join':'spend';s.apply(kind,slots(s,kind));}return s;};
+const grown=(batches:number,leaves=false)=>{const s=RollupState.genesis(hash,leaves);for(let i=0;i<batches;i++){const kind=i%5===4?'join':'spend';s.apply(kind,slots(s,kind));}return s;};
 
 test('a snapshot round-trips through its file byte for byte, and the restored state batches on identically',()=>{
  const state=grown(6),bytes=encodeSnapshot(state,pin),dir=mkdtempSync(join(tmpdir(),'rollup-snapshot-')),path=join(dir,'snapshot.bin');
@@ -30,6 +30,13 @@ test('a snapshot round-trips through its file byte for byte, and the restored st
  assert.deepEqual(restored.apply('join',next),state.apply('join',next));
  let lowest=NOTE_DEPTH;restored.notes.scan(level=>{lowest=Math.min(lowest,level);});
  assert.equal(lowest,SUBTREE_DEPTH,'a restored operator state keeps splicing');
+});
+
+test('a snapshot written with every note leaf restores into an operator state that batches on like the leaf state',()=>{
+ const full=grown(6,true),restored=decodeSnapshot(encodeSnapshot(full,pin),hash,pin,6)!;
+ assert.equal(restored.commitment(),full.commitment());
+ const next=slots(full,'spend');
+ assert.deepEqual(restored.apply('spend',next),full.apply('spend',next));
 });
 
 test('a snapshot that is damaged, foreign, ahead of the archive or malformed is refused',()=>{
