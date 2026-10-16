@@ -18,7 +18,7 @@ export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHe
 export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
 interface RecordSlot {root:string;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[];ciphertext?:string}
 /** One accepted batch as published for data availability. */
-export interface RollupRecord {kind:BatchKind;slots:RecordSlot[];txid?:string;at?:number}
+export interface RollupRecord {kind:BatchKind;slots:RecordSlot[];noteBlockRoot?:string;txid?:string;at?:number}
 interface RollupPlan {version:1;request:StockWireRequest;record:RollupRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
 /** What a deposit coin must still be when the batch is signed, as the client claims it. */
 export interface RollupDepositFacts {txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[]}
@@ -131,7 +131,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   },
  });
  const atOpen=journal.status().archive,committed=headCommitment(atOpen.head.sourceTxHex),snapshotPath=join(o.directory,'snapshot.bin');
- const replay=(s:RollupState)=>{for(let n=s.batchCount;n<atOpen.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;s.apply(body.kind,body.slots.map(slotOf));}return s;};
+ const replay=(s:RollupState)=>{for(let n=s.batchCount;n<atOpen.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;if(body.noteBlockRoot!==undefined)s.applyFromChain(body.kind,body.slots.map(sl=>sl.nullifiers.map(BigInt)),BigInt(body.noteBlockRoot));else s.apply(body.kind,body.slots.map(slotOf));}return s;};
  if(committed===undefined)console.warn(`[rollup] The pool head ${atOpen.head.txid} carries no readable state packet; the state is replayed from genesis and cannot be checked against it.`);
  let snapshotAt=0;
  /** A snapshot is used only once the batches after it replay to the commitment the head carries; anything else replays from genesis. */
@@ -317,31 +317,40 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    * Every record slot must reproduce the statement the transaction carries and the replay must reach its state packet,
    * so a record that misstates any note is refused.
    */
-  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots:(Omit<RecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
+  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<RecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
    try{
     const {tx,slots}=external,facts=readBatchTx(tx,o.leaves),[head,second]=spentCoins(tx,external.checkpoints);
     let archive=journal.status().archive;
     if(head!.txid!==archive.head.txid||head!.vout!==archive.head.vout)throw new Error(`Transaction ${tx.id} spends ${head!.txid}:${head!.vout}, not this pool's head.`);
-    if(slots.length!==facts.publics.length)throw new Error('The record has the wrong number of slots.');
-    if(slots.some(s=>s.nullifiers.length!==(facts.kind==='join'?2:1)))throw new Error(`Every slot of a ${facts.kind} batch spends ${facts.kind==='join'?'two notes':'one note'}.`);
-    slots.forEach((s,i)=>{
-     if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...slotOf({...s,publics:[]})})!==facts.publics[i]![0])throw new Error(`Slot ${i} does not match the statement the transaction carries.`);
-     if(s.ciphertext&&ctDigestOf(hex.decode(s.ciphertext))!==BigInt(s.ctDigest))throw new Error(`Slot ${i}'s note record does not match its digest.`);
-    });
+    // Without a record the nullifiers and the block root the transaction carries are enough to reach the same state.
+    if(slots){
+     if(slots.length!==facts.publics.length)throw new Error('The record has the wrong number of slots.');
+     if(slots.some(s=>s.nullifiers.length!==(facts.kind==='join'?2:1)))throw new Error(`Every slot of a ${facts.kind} batch spends ${facts.kind==='join'?'two notes':'one note'}.`);
+     slots.forEach((s,i)=>{
+      if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...slotOf({...s,publics:[]})})!==facts.publics[i]![0])throw new Error(`Slot ${i} does not match the statement the transaction carries.`);
+      if(s.ciphertext&&ctDigestOf(hex.decode(s.ciphertext))!==BigInt(s.ctDigest))throw new Error(`Slot ${i}'s note record does not match its digest.`);
+     });
+    }
     // Our own unaccepted batch spent the same head, so it can never land now.
     if(journal.status().pending){
      journal.discard();sent=undefined;
      if(state.batchCount>archive.batches)state.undoLast();
      padding[inflightKind].unshift(...inflightPadding);pending[inflightKind].unshift(...inflight);inflight=[];inflightPadding=[];
     }
-    const replica=state.clone(),replay=replica.apply(facts.kind,slots.map(s=>slotOf({...s,publics:[]})));
-    if(replica.commitment()!==facts.commitment||replay.daRoot!==facts.daRoot)throw new Error('The record does not match the state the transaction committed to.');
+    const replica=state.clone();
+    if(slots){
+     const replay=replica.apply(facts.kind,slots.map(s=>slotOf({...s,publics:[]})));
+     if(replica.commitment()!==facts.commitment||replay.daRoot!==facts.daRoot)throw new Error('The record does not match the state the transaction committed to.');
+    }else if(replica.applyFromChain(facts.kind,facts.nullifiers,facts.noteBlockRoot)!==facts.commitment)throw new Error('The transaction does not reconstruct a consistent state.');
     const reserveAsset=second&&Object.entries(archive.reserves).find(([,c])=>c.txid===second.txid&&c.vout===second.vout)?.[0];
     if(reserveAsset&&external.reserveAmount===undefined)throw new Error('Following a batch that moves a reserve needs the reserve\'s new amount.');
-    const record:RollupRecord={kind:facts.kind,slots:slots.map((s,i)=>({...s,publics:facts.publics[i]!.map(String)})),txid:tx.id,at:external.at};
+    const record:RollupRecord=slots
+     ?{kind:facts.kind,slots:slots.map((s,i)=>({...s,publics:facts.publics[i]!.map(String)})),txid:tx.id,at:external.at}
+     :{kind:facts.kind,slots:facts.nullifiers.map((nf,i)=>({root:'0',nullifiers:nf.map(String),commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:0,publics:facts.publics[i]!.map(String)})),noteBlockRoot:String(facts.noteBlockRoot),txid:tx.id,at:external.at};
     writeFileSync(bodyPath(archive.batches),JSON.stringify(record));
-    state.apply(facts.kind,slots.map(s=>slotOf({...s,publics:[]})));
+    if(slots)state.apply(facts.kind,slots.map(s=>slotOf({...s,publics:[]})));
+    else state.applyFromChain(facts.kind,facts.nullifiers,facts.noteBlockRoot);
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
     return {batch:archive.batches-1,txid:tx.id};

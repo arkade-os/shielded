@@ -731,3 +731,19 @@ test('a user lands a withdrawal from published state alone, and an operator that
  assert.deepEqual(await op.follow({tx,checkpoints,slots:recordAt(dir,0).slots as never,at:1}),{batch:0,txid:landed.txid});
  assert.equal(op.state.commitment(),user.state.commitment());
 });
+
+test('a batch whose record is withheld is followed from the transaction alone, and batching resumes',async(t)=>{
+ const w=await world(),a=await w.open(t),program=new Uint8Array(32).fill(0x52);
+ await a.submit(await toySpend('foreign',a.state.latestRoot(),{withdraw:1000n,program}));
+ a.addPadding(await pads(a.state.latestRoot(),BATCH_SLOTS-1));
+ w.clock.now=BATCH_WAIT_MS;
+ const landed=await a.tick() as {txid:string};
+ assert.equal(typeof landed?.txid,'string','the foreign batch lands');
+ const dir=mkdtempSync(join(tmpdir(),'rollup-chainonly-')),b=await w.open(t,{directory:dir});
+ const mine=await toySpend('mine',b.state.latestRoot(),{withdraw:1000n,program});
+ await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),BATCH_SLOTS-1));
+ assert.deepEqual(await b.follow({...landedTxs(w.dir),at:1}),{batch:0,txid:landed.txid},'followed from the transaction, no record');
+ assert.equal(b.state.commitment(),a.state.commitment(),'chain reconstruction reaches the same state');
+ w.clock.now+=BATCH_WAIT_MS;
+ assert.equal(((await b.tick()) as {batch:number}).batch,1,'the stuck spend rides the next batch, nothing published');
+});
