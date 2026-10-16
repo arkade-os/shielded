@@ -22,7 +22,7 @@ import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupLeaves} from './covenant.ts';
 import {loadRollupLeaves} from './leaves.ts';
-import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
+import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord,type RollupTimings} from './operator.ts';
 import {createRollupProver} from './prover.ts';
 import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
 import {listingsOf,MAX_RESERVES} from './listings.ts';
@@ -39,9 +39,10 @@ const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
 
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
+export type RollupStatusBatch={batch:number;at:number}&RollupTimings;
 export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
- pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>;maxReserves:number};
+ pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;lastBatch?:RollupStatusBatch;reserves:Record<string,string>;maxReserves:number};
  network?:StockNetworkInfo;
  proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;
 }
@@ -124,7 +125,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const timers=new Set<ReturnType<typeof setTimeout>>();
  const later=(fn:()=>void,ms:number)=>{const t=setTimeout(()=>{timers.delete(t);fn();},ms);timers.add(t);return t;};
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
- let blocked:{message:string;since:number}|undefined;
+ let blocked:{message:string;since:number}|undefined,lastBatch:RollupStatusBatch|undefined;
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
  /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. */
  const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
@@ -260,7 +261,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    running=true;again=false;
    try{
     if(!paused){
-     try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`+(r.timings?` (waited ${r.timings.waitedMs} ms, proved in ${r.timings.proveMs} ms, published in ${r.timings.publishMs} ms)`:''));included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
+     try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`+(r.timings?` (waited ${r.timings.waitedMs} ms, proved in ${r.timings.proveMs} ms, published in ${r.timings.publishMs} ms)`:''));if(r.timings)lastBatch={batch:r.batch,at:Date.now(),...r.timings};included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
      catch(error){note((error as Error).message);blocked={message:(error as Error).message,since:blocked?.since??Date.now()};}
      finally{ticking=undefined;}
      sweep();
@@ -337,7 +338,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   status:():RollupStatus=>{
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,{archive}=operator.status();
-   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
     reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
