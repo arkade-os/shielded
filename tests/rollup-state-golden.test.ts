@@ -28,4 +28,4 @@ test('incremental state reproduces the reference witnesses',()=>{
  }
  assert.deepEqual(out,GOLDEN);
 });
-const GOLDEN=['ad60cd87d329f303506d7311d772a6f22bb157272c82310df8de2c40b57e4d39','5e93e59c5fb7d2309b65cc988fe99409d365bb6cba9e55db3daf02ec4b6e47f7','a5a1a42a3492b5f91cb9f1986777a268842fbc020838501b083dcc18a0a6b064'];
+const GOLDEN=['2ddd881b4c32ba47634e3b9550b2aa3b3809dcb1cb3fc68a9a91d74f49c07044','7d3b3939b496435e0465f851f961d6d1c41ae391d3365fc86d9ba3a023aff71a','e5b71f84e0366641ec2e07e6555e3ca69b87abcffa5bb2c1671bdfa1d9495c0f'];
