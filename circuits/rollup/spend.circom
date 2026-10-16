@@ -4,7 +4,7 @@ include "lib.circom";
 // One input note (amount 0 = dummy, for deposits), two outputs, one asset.
 // Public: pub (statement hash), then the boundary legs the covenant checks.
 template Spend(DEPTH) {
- signal input pub; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
+ signal input pub; signal input nf0; signal input nf1; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
  signal input domain; signal input root; signal input ctDigest; signal input groupId; signal input groupSize; signal input asset;
  signal input inAmount; signal input inRho; signal input ask; signal input nk;
  signal input path[DEPTH]; signal input bits[DEPTH];
@@ -40,5 +40,7 @@ template Spend(DEPTH) {
  statement.inputs[3] <== cm[0].out; statement.inputs[4] <== cm[1].out; statement.inputs[5] <== ctDigest;
  statement.inputs[6] <== groupId; statement.inputs[7] <== groupSize;
  statement.out === pub;
+ // The chain carries the nullifier, so it must be this note's, not any other.
+ nf.out === nf0; nf1 === 0;
 }
-component main {public [pub, deposit, withdraw, boundaryAsset, destination]} = Spend(32);
+component main {public [pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination]} = Spend(32);

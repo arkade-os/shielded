@@ -43,7 +43,7 @@ func rollupWitnessNames(slots int) []string {
 		names = append(names, "b"+f)
 	}
 	for i := slots - 1; i >= 0; i-- {
-		for _, f := range append(append([]string(nil), rollupProofFields...), "pub", "dep", "wd", "a", "d") {
+		for _, f := range append(append([]string(nil), rollupProofFields...), "pub", "nf0", "nf1", "dep", "wd", "a", "d") {
 			names = append(names, fmt.Sprintf("%s_%d", f, i))
 		}
 	}
@@ -54,8 +54,8 @@ func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
 	if c.Slots < 1 || c.Slots > rollupMaxSlots || c.Kind > 1 {
 		return rollupLeaf{}, errors.New("rollup leaf needs 1-11 slots and kind 0 or 1")
 	}
-	if len(c.Client.IC) != 6 || len(c.Batch.IC) != c.Slots+2 {
-		return rollupLeaf{}, errors.New("rollup keys need 5 client and slots+1 batch public inputs")
+	if len(c.Client.IC) != 8 || len(c.Batch.IC) != c.Slots+2 {
+		return rollupLeaf{}, errors.New("rollup keys need 7 client and slots+1 batch public inputs")
 	}
 	if err := rollupSharedSetup(c.Client, c.Batch); err != nil {
 		return rollupLeaf{}, err
@@ -119,6 +119,13 @@ func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
 		s.pick(r, "k")
 		s.op(txscript.OP_MUL, 2, "u")
 		s.accumulate("s0", "u", first)
+		// The nullifiers are script numbers like pub, and nothing below reads them, so they roll into their sums.
+		for k, item := range []string{at("nf0", i), at("nf1", i)} {
+			s.roll(item)
+			s.pick(r, "k")
+			s.op(txscript.OP_MUL, 2, "u")
+			s.accumulate(fmt.Sprintf("s%d", k+1), "u", first)
+		}
 		for k, item := range []string{at("dep", i), at("wd", i), at("a", i), at("d", i)} {
 			s.pick(item, "x")
 			if k >= 2 {
@@ -126,7 +133,7 @@ func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
 			}
 			s.pick(r, "k")
 			s.op(txscript.OP_MUL, 2, "u")
-			s.accumulate(fmt.Sprintf("s%d", k+1), "u", first)
+			s.accumulate(fmt.Sprintf("s%d", k+3), "u", first)
 		}
 		s.roll(r)
 		s.accumulate("sr", r, first)
@@ -165,7 +172,7 @@ func emitRollupBinding(s *rollupStack, kind byte, n int) {
 	s.op(arkade.OP_INSPECTPACKET, 1, "new", "ok")
 	s.op(txscript.OP_VERIFY, 1)
 	s.op(txscript.OP_SIZE, 0, "size")
-	s.small(64, "64")
+	s.small(96, "96")
 	s.op(txscript.OP_NUMEQUALVERIFY, 2)
 	s.op(arkade.OP_CAT, 2, "binding")
 	s.op(txscript.OP_SHA256, 1, "h")
@@ -329,7 +336,7 @@ func emitRollupPairing(s *rollupStack, c rollupLeafConfig, n int) {
 	s.op(txscript.OP_MOD, 2, "k")
 	s.small(curve, "curve")
 	s.op(arkade.OP_ECMUL, 4, "lx", "ly")
-	for k := 0; k < 5; k++ {
+	for k := 0; k < 7; k++ {
 		s.number(c.Client.IC[k+1][0], "x")
 		s.number(c.Client.IC[k+1][1], "y")
 		s.roll(fmt.Sprintf("s%d", k))

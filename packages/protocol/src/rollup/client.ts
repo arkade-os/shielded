@@ -27,13 +27,13 @@ export function clientWitness(hash: Hash, spend: ClientSpend): ClientWitness {
  // The asset becomes public only with a boundary leg (spec 6.6).
  const boundaryAsset = spend.deposit + spend.withdraw === 0n ? 0n : spend.asset;
  const input = {
-  pub, deposit: spend.deposit, withdraw: spend.withdraw, boundaryAsset, asset: spend.asset, destination: spend.destination,
+  pub, nf0: nullifiers[0], nf1: m === 1 ? 0n : nullifiers[1], deposit: spend.deposit, withdraw: spend.withdraw, boundaryAsset, asset: spend.asset, destination: spend.destination,
   domain: spend.domain, root: spend.root, ctDigest: spend.ctDigest, groupId: spend.groupId, groupSize: BigInt(spend.groupSize),
   inAmount: per(input => input.amount), inRho: per(input => input.rho), ask: per(input => input.ask), nk: per(input => input.nk),
   path: per(input => input.path), bits: per(input => pathBits(input.index, NOTE_DEPTH)),
   outAmount: spend.outputs.map(output => output.amount), outOwner: spend.outputs.map(output => output.owner), outRandom: spend.outputs.map(output => output.random),
  };
- return { input, slot, publicSignals: [pub, spend.deposit, spend.withdraw, boundaryAsset, spend.destination] };
+ return { input, slot, publicSignals: [pub, nullifiers[0], m === 1 ? 0n : nullifiers[1], spend.deposit, spend.withdraw, boundaryAsset, spend.destination] };
 }
 
 export const toCircuitInput = (input: Record<string, unknown>) => JSON.parse(JSON.stringify(input, (_, value) => typeof value === 'bigint' ? value.toString() : value));

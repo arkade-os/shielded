@@ -48,7 +48,7 @@ func buildRollupLeaves(specFile string) (rollupLeavesManifest, error) {
 	}
 	var leaves [2]rollupLeaf
 	for kind, keys := range [2][3]string{{"", spec.ClientKey, spec.BatchKey}, {"join ", spec.ClientJoinKey, spec.BatchJoinKey}} {
-		client, err := loadRollupKey(at(keys[1]), 5)
+		client, err := loadRollupKey(at(keys[1]), 7)
 		if err != nil {
 			return rollupLeavesManifest{}, fmt.Errorf("%sclient key: %w", keys[0], err)
 		}

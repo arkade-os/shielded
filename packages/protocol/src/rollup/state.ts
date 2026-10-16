@@ -7,8 +7,8 @@ export interface BatchSlot { root: bigint; nullifiers: bigint[]; commitments: [b
 export interface BatchResult { witness: Record<string, unknown>; publicSignals: bigint[]; binding: Uint8Array; daRoot: bigint }
 
 const le32 = (value: bigint) => Uint8Array.from({ length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
-export const bindingOf = (kind: BatchKind, oldCommitment: bigint, newCommitment: bigint, daRoot: bigint) =>
- Uint8Array.from([0x53, 0x48, 2, BATCH_KIND_BYTE[kind], BATCH_SLOTS, ...le32(oldCommitment), ...le32(newCommitment), ...le32(daRoot)]);
+export const bindingOf = (kind: BatchKind, oldCommitment: bigint, newCommitment: bigint, daRoot: bigint, blockRoot: bigint) =>
+ Uint8Array.from([0x53, 0x48, 2, BATCH_KIND_BYTE[kind], BATCH_SLOTS, ...le32(oldCommitment), ...le32(newCommitment), ...le32(daRoot), ...le32(blockRoot)]);
 
 function validateGroups(hash: Hash, slots: BatchSlot[]): void {
  const bad = (why: string) => new RollupRejection('group-invalid', why);
@@ -85,16 +85,15 @@ export class RollupState {
    }
    // Both give the circuit's root; only leaves keep the note paths a wallet replica reads, and the operator reads none below the subtree.
    const commitments = slots.flatMap(slot => slot.commitments);
+   let level = Array.from({ length: 2 ** SUBTREE_DEPTH }, (_, i) => commitments[i] ?? 0n);
+   while (level.length > 1) level = Array.from({ length: level.length / 2 }, (_, i) => this.hash([level[2 * i], level[2 * i + 1]]));
+   const blockRoot = level[0];
    if (this.leaves) commitments.forEach((commitment, offset) => this.notes.set(noteCount + offset, commitment));
-   else {
-    let level = Array.from({ length: 2 ** SUBTREE_DEPTH }, (_, i) => commitments[i] ?? 0n);
-    while (level.length > 1) level = Array.from({ length: level.length / 2 }, (_, i) => this.hash([level[2 * i], level[2 * i + 1]]));
-    this.notes.setAt(SUBTREE_DEPTH, noteSlot, level[0]);
-   }
+   else this.notes.setAt(SUBTREE_DEPTH, noteSlot, blockRoot);
    this.noteCount += 2 ** SUBTREE_DEPTH;
    this.window.set(windowSlot, this.notes.root());
    this.batchCount += 1;
-   const binding = bindingOf(kind, oldCommitment, this.commitment(), da);
+   const binding = bindingOf(kind, oldCommitment, this.commitment(), da, blockRoot);
    const statement = sha256le248(binding);
    return { witness: { ...lists, statement, ...before }, publicSignals: [...pubs, statement], binding, daRoot: da };
   } catch (error) { this.undo(); throw error; }

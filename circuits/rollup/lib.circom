@@ -70,6 +70,8 @@ template IndexedInsert(D, TAG) {
 template AppendSubtree(L, SUB, D, Z) {
  signal input leaves[L]; signal input noteRoot; signal input noteSlot; signal input slotPath[D-SUB];
  signal output newRoot;
+ // The block root goes on chain, so a follower can advance the note tree without any commitment.
+ signal output subRoot;
  var W=1<<SUB;
  signal lvl[SUB+1][W]; component h[SUB+1][W];
  for(var j=0;j<W;j++) { if(j<L) lvl[0][j] <== leaves[j]; else lvl[0][j] <== 0; }
@@ -88,15 +90,16 @@ template AppendSubtree(L, SUB, D, Z) {
  }
  oldSlot.root === noteRoot;
  newRoot <== newSlot.root;
+ subRoot <== lvl[SUB][0];
 }
 
-// sha256-le-248 of: 'S' 'H' 2 KIND N || old state || new state || DA root (fields as 32 LE bytes).
+// sha256-le-248 of: 'S' 'H' 2 KIND N || old state || new state || DA root || note-block root (fields as 32 LE bytes).
 template Binding(KIND, N) {
- signal input fields[3]; signal output statement;
+ signal input fields[4]; signal output statement;
  var magic[5]=[83,72,2,KIND,N];
- component sha=Sha256(101*8); component fb[3];
+ component sha=Sha256(133*8); component fb[4];
  for(var i=0;i<5;i++) for(var b=0;b<8;b++) sha.in[i*8+b] <== (magic[i]>>(7-b))&1;
- for(var f=0;f<3;f++) {
+ for(var f=0;f<4;f++) {
   fb[f]=Num2Bits_strict(); fb[f].in <== fields[f];
   for(var i=0;i<32;i++) for(var b=0;b<8;b++) {
    if(i*8+7-b<254) sha.in[(5+32*f+i)*8+b] <== fb[f].out[i*8+7-b];
@@ -211,5 +214,6 @@ template Batch(N, M, KIND, DOMAIN, Z) {
 
  component bind=Binding(KIND, N);
  bind.fields[0] <== oldState.out; bind.fields[1] <== newState.out; bind.fields[2] <== daChain[N];
+ bind.fields[3] <== append.subRoot;
  bind.statement === statement;
 }

@@ -61,7 +61,7 @@ const deposits = Array.from({ length: BATCH_SLOTS }, (_, i) => spend({
 const depositWitnesses = deposits.map(s => clientWitness(hash, s));
 await accepts('client deposit through a dummy input', 'spend', depositWitnesses[0].input, true);
 await accepts('client asset deposit inside a group', 'spend', depositWitnesses[4].input);
-assert.equal(depositWitnesses[4].publicSignals[3], asset, 'a deposit publishes its asset');
+assert.equal(depositWitnesses[4].publicSignals[5], asset, 'a deposit publishes its asset');
 const hidden = structuredClone(depositWitnesses[4].input) as Record<string, any>;
 hidden.boundaryAsset = 0n;
 await rejects('client asset deposit hiding its asset', 'spend', hidden, /Spend_\d+ line: 36/);
@@ -70,7 +70,7 @@ await accepts('batch 1: eleven deposits including a BTC+asset group', 'batch-spe
 const loose: BatchSlot = { ...depositWitnesses[4].slot, groupId: 0n, groupSize: 0 };
 const missingMember = structuredClone(batch1.witness) as Record<string, any>;
 missingMember.groupId[4] = 0n; missingMember.groupSize[4] = 0n; missingMember.pub[4] = statementOf(hash, { domain: ROLLUP_DOMAIN, ...loose });
-await rejects('batch whose group run is missing a member', 'batch-spend', missingMember, /GroupRule_\d+ line: 132/);
+await rejects('batch whose group run is missing a member', 'batch-spend', missingMember, /GroupRule_\d+ line: 135/);
 assert.throws(() => state.apply('spend', depositWitnesses.map((w, i) => (i === 4 ? loose : w.slot))), /consecutive slots/);
 
 // Batch 2: a transfer, a withdrawal and an internal asset transfer from batch-1 notes; the rest is operator padding.
@@ -83,7 +83,7 @@ const transferWitness = clientWitness(hash, transfer), withdrawalWitness = clien
 await accepts('client transfer', 'spend', transferWitness.input, true);
 await accepts('client withdrawal', 'spend', withdrawalWitness.input);
 await accepts('client asset transfer inside the pool', 'spend', assetTransferWitness.input);
-assert.equal(assetTransferWitness.publicSignals[3], 0n, 'an internal transfer keeps its asset private');
+assert.equal(assetTransferWitness.publicSignals[5], 0n, 'an internal transfer keeps its asset private');
 const revealed = structuredClone(assetTransferWitness.input) as Record<string, any>;
 revealed.boundaryAsset = asset;
 await rejects('client internal transfer publishing its asset', 'spend', revealed, /Spend_\d+ line: 36/);
@@ -100,7 +100,7 @@ const batch2 = state.apply('spend', batch2Slots);
 await accepts('batch 2: transfer, withdrawal, asset transfer and eight padding spends', 'batch-spend', batch2.witness);
 const wrongSlot = structuredClone(batch2.witness) as Record<string, any>;
 wrongSlot.winIdx[0] = 5n;
-await rejects('batch claiming a root from the wrong window slot', 'batch-spend', wrongSlot, /Batch_\d+ line: 168/);
+await rejects('batch claiming a root from the wrong window slot', 'batch-spend', wrongSlot, /Batch_\d+ line: 171/);
 const respent = batch2Slots.map(slot => ({ ...slot, root: state.latestRoot() }));
 assert.throws(() => state.apply('spend', respent), /already spent/);
 await rejects('batch re-spending a nullifier from an earlier batch', 'batch-spend', forced(state, 'spend', respent).witness, /IndexedInsert_\d+ line: 49/);
@@ -127,12 +127,24 @@ await rejects('client spend with a swapped nullifier key', 'spend', swappedNk, /
 const forgedNf = structuredClone(transferWitness.input) as Record<string, any>;
 forgedNf.pub = statementOf(hash, { domain: ROLLUP_DOMAIN, ...transferWitness.slot, nullifiers: [1n] });
 await rejects('client spend publishing a nullifier it did not derive', 'spend', forgedNf, /Spend_\d+ line: 42/);
+const tamperedNf = structuredClone(transferWitness.input) as Record<string, any>;
+tamperedNf.nf0 = transferWitness.slot.nullifiers[0] + 1n;
+await rejects('client spend whose on-chain nullifier is not the note\'s', 'spend', tamperedNf, /Spend_\d+ line: 44/);
+const blankNf = structuredClone(transferWitness.input) as Record<string, any>;
+blankNf.nf0 = 0n;
+await rejects('client spend blanking its on-chain nullifier', 'spend', blankNf, /Spend_\d+ line: 44/);
+const smuggledNf1 = structuredClone(transferWitness.input) as Record<string, any>;
+smuggledNf1.nf1 = 1n;
+await rejects('client spend smuggling a second nullifier', 'spend', smuggledNf1, /Spend_\d+ line: 44/);
 
 // Batch 3: consolidate the transfer's two outputs with the join circuit.
 const change = [owned(transferWitness, transfer, 0, 32), owned(transferWitness, transfer, 1, 33)];
 const merge = spend({ root: state.latestRoot(), inputs: change.map(input), outputs: [{ amount: 1000n, owner: aliceOwner, random: fresh() }, { amount: 0n, owner: aliceOwner, random: fresh() }] });
 const mergeWitness = clientWitness(hash, merge);
 await accepts('client join of 600 and 400 into 1000', 'join', mergeWitness.input, true);
+const swappedNf = structuredClone(mergeWitness.input) as Record<string, any>;
+[swappedNf.nf0, swappedNf.nf1] = [swappedNf.nf1, swappedNf.nf0];
+await rejects('client join with its two on-chain nullifiers swapped', 'join', swappedNf, /Join_\d+ line: 47/);
 const twice = clientWitness(hash, { ...merge, inputs: [input(change[0]), input(change[0])], outputs: [{ ...merge.outputs[0], amount: 1200n }, merge.outputs[1]] });
 await rejects('client join spending one note twice', 'join', twice.input, /Join_\d+ line: 28/);
 const joinRevealed = structuredClone(mergeWitness.input) as Record<string, any>;

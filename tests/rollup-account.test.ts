@@ -113,7 +113,7 @@ test('an asset enters and leaves with its 330-sat BTC carrier, and moves private
  await apply(await batchOf(alice.state.latestRoot(),deposit));
  assert.equal(alice.balance(x),1000n);assert.equal(alice.balance(),330n);
  const {spends:pay}=await alice.pay(bobTo,400n,aliceTo,new Set(),x);
- assert.ok(pay.every(s=>s.witness.publicSignals[3]===0n),'a transfer shows no asset');
+ assert.ok(pay.every(s=>s.witness.publicSignals[5]===0n),'a transfer shows no asset');
  await apply(await batchOf(alice.state.latestRoot(),pay));
  assert.equal(bob.balance(x),400n);assert.equal(alice.balance(x),600n);
  const out=await alice.withdrawAsset(x,250n,program,aliceTo);

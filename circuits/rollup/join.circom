@@ -3,7 +3,7 @@ include "lib.circom";
 
 // Two input notes, two outputs, one asset: consolidation, splitting and pay-from-two.
 template Join(DEPTH) {
- signal input pub; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
+ signal input pub; signal input nf0; signal input nf1; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
  signal input domain; signal input root; signal input ctDigest; signal input groupId; signal input groupSize; signal input asset;
  signal input inAmount[2]; signal input inRho[2]; signal input ask[2]; signal input nk[2];
  signal input path[2][DEPTH]; signal input bits[2][DEPTH];
@@ -43,5 +43,7 @@ template Join(DEPTH) {
  statement.inputs[3] <== nf[1].out; statement.inputs[4] <== cm[0].out; statement.inputs[5] <== cm[1].out;
  statement.inputs[6] <== ctDigest; statement.inputs[7] <== groupId; statement.inputs[8] <== groupSize;
  statement.out === pub;
+ // The chain carries both nullifiers, so they must be these notes'.
+ nf[0].out === nf0; nf[1].out === nf1;
 }
-component main {public [pub, deposit, withdraw, boundaryAsset, destination]} = Join(32);
+component main {public [pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination]} = Join(32);

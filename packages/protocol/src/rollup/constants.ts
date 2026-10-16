@@ -11,7 +11,7 @@ export const WINDOW_DEPTH = 6;
 export const SUBTREE_DEPTH = 5;
 /** The pool serves the note frontier at every multiple of this many batches. */
 export const CHECKPOINT_EVERY = 64;
-export const BATCH_SLOTS = 11;
+export const BATCH_SLOTS = 10;
 export const BTC_ASSET = 0n;
 export type BatchKind = 'spend' | 'join';
 export const BATCH_KIND_BYTE: Record<BatchKind, number> = { spend: 0, join: 1 };
