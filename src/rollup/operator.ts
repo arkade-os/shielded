@@ -53,8 +53,15 @@ export interface RollupOperatorOptions {
  onDrop?(ids:string[],reason:string):void;
  weightLimit?:number;
  now?:()=>number;
+ /** The client-proof check; tests replace it to hold a verification open. */
+ verify?:typeof verifyRollupProof;
+ /** How long a batch that is not full waits for company after its oldest spend, per lane. */
+ batchWaitMs?:number;
+ joinWaitMs?:number;
 }
-export type RollupTick={txid:string;batch:number}|{blocked:string}|undefined;
+/** Where a batch's time went: waiting from its oldest spend, proving, then signing deposits and publishing. */
+export interface RollupTimings {waitedMs:number;proveMs:number;publishMs:number}
+export type RollupTick={txid:string;batch:number;timings?:RollupTimings}|{blocked:string}|undefined;
 
 /** How long an unresolved submission is left alone between exact re-sends, and before it may be abandoned. */
 export const ROLLUP_RESEND_GRACE_MS=120_000;
@@ -82,7 +89,7 @@ function checkUnit(unit:readonly RollupSpend[]):void {
 }
 
 export async function openRollupOperator(o:RollupOperatorOptions){
- const now=o.now??Date.now,pool=rollupPoolTree(o.serverKey,o.emulatorKey,o.leaves,o.exitDelay),serverKeyHex=hex.encode(o.serverKey);
+ const now=o.now??Date.now,verify=o.verify??verifyRollupProof,pool=rollupPoolTree(o.serverKey,o.emulatorKey,o.leaves,o.exitDelay),serverKeyHex=hex.encode(o.serverKey);
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
@@ -123,6 +130,9 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  // The kind that goes first next tick: after a batch of one kind the other leads, so neither can starve.
  let lead:BatchKind='spend';
  const queued=(q:Record<BatchKind,RollupSpend[]>)=>[...q.spend,...q.join];
+ // A spend reserves its id and its nullifiers from admission, but may be selected only once its own proof verified and its whole unit passed its checks.
+ const proven=new WeakSet<RollupSpend>(),checked=new WeakSet<RollupSpend>();
+ const selectable=(s:RollupSpend)=>proven.has(s)&&checked.has(s);
  const kindOf=(s:{slot:BatchSlot}):BatchKind=>{
   const n=s.slot.nullifiers.length;
   if(n!==1&&n!==2)throw new RollupRejection('slot-shape','A slot spends one note (a spend) or two (a join).');
@@ -165,11 +175,13 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   const admitted={...spend,receivedAt:now()};
   pending[kind].push(admitted);
   try{
-   if(!await verifyRollupProof(o.clientKey[kind],spend.publics,spend.proof))throw new Error('Invalid client proof.');
+   if(!await verify(o.clientKey[kind],spend.publics,spend.proof))throw new Error('Invalid client proof.');
+   proven.add(admitted);
    const unit=groupId===0n?[admitted]:pending.spend.filter(s=>s.slot.groupId===groupId);
    if(unit.length!==Math.max(groupSize,1))return;
    checkUnit(unit);
    if(groupId!==0n&&groupIdOf(o.hash,unit.map(s=>s.slot.nullifiers[0]!))!==groupId)throw new RollupRejection('group-invalid','The group id does not commit to its members.');
+   for(const s of unit)checked.add(s);
   }catch(error){pending[kind]=pending[kind].filter(s=>s!==admitted);throw error;}
  };
 
@@ -190,7 +202,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   }
   let taken:RollupSpend[]=[];
   const pad=(count:number)=>{if(padding[kind].length<count)throw new Error('padding');taken=padding[kind].splice(0,count);return taken;};
-  const selection=selectRollupBatch(pending[kind],now(),pad,kind==='spend'?coinCap:undefined,kind==='join'?JOIN_BATCH_WAIT_MS:BATCH_WAIT_MS);
+  const selection=selectRollupBatch(pending[kind].filter(selectable),now(),pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS);
   if(!selection)return undefined;
   // run() only builds with nothing in flight, so a spent head means another prover moved it.
   const taker=await o.transport.spentBy?.(journal.status().archive.head);
@@ -201,10 +213,11 @@ export async function openRollupOperator(o:RollupOperatorOptions){
   let submitted=false,applied=false,evict=false;
   // Admission gates everything below, so a rejection here is a gap: evict the selection rather than loop on it.
   const gate=<T>(build:()=>T):T=>{try{return build();}catch(error){evict=true;throw error;}};
+  const started=now(),oldest=Math.min(...clients.map(s=>s.receivedAt));
   try{
    if(selection.asset&&!reserveCoin)gate(()=>{throw new Error(`No reserve for asset ${selection.asset}.`);});
    const result=gate(()=>state.apply(kind,selection.spends.map(s=>s.slot)));applied=true;
-   const proof=await o.prover[kind].prove(result.witness,result.publicSignals);
+   const proof=await o.prover[kind].prove(result.witness,result.publicSignals),proved=now();
    const witness=rollupWitness(proof,selection.spends.map(s=>({proof:s.proof,publics:s.publics})));
    const reserve=reserveCoin?{...poolCoin(reserveCoin,pool.reserve),amount:BigInt(reserveCoin.amount)}:undefined;
    const built=gate(()=>buildRollupBatchTx({kind,head:poolCoin(archive.head,kind==='join'?pool.batchJoin:pool.batch),...(reserve?{reserve}:{}),deposits:deposits.map(s=>s.coin!),legs:selection.legs,token:o.token,...(selection.asset?{asset:selection.asset}:{}),
@@ -233,7 +246,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    submitted=true;
    const outcome=await journal.submit('batch-'+archive.batches,plan);
    inflight=[];inflightPadding=[];if(kind==='spend')coinCap=undefined;
-   return {txid:outcome.receipt.txid,batch:archive.batches};
+   return {txid:outcome.receipt.txid,batch:archive.batches,timings:{waitedMs:started-oldest,proveMs:proved-started,publishMs:now()-proved}};
   }catch(error){
    if(submitted&&journal.status().pending)return {blocked:String((error as Error).message)};
    if(applied)state.undoLast();

@@ -14,7 +14,7 @@ import {idle} from '../../src/shielded/sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {arkAssetHoldings,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
-import {browserProver} from './shielded-prover.ts';
+import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 
@@ -192,6 +192,7 @@ export default function RollupWallet(){
   return()=>{stop=true;};
  },[wallet,tick]);
 
+ useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
  const requestKey=JSON.stringify([tab,to,amount,assetId,withSats,tick]);
  const quoteContext={wallet:wallet??quotes,revision:fundsRevision.current,key:requestKey};
  const {quote,error:quoteError}=quotes.read(quoteContext);
