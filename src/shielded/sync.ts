@@ -38,7 +38,8 @@ export function catchUp(account:RollupAccount,api:PoolApi,onBatch?:OnBatch,onPag
     for(const entry of entries){
      if(await account.concerns(entry,watched?.())){
       const [batch]=(await api<BatchPage>(`/batches?from=${entry.batch}&limit=1`)).batches;
-      await account.apply(batch!);await onBatch?.(account.batchCount,batch!,account);
+      if(!batch)throw new Error(`The pool scanned batch ${entry.batch} but did not serve it.`);
+      await account.apply(batch);await onBatch?.(account.batchCount,batch,account);
      }else account.skip(entry);
      applied++;
     }

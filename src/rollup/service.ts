@@ -351,8 +351,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   },
   /** A restore's compact view of committed batches; the block roots come off the operator's note tree. */
   scan:(from:number,limit:number)=>{
-   const operator=live?.operator,total=operator?.status().archive.batches??0,to=Math.min(total,from+limit),entries=[];
-   for(let n=from;n<to;n++)entries.push({record:readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)),root:operator!.state.notes.node(SUBTREE_DEPTH,n)});
+   const operator=live?.operator;
+   if(!operator)return {from,total:0,data:''};
+   const total=operator.status().archive.batches,to=Math.min(total,from+limit),entries=[];
+   for(let n=from;n<to;n++)entries.push({record:readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)),root:operator.state.notes.node(SUBTREE_DEPTH,n)});
    return {from,total,data:base64.encode(encodeScan(entries))};
   },
   /** When every CHECKPOINT_EVERY-th batch landed, so a restore turns a date into a checkpoint without telling the pool the date. */

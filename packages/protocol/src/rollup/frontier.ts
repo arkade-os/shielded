@@ -56,6 +56,7 @@ export class NoteFrontier {
   if (leaves.length > BLOCK) throw new Error('A batch appends at most 32 leaves.');
   const block = this.blocks, inner: bigint[][] = [Array.from({ length: BLOCK }, (_, i) => leaves[i] ?? 0n)];
   for (let l = 0; l < SUBTREE_DEPTH; l++) inner.push(Array.from({ length: BLOCK >> (l + 1) }, (_, i) => this.hash([inner[l]![2 * i]!, inner[l]![2 * i + 1]!])));
+  // appendRoot writes filled[u] only where this block is a left child, exactly where the loop below reads zeros instead.
   this.appendRoot(inner[SUBTREE_DEPTH]![0]!);
   for (const offset of track) {
    const siblings: bigint[] = [];
