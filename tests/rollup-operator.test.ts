@@ -9,7 +9,7 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {F1Field} from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
-import {BTC_ASSET,ROLLUP_DOMAIN,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
+import {BTC_ASSET,NOTE_DEPTH,ROLLUP_DOMAIN,ROLLUP_FIELD,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {clientWitness,inputNullifierOf} from '../packages/protocol/src/rollup/client.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
@@ -168,6 +168,8 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  w.clock.now=20_000;
  const second=await op.tick() as {batch:number;txid:string};
  assert.equal(second.batch,1);
+ let lowest=NOTE_DEPTH;op.state.notes.scan(level=>{lowest=Math.min(lowest,level);});
+ assert.equal(lowest,SUBTREE_DEPTH,'the operator keeps no note below the subtree it splices');
  assert.equal(op.status().archive.head.value,101_830);
  const body=JSON.parse(readFileSync(join(w.dir,'batches','1.json'),'utf8'));
  assert.deepEqual([body.txid,body.at],[second.txid,20_000],'a published batch names its transaction and time');
