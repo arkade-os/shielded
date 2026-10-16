@@ -53,10 +53,10 @@ export function rollupProofItems(proof:SnarkProof):Uint8Array[] {
   return scriptNum(BigInt(text));
  });
 }
-/** pub, deposit, withdraw as script numbers; asset and destination fields as 32-byte LE; zero is empty. */
+/** pub, nf0, nf1, deposit, withdraw as script numbers; asset and destination fields as 32-byte LE; zero is empty. */
 export function rollupPublicItems(publics:readonly bigint[]):Uint8Array[] {
- if(publics.length!==5)fail('a slot has five public inputs.');
- return [scriptNum(publics[0]!),scriptNum(publics[1]!),scriptNum(publics[2]!),le32(publics[3]!),le32(publics[4]!)];
+ if(publics.length!==7)fail('a slot has seven public inputs.');
+ return [scriptNum(publics[0]!),scriptNum(publics[1]!),scriptNum(publics[2]!),scriptNum(publics[3]!),scriptNum(publics[4]!),le32(publics[5]!),le32(publics[6]!)];
 }
 export function rollupWitness(batch:SnarkProof,slots:readonly {proof:SnarkProof;publics:readonly bigint[]}[]):Uint8Array[] {
  const items=rollupProofItems(batch);

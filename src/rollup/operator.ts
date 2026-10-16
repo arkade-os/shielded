@@ -256,7 +256,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    const witness=rollupWitness(proof,selection.spends.map(s=>({proof:s.proof,publics:s.publics})));
    const reserve=reserveCoin?{...poolCoin(reserveCoin,pool.reserve),amount:BigInt(reserveCoin.amount)}:undefined;
    const built=gate(()=>buildRollupBatchTx({kind,head:poolCoin(archive.head,kind==='join'?pool.batchJoin:pool.batch),...(reserve?{reserve}:{}),deposits:deposits.map(s=>s.coin!),legs:selection.legs,token:o.token,...(selection.asset?{asset:selection.asset}:{}),
-    leaves:o.leaves,witness,newPacket:Uint8Array.from([...le32(state.commitment()),...le32(result.daRoot)]),checkpoint:o.checkpoint}));
+    leaves:o.leaves,witness,newPacket:Uint8Array.from([...le32(state.commitment()),...le32(result.daRoot),...le32(result.blockRoot)]),checkpoint:o.checkpoint}));
    const firstDeposit=reserve?2:1;
    let request={arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(tx=>base64.encode(tx.toPSBT()))};
    if(deposits.length){

@@ -4,7 +4,7 @@ import { RollupNullifiers } from './nullifiers.ts';
 import { DeepTree } from './tree.ts';
 
 export interface BatchSlot { root: bigint; nullifiers: bigint[]; commitments: [bigint, bigint]; ctDigest: bigint; groupId: bigint; groupSize: number }
-export interface BatchResult { witness: Record<string, unknown>; publicSignals: bigint[]; binding: Uint8Array; daRoot: bigint }
+export interface BatchResult { witness: Record<string, unknown>; publicSignals: bigint[]; binding: Uint8Array; daRoot: bigint; blockRoot: bigint }
 
 const le32 = (value: bigint) => Uint8Array.from({ length: 32 }, (_, i) => Number((value >> BigInt(8 * i)) & 255n));
 export const bindingOf = (kind: BatchKind, oldCommitment: bigint, newCommitment: bigint, daRoot: bigint, blockRoot: bigint) =>
@@ -95,7 +95,28 @@ export class RollupState {
    this.batchCount += 1;
    const binding = bindingOf(kind, oldCommitment, this.commitment(), da, blockRoot);
    const statement = sha256le248(binding);
-   return { witness: { ...lists, statement, ...before }, publicSignals: [...pubs, statement], binding, daRoot: da };
+   return { witness: { ...lists, statement, ...before }, publicSignals: [...pubs, statement], binding, daRoot: da, blockRoot };
+  } catch (error) { this.undo(); throw error; }
+ }
+
+ /** Advances state from chain data alone: each slot's nullifiers and the appended block root, no commitments. The resulting commitment equals apply's, so a follower checks it against the transaction; a wallet replica seals the block as one subtree. */
+ applyFromChain(kind: BatchKind, slotNullifiers: bigint[][], blockRoot: bigint): bigint {
+  const m = kind === 'spend' ? 1 : 2;
+  if (slotNullifiers.length !== BATCH_SLOTS) throw new RollupRejection('slot-count', `A batch has exactly ${BATCH_SLOTS} slots.`);
+  if (slotNullifiers.some(nullifiers => nullifiers.length !== m)) throw new RollupRejection('slot-shape', `A ${kind} slot spends ${m} note(s).`);
+  if (this.noteCount + 2 ** SUBTREE_DEPTH > 2 ** NOTE_DEPTH) throw new RollupRejection('note-tree-full', 'The note tree is full.');
+  if (this.nullifiers.count() + BATCH_SLOTS * m > 2 ** NULLIFIER_DEPTH) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
+  const noteCount = this.noteCount, batchCount = this.batchCount;
+  const noteSlot = noteCount / 2 ** SUBTREE_DEPTH, windowSlot = batchCount % 2 ** WINDOW_DEPTH;
+  this.notes.begin(); this.nullifiers.begin(); this.window.begin();
+  this.undo = () => { this.notes.rollback(); this.nullifiers.rollback(); this.window.rollback(); this.noteCount = noteCount; this.batchCount = batchCount; this.undo = undefined; };
+  try {
+   for (const nullifiers of slotNullifiers) for (const nullifier of nullifiers) this.nullifiers.insert(nullifier);
+   this.notes.setAt(SUBTREE_DEPTH, noteSlot, blockRoot);
+   this.noteCount += 2 ** SUBTREE_DEPTH;
+   this.window.set(windowSlot, this.notes.root());
+   this.batchCount += 1;
+   return this.commitment();
   } catch (error) { this.undo(); throw error; }
  }
  /** Reverts the latest apply(), e.g. when a depositor never signs and the batch is rebuilt without them. */

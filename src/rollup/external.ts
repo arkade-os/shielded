@@ -17,12 +17,13 @@ export function readBatchTx(tx:Transaction,leaves:RollupLeaves){
  const entry=packet?EmulatorPacket.fromBytes(packet.serialize()).entries.find(e=>e.vin===0):undefined;
  const kind:BatchKind|undefined=!entry?.witness?undefined:same(entry.script,leaves.batch)?'spend':same(entry.script,leaves.batchJoin)?'join':undefined;
  if(!kind)throw new Error('The transaction does not spend the pool head through a batch leaf.');
- if(!state||state.length!==64)throw new Error('The transaction carries no rollup state packet.');
+ if(!state||state.length!==96)throw new Error('The transaction carries no rollup state packet.');
  const items=RawWitness.decode(entry!.witness!);
- if(items.length!==8+BATCH_SLOTS*13)throw new Error('The batch witness has the wrong shape.');
- // rollupWitness writes the batch proof, then each slot's proof and public inputs from the last slot to the first.
- const publics=Array.from({length:BATCH_SLOTS},(_,i)=>{const at=8+(BATCH_SLOTS-1-i)*13+8,p=items.slice(at,at+5);return [scriptNum(p[0]!),scriptNum(p[1]!),scriptNum(p[2]!),le(p[3]!),le(p[4]!)];});
- return {kind,publics,commitment:le(state.subarray(0,32)),daRoot:le(state.subarray(32))};
+ if(items.length!==8+BATCH_SLOTS*15)throw new Error('The batch witness has the wrong shape.');
+ // Per slot after the 8 proof items: pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination. Slots run last to first.
+ const parsed=Array.from({length:BATCH_SLOTS},(_,i)=>{const at=8+(BATCH_SLOTS-1-i)*15+8,p=items.slice(at,at+7);
+  return {publics:[scriptNum(p[0]!),scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:kind==='join'?[scriptNum(p[1]!),scriptNum(p[2]!)]:[scriptNum(p[1]!)]};});
+ return {kind,publics:parsed.map(s=>s.publics),nullifiers:parsed.map(s=>s.nullifiers),commitment:le(state.subarray(0,32)),daRoot:le(state.subarray(32,64)),noteBlockRoot:le(state.subarray(64))};
 }
 
 /** The coin each checkpoint spends; an Arkade transaction's input i spends checkpoint i, which spends the coin itself. */

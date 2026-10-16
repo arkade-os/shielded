@@ -89,9 +89,9 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const batchProof=await createRollupProver({wasm:join(dir,'keys','batch-spend.wasm'),zkey:join(dir,'keys','batch-spend.zkey')}).prove(result.witness,result.publicSignals);
  const info=await new RestArkProvider(network.arkUrl).getInfo();
  const built=buildRollupBatchTx({head:{txid:head.txid,vout:head.vout,value:head.value,sourceTx:source.toBytes(true,true),tapTree:tree.tree.encode(),leaf:tree.tree.findLeaf(hex.encode(tree.batch))},deposits:[],
-  legs:spends.map(({built:{witness:{publicSignals:p}}},i)=>({deposit:p[1]!,withdraw:p[2]!,asset:p[3]!==0n,...(i===0?{program:ArkAddress.decode(to).pkScript.subarray(2)}:{})})),
+  legs:spends.map(({built:{witness:{publicSignals:p}}},i)=>({deposit:p[3]!,withdraw:p[4]!,asset:p[5]!==0n,...(i===0?{program:ArkAddress.decode(to).pkScript.subarray(2)}:{})})),
   token:pool.token,leaves,witness:rollupWitness(batchProof,spends.map(s=>({proof:s.proof,publics:s.built.witness.publicSignals}))),
-  newPacket:Uint8Array.from([...le32(replica.commitment()),...le32(result.daRoot)]),checkpoint:validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey)});
+  newPacket:Uint8Array.from([...le32(replica.commitment()),...le32(result.daRoot),...le32(result.blockRoot)]),checkpoint:validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey)});
  const receipt=await createRollupTransport(network).submit({arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(c=>base64.encode(c.toPSBT()))},1);
  const record:PublishedBatch={kind:'spend',slots:spends.map(({built:{witness:{slot,publicSignals},ciphertext}})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publicSignals.map(String),ciphertext:hex.encode(ciphertext)})),txid:receipt.txid,at:Date.now()};
  writeFileSync(join(dir,'batches',`${numbers.length}.json`),JSON.stringify(record));
