@@ -127,6 +127,8 @@ export class ShieldedWallet extends Wallet {
  private stopped=false;
  private selfSending=false;
  private nativeOperations=0;
+ private statusAt=Date.now();
+ private headExpiry?:number;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const wallet=await super.create(config) as ShieldedWallet;
@@ -210,10 +212,19 @@ export class ShieldedWallet extends Wallet {
   this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
   await this.autoShield().catch(()=>{});
  }
+ /** Set once the pool has missed two refreshes. Only the operator renews the head, so its expiry is the deadline to exit. */
+ get operatorDown():{since:number;headExpiresAt?:number}|undefined{
+  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry}:undefined;
+ }
+ private async headExpiresAt(){
+  const {vtxos}=await this.indexerProvider.getVtxos({scripts:[this.poolScript],spendableOnly:true});
+  return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
+ }
  /** The safety net behind the stream: refresh the pool, catch up, then start anything waiting. Never awaits a batch. */
  private async tick():Promise<void>{
   if(this.stopped)return;
-  try{this.pool={...this.pool,status:await this.api('/status')};await this.sync();}catch{/* the next tick retries */}
+  try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;await this.sync();}
+  catch{if(this.operatorDown&&this.headExpiry===undefined)this.headExpiry=await this.headExpiresAt().catch(()=>undefined);}
   void this.autoShield().catch(()=>{});
   void this.merge().catch(()=>{});
   this.changed();

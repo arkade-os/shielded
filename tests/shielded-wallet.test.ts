@@ -12,7 +12,7 @@ import {DeepTree} from '../packages/protocol/src/rollup/tree.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
-import {catchUp} from '../src/shielded/sync.ts';
+import {catchUp,WATCHDOG_MS} from '../src/shielded/sync.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 
@@ -875,4 +875,22 @@ test('a wallet started from a checkpoint watches for links in the batches it cat
  const wallet=await open({fetcher,bornAt:66});
  try{assert.deepEqual([watched,paths.filter(p=>p.startsWith('/batches?from=0')),wallet.batchCount()],[[64,65,66,67,68,69],[],70]);}
  finally{await wallet.dispose();}
+});
+
+test('a pool that stops answering is reported after two missed refreshes, with the head expiry the indexer shows',async t=>{
+ const wallet=await open(),expires=Date.parse('2026-10-20T12:00:00Z'),down=()=>wallet.operatorDown;let up=true,lookups=0;
+ clearTimeout((wallet as any).timer);
+ wallet.api=(async(path:string)=>{if(!up)throw new Error('fetch failed');return path==='/status'?status(0):{total:0,batches:[]};}) as never;
+ (wallet as any).indexerProvider={...(indexer as object),getVtxos:async()=>{lookups++;return {vtxos:[{txid:'cd'.repeat(32),vout:0,value:330,assets:[{assetId:'ee'.repeat(34),amount:5n}]},{txid:'ab'.repeat(32),vout:0,value:1000,assets:[{assetId:TOKEN,amount:1n}],expiresAt:new Date(expires)}],page:undefined};}};
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ try{
+  up=false;await (wallet as any).tick();
+  assert.equal(down(),undefined,'one missed refresh is not an outage');
+  t.mock.timers.tick(2*WATCHDOG_MS);await (wallet as any).tick();
+  assert.equal(down()?.headExpiresAt,expires,'the token-carrying coin is the head');
+  await (wallet as any).tick();
+  assert.equal(lookups,1,'the expiry is looked up once per outage');
+  up=true;await (wallet as any).tick();
+  assert.equal(down(),undefined,'an answer clears it');
+ }finally{t.mock.timers.reset();await wallet.dispose();}
 });
