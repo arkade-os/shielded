@@ -15,7 +15,7 @@ type Party=keyof typeof parties;
 const stations:{name:string;by:Party;text:React.ReactNode}[]=[
  {name:'Keys',by:'you',text:<>One recovery secret derives a spend key <var>ask</var>, a nullifier key <var>nk</var> and an X25519 view key. Your bech32m address, <code>shrol21…</code>, carries your owner hash and the public view key.</>},
  {name:'Prove',by:'you',text:<>Each output is sealed to its recipient’s view key with ECDH and AES-GCM. A Groth16 proof then shows the spend is valid; its statement binds the nullifiers it spends (one, or two for a merge), two new commitments and the sealed record’s digest.</>},
- {name:'Batch',by:'op',text:<>Spends wait for eleven, or ten seconds after the first; merges of two notes wait up to a minute. The operator fills empty slots with its own zero-value spends, so no batch shows how full it was, then proves the whole state update at once.</>},
+ {name:'Batch',by:'op',text:<>A batch closes as soon as a spend arrives and the previous batch has landed; spends that arrive while one is being proved share the next. The operator fills empty slots with its own zero-value spends, so no batch shows how full it was, then proves the whole state update at once.</>},
  {name:'Verify',by:'ark',text:<>One Arkade transaction spends the pool’s head VTXO through its batch leaf. The Arkade emulator checks all twelve proofs in one <code>OP_ECPAIRING</code> and the amounts against the real outputs, then co-signs, as does arkd. <a href="#sh-fig-2">See Fig. 2.</a></>},
  {name:'Sync',by:'you',text:<>Every wallet replays each published batch into its own copy of the state, trial-decrypts the records with its view key to find its notes, and computes its own Merkle paths. It never asks anyone for one.</>},
 ];
@@ -35,7 +35,7 @@ const defs:[React.ReactNode,React.ReactNode,React.ReactNode][]=[
 ];
 const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
  {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','10,818'],['Public inputs','5'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','8.1 MB, cached by hash']]},
- {title:'Batch',by:'op',rows:[['Slots','11'],['Closes','10 s after the first'],['Constraints','509,799'],['Public inputs','12']]},
+ {title:'Batch',by:'op',rows:[['Slots','11'],['Closes','On the first spend'],['Constraints','509,799'],['Public inputs','12']]},
  {title:'State',rows:[['Note tree','depth 32, 4.29 billion'],['Per batch','one 32-leaf subtree'],['Nullifiers','indexed tree, depth 32'],['Root window','last 64 batches']]},
  {title:'On Arkade',by:'ark',rows:[['Transaction','8,665 bytes'],['Weight','34,660 of 40,000 WU'],['Per payment','about 3,150 WU'],['State packet','64 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
 ];

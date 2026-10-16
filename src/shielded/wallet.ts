@@ -18,7 +18,7 @@ import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type P
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
 import {submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {WATCHDOG_MS,catchUp,idle,type OnBatch} from './sync.ts';
+import {WATCHDOG_MS,catchUp,catchUpAfterEvent,idle,type OnBatch} from './sync.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:BuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
@@ -204,7 +204,7 @@ export class ShieldedWallet extends Wallet {
   this.unwatch.push(manager.onContractEvent(event=>{
    // A watch-only event carries no contract, which is the point: the pool script is not ours. Any movement on it
    // means the head moved, and `connection_reset` means an event may have been missed.
-   if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void this.sync().catch(()=>{});
+   if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void catchUpAfterEvent(()=>this.sync(),()=>this.stopped).catch(()=>{});
   }));
   this.unwatch.push(await this.notifyIncomingFunds(()=>{this.changed();void this.autoShield().catch(()=>{});}));
   this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
@@ -219,9 +219,10 @@ export class ShieldedWallet extends Wallet {
   this.changed();
   if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
  }
- async sync():Promise<void>{
+ async sync():Promise<number>{
   const applied=await catchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save());
   if(applied)this.changed();
+  return applied;
  }
  /** Finds the links a batch minted and marks those it claimed; replaying the pool rebuilds them, so a restore needs nothing else. */
  private async watchLinks(number:number,batch:PublishedBatch,account:RollupAccount){

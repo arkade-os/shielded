@@ -20,6 +20,7 @@ import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,type RollupSpend} from '../src/rollup/b
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
+import {verifyRollupProof} from '../src/rollup/prover.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
@@ -78,10 +79,25 @@ async function toyJoin(id:string,root:bigint):Promise<Omit<RollupSpend,'received
  }
 }
 const toyProver={prove:async(_input:Record<string,unknown>,expected:readonly bigint[])=>(await snarkjs.groth16.fullProve({x:expected.map(String)},toy('covenant-batch.wasm'),toy('covenant-batch.zkey'))).proof as SnarkProof};
+/** Holds a spend's proof check open until the test releases it, so a batch can fall due while it verifies. */
+function heldVerify(){
+ const gates=new Map<SnarkProof,{wait:Promise<boolean>;settle:(ok:boolean)=>void}>();
+ return {
+  hold:(proof:SnarkProof)=>{let settle=(_ok:boolean)=>{};const wait=new Promise<boolean>(resolve=>{settle=resolve;});gates.set(proof,{wait,settle});},
+  release:(proof:SnarkProof,ok=true)=>{gates.get(proof)!.settle(ok);gates.delete(proof);},
+  verify:async(key:unknown,publics:readonly bigint[],proof:SnarkProof)=>{
+   const gate=gates.get(proof);
+   if(gate&&!await gate.wait)return false;
+   return verifyRollupProof(key,publics,proof);
+  },
+ };
+}
 after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();});
 const pads=(root:bigint,count:number)=>Promise.all(Array.from({length:count},()=>toySpend('pad',root))).then(list=>list.map(s=>({...s,receivedAt:Infinity})));
 const joinPads=async(root:bigint,count:number)=>{const list=[];for(let i=0;i<count;i++)list.push({...await toyJoin('pad',root),receivedAt:Infinity});return list;};
 const recordAt=(dir:string,n:number)=>JSON.parse(readFileSync(join(dir,'batches',`${n}.json`),'utf8')) as {kind:string;slots:{nullifiers:string[]}[]};
+const notesIn=(dir:string,n:number)=>new Set(recordAt(dir,n).slots.flatMap(s=>s.nullifiers));
+const noteOf=(s:{slot:{nullifiers:bigint[]}})=>String(s.slot.nullifiers[0]);
 
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-operator-'));
@@ -142,7 +158,7 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  op.addPadding(await pads(op.state.latestRoot(),10));
  assert.equal(await op.tick(),undefined,'waits for the batch window');
  w.clock.now=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,102_830);
  await op.submit(await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)}));
  op.addPadding(await pads(op.state.latestRoot(),10));
@@ -257,7 +273,7 @@ test('a deposit the network keeps refusing is dropped, and the honest spend stil
  assert.match(((await op.tick()) as {blocked:string}).blocked,/abandoned/);
  assert.equal(op.pending(),1,'the refused deposit is dropped and the transfer waits');
  assert.equal(readdirSync(join(w.dir,'abandoned')).length,1);
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,100_330,'the batch that lands carries no deposit');
  assert.equal(submits,3,'the refused deposit is never proven or sent again');
  assert.equal(await op.tick(),undefined);
@@ -282,7 +298,7 @@ test('a deposit nobody signed drops only its own group, and the signed one still
  await assert.rejects(op.tick(),/did not sign/);
  assert.equal(op.pending(),2,'the refused group goes, carrier included; the rest waits');
  w.clock.now+=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,102_830,'the signed deposit still lands');
  assert.equal(op.pending(),0);
 });
@@ -333,7 +349,7 @@ test('a selection whose asset reserve vanished is evicted and gives its padding 
  assert.equal(op.pending(),0,'the selection is evicted instead of being retried forever');
  await op.submit(await toySpend('after',root));
  w.clock.now+=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch'],'the evicted batch gave its padding back');
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings'],'the evicted batch gave its padding back');
 });
 
 test('admission refuses forged statements, proofs and boundary legs, and double spends',async(t)=>{
@@ -355,7 +371,7 @@ test('a deposit coin that is no longer fresh is dropped before the batch, with t
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
  op.addPadding(await pads(op.state.latestRoot(),10));
  w.clock.now=10_000;
- assert.deepEqual(Object.keys((await op.tick())!),['txid','batch']);
+ assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.deepEqual(floors,[86_400_000]);
  assert.deepEqual(drops.map(([ids])=>ids),[['deposit']]);
  assert.match(drops[0]![1],/expires/);
@@ -448,6 +464,18 @@ test('a head someone else spent stops batching with a pointer to its record, and
  assert.equal(op.status().pending,undefined,'nothing was submitted on a spent head');
 });
 
+test('without a batch window a lone spend or join batches on the next tick, which says where the time went',async(t)=>{
+ const w=await world(),op=await w.open(t,{batchWaitMs:0,joinWaitMs:0});
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=3;
+ const spend=await op.tick() as {batch:number;timings:{waitedMs:number;proveMs:number;publishMs:number}};
+ assert.deepEqual([spend.batch,spend.timings.waitedMs],[0,3],'no clock advance needed; the wait is measured from the oldest spend');
+ await op.submit(await toyJoin('join',op.state.latestRoot()));
+ op.addPadding(await joinPads(op.state.latestRoot(),10));
+ assert.equal((await op.tick() as {batch:number}).batch,1);
+});
+
 test('a join batch lands through the join leaf, inserts two nullifiers per slot, and records its kind',async(t)=>{
  const w=await world(),op=await w.open(t),before=op.state.nullifiers.count();
  for(let i=0;i<11;i++)await op.submit(await toyJoin('join'+i,op.state.latestRoot()));
@@ -490,6 +518,63 @@ test('a join batch another prover landed is followed, and a record that misstate
  await assert.rejects(b.follow({tx,checkpoints,slots:misstated as never,at:1}),/does not match the statement/);
  assert.deepEqual(await b.follow({tx,checkpoints,slots:record.slots as never,at:1}),{batch:0,txid:landed.txid});
  assert.equal(b.state.commitment(),a.state.commitment());
+});
+
+test('a spend whose proof is still being checked never enters a batch, and a bad one batches nothing',async(t)=>{
+ const w=await world(),held=heldVerify(),op=await w.open(t,{verify:held.verify}),root=op.state.latestRoot();
+ const fast=await toySpend('fast',root),slow=await toySpend('slow',root);
+ await op.submit(fast);
+ op.addPadding(await pads(root,10));
+ held.hold(slow.proof);
+ const admission=op.submit(slow).then(()=>'admitted',error=>(error as Error).message);
+ w.clock.now=BATCH_WAIT_MS;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ assert.deepEqual([notesIn(w.dir,0).has(noteOf(fast)),notesIn(w.dir,0).has(noteOf(slow))],[true,false],'only the verified spend rode the batch');
+ held.release(slow.proof,false);
+ assert.match(await admission,/Invalid client proof/);
+ assert.deepEqual(op.pendingIds(),[]);
+ assert.equal(op.state.nullifiers.has(slow.slot.nullifiers[0]!),false,'its note was never spent by a batch');
+});
+
+test('a group whose completing member is still being checked is not selectable, and lands once it passes',async(t)=>{
+ const w=await world(),held=heldVerify(),op=await w.open(t,{verify:held.verify}),root=op.state.latestRoot();
+ const pair=await toyGroup(['first','second'],root,[{},{}]),transfer=await toySpend('transfer',root);
+ await op.submit(transfer);await op.submit(pair[0]!);
+ held.hold(pair[1]!.proof);
+ const admission=op.submit(pair[1]!);
+ op.addPadding(await pads(root,10));
+ w.clock.now=BATCH_WAIT_MS;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ assert.deepEqual([notesIn(w.dir,0).has(noteOf(transfer)),...pair.map(s=>notesIn(w.dir,0).has(noteOf(s)))],[true,false,false],'the group waited for its own check');
+ held.release(pair[1]!.proof);await admission;
+ op.addPadding(await pads(op.state.latestRoot(),9));
+ w.clock.now+=BATCH_WAIT_MS;
+ assert.equal((await op.tick() as {batch:number}).batch,1);
+ assert.deepEqual(pair.map(s=>notesIn(w.dir,1).has(noteOf(s))),[true,true]);
+});
+
+test('a note being verified is still reserved against a second spend of it',async(t)=>{
+ const w=await world(),held=heldVerify(),op=await w.open(t,{verify:held.verify}),root=op.state.latestRoot();
+ const good=await toySpend('a',root);
+ held.hold(good.proof);
+ const admission=op.submit(good);
+ await assert.rejects(op.submit({...good}),/Duplicate rollup spend id/);
+ await assert.rejects(op.submit({...good,id:'again'}),/already spent or pending/);
+ assert.deepEqual(op.pendingIds(),['a'],'it waits in the queue while it verifies, so the service never settles it as dropped');
+ held.release(good.proof);await admission;
+ assert.deepEqual(op.pendingIds(),['a']);
+});
+
+test('a group cannot be over-filled by a member that arrives while its siblings verify',async(t)=>{
+ const w=await world(),held=heldVerify(),op=await w.open(t,{verify:held.verify}),root=op.state.latestRoot();
+ const pair=await toyGroup(['first','second'],root,[{},{}]);
+ for(const s of pair)held.hold(s.proof);
+ const admissions=pair.map(s=>op.submit(s));
+ const extra=await toySpend('third',root,{groupId:pair[0]!.slot.groupId,groupSize:2});
+ await assert.rejects(op.submit(extra),/already complete/);
+ for(const s of pair)held.release(s.proof);
+ await Promise.all(admissions);
+ assert.deepEqual(op.pendingIds(),['first','second']);
 });
 
 test('a steady stream of spends cannot starve a due join batch',async(t)=>{
