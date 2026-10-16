@@ -14,7 +14,7 @@ export function browserProver(status:()=>RollupPoolStatus):ShieldedProver{
   prove(built:BuiltSpend){
    const next=queue.then(async()=>{
     const urls=provingUrls(built,status().proving!);
-    const {proof}=await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),urls.wasm,urls.zkey,undefined,undefined,{singleThread:true});
+    const {proof}=await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),urls.wasm,urls.zkey);
     if(built.witness.slot.nullifiers.length===2)localStorage.setItem(JOIN_READY,'1');
     return proof;
    });
