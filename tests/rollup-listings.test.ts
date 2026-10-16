@@ -18,7 +18,7 @@ test('a pool-script coin holding one new asset and the dust lists that asset onc
  assert.deepEqual(listingsOf([coin('2',330,[{assetId:x,amount:1n}])],token,new Set([x])),{adopt:[],dropped:[]},'an asset with a reserve is not listed again');
 });
 
-test('listings stop at the reserve cap, since every reserve rides along in each renewal',()=>{
+test('listings stop at the reserve cap, which bounds the rounds a renewal takes',()=>{
  const id=(i:number)=>i.toString(16).padStart(2,'0').repeat(34);
  const many=Array.from({length:MAX_RESERVES+2},(_,i)=>coin(String(i%10),330,[{assetId:id(i),amount:1n}]));
  const found=listingsOf(many,token,new Set(['dd'.repeat(34)]));
