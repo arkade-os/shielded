@@ -98,3 +98,15 @@ test('the acceptance journal keeps the newest receipts whole, compacts older one
   try{assert.equal(held.load<{pending:{receipt:Native}}>()!.pending.receipt.signedArkTx,psbt,'an unresolved receipt stays whole, because applying it again needs its transactions');}finally{held.close();}
  }finally{journal.close();await rm(dir,{recursive:true,force:true});}
 });
+test('an accepted all-digit id from an older journal still replays, while a new one is refused',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'stock-journal-'));
+ let journal=await openStockJournal(dir,pin,archive,hooks());
+ try{
+  await journal.submit('deposit-one',plan);journal.close();
+  const store=EngineStore.open(dir);
+  try{const row=store.load<{accepted:Record<string,unknown>}>()!;row.accepted={'7':row.accepted['deposit-one']};store.save(row);}finally{store.close();}
+  journal=await openStockJournal(dir,pin,archive,hooks());
+  assert.equal((await journal.submit('7',plan)).replay,true);
+  await assert.rejects(journal.submit('8',plan),/Invalid stock request identity/);
+ }finally{journal.close();await rm(dir,{recursive:true,force:true});}
+});

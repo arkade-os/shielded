@@ -97,11 +97,12 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
    busy=true;try{const archive=await transform(structuredClone(saved.archive));await hooks.validateArchive(structuredClone(archive));persist({...saved,archive});return structuredClone(archive);}finally{busy=false;}
   },
   submit:async(id:string,plan:P)=>{
-   // An all-digit key would be listed ahead of older ones, and bounded() compacts by insertion order.
-   ensure();if(!/^[A-Za-z0-9._:-]{1,128}$/.test(id)||/^\d+$/.test(id)||['__proto__','constructor','prototype'].includes(id))throw new Error('Invalid stock request identity.');
+   ensure();if(!/^[A-Za-z0-9._:-]{1,128}$/.test(id)||['__proto__','constructor','prototype'].includes(id))throw new Error('Invalid stock request identity.');
    const serialized=canonical(plan);if(Buffer.byteLength(serialized)>8*1024*1024)throw new Error('Stock public plan exceeds the archive limit.');
    const fingerprint=stockJournalFingerprint(plan),known=Object.hasOwn(saved.accepted,id)?saved.accepted[id]:undefined;
    if(known){if(known.fingerprint!==fingerprint)throw new Error('Accepted stock request identity was reused for different transaction facts.');return {receipt:structuredClone(known.receipt),archive:structuredClone(saved.archive),replay:true};}
+   // A new all-digit key would be listed ahead of older ones, and bounded() compacts by insertion order.
+   if(/^\d+$/.test(id))throw new Error('Invalid stock request identity.');
    if(saved.pending)throw new Error('A stock signing outcome is unresolved; reconcile the exact journaled transaction before any new submission.');
    busy=true;
    try{
