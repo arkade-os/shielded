@@ -27,6 +27,9 @@ export function parseRollupAddress(address: string): RollupRecipient {
 const SEALED = 1 + 72 + 16;
 export const ROLLUP_RECORD_BYTES = 32 + 2 * SEALED;
 export const ctDigestOf = (record: Uint8Array) => sha256le248(record);
+/** A record's ephemeral key and the view tag of each output: what a scan sends so a wallet can tell the records it may open. */
+export const recordHints = (record: Uint8Array) => ({ ephemeral: record.subarray(0, 32), tags: [record[32]!, record[32 + SEALED]!] as [number, number] });
+export const rollupViewTag = (shared: Uint8Array, index: number) => hkdf(sha256, shared, undefined, new TextEncoder().encode(`shielded-rollup-note:${index}`), 1)[0]!;
 
 // Each (ephemeral key, recipient, output) gets its own key, so a fixed IV never repeats under one key.
 async function noteKey(shared: Uint8Array, index: number) {

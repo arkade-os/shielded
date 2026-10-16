@@ -6,7 +6,7 @@ import {idle} from '../../src/shielded/sync.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {watchHandle,type StepState} from '../../src/shielded/handle.ts';
 
-export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1';
+export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 export const errorText=(error:unknown)=>error instanceof Error?error.message:typeof error==='string'?error:'The action failed.';
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
@@ -53,11 +53,12 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
  if(!wallet.repositoryError&&current()&&storage.getItem(SENT)===raw)storage.removeItem(SENT);
 }
 
-export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void}){
+export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number}}){
  const parsed=bytesToHex(parseMasterSecret(phrase));
  o.cache.close();await o.stop();await o.cache.drain();await o.cache.repository.clear();
  o.storage.setItem(SECRET,parsed);
  for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
+ if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);
  o.storage.removeItem(SENT);o.reload();
 }
 
