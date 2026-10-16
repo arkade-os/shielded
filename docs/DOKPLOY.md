@@ -1,6 +1,6 @@
 # Deploy Shielded on Dokploy
 
-Create a Dokploy **Application** from this repository and its `main` branch. Choose the Dockerfile build type with the path `Dockerfile.dokploy`. The image downloads the genesis-2 proving keys from the GitHub release named in `Dockerfile.dokploy` (the `SHIELDED_ROLLUP_KEYS_URL` build argument) and keeps each file only if it matches `rollup-keys/genesis-2.json`. It also builds the pinned rapidsnark prover, the Arkade VM bridge and the web app, then starts `src/server.ts`. The host never runs a key setup.
+Create a Dokploy **Application** from this repository and its `main` branch. Choose the Dockerfile build type with the path `Dockerfile.dokploy`. The image downloads the genesis-2 proving keys from the GitHub release named in `Dockerfile.dokploy` (the `SHIELDED_ROLLUP_KEYS_URL` build argument) and keeps each file only if it matches `rollup-keys/genesis-2.json`. It also downloads the pinned rapidsnark prover release, checks its SHA-256, and builds the Arkade VM bridge and the web app, then starts `src/server.ts`. The host never runs a key setup.
 
 Add the variables from [`dokploy.env.example`](../dokploy.env.example) to the runtime environment. Only Mutinynet is supported.
 

@@ -1,20 +1,19 @@
-# The rapidsnark release binary needs GLIBCXX_3.4.32, newer than bookworm's, so build the pinned tag here.
-FROM --platform=linux/amd64 debian:bookworm AS rapidsnark-build
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential cmake git ca-certificates curl m4 nasm libgmp-dev libsodium-dev && rm -rf /var/lib/apt/lists/*
+# The pinned rapidsnark release binary needs GLIBCXX_3.4.32, newer than bookworm's, so the Node stages use trixie.
+FROM --platform=linux/amd64 debian:trixie-slim AS rapidsnark
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN git clone --depth 1 --branch v0.0.8 https://github.com/iden3/rapidsnark.git . \
- && test "$(git rev-parse HEAD)" = 2921b0eb33369f4d329a6902e97959246b802e6c \
- && git submodule update --init --recursive --depth 1 \
- && ./build_gmp.sh host && make host && mkdir -p /out && install -m 0755 package/bin/prover /out/rapidsnark
+RUN curl -fsSLo rapidsnark.zip https://github.com/iden3/rapidsnark/releases/download/v0.0.8/rapidsnark-linux-x86_64-v0.0.8.zip \
+ && echo '2ec59e3aa5ff498e862d60b3b7abdcd094ea484271750ec1ea14fb7c1305e423  rapidsnark.zip' | sha256sum -c - \
+ && unzip -q rapidsnark.zip && mkdir -p /out && install -m 0755 rapidsnark-linux-x86_64-v0.0.8/bin/prover /out/rapidsnark
 
 # The ceremony's proving keys, each checked against the manifest pinned in the repo; the host never runs a setup.
-FROM --platform=linux/amd64 node:24-bookworm-slim AS rollup-keys
+FROM --platform=linux/amd64 node:24-trixie-slim AS rollup-keys
 ARG SHIELDED_ROLLUP_KEYS_URL=https://github.com/arkade-os/shielded/releases/download/rollup-genesis-2-keys
 WORKDIR /keys
 COPY tools/fetch-rollup-keys.mjs rollup-keys/genesis-2.json ./
 RUN node fetch-rollup-keys.mjs genesis-2.json "$SHIELDED_ROLLUP_KEYS_URL" /out/rollup-keys
 
-FROM --platform=linux/amd64 node:24-bookworm-slim AS app-build
+FROM --platform=linux/amd64 node:24-trixie-slim AS app-build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -28,7 +27,7 @@ RUN go mod download
 COPY tools/vm/ ./
 RUN mkdir -p /out && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/shielded-vm .
 
-FROM --platform=linux/amd64 node:24-bookworm-slim AS runtime
+FROM --platform=linux/amd64 node:24-trixie-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8792 SHIELDED_DATA_DIR=/data SHIELDED_ROLLUP_KEYS=/app/rollup-keys
 WORKDIR /app
 COPY --from=app-build --chown=node:node /app/node_modules ./node_modules
@@ -38,7 +37,7 @@ COPY --from=app-build --chown=node:node /app/packages ./packages
 COPY --from=app-build --chown=node:node /app/app/dist ./app/dist
 COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
 COPY --from=rollup-keys --chown=node:node /out/rollup-keys ./rollup-keys
-COPY --from=rapidsnark-build --chown=node:node /out/rapidsnark ./bin/rapidsnark
+COPY --from=rapidsnark --chown=node:node /out/rapidsnark ./bin/rapidsnark
 RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 USER node
