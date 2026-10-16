@@ -5,7 +5,7 @@ import type {RollupDepositFacts,RollupTransport} from './operator.ts';
 
 const holdings=(assets:readonly {assetId:string;amount:bigint}[])=>assets.map(a=>`${a.assetId}:${a.amount}`).sort().join(',');
 
-/** The emulator answers only after arkd finalizes, retrying that for up to two minutes, yet arkd indexes the batch within seconds. */
+/** The emulator answers only after arkd finalizes, retrying that for up to two minutes, yet arkd indexes the batch within seconds; a losing call simply runs out. */
 export function landedOrAnswered<T>(answer:Promise<T>,landed:()=>Promise<T|undefined>,everyMs=2000):Promise<T>{
  return new Promise<T>((resolve,reject)=>{
   let done=false;
