@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import { BATCH_SLOTS, BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RollupRejection, WINDOW_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
+import { BATCH_SLOTS, BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RollupRejection, SUBTREE_DEPTH, WINDOW_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
 import { clientWitness, inputNullifierOf, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
+import { checkpointOf } from '../packages/protocol/src/rollup/frontier.ts';
 import { groupIdOf, ownerOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { RollupState, type BatchSlot } from '../packages/protocol/src/rollup/state.ts';
@@ -128,6 +129,22 @@ test('a state restored from its scanned parts commits the same and applies the n
  const slots = fill(state, [deposit(state, 7n).slot]);
  assert.deepEqual(restored.apply('spend', slots), state.apply('spend', slots));
  assert.equal(restored.commitment(), state.commitment());
+});
+
+test('an operator state splices each note subtree: it batches and checkpoints like the leaf state but stores no node below the subtree', () => {
+ const leaves = RollupState.genesis(hash), spliced = RollupState.genesis(hash, false);
+ for (let i = 0; i < 3; i++) {
+  const slots = fill(leaves, [deposit(leaves, 1000n).slot]);
+  assert.deepEqual(spliced.apply('spend', slots), leaves.apply('spend', slots));
+ }
+ spliced.undoLast(); leaves.undoLast();
+ assert.equal(spliced.commitment(), leaves.commitment());
+ assert.deepEqual(checkpointOf(spliced.notes, 2), checkpointOf(leaves.notes, 2));
+ const copy = spliced.clone();
+ copy.apply('spend', fill(copy));
+ let lowest = NOTE_DEPTH;
+ copy.notes.scan(level => { lowest = Math.min(lowest, level); });
+ assert.equal(lowest, SUBTREE_DEPTH);
 });
 
 test('a committed root stays readable while the next batch is applied but not yet accepted', () => {

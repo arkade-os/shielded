@@ -53,7 +53,7 @@ export function decodeSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,batche
   // New notes only ever append, so the next block's path is all the note tree must vouch for; the other two are checked whole.
   if(!notes.consistentAlong(SUBTREE_DEPTH,batchCount)||!window.consistent()||!nullifiers.tree.consistent())return undefined;
   nullifiers.loadLeaves(leaves);
-  return RollupState.restore(hash,{notes,nullifiers,window,noteCount,batchCount});
+  return RollupState.restore(hash,{notes,nullifiers,window,noteCount,batchCount},false);
  }catch{return undefined;}
 }
 
