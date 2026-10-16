@@ -124,9 +124,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  let stopped=false,kick=()=>{};
  const timers=new Set<ReturnType<typeof setTimeout>>();
  const later=(fn:()=>void,ms:number)=>{const t=setTimeout(()=>{timers.delete(t);fn();},ms);timers.add(t);return t;};
+ const checkpointTimes:number[]=[];
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
  let blocked:{message:string;since:number}|undefined;
- const checkpointTimes:number[]=[];
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
  /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. */
  const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
