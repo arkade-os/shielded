@@ -747,3 +747,17 @@ test('a batch whose record is withheld is followed from the transaction alone, a
  w.clock.now+=BATCH_WAIT_MS;
  assert.equal(((await b.tick()) as {batch:number}).batch,1,'the stuck spend rides the next batch, nothing published');
 });
+
+test('a followed batch stores the same seven-element publics a normally landed one does',async(t)=>{
+ const w=await world(),a=await w.open(t);
+ await a.submit(await toySpend('withdraw',a.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)}));
+ a.addPadding(await pads(a.state.latestRoot(),BATCH_SLOTS-1));
+ w.clock.now=BATCH_WAIT_MS;
+ await a.tick();
+ const landed=recordAt(w.dir,0) as unknown as {slots:{publics:string[]}[]};
+ const dir=mkdtempSync(join(tmpdir(),'rollup-followrec-')),b=await w.open(t,{directory:dir});
+ await b.follow({...landedTxs(w.dir),slots:recordAt(w.dir,0).slots as never,at:1});
+ const followed=recordAt(dir,0) as unknown as {slots:{publics:string[]}[]};
+ assert.equal(followed.slots[0]!.publics.length,7,'a followed record keeps the seven public inputs the wallet reads by index');
+ assert.deepEqual(followed.slots[0]!.publics,landed.slots[0]!.publics,'same layout as the normally landed record');
+});

@@ -22,7 +22,7 @@ export function readBatchTx(tx:Transaction,leaves:RollupLeaves){
  if(items.length!==8+BATCH_SLOTS*15)throw new Error('The batch witness has the wrong shape.');
  // Per slot after the 8 proof items: pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination. Slots run last to first.
  const parsed=Array.from({length:BATCH_SLOTS},(_,i)=>{const at=8+(BATCH_SLOTS-1-i)*15+8,p=items.slice(at,at+7);
-  return {publics:[scriptNum(p[0]!),scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:kind==='join'?[scriptNum(p[1]!),scriptNum(p[2]!)]:[scriptNum(p[1]!)]};});
+  return {publics:[scriptNum(p[0]!),scriptNum(p[1]!),scriptNum(p[2]!),scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:kind==='join'?[scriptNum(p[1]!),scriptNum(p[2]!)]:[scriptNum(p[1]!)]};});
  return {kind,publics:parsed.map(s=>s.publics),nullifiers:parsed.map(s=>s.nullifiers),commitment:le(state.subarray(0,32)),daRoot:le(state.subarray(32,64)),noteBlockRoot:le(state.subarray(64))};
 }
 
