@@ -38,6 +38,8 @@ test('a tree scanned and placed node by node keeps its root and paths, and later
  assert.equal(copy.root(), tree.root());
  assert.throws(() => copy.place(33, 0, 1n), /out of range/);
  assert.throws(() => copy.place(32, 1, 1n), /out of range/);
+ copy.begin();
+ assert.throws(() => copy.place(0, 9, 1n), /inside a transaction/);
 });
 
 test('clones are independent', () => {

@@ -41,6 +41,7 @@ export class RollupNullifiers {
    sorted.push(value); index.set(value, at);
   }
   if (sorted.length !== stored.length - 1) throw unsorted();
+  // In bounds: the walk reached every leaf, so each nextIndex was either followed to a leaf or ended it at 0.
   const leaves = stored.map(({ value, nextIndex }) => ({ value, nextIndex, nextValue: stored[nextIndex].value }));
   const newest = Array.from({ length: Math.min(sorted.length, 2 * BATCH_SLOTS) }, (_, k) => leaves.length - 1 - k);
   if ([0, ...newest].some(i => this.leafHash(leaves[i]) !== this.tree.node(0, i))) throw new Error('The nullifier leaves do not match the tree.');

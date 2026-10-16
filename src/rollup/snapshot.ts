@@ -38,7 +38,7 @@ export function decodeSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,batche
   const body=bytes.length-32;
   if(body<HEADER+16||!bytes.subarray(0,4).equals(MAGIC)||bytes.readUInt16LE(4)!==SNAPSHOT_VERSION||bytes[6]!==NOTE_DEPTH||bytes[7]!==NULLIFIER_DEPTH||bytes[8]!==WINDOW_DEPTH)return undefined;
   if(!sha256(bytes.subarray(0,body)).equals(bytes.subarray(body))||!bytes.subarray(9,41).equals(fingerprint(pin)))return undefined;
-  const [batchCount,noteCount,nfCount]=[41,45,49].map(at=>bytes.readUInt32LE(at)) as [number,number,number];
+  const [batchCount,noteCount,nfCount]=[41,45,49].map(offset=>bytes.readUInt32LE(offset)) as [number,number,number];
   if(batchCount>batches||noteCount!==2**SUBTREE_DEPTH*batchCount||nfCount<1)return undefined;
   let at=HEADER;
   const u32=()=>{at+=4;return bytes.readUInt32LE(at-4);};

@@ -47,7 +47,10 @@ export class DeepTree {
   for (const [key, value] of this.nodes) { const at = key.indexOf(':'); visit(Number(key.slice(0, at)), Number(key.slice(at + 1)), value); }
  }
  /** Sets one node and leaves its ancestors stale: only a restore placing every node another tree's scan() visited may use it. */
- place(level: number, index: number, value: bigint): void { this.check(level, index); this.write(level + ':' + index, value); }
+ place(level: number, index: number, value: bigint): void {
+  if (this.log) throw new Error('A restore cannot place nodes inside a transaction.');
+  this.check(level, index); this.write(level + ':' + index, value);
+ }
  clone(): DeepTree {
   const copy = new DeepTree(this.hash, this.depth, this.empty);
   copy.nodes = new Map(this.nodes);
