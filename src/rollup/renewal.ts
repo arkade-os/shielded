@@ -51,6 +51,10 @@ export function renewalChunks(reserves:Readonly<Record<string,{txid:string;vout:
  for(let i=0;i<ids.length;i+=RENEWAL_CHUNK)chunks.push(ids.slice(i,i+RENEWAL_CHUNK));
  return chunks.length?chunks:[[]];
 }
+/** The reserves an intent carries, in its output order; an id the archive lacks is refused, since skipping it would shift every later vout. */
+export function carriedReserves<T>(reserves:Readonly<Record<string,T>>,ids:readonly string[]=Object.keys(reserves)):Record<string,T>{
+ return Object.fromEntries(ids.map(assetId=>{const coin=reserves[assetId];if(!coin)throw new Error(`Reserve ${assetId} is not in the archive.`);return [assetId,coin];}));
+}
 
 /**
  * Moves the head and the given reserves (all, by default), unchanged, into a fresh round; returns their new outpoints.
@@ -62,8 +66,8 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
  onIntent?(intentId:string):Promise<void>|void;providers?:RollupRenewalProviders}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
  const ark=o.providers?.ark??new RestArkProvider(o.network.arkUrl),emulator=o.providers?.emulator??new RestEmulatorProvider(o.network.emulatorUrl);
  const indexer=o.providers?.indexer??new RestIndexerProvider(o.network.indexerUrl??o.network.arkUrl);
- const reserves=(o.reserves??Object.keys(o.archive.reserves)).map(assetId=>[assetId,o.archive.reserves[assetId]!] as const);
- const points=rollupPoolPoints({head:o.archive.head,reserves:Object.fromEntries(reserves)});
+ const carried=carriedReserves(o.archive.reserves,o.reserves),reserves=Object.entries(carried);
+ const points=rollupPoolPoints({head:o.archive.head,reserves:carried});
  const found=(await indexer.getVtxos({outpoints:points})).vtxos,leaf=o.pool.findLeaf(hex.encode(o.renewLeaf));
  const coins=await withPrevTxs(points.map(p=>{
   const v=found.find(c=>c.txid===p.txid&&c.vout===p.vout);
@@ -90,7 +94,7 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
   let commitment:string;
   try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`)]),handler,{abortController});}
   finally{abortController.abort();}
-  return {commitment,...await renewedRollupPool(indexer,o.pool,o.token,{reserves:Object.fromEntries(reserves)})};
+  return {commitment,...await renewedRollupPool(indexer,o.pool,o.token,{reserves:carried})};
  }catch(error){throw new Error(`Rollup renewal intent ${intentId} is registered and must be confirmed or cleared: ${(error as Error).message}`,{cause:error});}
 }
 

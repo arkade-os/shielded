@@ -8,7 +8,7 @@ import {base64,hex} from '@scure/base';
 import {offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
-import {flushRollupIntent,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalSignature} from '../src/rollup/renewal.ts';
+import {carriedReserves,flushRollupIntent,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
 // tools/vm/rollup_renewal_test.go pins the same digest for the covenant's gate.
 test('the renewal gate signs the digest the covenant rebuilds',()=>{
@@ -93,6 +93,17 @@ test('a renewal chunk carries the head and only the reserves it names, and chunk
  const many=Object.fromEntries(Array.from({length:RENEWAL_CHUNK+1},(_,i)=>[id(String(10+i)),coin(1,330)]));
  assert.deepEqual(renewalChunks(many,()=>0).map(c=>c.length),[RENEWAL_CHUNK,1]);
  assert.deepEqual(renewalChunks({},()=>0),[[]],'with no reserve, one intent still renews the head');
+});
+
+test('an interrupted chunk is adopted in the order its intent carried, and only an archive reserve can be carried',()=>{
+ const id=(b:string)=>asset.AssetId.create(b.repeat(32),0).toString(),token=id('cc'),[x,y,z]=[id('d1'),id('d2'),id('d3')];
+ const reserves={[x]:{amount:'5'},[y]:{amount:'6'},[z]:{amount:'7'}};
+ assert.deepEqual(Object.keys(carriedReserves(reserves,[z,x])),[z,x]);
+ assert.deepEqual(Object.keys(carriedReserves(reserves)),[x,y,z],'a renewal.json from before chunks names no ids, so it carried every reserve');
+ assert.throws(()=>carriedReserves(reserves,[z,id('ee')]),/not in the archive/);
+ const txid='ef'.repeat(32),out=(vout:number,assetId:string,amount:bigint)=>({txid,vout,value:vout?330:3000,assets:[{assetId,amount}]});
+ const moved=renewedRollupPoolCoins(token,Object.entries(carriedReserves(reserves,[z,x])).map(([assetId,r])=>[assetId,r.amount] as const),[out(2,x,5n),out(0,token,1n),out(1,z,7n)]);
+ assert.deepEqual(moved.reserves.map(r=>[r.assetId,r.coin.vout]),[[z,1],[x,2]],'each carried reserve sits after the head in the intent\'s order');
 });
 
 test('a stranded renewal intent is confirmed in its round and cleared when that round fails',async()=>{
