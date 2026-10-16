@@ -30,15 +30,15 @@ RUN mkdir -p /out && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/s
 FROM --platform=linux/amd64 node:24-trixie-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8792 SHIELDED_DATA_DIR=/data SHIELDED_ROLLUP_KEYS=/app/rollup-keys
 WORKDIR /app
+RUN mkdir -p /data && chown node:node /data
+COPY --from=rollup-keys --chown=node:node /out/rollup-keys ./rollup-keys
+COPY --from=rapidsnark --chown=node:node /out/rapidsnark ./bin/rapidsnark
+COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
 COPY --from=app-build --chown=node:node /app/node_modules ./node_modules
 COPY --from=app-build --chown=node:node /app/package.json ./package.json
 COPY --from=app-build --chown=node:node /app/src ./src
 COPY --from=app-build --chown=node:node /app/packages ./packages
 COPY --from=app-build --chown=node:node /app/app/dist ./app/dist
-COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
-COPY --from=rollup-keys --chown=node:node /out/rollup-keys ./rollup-keys
-COPY --from=rapidsnark --chown=node:node /out/rapidsnark ./bin/rapidsnark
-RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 USER node
 EXPOSE 8792

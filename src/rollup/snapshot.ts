@@ -32,7 +32,7 @@ export function encodeSnapshot(state:RollupState,pin:StockReleasePin):Buffer {
  return out;
 }
 
-/** The state a snapshot holds, or undefined for anything unusable; it never throws and never returns part of a state. */
+/** The operator state a snapshot holds, which splices note subtrees and so serves no note path, or undefined for anything unusable; it never throws and never returns part of a state. */
 export function decodeSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,batches:number):RollupState|undefined {
  try{
   const body=bytes.length-32;
@@ -53,7 +53,7 @@ export function decodeSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,batche
   // New notes only ever append, so the next block's path is all the note tree must vouch for; the other two are checked whole.
   if(!notes.consistentAlong(SUBTREE_DEPTH,batchCount)||!window.consistent()||!nullifiers.tree.consistent())return undefined;
   nullifiers.loadLeaves(leaves);
-  return RollupState.restore(hash,{notes,nullifiers,window,noteCount,batchCount});
+  return RollupState.restore(hash,{notes,nullifiers,window,noteCount,batchCount},false);
  }catch{return undefined;}
 }
 

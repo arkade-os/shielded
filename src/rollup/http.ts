@@ -50,6 +50,12 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!Number.isInteger(from)||from<0||!Number.isInteger(limit)||limit<1){res.status(400).json({error:'Invalid batch range.'});return;}
   res.setHeader('Cache-Control','no-store');res.json(service()!.batches(from,limit));
  });
+ router.get('/scan',(req,res)=>{
+  const from=Number(req.query.from??0),limit=Math.min(Number(req.query.limit??500),500);
+  if(!Number.isInteger(from)||from<0||!Number.isInteger(limit)||limit<1){res.status(400).json({error:'Invalid batch range.'});return;}
+  res.setHeader('Cache-Control','no-store');res.json(service()!.scan(from,limit));
+ });
+ router.get('/times',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.times());});
  router.get('/checkpoints/:blocks',(req,res)=>{
   const checkpoint=/^[1-9][0-9]{0,9}$/.test(req.params.blocks)?service()!.checkpoint(Number(req.params.blocks)):undefined;
   res.setHeader('Cache-Control','no-store');

@@ -50,8 +50,8 @@ export type LinkState='unclaimed'|'claimed'|'taken-back';
 export interface ClaimLink extends LinkRecord {token:string;state:LinkState}
 const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
 /** Never throws: a cache that cannot be read is a full sync, reported once, not a wallet that will not open. */
-export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;bornAt:number;api?:PoolApi;onBatch?:OnBatch}):Promise<LoadedAccount>{
- const fresh=async(error?:string):Promise<LoadedAccount>=>({account:o.api?await freshAccount(hash,keys,o.bornAt,o.api,o.onBatch):RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],links:[],resumed:false,...(error?{error}:{})});
+export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;bornAt:number;api?:PoolApi;onBatch?:OnBatch;watched?:()=>Iterable<bigint>}):Promise<LoadedAccount>{
+ const fresh=async(error?:string):Promise<LoadedAccount>=>({account:o.api?await freshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched):RollupAccount.owning(hash,keys,{frontier:true,bornAt:o.bornAt}),sent:{},listings:[],links:[],resumed:false,...(error?{error}:{})});
  if(!o.repository)return fresh();
  try{
   const stored=await o.repository.getAccount(o.token);
@@ -135,7 +135,7 @@ export class ShieldedWallet extends Wallet {
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
    wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;wallet.master=parseMasterSecret(config.secret);
    // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
-   const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0,api:wallet.api,onBatch:(cursor,batch,account)=>wallet.watchLinks(cursor-1,batch,account)});
+   const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0,api:wallet.api,onBatch:(cursor,batch,account)=>wallet.watchLinks(cursor-1,batch,account),watched:()=>wallet.openLinkNullifiers()});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    for(const txid of loaded.listings)wallet.listings.add(txid);
    for(const link of loaded.links)wallet.linkRecords.set(link.key,link);
@@ -220,10 +220,11 @@ export class ShieldedWallet extends Wallet {
   if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
  }
  async sync():Promise<number>{
-  const applied=await catchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save());
+  const applied=await catchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save(),()=>this.openLinkNullifiers());
   if(applied)this.changed();
   return applied;
  }
+ private openLinkNullifiers(){return [...this.linkRecords.values()].flatMap(link=>link.open.map(BigInt));}
  /** Finds the links a batch minted and marks those it claimed; replaying the pool rebuilds them, so a restore needs nothing else. */
  private async watchLinks(number:number,batch:PublishedBatch,account:RollupAccount){
   const history=account.history,entries:HistoryEntry[]=[];

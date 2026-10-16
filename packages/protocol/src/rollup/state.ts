@@ -24,14 +24,14 @@ function validateGroups(hash: Hash, slots: BatchSlot[]): void {
 
 export class RollupState {
  private undo?: () => void;
- private constructor(private readonly hash: Hash, public notes: DeepTree, public nullifiers: RollupNullifiers, public window: DeepTree, public noteCount: number, public batchCount: number) {}
- static genesis(hash: Hash): RollupState {
-  return new RollupState(hash, new DeepTree(hash, NOTE_DEPTH), new RollupNullifiers(hash), new DeepTree(hash, WINDOW_DEPTH), 0, 0);
+ private constructor(private readonly hash: Hash, public notes: DeepTree, public nullifiers: RollupNullifiers, public window: DeepTree, public noteCount: number, public batchCount: number, private readonly leaves: boolean) {}
+ static genesis(hash: Hash, leaves = true): RollupState {
+  return new RollupState(hash, new DeepTree(hash, NOTE_DEPTH), new RollupNullifiers(hash), new DeepTree(hash, WINDOW_DEPTH), 0, 0, leaves);
  }
- static restore(hash: Hash, s: { notes: DeepTree; nullifiers: RollupNullifiers; window: DeepTree; noteCount: number; batchCount: number }): RollupState {
-  return new RollupState(hash, s.notes, s.nullifiers, s.window, s.noteCount, s.batchCount);
+ static restore(hash: Hash, s: { notes: DeepTree; nullifiers: RollupNullifiers; window: DeepTree; noteCount: number; batchCount: number }, leaves = true): RollupState {
+  return new RollupState(hash, s.notes, s.nullifiers, s.window, s.noteCount, s.batchCount, leaves);
  }
- clone(): RollupState { return new RollupState(this.hash, this.notes.clone(), this.nullifiers.clone(), this.window.clone(), this.noteCount, this.batchCount); }
+ clone(): RollupState { return new RollupState(this.hash, this.notes.clone(), this.nullifiers.clone(), this.window.clone(), this.noteCount, this.batchCount, this.leaves); }
  commitment(): bigint {
   return this.hash([STATE_TAG, this.notes.root(), BigInt(this.noteCount), this.nullifiers.root(), BigInt(this.nullifiers.count()), this.window.root(), BigInt(this.batchCount), 0n, 0n]);
  }
@@ -83,8 +83,14 @@ export class RollupState {
     }
     da = this.hash([da, ...slot.nullifiers, slot.commitments[0], slot.commitments[1], slot.ctDigest]);
    }
-   // Leaf-by-leaf gives the same root as the circuit's subtree splice and keeps wallet paths available.
-   slots.flatMap(slot => slot.commitments).forEach((commitment, offset) => this.notes.set(noteCount + offset, commitment));
+   // Both give the circuit's root; only leaves keep the note paths a wallet replica reads, and the operator reads none below the subtree.
+   const commitments = slots.flatMap(slot => slot.commitments);
+   if (this.leaves) commitments.forEach((commitment, offset) => this.notes.set(noteCount + offset, commitment));
+   else {
+    let level = Array.from({ length: 2 ** SUBTREE_DEPTH }, (_, i) => commitments[i] ?? 0n);
+    while (level.length > 1) level = Array.from({ length: level.length / 2 }, (_, i) => this.hash([level[2 * i], level[2 * i + 1]]));
+    this.notes.setAt(SUBTREE_DEPTH, noteSlot, level[0]);
+   }
    this.noteCount += 2 ** SUBTREE_DEPTH;
    this.window.set(windowSlot, this.notes.root());
    this.batchCount += 1;
