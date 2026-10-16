@@ -56,8 +56,18 @@ export class NoteFrontier {
   if (leaves.length > BLOCK) throw new Error('A batch appends at most 32 leaves.');
   const block = this.blocks, inner: bigint[][] = [Array.from({ length: BLOCK }, (_, i) => leaves[i] ?? 0n)];
   for (let l = 0; l < SUBTREE_DEPTH; l++) inner.push(Array.from({ length: BLOCK >> (l + 1) }, (_, i) => this.hash([inner[l]![2 * i]!, inner[l]![2 * i + 1]!])));
-  const path: bigint[] = [];
-  let node = inner[SUBTREE_DEPTH]![0]!;
+  this.appendRoot(inner[SUBTREE_DEPTH]![0]!);
+  for (const offset of track) {
+   const siblings: bigint[] = [];
+   for (let l = 0, i = offset; l < SUBTREE_DEPTH; l++, i = Math.floor(i / 2)) siblings.push(inner[l]![i % 2 === 0 ? i + 1 : i - 1]!);
+   for (let u = 0, i = block; u < UPPER; u++, i = Math.floor(i / 2)) siblings.push(i % 2 === 0 ? this.zeros[SUBTREE_DEPTH + u]! : this.filled[u]!);
+   this.tracked.set(block * BLOCK + offset, siblings);
+  }
+ }
+ /** Appends a block known only by its root, as a scan does for a batch that holds none of this wallet's notes. */
+ appendRoot(root: bigint): void {
+  const block = this.blocks, path: bigint[] = [];
+  let node = root;
   for (let u = 0, i = block; u < UPPER; u++, i = Math.floor(i / 2)) {
    path.push(node);
    if (i % 2 === 0) { this.filled[u] = node; node = this.hash([node, this.zeros[SUBTREE_DEPTH + u]!]); }
@@ -68,12 +78,6 @@ export class NoteFrontier {
   for (const [index, siblings] of this.tracked) {
    const u = 31 - Math.clz32(Math.floor(index / BLOCK) ^ block);
    siblings[SUBTREE_DEPTH + u] = path[u]!;
-  }
-  for (const offset of track) {
-   const siblings: bigint[] = [];
-   for (let l = 0, i = offset; l < SUBTREE_DEPTH; l++, i = Math.floor(i / 2)) siblings.push(inner[l]![i % 2 === 0 ? i + 1 : i - 1]!);
-   for (let u = 0, i = block; u < UPPER; u++, i = Math.floor(i / 2)) siblings.push(i % 2 === 0 ? this.zeros[SUBTREE_DEPTH + u]! : this.filled[u]!);
-   this.tracked.set(block * BLOCK + offset, siblings);
   }
   this.blocks++;
  }

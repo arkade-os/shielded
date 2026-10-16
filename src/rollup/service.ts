@@ -8,9 +8,10 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,CHECKPOINT_EVERY,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,SUBTREE_DEPTH,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {checkpointOf} from '../../packages/protocol/src/rollup/frontier.ts';
+import {encodeScan} from '../../packages/protocol/src/rollup/scan.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
@@ -125,6 +126,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const later=(fn:()=>void,ms:number)=>{const t=setTimeout(()=>{timers.delete(t);fn();},ms);timers.add(t);return t;};
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
  let blocked:{message:string;since:number}|undefined;
+ const checkpointTimes:number[]=[];
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
  /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. */
  const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
@@ -346,6 +348,18 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
    return {from,total,batches:list};
+  },
+  /** A restore's compact view of committed batches; the block roots come off the operator's note tree. */
+  scan:(from:number,limit:number)=>{
+   const operator=live?.operator,total=operator?.status().archive.batches??0,to=Math.min(total,from+limit),entries=[];
+   for(let n=from;n<to;n++)entries.push({record:readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)),root:operator!.state.notes.node(SUBTREE_DEPTH,n)});
+   return {from,total,data:base64.encode(encodeScan(entries))};
+  },
+  /** When every CHECKPOINT_EVERY-th batch landed, so a restore turns a date into a checkpoint without telling the pool the date. */
+  times:()=>{
+   const total=live?.operator.status().archive.batches??0;
+   for(let n=checkpointTimes.length*CHECKPOINT_EVERY;n<total;n+=CHECKPOINT_EVERY)checkpointTimes.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)).at??0);
+   return {every:CHECKPOINT_EVERY,at:[...checkpointTimes]};
   },
   /** The note frontier after a committed multiple of CHECKPOINT_EVERY batches; it never changes once served. */
   checkpoint:(blocks:number)=>{

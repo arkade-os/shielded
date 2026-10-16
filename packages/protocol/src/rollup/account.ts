@@ -4,7 +4,8 @@ import { clientWitness, inputNullifierOf, type ClientWitness } from './client.ts
 import { akOf, destinationFieldOf, groupIdOf, noteOf, nullifierOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
 import { NoteFrontier, type FrontierCheckpoint, type FrontierSnapshot } from './frontier.ts';
 import { RollupState, type BatchSlot } from './state.ts';
-import { ctDigestOf, openRollupNotes, sealRollupNotes, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
+import { nullifierHint, type ScanBatch } from './scan.ts';
+import { ctDigestOf, openRollupNotes, rollupViewTag, sealRollupNotes, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
 
 /** A slot as the operator publishes it: decimal field elements plus the hex note record. */
 export interface PublishedSlot { root: string; nullifiers: string[]; commitments: [string, string]; ctDigest: string; groupId: string; groupSize: number; publics?: string[]; ciphertext?: string }
@@ -49,6 +50,30 @@ export class RollupAccount {
  }
  static owning(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, options: { frontier?: boolean; bornAt?: number } = {}): RollupAccount {
   return new RollupAccount(hash, { ...keys, owner: ownerOf(hash, ROLLUP_DOMAIN, akOf(hash, keys.ask), keys.nk) }, options);
+ }
+
+ /** A frontier account can pass a batch it has no part in by its scan entry; a full replica needs every batch whole. */
+ get canSkip(): boolean { return !!this.frontier; }
+ /** Whether a scanned batch may create or spend this wallet's notes, or spend a `watched` nullifier: only those are fetched whole. */
+ async concerns(entry: ScanBatch, watched: Iterable<bigint> = []): Promise<boolean> {
+  const mine = new Set([...this.owned.keys(), ...watched].map(nullifierHint));
+  if (entry.slots.some(slot => slot.nullifiers.some(hint => mine.has(hint)))) return true;
+  if (entry.batch < this.bornAt) return false;
+  const ecdh = await (this.ecdh ??= viewEcdh(this.keys.viewSecret));
+  for (const slot of entry.slots) {
+   if (!slot.ephemeral) continue;
+   const shared = await ecdh(slot.ephemeral).catch(() => undefined);
+   if (shared && slot.tags.some((tag, i) => rollupViewTag(shared, i) === tag)) return true;
+  }
+  return false;
+ }
+ /** Passes a scanned batch `concerns` cleared: the note frontier grows by its block root alone. */
+ skip(entry: ScanBatch): void {
+  if (!this.frontier) throw new Error('Only a frontier account can pass a batch by its scan entry.');
+  if (entry.batch !== this.blocks) throw new Error(`Scan entry ${entry.batch} does not follow batch ${this.blocks}.`);
+  if (entry.txid) this.txids.add(entry.txid);
+  this.frontier.appendRoot(entry.root);
+  this.blocks++;
  }
 
  async apply(batch: PublishedBatch): Promise<OwnedNote[]> {
