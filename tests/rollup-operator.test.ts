@@ -19,7 +19,7 @@ import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.t
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,type RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import {openRollupOperator,ROLLUP_QUICK_REFUSAL_MS,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
+import {openRollupOperator,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
 import {verifyRollupProof} from '../src/rollup/prover.ts';
 import {encodeSnapshot,headCommitment,readSnapshot} from '../src/rollup/snapshot.ts';
 
@@ -644,7 +644,7 @@ test('a steady stream of spends cannot starve a due join batch',async(t)=>{
 
 test('a batch the emulator refuses at once is re-sent after a short grace, then rebuilt instead of waiting minutes',async(t)=>{
  const w=await world();let refuse=2,submits=0;
- const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{submits++;if(refuse-->0)throw new Error('internal error');return w.transport.submit(request,first);}}});
+ const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{submits++;if(refuse-->0)throw Object.assign(new Error('internal error'),{refused:true});return w.transport.submit(request,first);}}});
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
  op.addPadding(await pads(op.state.latestRoot(),20));
  w.clock.now=10_000;
@@ -657,4 +657,37 @@ test('a batch the emulator refuses at once is re-sent after a short grace, then 
  assert.match(((await op.tick()) as {blocked:string}).blocked,/abandoned/,'a second quick refusal gives that batch up');
  assert.equal(((await op.tick()) as {batch:number}).batch,0,'and the rebuilt one lands');
  assert.equal(submits,3);
+});
+
+test('a batch found landed after a refusal does not count against the next batch, which is re-sent rather than abandoned',async(t)=>{
+ const w=await world(),landed=new Map<string,StockNativeReceipt>(),refusal=()=>Object.assign(new Error('internal error'),{refused:true});let calls=0;
+ const op=await w.open(t,{batchWaitMs:0,transport:{...w.transport,
+  submit:async(request:StockWireRequest,first:number)=>{
+   if(++calls===1){landed.set(request.arkTx,await w.transport.submit(request,first));throw refusal();}
+   if(calls===2)throw refusal();
+   return w.transport.submit(request,first);
+  },
+  lookup:async(request:StockWireRequest)=>landed.get(request.arkTx)??await w.transport.lookup(request)}});
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),20));
+ w.clock.now=10_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/internal error/);
+ assert.equal(((await op.tick()) as {batch:number}).batch,0,'found landed on the next tick');
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/internal error/);
+ w.clock.now+=ROLLUP_QUICK_REFUSAL_MS;
+ assert.equal(((await op.tick()) as {batch:number}).batch,1);
+});
+
+test('an emulator that cannot be reached keeps the long grace, so an outage does not drop deposits',async(t)=>{
+ const w=await world();let down=true;
+ const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('fetch failed');return w.transport.submit(request,first);}}});
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/fetch failed/);
+ w.clock.now+=ROLLUP_QUICK_REFUSAL_MS;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/no known outcome/);
+ down=false;w.clock.now=10_000+ROLLUP_RESEND_GRACE_MS;
+ assert.equal(((await op.tick()) as {batch:number}).batch,0);
 });

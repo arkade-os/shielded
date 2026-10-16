@@ -21,6 +21,9 @@ export function landedOrAnswered<T>(answer:Promise<T>,landed:()=>Promise<T|undef
  });
 }
 
+/** Only the emulator's own error body is a refusal; a dead link or a proxy's error page says nothing about the batch. */
+export const emulatorRefused=(error:unknown)=>error instanceof Error&&/^Failed to submit tx to emulator: \{"code":\d+/.test(error.message);
+
 /** Batches go through the Arkade emulator; the rollup pays up to the operator's own weight limit, not the stock profile's. */
 export function createRollupTransport(network:StockNetworkInfo,providers:{emulator?:Pick<RestEmulatorProvider,'submitTx'>;indexer?:Pick<RestIndexerProvider,'getVirtualTxs'|'getVtxos'>}={}):RollupTransport&{fresh(coin:RollupDepositFacts,floorMs:number):Promise<boolean>} {
  const rollup={...network,weightLimit:network.operatorMaxWeight};
@@ -34,7 +37,8 @@ export function createRollupTransport(network:StockNetworkInfo,providers:{emulat
   submit:async(request,firstDeposit)=>{
    assertStockWeightBudget(rollup,stockSignedWeights(request,true));
    verifyStockCustomerSignatures(request,network.serverKey,firstDeposit);
-   return landedOrAnswered(emulator.submitTx(request.arkTx,request.checkpoints).then(response=>verifyStockResponse(request,response,rollup)),()=>stock.lookup(request));
+   const answer=emulator.submitTx(request.arkTx,request.checkpoints).then(response=>verifyStockResponse(request,response,rollup),(error:unknown)=>{throw emulatorRefused(error)?Object.assign(error as Error,{refused:true}):error;});
+   return landedOrAnswered(answer,()=>stock.lookup(request));
   },
   unspent:async coin=>live(await coinOf(coin)),
   spentBy:async coin=>{const v=await coinOf(coin);return v?.isSpent?v.arkTxId||v.settledBy||'an unknown transaction':undefined;},
