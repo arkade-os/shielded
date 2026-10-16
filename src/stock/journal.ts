@@ -14,10 +14,10 @@ export interface StockReleasePin {
 }
 export interface StockJournalReceipt {txid:string;checkpointTxids:string[]}
 interface Pending<P,R> {id:string;fingerprint:string;plan:P;stage:'submitted'|'accepted';receipt?:R}
-type Accepted<R>={fingerprint:string;receipt:R}|{fingerprint:string;receipt:StockJournalReceipt;compact:true};
+type Accepted<R>={fingerprint:string;receipt:R};
 interface Saved<A,P,R> {version:1;pin:StockReleasePin;archive:A;accepted:Record<string,Accepted<R>>;pending?:Pending<P,R>}
-/** Only `.txid` of an accepted receipt is ever read back; the newest stay whole for inspection, as many as the rollup's root window. */
-const WHOLE_RECEIPTS=64;
+/** Each batch id is submitted once and every save rewrites the whole row, so only the newest receipts are kept, as many as the rollup's root window; age is insertion order, which a new all-digit id would break. */
+const KEPT_RECEIPTS=64;
 export interface StockJournalHooks<A,P,R extends StockJournalReceipt> {
  validateArchive(archive:A):Promise<void>|void;
  validatePlan(plan:P,archive:A):Promise<void>|void;
@@ -39,16 +39,9 @@ function canonical(value:unknown):string {
  throw new Error('Stock journal values must contain only canonical public JSON data.');
 }
 export const stockJournalFingerprint=(value:unknown)=>createHash('sha256').update(canonical(value)).digest('hex');
-/**
- * Older receipts keep only what is still read of them, the txid and their plan's fingerprint: whole ones carry the
- * signed transactions, so keeping every one rewrites the entire row on each save until no stringify of it can be made.
- */
 function bounded<R extends StockJournalReceipt>(accepted:Record<string,Accepted<R>>):Record<string,Accepted<R>>{
- const ids=Object.keys(accepted).slice(0,-WHOLE_RECEIPTS);
- if(ids.every(id=>'compact' in accepted[id]!))return accepted;
- const next={...accepted};
- for(const id of ids){const {fingerprint,receipt}=next[id]!;next[id]={fingerprint,receipt:{txid:receipt.txid,checkpointTxids:[...receipt.checkpointTxids]},compact:true};}
- return next;
+ const ids=Object.keys(accepted);
+ return ids.length<=KEPT_RECEIPTS?accepted:Object.fromEntries(ids.slice(-KEPT_RECEIPTS).map(id=>[id,accepted[id]!]));
 }
 function validatePin(pin:StockReleasePin):void {
  if(!pin||pin.version!==1||!['mutinynet','local-stock'].includes(pin.network))throw new Error('Unsupported stock release pin.');
@@ -88,8 +81,6 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
  };
  return {
   status:()=>({pin:structuredClone(saved.pin),archive:structuredClone(saved.archive),pending:saved.pending?{id:saved.pending.id,stage:saved.pending.stage}:undefined,blocked:!!saved.pending}),
-  /** Only the base fields are promised: an older batch answers with the txid its receipt was compacted to. */
-  receipt:(id:string):StockJournalReceipt|undefined=>Object.hasOwn(saved.accepted,id)?structuredClone(saved.accepted[id]!.receipt):undefined,
   /** Drops an unaccepted plan the caller proved can never land, because another transaction spent what it spends. */
   discard:()=>{ensure();if(saved.pending?.stage!=='submitted')throw new Error('Only an unaccepted plan can be discarded.');const next={...saved};delete next.pending;persist(next);},
   updateArchive:async(transform:(archive:A)=>Promise<A>|A)=>{
@@ -101,7 +92,6 @@ export async function openStockJournal<A,P,R extends StockJournalReceipt>(direct
    const serialized=canonical(plan);if(Buffer.byteLength(serialized)>8*1024*1024)throw new Error('Stock public plan exceeds the archive limit.');
    const fingerprint=stockJournalFingerprint(plan),known=Object.hasOwn(saved.accepted,id)?saved.accepted[id]:undefined;
    if(known){if(known.fingerprint!==fingerprint)throw new Error('Accepted stock request identity was reused for different transaction facts.');return {receipt:structuredClone(known.receipt),archive:structuredClone(saved.archive),replay:true};}
-   // A new all-digit key would be listed ahead of older ones, and bounded() compacts by insertion order.
    if(/^\d+$/.test(id))throw new Error('Invalid stock request identity.');
    if(saved.pending)throw new Error('A stock signing outcome is unresolved; reconcile the exact journaled transaction before any new submission.');
    busy=true;

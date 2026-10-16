@@ -51,45 +51,28 @@ type Native=StockJournalReceipt&{signedArkTx:string;signedCheckpointTxs:string[]
 const psbt='A'.repeat(7_000),full=(txid:string):Native=>({txid,checkpointTxids:receipt.checkpointTxids,signedArkTx:psbt,signedCheckpointTxs:[psbt]});
 const nativeHooks=():StockJournalHooks<Archive,Plan,Native>=>({...hooks(),transmit:async value=>full(value.txid),lookup:async()=>undefined});
 const rowBytes=(dir:string)=>{const db=new DatabaseSync(join(dir,'shielded.sqlite'));try{return (db.prepare('SELECT length(ciphertext) AS n FROM checkpoint WHERE id=1').get() as {n:number}).n;}finally{db.close();}};
-test('the acceptance journal keeps the newest receipts whole, compacts older ones, and grows a bounded amount per batch',async()=>{
+test('the acceptance journal keeps only the newest receipts, so its row stops growing',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'stock-journal-')),kept=64,batches=kept+12;
  const head=(n:number)=>n.toString(16).padStart(64,'0');
  const open=()=>openStockJournal(dir,pin,{revision:0,head:head(0)},nativeHooks());
  let journal=await open();
- const whole=(id:string)=>journal.receipt(id) as Partial<Native>|undefined;
+ const stored=()=>{const store=EngineStore.open(dir);try{return store.load<{accepted:Record<string,{receipt:Native}>}>()!.accepted;}finally{store.close();}};
  const fill=async(from:number,to:number)=>{for(let n=from;n<to;n++)await journal.submit('batch-'+n,{oldHead:head(n),txid:head(n+1),customerOutpoint:plan.customerOutpoint});};
  try{
   await fill(0,kept+4);journal.close();const early=rowBytes(dir);
   journal=await open();await fill(kept+4,batches);journal.close();
-  const perBatch=(rowBytes(dir)-early)/(batches-kept-4);
-  assert.ok(perBatch<1_000,`an accepted batch adds ${Math.round(perBatch)} bytes to the stored row`);
+  assert.ok(Math.abs(rowBytes(dir)-early)<200,`eight more batches moved the stored row by ${rowBytes(dir)-early} bytes`);
+  const accepted=stored();
+  assert.deepEqual(Object.keys(accepted),Array.from({length:kept},(_,i)=>'batch-'+(batches-kept+i)));
+  assert.equal(accepted['batch-'+(batches-kept)]!.receipt.signedArkTx,psbt,'a kept receipt stays whole');
 
   journal=await open();
-  assert.equal(whole('batch-'+(batches-1))?.signedArkTx,psbt,'the newest receipt is kept whole');
-  assert.equal(whole('batch-'+(batches-kept))?.signedArkTx,psbt,'the oldest of the newest 64 is kept whole');
-  assert.equal(whole('batch-'+(batches-kept-1))?.signedArkTx,undefined,'an older receipt drops its signed transactions');
-  assert.equal(journal.receipt('batch-0')?.txid,head(1),'a compacted receipt still answers for its batch');
-  assert.deepEqual(journal.receipt('batch-0')?.checkpointTxids,receipt.checkpointTxids);
-  const stale={oldHead:head(0),txid:head(1),customerOutpoint:plan.customerOutpoint};
-  assert.equal((await journal.submit('batch-0',stale)).replay,true,'a compacted id still replays');
-  await assert.rejects(journal.submit('batch-0',{...stale,txid:head(2)}),/reused/);
-  await assert.rejects(journal.submit('4096',stale),/Invalid stock request identity/,'an all-digit id would sort ahead of the older entries');
+  const last={oldHead:head(batches-1),txid:head(batches),customerOutpoint:plan.customerOutpoint};
+  assert.equal((await journal.submit('batch-'+(batches-1),last)).replay,true,'a kept id still replays');
+  await assert.rejects(journal.submit('batch-'+(batches-1),{...last,txid:head(2)}),/reused/);
+  await assert.rejects(journal.submit('batch-0',{oldHead:head(0),txid:head(1),customerOutpoint:plan.customerOutpoint}),/Expected values/,'a dropped id is a new submission, so its old head is refused');
+  await assert.rejects(journal.submit('4096',last),/Invalid stock request identity/,'an all-digit id would sort ahead of the older entries');
   journal.close();
-
-  const store=EngineStore.open(dir);
-  try{
-   const row=store.load<{accepted:Record<string,{fingerprint:string;receipt:Native}>}>()!;
-   for(const [id,entry] of Object.entries(row.accepted))row.accepted[id]={fingerprint:entry.fingerprint,receipt:full(entry.receipt.txid)};
-   store.save(row);
-  }finally{store.close();}
-  const unbounded=rowBytes(dir);
-  journal=await open();
-  assert.equal(whole('batch-0')?.signedArkTx,psbt,'a row written before compaction loads unchanged');
-  await journal.updateArchive(archive=>archive);
-  assert.equal(whole('batch-0')?.signedArkTx,undefined,'the next persist compacts it');
-  assert.equal(journal.receipt('batch-0')?.txid,head(1));
-  journal.close();
-  assert.ok(unbounded-rowBytes(dir)>(batches-kept)*psbt.length,`the row fell by ${unbounded-rowBytes(dir)} bytes`);
 
   journal=await openStockJournal(dir,pin,{revision:0,head:head(0)},{...nativeHooks(),apply:()=>{throw new Error('local apply failed');}});
   await assert.rejects(journal.submit('batch-'+batches,{oldHead:head(batches),txid:head(batches+1),customerOutpoint:plan.customerOutpoint}),/local apply failed/);
