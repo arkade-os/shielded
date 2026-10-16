@@ -23,8 +23,11 @@ const spend={id:'ab'.repeat(16),slot:{root:'7',nullifiers:['11'],commitments:['1
 test('the rollup API is closed until the service exists, and refuses cross-origin writes',async(t)=>{
  const closed=await serve(undefined);t.after(closed.close);
  assert.equal((await fetch(closed.base+'/status')).status,503);
- const open=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000})});t.after(open.close);
- assert.equal((await fetch(open.base+'/status')).status,200);
+ const lastBatch={batch:3,at:1,waitedMs:2,proveMs:4,publishMs:5};
+ const open=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000,pool:{lastBatch}} as never)});t.after(open.close);
+ const answered=await fetch(open.base+'/status');
+ assert.equal(answered.status,200);
+ assert.deepEqual((await answered.json()).pool.lastBatch,lastBatch,'the last batch\'s timings reach the status endpoint');
  assert.equal((await post(open.base+'/spends',spend,'https://evil.example')).status,403);
 });
 
