@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,readdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdtempSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {after,test,type TestContext} from 'node:test';
@@ -21,6 +21,7 @@ import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
 import {verifyRollupProof} from '../src/rollup/prover.ts';
+import {encodeSnapshot,headCommitment,readSnapshot} from '../src/rollup/snapshot.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
@@ -98,6 +99,7 @@ const joinPads=async(root:bigint,count:number)=>{const list=[];for(let i=0;i<cou
 const recordAt=(dir:string,n:number)=>JSON.parse(readFileSync(join(dir,'batches',`${n}.json`),'utf8')) as {kind:string;slots:{nullifiers:string[]}[]};
 const notesIn=(dir:string,n:number)=>new Set(recordAt(dir,n).slots.flatMap(s=>s.nullifiers));
 const noteOf=(s:{slot:{nullifiers:bigint[]}})=>String(s.slot.nullifiers[0]);
+const savedAt=(w:Awaited<ReturnType<typeof world>>)=>readSnapshot(join(w.dir,'snapshot.bin'),hash,w.options.pin,Infinity)?.batchCount;
 
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-operator-'));
@@ -160,6 +162,7 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  w.clock.now=10_000;
  assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,102_830);
+ const early=encodeSnapshot(op.state,w.options.pin);
  await op.submit(await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)}));
  op.addPadding(await pads(op.state.latestRoot(),10));
  w.clock.now=20_000;
@@ -170,10 +173,62 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
  assert.deepEqual([body.txid,body.at],[second.txid,20_000],'a published batch names its transaction and time');
  assert.equal(op.txidOf(1),second.txid,'the journal answers for batches published before records carried a txid');
  const commitment=op.state.commitment();
+ assert.equal(headCommitment(op.status().archive.head.sourceTxHex),commitment,'the head carries the commitment a restart is checked against');
+ assert.equal(savedAt(w),undefined,'two batches are short of the cadence');
  op.close();
+ assert.equal(savedAt(w),2,'closing persists the state');
 
  const reopened=await w.open(t);
  assert.equal(reopened.state.commitment(),commitment);
+ reopened.close();
+ const snapshot=join(w.dir,'snapshot.bin'),first=join(w.dir,'batches','0.json'),record=readFileSync(first);
+ writeFileSync(snapshot,early);rmSync(first);
+ const resumed=await w.open(t);
+ assert.equal(resumed.state.commitment(),commitment,'resumed after batch 0 without reading its record');
+ resumed.close();writeFileSync(first,record);
+ const damaged=Buffer.from(early),forked=resumed.state.clone();damaged[100]^=1;forked.nullifiers.insert(12345n);
+ for(const bad of [damaged,encodeSnapshot(forked,w.options.pin)]){
+  writeFileSync(snapshot,bad);
+  const fallback=await w.open(t);
+  assert.equal(fallback.state.commitment(),commitment,'a damaged snapshot, or one the head disagrees with, falls back to the full replay');
+  fallback.close();
+ }
+});
+
+test('the operator snapshots on its cadence, but never while a submitted batch is unresolved',async(t)=>{
+ const w=await world();let down=false;
+ const op=await w.open(t,{snapshotEvery:1,transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('emulator unreachable');return w.transport.submit(request,first);}}});
+ const batch=async()=>{await op.submit(await toySpend('s'+op.state.batchCount,op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));w.clock.now+=10_000;return op.tick();};
+ for(const n of [1,2]){assert.ok('txid' in (await batch())!);assert.equal(savedAt(w),n);}
+ down=true;
+ assert.match((await batch() as {blocked:string}).blocked,/unreachable/);
+ assert.deepEqual([op.state.batchCount,op.status().archive.batches,savedAt(w)],[3,2,2]);
+ op.close();
+ assert.equal(savedAt(w),2,'nor on close');
+});
+
+test('a close while an applied batch waits for signatures keeps the snapshot at the last accepted batch',async(t)=>{
+ const w=await world(),op=await w.open(t,{snapshotEvery:1,signDeposits:async()=>{op.close();return undefined;}});
+ await op.submit(await toySpend('first',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now+=10_000;
+ await assert.rejects(op.tick(),/did not sign/);
+ assert.deepEqual([op.state.batchCount,savedAt(w)],[1,1],'the unsigned batch is undone and was never persisted');
+});
+
+test('a full replay that disagrees with the head is refused rather than opened on a wrong state',async(t)=>{
+ const w=await world(),op=await w.open(t);
+ await op.submit(await toySpend('a',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));
+ w.clock.now=10_000;
+ assert.equal((await op.tick() as {batch:number}).batch,0);
+ const commitment=op.state.commitment(),path=join(w.dir,'batches','0.json'),original=readFileSync(path,'utf8'),body=JSON.parse(original);
+ op.close();rmSync(join(w.dir,'snapshot.bin'));
+ body.slots[3].commitments.reverse();writeFileSync(path,JSON.stringify(body));
+ await assert.rejects(w.open(t),/head commits to/);
+ writeFileSync(path,original);
+ assert.equal((await w.open(t)).state.commitment(),commitment,'the refusal released the journal');
 });
 
 test('a deposit that is never signed is dropped and the rest of the batch goes through',async(t)=>{
@@ -432,6 +487,7 @@ test('a batch another prover got accepted is followed from its record, and a rec
  await assert.rejects(b.follow({tx,checkpoints,slots:forged.slots as never,at:1}),/does not match/,'a swapped commitment breaks the statement the chain carries');
  assert.deepEqual(await b.follow({tx,checkpoints,slots:record.slots as never,at:1}),{batch:0,txid:landed.txid});
  assert.equal(b.state.commitment(),a.state.commitment());
+ assert.equal(headCommitment(b.status().archive.head.sourceTxHex),b.state.commitment(),'a followed head carries the commitment too');
  assert.deepEqual(b.status().archive.head,a.status().archive.head);
  await assert.rejects(b.follow({tx,checkpoints,slots:record.slots as never,at:1}),/spends .* not this pool's head/,'the same batch cannot be followed twice');
 });

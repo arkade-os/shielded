@@ -1,4 +1,4 @@
-import {mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
@@ -12,6 +12,7 @@ import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSpend} fro
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,type RollupCoin,type RollupLeaves} from './covenant.ts';
 import {readBatchTx,spentCoins} from './external.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
+import {encodeSnapshot,headCommitment,readSnapshot,writeSnapshot} from './snapshot.ts';
 
 export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHex:string}
 export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
@@ -58,6 +59,7 @@ export interface RollupOperatorOptions {
  /** How long a batch that is not full waits for company after its oldest spend, per lane. */
  batchWaitMs?:number;
  joinWaitMs?:number;
+ snapshotEvery?:number;
 }
 /** Where a batch's time went: waiting from its oldest spend, proving, then signing deposits and publishing. */
 export interface RollupTimings {waitedMs:number;proveMs:number;publishMs:number}
@@ -67,6 +69,7 @@ export type RollupTick={txid:string;batch:number;timings?:RollupTimings}|{blocke
 export const ROLLUP_RESEND_GRACE_MS=120_000;
 /** How long the first member of a group waits for the rest before the group is dropped. */
 export const ROLLUP_GROUP_WAIT_MS=120_000;
+const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const slotOf=(s:RecordSlot):BatchSlot=>({root:BigInt(s.root),nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
 const recordOf=(kind:BatchKind,spends:readonly RollupSpend[]):RollupRecord=>({kind,slots:spends.map(({slot,publics,ciphertext})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})}))});
@@ -93,7 +96,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
- const state=RollupState.genesis(o.hash);
+ let state=RollupState.genesis(o.hash);
  const poolCoin=(c:RollupPoolCoin,leaf:Uint8Array):RollupCoin=>({txid:c.txid,vout:c.vout,value:c.value,sourceTx:hex.decode(c.sourceTxHex),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(leaf))});
  const headOf=(plan:RollupPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
  const keptPath=(plan:RollupPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
@@ -123,7 +126,35 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    return {...archive,head:coin(0),reserves,batches:archive.batches+1};
   },
  });
- for(let n=0;n<journal.status().archive.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;state.apply(body.kind,body.slots.map(slotOf));}
+ const atOpen=journal.status().archive,committed=headCommitment(atOpen.head.sourceTxHex),snapshotPath=join(o.directory,'snapshot.bin');
+ const replay=(s:RollupState)=>{for(let n=s.batchCount;n<atOpen.batches;n++){const body=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupRecord;s.apply(body.kind,body.slots.map(slotOf));}return s;};
+ if(committed===undefined)console.warn(`[rollup] The pool head ${atOpen.head.txid} carries no readable state packet; the state is replayed from genesis and cannot be checked against it.`);
+ let snapshotAt=0;
+ /** A snapshot is used only once the batches after it replay to the commitment the head carries; anything else replays from genesis. */
+ const resumed=():RollupState|undefined=>{
+  if(committed===undefined||!existsSync(snapshotPath))return undefined;
+  const ignore=(why:string)=>{console.warn(`[rollup] Ignoring ${snapshotPath}: ${why}; replaying ${atOpen.batches} batches from genesis.`);return undefined;};
+  try{
+   const s=readSnapshot(snapshotPath,o.hash,o.pin,atOpen.batches);
+   if(!s)return ignore('it is damaged, from another pool or format, or ahead of the journal');
+   const from=s.batchCount,reached=replay(s).commitment();
+   if(reached===committed){snapshotAt=from;return s;}
+   return ignore(`resumed at batch ${from} it reaches commitment ${reached}, but the head commits to ${committed}`);
+  }catch(error){return ignore((error as Error).message);}
+ };
+ try{
+  state=resumed()??replay(state);
+  if(committed!==undefined&&state.commitment()!==committed)throw new Error(`Replaying ${atOpen.batches} batches gives commitment ${state.commitment()}, but the pool head commits to ${committed}; a batch record is wrong, so the pool does not open.`);
+ // Released so the service's retry meets this error again, not its own journal lock.
+ }catch(error){journal.close();throw error;}
+ // run() applies a batch long before the journal holds it, and undoLast() may still take it back: only accepted state is written.
+ const snapshot=(every:number)=>{
+  try{
+   const status=journal.status();
+   if(status.pending||state.batchCount!==status.archive.batches||state.batchCount-snapshotAt<every)return;
+   writeSnapshot(snapshotPath,encodeSnapshot(state,o.pin));snapshotAt=state.batchCount;
+  }catch(error){console.warn(`[rollup] Could not write ${snapshotPath}: ${(error as Error).message}`);}
+ };
  // One batch is in flight at a time (the journal holds one plan), so a single in-flight pair carries its kind.
  const pending:Record<BatchKind,RollupSpend[]>={spend:[],join:[]},padding:Record<BatchKind,RollupSpend[]>={spend:[],join:[]};
  let inflight:RollupSpend[]=[],inflightPadding:RollupSpend[]=[],inflightKind:BatchKind='spend',busy=false,coinCap:number|undefined;
@@ -343,9 +374,9 @@ export async function openRollupOperator(o:RollupOperatorOptions){
      try{const ran=await run(kind);if(ran){if('txid' in ran)lead=kind==='spend'?'join':'spend';return ran;}}catch(error){if((error as Error).message!=='padding')throw error;short??=kind;}
     }
     return short?{blocked:`Not enough padding ${short==='join'?'joins':'spends'}.`}:undefined;
-   }finally{busy=false;}
+   }finally{snapshot(o.snapshotEvery??SNAPSHOT_EVERY);busy=false;}
   },
-  close:()=>journal.close(),
+  close:()=>{snapshot(1);journal.close();},
  };
 }
 export type RollupOperator=Awaited<ReturnType<typeof openRollupOperator>>;
