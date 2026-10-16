@@ -113,7 +113,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
    try{
     const receipt=await o.transport.lookup(plan.request)??await o.transport.submit(plan.request,plan.firstDeposit);
     sent=undefined;return receipt;
-   }catch(error){if(now()-attempt.at<ROLLUP_QUICK_REFUSAL_MS)Object.assign(attempt,{at:now(),graceMs:ROLLUP_QUICK_REFUSAL_MS});throw error;}
+   }catch(error){if((error as {refused?:boolean}).refused&&now()-attempt.at<ROLLUP_QUICK_REFUSAL_MS)Object.assign(attempt,{at:now(),graceMs:ROLLUP_QUICK_REFUSAL_MS});throw error;}
   },
   lookup:plan=>o.transport.lookup(plan.request),
   // Only "not accepted yet" is observable, so the plan is also kept on disk in case it lands after this.
@@ -369,7 +369,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
       inflight=[];inflightPadding=[];sent=undefined;
       return {blocked:'A submitted batch was abandoned; its plan is kept in case it lands.'};
      }
-     inflight=[];inflightPadding=[];
+     inflight=[];inflightPadding=[];sent=undefined;
      if(r.receipt)return {txid:r.receipt.txid,batch};
     }
     const adopted=await adopt();if(adopted)return adopted;

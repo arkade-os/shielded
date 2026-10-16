@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
-import {createRollupTransport,landedOrAnswered} from '../src/rollup/transport.ts';
+import {createRollupTransport,emulatorRefused,landedOrAnswered} from '../src/rollup/transport.ts';
 
 const network:StockNetworkInfo={network:'mutinynet',arkUrl:'https://ark.invalid',emulatorUrl:'https://emulator.invalid',serverKey:'11'.repeat(32),emulatorKey:'22'.repeat(32),
  operatorMaxWeight:40_000,weightLimit:4_000,dust:330,exitDelay:{type:'seconds',value:2048},emulatorVersion:'test',nativeAdmission:'unverified'};
@@ -34,4 +34,10 @@ test('a batch settles as soon as it is seen landed, without waiting on an emulat
  await assert.rejects(landedOrAnswered(later<string>(30,new Error('internal error')),async()=>{looks++;return undefined;},10),/internal error/,'an answered refusal stands when the batch never shows');
  const after=looks;await later(40,undefined);
  assert.equal(looks,after,'looking stops once the answer is in');
+});
+
+test('only the emulator answering with its own error body is a refusal; a dead link or a proxy page is not',()=>{
+ assert.equal(emulatorRefused(new Error('Failed to submit tx to emulator: {"code":13, "message":"internal error", "details":[]}')),true);
+ assert.equal(emulatorRefused(new Error('Failed to submit tx to emulator: <html><body><h1>502 Bad Gateway</h1></body></html>')),false);
+ assert.equal(emulatorRefused(new TypeError('fetch failed')),false);
 });
