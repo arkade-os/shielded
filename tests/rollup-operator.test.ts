@@ -19,7 +19,7 @@ import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.t
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,type RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import {openRollupOperator,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
+import {openRollupOperator,ROLLUP_QUICK_REFUSAL_MS,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
 import {verifyRollupProof} from '../src/rollup/prover.ts';
 import {encodeSnapshot,headCommitment,readSnapshot} from '../src/rollup/snapshot.ts';
 
@@ -640,4 +640,21 @@ test('a steady stream of spends cannot starve a due join batch',async(t)=>{
  const kinds:string[]=[];
  for(let i=0;i<3;i++)kinds.push(recordAt(w.dir,(await op.tick() as {batch:number}).batch).kind);
  assert.deepEqual(kinds,['spend','join','spend']);
+});
+
+test('a batch the emulator refuses at once is re-sent after a short grace, then rebuilt instead of waiting minutes',async(t)=>{
+ const w=await world();let refuse=2,submits=0;
+ const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{submits++;if(refuse-->0)throw new Error('internal error');return w.transport.submit(request,first);}}});
+ await op.submit(await toySpend('transfer',op.state.latestRoot()));
+ op.addPadding(await pads(op.state.latestRoot(),20));
+ w.clock.now=10_000;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/internal error/);
+ w.clock.now+=ROLLUP_QUICK_REFUSAL_MS-1;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/no known outcome/,'held until the indexer has had time to show a landing');
+ w.clock.now+=1;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/internal error/,'then the exact batch is re-sent');
+ w.clock.now+=ROLLUP_QUICK_REFUSAL_MS;
+ assert.match(((await op.tick()) as {blocked:string}).blocked,/abandoned/,'a second quick refusal gives that batch up');
+ assert.equal(((await op.tick()) as {batch:number}).batch,0,'and the rebuilt one lands');
+ assert.equal(submits,3);
 });

@@ -67,6 +67,8 @@ export type RollupTick={txid:string;batch:number;timings?:RollupTimings}|{blocke
 
 /** How long an unresolved submission is left alone between exact re-sends, and before it may be abandoned. */
 export const ROLLUP_RESEND_GRACE_MS=120_000;
+/** A refusal this quick is the emulator's own answer, not a finalize that hung: its grace only covers indexer lag. */
+export const ROLLUP_QUICK_REFUSAL_MS=15_000;
 /** How long the first member of a group waits for the rest before the group is dropped. */
 export const ROLLUP_GROUP_WAIT_MS=120_000;
 const SNAPSHOT_EVERY=32;
@@ -101,20 +103,22 @@ export async function openRollupOperator(o:RollupOperatorOptions){
  const headOf=(plan:RollupPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
  const keptPath=(plan:RollupPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
  /** The last transmission of the journaled plan; `tries` counts the sends of the exact bytes the journal holds. */
- let sent:{at:number;failed:boolean;tries:number}|undefined;
+ let sent:{at:number;failed:boolean;tries:number;graceMs:number}|undefined;
  const journal=await openStockJournal<RollupArchive,RollupPlan,StockNativeReceipt>(join(o.directory,'journal'),o.pin,o.genesis,{
   validateArchive:archive=>{if(archive.version!==1||Transaction.fromRaw(hex.decode(archive.head.sourceTxHex),{allowUnknownOutputs:true}).id!==archive.head.txid)throw new Error('Invalid rollup archive head.');},
   validatePlan:(plan,archive)=>{const head=headOf(plan);if(plan.version!==1||head.txid!==archive.head.txid||head.vout!==archive.head.vout)throw new Error('Rollup plan spends a different head.');},
   verifyReceipt:(plan,receipt)=>o.transport.verify(plan.request,receipt),
   transmit:async plan=>{
-   sent={at:now(),failed:true,tries:(sent?.tries??0)+1};
-   const receipt=await o.transport.lookup(plan.request)??await o.transport.submit(plan.request,plan.firstDeposit);
-   sent=undefined;return receipt;
+   const attempt={at:now(),failed:true,tries:(sent?.tries??0)+1,graceMs:ROLLUP_RESEND_GRACE_MS};sent=attempt;
+   try{
+    const receipt=await o.transport.lookup(plan.request)??await o.transport.submit(plan.request,plan.firstDeposit);
+    sent=undefined;return receipt;
+   }catch(error){if(now()-attempt.at<ROLLUP_QUICK_REFUSAL_MS)Object.assign(attempt,{at:now(),graceMs:ROLLUP_QUICK_REFUSAL_MS});throw error;}
   },
   lookup:plan=>o.transport.lookup(plan.request),
   // Only "not accepted yet" is observable, so the plan is also kept on disk in case it lands after this.
   abandoned:async plan=>{
-   if(!sent?.failed||sent.tries<2||now()-sent.at<ROLLUP_RESEND_GRACE_MS)return false;
+   if(!sent?.failed||sent.tries<2||now()-sent.at<sent.graceMs)return false;
    if(await o.transport.lookup(plan.request)||!await o.transport.unspent(headOf(plan)))return false;
    writeFileSync(keptPath(plan),JSON.stringify(plan));return true;
   },
@@ -354,7 +358,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
      const batch=journal.status().archive.batches;
      let r=await journal.reconcile() as {resolved:boolean;abandoned?:boolean;receipt?:StockNativeReceipt};
      if(!r.resolved){
-      if(sent&&now()-sent.at<ROLLUP_RESEND_GRACE_MS)return {blocked:'A submitted batch has no known outcome yet.'};
+      if(sent&&now()-sent.at<sent.graceMs)return {blocked:'A submitted batch has no known outcome yet.'};
       try{r={resolved:true,...await journal.retransmit()};}catch(error){return {blocked:String((error as Error).message)};}
      }
      if(r.abandoned){
