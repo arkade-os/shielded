@@ -3,12 +3,12 @@ import {randomBytes} from 'node:crypto';
 import {test} from 'node:test';
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {sha256} from '@noble/hashes/sha2.js';
-import {asset,SingleKey,UnknownPacket} from '@arkade-os/sdk';
-import {hex} from '@scure/base';
+import {asset,SingleKey,Transaction,UnknownPacket} from '@arkade-os/sdk';
+import {base64,hex} from '@scure/base';
 import {offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
-import {flushRollupIntent,leftoverRenewal,renewedRollupPoolCoins,renewRollupPool,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalSignature} from '../src/rollup/renewal.ts';
+import {carriedReserves,flushRollupIntent,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
 // tools/vm/rollup_renewal_test.go pins the same digest for the covenant's gate.
 test('the renewal gate signs the digest the covenant rebuilds',()=>{
@@ -64,6 +64,46 @@ test('a renewal hands out its intent id before the round, and names it when the 
  await assert.rejects(renewRollupPool({network,identity:SingleKey.fromHex('04'.repeat(32)),operatorSecret:randomBytes(32),pool:pool.tree,renewLeaf:pool.renew,
   leaves,token,archive:{version:1,head,reserves:{},batches:0},onIntent:id=>{seen.push(id);},providers:providers as never}),/intent-42/);
  assert.deepEqual(seen,['intent-42'],'the id reaches the caller before the round, so a stranded intent can be cleared');
+});
+
+test('a renewal chunk carries the head and only the reserves it names, and chunks follow the expiries',async()=>{
+ const id=(b:string)=>asset.AssetId.create(b.repeat(32),0).toString(),token=id('cc'),[x,y,z]=[id('d1'),id('d2'),id('d3')];
+ const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
+ const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
+ const pool=rollupPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
+ const holds=(assetId:string,vout:number,amount:bigint)=>asset.AssetGroup.create(asset.AssetId.fromString(assetId),null,[asset.AssetInput.create(0,amount)],[asset.AssetOutput.create(vout,amount)],[]);
+ const parent=offlineNativeFixture([3000n,330n,330n,330n].map(amount=>({script:pool.tree.pkScript,amount})),[asset.Packet.create([holds(token,0,1n),holds(x,1,5n),holds(y,2,6n),holds(z,3,7n)]),new UnknownPacket(ROLLUP_STATE_PACKET,new Uint8Array(64))]);
+ const coin=(vout:number,value:number)=>({txid:parent.id,vout,value,sourceTxHex:hex.encode(parent.toBytes())});
+ const archive={version:1 as const,head:coin(0,3000),reserves:{[x]:{...coin(1,330),amount:'5'},[y]:{...coin(2,330),amount:'6'},[z]:{...coin(3,330),amount:'7'}},batches:0};
+ const vtxos=[0,1,2,3].map(vout=>({txid:parent.id,vout,value:vout?330:3000,script:hex.encode(pool.tree.pkScript),isSpent:false,prevTx:parent.toBytes()}));
+ let proof='';
+ const providers={
+  ark:{registerIntent:async()=>'intent-7',getEventStream:async function*(){throw new Error('the round was dropped');}},
+  emulator:{submitIntent:async(o:{proof:string})=>(proof=o.proof)},
+  indexer:{getVtxos:async({outpoints}:{outpoints:{txid:string;vout:number}[]})=>({vtxos:vtxos.filter(v=>outpoints.some(p=>p.vout===v.vout))}),getVirtualTxs:async()=>({txs:[]})},
+ };
+ const network={network:'mutinynet',arkUrl:'https://ark.invalid',emulatorUrl:'https://emulator.invalid'} as unknown as StockNetworkInfo;
+ await assert.rejects(renewRollupPool({network,identity:SingleKey.fromHex('04'.repeat(32)),operatorSecret:randomBytes(32),pool:pool.tree,renewLeaf:pool.renew,
+  leaves,token,archive,reserves:[z,x],providers:providers as never}),/intent-7/);
+ const tx=Transaction.fromPSBT(base64.decode(proof)),spent=Array.from({length:tx.inputsLength-1},(_,i)=>tx.getInput(i+1).index);
+ assert.deepEqual(spent,[0,3,1],'the head first, then the named reserves in order; the other reserve stays out');
+ assert.equal(tx.outputsLength,4,'one output per carried coin, plus the extension');
+ const expiry:Record<number,number>={1:30,2:10,3:20};
+ assert.deepEqual(renewalChunks(archive.reserves,c=>expiry[c.vout]!),[[y,z,x]]);
+ const many=Object.fromEntries(Array.from({length:RENEWAL_CHUNK+1},(_,i)=>[id(String(10+i)),coin(1,330)]));
+ assert.deepEqual(renewalChunks(many,()=>0).map(c=>c.length),[RENEWAL_CHUNK,1]);
+ assert.deepEqual(renewalChunks({},()=>0),[[]],'with no reserve, one intent still renews the head');
+});
+
+test('an interrupted chunk is adopted in the order its intent carried, and only an archive reserve can be carried',()=>{
+ const id=(b:string)=>asset.AssetId.create(b.repeat(32),0).toString(),token=id('cc'),[x,y,z]=[id('d1'),id('d2'),id('d3')];
+ const reserves={[x]:{amount:'5'},[y]:{amount:'6'},[z]:{amount:'7'}};
+ assert.deepEqual(Object.keys(carriedReserves(reserves,[z,x])),[z,x]);
+ assert.deepEqual(Object.keys(carriedReserves(reserves)),[x,y,z],'a renewal.json from before chunks names no ids, so it carried every reserve');
+ assert.throws(()=>carriedReserves(reserves,[z,id('ee')]),/not in the archive/);
+ const txid='ef'.repeat(32),out=(vout:number,assetId:string,amount:bigint)=>({txid,vout,value:vout?330:3000,assets:[{assetId,amount}]});
+ const moved=renewedRollupPoolCoins(token,Object.entries(carriedReserves(reserves,[z,x])).map(([assetId,r])=>[assetId,r.amount] as const),[out(2,x,5n),out(0,token,1n),out(1,z,7n)]);
+ assert.deepEqual(moved.reserves.map(r=>[r.assetId,r.coin.vout]),[[z,1],[x,2]],'each carried reserve sits after the head in the intent\'s order');
 });
 
 test('a stranded renewal intent is confirmed in its round and cleared when that round fails',async()=>{

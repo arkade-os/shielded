@@ -43,17 +43,31 @@ export function rollupRenewalDue(points:readonly {txid:string;vout:number}[],fou
  return expiries.some(t=>t-now<beforeMs);
 }
 
+/** The renew leaf only needs the head at input 1, so each intent carries it and this many reserves: about 16.5k of arkd's 40k WU. */
+export const RENEWAL_CHUNK=8;
+/** Reserve ids in the order they come due, a chunk per intent; with no reserve, one intent renews the head alone. */
+export function renewalChunks(reserves:Readonly<Record<string,{txid:string;vout:number}>>,expiresAt:(coin:{txid:string;vout:number})=>number):string[][]{
+ const ids=Object.keys(reserves).sort((a,b)=>expiresAt(reserves[a]!)-expiresAt(reserves[b]!)),chunks:string[][]=[];
+ for(let i=0;i<ids.length;i+=RENEWAL_CHUNK)chunks.push(ids.slice(i,i+RENEWAL_CHUNK));
+ return chunks.length?chunks:[[]];
+}
+/** The reserves an intent carries, in its output order; an id the archive lacks is refused, since skipping it would shift every later vout. */
+export function carriedReserves<T>(reserves:Readonly<Record<string,T>>,ids:readonly string[]=Object.keys(reserves)):Record<string,T>{
+ return Object.fromEntries(ids.map(assetId=>{const coin=reserves[assetId];if(!coin)throw new Error(`Reserve ${assetId} is not in the archive.`);return [assetId,coin];}));
+}
+
 /**
- * Moves the head and every reserve, unchanged, into a fresh round; returns their new outpoints.
+ * Moves the head and the given reserves (all, by default), unchanged, into a fresh round; returns their new outpoints.
  * ponytail: one-shot; a crash after registration strands the intent until flushRollupIntent clears it.
  */
 export interface RollupRenewalProviders {ark?:RestArkProvider;emulator?:RestEmulatorProvider;indexer?:RestIndexerProvider}
-export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive;
+export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive;reserves?:readonly string[];
  /** Called with the registered intent id before the round is joined; arkd re-queues that intent until it confirms or is cleared. */
  onIntent?(intentId:string):Promise<void>|void;providers?:RollupRenewalProviders}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
  const ark=o.providers?.ark??new RestArkProvider(o.network.arkUrl),emulator=o.providers?.emulator??new RestEmulatorProvider(o.network.emulatorUrl);
  const indexer=o.providers?.indexer??new RestIndexerProvider(o.network.indexerUrl??o.network.arkUrl);
- const reserves=Object.entries(o.archive.reserves),points=rollupPoolPoints(o.archive);
+ const carried=carriedReserves(o.archive.reserves,o.reserves),reserves=Object.entries(carried);
+ const points=rollupPoolPoints({head:o.archive.head,reserves:carried});
  const found=(await indexer.getVtxos({outpoints:points})).vtxos,leaf=o.pool.findLeaf(hex.encode(o.renewLeaf));
  const coins=await withPrevTxs(points.map(p=>{
   const v=found.find(c=>c.txid===p.txid&&c.vout===p.vout);
@@ -80,7 +94,7 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
   let commitment:string;
   try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`)]),handler,{abortController});}
   finally{abortController.abort();}
-  return {commitment,...await renewedRollupPool(indexer,o.pool,o.token,o.archive)};
+  return {commitment,...await renewedRollupPool(indexer,o.pool,o.token,{reserves:carried})};
  }catch(error){throw new Error(`Rollup renewal intent ${intentId} is registered and must be confirmed or cleared: ${(error as Error).message}`,{cause:error});}
 }
 

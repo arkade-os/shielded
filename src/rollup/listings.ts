@@ -1,5 +1,5 @@
-/** Every reserve moves with the head in each renewal intent, so their number is bounded. */
-export const MAX_RESERVES=8;
+/** Renewal takes a round per RENEWAL_CHUNK reserves and anyone may list an asset, so their number is bounded. */
+export const MAX_RESERVES=64;
 const DUST=330;
 
 interface PoolScriptCoin {txid:string;vout:number;value:number;assets?:{assetId:string;amount:bigint}[]}

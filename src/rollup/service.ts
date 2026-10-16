@@ -25,7 +25,7 @@ import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupLeaves} fr
 import {loadRollupLeaves} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord,type RollupTimings} from './operator.ts';
 import {createRollupProver} from './prover.ts';
-import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
+import {carriedReserves,flushRollupIntent,leftoverRenewal,renewalChunks,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
 import {listingsOf,MAX_RESERVES} from './listings.ts';
 import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
@@ -273,10 +273,13 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const renewalPath=join(o.directory,'renewal.json');
   const settleRenewal=async()=>{
    if(!existsSync(renewalPath))return;
-   const pending=readJson<{intentId:string;head:{txid:string;vout:number}}>(renewalPath),{archive}=operator.status();
+   const pending=readJson<{intentId:string;head:{txid:string;vout:number};reserves?:string[]}>(renewalPath),{archive}=operator.status();
    const next=leftoverRenewal(pending,archive.head,(await live!.indexer.getVtxos({outpoints:[pending.head]})).vtxos[0]);
    if(next==='moved')throw new Error('The pool head was spent outside this operator, which cannot follow that yet.');
-   if(next==='adopt'){await operator.relocate(await renewedRollupPool(live!.indexer,live!.pool.tree,live!.genesis.token,archive));log('adopted the head an interrupted renewal created');}
+   if(next==='adopt'){
+    const moved=await renewedRollupPool(live!.indexer,live!.pool.tree,live!.genesis.token,{reserves:carriedReserves(archive.reserves,pending.reserves)});
+    await operator.relocate({head:moved.head,reserves:{...archive.reserves,...moved.reserves}});log('adopted the head an interrupted renewal created');
+   }
    if(next==='flush')log(`interrupted renewal intent ${pending.intentId}: ${await flushRollupIntent({arkUrl:live!.network.arkUrl,intentId:pending.intentId,topics:[archive.head,...Object.values(archive.reserves)].map(c=>`${c.txid}:${c.vout}`)})}`);
    rmSync(renewalPath,{force:true});
   };
@@ -284,13 +287,17 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(stopped)return;
    try{
     if(existsSync(renewalPath))await exclusive(settleRenewal);
-    const points=rollupPoolPoints(operator.status().archive),{vtxos}=await live!.indexer.getVtxos({outpoints:points});
-    if(rollupRenewalDue(points,vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))await exclusive(async()=>{
+    const {archive}=operator.status(),points=rollupPoolPoints(archive),{vtxos}=await live!.indexer.getVtxos({outpoints:points});
+    // rollupRenewalDue below refuses any point the indexer left out, so the 0 never sorts a missing coin first.
+    const expiresAt=(c:{txid:string;vout:number})=>vtxos.find(v=>v.txid===c.txid&&v.vout===c.vout)?.expiresAt?.getTime()??0;
+    // A chunk per round, each under the lock alone, so batches keep landing between rounds.
+    if(rollupRenewalDue(points,vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))for(const chunk of renewalChunks(archive.reserves,expiresAt))await exclusive(async()=>{
      const from=operator.status().archive.head;
      try{
-      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,
-       onIntent:intentId=>writeFileSync(renewalPath,JSON.stringify({intentId,head:{txid:from.txid,vout:from.vout}}))});
-      await operator.relocate(moved);rmSync(renewalPath,{force:true});log(`renewed into round ${moved.commitment}, head ${moved.head.txid}`);
+      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,reserves:chunk,
+       onIntent:intentId=>writeFileSync(renewalPath,JSON.stringify({intentId,head:{txid:from.txid,vout:from.vout},reserves:chunk}))});
+      await operator.relocate({head:moved.head,reserves:{...operator.status().archive.reserves,...moved.reserves}});rmSync(renewalPath,{force:true});
+      log(`renewed the head and ${chunk.length} reserve(s) into round ${moved.commitment}, head ${moved.head.txid}`);
      }catch(error){await settleRenewal().catch(e=>note('renewal: '+(e as Error).message));throw error;}
     });
    }catch(error){note('renewal: '+(error as Error).message);}
