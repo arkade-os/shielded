@@ -5,6 +5,22 @@ import type {RollupDepositFacts,RollupTransport} from './operator.ts';
 
 const holdings=(assets:readonly {assetId:string;amount:bigint}[])=>assets.map(a=>`${a.assetId}:${a.amount}`).sort().join(',');
 
+/** The emulator answers only after arkd finalizes, retrying that for up to two minutes, yet arkd indexes the batch within seconds; a losing call simply runs out. */
+export function landedOrAnswered<T>(answer:Promise<T>,landed:()=>Promise<T|undefined>,everyMs=2000):Promise<T>{
+ return new Promise<T>((resolve,reject)=>{
+  let done=false;
+  answer.then(value=>{done=true;resolve(value);},error=>{done=true;reject(error);});
+  void (async()=>{
+   while(!done){
+    await new Promise(r=>setTimeout(r,everyMs));
+    if(done)return;
+    const found=await landed().catch(()=>undefined);
+    if(found!==undefined&&!done){done=true;resolve(found);}
+   }
+  })();
+ });
+}
+
 /** Batches go through the Arkade emulator; the rollup pays up to the operator's own weight limit, not the stock profile's. */
 export function createRollupTransport(network:StockNetworkInfo,providers:{emulator?:Pick<RestEmulatorProvider,'submitTx'>;indexer?:Pick<RestIndexerProvider,'getVirtualTxs'|'getVtxos'>}={}):RollupTransport&{fresh(coin:RollupDepositFacts,floorMs:number):Promise<boolean>} {
  const rollup={...network,weightLimit:network.operatorMaxWeight};
@@ -18,7 +34,7 @@ export function createRollupTransport(network:StockNetworkInfo,providers:{emulat
   submit:async(request,firstDeposit)=>{
    assertStockWeightBudget(rollup,stockSignedWeights(request,true));
    verifyStockCustomerSignatures(request,network.serverKey,firstDeposit);
-   return verifyStockResponse(request,await emulator.submitTx(request.arkTx,request.checkpoints),rollup);
+   return landedOrAnswered(emulator.submitTx(request.arkTx,request.checkpoints).then(response=>verifyStockResponse(request,response,rollup)),()=>stock.lookup(request));
   },
   unspent:async coin=>live(await coinOf(coin)),
   spentBy:async coin=>{const v=await coinOf(coin);return v?.isSpent?v.arkTxId||v.settledBy||'an unknown transaction':undefined;},
