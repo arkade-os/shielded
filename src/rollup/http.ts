@@ -79,7 +79,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   try{
    const b=req.body??{},s=b.slot??{};
    if(typeof b.id!=='string'||!/^[0-9a-f]{16,64}$/.test(b.id))throw new Error('A spend id is 8 to 32 random bytes in hex.');
-   if(!Array.isArray(s.nullifiers)||!Array.isArray(s.commitments)||s.commitments.length!==2||!Array.isArray(b.publics)||b.publics.length!==5)throw new Error('Malformed spend slot.');
+   if(!Array.isArray(s.nullifiers)||!Array.isArray(s.commitments)||s.commitments.length!==2||!Array.isArray(b.publics)||b.publics.length!==7)throw new Error('Malformed spend slot.');
    const groupId=decimal(s.groupId);
    if(!(groupId===0n&&s.groupSize===0)&&!(groupId!==0n&&(s.groupSize===2||s.groupSize===3)))throw new Error('A group has a nonzero id and two or three members; a lone spend has neither.');
    if(b.asset!==undefined&&(typeof b.asset!=='string'||!/^[0-9a-f]{68}$/.test(b.asset)))throw new Error('An asset id is 68 lowercase hex characters.');

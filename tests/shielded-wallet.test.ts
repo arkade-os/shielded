@@ -629,7 +629,7 @@ test('private action reservations release only after a safe outcome',async()=>{
      if(action!=='pay'){
       assert.equal(body!.program,'e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e');
       assert.equal(body!.asset,action==='withdraw'&&posts===0?TOKEN:undefined);
-      assert.equal(body!.publics[2],action==='withdraw'?(posts===0?'40':'400'):'400');
+      assert.equal(body!.publics[4],action==='withdraw'?(posts===0?'40':'400'):'400');
       assert.equal(body!.slot.groupSize,action==='withdraw'?2:0);
      }
      posts++;if(outcome==='post')throw new Error('post');return {};

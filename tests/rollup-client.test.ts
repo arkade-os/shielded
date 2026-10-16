@@ -20,7 +20,7 @@ test('a spend slot carries the nullifier and commitments the circuit derives', (
  const nf = nullifierOf(hash, ROLLUP_DOMAIN, 8n, 11n);
  assert.deepEqual(slot.nullifiers, [nf]);
  assert.equal(slot.commitments[0], noteOf(hash, ROLLUP_DOMAIN, 60n, BTC_ASSET, owner, outputRhoOf(hash, ROLLUP_DOMAIN, 1n, [nf], 0)));
- assert.deepEqual(publicSignals, [statementOf(hash, { domain: ROLLUP_DOMAIN, ...slot }), 0n, 0n, BTC_ASSET, 0n]);
+ assert.deepEqual(publicSignals, [statementOf(hash, { domain: ROLLUP_DOMAIN, ...slot }), nf, 0n, 0n, 0n, BTC_ASSET, 0n]);
  assert.equal(input.inAmount, 100n);
  assert.deepEqual((input.bits as bigint[]).slice(0, 3), [1n, 0n, 1n]);
 });

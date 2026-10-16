@@ -18,7 +18,7 @@ async function serve(service:Partial<RollupService>|undefined){
 }
 const post=(url:string,body:unknown,origin?:string)=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...(origin?{origin}:{})},body:JSON.stringify(body)});
 const proof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']};
-const spend={id:'ab'.repeat(16),slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0'],proof,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
+const spend={id:'ab'.repeat(16),slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0','0','0'],proof,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
 
 test('the rollup API is closed until the service exists, and refuses cross-origin writes',async(t)=>{
  const closed=await serve(undefined);t.after(closed.close);
@@ -61,7 +61,7 @@ test('a spend is validated and handed to the operator with field elements as big
  const accepted=await post(api.base+'/spends',{...spend,program:'cd'.repeat(32)});
  assert.equal(accepted.status,202);
  assert.deepEqual(submitted[0]!.slot,{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0});
- assert.deepEqual(submitted[0]!.publics,[1n,2n,0n,0n,0n]);
+ assert.deepEqual(submitted[0]!.publics,[1n,2n,0n,0n,0n,0n,0n]);
  assert.equal(submitted[0]!.program!.length,32);
  assert.equal((await fetch(api.base+'/spends/'+spend.id)).status,404);
  assert.equal((await post(api.base+'/spends/'+spend.id+'/sign',{arkTx:'x',checkpoint:'y'})).status,409);

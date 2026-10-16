@@ -29,10 +29,10 @@ test('a batch appends 32 leaves, pushes the root into the window and binds both 
  const result = state.apply('spend', fill(state, [deposit(state, 1000n).slot]));
  assert.equal(state.noteCount, 32);
  assert.equal(state.batchCount, 1);
- assert.equal(state.nullifiers.count(), 12);
+ assert.equal(state.nullifiers.count(), 1 + BATCH_SLOTS);
  assert.equal(state.latestRoot(), state.notes.root());
- assert.equal(result.binding.length, 101);
- assert.deepEqual([...result.binding.subarray(0, 5)], [0x53, 0x48, 2, 0, 11]);
+ assert.equal(result.binding.length, 133);
+ assert.deepEqual([...result.binding.subarray(0, 5)], [0x53, 0x48, 2, 0, BATCH_SLOTS]);
  const digest = createHash('sha256').update(result.binding).digest();
  assert.equal(result.publicSignals.at(-1), BigInt('0x' + Buffer.from(digest.subarray(0, 31)).reverse().toString('hex')));
 });

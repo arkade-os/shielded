@@ -84,12 +84,12 @@ const sameRequest=(actual:StockWireRequest,expected:StockWireRequest)=>
 /** Carrier and funding rules a unit (one spend, or a complete group) must meet before it may enter a batch. */
 function checkUnit(unit:readonly RollupSpend[]):void {
  unit.forEach((s,i)=>{
-  if(s.publics[3]===0n||s.publics[2]===0n)return;
+  if(s.publics[5]===0n||s.publics[4]===0n)return;
   const carrier=unit[i+1];
-  if(!carrier||carrier.publics[3]!==0n||carrier.publics[2]===0n||hex.encode(carrier.program!)!==hex.encode(s.program!))throw new Error('An asset payout must be followed by its BTC carrier to the same program.');
+  if(!carrier||carrier.publics[5]!==0n||carrier.publics[4]===0n||hex.encode(carrier.program!)!==hex.encode(s.program!))throw new Error('An asset payout must be followed by its BTC carrier to the same program.');
  });
- const sats=unit.reduce((sum,s)=>sum+BigInt(s.coin?.value??0),0n),btc=unit.reduce((sum,s)=>sum+(s.publics[3]===0n?s.publics[1]:0n),0n);
- const units=unit.reduce((sum,s)=>sum+(s.coin?.assetAmount??0n),0n),assets=unit.reduce((sum,s)=>sum+(s.publics[3]!==0n?s.publics[1]:0n),0n);
+ const sats=unit.reduce((sum,s)=>sum+BigInt(s.coin?.value??0),0n),btc=unit.reduce((sum,s)=>sum+(s.publics[5]===0n?s.publics[3]:0n),0n);
+ const units=unit.reduce((sum,s)=>sum+(s.coin?.assetAmount??0n),0n),assets=unit.reduce((sum,s)=>sum+(s.publics[5]!==0n?s.publics[3]:0n),0n);
  if(sats!==btc||units!==assets)throw new Error('Deposit coins must carry exactly the deposited sats and asset.');
 }
 
@@ -184,7 +184,7 @@ export async function openRollupOperator(o:RollupOperatorOptions){
 
  /** The only gate: a spend the batch, the builder or the network would reject must never reserve a nullifier. */
  const submit=async(spend:Omit<RollupSpend,'receivedAt'>)=>{
-  const [pub,deposit,withdraw,assetField,destination]=spend.publics;
+  const [pub,,,deposit,withdraw,assetField,destination]=spend.publics;
   const {root,nullifiers,commitments,ctDigest,groupId,groupSize}=spend.slot;
   if([...queued(pending),...inflight].some(s=>s.id===spend.id))throw new Error('Duplicate rollup spend id.');
   const kind=kindOf(spend);

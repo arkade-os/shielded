@@ -115,9 +115,9 @@ export class RollupAccount {
    return [...totals].filter(([, amount]) => amount > 0n).map(([asset, amount]) => ({ asset, amount }));
   };
   const base = { batch: number, slots: Array.from({ length: to - from }, (_, i) => from + i), ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), spent: spent.map(n => n.nullifier), created };
-  if (created.length && legs.some(p => (p[1] ?? 0n) > 0n)) return { kind: 'shield', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[1] ?? 0n }))) };
-  const payout = legs.find(p => (p[2] ?? 0n) > 0n);
-  if (spent.length && payout) return { kind: 'withdraw', ...base, amounts: sum(legs.map(p => ({ asset: p[3] ?? 0n, amount: p[2] ?? 0n }))), destination: payout[4] ?? 0n };
+  if (created.length && legs.some(p => (p[3] ?? 0n) > 0n)) return { kind: 'shield', ...base, amounts: sum(legs.map(p => ({ asset: p[5] ?? 0n, amount: p[3] ?? 0n }))) };
+  const payout = legs.find(p => (p[4] ?? 0n) > 0n);
+  if (spent.length && payout) return { kind: 'withdraw', ...base, amounts: sum(legs.map(p => ({ asset: p[5] ?? 0n, amount: p[4] ?? 0n }))), destination: payout[6] ?? 0n };
   if (spent.length) {
    const amounts = sum([...spent.map(n => ({ asset: n.asset, amount: n.amount })), ...created.map(n => ({ asset: n.asset, amount: -n.amount }))]);
    if (amounts.length) return { kind: 'send', ...base, amounts };

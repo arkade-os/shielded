@@ -2,16 +2,16 @@ import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
 import type {BatchSlot} from '../../packages/protocol/src/rollup/state.ts';
 import type {RollupCoin,RollupLeg,SnarkProof} from './covenant.ts';
 
-export const RESERVE_DEPOSIT_INPUTS=8;
+export const RESERVE_DEPOSIT_INPUTS=7;
 export const BATCH_WAIT_MS=10_000;
 /** A join batch costs a 908,989-constraint proof, so one consolidation waits longer for company. */
 export const JOIN_BATCH_WAIT_MS=60_000;
 
-/** One slot as the operator receives it: the opening, its five public inputs, the client proof and boundary details. */
+/** One slot as the operator receives it: the opening, its seven public inputs, the client proof and boundary details. */
 export interface RollupSpend {
  id:string;
  slot:BatchSlot;
- publics:readonly [bigint,bigint,bigint,bigint,bigint];
+ publics:readonly [bigint,bigint,bigint,bigint,bigint,bigint,bigint];
  proof:SnarkProof;
  receivedAt:number;
  asset?:string;
@@ -22,7 +22,7 @@ export interface RollupSpend {
 }
 export interface RollupSelection {spends:RollupSpend[];asset?:string;legs:RollupLeg[]}
 
-const legOf=(s:RollupSpend):RollupLeg=>({deposit:s.publics[1],withdraw:s.publics[2],asset:s.publics[3]!==0n,...(s.program?{program:s.program}:{})});
+const legOf=(s:RollupSpend):RollupLeg=>({deposit:s.publics[3],withdraw:s.publics[4],asset:s.publics[5]!==0n,...(s.program?{program:s.program}:{})});
 
 /** Units are single spends or complete groups, oldest first; a unit waits while its group is incomplete or its asset differs. */
 function units(pending:readonly RollupSpend[]):RollupSpend[][] {
@@ -44,7 +44,7 @@ export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padd
  const chosen:RollupSpend[]=[];
  let asset:string|undefined,coins=0;
  for(const unit of units(pending)){
-  const unitAsset=unit.find(s=>s.publics[3]!==0n)?.asset;
+  const unitAsset=unit.find(s=>s.publics[5]!==0n)?.asset;
   if(unitAsset&&asset&&unitAsset!==asset)continue;
   const nextAsset=asset??unitAsset,nextCoins=coins+unit.filter(s=>s.coin).length;
   if(chosen.length+unit.length>BATCH_SLOTS||nextCoins>Math.min(maxCoins,nextAsset?RESERVE_DEPOSIT_INPUTS:BATCH_SLOTS))continue;

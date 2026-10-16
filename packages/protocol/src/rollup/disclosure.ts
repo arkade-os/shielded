@@ -63,7 +63,7 @@ export async function incomingNotes(hash: Hash, batches: readonly PublishedBatch
   const opened = await openRollupNotes(hex.decode(slot.ciphertext), key.viewSecret, ecdh);
   opened.forEach((note, j) => {
    if (!note || note.amount === 0n || String(noteOf(hash, ROLLUP_DOMAIN, note.amount, note.asset, key.owner, note.rho)) !== slot.commitments[j]) return;
-   found.push({ batch: first + b, ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), index: (first + b) * 32 + 2 * i + j, amount: note.amount, asset: note.asset, deposit: (slot.publics?.[1] ?? '0') !== '0' });
+   found.push({ batch: first + b, ...(batch.txid ? { txid: batch.txid } : {}), ...(batch.at !== undefined ? { at: batch.at } : {}), index: (first + b) * 32 + 2 * i + j, amount: note.amount, asset: note.asset, deposit: (slot.publics?.[3] ?? '0') !== '0' });
   });
  }
  return found;

@@ -66,12 +66,12 @@ func (b *rollupBatch) signedWeight(t *testing.T) int {
 
 // rollupReserveDepositInputs is the most deposit inputs a batch that carries
 // the asset reserve can bring and still fit; the operator must enforce it.
-const rollupReserveDepositInputs = 8
+const rollupReserveDepositInputs = 7
 
 // rollupDeposits fills slots with 1 BTC deposits. With the reserve, the first
 // input is an asset deposit whose carrier sats are credited in the next slot.
 func rollupDeposits(inputs int, reserve bool) []rollupLeg {
-	legs := make([]rollupLeg, 11)
+	legs := make([]rollupLeg, 10)
 	slot := 0
 	if reserve {
 		legs[0] = rollupLeg{dep: 1_000_000_000_000, asset: true, inSats: 330, inAsset: 1_000_000_000_000}
@@ -85,7 +85,7 @@ func rollupDeposits(inputs int, reserve bool) []rollupLeg {
 }
 
 func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
-	w := newRollupWorld(t, 11, 0, 11)
+	w := newRollupWorld(t, 10, 0, 11)
 	w.headIn = 10_000_000_000
 	weigh := func(w *rollupWorld, name string, legs []rollupLeg, reserve bool) int {
 		b := w.batchOf(legs, reserve)
@@ -96,21 +96,21 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 		t.Logf("%-40s %6d WU, headroom %5d", name, weight, rollupMaxTxWeight-weight)
 		return weight
 	}
-	payouts := make([]rollupLeg, 11)
+	payouts := make([]rollupLeg, 10)
 	for i := range payouts {
 		payouts[i] = rollupLeg{wd: 100_000_000, dest: rollupProgram(byte(0x30 + i))}
 	}
-	baseline := map[string]int{"transfers only": 34788, "deposits, payouts and an asset": 38066,
-		"11 deposits of 1 BTC": 39694, "11 payouts of 1 BTC": 38260, "reserve and 8 deposit inputs": 39594}
+	baseline := map[string]int{"transfers only": 35392, "deposits, payouts and an asset": 38678,
+		"10 deposits of 1 BTC": 39856, "10 payouts of 1 BTC": 38560, "reserve and 7 deposit inputs": 39760}
 	for _, mix := range []struct {
 		name    string
 		legs    []rollupLeg
 		reserve bool
 	}{
-		{"transfers only", make([]rollupLeg, 11), false},
+		{"transfers only", make([]rollupLeg, 10), false},
 		{"deposits, payouts and an asset", w.honestLegs(true), true},
-		{"11 deposits of 1 BTC", rollupDeposits(11, false), false},
-		{"11 payouts of 1 BTC", payouts, false},
+		{"10 deposits of 1 BTC", rollupDeposits(10, false), false},
+		{"10 payouts of 1 BTC", payouts, false},
 		{fmt.Sprintf("reserve and %d deposit inputs", rollupReserveDepositInputs), rollupDeposits(rollupReserveDepositInputs, true), true},
 	} {
 		weight := weigh(w, mix.name, mix.legs, mix.reserve)
@@ -121,12 +121,13 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 			t.Errorf("%s: %d WU, was %d with four pool leaves", mix.name, weight, want)
 		}
 	}
-	join := newRollupWorld(t, 11, 1, 11)
+	join := newRollupWorld(t, 10, 1, 11)
 	join.headIn = w.headIn
-	if weight := weigh(join, "join batch, no legs", make([]rollupLeg, 11), false); weight > rollupMaxTxWeight-5_000 {
-		t.Errorf("join batch: %d WU leaves under 5,000 WU of headroom", weight)
+	// A join batch carries no boundary leg, so it needs less headroom than a spend.
+	if weight := weigh(join, "join batch, no legs", make([]rollupLeg, 10), false); weight > rollupMaxTxWeight-3_000 {
+		t.Errorf("join batch: %d WU leaves under 3,000 WU of headroom", weight)
 	}
-	if next := rollupReserveDepositInputs + 1; next <= 10 {
+	if next := rollupReserveDepositInputs + 1; next <= 9 {
 		if weight := weigh(w, fmt.Sprintf("reserve and %d deposit inputs", next), rollupDeposits(next, true), true); weight <= rollupMaxTxWeight {
 			t.Errorf("the reserve deposit budget is stale: %d inputs fit at %d WU", next, weight)
 		}

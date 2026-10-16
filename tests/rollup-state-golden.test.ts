@@ -16,7 +16,7 @@ const slot=(state:RollupState,amount:bigint):BatchSlot=>clientWitness(hash,{doma
  outputs:[{amount,owner,random:fresh()},{amount:0n,owner,random:fresh()}],deposit:amount,withdraw:0n,destination:0n,ctDigest:fresh(),groupId:0n,groupSize:0}).slot;
 const digest=(r:Pick<BatchResult,'witness'|'publicSignals'|'binding'|'daRoot'>)=>createHash('sha256').update(JSON.stringify({w:r.witness,p:r.publicSignals,b:[...r.binding],d:r.daRoot},(_,v)=>typeof v==='bigint'?v.toString():v)).digest('hex');
 
-// Pinned from the Plan 1 reference model, so the incremental state must reproduce its witnesses exactly.
+// Pinned from the incremental state's own witnesses at the 7-public/96-byte layout; regenerate when that layout changes.
 test('incremental state reproduces the reference witnesses',()=>{
  let state=RollupState.genesis(hash);
  const out:string[]=[];
@@ -28,4 +28,4 @@ test('incremental state reproduces the reference witnesses',()=>{
  }
  assert.deepEqual(out,GOLDEN);
 });
-const GOLDEN=['ed6b93f609d343b77bf36a385b48a5f5e94d2032e10e392065ea0821d9dae903','0d65c4010f0b6a5892b8da54670b26c6ea53777c6671db29e09cc43155bfc220','e1e2cf502b28af81a534a9ce194f0e35d5af69e9089aeb7af3d8efaf3a7b2e2c'];
+const GOLDEN=['ad60cd87d329f303506d7311d772a6f22bb157272c82310df8de2c40b57e4d39','5e93e59c5fb7d2309b65cc988fe99409d365bb6cba9e55db3daf02ec4b6e47f7','a5a1a42a3492b5f91cb9f1986777a268842fbc020838501b083dcc18a0a6b064'];

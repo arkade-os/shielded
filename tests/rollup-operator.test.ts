@@ -9,7 +9,7 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {F1Field} from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
-import {BTC_ASSET,NOTE_DEPTH,ROLLUP_DOMAIN,ROLLUP_FIELD,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,BTC_ASSET,NOTE_DEPTH,ROLLUP_DOMAIN,ROLLUP_FIELD,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {clientWitness,inputNullifierOf} from '../packages/protocol/src/rollup/client.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
@@ -37,8 +37,8 @@ const fresh=()=>++counter;
 
 interface Leg {deposit?:bigint;withdraw?:bigint;asset?:string;program?:Uint8Array;coin?:RollupCoin&{assetAmount?:bigint};groupId?:bigint;groupSize?:number;ctDigest?:bigint}
 const spendOf=async(id:string,w:ReturnType<typeof clientWitness>,root2:unknown,leg:Leg):Promise<Omit<RollupSpend,'receivedAt'>>=>{
- const [pub,deposit,withdraw,boundaryAsset,destination]=w.publicSignals.map(String);
- const {proof}=await snarkjs.groth16.fullProve({pub,deposit,withdraw,boundaryAsset,destination,w:String(root2)},toy('covenant-client.wasm'),toy('covenant-client.zkey'));
+ const [pub,nf0,nf1,deposit,withdraw,boundaryAsset,destination]=w.publicSignals.map(String);
+ const {proof}=await snarkjs.groth16.fullProve({pub,nf0,nf1,deposit,withdraw,boundaryAsset,destination,w:String(root2)},toy('covenant-client.wasm'),toy('covenant-client.zkey'));
  return {id,slot:w.slot,publics:w.publicSignals as unknown as RollupSpend['publics'],proof:proof as SnarkProof,
   ...(leg.asset&&(leg.deposit||leg.withdraw)?{asset:leg.asset}:{}),...(leg.program?{program:leg.program}:{}),...(leg.coin?{coin:leg.coin}:{})};
 };
@@ -104,7 +104,7 @@ const savedAt=(w:Awaited<ReturnType<typeof world>>)=>readSnapshot(join(w.dir,'sn
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-operator-'));
  writeFileSync(join(dir,'client.json'),JSON.stringify(fixture.clientKey));writeFileSync(join(dir,'batch.json'),JSON.stringify(fixture.batchKey));
- writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',clientJoinKey:'client.json',batchJoinKey:'batch.json',slots:11,token,operator:'aa'.repeat(32)}));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',clientJoinKey:'client.json',batchJoinKey:'batch.json',slots:BATCH_SLOTS,token,operator:'aa'.repeat(32)}));
  const leaves=await loadRollupLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json'));
  const [server,emulator,user]=await Promise.all(['01','02','03'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
  const exitDelay={type:'seconds' as const,value:2048},pool=rollupPoolTree(server,emulator,leaves,exitDelay);
@@ -157,14 +157,14 @@ function lossyNetwork(w:Awaited<ReturnType<typeof world>>){
 test('the operator batches a deposit and then a withdrawal through the covenant, and replays them after a restart',async(t)=>{
  const w=await world(),op=await w.open(t);
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  assert.equal(await op.tick(),undefined,'waits for the batch window');
  w.clock.now=10_000;
  assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.equal(op.status().archive.head.value,102_830);
  const early=encodeSnapshot(op.state,w.options.pin);
  await op.submit(await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)}));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=20_000;
  const second=await op.tick() as {batch:number;txid:string};
  assert.equal(second.batch,1);
@@ -199,7 +199,7 @@ test('the operator batches a deposit and then a withdrawal through the covenant,
 test('the operator snapshots on its cadence, but never while a submitted batch is unresolved',async(t)=>{
  const w=await world();let down=false;
  const op=await w.open(t,{snapshotEvery:1,transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('emulator unreachable');return w.transport.submit(request,first);}}});
- const batch=async()=>{await op.submit(await toySpend('s'+op.state.batchCount,op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));w.clock.now+=10_000;return op.tick();};
+ const batch=async()=>{await op.submit(await toySpend('s'+op.state.batchCount,op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));w.clock.now+=10_000;return op.tick();};
  for(const n of [1,2]){assert.ok('txid' in (await batch())!);assert.equal(savedAt(w),n);}
  down=true;
  assert.match((await batch() as {blocked:string}).blocked,/unreachable/);
@@ -210,10 +210,10 @@ test('the operator snapshots on its cadence, but never while a submitted batch i
 
 test('a close while an applied batch waits for signatures keeps the snapshot at the last accepted batch',async(t)=>{
  const w=await world(),op=await w.open(t,{snapshotEvery:1,signDeposits:async()=>{op.close();return undefined;}});
- await op.submit(await toySpend('first',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));
+ await op.submit(await toySpend('first',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.equal((await op.tick() as {batch:number}).batch,0);
- await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));op.addPadding(await pads(op.state.latestRoot(),10));
+ await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now+=10_000;
  await assert.rejects(op.tick(),/did not sign/);
  assert.deepEqual([op.state.batchCount,savedAt(w)],[1,1],'the unsigned batch is undone and was never persisted');
@@ -221,7 +221,7 @@ test('a close while an applied batch waits for signatures keeps the snapshot at 
 
 test('a full replay that disagrees with the head is refused rather than opened on a wrong state',async(t)=>{
  const w=await world(),op=await w.open(t);
- await op.submit(await toySpend('a',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),10));
+ await op.submit(await toySpend('a',op.state.latestRoot()));op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.equal((await op.tick() as {batch:number}).batch,0);
  const commitment=op.state.commitment(),path=join(w.dir,'batches','0.json'),original=readFileSync(path,'utf8'),body=JSON.parse(original);
@@ -238,7 +238,7 @@ test('a deposit that is never signed is dropped and the rest of the batch goes t
  const op=await w.open(t,{signDeposits:async(request:StockWireRequest,spends:RollupSpend[])=>refuse?undefined:w.options.signDeposits(request,spends),onDrop:(ids:string[],reason:string)=>drops.push([ids,reason])});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  await assert.rejects(op.tick(),/did not sign/);
  assert.equal(op.state.batchCount,0);
@@ -255,7 +255,7 @@ test('a submission with no outcome blocks the pool, then the exact batch is re-s
  let down=true;
  const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('emulator unreachable');return w.transport.submit(request,first);}}});
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.match(((await op.tick()) as {blocked:string}).blocked,/unreachable/);
  assert.equal(op.state.batchCount,1,'the unconfirmed batch stays applied while its outcome is unknown');
@@ -269,7 +269,7 @@ test('an over-weight batch is caught before submission and its newest deposit wa
  const w=await world(),op=await w.open(t,{weightLimit:20_000});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  await assert.rejects(op.tick(),/weight/);
  assert.equal(op.state.batchCount,0);
@@ -280,7 +280,7 @@ test('an over-weight batch is caught before submission and its newest deposit wa
 test('a batch whose reply was lost is re-sent and recorded instead of being replaced',async(t)=>{
  const w=await world(),{net,transport}=lossyNetwork(w),op=await w.open(t,{transport});
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.match(((await op.tick()) as {blocked:string}).blocked,/proxy timeout/);
  w.clock.now+=300_000;
@@ -295,7 +295,7 @@ test('a batch whose reply was lost is re-sent and recorded instead of being repl
 test('an abandoned batch that lands late is adopted, head and record included',async(t)=>{
  const w=await world(),{net,transport}=lossyNetwork(w),op=await w.open(t,{transport});
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.match(((await op.tick()) as {blocked:string}).blocked,/proxy timeout/);
  w.clock.now+=300_000;
@@ -320,7 +320,7 @@ test('a deposit the network keeps refusing is dropped, and the honest spend stil
  const op=await w.open(t,{transport});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.match(((await op.tick()) as {blocked:string}).blocked,/rejected the deposit/);
  w.clock.now+=300_000;
@@ -349,7 +349,7 @@ test('a deposit nobody signed drops only its own group, and the signed one still
  for(const s of await toyGroup(['unsigned','carrier'],root,[{deposit:2500n,coin:w.coin(1)},{}]))await op.submit(s);
  await op.submit(await toySpend('signed',root,{deposit:2500n,coin:w.coin(2)}));
  await op.submit(await toySpend('transfer',root));
- op.addPadding(await pads(root,9));
+ op.addPadding(await pads(root,BATCH_SLOTS-1));
  w.clock.now=10_000;
  await assert.rejects(op.tick(),/did not sign/);
  assert.equal(op.pending(),2,'the refused group goes, carrier included; the rest waits');
@@ -370,7 +370,7 @@ test('a depositor that signs another coin than the one the operator built on is 
   return {arkTx:base64.encode((await w.depositor.sign(ark,[first])).toPSBT()),checkpoints} as StockWireRequest|undefined;
  }});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  await assert.rejects(op.tick(),/not the batch the operator built/);
  assert.equal(op.status().archive.batches,0,'the swapped coin never reaches the emulator');
@@ -398,7 +398,7 @@ test('a selection whose asset reserve vanished is evicted and gives its padding 
  const payout=await toyGroup(['payout','carrier'],root,[{withdraw:5n,asset:x,program:new Uint8Array(32).fill(0x53)},{withdraw:330n,program:new Uint8Array(32).fill(0x53)}]);
  for(const s of payout)await op.submit(s);
  await op.submit(await toySpend('transfer',root));
- op.addPadding(await pads(root,10));
+ op.addPadding(await pads(root,BATCH_SLOTS-1));
  await op.relocate({head,reserves:{}});
  w.clock.now=10_000;
  await assert.rejects(op.tick(),/No reserve/);
@@ -425,7 +425,7 @@ test('a deposit coin that is no longer fresh is dropped before the batch, with t
  const op=await w.open(t,{transport:{...w.transport,fresh:async(_coin:RollupDepositFacts,floorMs:number)=>{floors.push(floorMs);return false;}},depositFloorMs:86_400_000,onDrop:(ids:string[],reason:string)=>drops.push([ids,reason])});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.deepEqual(Object.keys((await op.tick())!),['txid','batch','timings']);
  assert.deepEqual(floors,[86_400_000]);
@@ -445,7 +445,7 @@ test('a group whose other members never arrive is dropped after a wait, freeing 
  const op=await w.open(t,{onDrop:(ids:string[],reason:string)=>drops.push([ids,reason])});
  const pair=await toyGroup(['first','second'],op.state.latestRoot(),[{},{}]);
  await op.submit(pair[0]!);
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=60_000;
  assert.equal(await op.tick(),undefined);
  assert.deepEqual(op.pendingIds(),['first'],'a straggler still has time to arrive');
@@ -466,7 +466,7 @@ test('a note record is admitted only under its digest and is published with its 
  await assert.rejects(op.submit({...sealed,ciphertext:record.subarray(1)}),/note record/);
  await op.submit({...sealed,ciphertext:record});
  assert.deepEqual(op.pendingIds(),['sealed']);
- op.addPadding(await pads(root,10));
+ op.addPadding(await pads(root,BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.equal(((await op.tick()) as {batch:number}).batch,0);
  assert.deepEqual(op.pendingIds(),[]);
@@ -478,7 +478,7 @@ test('a note record is admitted only under its digest and is published with its 
 test('a batch another prover got accepted is followed from its record, and a record that disagrees with the chain is refused',async(t)=>{
  const w=await world(),a=await w.open(t),b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-follower-'))});
  await a.submit(await toySpend('deposit',a.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
- a.addPadding(await pads(a.state.latestRoot(),10));
+ a.addPadding(await pads(a.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  const landed=await a.tick() as {txid:string;batch:number};
  const record=JSON.parse(readFileSync(join(w.dir,'batches','0.json'),'utf8')) as {slots:{commitments:[string,string]}[]};
@@ -498,7 +498,7 @@ test('an operator whose own batch lost the race drops it, follows the winner, an
  const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-loser-')),transport:dead});
  const mine=await toySpend('withdraw',b.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)});
  await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),20));
- await a.submit(await toySpend('deposit',a.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));a.addPadding(await pads(a.state.latestRoot(),10));
+ await a.submit(await toySpend('deposit',a.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));a.addPadding(await pads(a.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.ok('blocked' in (await b.tick())!,'its own batch is in flight with no outcome');
  await a.tick();
@@ -512,32 +512,32 @@ test('an operator whose own batch lost the race drops it, follows the winner, an
 test('a head someone else spent stops batching with a pointer to its record, and keeps every spend queued',async(t)=>{
  const w=await world(),op=await w.open(t,{transport:{...w.transport,spentBy:async()=>'ee'.repeat(32)}});
  const mine=await toySpend('withdraw',op.state.latestRoot(),{withdraw:1000n,program:new Uint8Array(32).fill(0x52)});
- await op.submit(mine);op.addPadding(await pads(op.state.latestRoot(),10));
+ await op.submit(mine);op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  const tick=await op.tick() as {blocked:string};
  assert.match(tick.blocked,new RegExp(`spent by ${'ee'.repeat(32)}.*/api/rollup/external`));
  assert.deepEqual(op.pendingIds(),[mine.id]);
- assert.equal(op.padding(),10,'padding is kept for the batch after the record arrives');
+ assert.equal(op.padding(),BATCH_SLOTS-1,'padding is kept for the batch after the record arrives');
  assert.equal(op.status().pending,undefined,'nothing was submitted on a spent head');
 });
 
 test('without a batch window a lone spend or join batches on the next tick, which says where the time went',async(t)=>{
  const w=await world(),op=await w.open(t,{batchWaitMs:0,joinWaitMs:0});
  await op.submit(await toySpend('deposit',op.state.latestRoot(),{deposit:2500n,coin:w.coin(1)}));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=3;
  const spend=await op.tick() as {batch:number;timings:{waitedMs:number;proveMs:number;publishMs:number}};
  assert.deepEqual([spend.batch,spend.timings.waitedMs],[0,3],'no clock advance needed; the wait is measured from the oldest spend');
  await op.submit(await toyJoin('join',op.state.latestRoot()));
- op.addPadding(await joinPads(op.state.latestRoot(),10));
+ op.addPadding(await joinPads(op.state.latestRoot(),BATCH_SLOTS-1));
  assert.equal((await op.tick() as {batch:number}).batch,1);
 });
 
 test('a join batch lands through the join leaf, inserts two nullifiers per slot, and records its kind',async(t)=>{
  const w=await world(),op=await w.open(t),before=op.state.nullifiers.count();
- for(let i=0;i<11;i++)await op.submit(await toyJoin('join'+i,op.state.latestRoot()));
- assert.equal((await op.tick() as {batch:number}).batch,0,'eleven joins fill a batch without waiting');
- assert.equal(op.state.nullifiers.count()-before,22);
+ for(let i=0;i<BATCH_SLOTS;i++)await op.submit(await toyJoin('join'+i,op.state.latestRoot()));
+ assert.equal((await op.tick() as {batch:number}).batch,0,'a full batch of joins closes without waiting');
+ assert.equal(op.state.nullifiers.count()-before,2*BATCH_SLOTS);
  assert.equal(recordAt(w.dir,0).kind,'join');
  const landed=JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string};
  assert.deepEqual(Extension.fromTx(Transaction.fromPSBT(base64.decode(landed.arkTx))).getEmulatorPacket()!.entries[0]!.script,w.options.leaves.batchJoin);
@@ -545,7 +545,7 @@ test('a join batch lands through the join leaf, inserts two nullifiers per slot,
 
 test('a join carrying a boundary leg, a group or one note twice is refused at admission',async(t)=>{
  const w=await world(),op=await w.open(t),aJoin=await toyJoin('j',op.state.latestRoot()),[nf]=aJoin.slot.nullifiers;
- await assert.rejects(op.submit({...aJoin,id:'leg',publics:[aJoin.publics[0],1000n,0n,0n,0n]}),/join carries no deposit/i);
+ await assert.rejects(op.submit({...aJoin,id:'leg',publics:[aJoin.publics[0],aJoin.publics[1],aJoin.publics[2],1000n,0n,0n,0n]}),/join carries no deposit/i);
  await assert.rejects(op.submit({...aJoin,id:'group',slot:{...aJoin.slot,groupId:7n,groupSize:2}}),/join is never part of a group/i);
  await assert.rejects(op.submit({...aJoin,id:'twice',slot:{...aJoin.slot,nullifiers:[nf!,nf!]}}),/two different notes/i);
  await assert.rejects(op.submit({...aJoin,id:'three',slot:{...aJoin.slot,nullifiers:[nf!,nf!+1n,nf!+2n]}}),/one note .* or two/i);
@@ -554,8 +554,8 @@ test('a join carrying a boundary leg, a group or one note twice is refused at ad
 test('a spend never rides a join batch and a join never rides a spend batch',async(t)=>{
  const w=await world(),op=await w.open(t),root=op.state.latestRoot();
  await op.submit(await toySpend('spend',root));await op.submit(await toyJoin('join',root));
- op.addPadding(await pads(root,10));op.addPadding(await joinPads(root,10));
- assert.deepEqual([op.padding('spend'),op.padding('join'),op.padding()],[10,10,20]);
+ op.addPadding(await pads(root,BATCH_SLOTS-1));op.addPadding(await joinPads(root,BATCH_SLOTS-1));
+ assert.deepEqual([op.padding('spend'),op.padding('join'),op.padding()],[BATCH_SLOTS-1,BATCH_SLOTS-1,2*(BATCH_SLOTS-1)]);
  w.clock.now=BATCH_WAIT_MS;
  assert.equal((await op.tick() as {batch:number}).batch,0);
  assert.deepEqual([recordAt(w.dir,0).kind,recordAt(w.dir,0).slots.every(s=>s.nullifiers.length===1)],['spend',true]);
@@ -567,7 +567,7 @@ test('a spend never rides a join batch and a join never rides a spend batch',asy
 
 test('a join batch another prover landed is followed, and a record that misstates a nullifier is refused',async(t)=>{
  const w=await world(),a=await w.open(t),b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-join-follower-'))});
- for(let i=0;i<11;i++)await a.submit(await toyJoin('join'+i,a.state.latestRoot()));
+ for(let i=0;i<BATCH_SLOTS;i++)await a.submit(await toyJoin('join'+i,a.state.latestRoot()));
  const landed=await a.tick() as {txid:string;batch:number},record=recordAt(w.dir,0) as unknown as {slots:{nullifiers:string[]}[]};
  const txs=JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string;checkpoints:string[]};
  const tx=Transaction.fromPSBT(base64.decode(txs.arkTx)),checkpoints=txs.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)));
@@ -581,7 +581,7 @@ test('a spend whose proof is still being checked never enters a batch, and a bad
  const w=await world(),held=heldVerify(),op=await w.open(t,{verify:held.verify}),root=op.state.latestRoot();
  const fast=await toySpend('fast',root),slow=await toySpend('slow',root);
  await op.submit(fast);
- op.addPadding(await pads(root,10));
+ op.addPadding(await pads(root,BATCH_SLOTS-1));
  held.hold(slow.proof);
  const admission=op.submit(slow).then(()=>'admitted',error=>(error as Error).message);
  w.clock.now=BATCH_WAIT_MS;
@@ -599,12 +599,12 @@ test('a group whose completing member is still being checked is not selectable, 
  await op.submit(transfer);await op.submit(pair[0]!);
  held.hold(pair[1]!.proof);
  const admission=op.submit(pair[1]!);
- op.addPadding(await pads(root,10));
+ op.addPadding(await pads(root,BATCH_SLOTS-1));
  w.clock.now=BATCH_WAIT_MS;
  assert.equal((await op.tick() as {batch:number}).batch,0);
  assert.deepEqual([notesIn(w.dir,0).has(noteOf(transfer)),...pair.map(s=>notesIn(w.dir,0).has(noteOf(s)))],[true,false,false],'the group waited for its own check');
  held.release(pair[1]!.proof);await admission;
- op.addPadding(await pads(op.state.latestRoot(),9));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now+=BATCH_WAIT_MS;
  assert.equal((await op.tick() as {batch:number}).batch,1);
  assert.deepEqual(pair.map(s=>notesIn(w.dir,1).has(noteOf(s))),[true,true]);
@@ -636,8 +636,8 @@ test('a group cannot be over-filled by a member that arrives while its siblings 
 
 test('a steady stream of spends cannot starve a due join batch',async(t)=>{
  const w=await world(),op=await w.open(t),root=op.state.latestRoot();
- for(let i=0;i<22;i++)await op.submit(await toySpend('spend'+i,root));
- for(let i=0;i<11;i++)await op.submit(await toyJoin('join'+i,root));
+ for(let i=0;i<2*BATCH_SLOTS;i++)await op.submit(await toySpend('spend'+i,root));
+ for(let i=0;i<BATCH_SLOTS;i++)await op.submit(await toyJoin('join'+i,root));
  const kinds:string[]=[];
  for(let i=0;i<3;i++)kinds.push(recordAt(w.dir,(await op.tick() as {batch:number}).batch).kind);
  assert.deepEqual(kinds,['spend','join','spend']);
@@ -684,7 +684,7 @@ test('an emulator that cannot be reached keeps the long grace, so an outage does
  const w=await world();let down=true;
  const op=await w.open(t,{transport:{...w.transport,submit:async(request:StockWireRequest,first:number)=>{if(down)throw new Error('fetch failed');return w.transport.submit(request,first);}}});
  await op.submit(await toySpend('transfer',op.state.latestRoot()));
- op.addPadding(await pads(op.state.latestRoot(),10));
+ op.addPadding(await pads(op.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=10_000;
  assert.match(((await op.tick()) as {blocked:string}).blocked,/fetch failed/);
  w.clock.now+=ROLLUP_QUICK_REFUSAL_MS;
@@ -698,13 +698,13 @@ const landedTxs=(dir:string)=>{const {arkTx,checkpoints}=JSON.parse(readFileSync
 test('a batch whose record is withheld stops batching indefinitely, and only publishing the record resumes it',async(t)=>{
  const w=await world(),a=await w.open(t),program=new Uint8Array(32).fill(0x52);
  await a.submit(await toySpend('foreign',a.state.latestRoot(),{withdraw:1000n,program}));
- a.addPadding(await pads(a.state.latestRoot(),10));
+ a.addPadding(await pads(a.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=BATCH_WAIT_MS;
  const landed=await a.tick() as {txid:string},genesis=w.options.genesis.head.txid,dir=mkdtempSync(join(tmpdir(),'rollup-withheld-'));
  assert.equal(typeof landed?.txid,'string','the foreign batch lands');
  const b=await w.open(t,{directory:dir,transport:{...w.transport,spentBy:async(head:{txid:string})=>head.txid===genesis?landed.txid:undefined}});
  const mine=await toySpend('mine',b.state.latestRoot(),{withdraw:1000n,program});
- await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),10));
+ await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),BATCH_SLOTS-1));
  for(const step of [BATCH_WAIT_MS,60_000,3_600_000]){
   w.clock.now+=step;
   assert.match(((await b.tick()) as {blocked:string}).blocked,/\/api\/rollup\/external/,`still blocked ${step} ms later`);
@@ -712,7 +712,7 @@ test('a batch whose record is withheld stops batching indefinitely, and only pub
  assert.deepEqual([b.pendingIds(),b.status().pending,existsSync(join(dir,'batches','0.json'))],[['mine'],undefined,false],'without the record nothing ever lands');
  await b.follow({...landedTxs(w.dir),slots:recordAt(w.dir,0).slots as never,at:1});
  assert.equal(b.state.commitment(),a.state.commitment());
- b.addPadding(await pads(b.state.latestRoot(),10));
+ b.addPadding(await pads(b.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now+=BATCH_WAIT_MS;
  assert.equal(((await b.tick()) as {batch:number}).batch,1);
  assert.ok(notesIn(dir,1).has(noteOf(mine)),'the stuck spend rides the first batch after the record arrives');
@@ -722,7 +722,7 @@ test('a user lands a withdrawal from published state alone, and an operator that
  const w=await world(),op=await w.open(t),dir=mkdtempSync(join(tmpdir(),'rollup-user-')),user=await w.open(t,{directory:dir});
  const dest=new Uint8Array(32).fill(0x53);
  await user.submit(await toySpend('user-withdraw',user.state.latestRoot(),{withdraw:1000n,program:dest}));
- user.addPadding(await pads(user.state.latestRoot(),10));
+ user.addPadding(await pads(user.state.latestRoot(),BATCH_SLOTS-1));
  w.clock.now=BATCH_WAIT_MS;
  const landed=await user.tick() as {txid:string};
  assert.equal(typeof landed?.txid,'string','the user\'s own batch lands');

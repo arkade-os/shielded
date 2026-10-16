@@ -6,6 +6,7 @@ import {test} from 'node:test';
 import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,SingleKey,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
+import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
@@ -18,7 +19,7 @@ const token=asset.AssetId.create('cc'.repeat(32),0).toString();
 async function world(){
  const dir=mkdtempSync(join(tmpdir(),'rollup-batch-'));
  writeFileSync(join(dir,'client.json'),JSON.stringify(fixture.clientKey));writeFileSync(join(dir,'batch.json'),JSON.stringify(fixture.batchKey));
- writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',clientJoinKey:'client.json',batchJoinKey:'batch.json',slots:11,token,operator:'aa'.repeat(32)}));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'client.json',batchKey:'batch.json',clientJoinKey:'client.json',batchJoinKey:'batch.json',slots:BATCH_SLOTS,token,operator:'aa'.repeat(32)}));
  const leaves=await loadRollupLeaves(vm,join(dir,'spec.json'));
  const [server,emulator,user]=await Promise.all(['01','02','03'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
  const pool=rollupPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
@@ -27,7 +28,7 @@ async function world(){
  const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fromString(token),null,[asset.AssetInput.create(0,1n)],[asset.AssetOutput.create(0,1n)],[])]);
  const parent=offlineNativeFixture([{script:pool.tree.pkScript,amount:100_330n},{script:userTree.pkScript,amount:2_500n}],[tokenPacket,new UnknownPacket(ROLLUP_STATE_PACKET,hex.decode(fixture.oldPacket))]);
  const coin=(vout:number,tree:VtxoScript,leaf:Uint8Array)=>({txid:parent.id,vout,value:Number(parent.getOutput(vout).amount),sourceTx:parent.toBytes(),tapTree:tree.encode(),leaf:tree.findLeaf(hex.encode(leaf))});
- const legs:RollupLeg[]=Array.from({length:11},()=>({deposit:0n,withdraw:0n,asset:false}));
+ const legs:RollupLeg[]=Array.from({length:BATCH_SLOTS},()=>({deposit:0n,withdraw:0n,asset:false}));
  legs[1]={deposit:2500n,withdraw:0n,asset:false};
  legs[3]={deposit:0n,withdraw:1000n,asset:false,program:hex.decode(fixture.payoutProgram)};
  const witness=rollupWitness(fixture.batch.proof,fixture.slots.map(s=>({proof:s.proof,publics:s.publicSignals.map(BigInt)})));

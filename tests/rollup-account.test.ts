@@ -31,7 +31,7 @@ test('a join merges two notes into one and the account follows it',async()=>{
  const alice=await nineNotes(),before=alice.balance(),[a,b]=alice.notes();
  const built=await alice.join([a!,b!],aliceTo);
  assert.equal(built.witness.slot.nullifiers.length,2);
- assert.deepEqual(built.witness.publicSignals.slice(1),[0n,0n,0n,0n]);
+ assert.deepEqual(built.witness.publicSignals.slice(3),[0n,0n,0n,0n]);
  await alice.apply(await batchOf(alice.state.latestRoot(),[built],'join'));
  assert.equal(alice.balance(),before);
  assert.deepEqual(alice.notes().map(n=>n.amount),[300n,400n,500n,600n,700n,800n,900n,300n]);
@@ -61,7 +61,7 @@ test('a deposit, a transfer and a withdrawal move notes between replicas that ag
  const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);assert.equal(alice.state.commitment(),bob.state.commitment());};
 
  const deposit=await alice.spend({deposit:1000n},aliceTo);
- assert.deepEqual(deposit.witness.publicSignals.slice(1),[1000n,0n,0n,0n]);
+ assert.deepEqual(deposit.witness.publicSignals.slice(3),[1000n,0n,0n,0n]);
  assert.equal(deposit.witness.publicSignals[0],statementOf(hash,{domain:ROLLUP_DOMAIN,...deposit.witness.slot}));
  await apply(await batchOf(alice.state.latestRoot(),[deposit]));
  assert.equal(alice.balance(),1000n);assert.equal(bob.balance(),0n);
@@ -72,7 +72,7 @@ test('a deposit, a transfer and a withdrawal move notes between replicas that ag
  await assert.rejects(alice.spend({input:note!,to:{recipient:bobTo,amount:1001n}},aliceTo),/does not balance/);
  const transfer=await alice.spend({input:note!,to:{recipient:bobTo,amount:300n}},aliceTo);
  assert.equal(transfer.change,700n);
- assert.deepEqual(transfer.witness.publicSignals.slice(1),[0n,0n,0n,0n]);
+ assert.deepEqual(transfer.witness.publicSignals.slice(3),[0n,0n,0n,0n]);
  await apply(await batchOf(alice.state.latestRoot(),[transfer]));
  assert.equal(alice.balance(),700n);assert.equal(bob.balance(),300n);
  assert.ok(!alice.notes().some(n=>n.nullifier===note!.nullifier));
@@ -81,7 +81,7 @@ test('a deposit, a transfer and a withdrawal move notes between replicas that ag
  const program=hex.decode('ab'.repeat(32));
  await assert.rejects(bob.spend({input:bob.notes()[0]!,withdraw:100n},bobTo),/payout program/);
  const withdrawal=await bob.spend({input:bob.notes()[0]!,withdraw:100n,program},bobTo);
- assert.deepEqual(withdrawal.witness.publicSignals.slice(1),[0n,100n,0n,destinationFieldOf(program)]);
+ assert.deepEqual(withdrawal.witness.publicSignals.slice(3),[0n,100n,0n,destinationFieldOf(program)]);
  await apply(await batchOf(bob.state.latestRoot(),[withdrawal]));
  assert.equal(bob.balance(),200n);assert.equal(alice.balance(),700n);
 });
@@ -108,7 +108,7 @@ test('an asset enters and leaves with its 330-sat BTC carrier, and moves private
  const alice=RollupAccount.owning(hash,aliceKeys),bob=RollupAccount.owning(hash,bobKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ac'.repeat(32));
  const apply=async(batch:PublishedBatch)=>{await alice.apply(batch);await bob.apply(batch);};
  const deposit=await alice.depositAsset(x,1000n,330n,aliceTo);
- assert.deepEqual(deposit.map(s=>s.witness.publicSignals.slice(1,4)),[[1000n,0n,x],[330n,0n,0n]]);
+ assert.deepEqual(deposit.map(s=>s.witness.publicSignals.slice(3,6)),[[1000n,0n,x],[330n,0n,0n]]);
  assert.ok(deposit.every(s=>s.witness.slot.groupSize===2&&s.witness.slot.groupId===deposit[0]!.witness.slot.groupId));
  await apply(await batchOf(alice.state.latestRoot(),deposit));
  assert.equal(alice.balance(x),1000n);assert.equal(alice.balance(),330n);
@@ -117,7 +117,7 @@ test('an asset enters and leaves with its 330-sat BTC carrier, and moves private
  await apply(await batchOf(alice.state.latestRoot(),pay));
  assert.equal(bob.balance(x),400n);assert.equal(alice.balance(x),600n);
  const out=await alice.withdrawAsset(x,250n,program,aliceTo);
- assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(2,5)),[[250n,x,destinationFieldOf(program)],[330n,0n,destinationFieldOf(program)]],'the payout comes first, then its carrier');
+ assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(4,7)),[[250n,x,destinationFieldOf(program)],[330n,0n,destinationFieldOf(program)]],'the payout comes first, then its carrier');
  await apply(await batchOf(alice.state.latestRoot(),out));
  assert.equal(alice.balance(x),350n);assert.equal(alice.balance(),0n);
  await assert.rejects(alice.withdrawAsset(x,10n,program,aliceTo),/carrier/);
@@ -192,7 +192,7 @@ test('an asset and sats leave together: the carrier withdraws the sats, so one o
  const alice=RollupAccount.owning(hash,aliceKeys),x=assetFieldOfId('dd'.repeat(34)),program=hex.decode('ae'.repeat(32));
  await alice.apply(await batchOf(alice.state.latestRoot(),[...await alice.depositAsset(x,1000n,330n,aliceTo),await alice.spend({deposit:2000n},aliceTo)]));
  const out=await alice.withdrawAsset(x,100n,program,aliceTo,new Set(),1500n);
- assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(2,4)),[[100n,x],[1500n,0n]]);
+ assert.deepEqual(out.map(s=>s.witness.publicSignals.slice(4,6)),[[100n,x],[1500n,0n]]);
  await assert.rejects(alice.withdrawAsset(x,100n,program,aliceTo,new Set(),329n),/at least 330/);
 });
 

@@ -7,7 +7,7 @@ import type {RollupSpend} from '../src/rollup/batcher.ts';
 import {decodeSpend,encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 
 const spend:Omit<RollupSpend,'receivedAt'>={id:'ab'.repeat(16),slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:99n,groupSize:2},
- publics:[1n,2n,0n,0n,0n],proof:{pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']},ciphertext:Uint8Array.of(1,2,3),program:new Uint8Array(32).fill(4),asset:'cc'.repeat(34)};
+ publics:[1n,2n,0n,0n,0n,0n,0n],proof:{pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']},ciphertext:Uint8Array.of(1,2,3),program:new Uint8Array(32).fill(4),asset:'cc'.repeat(34)};
 
 test('a stored spend decodes to the spend that was admitted, and keeps the coin it named',()=>{
  const coin={txid:'dd'.repeat(32),vout:1,tapTree:'aa',leaf:'bb'};

@@ -11,9 +11,9 @@ after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}})
 test('the prover proves in a child process and refuses a proof of other public signals',async()=>{
  const calls:string[][]=[];
  const prover=createRollupProver({wasm:toy('covenant-client.wasm'),zkey:toy('covenant-client.zkey')},undefined,(file,args)=>{calls.push(args);return runChild(file,args);});
- const input={pub:9n,deposit:0n,withdraw:0n,boundaryAsset:0n,destination:0n,w:3n};
- const proof=await prover.prove(input,[9n,0n,0n,0n,0n]);
+ const input={pub:9n,nf0:0n,nf1:0n,deposit:0n,withdraw:0n,boundaryAsset:0n,destination:0n,w:3n};
+ const proof=await prover.prove(input,[9n,0n,0n,0n,0n,0n,0n]);
  assert.deepEqual(calls.map(args=>args.slice(1,3)),[['groth16','fullprove']]);
- assert.equal(await verifyRollupProof(fixture.clientKey,[9n,0n,0n,0n,0n],proof),true);
- await assert.rejects(prover.prove(input,[9n,1n,0n,0n,0n]),/public signals differ/);
+ assert.equal(await verifyRollupProof(fixture.clientKey,[9n,0n,0n,0n,0n,0n,0n],proof),true);
+ await assert.rejects(prover.prove(input,[9n,1n,0n,0n,0n,0n,0n]),/public signals differ/);
 });

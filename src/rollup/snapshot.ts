@@ -68,7 +68,7 @@ export function writeSnapshot(path:string,bytes:Uint8Array):void {
 export function headCommitment(sourceTxHex:string):bigint|undefined {
  try{
   const packet=Extension.fromTx(Transaction.fromRaw(hex.decode(sourceTxHex),{allowUnknownOutputs:true})).getPacketByType(ROLLUP_STATE_PACKET)?.serialize();
-  return packet?.length===64?get(Buffer.from(packet),0):undefined;
+  return packet?.length===96?get(Buffer.from(packet),0):undefined;
  }catch{return undefined;}
 }
 
