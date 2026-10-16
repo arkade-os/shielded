@@ -53,11 +53,12 @@ export function transferBody(id:string,built:BuiltSpend,proof:Groth16Proof,extra
   ...(extra.program?{program:hex.encode(extra.program)}:{}),...(extra.coin?{coin:extra.coin}:{}),...(extra.asset?{asset:extra.asset}:{})};
 }
 
-/** A two-nullifier slot proves with the join circuit, so a wallet that never merges never downloads it. */
-export function provingUrls(built:BuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>,origin=''){
- const circuit=built.witness.slot.nullifiers.length===2?'join':'spend',keys=proving[circuit];
+export function circuitUrls(circuit:'spend'|'join',proving:NonNullable<RollupPoolStatus['proving']>,origin=''){
+ const keys=proving[circuit];
  return {wasm:`${origin}/api/rollup/proving/${circuit}.wasm?v=${keys.wasm}`,zkey:`${origin}/api/rollup/proving/${circuit}.zkey?v=${keys.zkey}`};
 }
+/** A two-nullifier slot proves with the join circuit, so a wallet that never merges never downloads it. */
+export const provingUrls=(built:BuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>,origin='')=>circuitUrls(built.witness.slot.nullifiers.length===2?'join':'spend',proving,origin);
 
 /** Batch inputs spend checkpoint outputs, so the pool head is checkpoint 0's input and our coin is our checkpoint's. */
 export function checkSigningRequest(request:SpendStatus,coin:{txid:string;vout:number},poolScript:string){

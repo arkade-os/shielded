@@ -1,7 +1,7 @@
 import type {PublishedBatch,RollupAccount} from '../../packages/protocol/src/rollup/account.ts';
 import type {PoolApi} from './pool.ts';
 
-export const WATCHDOG_MS=60_000;
+export const WATCHDOG_MS=60_000,EVENT_RETRY_MS=[0,1000,2000,4000,8000];
 export interface BatchPage {total:number;batches:PublishedBatch[]}
 const running=new WeakMap<RollupAccount,Promise<number>>();
 
@@ -32,4 +32,14 @@ export function catchUp(account:RollupAccount,api:PoolApi,onBatch?:(cursor:numbe
  })();
  running.set(account,run);
  return run.finally(()=>{if(running.get(account)===run)running.delete(account);});
+}
+
+/** The head moves as soon as arkd takes a batch, a moment before the pool records it, so a catch-up that finds nothing looks again. */
+export async function catchUpAfterEvent(run:()=>Promise<number>,stopped:()=>boolean,delays:readonly number[]=EVENT_RETRY_MS):Promise<number>{
+ for(const ms of delays){
+  if(ms)await new Promise(resolve=>setTimeout(resolve,ms));
+  if(stopped())return 0;
+  try{const applied=await run();if(applied)return applied;}catch{/* the next delay looks again */}
+ }
+ return 0;
 }
