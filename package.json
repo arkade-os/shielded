@@ -29,6 +29,7 @@
     "@scure/btc-signer": "2.4.1",
     "circomlib": "2.0.5",
     "circomlibjs": "0.1.7",
+    "compression": "1.8.2",
     "express": "5.3.0",
     "ffjavascript": "^0.3.1",
     "nostr-tools": "2.25.2",
@@ -37,6 +38,7 @@
     "snarkjs": "0.7.6"
   },
   "devDependencies": {
+    "@types/compression": "1.8.1",
     "@types/express": "5.0.6",
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
