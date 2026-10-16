@@ -67,7 +67,7 @@ func rollupScriptNum(v uint32) []byte {
 // extension] and executes the renewal leaf on inputs 1 and 2.
 func (c rollupRenewal) run(t *testing.T) error {
 	t.Helper()
-	w := newRollupWorld(t, 11, 0, 9)
+	w := newRollupWorld(t, 10, 0, 9)
 	leaf, err := buildRollupRenewalLeaf(w.token, schnorr.SerializePubKey(rollupRenewalOperator.PubKey()))
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestRollupRenewalLeaf(t *testing.T) {
 	if err := (rollupRenewal{message: rollupRegisterMessage}).run(t); err != nil {
 		t.Fatalf("operator renewal rejected: %v", err)
 	}
-	w := newRollupWorld(t, 11, 0, 9)
+	w := newRollupWorld(t, 10, 0, 9)
 	changed := bytes.Clone(w.oldPacket)
 	changed[0] ^= 1
 	for name, c := range map[string]rollupRenewal{

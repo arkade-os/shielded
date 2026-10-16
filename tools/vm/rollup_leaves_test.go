@@ -49,10 +49,10 @@ func rollupFixtureKeys(t *testing.T) (client, batch rollupKey) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
-	if client, err = parseRollupKey(f.ClientKey, 5); err != nil {
+	if client, err = parseRollupKey(f.ClientKey, 7); err != nil {
 		t.Fatal(err)
 	}
-	if batch, err = parseRollupKey(f.BatchKey, 12); err != nil {
+	if batch, err = parseRollupKey(f.BatchKey, 11); err != nil {
 		t.Fatal(err)
 	}
 	return client, batch
@@ -61,11 +61,11 @@ func rollupFixtureKeys(t *testing.T) (client, batch rollupKey) {
 // The join leaf is the spend leaf with another kind byte: same length, same budgets.
 func TestRollupJoinLeafMatchesTheSpendLeafShape(t *testing.T) {
 	client, batch := rollupFixtureKeys(t)
-	spend, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Kind: 0, Client: client, Batch: batch})
+	spend, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 0, Client: client, Batch: batch})
 	if err != nil {
 		t.Fatal(err)
 	}
-	join, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Kind: 1, Client: client, Batch: batch})
+	join, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Client: client, Batch: batch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,24 +81,24 @@ func TestRollupLeavesManifest(t *testing.T) {
 	token := asset.AssetId{Index: 0}
 	token.Txid[0] = 0xcc
 	operator := schnorr.SerializePubKey(rollupRenewalOperator.PubKey())
-	spec := rollupLeavesSpec{Slots: 11, Token: token.String(), Operator: hex.EncodeToString(operator)}
+	spec := rollupLeavesSpec{Slots: 10, Token: token.String(), Operator: hex.EncodeToString(operator)}
 	got, err := buildRollupLeaves(writeRollupLeavesSpec(t, spec))
 	if err != nil {
 		t.Fatal(err)
 	}
 	client, batch := rollupFixtureKeys(t)
-	leaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Client: client, Batch: batch})
-	joinLeaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Kind: 1, Client: client, Batch: batch})
+	leaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Client: client, Batch: batch})
+	joinLeaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Client: client, Batch: batch})
 	reserve, _ := buildRollupReserveLeaf(token)
 	renew, _ := buildRollupRenewalLeaf(token, operator)
-	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), BatchJoin: hex.EncodeToString(joinLeaf.Script), Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 41, Pairs: 16}
+	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), BatchJoin: hex.EncodeToString(joinLeaf.Script), Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 40, Pairs: 15}
 	if got != want {
 		t.Fatalf("manifest differs from the direct builds: ecmul %d pairs %d", got.ECMul, got.Pairs)
 	}
 	for name, bad := range map[string]rollupLeavesSpec{
-		"batch key for another slot count": {Slots: 10, Token: spec.Token, Operator: spec.Operator},
-		"malformed token":                  {Slots: 11, Token: "zz", Operator: spec.Operator},
-		"short operator key":               {Slots: 11, Token: spec.Token, Operator: "02"},
+		"batch key for another slot count": {Slots: 11, Token: spec.Token, Operator: spec.Operator},
+		"malformed token":                  {Slots: 10, Token: "zz", Operator: spec.Operator},
+		"short operator key":               {Slots: 10, Token: spec.Token, Operator: "02"},
 	} {
 		if _, err := buildRollupLeaves(writeRollupLeavesSpec(t, bad)); err == nil {
 			t.Errorf("%s: leaves built", name)

@@ -67,11 +67,11 @@ func TestRollupBatchLeafVerifiesSnarkJSProofs(t *testing.T) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
-	client, err := parseRollupKey(f.ClientKey, 5)
+	client, err := parseRollupKey(f.ClientKey, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	batch, err := parseRollupKey(f.BatchKey, 12)
+	batch, err := parseRollupKey(f.BatchKey, 11)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,13 +82,13 @@ func TestRollupBatchLeafVerifiesSnarkJSProofs(t *testing.T) {
 		}
 		return b
 	}
-	w := newRollupWorld(t, 11, 0, 1)
-	if w.leaf, err = buildRollupBatchLeaf(rollupLeafConfig{Slots: 11, Client: client, Batch: batch}); err != nil {
+	w := newRollupWorld(t, 10, 0, 1)
+	if w.leaf, err = buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Client: client, Batch: batch}); err != nil {
 		t.Fatal(err)
 	}
 	newPacket := decode(f.NewPacket)
-	w.oldPacket, w.newState, w.newDA = decode(f.OldPacket), newPacket[:32], newPacket[32:]
-	legs := make([]rollupLeg, 11)
+	w.oldPacket, w.newState, w.newDA, w.newBlock = decode(f.OldPacket), newPacket[:32], newPacket[32:64], newPacket[64:]
+	legs := make([]rollupLeg, 10)
 	legs[1] = rollupLeg{dep: 2500, inSats: 2500}
 	legs[3] = rollupLeg{wd: 1000, dest: decode(f.PayoutProgram)}
 	b := w.batchOf(legs, false)

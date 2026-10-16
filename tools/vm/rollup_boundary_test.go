@@ -15,7 +15,7 @@ import (
 // carrier, vout 4 BTC payout, vout 5 anchor.
 func rollupBoundaryBatch(t *testing.T, mutate func([]rollupLeg)) *rollupBatch {
 	t.Helper()
-	w := newRollupWorld(t, 11, 0, 7)
+	w := newRollupWorld(t, 10, 0, 7)
 	legs := w.honestLegs(true)
 	if mutate != nil {
 		mutate(legs)
@@ -24,7 +24,7 @@ func rollupBoundaryBatch(t *testing.T, mutate func([]rollupLeg)) *rollupBatch {
 }
 
 func TestRollupBatchLeafAcceptsBoundaryBatches(t *testing.T) {
-	w := newRollupWorld(t, 11, 0, 7)
+	w := newRollupWorld(t, 10, 0, 7)
 	for _, c := range []struct {
 		name    string
 		legs    []rollupLeg
@@ -84,7 +84,7 @@ func TestRollupBatchLeafRejectsBTCLegAttacks(t *testing.T) {
 	b.depositAs[4] = new(big.Int).Sub(rollupScalarField, big.NewInt(5))
 	b.prove()
 	b.buildWitness()
-	b.witness[b.slotItem(4, 9)] = []byte{0x85}
+	b.witness[b.slotItem(4, 11)] = []byte{0x85}
 	b.tx.TxOut[0].Value -= 5
 	rollupExpectReject(t, "negative deposit drains the head", b, "OP_VERIFY")
 }
@@ -131,8 +131,8 @@ func TestRollupBatchLeafRejectsAssetAttacks(t *testing.T) {
 	insertPayout(b, 3)
 	rollupExpectReject(t, "asset payout without its carrier slot", b, "OP_VERIFY")
 
-	b = rollupBoundaryBatch(t, func(legs []rollupLeg) { legs[10], legs[6], legs[7] = legs[6], rollupLeg{}, rollupLeg{} })
-	insertPayout(b, 4)
+	b = rollupBoundaryBatch(t, func(legs []rollupLeg) { legs[9], legs[6], legs[7] = legs[6], rollupLeg{}, rollupLeg{} })
+	insertPayout(b, 3)
 	rollupExpectReject(t, "asset payout in the last slot", b, "script returned early")
 
 	b = rollupBoundaryBatch(t, nil)
@@ -141,7 +141,7 @@ func TestRollupBatchLeafRejectsAssetAttacks(t *testing.T) {
 	rollupSetOutput(x, 4, 1)
 	rollupExpectReject(t, "reserve skimmed by one unit", b, "OP_NUMEQUALVERIFY")
 
-	w := newRollupWorld(t, 11, 0, 7)
+	w := newRollupWorld(t, 10, 0, 7)
 	b = w.batchOf(w.honestLegs(false), true)
 	x = b.group(b.w.x)
 	rollupSetOutput(x, 1, b.w.xIn-100)

@@ -38,16 +38,16 @@ const le248 = (bytes) => {
   for (let i = 30; i >= 0; i--) value = (value << 8n) | BigInt(digest[i]);
   return value;
 };
-const packet = (a, b) => Buffer.concat([Buffer.alloc(31, a), Buffer.alloc(1), Buffer.alloc(31, b), Buffer.alloc(1)]);
-const oldPacket = packet(0x0a, 0x0b), newPacket = packet(0x0c, 0x0d), payoutProgram = Buffer.alloc(32, 0x51);
+const packet = (a, b, c) => Buffer.concat([Buffer.alloc(31, a), Buffer.alloc(1), Buffer.alloc(31, b), Buffer.alloc(1), Buffer.alloc(31, c), Buffer.alloc(1)]);
+const oldPacket = packet(0x0a, 0x0b, 0x0e), newPacket = packet(0x0c, 0x0d, 0x0f), payoutProgram = Buffer.alloc(32, 0x51);
 const slots = [];
-for (let i = 0; i < 11; i++) {
+for (let i = 0; i < 10; i++) {
   const w = BigInt(i + 2);
-  const input = {pub: w * w, deposit: i === 1 ? 2500n : 0n, withdraw: i === 3 ? 1000n : 0n, boundaryAsset: 0n, destination: i === 3 ? le248(payoutProgram) : 0n, w};
+  const input = {pub: w * w, nf0: w, nf1: 0n, deposit: i === 1 ? 2500n : 0n, withdraw: i === 3 ? 1000n : 0n, boundaryAsset: 0n, destination: i === 3 ? le248(payoutProgram) : 0n, w};
   const strings = Object.fromEntries(Object.entries(input).map(([key, value]) => [key, value.toString()]));
   slots.push(await snarkjs.groth16.fullProve(strings, file('covenant-client_js/covenant-client.wasm'), file('covenant-client.zkey')));
 }
-const binding = Buffer.concat([Buffer.from([0x53, 0x48, 2, 0, 11]), oldPacket.subarray(0, 32), newPacket]);
+const binding = Buffer.concat([Buffer.from([0x53, 0x48, 2, 0, 10]), oldPacket.subarray(0, 32), newPacket]);
 const x = [...slots.map((slot) => slot.publicSignals[0]), le248(binding).toString()];
 const batch = await snarkjs.groth16.fullProve({x}, file('covenant-batch_js/covenant-batch.wasm'), file('covenant-batch.zkey'));
 const fixture = {clientKey: keys['covenant-client'], batchKey: keys['covenant-batch'], oldPacket: oldPacket.toString('hex'), newPacket: newPacket.toString('hex'), payoutProgram: payoutProgram.toString('hex'), slots, batch};

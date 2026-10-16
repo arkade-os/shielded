@@ -64,6 +64,7 @@ type rollupWorld struct {
 	xIn                uint64
 	oldPacket          []byte
 	newState, newDA    []byte
+	newBlock           []byte
 	poolSPK, userSPK   []byte
 	emulatorSigningKey *btcec.PrivateKey
 }
@@ -71,7 +72,7 @@ type rollupWorld struct {
 func newRollupWorld(t *testing.T, slots int, kind byte, seed int64) *rollupWorld {
 	t.Helper()
 	rng := rand.New(rand.NewSource(seed))
-	client := newRollupTrapdoor(rng, nil, 5)
+	client := newRollupTrapdoor(rng, nil, 7)
 	batch := newRollupTrapdoor(rng, client, slots+1)
 	w := &rollupWorld{slots: slots, kind: kind, rng: rng, client: client, batch: batch}
 	leaf, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: slots, Kind: kind, Client: client.key, Batch: batch.key})
@@ -86,8 +87,9 @@ func newRollupWorld(t *testing.T, slots int, kind byte, seed int64) *rollupWorld
 	}
 	w.headIn, w.xIn = 100_330, 10_000
 	state := func() []byte { b := make([]byte, 32); rng.Read(b[:31]); return b }
-	w.oldPacket = append(state(), state()...)
-	w.newState, w.newDA = state(), state()
+	// The 0x87 packet is 96 bytes: new state, DA root, appended note-block root.
+	w.oldPacket = append(append(state(), state()...), state()...)
+	w.newState, w.newDA, w.newBlock = state(), state(), state()
 	w.poolSPK = rollupP2TR(bytes.Repeat([]byte{0x11}, 32))
 	w.userSPK = rollupP2TR(bytes.Repeat([]byte{0x22}, 32))
 	if w.emulatorSigningKey, err = btcec.NewPrivateKey(); err != nil {
@@ -127,6 +129,7 @@ type rollupBatch struct {
 	legs       []rollupLeg
 	reserve    bool
 	pubs       []*big.Int
+	nfs        [][2]*big.Int
 	proofs     []rollupProof
 	assetAs    map[int]*big.Int
 	depositAs  map[int]*big.Int
@@ -145,6 +148,12 @@ func (w *rollupWorld) batchOf(legs []rollupLeg, reserve bool) *rollupBatch {
 	b := &rollupBatch{w: w, legs: legs, reserve: reserve, assetAs: map[int]*big.Int{}, depositAs: map[int]*big.Int{}, zeroDest: map[int]bool{}, reserveVin: 1, batchKind: w.kind}
 	for range legs {
 		b.pubs = append(b.pubs, new(big.Int).Rand(w.rng, rollupScalarField))
+		// A spend slot spends one note, a join two; the circuit pins a spend slot's unused nullifier to 0.
+		nf := [2]*big.Int{new(big.Int).Rand(w.rng, rollupScalarField), big.NewInt(0)}
+		if w.kind == 1 {
+			nf[1] = new(big.Int).Rand(w.rng, rollupScalarField)
+		}
+		b.nfs = append(b.nfs, nf)
 	}
 	b.prove()
 	b.buildTx()
@@ -168,12 +177,12 @@ func (b *rollupBatch) publics(i int) []*big.Int {
 	if v, ok := b.depositAs[i]; ok {
 		dep = v
 	}
-	return []*big.Int{b.pubs[i], dep, new(big.Int).SetUint64(l.wd), a, d}
+	return []*big.Int{b.pubs[i], b.nfs[i][0], b.nfs[i][1], dep, new(big.Int).SetUint64(l.wd), a, d}
 }
 
-// slotItem is the witness index of slot i's field f: 0-7 proof, 8 pub, 9
-// deposit, 10 withdraw, 11 boundaryAsset, 12 destination.
-func (b *rollupBatch) slotItem(i, f int) int { return 8 + (b.w.slots-1-i)*13 + f }
+// slotItem is the witness index of slot i's field f: 0-7 proof, 8 pub, 9 nf0,
+// 10 nf1, 11 deposit, 12 withdraw, 13 boundaryAsset, 14 destination.
+func (b *rollupBatch) slotItem(i, f int) int { return 8 + (b.w.slots-1-i)*15 + f }
 
 func (b *rollupBatch) prove() {
 	b.proofs = nil
@@ -198,8 +207,9 @@ func (b *rollupBatch) buildWitness() {
 	b.witness = wit
 }
 
-// rollupPublicItems encodes pub, deposit and withdraw as script numbers, and
-// boundaryAsset and destination as 32-byte little-endian; zero is empty.
+// rollupPublicItems encodes pub, the two nullifiers, deposit and withdraw as
+// script numbers, and boundaryAsset and destination as 32-byte little-endian;
+// zero is empty.
 func rollupPublicItems(x []*big.Int) [][]byte {
 	optional := func(v *big.Int, fixed bool) []byte {
 		if v.Sign() == 0 {
@@ -210,12 +220,13 @@ func rollupPublicItems(x []*big.Int) [][]byte {
 		}
 		return scriptNumBytes(v)
 	}
-	return [][]byte{scriptNumBytes(x[0]), optional(x[1], false), optional(x[2], false), optional(x[3], true), optional(x[4], true)}
+	return [][]byte{scriptNumBytes(x[0]), optional(x[1], false), optional(x[2], false),
+		optional(x[3], false), optional(x[4], false), optional(x[5], true), optional(x[6], true)}
 }
 
 func (b *rollupBatch) buildTx() {
 	w := b.w
-	b.newPacket = append(append([]byte{}, w.newState...), w.newDA...)
+	b.newPacket = append(append(append([]byte{}, w.newState...), w.newDA...), w.newBlock...)
 	parent := wire.NewMsgTx(3)
 	parent.AddTxIn(&wire.TxIn{PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{0x70}}})
 	parent.AddTxOut(wire.NewTxOut(w.headIn, w.poolSPK))

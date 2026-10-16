@@ -27,7 +27,7 @@ func rollupTransfers(w *rollupWorld) *rollupBatch {
 
 func TestRollupBatchLeafAcceptsTransferBatches(t *testing.T) {
 	for _, kind := range []byte{0, 1} {
-		w := newRollupWorld(t, 11, kind, 7)
+		w := newRollupWorld(t, 10, kind, 7)
 		if w.leaf.ECMul > 50 || w.leaf.Pairs > 16 {
 			t.Fatalf("leaf exceeds the per-input caps: %d OP_ECMUL, %d pairs", w.leaf.ECMul, w.leaf.Pairs)
 		}
@@ -39,7 +39,7 @@ func TestRollupBatchLeafAcceptsTransferBatches(t *testing.T) {
 }
 
 func TestRollupBatchLeafRejectsProofAndStateAttacks(t *testing.T) {
-	fresh := func() *rollupBatch { return rollupTransfers(newRollupWorld(t, 11, 0, 7)) }
+	fresh := func() *rollupBatch { return rollupTransfers(newRollupWorld(t, 10, 0, 7)) }
 	b := fresh()
 	b.proofs[0].A = b.proofs[1].A
 	b.buildWitness()
@@ -68,7 +68,7 @@ func TestRollupBatchLeafRejectsProofAndStateAttacks(t *testing.T) {
 	b.buildWitness()
 	rollupExpectReject(t, "join-kind statement on a spend leaf", b, "OP_VERIFY")
 
-	w := newRollupWorld(t, 11, 1, 9)
+	w := newRollupWorld(t, 10, 1, 9)
 	b = rollupTransfers(w)
 	b.batchKind = 0
 	b.buildWitness()
@@ -76,7 +76,7 @@ func TestRollupBatchLeafRejectsProofAndStateAttacks(t *testing.T) {
 }
 
 func TestRollupBatchLeafKeepsTheHead(t *testing.T) {
-	fresh := func() *rollupBatch { return rollupTransfers(newRollupWorld(t, 11, 0, 7)) }
+	fresh := func() *rollupBatch { return rollupTransfers(newRollupWorld(t, 10, 0, 7)) }
 	b := fresh()
 	b.tx.TxOut[0].Value++
 	rollupExpectReject(t, "head value off by one", b, "OP_NUMEQUALVERIFY")
