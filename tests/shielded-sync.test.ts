@@ -4,7 +4,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
-import {catchUp,idle,WATCHDOG_MS} from '../src/shielded/sync.ts';
+import {catchUp,catchUpAfterEvent,idle,WATCHDOG_MS} from '../src/shielded/sync.ts';
 import {loadAccount} from '../src/shielded/wallet.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
@@ -151,4 +151,16 @@ for(const rejects of [false,true])test(`page checkpoints hold the flight through
   assert.equal(saved,false);assert.deepEqual(events,['applying']);
   finishApply.resolve();await checkedLeader;assert.equal(await follower,1);assert.equal(await snapshot,2);assert.deepEqual(pages,[1,2]);
  }finally{checkpoint.resolve();finishApply.resolve();await Promise.allSettled([checkedLeader,follower,snapshot]);}
+});
+
+test('a pool event that finds no new batch looks again shortly, until one lands, the delays run out or the wallet stops',async()=>{
+ let calls=0;
+ assert.equal(await catchUpAfterEvent(async()=>++calls===3?2:0,()=>false,[0,1,1,1]),2);
+ assert.equal(calls,3,'it stops at the first catch-up that applies a batch');
+ calls=0;
+ assert.equal(await catchUpAfterEvent(async()=>{calls++;return 0;},()=>false,[0,1,1]),0);
+ assert.equal(calls,3,'it gives up after the last delay and leaves the rest to the watchdog');
+ let stopped=false;calls=0;
+ assert.equal(await catchUpAfterEvent(async()=>{calls++;stopped=true;return 0;},()=>stopped,[0,1,1]),0);
+ assert.equal(calls,1,'a stopped wallet does not look again');
 });
