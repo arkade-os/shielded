@@ -13,12 +13,15 @@ test('a pool-script coin holding one new asset and the dust lists that asset onc
   coin('4',329,[{assetId:y,amount:1n}]),
   coin('5',330,[{assetId:y,amount:1n},{assetId:x,amount:1n}]),
   coin('6',330,[]),
- ],token,new Set());
+ ],token,new Set()).adopt;
  assert.deepEqual(found.map(f=>[f.assetId,f.coin.txid[0],f.amount]),[[x,'3',5n]],'the larger listing of an asset wins');
- assert.deepEqual(listingsOf([coin('2',330,[{assetId:x,amount:1n}])],token,new Set([x])),[],'an asset with a reserve is not listed again');
+ assert.deepEqual(listingsOf([coin('2',330,[{assetId:x,amount:1n}])],token,new Set([x])),{adopt:[],dropped:[]},'an asset with a reserve is not listed again');
 });
 
 test('listings stop at the reserve cap, since every reserve rides along in each renewal',()=>{
- const many=Array.from({length:MAX_RESERVES+2},(_,i)=>coin(String(i%10),330,[{assetId:i.toString(16).padStart(2,'0').repeat(34),amount:1n}]));
- assert.equal(listingsOf(many,token,new Set(['dd'.repeat(34)])).length,MAX_RESERVES-1);
+ const id=(i:number)=>i.toString(16).padStart(2,'0').repeat(34);
+ const many=Array.from({length:MAX_RESERVES+2},(_,i)=>coin(String(i%10),330,[{assetId:id(i),amount:1n}]));
+ const found=listingsOf(many,token,new Set(['dd'.repeat(34)]));
+ assert.equal(found.adopt.length,MAX_RESERVES-1);
+ assert.deepEqual(found.dropped,[id(MAX_RESERVES-1),id(MAX_RESERVES),id(MAX_RESERVES+1)],'the listings the cap turns away are named, since each cost its lister a coin');
 });

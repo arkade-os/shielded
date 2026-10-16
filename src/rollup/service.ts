@@ -24,8 +24,8 @@ import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupLeaves} fr
 import {loadRollupLeaves} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord} from './operator.ts';
 import {createRollupProver} from './prover.ts';
-import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool} from './renewal.ts';
-import {listingsOf} from './listings.ts';
+import {flushRollupIntent,leftoverRenewal,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
+import {listingsOf,MAX_RESERVES} from './listings.ts';
 import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
 
@@ -34,14 +34,14 @@ export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend',
 const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=2*BATCH_SLOTS;
 // The batch-join setup alone peaked at 4.11 GiB single-threaded; the server process needs room beside it.
 const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
-// arkd sweeps a pool coin at its batch expiry, so the head moves to a fresh round well before. A batch inherits its
+// arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
 
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
- pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>};
+ pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves:Record<string,string>;maxReserves:number};
  network?:StockNetworkInfo;
  proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;
 }
@@ -296,8 +296,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(stopped)return;
    try{
     if(existsSync(renewalPath))await exclusive(settleRenewal);
-    const {head}=operator.status().archive,{vtxos}=await live!.indexer.getVtxos({outpoints:[{txid:head.txid,vout:head.vout}]}),expires=vtxos[0]?.expiresAt;
-    if(expires instanceof Date&&expires.getTime()-Date.now()<(o.renewBeforeMs??RENEW_BEFORE_MS))await exclusive(async()=>{
+    const points=rollupPoolPoints(operator.status().archive),{vtxos}=await live!.indexer.getVtxos({outpoints:points});
+    if(rollupRenewalDue(points,vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))await exclusive(async()=>{
      const from=operator.status().archive.head;
      try{
       const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,
@@ -308,14 +308,16 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    }catch(error){note('renewal: '+(error as Error).message);}
    later(renew,RENEW_CHECK_MS);
   };
+  const turnedAway=new Set<string>();
   const list=async()=>{
    if(stopped)return;
    try{
     const {archive}=operator.status(),{vtxos}=await live!.indexer.getVtxos({scripts:[hex.encode(live!.pool.tree.pkScript)],spendableOnly:true});
     const found=listingsOf(vtxos,live!.genesis.token,new Set(Object.keys(archive.reserves)));
-    if(found.length)await exclusive(async()=>{
+    for(const assetId of found.dropped)if(!turnedAway.has(assetId)){turnedAway.add(assetId);log(`the pool already holds ${MAX_RESERVES} reserves, so the listing of ${assetId} is ignored`);}
+    if(found.adopt.length)await exclusive(async()=>{
      const reserves={...operator.status().archive.reserves};
-     for(const f of found){
+     for(const f of found.adopt){
       const raw=(await live!.indexer.getVirtualTxs([f.coin.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===f.coin.txid);
       if(!raw)continue;
       reserves[f.assetId]={txid:f.coin.txid,vout:f.coin.vout,value:f.coin.value,sourceTxHex:hex.encode(raw.toBytes(true,true)),amount:String(f.amount)};
@@ -336,7 +338,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,{archive}=operator.status();
    return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(operator.state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),
-    reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount]))}};
+    reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
   step:async()=>{
