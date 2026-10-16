@@ -9,7 +9,7 @@ import { ctDigestOf, openRollupNotes, rollupViewTag, sealRollupNotes, viewEcdh, 
 
 /** A slot as the operator publishes it: decimal field elements plus the hex note record. */
 export interface PublishedSlot { root: string; nullifiers: string[]; commitments: [string, string]; ctDigest: string; groupId: string; groupSize: number; publics?: string[]; ciphertext?: string }
-export interface PublishedBatch { kind: BatchKind; slots: PublishedSlot[]; txid?: string; at?: number }
+export interface PublishedBatch { kind: BatchKind; slots: PublishedSlot[]; noteBlockRoot?: string; txid?: string; at?: number }
 export interface OwnedNote extends RollupNote { index: number; nullifier: bigint }
 /** One slot, or one whole group, that moved this wallet's notes. Amounts are per asset field, BTC being 0. */
 export interface HistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw' | 'merge'; batch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: OwnedNote[]; destination?: bigint; slots: number[] }
@@ -79,7 +79,12 @@ export class RollupAccount {
  async apply(batch: PublishedBatch): Promise<OwnedNote[]> {
   const number = this.batchCount, base = number * 32;
   if (batch.txid) this.txids.add(batch.txid);
-  if (!this.frontier) this.state.apply(batch.kind, batch.slots.map(slotOf));
+  // A withheld record reaches us with only its nullifiers and block root; seal the block as one subtree and find no notes in it.
+  const chainOnly = batch.noteBlockRoot !== undefined;
+  if (!this.frontier) {
+   if (chainOnly) this.state.applyFromChain(batch.kind, batch.slots.map(slot => slot.nullifiers.map(BigInt)), BigInt(batch.noteBlockRoot!));
+   else this.state.apply(batch.kind, batch.slots.map(slotOf));
+  }
   const spent = batch.slots.map(slot => slot.nullifiers.flatMap(nf => { const note = this.owned.get(BigInt(nf)); this.owned.delete(BigInt(nf)); return note ? [note] : []; }));
   const created: OwnedNote[][] = batch.slots.map(() => []);
   for (const [i, slot] of batch.slots.entries()) {
@@ -93,7 +98,8 @@ export class RollupAccount {
    });
   }
   if (this.frontier) {
-   this.frontier.append(batch.slots.flatMap(slot => slot.commitments.map(BigInt)), created.flat().map(n => n.index - base));
+   if (chainOnly) this.frontier.appendRoot(BigInt(batch.noteBlockRoot!));
+   else this.frontier.append(batch.slots.flatMap(slot => slot.commitments.map(BigInt)), created.flat().map(n => n.index - base));
    for (const note of spent.flat()) this.frontier.untrack(note.index);
    this.blocks++;
   }

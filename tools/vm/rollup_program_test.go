@@ -55,6 +55,10 @@ func TestRollupBatchLeafRejectsProofAndStateAttacks(t *testing.T) {
 	rollupExpectReject(t, "new state edited after proving", b, "OP_VERIFY")
 
 	b = fresh()
+	b.newPacket[64] ^= 1
+	rollupExpectReject(t, "note-block root edited after proving", b, "OP_VERIFY")
+
+	b = fresh()
 	for op, parent := range b.parents {
 		stale := parent.Copy()
 		ext, _ := extension.NewExtensionFromPackets(extension.UnknownPacket{PacketType: rollupStatePacket, Data: append(bytes.Repeat([]byte{9}, 32), b.w.oldPacket[32:]...)})

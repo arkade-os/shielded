@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,ROLLUP_DOMAIN,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupSpend,buildRollupTransfer,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {assetFieldOfId,destinationFieldOf,noteOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
@@ -203,4 +203,16 @@ test('a payment can name its recipient from its first input, for one note, a joi
   assert.deepEqual([paid.kind,paid.spends.length],[kind,count]);
   assert.deepEqual(seen,[paid.spends[0]!.witness.slot.nullifiers[0]],'asked once, with the first nullifier of the first spend');
  }
+});
+
+test('a full replica applies a withheld batch from its nullifiers and block root alone', async () => {
+ const alice = RollupAccount.owning(hash, aliceKeys), deposits: BuiltSpend[] = [];
+ for (let i = 1; i <= 9; i++) deposits.push(await alice.spend({ deposit: BigInt(100 * i) }, aliceTo));
+ const batch = await batchOf(alice.state.latestRoot(), deposits);
+ await alice.apply(batch);
+ const blockRoot = alice.state.notes.node(SUBTREE_DEPTH, 0);
+ const bob = RollupAccount.owning(hash, bobKeys);
+ await bob.apply({ kind: batch.kind, noteBlockRoot: String(blockRoot), slots: batch.slots.map(s => ({ ...s, commitments: ['0', '0'] as [string, string], ctDigest: '0', ciphertext: undefined })) });
+ assert.equal(bob.state.commitment(), alice.state.commitment(), 'the block root and nullifiers reach the same state as the full record');
+ assert.equal(bob.notes().length, 0, 'bob finds no notes in a batch it has no record for');
 });
