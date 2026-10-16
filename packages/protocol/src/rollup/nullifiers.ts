@@ -1,4 +1,4 @@
-import { BATCH_SLOTS, NULLIFIER_DEPTH, NULLIFIER_TAG, ROLLUP_FIELD, RollupRejection } from './constants.ts';
+import { NULLIFIER_DEPTH, NULLIFIER_TAG, ROLLUP_FIELD, RollupRejection } from './constants.ts';
 import type { Hash } from './notes.ts';
 import { DeepTree } from './tree.ts';
 
@@ -30,7 +30,7 @@ export class RollupNullifiers {
   return copy;
  }
  scanLeaves(visit: (value: bigint, nextIndex: number) => void): void { for (const leaf of this.leaves) visit(leaf.value, leaf.nextIndex); }
- /** Restores the leaves over a tree placed node by node; a spot check (sentinel, a join batch's worth of newest) ties them to it. */
+ /** Restores the leaves over a tree placed node by node, refusing any leaf whose hash is not that tree's leaf. */
  loadLeaves(stored: readonly { value: bigint; nextIndex: number }[]): void {
   const unsorted = () => new Error('The nullifier leaves are not one sorted list from the sentinel.');
   if (stored[0]?.value !== 0n) throw unsorted();
@@ -43,8 +43,7 @@ export class RollupNullifiers {
   if (sorted.length !== stored.length - 1) throw unsorted();
   // In bounds: the walk reached every leaf, so each nextIndex was either followed to a leaf or ended it at 0.
   const leaves = stored.map(({ value, nextIndex }) => ({ value, nextIndex, nextValue: stored[nextIndex].value }));
-  const newest = Array.from({ length: Math.min(sorted.length, 2 * BATCH_SLOTS) }, (_, k) => leaves.length - 1 - k);
-  if ([0, ...newest].some(i => this.leafHash(leaves[i]) !== this.tree.node(0, i))) throw new Error('The nullifier leaves do not match the tree.');
+  if (leaves.some((leaf, i) => this.leafHash(leaf) !== this.tree.node(0, i))) throw new Error('The nullifier leaves do not match the tree.');
   this.leaves = leaves; this.sorted = sorted; this.index = index;
  }
  begin(): void { this.log = []; this.tree.begin(); }

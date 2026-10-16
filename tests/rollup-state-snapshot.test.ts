@@ -50,3 +50,17 @@ test('a restored note tree serves the same historical checkpoint',()=>{
  const state=grown(70),restored=decodeSnapshot(encodeSnapshot(state,pin),hash,pin,70)!;
  assert.deepEqual(checkpointOf(restored.notes,64),checkpointOf(state.notes,64));
 });
+
+test('a snapshot whose trees disagree with their roots where later batches read them is refused',()=>{
+ const state=grown(6),restored=()=>decodeSnapshot(encodeSnapshot(state,pin),hash,pin,6)!;
+ const older=(s:RollupState)=>{const leaves:{value:bigint;nextIndex:number}[]=[];s.nullifiers.scanLeaves((value,nextIndex)=>leaves.push({value,nextIndex}));return leaves;};
+ const cases:Record<string,(s:RollupState)=>void>={
+  'note frontier sibling':s=>s.notes.place(6,2,s.notes.node(6,2)+1n),
+  'note past the frontier':s=>s.notes.place(5,7,1n),
+  'window node':s=>s.window.place(0,1,s.window.node(0,1)+1n),
+  'nullifier past the frontier':s=>s.nullifiers.tree.place(0,s.nullifiers.count(),1n),
+  'older nullifier leaf':s=>{const leaves=older(s),first=leaves[0]!.nextIndex;leaves[first]={...leaves[first]!,value:leaves[first]!.value-1n};s.nullifiers.scanLeaves=visit=>leaves.forEach(l=>visit(l.value,l.nextIndex));},
+ };
+ assert.ok(decodeSnapshot(encodeSnapshot(restored(),pin),hash,pin,6));
+ for(const [name,edit] of Object.entries(cases)){const s=restored();edit(s);assert.equal(decodeSnapshot(encodeSnapshot(s,pin),hash,pin,6),undefined,name);}
+});

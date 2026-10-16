@@ -51,6 +51,24 @@ export class DeepTree {
   if (this.log) throw new Error('A restore cannot place nodes inside a transaction.');
   this.check(level, index); this.write(level + ':' + index, value);
  }
+ /** The root follows from (level, index) and the siblings on its path: everything a write there reads. */
+ consistentAlong(level: number, index: number): boolean {
+  let v = this.node(level, index);
+  for (let l = level, i = index; l < this.depth; l++, i = Math.floor(i / 2)) {
+   const sibling = this.at(l, i % 2 === 0 ? i + 1 : i - 1);
+   v = i % 2 === 0 ? this.hash([v, sibling]) : this.hash([sibling, v]);
+   if (v !== this.at(l + 1, Math.floor(i / 2))) return false;
+  }
+  return true;
+ }
+ /** Every stored node above the leaves is the hash of its children; linear in the stored nodes. */
+ consistent(): boolean {
+  for (const [key, value] of this.nodes) {
+   const at = key.indexOf(':'), level = Number(key.slice(0, at)), index = Number(key.slice(at + 1));
+   if (level > 0 && value !== this.hash([this.at(level - 1, 2 * index), this.at(level - 1, 2 * index + 1)])) return false;
+  }
+  return true;
+ }
  clone(): DeepTree {
   const copy = new DeepTree(this.hash, this.depth, this.empty);
   copy.nodes = new Map(this.nodes);

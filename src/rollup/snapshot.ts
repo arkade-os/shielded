@@ -43,12 +43,15 @@ export function decodeSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,batche
   let at=HEADER;
   const u32=()=>{at+=4;return bytes.readUInt32LE(at-4);};
   const field=()=>{const value=get(bytes,at);at+=32;if(value>=ROLLUP_FIELD)throw new Error('A snapshot value is outside the field.');return value;};
-  const fill=(tree:DeepTree)=>{for(let n=u32();n>0;n--){const level=bytes.readUInt8(at++),index=u32();tree.place(level,index,field());}return tree;};
-  const notes=fill(new DeepTree(hash,NOTE_DEPTH)),nullifiers=new RollupNullifiers(hash);fill(nullifiers.tree);
-  const window=fill(new DeepTree(hash,WINDOW_DEPTH));
+  // A node past a tree's frontier would be read as a sibling by a later write, where only an empty subtree may be.
+  const fill=(tree:DeepTree,end:number)=>{for(let n=u32();n>0;n--){const level=bytes.readUInt8(at++),index=u32();if(index*2**level>=end)throw new Error('A snapshot node lies past its frontier.');tree.place(level,index,field());}return tree;};
+  const notes=fill(new DeepTree(hash,NOTE_DEPTH),noteCount),nullifiers=new RollupNullifiers(hash);fill(nullifiers.tree,nfCount);
+  const window=fill(new DeepTree(hash,WINDOW_DEPTH),Math.min(batchCount,2**WINDOW_DEPTH));
   if(u32()!==nfCount)return undefined;
   const leaves=Array.from({length:nfCount},()=>({value:field(),nextIndex:u32()}));
   if(at!==body)return undefined;
+  // New notes only ever append, so the next block's path is all the note tree must vouch for; the other two are checked whole.
+  if(!notes.consistentAlong(SUBTREE_DEPTH,batchCount)||!window.consistent()||!nullifiers.tree.consistent())return undefined;
   nullifiers.loadLeaves(leaves);
   return RollupState.restore(hash,{notes,nullifiers,window,noteCount,batchCount});
  }catch{return undefined;}
