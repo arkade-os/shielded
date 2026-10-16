@@ -690,3 +690,41 @@ test('an emulator that cannot be reached keeps the long grace, so an outage does
  down=false;w.clock.now=10_000+ROLLUP_RESEND_GRACE_MS;
  assert.equal(((await op.tick()) as {batch:number}).batch,0);
 });
+
+const landedTxs=(dir:string)=>{const {arkTx,checkpoints}=JSON.parse(readFileSync(join(dir,'landed.json'),'utf8')) as {arkTx:string;checkpoints:string[]};return {tx:Transaction.fromPSBT(base64.decode(arkTx)),checkpoints:checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)))};};
+
+test('a batch whose record is withheld stops batching indefinitely, and only publishing the record resumes it',async(t)=>{
+ const w=await world(),a=await w.open(t),program=new Uint8Array(32).fill(0x52);
+ await a.submit(await toySpend('foreign',a.state.latestRoot(),{withdraw:1000n,program}));
+ a.addPadding(await pads(a.state.latestRoot(),10));
+ w.clock.now=BATCH_WAIT_MS;
+ const landed=await a.tick() as {txid:string},genesis=w.options.genesis.head.txid,dir=mkdtempSync(join(tmpdir(),'rollup-withheld-'));
+ const b=await w.open(t,{directory:dir,transport:{...w.transport,spentBy:async(head:{txid:string})=>head.txid===genesis?landed.txid:undefined}});
+ const mine=await toySpend('mine',b.state.latestRoot(),{withdraw:1000n,program});
+ await b.submit(mine);b.addPadding(await pads(b.state.latestRoot(),10));
+ for(const step of [BATCH_WAIT_MS,60_000,3_600_000]){
+  w.clock.now+=step;
+  assert.match(((await b.tick()) as {blocked:string}).blocked,/\/api\/rollup\/external/,`still blocked ${step} ms later`);
+ }
+ assert.deepEqual([b.pendingIds(),b.status().pending,existsSync(join(dir,'batches','0.json'))],[['mine'],undefined,false],'without the record nothing ever lands');
+ await b.follow({...landedTxs(w.dir),slots:recordAt(w.dir,0).slots as never,at:1});
+ assert.equal(b.state.commitment(),a.state.commitment());
+ b.addPadding(await pads(b.state.latestRoot(),10));
+ w.clock.now+=BATCH_WAIT_MS;
+ assert.equal(((await b.tick()) as {batch:number}).batch,1);
+ assert.ok(notesIn(dir,1).has(noteOf(mine)),'the stuck spend rides the first batch after the record arrives');
+});
+
+test('a user lands a withdrawal from published state alone, and an operator that did not build it follows',async(t)=>{
+ const w=await world(),op=await w.open(t),dir=mkdtempSync(join(tmpdir(),'rollup-user-')),user=await w.open(t,{directory:dir});
+ const dest=new Uint8Array(32).fill(0x53);
+ await user.submit(await toySpend('user-withdraw',user.state.latestRoot(),{withdraw:1000n,program:dest}));
+ user.addPadding(await pads(user.state.latestRoot(),10));
+ w.clock.now=BATCH_WAIT_MS;
+ const landed=await user.tick() as {txid:string};
+ assert.equal(typeof landed?.txid,'string','the user\'s own batch lands');
+ const {tx,checkpoints}=landedTxs(w.dir),payout=hex.encode(Uint8Array.of(0x51,0x20,...dest));
+ assert.ok(Array.from({length:tx.outputsLength},(_,i)=>tx.getOutput(i)).some(o=>hex.encode(o.script!)===payout&&o.amount===1000n),'the covenant-checked batch pays the destination');
+ assert.deepEqual(await op.follow({tx,checkpoints,slots:recordAt(dir,0).slots as never,at:1}),{batch:0,txid:landed.txid});
+ assert.equal(op.state.commitment(),user.state.commitment());
+});
