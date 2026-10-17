@@ -785,3 +785,13 @@ test('catchUpFromChain walks the head chain to the committed state via the index
  assert.equal(applied,3,'walked all three batches from chain through the indexer');
  assert.equal(state.commitment(),a.state.commitment(),'reached the operator\'s committed state with no records');
 });
+
+// The covenant reads each slot's client publics by position (readBatchTx) and the batch circuit maps Client.IC by the same
+// index, so a reorder of the client public declaration silently binds the wrong field. covenant-client.circom is the canonical
+// client layout; this pins a real groth16 proof's publicSignals to it. At the genesis-3 ceremony, re-run the same assertion
+// against the real spend/join zkey to confirm the keys inherited this order before pinning the covenant leaf hex.
+test('a client proof publishes [pub,nf0,nf1,deposit,withdraw,boundaryAsset,destination] in that order',async()=>{
+ const w=7n,marks={pub:String(w*w),nf0:'11',nf1:'22',deposit:'33',withdraw:'44',boundaryAsset:'55',destination:'66'};
+ const {publicSignals}=await snarkjs.groth16.fullProve({...marks,w:String(w)},toy('covenant-client.wasm'),toy('covenant-client.zkey'));
+ assert.deepEqual(publicSignals.map(String),[marks.pub,marks.nf0,marks.nf1,marks.deposit,marks.withdraw,marks.boundaryAsset,marks.destination]);
+});
