@@ -8,10 +8,10 @@ RUN curl -fsSLo rapidsnark.zip https://github.com/iden3/rapidsnark/releases/down
 
 # The ceremony's proving keys, each checked against the manifest pinned in the repo; the host never runs a setup.
 FROM --platform=linux/amd64 node:24-trixie-slim AS rollup-keys
-ARG SHIELDED_ROLLUP_KEYS_URL=https://github.com/arkade-os/shielded/releases/download/rollup-genesis-2-keys
+ARG SHIELDED_ROLLUP_KEYS_URL=https://github.com/arkade-os/shielded/releases/download/rollup-genesis-3-keys
 WORKDIR /keys
-COPY tools/fetch-rollup-keys.mjs rollup-keys/genesis-2.json ./
-RUN node fetch-rollup-keys.mjs genesis-2.json "$SHIELDED_ROLLUP_KEYS_URL" /out/rollup-keys
+COPY tools/fetch-rollup-keys.mjs rollup-keys/genesis-3.json ./
+RUN node fetch-rollup-keys.mjs genesis-3.json "$SHIELDED_ROLLUP_KEYS_URL" /out/rollup-keys
 
 FROM --platform=linux/amd64 node:24-trixie-slim AS app-build
 WORKDIR /app
