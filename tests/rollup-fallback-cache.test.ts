@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import fs,{existsSync,mkdtempSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
@@ -90,4 +91,41 @@ test('backup and temporary filenames do not count as mirrored batches',t=>{
  const dir=directory(t);cacheBatch(dir,0,fixture.records[0]!);
  for(const name of ['1','1.json.tmp','01.json'])writeFileSync(join(dir,'batches',name),'backup');
  assert.deepEqual(cachedBatchNumbers(dir),[0]);assert.equal(mirrorStart(dir),1);
+});
+
+for(const upgrade of [false,true])test(`an interrupted ${upgrade?'upgrade preserves the old record':'append publishes no record'} and removes its temporary file`,t=>{
+ const dir=directory(t),path=join(dir,'batches','0.json'),originalWrite=fs.writeFileSync;
+ if(upgrade)cacheBatch(dir,0,{...chainOnlyBatch(readBatchTx(fixture.txs[0]!,leaves)),txid:fixture.txs[0]!.id});
+ const old=upgrade?readFileSync(path,'utf8'):undefined;
+ t.mock.method(fs,'writeFileSync',(file:fs.PathOrFileDescriptor,data:string|NodeJS.ArrayBufferView,options?:fs.WriteFileOptions)=>{
+  originalWrite(file,String(data).slice(0,20),options);throw new Error('interrupted cache write');
+ });
+ syncBuiltinESMExports();
+ try{assert.throws(()=>cacheBatch(dir,0,fixture.records[0]!),/interrupted cache write/);}
+ finally{t.mock.restoreAll();syncBuiltinESMExports();}
+ if(upgrade)assert.equal(readFileSync(path,'utf8'),old);else assert.equal(existsSync(path),false);
+ assert.deepEqual(readdirSync(join(dir,'batches')),upgrade?['0.json']:[]);
+});
+
+test('an append cannot replace a competing record published during its temporary write',t=>{
+ const dir=directory(t),path=join(dir,'batches','0.json'),originalWrite=fs.writeFileSync;
+ t.mock.method(fs,'writeFileSync',(file:fs.PathOrFileDescriptor,data:string|NodeJS.ArrayBufferView,options?:fs.WriteFileOptions)=>{
+  originalWrite(file,data,options);originalWrite(path,JSON.stringify(fixture.records[1]!),{flag:'wx'});
+ });
+ syncBuiltinESMExports();
+ try{assert.throws(()=>cacheBatch(dir,0,fixture.records[0]!),(error:NodeJS.ErrnoException)=>error.code==='EEXIST');}
+ finally{t.mock.restoreAll();syncBuiltinESMExports();}
+ assert.deepEqual(read(dir,0),fixture.records[1]);assert.deepEqual(readdirSync(join(dir,'batches')),['0.json']);
+});
+
+test('an upgrade refuses a competing full record published during its temporary write',t=>{
+ const dir=directory(t),path=join(dir,'batches','0.json'),originalWrite=fs.writeFileSync;
+ cacheBatch(dir,0,{...chainOnlyBatch(readBatchTx(fixture.txs[0]!,leaves)),txid:fixture.txs[0]!.id});
+ t.mock.method(fs,'writeFileSync',(file:fs.PathOrFileDescriptor,data:string|NodeJS.ArrayBufferView,options?:fs.WriteFileOptions)=>{
+  originalWrite(file,data,options);originalWrite(path,JSON.stringify(fixture.records[1]!));
+ });
+ syncBuiltinESMExports();
+ try{assert.throws(()=>cacheBatch(dir,0,fixture.records[0]!),/conflict/i);}
+ finally{t.mock.restoreAll();syncBuiltinESMExports();}
+ assert.deepEqual(read(dir,0),fixture.records[1]);assert.deepEqual(readdirSync(join(dir,'batches')),['0.json']);
 });

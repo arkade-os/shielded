@@ -1,4 +1,5 @@
-import {existsSync,readdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {closeSync,existsSync,fsyncSync,linkSync,openSync,readdirSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import type {Transaction} from '@arkade-os/sdk';
@@ -14,18 +15,33 @@ export function cachedBatchNumbers(dir:string):number[]{
 }
 export function mirrorStart(dir:string):number{
  const numbers=cachedBatchNumbers(dir);
+ // Full records from the current batch API omit the chain-only noteBlockRoot marker.
  return numbers.find(index=>read(dir,index).noteBlockRoot!==undefined)??numbers.length;
 }
 export function cacheBatch(dir:string,index:number,record:PublishedBatch):void{
  const numbers=cachedBatchNumbers(dir),path=join(dir,'batches',`${index}.json`);
  if(!Number.isSafeInteger(index)||index<0||index>numbers.length)throw new Error('A cached batch would create a gap.');
+ let oldBytes:string|undefined;
  if(existsSync(path)){
-  const old=read(dir,index);if(isDeepStrictEqual({...old,at:undefined},{...record,at:undefined}))return;
+  oldBytes=readFileSync(path,'utf8');const old=JSON.parse(oldBytes) as PublishedBatch;
+  if(isDeepStrictEqual({...old,at:undefined},{...record,at:undefined}))return;
   const matches=!!old.txid&&old.txid===record.txid&&old.kind===record.kind&&isDeepStrictEqual(old.slots.map(s=>[s.nullifiers,s.publics]),record.slots.map(s=>[s.nullifiers,s.publics]));
   if(matches&&old.noteBlockRoot===undefined&&record.noteBlockRoot!==undefined)return;
   if(!matches||old.noteBlockRoot===undefined||record.noteBlockRoot!==undefined)throw new Error(`Cached batch ${index} conflicts with an existing record.`);
  }
- writeFileSync(path,JSON.stringify(record),{flag:index===numbers.length?'wx':'w'});
+ const bytes=JSON.stringify(record),temporary=`${path}.${randomUUID()}.tmp`;
+ let descriptor:number|undefined=openSync(temporary,'wx');
+ try{
+  writeFileSync(descriptor,bytes);fsyncSync(descriptor);closeSync(descriptor);descriptor=undefined;
+  if(index===numbers.length)linkSync(temporary,path);
+  else{
+   if(readFileSync(path,'utf8')!==oldBytes)throw new Error(`Cached batch ${index} conflicts with an existing record.`);
+   renameSync(temporary,path);
+  }
+ }finally{
+  if(descriptor!==undefined)closeSync(descriptor);
+  if(existsSync(temporary))unlinkSync(temporary);
+ }
 }
 export async function catchUpCachedBatches(dir:string,account:RollupAccount,leaves:RollupLeaves,fromTxid:string,target:bigint,nextBatchTx:(head:{txid:string;vout:number})=>Promise<Transaction|undefined>):Promise<number>{
  if(account.batchCount!==cachedBatchNumbers(dir).length)throw new Error('The account does not match its mirrored batch count.');
