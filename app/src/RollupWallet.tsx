@@ -28,12 +28,14 @@ const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'me
 const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
 const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 // The resolver's kinds, mapped onto the swatches the history list already has.
-const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','shielded-send':'send','shielded-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
+const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','shielded-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
+const LIGHTNING_STATUS:Record<string,string>={received:'Received; waiting to shield',shielding:'Received; shielding',shielded:'Shielded in the pool',retrying:'Received; shielding will retry','below-minimum':'Received outside the pool; below the shielding minimum'};
 const WHERE:Record<string,string>={
  shield:'From your Arkade coins into the pool; the amount is public.',
  unshield:'Out of the pool to an Arkade address; the amount is public.',
  'shielded-send':'Inside the pool; amount and parties stay private.',
  'shielded-receive':'Inside the pool; amount and sender stay private.',
+ 'lightning-receive':'The Lightning payout is public until it enters the pool.',
  'claim-link':'Inside the pool: into a claim link. Whoever claims it gets the amount, privately.',
  merge:'Inside the pool: your own notes, merged into one. Nothing left the wallet.',
  list:'To the pool, listing this asset so anyone can shield it.',
@@ -203,8 +205,8 @@ export default function RollupWallet(){
   let stop=false;
   void (async()=>{
    try{
-    const [list,balance,address,history]=await Promise.all([wallet.coins(),wallet.getBalance(),wallet.getAddress(),wallet.getActivityHistory()]);
-    if(!stop&&!restoring.current){setCoins(list);setArkAvailable(balance.available);setArkAddress(address);setRows(history);setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
+    const [list,balance,address,history,lightningHistory]=await Promise.all([wallet.coins(),wallet.getBalance(),wallet.getAddress(),wallet.getActivityHistory(),wallet.swaps?.getActivityHistory()??[]]);
+    if(!stop&&!restoring.current){setCoins(list);setArkAvailable(balance.available);setArkAddress(address);setRows([...history,...lightningHistory].sort((a,b)=>b.createdAt-a.createdAt));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
      if(wallet.repositoryError)setPoolError(`Your saved notes could not be read or saved: ${wallet.repositoryError}`);}
    }catch(error){if(!stop&&!restoring.current)setPoolError(errorText(error));}
   })();
@@ -336,14 +338,15 @@ export default function RollupWallet(){
     {!rows.length?<p className="stock-muted">{synced?'Nothing yet. Fund your Arkade address and it shows up here.':'Reading the pool…'}</p>:<ul>{rows.map(item=>{
      const kind=item.intent?.kind,received=activityReceived(item),newest=item.txs[item.txs.length-1]!;
      const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
+     const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:item.settled?'Settled':'Preconfirmed';
      const id=newest.key.arkTxid||newest.key.commitmentTxid,asset=newest.assets?.[0];
-     return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}</span>
+     return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
        <b className={received?'in':'out'}>{received?'+':'−'}{asset?`${sats(asset.amount)} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}</b><time>{when(item.createdAt)}</time></summary>
       <dl>
        <dt>Where</dt><dd>{whereOf(kind,received)}</dd>
        {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
        {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={newest.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
-       <dt>Status</dt><dd>{item.settled?'Settled':'Preconfirmed'}</dd>
+       <dt>Status</dt><dd>{status}</dd>
        {revealFor(item)}
       </dl></details></li>;
     })}</ul>}

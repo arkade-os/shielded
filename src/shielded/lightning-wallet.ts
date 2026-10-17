@@ -1,4 +1,4 @@
-import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type IWallet,type Identity,type SendParams,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,TxType,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type Activity,type IWallet,type Identity,type SendParams,type WalletConfig} from '@arkade-os/sdk';
 import {IndexedDbAssetSwapRepository,createSwapClient,type AssetSwapRepository,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
 import {hex} from '@scure/base';
 import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
@@ -9,6 +9,7 @@ import type {ShieldedWallet} from './wallet.ts';
 
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
  registerPayouts(records:LightningPayout[]):Promise<void>;
+ getActivityHistory():Promise<Activity[]>;
  [Symbol.asyncDispose]():Promise<void>;
 }
 export const lightningOwner=async(wallet:Pick<Wallet,'identity'>)=>hex.encode(await wallet.identity.xOnlyPublicKey());
@@ -81,6 +82,23 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const forward=(update:SwapUpdate)=>{updates.set(update.swap.id,update);for(const listener of listeners)try{listener(update);}catch{}};
  const report=(error:unknown)=>{try{onError?.(error instanceof Error?error:new Error(String(error)));}catch{}};
  const assertOpen=()=>{if(stopped)throw new Error('Private Lightning service is closed');};
+ const getActivityHistory=async():Promise<Activity[]>=>{
+  assertOpen();if(!payouts.size)return [];
+  const manager=await companion.getContractManager(),[contracts,spends,artifacts]=await Promise.all([manager.getContractsWithVtxos(undefined,undefined,{unspentOnly:false}),journal.list(String(wallet.self.owner),pool),journal.artifacts(owner,pool)]);
+  const rows=new Map<string,Activity>();
+  for(const {contract,vtxos} of contracts){
+   if(!payouts.has(contract.script))continue;
+   for(const coin of vtxos){
+    if(coin.script!==contract.script)continue;
+    const outpoint=`${coin.txid}:${coin.vout}`,attempts=spends.filter(record=>record.kind==='shield'&&record.reference===outpoint);
+    const outcome=attempts.some(r=>r.state==='included')?'shielded':coin.value<DUST?'below-minimum':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':attempts.length?'retrying':'received';
+    const id=`shielded-lightning:receive:${outpoint}`,createdAt=coin.createdAt.getTime(),settled=!coin.isPreconfirmed;
+    rows.set(id,{id,amount:coin.value,createdAt,settled,intent:{kind:'lightning-receive',label:artifacts.some(a=>a.kind==='send'&&a.script===contract.script)?'Lightning refund':'Received via Lightning',outcome,metadata:{outpoint}},
+     txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:coin.txid},type:TxType.TxReceived,amount:coin.value,createdAt,settled}]});
+   }
+  }
+  return [...rows.values()].sort((a,b)=>b.createdAt-a.createdAt);
+ };
  const close=(session:Session)=>session.closing??=(async()=>{await session.funding?.catch(()=>{});session.off();await session.client[Symbol.asyncDispose]();await session.repository[Symbol.asyncDispose]?.();await session.release();sessions.delete(session.artifact.id);})();
  const bind=(session:Session)=>{session.off=session.client.onUpdate(update=>{
   forward(update);if(!terminal.has(update.outcome)||session.artifact.state!=='accepted')return;
@@ -105,7 +123,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     if(!existing&&attempts.length){let suffix=attempts.length;do{id=`${baseId}-${suffix++}`;}while(attempts.some(record=>record.id===id));}
     const handle=await wallet.shieldLightning(coin,lightningSigner(companion,payout.descriptor),journal,{id,reference:outpoint,signal:operations.signal});await handle.settled();
    }finally{await release();}})();
-   shielding.set(outpoint,task);void task.catch(report).finally(()=>shielding.delete(outpoint));
+   shielding.set(outpoint,task);wallet.changed();void task.catch(report).finally(()=>{shielding.delete(outpoint);wallet.changed();});
   }
  };
  const registerPayouts=async(records:LightningPayout[])=>{
@@ -119,6 +137,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   }
   await journal.savePayouts(owner,pool,records);
   for(const record of records){payouts.set(record.script,record);await manager.setContractWatchState(record.script,'watched');}
+  wallet.changed();
   await scan();
  };
  const watchArtifact=async(artifact:LightningArtifact)=>{
@@ -219,10 +238,13 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
    legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await legacy.ready;await legacy.start();
   }
-  offPayout=(await companion.getContractManager()).onContractEvent(event=>{if(event.type==='vtxo_received'||event.type==='connection_reset')void scan().catch(report);});
+  offPayout=(await companion.getContractManager()).onContractEvent(event=>{
+   if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
+   wallet.changed();if(event.type==='vtxo_received'||event.type==='connection_reset')void scan().catch(report);
+  });
   const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
-  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,
+  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
  }catch(error){await dispose();throw error;}
 }
