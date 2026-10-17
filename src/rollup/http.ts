@@ -28,7 +28,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(req.method!=='POST'||/^\/spends\/[^/]+\/sign$/.test(req.path))return next();
   const now=Date.now(),key=req.ip??'',seen=writes.get(key);
   if(!seen||now-seen.since>60_000){if(writes.size>10_000)writes.clear();writes.set(key,{count:1,since:now});return next();} // ponytail: crude reset, an LRU if the map ever matters
-  if(++seen.count>POSTS_PER_MINUTE){res.status(429).json({error:'Too many requests from this address; try again in a minute.'});return;}
+  if(++seen.count>POSTS_PER_MINUTE){res.setHeader('Retry-After',Math.floor((60_000-(now-seen.since))/1000)+1);res.status(429).json({error:'Too many requests from this address; try again in a minute.',code:'admission-rate-limit'});return;}
   next();
  });
  router.use(express.json({limit:'64kb',strict:true}));

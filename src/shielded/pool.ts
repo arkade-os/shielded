@@ -9,17 +9,31 @@ export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Prom
 export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=><T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
 export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+const rateLimitedUntil=new Map<string,number>();
+const admissionLimitedUntil=new Map<string,number>();
 
-/** Retries outages (network errors and 5xx); a refusal is the pool's answer and surfaces at once. */
+/** Retries outages and rate limits; definitive refusals surface at once. */
 export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{
+ const key=new URL(origin||globalThis.location?.origin||'http://localhost').origin;
+ const admission=body!==undefined&&!/^\/spends\/[^/]+\/sign(?:\?|$)/.test(path);
+ const request:RequestInit={method:body===undefined?'GET':'POST',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})};
  for(let attempt=0;;attempt++){
+  for(let remaining;(remaining=Math.max(rateLimitedUntil.get(key)??0,admission?admissionLimitedUntil.get(key)??0:0)-Date.now())>0;)await sleep(Math.min(remaining,2_147_483_647));
   beforeRequest?.();
   let response:Response|undefined;
-  try{response=await fetcher(origin+'/api/rollup'+path,{method:body===undefined?'GET':'POST',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});}
+  try{response=await fetcher(origin+'/api/rollup'+path,request);}
   catch(error){if(attempt>=4)throw error;}
   if(response&&response.status<500){
    const json=await response.json().catch(()=>({}));
-   if(!response.ok)throw Object.assign(new Error(json.error??`The pool answered ${response.status}.`),{status:response.status,...(typeof json.code==='string'?{code:json.code}:{})});
+   const metadata=json&&typeof json==='object'?json:{};
+   if(response.status===429){
+    const retryAfter=response.headers.get('Retry-After')?.trim();
+    const delay=retryAfter&&/^\d+$/.test(retryAfter)?Number(retryAfter)*1000:retryAfter&&/^[A-Za-z]/.test(retryAfter)?Date.parse(retryAfter)-Date.now():NaN;
+    const cooldown=admission&&(metadata.code==='admission-rate-limit'||metadata.error==='Too many requests from this address; try again in a minute.')?admissionLimitedUntil:rateLimitedUntil;
+    cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(Number.isSafeInteger(delay)&&delay>=0?Math.max(1000,delay):60_000)));
+    if(attempt<4)continue;
+   }
+   if(!response.ok)throw Object.assign(new Error(metadata.error??`The pool answered ${response.status}.`),{status:response.status,...(typeof metadata.code==='string'?{code:metadata.code}:{})});
    return json as T;
   }
   if(attempt>=4)throw new Error(`The pool did not answer (${response?.status??'network error'}).`);
@@ -76,13 +90,17 @@ export async function signDeposit(identity:Identity,request:SpendStatus){
 
 /** Polls a spend until it is settled or the deadline passes; a rebuilt batch asks the depositor to sign again. */
 export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=poolApiOf(''),pollMs=1000,deadlineMs=Infinity):Promise<SpendStatus>{
- let signed='';
+ let signed='',interval=pollMs;
  for(const end=Date.now()+deadlineMs;;){
   if(Date.now()>end)throw new Error('The spend did not settle in time; the pool may still include it.');
   const status=await api<SpendStatus>('/spends/'+id);
   if(status.status==='included'||status.status==='dropped')return status;
-  if(status.status==='signing'&&status.arkTx!==signed){await onSigning(status);signed=status.arkTx!;}
-  await sleep(pollMs);
+  if(status.status==='signing'){
+   if(status.arkTx!==signed){await onSigning(status);signed=status.arkTx!;}
+   interval=pollMs;
+  }
+  await sleep(interval);
+  interval=Math.min(5*pollMs,2*interval);
  }
 }
 
