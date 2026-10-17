@@ -13,7 +13,8 @@ export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(fiel
  const index=new WeakMap<ArkTransaction,HistoryEntry>();
  return {
   rows(){
-   return entries().filter(e=>e.kind in SYNTHETIC&&(e.kind!=='withdraw'||nativeDestination===undefined||e.destination!==nativeDestination)).map(e=>{
+   // Only synthesize withdrawals known to be external; older snapshots may omit their destination.
+   return entries().filter(e=>e.kind in SYNTHETIC&&(e.kind!=='withdraw'||nativeDestination!==undefined&&e.destination!==undefined&&e.destination!==nativeDestination)).map(e=>{
     const sats=e.amounts.filter(a=>a.asset===0n).reduce((sum,a)=>sum+a.amount,0n);
     const assets=e.amounts.flatMap(a=>{const assetId=a.asset===0n?undefined:assetIdOf(a.asset);return assetId?[{assetId,amount:a.amount}]:[];});
     const row:ArkTransaction={key:{boardingTxid:'',commitmentTxid:'',arkTxid:e.txid??''},type:e.kind==='receive'?TxType.TxReceived:TxType.TxSent,

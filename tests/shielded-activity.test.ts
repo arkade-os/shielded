@@ -42,6 +42,12 @@ test('a shield gets no synthetic row because the SDK already has one',()=>{
  assert.deepEqual(indexOf([entry({kind:'shield'})]).rows(),[]);
 });
 
+test('unknown withdrawal destinations and missing native destinations preserve the SDK-only history',()=>{
+ assert.deepEqual(indexOf([entry({kind:'withdraw'})],1n).rows(),[]);
+ assert.deepEqual(indexOf([entry({kind:'withdraw',destination:2n})]).rows(),[]);
+ assert.deepEqual(indexOf([entry({kind:'withdraw'})]).rows(),[]);
+});
+
 test('external pool withdrawals produce negative BTC and asset-carrier activities even in one batch',async()=>{
  const entries=[entry({kind:'withdraw',destination:2n,amounts:[{asset:0n,amount:1000n}],slots:[0]}),entry({kind:'withdraw',destination:3n,amounts:[{asset:1234n,amount:9n},{asset:0n,amount:330n}],slots:[1,2]})],index=indexOf(entries,1n),activity=new ActivityRegistry();
  activity.use(shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>true,isListing:()=>false}));
@@ -61,6 +67,8 @@ test('withdrawal history survives snapshot reload and full batch replay',async()
   assert.equal(history.at(-1)!.destination,destinationFieldOf(program));const rows=indexOf(history,1n).rows();
   assert.equal(rows.length,1);assert.equal(rows[0]!.amount,1000);assert.equal(rows[0]!.type,TxType.TxSent);assert.equal(rows[0]!.key.arkTxid,withdrawn.txid);
  }
+ const legacySnapshot=account.snapshot();for(const e of legacySnapshot.history)delete e.destination;
+ assert.deepEqual(indexOf(RollupAccount.fromSnapshot(hash,keys,legacySnapshot).history,1n).rows(),[]);
 });
 
 test('an asset payment carries its units in assets, not in sats',()=>{
