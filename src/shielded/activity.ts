@@ -4,16 +4,17 @@ import type {HistoryEntry} from '../../packages/protocol/src/rollup/account.ts';
 import type {SentRecord} from './repository.ts';
 
 export const SHIELDED_TAG='shielded';
-const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge'} as const;
+const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge',withdraw:'unshield'} as const;
 type SyntheticKind=keyof typeof SYNTHETIC;
 const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool',list:'Listed asset'} as const;
 export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):HistoryEntry|undefined}
 
-export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(field:bigint)=>string|undefined):ShieldedRowIndex{
+export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(field:bigint)=>string|undefined,nativeDestination?:bigint):ShieldedRowIndex{
  const index=new WeakMap<ArkTransaction,HistoryEntry>();
  return {
   rows(){
-   return entries().filter(e=>e.kind in SYNTHETIC).map(e=>{
+   // Only synthesize withdrawals known to be external; older snapshots may omit their destination.
+   return entries().filter(e=>e.kind in SYNTHETIC&&(e.kind!=='withdraw'||nativeDestination!==undefined&&e.destination!==undefined&&e.destination!==nativeDestination)).map(e=>{
     const sats=e.amounts.filter(a=>a.asset===0n).reduce((sum,a)=>sum+a.amount,0n);
     const assets=e.amounts.flatMap(a=>{const assetId=a.asset===0n?undefined:assetIdOf(a.asset);return assetId?[{assetId,amount:a.amount}]:[];});
     const row:ArkTransaction={key:{boardingTxid:'',commitmentTxid:'',arkTxid:e.txid??''},type:e.kind==='receive'?TxType.TxReceived:TxType.TxSent,

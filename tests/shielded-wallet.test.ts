@@ -7,11 +7,11 @@ import info from './fixtures/ark-info.json' with {type:'json'};
 import {RollupAccount,type BuiltSpend,type PublishedBatch,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
 import {NOTE_DEPTH,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {checkpointOf} from '../packages/protocol/src/rollup/frontier.ts';
-import {assetFieldOfId,noteOf} from '../packages/protocol/src/rollup/notes.ts';
+import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {DeepTree} from '../packages/protocol/src/rollup/tree.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
-import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {catchUp,WATCHDOG_MS} from '../src/shielded/sync.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
@@ -27,7 +27,7 @@ const prover:ShieldedProver={prove:async()=>({pi_a:[],pi_b:[],pi_c:[]})};
 const ark={serverUrl:'https://mutinynet.arkade.sh',getInfo:async()=>info} as never;
 const indexer={getVtxos:async()=>({vtxos:[],page:undefined}),getVirtualTxs:async()=>({txs:[]}),
  subscribeForScripts:async()=>'sub',getSubscription:async function*(){},unsubscribeForScripts:async()=>{}} as never;
-const onchain={getCoins:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never;
+const onchain={getCoins:async()=>[],getTransactions:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never;
 
 /** Counts what the pool was asked for, so a resumed wallet can be shown not to re-read the published batches. */
 function poolFetcher(batches:number){
@@ -61,6 +61,21 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
   assert.equal(wallet.resumed,false);
   assert.equal(wallet.repositoryError,undefined);
   assert.ok((await wallet.getAddress()).startsWith('tark1'));
+ }finally{await wallet.dispose();}
+});
+
+test('self-native withdrawal keeps its SDK receipt while external withdrawals in the same batch remain visible',async t=>{
+ const wallet=await open(),txid='cd'.repeat(32),assetId='ee'.repeat(34),field=assetFieldOfId(assetId);
+ try{
+  const address=await wallet.getAddress(),script=hex.encode(ArkAddress.decode(address).pkScript),nativeDestination=destinationFieldOf(programOf(address)),externalDestination=destinationFieldOf(new Uint8Array(32).fill(7)),manager=await wallet.getContractManager(),[contract]=await manager.getContracts({script});assert.ok(contract);
+  t.mock.method(manager,'getContractsWithVtxos',async()=>[{contract,vtxos:[{txid,vout:0,value:1000,script,createdAt:new Date(2000),status:{isLeaf:false},isPreconfirmed:true,isSpent:false,isUnrolled:false,commitmentTxIds:[]}]}] as never);
+  wallet.pool.status.pool!.reserves={[assetId]:'reserve'};wallet.account.txids.add(txid);
+  const base={kind:'withdraw' as const,batch:3,txid,at:1000,spent:[7n],created:[]};
+  wallet.account.history.push({...base,destination:nativeDestination,amounts:[{asset:0n,amount:1000n}],slots:[0]},
+   {...base,destination:externalDestination,amounts:[{asset:0n,amount:2113n}],slots:[1]},
+   {...base,destination:externalDestination,amounts:[{asset:field,amount:9n},{asset:0n,amount:330n}],slots:[2,3]});
+  const items=await wallet.getActivityHistory();assert.equal(items.length,3);assert.deepEqual(items.map(item=>item.amount),[1000,-2113,-330]);assert.ok(items.every(item=>item.intent?.kind==='unshield'));
+  assert.deepEqual(items[2]!.txs[0]!.assets,[{assetId,amount:9n}]);assert.deepEqual((await wallet.getActivityHistory()).map(item=>item.id),items.map(item=>item.id));
  }finally{await wallet.dispose();}
 });
 

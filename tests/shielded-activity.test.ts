@@ -7,6 +7,7 @@ import {decodeDisclosure,sentNoteOf,verifyDisclosure} from '../packages/protocol
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
+import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
 import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,SHIELDED_TAG} from '../src/shielded/activity.ts';
 import type {SentRecord} from '../src/shielded/repository.ts';
 
@@ -18,7 +19,7 @@ const note=(amount:bigint,nullifier:bigint,index=0,asset=0n):OwnedNote=>({amount
 const entry=(over:Partial<HistoryEntry>):HistoryEntry=>({kind:'send',batch:3,txid:'ab'.repeat(32),at:1000,amounts:[{asset:0n,amount:500n}],spent:[7n],created:[],slots:[0],...over});
 const row=(over:Partial<ArkTransaction>):ArkTransaction=>({key:{boardingTxid:'',commitmentTxid:'',arkTxid:'cd'.repeat(32)},type:TxType.TxSent,amount:900,settled:true,createdAt:2000,...over});
 const assetIdOf=(field:bigint)=>field===0n?undefined:ASSET;
-const indexOf=(entries:HistoryEntry[])=>shieldedRows(()=>entries,assetIdOf);
+const indexOf=(entries:HistoryEntry[],nativeDestination?:bigint)=>shieldedRows(()=>entries,assetIdOf,nativeDestination);
 const activityOf=(txs:ArkTransaction[],intent?:Activity['intent']):Activity=>({id:'x',txs,amount:0,createdAt:txs[0]?.createdAt??0,settled:true,...(intent?{intent}:{})});
 
 test('a private payment, a receipt and a merge each become one synthetic row',()=>{
@@ -37,8 +38,37 @@ test('a private payment, a receipt and a merge each become one synthetic row',()
  assert.equal(rows[0]!.createdAt,1000);
 });
 
-test('a shield or a withdrawal gets no synthetic row, because the SDK already has one',()=>{
- assert.deepEqual(indexOf([entry({kind:'shield'}),entry({kind:'withdraw'})]).rows(),[]);
+test('a shield gets no synthetic row because the SDK already has one',()=>{
+ assert.deepEqual(indexOf([entry({kind:'shield'})]).rows(),[]);
+});
+
+test('unknown withdrawal destinations and missing native destinations preserve the SDK-only history',()=>{
+ assert.deepEqual(indexOf([entry({kind:'withdraw'})],1n).rows(),[]);
+ assert.deepEqual(indexOf([entry({kind:'withdraw',destination:2n})]).rows(),[]);
+ assert.deepEqual(indexOf([entry({kind:'withdraw'})]).rows(),[]);
+});
+
+test('external pool withdrawals produce negative BTC and asset-carrier activities even in one batch',async()=>{
+ const entries=[entry({kind:'withdraw',destination:2n,amounts:[{asset:0n,amount:1000n}],slots:[0]}),entry({kind:'withdraw',destination:3n,amounts:[{asset:1234n,amount:9n},{asset:0n,amount:330n}],slots:[1,2]})],index=indexOf(entries,1n),activity=new ActivityRegistry();
+ activity.use(shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>true,isListing:()=>false}));
+ const items=await ReadonlyWallet.prototype.getActivityHistory.call({getTransactionHistory:async()=>index.rows(),activity} as never);
+ assert.equal(items.length,2);assert.deepEqual(items.map(item=>[item.intent?.kind,item.intent?.label,item.amount]),[['unshield','Withdrawn from the pool',-1000],['unshield','Withdrawn from the pool',-330]]);
+ assert.deepEqual(items[1]!.txs[0]!.assets,[{assetId:ASSET,amount:9n}]);assert.equal(new Set(items.map(item=>item.id)).size,2);
+ assert.deepEqual(items.map(item=>entryForActivity(item,{index,entries})),entries);
+});
+
+test('withdrawal history survives snapshot reload and full batch replay',async()=>{
+ const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret),account=RollupAccount.owning(hash,keys,{frontier:true});
+ const publish=({witness,ciphertext}:BuiltSpend):PublishedSlot=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:String(witness.slot.groupId),groupSize:witness.slot.groupSize,publics:witness.publicSignals.map(String),ciphertext:hex.encode(ciphertext)});
+ const funded={kind:'spend' as const,slots:[publish(await account.spend({deposit:5000n},self))],txid:'ab'.repeat(32)};await account.apply(funded);
+ const program=new Uint8Array(32).fill(7),withdrawn={kind:'spend' as const,slots:[publish(await account.spend({input:account.notes()[0],withdraw:1000n,program},self))],txid:'cd'.repeat(32)};await account.apply(withdrawn);
+ const restored=RollupAccount.fromSnapshot(hash,keys,JSON.parse(JSON.stringify(account.snapshot()))),replayed=RollupAccount.owning(hash,keys,{frontier:true});await replayed.apply(funded);await replayed.apply(withdrawn);
+ for(const history of [account.history,restored.history,replayed.history]){
+  assert.equal(history.at(-1)!.destination,destinationFieldOf(program));const rows=indexOf(history,1n).rows();
+  assert.equal(rows.length,1);assert.equal(rows[0]!.amount,1000);assert.equal(rows[0]!.type,TxType.TxSent);assert.equal(rows[0]!.key.arkTxid,withdrawn.txid);
+ }
+ const legacySnapshot=account.snapshot();for(const e of legacySnapshot.history)delete e.destination;
+ assert.deepEqual(indexOf(RollupAccount.fromSnapshot(hash,keys,legacySnapshot).history,1n).rows(),[]);
 });
 
 test('an asset payment carries its units in assets, not in sats',()=>{
