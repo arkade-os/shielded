@@ -13,6 +13,7 @@ import {BATCH_SLOTS,BTC_ASSET,NOTE_DEPTH,ROLLUP_DOMAIN,ROLLUP_FIELD,SUBTREE_DEPT
 import {clientWitness,inputNullifierOf} from '../packages/protocol/src/rollup/client.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
+import {catchUpFromChain,indexerBatchWalker,type ChainOnlyBatch} from '../src/rollup/external.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
@@ -760,4 +761,27 @@ test('a followed batch stores the same seven-element publics a normally landed o
  const followed=recordAt(dir,0) as unknown as {slots:{publics:string[]}[]};
  assert.equal(followed.slots[0]!.publics.length,7,'a followed record keeps the seven public inputs the wallet reads by index');
  assert.deepEqual(followed.slots[0]!.publics,landed.slots[0]!.publics,'same layout as the normally landed record');
+});
+
+test('catchUpFromChain walks the head chain to the committed state via the indexer',async(t)=>{
+ const w=await world(),a=await w.open(t),txs:Transaction[]=[],raw=new Map<string,string>();
+ for(let n=0;n<3;n++){
+  await a.submit(await toySpend('catchup'+n,a.state.latestRoot()));
+  a.addPadding(await pads(a.state.latestRoot(),BATCH_SLOTS-1));
+  w.clock.now+=BATCH_WAIT_MS;
+  assert.equal(((await a.tick()) as {batch:number}).batch,n);
+  const arkTx=(JSON.parse(readFileSync(join(w.dir,'landed.json'),'utf8')) as {arkTx:string}).arkTx,tx=Transaction.fromPSBT(base64.decode(arkTx));
+  txs.push(tx);raw.set(tx.id,arkTx);
+ }
+ // The next batch spends the previous head's vout 0, so each head's arkTxId names the batch to read next; the last head is unspent.
+ const spent=new Map<string,Transaction>([[w.options.genesis.head.txid,txs[0]!],...txs.slice(0,-1).map((tx,i)=>[tx.id,txs[i+1]!] as [string,Transaction])]);
+ const indexer={
+  getVtxos:async({outpoints}:{outpoints:{txid:string;vout:number}[]})=>{const sp=spent.get(outpoints[0]!.txid);return {vtxos:sp?[{isSpent:true,arkTxId:sp.id}]:[{isSpent:false}]};},
+  getVirtualTxs:async(ids:string[])=>({txs:ids.map(id=>raw.get(id)!)}),
+ };
+ const state=RollupState.genesis(hash,false);
+ const account={apply:async(b:ChainOnlyBatch)=>{state.applyFromChain(b.kind,b.slots.map(s=>s.nullifiers.map(BigInt)),BigInt(b.noteBlockRoot));},state};
+ const applied=await catchUpFromChain(account,w.options.leaves,w.options.genesis.head.txid,a.state.commitment(),indexerBatchWalker(indexer));
+ assert.equal(applied,3,'walked all three batches from chain through the indexer');
+ assert.equal(state.commitment(),a.state.commitment(),'reached the operator\'s committed state with no records');
 });

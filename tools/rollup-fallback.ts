@@ -19,6 +19,7 @@ import {validateStockCheckpoint} from '../src/stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../src/stock/indexer.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
+import {catchUpFromChain,indexerBatchWalker} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
 import {ROLLUP_KEY_FILES} from '../src/rollup/service.ts';
@@ -76,7 +77,13 @@ async function withdraw(dir:string,sats:bigint,to:string){
  if(expires!==undefined&&expires-Date.now()<30*60_000)throw new Error(`The pool head expires at ${new Date(expires).toISOString()}; a payout now would be swept before it could be moved.`);
  const source=(await indexer.getVirtualTxs([head.txid])).txs.map(decodeStockIndexerTransaction).find(t=>t.id===head.txid)!;
  const packet=Extension.fromTx(source).getPacketByType(ROLLUP_STATE_PACKET)!.serialize();
- if(fromLe(packet.subarray(0,32))!==account.state.commitment())throw new Error('The mirrored records are behind the chain; mirror again or find the missing ones.');
+ const committed=fromLe(packet.subarray(0,32));
+ if(committed!==account.state.commitment()){
+  // Records were withheld before the mirror ran: walk the head's ancestry from the last mirrored batch and apply each from chain.
+  const last=numbers.length?json<PublishedBatch>(join(dir,'batches',`${numbers.length-1}.json`)).txid:undefined;
+  if(!last)throw new Error('No mirrored batch to catch up from; mirror at least one batch while the operator is up.');
+  log('caught up',await catchUpFromChain(account,leaves,last,committed,indexerBatchWalker(indexer)),'withheld batches from the chain');
+ }
  const note=account.notes().filter(n=>n.amount>=sats).sort((a,b)=>a.amount<b.amount?-1:1)[0];
  if(!note)throw new Error(`No single note of this wallet covers ${sats} sats; it holds ${account.balance()} in ${account.notes().length} notes.`);
  log('replayed',numbers.length,'batches; spending a',note.amount,'sat note');
