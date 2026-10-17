@@ -3,7 +3,7 @@
 //   withdraw <dir> <sats> <tark1…>       prove and submit a batch paying out from the wallet in SHIELDED_PHRASE
 //   publish <dir> <pool-url> <batch>     hand a batch this tool landed to the operator, so it can follow it
 import {createHash} from 'node:crypto';
-import {existsSync,mkdirSync,readdirSync,readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {ArkAddress,Extension,RestArkProvider,RestIndexerProvider} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
@@ -19,11 +19,12 @@ import {validateStockCheckpoint} from '../src/stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../src/stock/indexer.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
-import {catchUpFromChain,indexerBatchWalker} from '../src/rollup/external.ts';
+import {indexerBatchWalker} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
 import {ROLLUP_KEY_FILES} from '../src/rollup/service.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
+import {cacheBatch,cachedBatchNumbers as batchesIn,catchUpCachedBatches,mirrorStart} from './rollup-cache.ts';
 
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo}
 const [command,...args]=process.argv.slice(2);
@@ -32,7 +33,6 @@ const json=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
 const fromLe=(bytes:Uint8Array)=>bytes.reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n);
 const log=(...parts:unknown[])=>console.log(new Date().toISOString().slice(11,19),...parts);
-const batchesIn=(dir:string)=>readdirSync(join(dir,'batches')).map(name=>Number(name.replace('.json',''))).filter(Number.isInteger).sort((a,b)=>a-b);
 
 async function mirror(url:string,dir:string){
  const get=async(path:string)=>{const r=await fetch(url+'/api/rollup'+path);if(!r.ok)throw new Error(`${path}: HTTP ${r.status}`);return r;};
@@ -50,9 +50,9 @@ async function mirror(url:string,dir:string){
   if(sha(bytes)!==digest)throw new Error(`${name} does not match the key manifest.`);
   writeFileSync(path,bytes);log('key',name,bytes.length,'bytes');
  }
- for(let from=batchesIn(dir).length;;){
+ for(let from=mirrorStart(dir);;){
   const page=await (await get(`/batches?from=${from}&limit=100`)).json() as {total:number;batches:PublishedBatch[]};
-  page.batches.forEach((batch,i)=>writeFileSync(join(dir,'batches',`${from+i}.json`),JSON.stringify(batch)));
+  page.batches.forEach((batch,i)=>cacheBatch(dir,from+i,batch));
   from+=page.batches.length;if(from>=page.total||!page.batches.length)break;
  }
  log('mirrored',batchesIn(dir).length,'batches into',dir);
@@ -64,7 +64,6 @@ async function withdraw(dir:string,sats:bigint,to:string){
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
  const keys=deriveRollupKeys2(parseMasterSecret(phrase),'mutinynet'),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
  const account=RollupAccount.owning(hash,keys),numbers=batchesIn(dir);
- if(numbers.some((n,i)=>n!==i))throw new Error('The mirrored batch records have a gap.');
  for(const n of numbers)await account.apply(json<PublishedBatch>(join(dir,'batches',`${n}.json`)));
  writeFileSync(join(dir,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',clientJoinKey:'keys/join.vkey.json',batchJoinKey:'keys/batch-join.vkey.json',slots:BATCH_SLOTS,token:pool.token,operator:pool.operator}));
  const leaves=await loadRollupLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json')),tree=rollupPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
@@ -82,11 +81,12 @@ async function withdraw(dir:string,sats:bigint,to:string){
   // Records were withheld before the mirror ran: walk the head's ancestry from the last mirrored batch and apply each from chain.
   const last=numbers.length?json<PublishedBatch>(join(dir,'batches',`${numbers.length-1}.json`)).txid:undefined;
   if(!last)throw new Error('No mirrored batch to catch up from; mirror at least one batch while the operator is up.');
-  log('caught up',await catchUpFromChain(account,leaves,last,committed,indexerBatchWalker(indexer)),'withheld batches from the chain');
+  log('caught up',await catchUpCachedBatches(dir,account,leaves,last,committed,indexerBatchWalker(indexer)),'withheld batches from the chain');
  }
  const note=account.notes().filter(n=>n.amount>=sats).sort((a,b)=>a.amount<b.amount?-1:1)[0];
  if(!note)throw new Error(`No single note of this wallet covers ${sats} sats; it holds ${account.balance()} in ${account.notes().length} notes.`);
- log('replayed',numbers.length,'batches; spending a',note.amount,'sat note');
+ const batch=account.batchCount;
+ log('replayed',batch,'batches; spending a',note.amount,'sat note');
  const prove=async(built:BuiltSpend)=>(await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),join(dir,'keys','spend.wasm'),join(dir,'keys','spend.zkey'))).proof as SnarkProof;
  const mine=await account.spend({input:note,withdraw:sats,program:ArkAddress.decode(to).pkScript.subarray(2)},self),spends=[{built:mine,proof:await prove(mine)}];
  // Our own zero-value spends fill the slots, as the operator's padding does.
@@ -101,8 +101,8 @@ async function withdraw(dir:string,sats:bigint,to:string){
   newPacket:Uint8Array.from([...le32(replica.commitment()),...le32(result.daRoot),...le32(result.blockRoot)]),checkpoint:validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey)});
  const receipt=await createRollupTransport(network).submit({arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(c=>base64.encode(c.toPSBT()))},1);
  const record:PublishedBatch={kind:'spend',slots:spends.map(({built:{witness:{slot,publicSignals},ciphertext}})=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publicSignals.map(String),ciphertext:hex.encode(ciphertext)})),txid:receipt.txid,at:Date.now()};
- writeFileSync(join(dir,'batches',`${numbers.length}.json`),JSON.stringify(record));
- log('landed batch',numbers.length,'as',receipt.txid,'paying',sats,'sats to',to);
+ log('landed batch',batch,'as',receipt.txid,'paying',sats,'sats to',to);
+ cacheBatch(dir,batch,record);
  if(expires!==undefined)log('the payout expires with the head at',new Date(expires).toISOString(),'- move or settle it on Arkade before then');
 }
 
