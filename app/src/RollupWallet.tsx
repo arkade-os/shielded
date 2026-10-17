@@ -1,18 +1,20 @@
 import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
-import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Activity,type PaymentHandle,type PaymentRequest} from '@arkade-os/sdk';
-import {arkadeLnurl,type ArkadeLnurl} from '@arkade-os/lnurl-client/arkade';
-import {IndexedDbAssetSwapRepository,createSwapClient,type Outcome} from '@arkade-os/swap';
+import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
+import type {Outcome} from '@arkade-os/swap';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {IndexedDBShieldedNoteRepository} from '../../src/shielded/repository.ts';
 import type {StepState} from '../../src/shielded/handle.ts';
 import {LNURL_BASE} from '../../src/shielded/lightning.ts';
+import {IndexedDbLightningRepository} from '../../src/shielded/lightning-repository.ts';
+import {createLightningWallet,createPrivateLightning,lightningOwner} from '../../src/shielded/lightning-wallet.ts';
+import {createHdLnurl} from '../../src/shielded/lnurl-hd.ts';
 import {idle} from '../../src/shielded/sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
-import {DUST,bornAtFor,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
+import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {birthCheckpoint} from '../../src/shielded/checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
@@ -54,7 +56,7 @@ export default function RollupWallet(){
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[restoreDate,setRestoreDate]=useState('');
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
- const lnurlRef=useRef<ArkadeLnurl|undefined>(undefined);
+ const lnurlRef=useRef<ReturnType<typeof createHdLnurl>|undefined>(undefined);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined),fundsRevision=useRef(0);
  if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
@@ -125,12 +127,17 @@ export default function RollupWallet(){
   const r=await lnurlRef.current.claim();
   if(mounted.current)setLnAddress(r.lightningAddress??r.lnurl);
  });
+ const recoverAddress=()=>lightning(async()=>{
+  if(!lnurlRef.current)throw new Error('The wallet is still loading.');
+  const receivers=await lnurlRef.current.recover({explicit:true}),receiver=receivers[0];
+  if(mounted.current){setLnAddress(receiver?.lightningAddress??receiver?.lnurl??'');if(!receiver)setLnError('No Lightning address was found for this recovery phrase.');}
+ });
 
  const restoreWallet=async()=>{
   if(busyRef.current)return;
   try{
    const at=restoreDate?Date.parse(restoreDate):NaN,token=poolRef.current?.pool?.token;
-   const born=Number.isFinite(at)&&token?{token,at,batches:await birthCheckpoint(rollupApi,at)}:undefined;
+   const born=Number.isFinite(at)&&token?{token,at,batches:await birthCheckpoint(poolApiOf(''),at)}:undefined;
    await restorePageWallet(restore,{cache:cacheRef.current!,storage:localStorage,reload:()=>location.reload(),...(born?{born}:{}),stop:async()=>{
     restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);
@@ -142,6 +149,12 @@ export default function RollupWallet(){
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
   const status=initialPool,network=status.network;
+  const journal=new IndexedDbLightningRepository();
+  let companion:Wallet|undefined,lnurl:ReturnType<typeof createHdLnurl>|undefined;
+  const dispose=async(created:ShieldedWallet)=>{
+   await lnurl?.dispose();if(lnurlRef.current===lnurl)lnurlRef.current=undefined;
+   try{await created.dispose();}finally{try{await companion?.dispose();}finally{await journal[Symbol.asyncDispose]();}}
+  };
   const session=openPageWallet(async()=>{
    const poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
    return hash;
@@ -153,14 +166,15 @@ export default function RollupWallet(){
     storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
     settlementConfig:false,walletMode:'static',
     pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
-    shieldedRepository:cacheRef.current!.repository,bornAt,
+    shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
    });
    try{
-    // One store per wallet: swap records hold claim secrets, and another wallet's drive could only fail on them.
-    created.swaps=createSwapClient({wallet:created,repository:new IndexedDbAssetSwapRepository(`shielded-swaps-${await created.getAddress()}`)});
-   }catch(error){await created.dispose().catch(()=>{});throw error;}
+    companion=await createLightningWallet(secret,{arkProvider:created.arkProvider,indexerProvider:created.indexerProvider,onchainProvider:created.onchainProvider});
+    const swaps=await createPrivateLightning({wallet:created,companion,journal,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));}});created.swaps=swaps;
+    lnurl=createHdLnurl({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onAllocation:payout=>swaps.registerPayouts([payout])});
+   }catch(error){await dispose(created).catch(()=>{});throw error;}
    return created;
-  });
+  },dispose);
   let legacy=Promise.resolve(),closing:Promise<void>|undefined;
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
   const close=()=>{
@@ -175,11 +189,9 @@ export default function RollupWallet(){
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes could not be read, so the wallet is reading the pool again: ${created.repositoryError}`);
    unwatch.push(created.swaps!.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
-   // Not `{wallet}`: that also registers the boarding address, whose on-chain payments this wallet never onboards.
-   void created.getAddress().then(arkadeAddress=>{
-    const lnurl=lnurlRef.current=arkadeLnurl({identity:created.identity,arkadeAddress,baseUrl:LNURL_BASE});
-    return lnurl.owned().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);});
-   }).catch(()=>{});
+   lnurlRef.current=lnurl;
+   void lnurl!.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
+   lnurl!.start(error=>{if(current())setLnError(errorText(error));});
    setWallet(created);
   }).catch(error=>{if(current())setPoolError(errorText(error));});
   return()=>{void close().catch(()=>{});};
@@ -202,14 +214,17 @@ export default function RollupWallet(){
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
  const requestKey=JSON.stringify([tab,to,amount,assetId,withSats,tick]);
  const quoteContext={wallet:wallet??quotes,revision:fundsRevision.current,key:requestKey};
- const {quote,error:quoteError}=quotes.read(quoteContext);
+ const {quote,error:quoteError,pending:quoting}=quotes.read(quoteContext);
  useEffect(()=>{
-  if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current){quotes.clear();return;}
-  return quotes.load(quoteContext,()=>{
+  quotes.invalidate(quoteContext);
+ },[wallet,requestKey]);
+ const getQuote=()=>{
+  if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current||quoting)return;
+  quotes.load(quoteContext,()=>{
    const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(withSats||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
    return wallet.router().route(request);
   });
- },[wallet,requestKey,tick,busy]);
+ };
  // Each read builds the bearer key's account, so it runs when the link or wallet changes, not on every tick.
  useEffect(()=>{
   setClaimView(undefined);
@@ -238,7 +253,7 @@ export default function RollupWallet(){
  const expiring=coins.filter(c=>!wallet?.isPoolPayout(c)&&!c.assets?.length&&c.expiresAt!==undefined&&c.expiresAt-Date.now()<=SHIELD_FLOOR_MS).reduce((sum,c)=>sum+c.value,0);
  const ready=pool?.phase==='ready',unit=assetId?'units':'sats';
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
- const inFlight=(wallet?.inFlight.size??0)>0;
+ const inFlight=!!wallet&&[...wallet.shieldedNotes(),...reserves.flatMap(id=>wallet.shieldedNotes(assetFieldOfId(id)))].some(note=>wallet.inFlight.has(note.nullifier));
  const phrase=secret?recoveryPhraseOf(secret):'',created=Number(localStorage.getItem(CREATED))||0;
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity)=>{
@@ -249,7 +264,7 @@ export default function RollupWallet(){
    :<button type="button" className="stock-ghost stock-mini" onClick={()=>setRevealed(r=>({...r,[item.id]:link}))}>Create a reveal link</button>}</dd></>;
  };
 
- const submit=()=>{if(quote)void run(()=>quotes.send({...quoteContext,revision:fundsRevision.current},quote),routeCopy(quote.railId).title);};
+ const submit=()=>{if(quote)void run(()=>quotes.send({...quoteContext,revision:fundsRevision.current},quote),routeCopy(quote.railId).title);else getQuote();};
 
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Test funds only, with proving keys from a small testnet ceremony. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
@@ -288,11 +303,11 @@ export default function RollupWallet(){
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own; keep this page open until they do.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Need test sats? The <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> sends Arkade sats to this address after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
      <div className="stock-address"><small>LIGHTNING</small>
-      {lnAddress?<Copyable value={lnAddress}/>:<button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button>}
+      {lnAddress?<Copyable value={lnAddress}/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
       <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet||!lnAmount}>Create invoice</button></form>
       {invoice&&<><Copyable value={invoice.bolt11}/><p className="stock-muted">{invoiceLine(invoice)}</p></>}
       {lnError&&<p className="stock-blocked">{lnError}</p>}
-      <p className="stock-muted">Lightning payments reach your Arkade address through a swap, then move into the pool. Keep this page open until an invoice is paid; the Lightning address takes payments even while it is closed, and its payers can see your Arkade address.</p></div>
+      <p className="stock-muted">Each Lightning payment uses a fresh Arkade payout address. Payouts of at least {DUST} sats move into the pool while this page is open; smaller payouts stay outside and are never combined automatically. Your Lightning address stays the same and accepts payments while closed. Its service knows which payouts belong to the alias; payers see a fresh address for each request.</p></div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
      {arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(a.coins),'Shielding again')}>Shield again</button></>
@@ -305,11 +320,12 @@ export default function RollupWallet(){
      <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {assetId&&to.trim()&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-     <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning pays through a swap from your Arkade balance. Leave To empty to create a claim link instead: whoever opens it first gets the amount.</p>
+     <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning funds its swap directly from one pool note. Leave To empty to create a claim link instead: whoever opens it first gets the amount.</p>
+     {to.trim()&&<p className="stock-muted">Get quote contacts the payment service for Lightning invoices and addresses. It shares the invoice or address and amount; payment happens after you confirm the quote.</p>}
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
-     <button className="stock-primary" disabled={busy||restoring.current||!synced||!quote}>{busy?'Working…':quote?routeCopy(quote.railId).title:'Send'}</button>
+     <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))}>{busy?'Working…':quoting?'Getting quote…':quote?routeCopy(quote.railId).title:'Get quote'}</button>
      {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
      {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)}/>
       {typeof navigator.share==='function'&&<button type="button" className="stock-ghost stock-mini" onClick={()=>void navigator.share({url:claimUrl(location.origin,minted)}).catch(()=>{})}>Share</button>}
@@ -341,8 +357,9 @@ export default function RollupWallet(){
     {reserves.flatMap(id=>(wallet?.shieldedNotes(assetFieldOfId(id))??[]).map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} units</span><span className={wallet!.inFlight.has(n.nullifier)?'wait':'ok'}>{wallet!.inFlight.has(n.nullifier)?'In flight':`Asset ${short(id)}`}</span></div>))}
    </div></section>}
   </>}
-  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore this wallet and its Arkade balance in any browser. Anyone who has them can spend your funds.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and derive your Arkade keys. Anyone who has them can spend your funds. Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished: the phrase alone does not restore every outstanding swap.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
   <details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
+   <p className="stock-muted">Keep this browser&apos;s data while Lightning swaps or payouts are pending. A fresh browser recovers a Lightning alias through Recover a Lightning address; direct swaps also need their stored recovery records.</p>
    {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}
    {wallet&&<div className="stock-address"><small>VIEW KEY · READ ONLY</small>{showView?<><Copyable value={wallet.viewKey()}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${wallet.viewKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</div>}
    {wallet&&<div className="stock-address"><small>FULL VIEWING KEY · SEES SPENDS</small>{showFull?<><Copyable value={wallet.fullViewingKey()}/><p className="stock-muted">Shows every note this wallet received and which ones it spent, so also how much each payment out sent, forever. It cannot spend and cannot freeze your notes. <a className="stock-txlink" href={`/watch#${wallet.fullViewingKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowFull(true)}>Show full viewing key</button>}</div>}
