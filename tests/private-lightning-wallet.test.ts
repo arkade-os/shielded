@@ -76,12 +76,14 @@ test('create-if-absent returns the original durable body when the same logical a
 });
 
 function serviceFixture(){
- const contracts:any[]=[],receivers=new Set<(event:any)=>void>(),funded:any[]=[],shielded:any[]=[],provisioned:string[]=[],starts:string[]=[],closed:string[]=[],live=new Set<string>(),configs:SwapClientConfig[]=[];
- const manager={createContract:async(params:any)=>{const old=contracts.find(c=>c.script===params.script);if(old)return old;const contract={...params,createdAt:Date.now()};contracts.push(contract);return contract;},getContracts:async()=>contracts,setContractWatchState:async()=>{},onContractEvent:(fn:any)=>{receivers.add(fn);return()=>receivers.delete(fn);}};
+ const contracts:any[]=[],receivers=new Set<(event:any)=>void>(),funded:any[]=[],shielded:any[]=[],provisioned:string[]=[],starts:string[]=[],closed:string[]=[],live=new Set<string>(),configs:SwapClientConfig[]=[],historyReads:any[][]=[],changes:number[]=[];
+ const manager={createContract:async(params:any)=>{const old=contracts.find(c=>c.script===params.script);if(old)return old;const contract={...params,createdAt:Date.now()};contracts.push(contract);return contract;},getContracts:async()=>contracts,
+  getContractsWithVtxos:async(...args:any[])=>{historyReads.push(args);return contracts.map(contract=>({contract,vtxos:contract.vtxos??[]}));},
+  setContractWatchState:async()=>{},onContractEvent:(fn:any)=>{receivers.add(fn);return()=>receivers.delete(fn);}};
  const base=Object.assign(companion(),{getContractManager:async()=>manager,getVtxos:async()=>[]});
  const ordinaryAddress=script.address('tark',server).encode();
  const wallet={pool:{status:{pool:{token:pool}}},self:{owner:owner},inFlight:new Set(),shieldedNotes:()=>[{amount:5000n,nullifier:1n}],canWithdraw:(n:bigint)=>n<=5000n,restoreLightningSpends:async()=>{},
-  getAddress:async()=>ordinaryAddress,fundLightning:async(...args:any[])=>{funded.push(args);return 'ab'.repeat(32);},shieldLightning:async(...args:any[])=>{shielded.push(args);return {settled:async()=>{}};}} as unknown as ShieldedWallet;
+  changed:()=>changes.push(changes.length),getAddress:async()=>ordinaryAddress,fundLightning:async(...args:any[])=>{funded.push(args);return 'ab'.repeat(32);},shieldLightning:async(...args:any[])=>{shielded.push(args);return {settled:async()=>{}};}} as unknown as ShieldedWallet;
  const repositories=new Map<string,InMemoryAssetSwapRepository>();
  const repositoryFor=(name:string)=>{let repo=repositories.get(name);if(!repo){repo=new InMemoryAssetSwapRepository();repositories.set(name,repo);}return repo;};
  const acquireSession=async(name:string)=>{if(live.has(name))throw new Error('another tab');live.add(name);return async()=>{live.delete(name);};};
@@ -111,7 +113,7 @@ function serviceFixture(){
   } as unknown as SwapClient;
   return client;
  };
- return {base,wallet,repositoryFor,acquireSession,clientFactory,funded,shielded,provisioned,starts,closed,live,repositories,contracts,receivers,configs,
+ return {base,wallet,repositoryFor,acquireSession,clientFactory,funded,shielded,provisioned,starts,closed,live,repositories,contracts,receivers,configs,historyReads,changes,
   failAccept(){throwAfterPersist=true;},overrideSend(params:Record<string,unknown>){sendOverride=params;},terminalOnAccept(){terminalOnAccept=true;}};
 }
 
@@ -122,6 +124,65 @@ function shieldingRecord(id:string,coin:{txid:string;vout:number;value:number;sc
  return {...record,kind:'shield',reference,destination:coin.script,amount:String(coin.value),coin:savedCoin,
   body:{...record.body,publics:['0',record.nullifiers[0]!,'0',String(coin.value),'0','0','0'],coin:{txid:coin.txid,vout:coin.vout,tapTree:'00',leaf:'00'}}};
 }
+
+test('an actual Lightning receipt survives failed shielding, retry, spent inclusion and reload exactly once',async()=>{
+ const f=serviceFixture(),name=`ln-history-${crypto.randomUUID()}`,errors:Error[]=[];
+ let journal=new IndexedDbLightningRepository(name);
+ const options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:(error:Error)=>errors.push(error)};
+ let service=await createPrivateLightning(options);
+ try{
+  await service.receive({via:'lightning',amount:1000n});await service.receive({via:'lightning',amount:1000n});
+  assert.deepEqual(await service.getActivityHistory(),[],'unpaid allocations are not receipts');
+  const contract=f.contracts[0]!,coin={txid:'ab'.repeat(32),vout:2,value:987,script:contract.script,createdAt:new Date('2026-10-17T12:34:56Z'),isPreconfirmed:true,isSpent:false};
+  contract.vtxos=[coin,{...coin}];f.contracts.push({script:hex.encode(script.pkScript),vtxos:[{...coin,txid:'cd'.repeat(32),value:9000,script:hex.encode(script.pkScript)}]});
+  f.base.getVtxos=async()=>[coin] as never;f.wallet.shieldLightning=async()=>{throw new Error('pool rejected');};
+  const before=f.changes.length;
+  for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:contract.script,vtxos:[coin]});
+  await flushTasks();assert.equal(errors[0]?.message,'pool rejected');assert.ok(f.changes.length>=before+2,'receipt and failed shield both refresh history');
+  let rows=await service.getActivityHistory();assert.equal(rows.length,1);const id=rows[0]!.id;
+  assert.equal(rows[0]!.amount,987);assert.equal(rows[0]!.createdAt,coin.createdAt.getTime());assert.equal(rows[0]!.intent?.kind,'lightning-receive');assert.equal(rows[0]!.intent?.outcome,'received');
+  assert.deepEqual(f.historyReads.at(-1),[undefined,undefined,{unspentOnly:false}]);
+  const first=shieldingRecord('receipt-shield',coin);await journal.create(first);
+  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');
+  await journal.finish(owner,pool,first.id,{state:'dropped',reason:'pool rejected'});
+  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'retrying');
+  const retry=shieldingRecord('receipt-shield-retry',coin);await journal.create(retry);
+  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');
+  await journal.finish(owner,pool,retry.id,{state:'included',txid:'ef'.repeat(32)});coin.isSpent=true;f.base.getVtxos=async()=>[];
+  for(const listener of f.receivers)listener({type:'vtxo_spent',contractScript:contract.script,vtxos:[coin]});
+  rows=await service.getActivityHistory();assert.equal(rows.length,1);assert.equal(rows[0]!.id,id);assert.equal(rows[0]!.amount,987);assert.equal(rows[0]!.intent?.outcome,'shielded');
+  await service[Symbol.asyncDispose]();await journal[Symbol.asyncDispose]();journal=new IndexedDbLightningRepository(name);options.journal=journal;service=await createPrivateLightning(options);
+  rows=await service.getActivityHistory();assert.equal(rows.length,1);assert.equal(rows[0]!.id,id);assert.equal(rows[0]!.intent?.outcome,'shielded');
+ }finally{await service[Symbol.asyncDispose]();await journal[Symbol.asyncDispose]();}
+});
+
+test('receipt history refreshes when shielding starts before its durable submission is prepared',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ let finish!:()=>void;const pending=new Promise<void>(resolve=>{finish=resolve;});
+ try{
+  await service.receive({via:'lightning',amount:1000n});const contract=f.contracts[0]!,coin={txid:'ab'.repeat(32),vout:0,value:1000,script:contract.script,createdAt:new Date(1000)};
+  contract.vtxos=[coin];f.base.getVtxos=async()=>[coin] as never;f.wallet.shieldLightning=async()=>({settled:()=>pending}) as never;
+  const before=f.changes.length,payouts=await journal.payouts(hex.encode(await root.xOnlyPublicKey()),pool);await service.registerPayouts(payouts);
+  assert.ok(f.changes.length>before);assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');assert.deepEqual(await journal.list(owner,pool),[]);
+  finish();await flushTasks();assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'received');
+ }finally{finish();await service[Symbol.asyncDispose]();}
+});
+
+test('subdust Lightning receipts remain visible, distinct outpoints do not merge and unrelated events do not refresh them',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await service.receive({via:'lightning',amount:1000n});const contract=f.contracts[0]!;
+  contract.vtxos=[0,1].map(vout=>({txid:'ab'.repeat(32),vout,value:329,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
+  const rows=await service.getActivityHistory();assert.deepEqual(rows.map(row=>row.amount),[329,329]);assert.equal(new Set(rows.map(row=>row.id)).size,2);
+  assert.ok(rows.every(row=>row.intent?.outcome==='below-minimum'));assert.equal(f.shielded.length,0);
+  const before=f.changes.length;for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:'unrelated',vtxos:[]});
+  assert.equal(f.changes.length,before);
+  for(const listener of f.receivers)listener({type:'connection_reset'});assert.equal(f.changes.length,before+1);
+  await service.quote({to:'invoice'});const refund=f.contracts.at(-1)!;
+  refund.vtxos=[{...contract.vtxos[0],txid:'cd'.repeat(32),script:refund.script,value:500}];
+  assert.equal((await service.getActivityHistory()).find(row=>row.amount===500)!.intent?.label,'Lightning refund');
+ }finally{await service[Symbol.asyncDispose]();}
+});
 
 test('saved Lightning shielding rejects a destination public signal without releasing its reservation',()=>{
  const record=shieldingRecord('tampered',{txid:'ab'.repeat(32),vout:0,value:1000,script:'00'});
