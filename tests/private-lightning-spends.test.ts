@@ -323,19 +323,24 @@ test('Lightning shielding polls slowly while still signing inside a 30-second ro
  ark.addInput({txid:head.id,index:0,witnessUtxo:{script:hex.decode(SCRIPT),amount:1000n}});
  ark.addInput({txid:mine.id,index:0,witnessUtxo:{script:tree.pkScript,amount:1000n},tapLeafScript:[tree.leaves[0]!]});ark.addOutput({script:tree.pkScript,amount:2000n});
  const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
- let posted=false,signedAt=0,polls=0;
+ let posted=false,signedAt=0,polls=0,signingRequested=false,firstPollSeen!:()=>void,signPosted!:()=>void;
+ const firstPoll=new Promise<void>(resolve=>{firstPollSeen=resolve;}),signed=new Promise<void>(resolve=>{signPosted=resolve;});
  try{
   clearTimeout((wallet as any).timer);t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
   wallet.api=(async(path:string)=>{
    if(path.startsWith('/batches'))return {total:0,batches:[]};
    if(path==='/spends'){posted=true;return {};}
-   if(path.endsWith('/sign')){signedAt=Date.now();return {};}
+   if(path.endsWith('/sign')){signedAt=Date.now();signPosted();return {};}
    if(!posted)throw missing();
-   polls++;return signedAt?{status:'included',txid:TXID}:Date.now()>=1_006_001?signing:{status:'pending'};
+   polls++;firstPollSeen();
+   if(signedAt)return {status:'included',txid:TXID};
+   if(Date.now()>=1_006_001){signingRequested=true;return signing;}
+   return {status:'pending'};
   }) as PoolApi;
   const handle=await wallet.shieldLightning(coin,child,store,{id:'slow-poll',reference:`${coin.txid}:${coin.vout}`}),pending=handle.settled();
-  await setImmediate();
-  for(let elapsed=250;elapsed<=15_000;elapsed+=250){t.mock.timers.tick(250);await setImmediate();}
+  await firstPoll;await setImmediate();
+  for(let elapsed=250;elapsed<=15_000&&!signingRequested;elapsed+=250){t.mock.timers.tick(250);await setImmediate();}
+  assert.equal(signingRequested,true);await signed;await setImmediate();t.mock.timers.tick(1000);
   assert.equal((await pending).txid,TXID);assert.ok(polls<=6,String(polls));assert.ok(signedAt>=1_006_001&&signedAt<=1_011_001,String(signedAt));
  }finally{t.mock.timers.reset();await wallet.dispose();}
 });
