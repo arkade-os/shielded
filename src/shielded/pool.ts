@@ -25,14 +25,15 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   catch(error){if(attempt>=4)throw error;}
   if(response&&response.status<500){
    const json=await response.json().catch(()=>({}));
+   const metadata=json&&typeof json==='object'?json:{};
    if(response.status===429){
     const retryAfter=response.headers.get('Retry-After')?.trim();
     const delay=retryAfter&&/^\d+$/.test(retryAfter)?Number(retryAfter)*1000:retryAfter&&/^[A-Za-z]/.test(retryAfter)?Date.parse(retryAfter)-Date.now():NaN;
-    const cooldown=admission&&(json.code==='admission-rate-limit'||json.error==='Too many requests from this address; try again in a minute.')?admissionLimitedUntil:rateLimitedUntil;
-    cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(Number.isSafeInteger(delay)?Math.max(1000,delay):60_000)));
+    const cooldown=admission&&(metadata.code==='admission-rate-limit'||metadata.error==='Too many requests from this address; try again in a minute.')?admissionLimitedUntil:rateLimitedUntil;
+    cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(Number.isSafeInteger(delay)&&delay>=0?Math.max(1000,delay):60_000)));
     if(attempt<4)continue;
    }
-   if(!response.ok)throw Object.assign(new Error(json.error??`The pool answered ${response.status}.`),{status:response.status,...(typeof json.code==='string'?{code:json.code}:{})});
+   if(!response.ok)throw Object.assign(new Error(metadata.error??`The pool answered ${response.status}.`),{status:response.status,...(typeof metadata.code==='string'?{code:metadata.code}:{})});
    return json as T;
   }
   if(attempt>=4)throw new Error(`The pool did not answer (${response?.status??'network error'}).`);

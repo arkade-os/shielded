@@ -17,6 +17,47 @@ test('a rate-limited GET waits for Retry-After seconds before reading again',asy
  assert.deepEqual(await pending,{value:{ok:true},error:undefined});assert.deepEqual(calls,[1_000_000,1_002_000]);
 });
 
+test('a JSON null rate-limit response still retries and shares the origin cooldown',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ let calls=0;
+ const fetcher=(async()=>{calls++;return calls===1?Response.json(null,{status:429,headers:{'Retry-After':'2'}}):Response.json({ok:true});}) as typeof fetch;
+ const api=poolApiOf('https://null-limit.test',fetcher),first=outcome(api('/spends',{id:'fixed'}));
+ await flush();const sibling=outcome(api('/status'));await flush();assert.equal(calls,1);
+ t.mock.timers.tick(1999);await flush();assert.equal(calls,1);
+ t.mock.timers.tick(1);await flush();
+ assert.deepEqual(await first,{value:{ok:true},error:undefined});assert.deepEqual(await sibling,{value:{ok:true},error:undefined});assert.equal(calls,3);
+});
+
+test('a JSON null refusal retains its HTTP status and successful JSON is returned unchanged',async()=>{
+ const refusing=(async()=>Response.json(null,{status:400})) as typeof fetch;
+ await assert.rejects(poolApiOf('https://null-refusal.test',refusing)('/spends',{}),(error:{status?:number;message?:string})=>error.status===400&&error.message==='The pool answered 400.');
+ for(const value of [null,false,7,['original']]){
+  const fetcher=(async()=>Response.json(value)) as typeof fetch;
+  assert.deepEqual(await poolApiOf('https://raw-success.test',fetcher)('/status'),value);
+ }
+});
+
+test('a past Retry-After date waits a minute while numeric zero retains the one-second minimum',async t=>{
+ for(const [name,header,delay] of [['past',new Date(999_000).toUTCString(),60_000],['zero','0',1000]] as const){
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  let calls=0;
+  const fetcher=(async()=>{calls++;return calls===1?new Response('{}',{status:429,headers:{'Retry-After':header}}):Response.json({ok:true});}) as typeof fetch;
+  const pending=outcome(poolApiOf(`https://retry-${name}.test`,fetcher)('/status'));
+  await flush();t.mock.timers.tick(delay-1);await flush();assert.equal(calls,1);
+  t.mock.timers.tick(1);await flush();assert.deepEqual(await pending,{value:{ok:true},error:undefined});assert.equal(calls,2);
+  t.mock.timers.reset();
+ }
+});
+
+test('a positive Retry-After of one hour is honored without shortening it',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ let calls=0;
+ const fetcher=(async()=>{calls++;return calls===1?new Response('{}',{status:429,headers:{'Retry-After':'3600'}}):Response.json({ok:true});}) as typeof fetch;
+ const pending=outcome(poolApiOf('https://long-backoff.test',fetcher)('/status'));
+ await flush();t.mock.timers.tick(3_599_999);await flush();assert.equal(calls,1);
+ t.mock.timers.tick(1);await flush();assert.deepEqual(await pending,{value:{ok:true},error:undefined});assert.equal(calls,2);
+});
+
 test('Retry-After dates preserve one POST body and recheck its deadline immediately before retry',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
  const body={id:'fixed-id',proof:{pi_a:['original']}},requests:{at:number;body:unknown}[]=[],checks:number[]=[];
