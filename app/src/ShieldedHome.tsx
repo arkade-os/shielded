@@ -1,4 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
+import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
 import {Gradient,Seal,spirograph,wave,type Tincture} from './guilloche.tsx';
 import {rollupApi,type RollupPoolStatus} from './rollup-client.ts';
 import './shielded-home.css';
@@ -16,7 +17,7 @@ const stations:{name:string;by:Party;text:React.ReactNode}[]=[
  {name:'Keys',by:'you',text:<>One recovery secret derives a spend key <var>ask</var>, a nullifier key <var>nk</var> and an X25519 view key. Your bech32m address, <code>shrol21…</code>, carries your owner hash and the public view key.</>},
  {name:'Prove',by:'you',text:<>Each output is sealed to its recipient’s view key with ECDH and AES-GCM. A Groth16 proof then shows the spend is valid; its statement binds the nullifiers it spends (one, or two for a merge), two new commitments and the sealed record’s digest.</>},
  {name:'Batch',by:'op',text:<>A batch closes as soon as a spend arrives and the previous batch has landed; spends that arrive while one is being proved share the next. The operator fills empty slots with its own zero-value spends, so no batch shows how full it was, then proves the whole state update at once.</>},
- {name:'Verify',by:'ark',text:<>One Arkade transaction spends the pool’s head VTXO through its batch leaf. The Arkade emulator checks all twelve proofs in one <code>OP_ECPAIRING</code> and the amounts against the real outputs, then co-signs, as does arkd. <a href="#sh-fig-2">See Fig. 2.</a></>},
+ {name:'Verify',by:'ark',text:<>One Arkade transaction spends the pool’s head VTXO through its batch leaf. The Arkade emulator checks all {BATCH_SLOTS+1} proofs in one <code>OP_ECPAIRING</code> and the amounts against the real outputs, then co-signs, as does arkd. <a href="#sh-fig-2">See Fig. 2.</a></>},
  {name:'Sync',by:'you',text:<>Every wallet replays each published batch into its own copy of the state, trial-decrypts the records with its view key to find its notes, and computes its own Merkle paths. It never asks anyone for one.</>},
 ];
 type Part={name:string;text:React.ReactNode;maybe?:boolean;packet?:boolean};
@@ -29,18 +30,18 @@ const defs:[React.ReactNode,React.ReactNode,React.ReactNode][]=[
  ['asset',<>SHA-256<sub>248</sub>(AssetId)</>,'Any Arkade asset, as the circuit sees it.'],
  ['ctDigest',<>SHA-256<sub>248</sub>(sealed record)</>,'Binds the encrypted outputs, so no one can swap them.'],
  ['groupId',<>Poseidon(tag, nf<sub>0</sub>, nf<sub>1</sub>, nf<sub>2</sub>)</>,'Up to three notes pay as one, in consecutive slots.'],
- ['statement',<>Poseidon(domain, root, nf…, cm<sub>0</sub>, cm<sub>1</sub>, ctDigest, groupId, groupSize)</>,'Public input one of five. The other four, deposit, withdraw, asset and destination, are zero for a private payment.'],
- [<>da<sub>i</sub></>,<>Poseidon(da<sub>i−1</sub>, nf<sub>i</sub>…, cm<sub>i,0</sub>, cm<sub>i,1</sub>, ctDigest<sub>i</sub>)</>,<>Chained over the eleven slots from da<sub>0</sub>{' = 0'}. The last link is the DA root.</>],
- [<>statement<sub>batch</sub></>,<>SHA-256<sub>248</sub>(header || old || new || da<sub>11</sub>)</>,'Binds the old and new state commitments to the DA root. The batch proof’s twelfth public input.'],
+ ['statement',<>Poseidon(domain, root, nf…, cm<sub>0</sub>, cm<sub>1</sub>, ctDigest, groupId, groupSize)</>,'One of seven public inputs. The other six are two nullifiers, deposit, withdraw, boundary asset and destination. Boundary values are zero for a private payment.'],
+ [<>da<sub>i</sub></>,<>Poseidon(da<sub>i−1</sub>, nf<sub>i</sub>…, cm<sub>i,0</sub>, cm<sub>i,1</sub>, ctDigest<sub>i</sub>)</>,<>Chained over the {BATCH_SLOTS} slots from da<sub>0</sub>{' = 0'}. The last link is the DA root.</>],
+ [<>statement<sub>batch</sub></>,<>SHA-256<sub>248</sub>(header || old || new || da<sub>{BATCH_SLOTS}</sub> || noteBlockRoot)</>,<>Binds the old and new state commitments to the DA root and appended note-block root. The batch proof’s final public input, after {BATCH_SLOTS} client statements.</>],
 ];
 const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
- {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','10,818'],['Public inputs','5'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','8.1 MB, cached by hash']]},
- {title:'Batch',by:'op',rows:[['Slots','11'],['Closes','On the first spend'],['Constraints','509,799'],['Public inputs','12']]},
+ {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','10,819'],['Public inputs','7'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','8.1 MB, cached by hash']]},
+ {title:'Batch',by:'op',rows:[['Slots',String(BATCH_SLOTS)],['Closes','On the first spend'],['Constraints','500,930 (spend)'],['Public inputs',String(BATCH_SLOTS+1)]]},
  {title:'State',rows:[['Note tree','depth 32, 4.29 billion'],['Per batch','one 32-leaf subtree'],['Nullifiers','indexed tree, depth 32'],['Root window','last 64 batches']]},
- {title:'On Arkade',by:'ark',rows:[['Transaction','8,665 bytes'],['Weight','34,660 of 40,000 WU'],['Per payment','about 3,150 WU'],['State packet','64 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
+ {title:'On Arkade',by:'ark',rows:[['Transaction','Unmeasured for genesis 3'],['Weight','40,000 WU limit'],['Per payment','Depends on batch contents'],['State packet','96 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
 ];
 const trust:{title:string;by?:Party;text:string}[]=[
- {title:'A test network',text:'Mutinynet test coins only. The proving keys come from a small testnet ceremony over the shared Hermez powers of tau, sealed with a Bitcoin block hash; the README shows how to verify them.'},
+ {title:'A test network',text:'Mutinynet test coins only. The current genesis 3 proving keys use a development-only phase-2 setup over the shared Hermez powers of tau, without an independent ceremony or Bitcoin beacon. The README shows how to verify the artifacts.'},
  {title:'Arkade checks the proofs',by:'ark',text:'The Arkade emulator verifies the proofs and arkd must co-sign; Bitcoin itself does not verify them. Both must stay honest and online. If they do not, there is no independent exit from the pool.'},
  {title:'The operator keeps order',by:'op',text:'The pool operator orders batches and can delay or refuse a spend, but cannot spend a note without its owner’s proof. If it refuses you or stops, anyone holding the published batch key can prove a batch without it, until the pool head expires. Deposits and withdrawals are public, amount and address.'},
 ];
@@ -48,7 +49,7 @@ const pt=(r:number,deg:number)=>[(r*Math.sin(deg*Math.PI/180)).toFixed(1),(-r*Ma
 const studPaths=Array.from({length:4},(_,k)=>wave(8.5,2.2,8,k*Math.PI/4,72));
 const dial={
  ticks:Array.from({length:60},(_,i)=>'M'+pt(i%5?159:152,i*6)+'L'+pt(165,i*6)).join(''),
- spokes:Array.from({length:12},(_,k)=>'M'+pt(124,k*30)+'Q'+pt(92,k*30+5)+' '+pt(56,k*30+26)),
+ spokes:Array.from({length:BATCH_SLOTS+1},(_,k)=>'M'+pt(124,k*360/(BATCH_SLOTS+1))+'Q'+pt(92,k*360/(BATCH_SLOTS+1)+5)+' '+pt(56,k*360/(BATCH_SLOTS+1)+26)),
  hub:Array.from({length:6},(_,k)=>wave(40,4.5,9,k*Math.PI/3,120)),
  turned:spirograph(120,33,38,1440),
 };
@@ -111,28 +112,28 @@ function Wire({n}:{n:number}){
  return <svg className="sh-wire" viewBox="0 0 44 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">{Array.from({length:n},(_,i)=>{const y=(2*i+1)*50/n;return <path key={i} d={`M0 ${y}C24 ${y} 20 50 44 50`}/>;})}</svg>;
 }
 function Dial(){
- return <div className="sh-dial" data-reveal role="img" aria-label="A dial of twelve proofs: eleven client proofs, one per slot, and the batch proof at twelve o’clock, all converging on one pairing check at the center.">
+ return <div className="sh-dial" data-reveal role="img" aria-label={`A dial of ${BATCH_SLOTS+1} proofs: ${BATCH_SLOTS} client proofs, one per slot, and the batch proof at twelve o’clock, all converging on one pairing check at the center.`}>
   <svg viewBox="-200 -200 400 400" focusable="false">
    <defs><path id="sh-micro-ring" d="M0 -181A181 181 0 1 1 0 181A181 181 0 1 1 0 -181"/></defs>
    <circle className="sh-bezel" r="196"/><circle className="sh-bezel is-fine" r="190"/><circle className="sh-bezel is-fine" r="172"/>
-   <text className="sh-micro"><textPath href="#sh-micro-ring" textLength="1137" lengthAdjust="spacing">{'eleven client proofs and one batch proof, one randomized multi-pairing check · '.repeat(3)}</textPath></text>
+   <text className="sh-micro"><textPath href="#sh-micro-ring" textLength="1137" lengthAdjust="spacing">{`${BATCH_SLOTS} client proofs and one batch proof, one randomized multi-pairing check · `.repeat(3)}</textPath></text>
    <path className="sh-ticks" d={dial.ticks}/><path className="sh-turned" d={dial.turned}/>
-   {Array.from({length:11},(_,i)=>{const [x,y]=pt(141,(i+1)*30).split(' ');return <text key={i} className="sh-num" x={x} y={y}>{i+1}</text>;})}
+   {Array.from({length:BATCH_SLOTS},(_,i)=>{const [x,y]=pt(141,(i+1)*360/(BATCH_SLOTS+1)).split(' ');return <text key={i} className="sh-num" x={x} y={y}>{i+1}</text>;})}
    <path className="sh-index" d="M-7 -151L7 -151L0 -137Z"/>
-   {dial.spokes.map((d,k)=><path key={k} className={'sh-spoke'+(k?'':' is-batch')} d={d} pathLength={1} style={{'--k':k||12} as React.CSSProperties}/>)}
-   {dial.spokes.map((_,k)=>{const [x,y]=pt(124,k*30).split(' ');return <circle key={k} className={'sh-node'+(k?'':' is-batch')} cx={x} cy={y} r="3"/>;})}
+   {dial.spokes.map((d,k)=><path key={k} className={'sh-spoke'+(k?'':' is-batch')} d={d} pathLength={1} style={{'--k':k||BATCH_SLOTS+1} as React.CSSProperties}/>)}
+   {dial.spokes.map((_,k)=>{const [x,y]=pt(124,k*360/(BATCH_SLOTS+1)).split(' ');return <circle key={k} className={'sh-node'+(k?'':' is-batch')} cx={x} cy={y} r="3"/>;})}
    <g className="sh-hub"><circle r="56"/><circle className="is-fine" r="50"/>{dial.hub.map((d,i)=><path key={i} d={d}/>)}<circle className="sh-hub-core" r="5"/></g>
   </svg>
  </div>;
 }
 function Plate(){
- const parts=(list:Part[])=><ul className="sh-io">{list.map(part=><li key={part.name} className={part.maybe?'is-maybe':undefined}><b>{part.name}</b><p>{part.text}</p>{part.packet&&<span className="sh-packet" aria-hidden="true"><i>state</i><i>DA root</i></span>}</li>)}</ul>;
+ const parts=(list:Part[])=><ul className="sh-io">{list.map(part=><li key={part.name} className={part.maybe?'is-maybe':undefined}><b>{part.name}</b><p>{part.text}</p>{part.packet&&<span className="sh-packet" aria-hidden="true"><i>state</i><i>DA root</i><i>note-block root</i></span>}</li>)}</ul>;
  return <section id="under-the-hood" className="sh-plate" aria-labelledby="sh-hood-title">
   <Ribbon dark/>
   <div className="sh-plate-frame">
    <div className="sh-corners" aria-hidden="true"><Stud/><Stud/><Stud/><Stud/></div>
    <h2 id="sh-hood-title">Under the hood</h2>
-   <p className="sh-plate-lead">Each payment is a Groth16 proof your browser makes. The operator gathers eleven into one Arkade transaction, and Arkade verifies all of them, with the operator’s own proof, in a single pairing check.</p>
+   <p className="sh-plate-lead">Each payment is a Groth16 proof your browser makes. The operator gathers {BATCH_SLOTS} into one Arkade transaction, and Arkade verifies all of them, with the operator’s own proof, in a single pairing check.</p>
    <ul className="sh-key" aria-label="Key to the figures">{(Object.keys(parties) as Party[]).map(p=><li key={p} className={'is-'+p}>{parties[p]}</li>)}</ul>
    <figure className="sh-fig">
     <figcaption><h3><span>Fig. 1</span>The life of a private payment</h3></figcaption>
@@ -143,12 +144,12 @@ function Plate(){
     <div className="sh-tx">
      <div className="sh-side is-in"><h4>Inputs</h4>{parts(txIn)}<Wire n={txIn.length}/></div>
      <Dial/>
-     <p className="sh-dial-note">One <code>OP_ECPAIRING</code> checks all twelve proofs. The batch leaf then matches deposits, withdrawals and asset legs to the real outputs before the Arkade emulator co-signs.</p>
+     <p className="sh-dial-note">One <code>OP_ECPAIRING</code> checks all {BATCH_SLOTS+1} proofs. The batch leaf then matches deposits, withdrawals and asset legs to the real outputs before the Arkade emulator co-signs.</p>
      <div className="sh-side is-out"><h4>Outputs</h4><Wire n={txOut.length}/>{parts(txOut)}</div>
      <div className="sh-weight">
-      <div className="sh-scale" aria-hidden="true"><i/></div>
+      <div className="sh-scale" aria-hidden="true"/>
       <div className="sh-marks" aria-hidden="true"><span>0</span><span style={{left:'25%'}}>10,000</span><span style={{left:'50%'}}>20,000</span><span style={{left:'75%'}}>30,000</span><span>40,000</span></div>
-      <p>Measured on Mutinynet, a full batch transaction is <b>8,665 bytes</b> and <b>34,660 WU</b>, inside arkd’s 40,000 WU limit: about 3,150 WU for each of its eleven payments.</p>
+      <p>The current genesis 3 transaction size and weight have not been measured here. The operator checks each batch against a <b>40,000 WU limit</b>; its size depends on the deposits, withdrawals and assets it carries.</p>
      </div>
     </div>
    </figure>
