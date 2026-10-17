@@ -5,14 +5,15 @@ import type {BuiltSpend,OwnedNote,PublishedBatch,RollupAccount} from '../../pack
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
-export type PoolApi=<T>(path:string,body?:unknown)=>Promise<T>;
-export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=><T,>(path:string,body?:unknown)=>rollupApi<T>(path,body,fetcher,1000,origin);
+export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Promise<T>;
+export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=><T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
 export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 
 /** Retries outages (network errors and 5xx); a refusal is the pool's answer and surfaces at once. */
-export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin=''):Promise<T>{
+export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{
  for(let attempt=0;;attempt++){
+  beforeRequest?.();
   let response:Response|undefined;
   try{response=await fetcher(origin+'/api/rollup'+path,{method:body===undefined?'GET':'POST',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});}
   catch(error){if(attempt>=4)throw error;}
@@ -26,7 +27,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
  }
 }
 
-export async function syncAccount(account:RollupAccount,api:PoolApi=rollupApi){
+export async function syncAccount(account:RollupAccount,api:PoolApi=poolApiOf('')){
  for(;;){
   const page=await api<{total:number;batches:PublishedBatch[]}>(`/batches?from=${account.batchCount}&limit=50`);
   for(const batch of page.batches)await account.apply(batch);
@@ -74,7 +75,7 @@ export async function signDeposit(identity:Identity,request:SpendStatus){
 }
 
 /** Polls a spend until it is settled or the deadline passes; a rebuilt batch asks the depositor to sign again. */
-export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=rollupApi,pollMs=1000,deadlineMs=Infinity):Promise<SpendStatus>{
+export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=poolApiOf(''),pollMs=1000,deadlineMs=Infinity):Promise<SpendStatus>{
  let signed='';
  for(const end=Date.now()+deadlineMs;;){
   if(Date.now()>end)throw new Error('The spend did not settle in time; the pool may still include it.');

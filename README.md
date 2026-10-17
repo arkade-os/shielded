@@ -14,6 +14,18 @@ A private pool for Bitcoin and Arkade assets on Arkade. Inside the pool, value m
 - Anyone can list an Arkade asset by sending one unit and 330 sats to the pool address; the operator turns it into that asset's reserve.
 - The operator moves the head and reserves into a fresh Arkade round 48 hours before they expire.
 
+## Lightning privacy and recovery
+
+The wallet requests Lightning quotes only after **Get quote**. That action shares the invoice or Lightning address and amount with its payment service. Sending funds the verified HTLC directly from one pool note, including the swap fee; ordinary Arkade coins are never added. Each send refund and receive invoice uses its own HD child key and payout address. Receive and refund payouts return to the pool one coin at a time, signed with that child's key.
+
+A Lightning address remains a permanent alias. Its service receives only a dedicated public HD branch (`2/7`) and reserves a fresh child for every valid callback, including unpaid requests. The service can link those callbacks to the alias. Payers see the individual payout address. Direct swaps use a separate branch (`2/8`), with a durable counter shared across pools. Creating an alias requires the server's explicit HD acknowledgement; older servers fail closed. This depends on [lnurl-server #92](https://github.com/ArkLabsHQ/lnurl-server/pull/92).
+
+Keep browser data while swaps or payouts are pending. The journal saves the exact pool submission before sending it, and keeps uncertain funds reserved across reloads; a timeout or missing status never frees them. Existing swaps retain their original recovery path, with new funding disabled. Rolling back the application must preserve the Lightning journal and swap repositories.
+
+The recovery phrase derives all child keys, but does not reconstruct every direct swap or arbitrarily large unpaid index gap after browser storage is lost. **Recover a Lightning address** restores alias allocations from authenticated server history, including historical script settings. Outstanding direct swaps also require their stored recovery records. Alias history recovery contacts the service only after explicit enablement or recovery. Keep the page open to shield received payouts.
+
+The pool accepts deposits of at least 330 sats. Direct receive invoices enforce that floor. Alias or direct Arkade payouts below it remain at their individual HD addresses; the wallet reports them and never combines unrelated payouts automatically. Keep their recovery records too.
+
 ## Layout
 
 | Path | Contents |

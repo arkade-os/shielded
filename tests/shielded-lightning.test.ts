@@ -15,6 +15,7 @@ function fakeWallet(o:{arkade:number;canWithdraw?:boolean}){
  const topUps:{need:number;title:string}[]=[],checked:bigint[]=[];
  const wallet={
   poolAddress:POOL,
+  restoreLightningSpends:async()=>{},
   arkadeSats:async()=>o.arkade,
   canWithdraw:(amount:bigint)=>{checked.push(amount);return o.canWithdraw??true;},
   topUp:(need:number,title:string,pay:()=>Promise<unknown>)=>{topUps.push({need,title});return pay();},
@@ -31,35 +32,35 @@ function fakeRail(quotes:{total:number;send:()=>ReturnType<typeof handle>;expire
 }
 const req=(raw:string,amount?:number):PaymentRequest=>({raw,...(amount!==undefined?{amount}:{})});
 
-test('a payment the Arkade balance covers goes straight to the swap, with no withdrawal',async()=>{
+test('a Lightning payment uses the full pool amount even when the ordinary Arkade wallet is rich',async()=>{
  const {wallet,topUps}=fakeWallet({arkade:5000}),inner=fakeRail([{total:1003,send:handle}]);
  await (await (await poolFunded(wallet,inner.rail).quote(req(INVOICE),{} as never)).send()).settled();
  assert.deepEqual([topUps,inner.sent],[[],[0]]);
 });
 
-test('a short balance tops up the whole need, refusing at quote time when no single note covers the dust-floored shortfall',async()=>{
+test('the full Lightning cost must fit one pool note, without topping up an ordinary wallet',async()=>{
  const rich=fakeWallet({arkade:900}),quote=await poolFunded(rich.wallet,fakeRail([{total:1003,send:handle}]).rail).quote(req(INVOICE),{} as never);
- assert.deepEqual(rich.checked,[330n],'103 sats short withdraws the 330-sat minimum');
+ assert.deepEqual(rich.checked,[1003n]);
  await (await quote.send()).settled();
- assert.deepEqual(rich.topUps,[{need:1003,title:'Paying 1,000 sats over Lightning'}]);
- const poor=fakeWallet({arkade:0,canWithdraw:false});
- await assert.rejects(poolFunded(poor.wallet,fakeRail([{total:5003,send:handle}]).rail).quote(req(INVOICE),{} as never),/holds 0, and no single note in the pool covers the other 5,003/);
+ assert.deepEqual(rich.topUps,[]);
+ const poor=fakeWallet({arkade:50_000,canWithdraw:false});
+ await assert.rejects(poolFunded(poor.wallet,fakeRail([{total:5003,send:handle}]).rail).quote(req(INVOICE),{} as never),/No single unreserved pool note covers the 5,003 sats/);
 });
 
-test('a quote the withdrawal outlived is replaced before sending, and refused if the total rose',async()=>{
+test('an expired quote refuses payment without silently requesting another remote quote',async()=>{
  const {wallet}=fakeWallet({arkade:0}),past=Math.floor(Date.now()/1000)-1;
  const fresh=fakeRail([{total:1003,send:handle},{total:1003,send:handle}]);
  await (await (await poolFunded(wallet,fresh.rail).quote(req(INVOICE),{} as never)).send()).settled();
  assert.deepEqual([fresh.quoted(),fresh.sent],[1,[0]],'a live quote is sent as it is');
  const stale=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1003,send:handle}]);
- await (await (await poolFunded(wallet,stale.rail).quote(req(INVOICE),{} as never)).send()).settled();
- assert.deepEqual([stale.quoted(),stale.sent],[2,[1]],'the expired one never reaches accept');
- const dearer=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1010,send:handle}]);
- await assert.rejects((await poolFunded(wallet,dearer.rail).quote(req(INVOICE),{} as never)).send(),/now costs 1,010 sats, not 1,003/);
- assert.deepEqual(dearer.sent,[]);
- const rich=fakeWallet({arkade:5000}),covered=fakeRail([{total:1003,send:handle,expiresAt:past},{total:1003,send:handle}]);
- await (await (await poolFunded(rich.wallet,covered.rail).quote(req(INVOICE),{} as never)).send()).settled();
- assert.deepEqual([covered.quoted(),covered.sent,rich.topUps],[2,[1],[]],'a covered payment refreshes too, without a withdrawal');
+ await assert.rejects((await poolFunded(wallet,stale.rail).quote(req(INVOICE),{} as never)).send(),/quote expired/);
+ assert.deepEqual([stale.quoted(),stale.sent],[1,[]]);
+});
+
+test('a locally impossible explicit amount is refused before any quote disclosure',async()=>{
+ const {wallet}=fakeWallet({arkade:50_000,canWithdraw:false}),remote=fakeRail([{total:1003,send:handle}]);
+ await assert.rejects(poolFunded(wallet,remote.rail).quote(req(INVOICE,1000),{} as never),/No single unreserved pool note/);
+ assert.equal(remote.quoted(),0);
 });
 
 test('a Lightning address whose Arkade destination the pool cannot pay hands over to its Lightning option',async t=>{
