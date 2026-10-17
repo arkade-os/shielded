@@ -1,0 +1,14 @@
+pragma arkade ^0.1.0;
+
+// Experimental: fixed-width vout changes the Go renewal signature digest.
+contract RollupRenew(bytes32 tokenTxid, int tokenGidx, pubkey operator) {
+  function renew(signature operatorSig) {
+    require(tx.intent.field("type") == "register");
+    Outpoint head = tx.inputs[1].outpoint;
+    bytes message = sha256(tx.intent.field("cosigners_public_keys") + head.txid + num2bin(head.vout, 4));
+    require(checkSigFromStack(operatorSig, operator, message));
+    require(this.tunnel(this.activeInputIndex - 1, {scriptPubKey: true, value: true, assets: true}));
+    require(tx.inputs[1].assets.lookup(tokenTxid, tokenGidx) == 1);
+    require(tx.packet(135) == tx.inputs[1].packet(135));
+  }
+}

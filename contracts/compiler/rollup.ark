@@ -1,0 +1,185 @@
+pragma arkade ^0.1.0;
+
+// Reference form; generate.py emits the smaller unrolled variant for kinds 0 and 1.
+struct Proof { int ax; int ay; int bxc1; int bxc0; int byc1; int byc0; int cx; int cy; }
+struct Slot { Proof proof; int pub; int dep; int wd; bytes a; bytes d; }
+
+contract RollupBatch(
+  ECPoint alpha, ECPoint[6] clientIC, G2Point negBeta, G2Point negGamma, G2Point negDeltaClient,
+  ECPoint[13] batchIC, G2Point negDeltaBatch
+) {
+  const int N = 11;
+  const int P = 16;
+
+  function batch(Proof bp, Slot[N] slots) {
+    require(this.activeInputIndex == 0);
+    bytes newp = tx.packet(135);
+    require(size(newp) == 64);
+    bytes h = sha256(0x534802000b + substr(tx.inputs[0].packet(135), 0, 32) + newp);
+    int st = bin2num(substr(h, 0, 31) + 0x00);
+    bytes seed = sha256(h + tx.inputs[0].arkadeWitnessHash);
+
+    bool has = tx.numInputs > 1 && tx.inputs[1].scriptPubKey == tx.inputs[0].scriptPubKey && tx.inputs[1].witnessVersion == tx.inputs[0].witnessVersion;
+    // Without a reserve, asset fields must equal f, which stays empty.
+    AssetId xid = tx.inputs[0].assets[0].assetId;
+    int xin = 0;
+    bytes f = "";
+    int o = 1;
+    if (has) {
+      AssetId rid = tx.inputs[1].assets[0].assetId;
+      xid.txid = rid.txid;
+      xid.gidx = rid.gidx;
+      xin = tx.inputs[1].assets[0].amount;
+      f = substr(sha256(xid.txid + substr(num2bin(xid.gidx + 65536, 3), 0, 2)), 0, 31) + 0x00;
+      o = 2;
+    } else {
+      require(true);
+    }
+
+    int nall = 0;
+    int nbtc = 0;
+    int s0 = 0;
+    int s1 = 0;
+    int s2 = 0;
+    int s3 = 0;
+    int s4 = 0;
+    int sr = 0;
+    ECPoint sc = { x: 0, y: 0 };
+    ECPoint bsum = { x: 0, y: 0 };
+    bool pending = false;
+    ECPoint[P] g1 = [
+      { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 },
+      { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 },
+      { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 },
+      { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }
+    ];
+    G2Point[P] g2 = [
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 },
+      { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }, { xC1: 0, xC0: 0, yC1: 0, yC0: 0 }
+    ];
+
+    for (i, s) in slots {
+      int r = abs(bin2num(substr(sha256(seed + num2bin(i + 1, 1)), 0, 16)));
+      ECPoint pa = { x: s.proof.ax, y: s.proof.ay };
+      ECPoint ra = ecMul(pa, r, 2);
+      g1[i].x = ra.x;
+      g1[i].y = ra.y;
+      g2[i].xC1 = s.proof.bxc1;
+      g2[i].xC0 = s.proof.bxc0;
+      g2[i].yC1 = s.proof.byc1;
+      g2[i].yC0 = s.proof.byc0;
+      ECPoint pc = { x: s.proof.cx, y: s.proof.cy };
+      ECPoint nsc = ecAdd(sc, ecMul(pc, r, 2), 2);
+      sc.x = nsc.x;
+      sc.y = nsc.y;
+      ECPoint nbs = ecAdd(bsum, ecMul(batchIC[i + 1], s.pub, 2), 2);
+      bsum.x = nbs.x;
+      bsum.y = nbs.y;
+      s0 = s0 + s.pub * r;
+      s1 = s1 + s.dep * r;
+      s2 = s2 + s.wd * r;
+      s3 = s3 + bin2num(s.a) * r;
+      s4 = s4 + bin2num(s.d) * r;
+      sr = sr + r;
+
+      // An asset payout's carrier is the next slot: a BTC payout with no asset field.
+      bool ia = size(s.a) != 0;
+      if (pending) {
+        require(s.wd != 0);
+        require(!ia);
+      } else {
+        require(true);
+      }
+      require(!ia || s.a == f);
+      require(s.dep >= 0);
+      int net = s.dep - s.wd;
+      nall = nall + net;
+      if (!ia) {
+        nbtc = nbtc + net;
+      } else {
+        require(true);
+      }
+      pending = false;
+      if (s.wd != 0) {
+        require(tx.outputs[o].witnessVersion == 1);
+        require(substr(sha256(tx.outputs[o].scriptPubKey), 0, 31) + 0x00 == s.d);
+        if (ia) {
+          pending = true;
+          require(tx.outputs[o].assets.lookup(xid.txid, xid.gidx) == s.wd);
+        } else {
+          require(tx.outputs[o].value == s.wd);
+          o = o + 1;
+        }
+      } else {
+        require(true);
+      }
+    }
+    require(!pending);
+
+    g1[11].x = bp.ax;
+    g1[11].y = bp.ay;
+    g2[11].xC1 = bp.bxc1;
+    g2[11].xC0 = bp.bxc0;
+    g2[11].yC1 = bp.byc1;
+    g2[11].yC0 = bp.byc0;
+
+    ECPoint ga = ecMul(alpha, (sr + 1) % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2);
+    g1[12].x = ga.x;
+    g1[12].y = ga.y;
+    g2[12].xC1 = negBeta.xC1;
+    g2[12].xC0 = negBeta.xC0;
+    g2[12].yC1 = negBeta.yC1;
+    g2[12].yC0 = negBeta.yC0;
+
+    ECPoint l = ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(ecAdd(
+      ecMul(clientIC[0], sr % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2),
+      ecMul(clientIC[1], s0 % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2), 2),
+      ecMul(clientIC[2], s1 % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2), 2),
+      ecMul(clientIC[3], s2 % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2), 2),
+      ecMul(clientIC[4], s3 % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2), 2),
+      ecMul(clientIC[5], s4 % 21888242871839275222246405745257275088548364400416034343698204186575808495617, 2), 2),
+      bsum, 2), batchIC[0], 2), ecMul(batchIC[12], st, 2), 2);
+    g1[13].x = l.x;
+    g1[13].y = l.y;
+    g2[13].xC1 = negGamma.xC1;
+    g2[13].xC0 = negGamma.xC0;
+    g2[13].yC1 = negGamma.yC1;
+    g2[13].yC0 = negGamma.yC0;
+
+    g1[14].x = sc.x;
+    g1[14].y = sc.y;
+    g2[14].xC1 = negDeltaClient.xC1;
+    g2[14].xC0 = negDeltaClient.xC0;
+    g2[14].yC1 = negDeltaClient.yC1;
+    g2[14].yC0 = negDeltaClient.yC0;
+
+    g1[15].x = bp.cx;
+    g1[15].y = bp.cy;
+    g2[15].xC1 = negDeltaBatch.xC1;
+    g2[15].xC0 = negDeltaBatch.xC0;
+    g2[15].yC1 = negDeltaBatch.yC1;
+    g2[15].yC0 = negDeltaBatch.yC0;
+    require(ecPairing(g1, g2, 2));
+
+    int nx = nall - nbtc;
+    require(tx.outputs[0].value == tx.inputs[0].value + nbtc);
+    if (has) {
+      int kept = 0;
+      if (tx.outputs[1].assets.has(xid.txid, xid.gidx)) {
+        kept = tx.outputs[1].assets.lookup(xid.txid, xid.gidx);
+      } else {
+        require(true);
+      }
+      require(kept == xin + nx);
+    } else {
+      require(true);
+    }
+    require(this.tunnel(0, { scriptPubKey: true, value: false, assets: true }));
+  }
+}

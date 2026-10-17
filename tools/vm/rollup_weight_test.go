@@ -85,7 +85,7 @@ func rollupDeposits(inputs int, reserve bool) []rollupLeg {
 }
 
 func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
-	w := newRollupWorld(t, 11, 0, 11)
+	w := newRollupWorldVariant(t, 11, 0, 11, false)
 	w.headIn = 10_000_000_000
 	weigh := func(w *rollupWorld, name string, legs []rollupLeg, reserve bool) int {
 		b := w.batchOf(legs, reserve)
@@ -121,7 +121,7 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 			t.Errorf("%s: %d WU, was %d with four pool leaves", mix.name, weight, want)
 		}
 	}
-	join := newRollupWorld(t, 11, 1, 11)
+	join := newRollupWorldVariant(t, 11, 1, 11, false)
 	join.headIn = w.headIn
 	if weight := weigh(join, "join batch, no legs", make([]rollupLeg, 11), false); weight > rollupMaxTxWeight-5_000 {
 		t.Errorf("join batch: %d WU leaves under 5,000 WU of headroom", weight)

@@ -1,0 +1,9 @@
+pragma arkade ^0.1.0;
+
+contract RollupReserve(bytes32 tokenTxid, int tokenGidx) {
+  function reserve() {
+    require(this.activeInputIndex == 1);
+    require(tx.inputs[0].assets.lookup(tokenTxid, tokenGidx) == 1);
+    require(this.tunnel(1, {scriptPubKey: true, value: true, assets: true}, [tx.inputs[1].assets[0].assetId]));
+  }
+}
