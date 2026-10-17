@@ -219,6 +219,28 @@ test('a rich ordinary wallet cannot fund an impossible pool payment or bypass th
  try{await assert.rejects(service.quote({to:'invoice'}),/No single unreserved pool note/);assert.equal(quoted,0);assert.equal(f.funded.length,0);}finally{await service[Symbol.asyncDispose]();}
 });
 
+test('an individual Lightning receive below the pool minimum refuses locally and exact minimum remains receivable',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();let quotes=0,accepts=0;
+ const clientFactory=(config:SwapClientConfig)=>{const client=f.clientFactory(config),quote=client.quote,accept=client.accept;return {...client,
+  quote:async(input:Parameters<SwapClient['quote']>[0])=>{quotes++;const quoted=await quote(input);return {...quoted,take:{...quoted.take,amount:330n}};},
+  accept:async(quoted:Quote)=>{accepts++;return accept(quoted);}};};
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await assert.rejects(service.receive({via:'lightning',amount:329n}),/individual Lightning payout needs at least 330 sats/);
+  assert.equal(quotes,0);assert.equal(accepts,0);assert.equal(f.funded.length,0);assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool)).length,0);
+  const received=await service.receive({via:'lightning',amount:330n});assert.equal(received.take.amount,330n);assert.equal(quotes,1);assert.equal(accepts,1);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a receive quote whose net payout falls below the pool minimum is never accepted',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();let accepts=0;
+ const clientFactory=(config:SwapClientConfig)=>{const client=f.clientFactory(config),quote=client.quote;return {...client,
+  quote:async(input:Parameters<SwapClient['quote']>[0])=>{const quoted=await quote(input);return {...quoted,take:{...quoted.take,amount:329n}};},
+  accept:async()=>{accepts++;throw new Error('must not accept');}};};
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{await assert.rejects(service.receive({via:'lightning',amount:330n}),/quoted individual Lightning payout is below.*330 sats/);assert.equal(accepts,0);assert.equal(f.funded.length,0);}finally{await service[Symbol.asyncDispose]();}
+});
+
 test('stored HTLC funding rejects altered amount, assets, extra selection and wrong destination',async()=>{
  for(const override of [{amount:1002},{assets:[]},{selectedVtxos:[]},{address:new ArkAddress(server,new Uint8Array(32).fill(9),'tark').encode()}]){
   const f=serviceFixture(),journal=new InMemoryLightningRepository();f.overrideSend(override);
@@ -262,6 +284,18 @@ test('a private payout shields only its exact coin under its child signer while 
   for(let i=0;i<20&&!f.shielded.length;i++)await new Promise(resolve=>setTimeout(resolve,5));
   assert.equal(f.shielded.length,1);assert.equal(f.shielded[0]![0],own);
   assert.equal(hex.encode(await f.shielded[0]![1].xOnlyPublicKey()),contract.params.pubKey);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a received subdust payout reports its individual minimum and never combines it with ordinary coins',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[];
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
+ try{
+  await service.receive({via:'lightning',amount:1000n});const payout=(await journal.payouts(hex.encode(await root.xOnlyPublicKey()),pool))[0]!;
+  f.base.getVtxos=async()=>[{txid:'ab'.repeat(32),vout:0,value:329,script:payout.script},{txid:'cd'.repeat(32),vout:1,value:9000,script:hex.encode(script.pkScript)}] as never;
+  await service.registerPayouts([payout]);
+  assert.match(errors[0]!.message,/individual Lightning payout is below.*330 sats.*cannot be shielded alone/);
+  assert.equal(f.shielded.length,0);assert.equal(f.funded.length,0);
  }finally{await service[Symbol.asyncDispose]();}
 });
 

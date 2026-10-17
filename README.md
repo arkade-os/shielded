@@ -24,6 +24,8 @@ Keep browser data while swaps or payouts are pending. The journal saves the exac
 
 The recovery phrase derives all child keys, but does not reconstruct every direct swap or arbitrarily large unpaid index gap after browser storage is lost. **Recover a Lightning address** restores alias allocations from authenticated server history, including historical script settings. Outstanding direct swaps also require their stored recovery records. Alias history recovery contacts the service only after explicit enablement or recovery. Keep the page open to shield received payouts.
 
+The pool accepts deposits of at least 330 sats. Direct receive invoices enforce that floor. Alias or direct Arkade payouts below it remain at their individual HD addresses; the wallet reports them and never combines unrelated payouts automatically. Keep their recovery records too.
+
 ## Layout
 
 | Path | Contents |
