@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {setImmediate} from 'node:timers/promises';
 import {ArkAddress,Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
@@ -57,6 +58,25 @@ test('only the member that owns a deposit coin signs, and a request for a member
  assert.equal(signed.length,1);
  asked=false;
  await assert.rejects(submitAll([{built:built([11n])}],{...withCoin,step:()=>{},first:0}),/no deposit coin/i);
+});
+
+test('ordinary deposits poll slowly while still signing within the server round',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const pool=hex.decode('5120'+'aa'.repeat(32)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
+ const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
+ const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);
+ const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
+ let signedAt=0,polls=0;
+ const api=(async(path:string)=>{
+  if(path==='/spends')return {};
+  if(path.endsWith('/sign')){signedAt=Date.now();return {};}
+  polls++;return signedAt?{status:'included',txid:'t'}:Date.now()>=1_006_001?signing:{status:'pending'};
+ }) as never;
+ const pending=submitAll([{built:built([11n]),coin}],{api,prover,identity,poolScript:hex.encode(pool),step:()=>{},first:0});
+ await setImmediate();
+ for(let elapsed=250;elapsed<=15_000;elapsed+=250){t.mock.timers.tick(250);await setImmediate();}
+ assert.equal((await pending).status,'included');assert.ok(polls<=6,String(polls));
+ assert.ok(signedAt>=1_006_001&&signedAt<=1_011_001,String(signedAt));
 });
 
 test('a dropped member is the answer even when a sibling was included',async()=>{

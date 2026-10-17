@@ -57,7 +57,7 @@ export async function submitLightningSpend(record:LightningSpendRecord,store:Lig
   if(!r.coin)throw new Error('The pool asked to sign a Lightning funding withdrawal; not signing.');
   checkSigningRequest(request,r.coin,o.poolScript);o.step?.(3);
   await o.api(`/spends/${r.body.id}/sign`,await signDeposit(o.identity,request));
- },async<T,>(path:string,body?:unknown)=>{if(first&&body===undefined&&path===`/spends/${r.body.id}`){const result=first;first=undefined;return result as T;}return o.api<T>(path,body);},250,30*60_000);
+ },async<T,>(path:string,body?:unknown)=>{if(first&&body===undefined&&path===`/spends/${r.body.id}`){const result=first;first=undefined;return result as T;}return o.api<T>(path,body);},1000,30*60_000);
  if(final.status==='included'&&(!final.txid||!/^[0-9a-f]{64}$/.test(final.txid)))throw new Error('The pool did not identify the included Lightning spend.');
  await store.finish(r.owner,r.pool,r.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason}:{})});
  return final;

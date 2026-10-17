@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {setImmediate} from 'node:timers/promises';
 import {ArkAddress,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Transaction,VtxoScript,type ExtendedVirtualCoin} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
@@ -294,4 +295,47 @@ test('an internal pool API retry checks the funding deadline again before POSTin
   await assert.rejects(wallet.fundLightning('retry-expiry',PAYMENT,destination,700n,store,undefined,1001),/expired|deadline/);
   assert.equal(posts,1);assert.equal(store.rows.get('retry-expiry')!.state,'prepared');assert.equal(wallet.inFlight.size,1);
  }finally{await wallet.dispose();}
+});
+
+test('a rate-limit delay cannot submit expired Lightning funding or release its reservation',async t=>{
+ const store=new Store(),wallet=await open(store);let posts=0,posted!:()=>void;
+ const started=new Promise<void>(resolve=>{posted=resolve;});
+ try{
+  await fund(wallet);clearTimeout((wallet as any).timer);
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  const fetcher=(async(_url:unknown,init?:RequestInit)=>{
+   if(init?.method==='POST'){posts++;posted();return new Response('Cloudflare rate limit',{status:429,headers:{'Retry-After':'2'}});}
+   return Response.json({error:'Unknown spend'},{status:404});
+  }) as typeof fetch;
+  wallet.api=<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,0,'https://funding-expiry.test',beforeRequest);
+  const pending=assert.rejects(wallet.fundLightning('rate-expiry',PAYMENT,destination,700n,store,undefined,1001),/funding deadline expired/);
+  await started;await setImmediate();assert.equal(posts,1);
+  t.mock.timers.tick(2000);await pending;
+  assert.equal(posts,1);assert.equal(store.rows.get('rate-expiry')!.state,'prepared');assert.equal(wallet.inFlight.size,1);
+ }finally{t.mock.timers.reset();await wallet.dispose();}
+});
+
+test('Lightning shielding polls slowly while still signing inside a 30-second round',async t=>{
+ const store=new Store(),wallet=await open(store),child=SingleKey.fromHex('22'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
+ const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+ const head=tx('dd'.repeat(32),0,hex.decode(SCRIPT)),mine=tx(coin.txid,coin.vout,tree.pkScript,tree.leaves[0]);
+ const ark=new Transaction({allowUnknownOutputs:true});
+ ark.addInput({txid:head.id,index:0,witnessUtxo:{script:hex.decode(SCRIPT),amount:1000n}});
+ ark.addInput({txid:mine.id,index:0,witnessUtxo:{script:tree.pkScript,amount:1000n},tapLeafScript:[tree.leaves[0]!]});ark.addOutput({script:tree.pkScript,amount:2000n});
+ const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
+ let posted=false,signedAt=0,polls=0;
+ try{
+  clearTimeout((wallet as any).timer);t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  wallet.api=(async(path:string)=>{
+   if(path.startsWith('/batches'))return {total:0,batches:[]};
+   if(path==='/spends'){posted=true;return {};}
+   if(path.endsWith('/sign')){signedAt=Date.now();return {};}
+   if(!posted)throw missing();
+   polls++;return signedAt?{status:'included',txid:TXID}:Date.now()>=1_006_001?signing:{status:'pending'};
+  }) as PoolApi;
+  const handle=await wallet.shieldLightning(coin,child,store,{id:'slow-poll',reference:`${coin.txid}:${coin.vout}`}),pending=handle.settled();
+  await setImmediate();
+  for(let elapsed=250;elapsed<=15_000;elapsed+=250){t.mock.timers.tick(250);await setImmediate();}
+  assert.equal((await pending).txid,TXID);assert.ok(polls<=6,String(polls));assert.ok(signedAt>=1_006_001&&signedAt<=1_011_001,String(signedAt));
+ }finally{t.mock.timers.reset();await wallet.dispose();}
 });
