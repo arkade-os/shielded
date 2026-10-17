@@ -1,4 +1,4 @@
-import {DefaultVtxo,deriveDescriptorLeafCompressedPubKey,networkFromArkadeInfo,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type CreateContractParams,type Identity,type Wallet} from '@arkade-os/sdk';
+import {DefaultVtxo,deriveDescriptorLeafCompressedPubKey,networkFromArkadeInfo,parseHDDescriptor,timelockToSequence,type CreateContractParams,type Identity,type Wallet} from '@arkade-os/sdk';
 import {createLnurlClient,type FetchImpl} from '@arkade-os/lnurl-client';
 import {deriveSessionTokenForIdentity} from '@arkade-os/lnurl-client/arkade';
 import {HDKey} from '@scure/bip32';
@@ -13,7 +13,7 @@ export interface HdReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
 }
-interface ReceiveState {v:1;enabled:true;receivers:HdLnurlReceiver[];pending?:string;cursors:Record<string,number>;payouts:HdLnurlPayout[]}
+interface ReceiveState {v:1;enabled:true;bindingVersion?:2;receivers:HdLnurlReceiver[];pending?:string;cursors:Record<string,number>;payouts:HdLnurlPayout[]}
 export interface HdLnurlConfig {
  identity:Identity;companion:Wallet;journal:HdReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;
  onAllocation?:(payout:HdLnurlPayout)=>Promise<void>;
@@ -67,9 +67,8 @@ export function createHdLnurl(config:HdLnurlConfig){
   const info=await config.companion.getArkadeInfo({requireLive:true}),hrp=config.companion.network.hrp;
   if((hrp!=='ark'&&hrp!=='tark')||networkFromArkadeInfo(info).hrp!==hrp)throw new Error('HD receive operator network mismatch');
   if(!/^(0[23])?[0-9a-f]{64}$/i.test(info.signerPubkey)||info.unilateralExitDelay>0xffffffffn||info.unilateralExitDelay<0n)throw new Error('Invalid HD receive operator script settings');
-  const delay=sequenceToTimelock(Number(info.unilateralExitDelay));
-  if(BigInt(timelockToSequence(delay))!==info.unilateralExitDelay)throw new Error('Invalid HD receive operator exit delay');
-  const branch=receiveBranch(account(),{serverPubKey:info.signerPubkey.slice(-64),hrp,exitDelay:{type:delay.type,value:Number(delay.value)}});
+  const delay=info.unilateralExitDelay;
+  const branch=receiveBranch(account(),{serverPubKey:info.signerPubkey.slice(-64),hrp,exitDelay:{type:delay<512n?'blocks':'seconds',value:Number(delay)}});
   receiveScript(branch.hd,0);return branch;
  };
  const request=async<T,>(path:string,init?:RequestInit):Promise<T>=>{
@@ -124,10 +123,10 @@ export function createHdLnurl(config:HdLnurlConfig){
   if(!state){state=empty();await save(state);}
   if(!explicit&&!state.receivers.length&&!state.payouts.length)return [];
   const addresses=await registeredReceivers();
-  if(explicit){
-   const branch=await currentBranch(),active=addresses.filter(row=>row.status==='active');
+  if(explicit||state.bindingVersion!==2){
+   const branch=await currentBranch(),active=addresses.filter(row=>row.status==='active'&&(explicit||state.receivers.some(saved=>saved.handle===row.handle)));
    for(const receiver of active)await bind(receiver,branch.hd);
-   await save({...state,pending:undefined,receivers:active});
+   await save({...state,bindingVersion:2,...(explicit?{pending:undefined,receivers:active}:{})});
   }
   for(const receiver of addresses)await restore(receiver);
   return (await load())!.receivers;
@@ -146,7 +145,8 @@ export function createHdLnurl(config:HdLnurlConfig){
    const registered=existing??fromAddress(await client.registerAddress({token:await token(),domain,...(options.username?{username:options.username}:{}),...(options.claimCode?{claimCode:options.claimCode}:{})}));
    if(!existing)await save({...state,pending:registered.handle});
    await bind(registered,branch.hd);
-   await save({...state,pending:undefined,receivers:[registered,...state.receivers.filter(row=>row.handle!==registered.handle)]});
+   const migrated=state.bindingVersion===2||state.receivers.every(row=>row.handle===registered.handle);
+   await save({...state,bindingVersion:migrated?2:undefined,pending:undefined,receivers:[registered,...state.receivers.filter(row=>row.handle!==registered.handle)]});
    await restore(registered);return registered;
   }),
   recover,

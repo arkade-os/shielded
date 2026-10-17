@@ -14,12 +14,12 @@ function allocation(hd:HdReceiveConfig,index:number,id=index+1):HdReceiveAllocat
  const script=new DefaultVtxo.Script({pubKey:claim.slice(1),serverPubKey:hex.decode(hd.serverPubKey),csvTimelock:{type:hd.exitDelay.type,value:BigInt(hd.exitDelay.value)}});
  return {id,index,descriptor,claimPublicKey:hex.encode(claim),arkadeAddress:script.address(hd.hrp,hex.decode(hd.serverPubKey)).encode(),hd,createdAt:1};
 }
-function setup(){
+function setup(exitDelay=2048n){
  const state=new Map<string,unknown>(),requests:{url:string;init?:RequestInit}[]=[],watched:CreateContractParams[]=[],payouts:unknown[]=[];
  let signed=0,watchFailure=false,saveFailure=false,callbackFailure=false;
  const identity=SingleKey.fromHex('01'.repeat(32)),sign=identity.signMessage.bind(identity);
  identity.signMessage=async(...args)=>{signed++;return sign(...args);};
- const companion={identity:hdIdentity,network:{hrp:'tark'},getArkadeInfo:async()=>({network:'mutinynet',signerPubkey:hex.encode(server),unilateralExitDelay:144n}),getContractManager:async()=>({createContract:async(params:CreateContractParams)=>{if(watchFailure)throw new Error('watch failed');watched.push(params);return params;}})} as unknown as Wallet;
+ const companion={identity:hdIdentity,network:{hrp:'tark'},getArkadeInfo:async()=>({network:'mutinynet',signerPubkey:hex.encode(server),unilateralExitDelay:exitDelay}),getContractManager:async()=>({createContract:async(params:CreateContractParams)=>{if(watchFailure)throw new Error('watch failed');watched.push(params);return params;}})} as unknown as Wallet;
  let respond:(url:string,init?:RequestInit)=>Promise<Response>=async(url)=>url.endsWith('/lnurl/address')?json([receiver]):json({allocations:[],nextAfter:0});
  const journal={getReceiveState:async<T,>(_owner:string,_pool:string,key:string)=>structuredClone(state.get(key)) as T|undefined,saveReceiveState:async(_owner:string,_pool:string,key:string,value:unknown)=>{if(saveFailure)throw new Error('save failed');state.set(key,structuredClone(value));}};
  const config={identity,companion,journal,owner:'owner',pool:'pool',baseUrl:`https://${domain}`,fetch:async(url:string,init?:RequestInit)=>{requests.push({url,init});return respond(url,init);},onAllocation:async(value:unknown)=>{if(callbackFailure)throw new Error('payout failed');payouts.push(value);}};
@@ -50,6 +50,41 @@ test('HD alias exports only its scoped public branch and requires explicit serve
 
 test('HD alias refuses any remote mutation when persisting explicit enable fails',async()=>{
  const f=setup();f.saveFailure(true);await assert.rejects(f.service.claim(),/save failed/);assert.equal(f.requests.length,0);
+});
+
+for(const delay of [144n,2048n])test(`HD registration interprets the operator duration ${delay} using the SDK wallet policy`,async()=>{
+ const f=setup(delay),hd=await f.claim();
+ assert.deepEqual(hd.exitDelay,{type:delay<512n?'blocks':'seconds',value:Number(delay)});
+});
+
+for(const delay of [513n,4194308n])test(`HD registration rejects noncanonical operator duration ${delay} before binding`,async()=>{
+ const f=setup(delay);await assert.rejects(f.service.claim(),/Invalid HD receive script configuration/);
+ assert.equal(f.requests.length,0);
+});
+
+test('legacy alias bindings update only acknowledged handles and preserve historical payout scripts',async()=>{
+ const f=setup(),hd=await f.claim(),legacy={...hd,exitDelay:{type:'blocks' as const,value:2048}},row=allocation(legacy,0,1),before=f.requests.length;
+ for(const state of f.state.values())delete (state as {bindingVersion?:number}).bindingVersion;
+ f.respond(async(url,init)=>{
+  if(url.endsWith('/lnurl/address'))return json([receiver,{...receiver,handle:'other'}]);
+  if(init?.method==='POST'){assert.equal(url,`https://${domain}/lnurl/address/alice/arkade`);assert.deepEqual(JSON.parse(String(init.body)).hd.exitDelay,{type:'seconds',value:2048});return json({receiveMode:'hd'});}
+  return json(url.includes('/alice/')&&url.includes('after=0&')?{allocations:[row],nextAfter:1}:{allocations:[],nextAfter:url.includes('/alice/')?1:0});
+ });
+ const restart=createHdLnurl(f.config);await restart.recover();await restart.recover();
+ assert.equal(f.requests.slice(before).filter(r=>r.init?.method==='POST').length,1);
+ assert.equal(f.watched[0].params.csvTimelock,'2048');assert.equal((await restart.allocations())[0].address,row.arkadeAddress);
+});
+
+test('claiming one legacy alias does not mark other acknowledged aliases as migrated',async()=>{
+ const f=setup();await f.claim();const second={...receiver,handle:'second'},bound=new Set<string>();
+ for(const value of f.state.values()){const state=value as {bindingVersion?:number;receivers:unknown[]};delete state.bindingVersion;state.receivers.push(second);}
+ f.respond(async(url,init)=>{
+  if(url.endsWith('/lnurl/address'))return json([receiver,second]);
+  if(init?.method==='POST'){bound.add(url);return json({receiveMode:'hd'});}
+  return json({allocations:[],nextAfter:0});
+ });
+ await f.service.claim();await f.service.recover();
+ assert.ok(bound.has(`https://${domain}/lnurl/address/second/arkade`));
 });
 
 test('HD allocation recovery imports arbitrary gaps with local signing descriptors and original script settings',async()=>{
