@@ -57,7 +57,14 @@ const snapshot = resolve(root, 'contracts/compiler/vectors');
 const manifest = JSON.parse(readFileSync(resolve(snapshot, 'manifest.json'), 'utf8'));
 const changed = [];
 for (const [path, expected] of Object.entries(manifest.files)) {
-  const text = readFileSync(resolve(output, path), 'utf8').replaceAll('\r\n', '\n');
+  let text;
+  try {
+    text = readFileSync(resolve(output, path), 'utf8').replaceAll('\r\n', '\n');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    changed.push(path);
+    continue;
+  }
   if (createHash('sha256').update(text).digest('hex') !== expected) changed.push(path);
 }
 console.log(`Stable vectors: ${changed.length} changed of ${Object.keys(manifest.files).length}${changed.length ? ` (${changed.join(', ')})` : ''}`);
