@@ -15,7 +15,7 @@ export function cachedBatchNumbers(dir:string):number[]{
 }
 export function mirrorStart(dir:string):number{
  const numbers=cachedBatchNumbers(dir);
- // Full records from the current batch API omit the chain-only noteBlockRoot marker.
+ // Chain-only records carry noteBlockRoot; the current API's full records omit it.
  return numbers.find(index=>read(dir,index).noteBlockRoot!==undefined)??numbers.length;
 }
 export function cacheBatch(dir:string,index:number,record:PublishedBatch):void{
@@ -42,7 +42,13 @@ export function cacheBatch(dir:string,index:number,record:PublishedBatch):void{
   if(descriptor!==undefined)closeSync(descriptor);
   if(existsSync(temporary))unlinkSync(temporary);
  }
+ // Node cannot open directory descriptors on Windows.
+ if(process.platform!=='win32'){
+  const directory=openSync(join(dir,'batches'),'r');
+  try{fsyncSync(directory);}finally{closeSync(directory);}
+ }
 }
+// Discard the account on rejection; a failed walk may have advanced it.
 export async function catchUpCachedBatches(dir:string,account:RollupAccount,leaves:RollupLeaves,fromTxid:string,target:bigint,nextBatchTx:(head:{txid:string;vout:number})=>Promise<Transaction|undefined>):Promise<number>{
  if(account.batchCount!==cachedBatchNumbers(dir).length)throw new Error('The account does not match its mirrored batch count.');
  const recovered:{index:number;record:PublishedBatch}[]=[];
