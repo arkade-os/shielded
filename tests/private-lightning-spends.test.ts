@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Transaction,VtxoScript,type ExtendedVirtualCoin} from '@arkade-os/sdk';
+import {ArkAddress,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Transaction,VtxoScript,type ExtendedVirtualCoin} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
+import {Script} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import type {BuiltSpend,PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
@@ -134,6 +135,34 @@ test('one external HD payout is shielded directly and only its child signer sign
   assert.equal((await handle.settled()).txid,TXID);assert.equal(childSigns,2);assert.equal(store.rows.get('shield')!.state,'included');
   assert.equal((await (await wallet.shieldLightning(coin,signer,store,{id:'shield',reference:`${coin.txid}:${coin.vout}`})).settled()).txid,TXID);assert.equal(childSigns,2);
  }finally{await wallet.dispose();}
+});
+
+test('embedded child-key bytes are rejected before proving unless they are the exact signature operand',async()=>{
+ const child=SingleKey.fromHex('22'.repeat(32)),foreign=await SingleKey.fromHex('33'.repeat(32)).xOnlyPublicKey(),key=hex.encode(await child.xOnlyPublicKey());
+ for(const embedded of [`00${key}`,`f${key}0`]){
+  const store=new Store(),wallet=await open(store);let proofs=0,requests=0;
+  const script=Script.encode([hex.decode(embedded),'DROP',foreign,'CHECKSIG']),tree=new VtxoScript([script]);
+  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+  try{
+   assert.equal(hex.encode(script).includes(key),true);
+   wallet.prover={prove:async()=>{proofs++;throw new Error('The prover must not run');}};wallet.api=(async()=>{requests++;throw new Error('The API must not run');}) as PoolApi;
+   await assert.rejects(async()=>{const handle=await wallet.shieldLightning(coin,child,store,{id:'embedded',reference:`${coin.txid}:${coin.vout}`});await handle.settled();},/child signer/);
+   assert.equal(proofs,0);assert.equal(requests,0);assert.equal(store.rows.size,0);
+  }finally{await wallet.dispose();}
+ }
+});
+
+test('both DefaultVtxo child signature leaves pass the payout signer check',async()=>{
+ const child=SingleKey.fromHex('22'.repeat(32)),tree=new DefaultVtxo.Script({pubKey:await child.xOnlyPublicKey(),serverPubKey:ArkAddress.decode(ADDRESS).serverPubKey,csvTimelock:{type:'seconds',value:1024n}});
+ for(const leaf of [tree.forfeit(),tree.exit()]){
+  const store=new Store(),wallet=await open(store);let proofs=0;
+  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:leaf,forfeitTapLeafScript:tree.forfeit()};
+  try{
+   wallet.prover={prove:async()=>{proofs++;throw new Error('validated child signature operand');}};
+   const handle=await wallet.shieldLightning(coin,child,store,{id:'default',reference:`${coin.txid}:${coin.vout}`});
+   await assert.rejects(handle.settled(),/validated child signature operand/);assert.equal(proofs,1);
+  }finally{await wallet.dispose();}
+ }
 });
 
 test('durable funding holds are refreshed before ordinary private note selection',async()=>{

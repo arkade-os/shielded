@@ -144,3 +144,10 @@ test('two aliases on one scoped branch retain independent allocation cursors and
  assert.equal(new Set(f.watched.map(row=>row.script)).size,2);assert.equal(new Set((await f.service.allocations()).map(row=>row.id)).size,2);
  const count=f.watched.length;await createHdLnurl(f.config).recover();assert.equal(f.watched.length,count);
 });
+
+test('HD history rejects an oversized page before any watch, payout or cursor write',async()=>{
+ const f=setup(),hd=await f.claim(),rows=Array.from({length:101},(_,index)=>allocation(hd,index)),before=structuredClone(f.state);
+ f.respond(async(url)=>url.endsWith('/lnurl/address')?json([receiver]):url.includes('after=0&')?json({allocations:rows,nextAfter:101}):json({allocations:[],nextAfter:101}));
+ await assert.rejects(f.service.recover(),{message:'Invalid HD receive allocation page'});
+ assert.equal(f.watched.length,0);assert.equal(f.payouts.length,0);assert.deepEqual(f.state,before);assert.equal((await f.service.allocations()).length,0);
+});

@@ -91,7 +91,7 @@ export function createHdLnurl(config:HdLnurlConfig){
    if(!Number.isSafeInteger(after)||after<0)throw new Error('Invalid local HD receive allocation cursor');
    const query=new URLSearchParams({domain,after:String(after),limit:'100'});
    const page=await request<{allocations:HdReceiveAllocation[];nextAfter:number}>(`/lnurl/address/${encodeURIComponent(receiver.handle)}/arkade/allocations?${query}`);
-   if(!page||!Array.isArray(page.allocations)||!Number.isSafeInteger(page.nextAfter))throw new Error('Invalid HD receive allocation page');
+   if(!page||!Array.isArray(page.allocations)||page.allocations.length>100||!Number.isSafeInteger(page.nextAfter))throw new Error('Invalid HD receive allocation page');
    let previous=after;
    const prepared=page.allocations.map(allocation=>{
     if(!allocation||!Number.isSafeInteger(allocation.id)||allocation.id<=previous||!Number.isSafeInteger(allocation.createdAt)||!allocation.hd||allocation.hd.version!==1)throw new Error('Invalid HD receive allocation page');

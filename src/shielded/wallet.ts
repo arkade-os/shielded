@@ -1,5 +1,6 @@
 import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type Identity,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
+import {Script} from '@scure/btc-signer';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote,type PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
 import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -367,7 +368,9 @@ export class ShieldedWallet extends Wallet {
   const coin={txid:input.txid.toLowerCase(),vout:input.vout,value:input.value,tapTree:hex.encode(input.tapTree),leaf:walletIntentLeafScriptHex(input.intentTapLeafScript)};
   if(request.reference!==`${coin.txid}:${coin.vout}`)throw new Error('The Lightning payout reference must identify its outpoint.');
   const tree=VtxoScript.decode(input.tapTree);tree.findLeaf(coin.leaf);
-  if(hex.encode(tree.pkScript)!==input.script.toLowerCase()||!coin.leaf.includes(hex.encode(await descriptorSigner.xOnlyPublicKey())))throw new Error('The Lightning payout script does not match its child signer.');
+  const key=hex.encode(await descriptorSigner.xOnlyPublicKey()),ops=Script.decode(hex.decode(coin.leaf));
+  const signs=ops.some((op,i)=>op instanceof Uint8Array&&op.length===32&&hex.encode(op)===key&&(ops[i+1]==='CHECKSIG'||ops[i+1]==='CHECKSIGVERIFY'));
+  if(hex.encode(tree.pkScript)!==input.script.toLowerCase()||!signs)throw new Error('The Lightning payout script does not match its child signer.');
   const handle=shieldedHandle({id:request.id,title:`Shielding ${sats(input.value)} Lightning sats`,steps:shieldedSteps.shield,railId:'shielded-lightning-deposit'},async step=>{
    step(0);
    const record=await this.prepareLightning({id:request.id,reference:request.reference,kind:'shield',destination:input.script.toLowerCase(),amount:String(input.value),coin},store,async()=>({built:await this.account.spend({deposit:BigInt(input.value)},this.self),extra:{coin:{txid:coin.txid,vout:coin.vout,tapTree:coin.tapTree,leaf:coin.leaf}}}));
