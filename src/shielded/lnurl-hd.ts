@@ -13,7 +13,7 @@ export interface HdReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
 }
-interface ReceiveState {v:1;enabled:true;receivers:HdLnurlReceiver[];cursors:Record<string,number>;payouts:HdLnurlPayout[]}
+interface ReceiveState {v:1;enabled:true;receivers:HdLnurlReceiver[];pending?:string;cursors:Record<string,number>;payouts:HdLnurlPayout[]}
 export interface HdLnurlConfig {
  identity:Identity;companion:Wallet;journal:HdReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;
  onAllocation?:(payout:HdLnurlPayout)=>Promise<void>;
@@ -127,7 +127,7 @@ export function createHdLnurl(config:HdLnurlConfig){
   if(explicit){
    const branch=await currentBranch(),active=addresses.filter(row=>row.status==='active');
    for(const receiver of active)await bind(receiver,branch.hd);
-   await save({...state,receivers:active});
+   await save({...state,pending:undefined,receivers:active});
   }
   for(const receiver of addresses)await restore(receiver);
   return (await load())!.receivers;
@@ -140,10 +140,13 @@ export function createHdLnurl(config:HdLnurlConfig){
    if(options.domain!==undefined&&options.domain.toLowerCase()!==domain)throw new Error('Lightning address domain must match this service');
    let state=await load();if(!state){state=empty();await save(state);}
    const branch=await currentBranch(),owned=(await registeredReceivers()).filter(row=>row.status==='active');
-   const existing=!options.username&&!options.claimCode?(owned.find(row=>state.receivers.some(saved=>saved.handle===row.handle))??owned[0]):undefined;
+   const automatic=!options.username&&!options.claimCode;
+   const existing=automatic?owned.find(row=>state.receivers.some(saved=>saved.handle===row.handle))??owned.find(row=>row.handle===state.pending):undefined;
+   if(automatic&&!existing&&owned.length)throw new Error('A Lightning address already exists. Use Recover a Lightning address to enable it here explicitly.');
    const registered=existing??fromAddress(await client.registerAddress({token:await token(),domain,...(options.username?{username:options.username}:{}),...(options.claimCode?{claimCode:options.claimCode}:{})}));
+   if(!existing)await save({...state,pending:registered.handle});
    await bind(registered,branch.hd);
-   await save({...state,receivers:[registered,...state.receivers.filter(row=>row.handle!==registered.handle)]});
+   await save({...state,pending:undefined,receivers:[registered,...state.receivers.filter(row=>row.handle!==registered.handle)]});
    await restore(registered);return registered;
   }),
   recover,

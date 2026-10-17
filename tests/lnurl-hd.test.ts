@@ -163,11 +163,11 @@ test('failed HD registration retries the existing alias after the server is upda
  assert.equal(f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&r.init?.method==='POST').length,1);
  assert.equal(await f.service.current(),undefined);
  const before=f.requests.length;assert.deepEqual(await f.service.recover(),[]);assert.equal(f.requests.length,before);
- supported=true;assert.equal((await f.service.claim()).handle,receiver.handle);
+ supported=true;assert.equal((await createHdLnurl(f.config).claim()).handle,receiver.handle);
  assert.equal(f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&r.init?.method==='POST').length,1);
 });
 
-test('a lost registration response is recovered without consuming another alias',async()=>{
+test('a lost registration response requires explicit recovery without consuming another alias',async()=>{
  const f=setup(),aliases:typeof receiver[]=[];
  f.respond(async(url,init)=>{
   if(url.endsWith('/lnurl/address')){if(init?.method==='POST'){aliases.push(receiver);throw new TypeError('connection closed');}return json(aliases);}
@@ -175,8 +175,23 @@ test('a lost registration response is recovered without consuming another alias'
   return json({allocations:[],nextAfter:0});
  });
  await assert.rejects(f.service.claim(),/Request failed/);
- assert.equal((await f.service.claim()).handle,receiver.handle);
+ await assert.rejects(f.service.claim(),/Recover a Lightning address/);
+ assert.equal(f.requests.filter(r=>r.url.endsWith('/arkade')).length,0);
+ await f.service.recover({explicit:true});assert.equal((await f.service.current())?.handle,receiver.handle);
  assert.equal(aliases.length,1);
+});
+
+test('claim does not automatically replace an existing alias binding from another wallet',async()=>{
+ const f=setup();f.respond(async()=>json([receiver]));
+ await assert.rejects(f.service.claim(),/Recover a Lightning address/);
+ assert.equal(f.requests.filter(r=>r.init?.method==='POST').length,0);assert.equal(await f.service.current(),undefined);
+});
+
+test('claim reuses its acknowledged alias rather than another active owned alias',async()=>{
+ const f=setup();await f.claim();const before=f.requests.length;
+ f.respond(async(url,init)=>url.endsWith('/lnurl/address')?json([{...receiver,handle:'other'},receiver]):init?.method==='POST'?json({receiveMode:'hd'}):json({allocations:[],nextAfter:0}));
+ assert.equal((await f.service.claim()).handle,receiver.handle);
+ assert.deepEqual(f.requests.slice(before).filter(r=>r.init?.method==='POST').map(r=>r.url),[`https://${domain}/lnurl/address/alice/arkade`]);
 });
 
 test('an older server without allocation history reports missing HD support instead of a JSON parser error',async()=>{

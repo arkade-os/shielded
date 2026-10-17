@@ -1,5 +1,6 @@
 import {ArkAddress,type Identity} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
+import {destinationFieldOf} from '../../packages/protocol/src/rollup/notes.ts';
 import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus,type transferBody} from './pool.ts';
 
 export type LightningTransferBody=ReturnType<typeof transferBody>;
@@ -28,10 +29,11 @@ export function validateLightningSpend(value:LightningSpendRecord,owner:string,p
  if(r.expiresAt!==undefined&&(r.kind!=='fund'||!Number.isSafeInteger(r.expiresAt)||r.expiresAt<=0))fail();
  if(r.kind==='fund'){
   if(!r.paymentHash||!/^[0-9a-f]{64}$/.test(r.paymentHash)||r.coin||b.coin||!r.destination||b.publics[3]!=='0'||b.publics[4]!==r.amount||b.publics[5]!=='0')fail();
-  if(b.program!==hex.encode(ArkAddress.decode(r.destination!).pkScript.subarray(2)))fail();
+  const program=ArkAddress.decode(r.destination!).pkScript.subarray(2);
+  if(b.program!==hex.encode(program)||b.publics[6]!==String(destinationFieldOf(program)))fail();
  }else{
   const c=r.coin;
-  if(!c||!/^[0-9a-f]{64}$/.test(c.txid)||!Number.isSafeInteger(c.vout)||c.vout<0||!Number.isSafeInteger(c.value)||String(c.value)!==r.amount||!c.tapTree||!c.leaf||!r.destination||r.paymentHash||b.program||b.publics[3]!==r.amount||b.publics[4]!=='0'||b.publics[5]!=='0')fail();
+  if(!c||!/^[0-9a-f]{64}$/.test(c.txid)||!Number.isSafeInteger(c.vout)||c.vout<0||!Number.isSafeInteger(c.value)||String(c.value)!==r.amount||!c.tapTree||!c.leaf||!r.destination||r.paymentHash||b.program||b.publics[3]!==r.amount||b.publics[4]!=='0'||b.publics[5]!=='0'||b.publics[6]!=='0')fail();
   if(!b.coin||b.coin.txid!==c!.txid||b.coin.vout!==c!.vout||b.coin.tapTree!==c!.tapTree||b.coin.leaf!==c!.leaf)fail();
  }
  JSON.stringify(r);
