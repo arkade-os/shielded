@@ -5,7 +5,7 @@ import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote,type Publ
 import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {fullViewKeyOf,sentNoteOf,viewKeyOf} from '../../packages/protocol/src/rollup/disclosure.ts';
-import {akOf,assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
+import {akOf,assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2,parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
@@ -148,7 +148,7 @@ export class ShieldedWallet extends Wallet {
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    for(const txid of loaded.listings)wallet.listings.add(txid);
    for(const link of loaded.links)wallet.linkRecords.set(link.key,link);
-   wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field));
+   wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())));
    wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0]))}));
    await wallet.start();
    return wallet;
