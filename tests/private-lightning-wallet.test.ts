@@ -97,7 +97,7 @@ function serviceFixture(){
    quote:async(input:any)=>{
     const receive=!!input.via,view=config.wallet,key=receive?await provisionClaimSecret(view):await provisionRefundKey(view);
     provisioned.push(hex.encode(key.pubkey));
-    const giveAsset=receive?'bolt11:mutinynet/slip44:0':'arkade:mutinynet/slip44:0',takeAsset=receive?'arkade:mutinynet/slip44:0':'bolt11:mutinynet/slip44:0';
+    const giveAsset=receive?'bolt11:mutinynet/slip44:1':'arkade:mutinynet/slip44:1',takeAsset=receive?'arkade:mutinynet/slip44:1':'bolt11:mutinynet/slip44:1';
     return {id:`quote-${sequence++}`,route:{give:{corridor:receive?'lightning':'arkade',asset:giveAsset,instrument:{kind:'wallet'}},take:{corridor:receive?'arkade':'lightning',asset:takeAsset,instrument:{kind:'wallet'}}},give:{asset:giveAsset,amount:1003n},take:{asset:takeAsset,amount:1000n},fee:{asset:giveAsset,amount:3n},lock:{hash:'01'.repeat(32)},expiresAt:Math.floor(Date.now()/1000)+600,market:{kind:'card',key:'test'},...(receive?{artifact:{kind:'invoice',bolt11:'test-invoice'}}:{})} as unknown as Quote;
    },accept:async(q:Quote)=>{
     const address=await config.wallet.getAddress(),lockupPkScript=hex.encode(script.pkScript),lockupAddress=ordinaryAddress;
@@ -116,6 +116,40 @@ function serviceFixture(){
  return {base,wallet,repositoryFor,acquireSession,clientFactory,funded,shielded,provisioned,starts,closed,live,repositories,contracts,receivers,configs,historyReads,changes,
   failAccept(){throwAfterPersist=true;},overrideSend(params:Record<string,unknown>){sendOverride=params;},terminalOnAccept(){terminalOnAccept=true;}};
 }
+
+test('explicit invoice creation loads cold discovery while startup, history and resolve stay offline',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),calls:string[]=[],unavailable=new Error('DiscoverySnapshotUnavailable');let loaded=false;
+ const clientFactory=(config:SwapClientConfig)=>{
+  const client=f.clientFactory(config);if(config.policy?.drive!=='readonly')return client;
+  return {...client,markets:async()=>{calls.push('markets');loaded=true;return client.markets();},resolve:async(input)=>{calls.push('resolve');if(!loaded)throw unavailable;return client.resolve(input);}} as SwapClient;
+ };
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  assert.deepEqual(calls,[]);await service.getActivityHistory();
+  for(const listener of f.receivers)listener({type:'connection_reset'});await flushTasks();assert.deepEqual(calls,[]);
+  await assert.rejects(service.resolve({give:'bitcoin',via:'lightning',amount:2000n}),error=>error===unavailable);
+  assert.deepEqual(calls,['resolve']);assert.deepEqual(await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool),[]);
+  const invoice=await service.receive({via:'lightning',amount:2000n});
+  assert.equal(invoice.artifact.kind,'invoice');assert.deepEqual(calls,['resolve','markets','resolve']);
+  assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool)).length,1);assert.equal(f.funded.length,0);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+for(const failedStage of ['markets','resolve'] as const)test(`explicit invoice discovery ${failedStage} failure preserves reservations without allocating an artifact or session`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),saved=spend('existing'),failure=new Error(`${failedStage} unavailable`),calls:string[]=[];
+ await journal.create(saved);(f.wallet.inFlight as Set<bigint>).add(1n);
+ const clientFactory=(config:SwapClientConfig)=>{
+  const client=f.clientFactory(config);if(config.policy?.drive!=='readonly')return client;
+  return {...client,markets:async()=>{calls.push('markets');if(failedStage==='markets')throw failure;return client.markets();},resolve:async(input)=>{calls.push('resolve');if(failedStage==='resolve')throw failure;return client.resolve(input);}} as SwapClient;
+ };
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await assert.rejects(service.receive({via:'lightning',amount:2000n}),error=>error===failure);
+  assert.deepEqual(calls,failedStage==='markets'?['markets']:['markets','resolve']);
+  assert.deepEqual(await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool),[]);assert.deepEqual(await journal.list(owner,pool),[saved]);assert.deepEqual([...f.wallet.inFlight],[1n]);
+  assert.equal(f.configs.length,1);assert.equal(f.contracts.length,0);assert.equal(f.live.size,0);assert.equal(f.funded.length,0);assert.equal(f.starts.length,0);
+ }finally{await service[Symbol.asyncDispose]();}
+});
 
 const flushTasks=async()=>{for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
 function shieldingRecord(id:string,coin:{txid:string;vout:number;value:number;script:string}):LightningSpendRecord{
@@ -250,6 +284,36 @@ test('private Lightning funds only the verified full HTLC from the pool and pers
   assert.equal(f.shielded.length,0);assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool)).length,3);
  }finally{await service[Symbol.asyncDispose]();}
  assert.equal(f.live.size,0);
+});
+
+for(const asset of ['arkade:mutinynet/slip44:1','arkade:mutinynet/slip44:0'] as const)test(`a ${asset.endsWith(':1')?'canonical':'legacy'} Mutinynet Bitcoin send funds its verified HTLC`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),clientFactory=(config:SwapClientConfig)=>{
+  const client=f.clientFactory(config);return {...client,quote:async(input:Parameters<SwapClient['quote']>[0])=>{const quoted=await client.quote(input);return {...quoted,route:{...quoted.route,give:{...quoted.route.give,asset}},give:{...quoted.give,asset}} as Quote;}};
+ };
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  const quoted=await service.quote({to:'invoice'});assert.equal(quoted.route.give.asset,asset);
+  await service.accept(quoted);assert.equal(f.funded.length,1);assert.equal(f.funded[0]![2],script.address('tark',server).encode());assert.equal(f.funded[0]![3],1003n);assert.equal(f.funded[0]![6],quoted.expiresAt);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+for(const field of ['issued asset','give corridor','take corridor','deadline','program'] as const)test(`canonical Bitcoin funding still rejects a stored HTLC with an altered ${field}`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();
+ const repositoryFor=(name:string)=>{
+  const repository=f.repositoryFor(name),get=repository.getSwapRecord.bind(repository);
+  repository.getSwapRecord=async id=>{
+   const record=await get(id);if(record?.family!=='rfq')return record;
+   if(field==='issued asset')return {...record,route:{...record.route,give:{...record.route.give,asset:`arkade:mutinynet/asset:${'ab'.repeat(34)}`}}};
+   if(field==='give corridor')return {...record,route:{...record.route,give:{...record.route.give,corridor:'lightning'}}};
+   if(field==='take corridor')return {...record,route:{...record.route,take:{...record.route.take,corridor:'arkade'}}};
+   if(field==='deadline')return {...record,expiresAt:record.expiresAt+1};
+   return {...record,lockupPkScript:'5120'+'ab'.repeat(32)};
+  };
+  return repository;
+ };
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{await assert.rejects(service.accept(await service.quote({to:'invoice'})),{message:'Private Lightning funding does not match its stored HTLC'});assert.equal(f.funded.length,0);}
+ finally{await service[Symbol.asyncDispose]();}
 });
 
 test('acceptance ambiguity reconstructs the same durable artifact and resumes it on reload',async()=>{

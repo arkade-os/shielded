@@ -1,5 +1,5 @@
 import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,TxType,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type Activity,type IWallet,type Identity,type SendParams,type WalletConfig} from '@arkade-os/sdk';
-import {IndexedDbAssetSwapRepository,createSwapClient,type AssetSwapRepository,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
+import {IndexedDbAssetSwapRepository,createSwapClient,isBtcAssetLenient,type AssetSwapRepository,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
 import {hex} from '@scure/base';
 import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -155,7 +155,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     const keys=Object.keys(params),payment=params as unknown as {address:string;amount:number};
     if(keys.some(key=>!['address','amount'].includes(key))||typeof payment.address!=='string'||!Number.isSafeInteger(payment.amount)||payment.amount<=0||!artifact.quoteId||!Number.isSafeInteger(artifact.expiresAt)||artifact.expiresAt!<=0)throw new Error('Private Lightning can fund only its verified HTLC');
     const record=await repository.getSwapRecord(artifact.quoteId);
-    if(!record||record.family!=='rfq'||record.kind!=='lightning_send'||record.route.give.corridor!=='arkade'||record.route.take.corridor!=='lightning'||record.lockupAddress!==payment.address||record.give.amount!==String(payment.amount)||record.expiresAt!==artifact.expiresAt||!record.route.give.asset.endsWith('/slip44:0')||hex.encode(ArkAddress.decode(payment.address).pkScript)!==record.lockupPkScript||!/^[0-9a-f]{64}$/.test(record.lock.hash))throw new Error('Private Lightning funding does not match its stored HTLC');
+    if(!record||record.family!=='rfq'||record.kind!=='lightning_send'||record.route.give.corridor!=='arkade'||record.route.take.corridor!=='lightning'||record.lockupAddress!==payment.address||record.give.amount!==String(payment.amount)||record.expiresAt!==artifact.expiresAt||!isBtcAssetLenient(record.route.give.asset)||hex.encode(ArkAddress.decode(payment.address).pkScript)!==record.lockupPkScript||!/^[0-9a-f]{64}$/.test(record.lock.hash))throw new Error('Private Lightning funding does not match its stored HTLC');
     return wallet.fundLightning(`lightning-fund-${artifact.index}`,record.lock.hash,record.lockupAddress,BigInt(record.give.amount),journal,operations.signal,artifact.expiresAt);
    },()=>biggestNote(wallet));
    client=clientFactory({...config,wallet:view,repository,policy:{drive:'manual'}});
@@ -187,7 +187,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   void task.then(async()=>{if(artifactEnded(artifact))await close(session);}).catch(error=>{session.needsFundingRetry=true;report(error);}).finally(()=>{if(session.funding===task)session.funding=undefined;});
  };
  const quote:PrivateLightningService['quote']=async input=>{
-  assertOpen();await wallet.restoreLightningSpends(journal);const resolution=await discovery.resolve(input),send=resolution.give.corridor==='arkade'&&resolution.take.corridor==='lightning',receive=resolution.give.corridor==='lightning'&&resolution.take.corridor==='arkade';
+  assertOpen();await wallet.restoreLightningSpends(journal);await discovery.markets();const resolution=await discovery.resolve(input),send=resolution.give.corridor==='arkade'&&resolution.take.corridor==='lightning',receive=resolution.give.corridor==='lightning'&&resolution.take.corridor==='arkade';
   if(!send&&!receive)throw new Error('Private Lightning supports Bitcoin Lightning payments only');
   const amount=resolution.amount?.value;
   if(amount===undefined||amount<=0n||amount>BigInt(Number.MAX_SAFE_INTEGER))throw new Error('Lightning needs a valid whole-sat amount');
