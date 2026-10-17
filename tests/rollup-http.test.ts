@@ -82,14 +82,24 @@ test('a batch record from another prover is checked for shape and handed to the 
 });
 
 test('each address gets a budget of submissions per minute; reads and deposit signatures are not counted',async(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:1_000_000});
  let submitted=0;
  const api=await serve({ready:()=>true,status:()=>({version:1,phase:'ready',message:'',minimumFundingSats:2000}),submit:async()=>{submitted++;},sign:()=>{throw new Error('This spend has no open signing round.');}});t.after(api.close);
  const codes:number[]=[];
- for(let i=0;i<61;i++)codes.push((await post(api.base+'/spends',{...spend,id:String(i).padStart(32,'0')})).status);
+ for(let i=0;i<60;i++)codes.push((await post(api.base+'/spends',{...spend,id:String(i).padStart(32,'0')})).status);
+ t.mock.timers.tick(45_501);
+ const limited=await post(api.base+'/spends',{...spend,id:'e'.repeat(32)});codes.push(limited.status);
  assert.deepEqual([codes.slice(0,60).every(c=>c===202),codes[60]],[true,429]);
+ assert.equal(limited.headers.get('Retry-After'),'15');
+ assert.deepEqual(await limited.json(),{error:'Too many requests from this address; try again in a minute.',code:'admission-rate-limit'});
  assert.equal(submitted,60);
  assert.equal((await fetch(api.base+'/status')).status,200,'reads stay open');
  assert.equal((await post(api.base+'/spends/'+spend.id+'/sign',{arkTx:'x',checkpoint:'y'})).status,409,'a signature still reaches its round');
+ t.mock.timers.tick(14_499);
+ const boundary=await post(api.base+'/spends',spend);
+ assert.equal(boundary.status,429);assert.equal(boundary.headers.get('Retry-After'),'1');
+ t.mock.timers.tick(1);
+ assert.equal((await post(api.base+'/spends',spend)).status,202);
 });
 
 test('checkpoints are served only for the batch counts the operator vouches for',async(t)=>{
