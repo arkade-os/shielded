@@ -6,10 +6,11 @@ import {InMemoryAssetSwapRepository,type Quote,type SwapClient,type SwapClientCo
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {hex} from '@scure/base';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
+import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
 import {IndexedDbLightningRepository,InMemoryLightningRepository} from '../src/shielded/lightning-repository.ts';
 import {artifactWallet,createPrivateLightning,materializeLightningArtifact} from '../src/shielded/lightning-wallet.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
-import {submitLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
+import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
 
 globalThis.indexedDB=indexedDB;
 const owner='owner',pool='pool',secret='11'.repeat(32);
@@ -41,8 +42,16 @@ test('the in-memory HD counter stays global when the wallet changes pools',async
 function spend(id:string,poolName=pool,nullifier='1',hash='03'.repeat(32)):LightningSpendRecord{
  const address=script.address('tark',server).encode();
  return {v:1,id,owner,pool:poolName,reference:hash,kind:'fund',paymentHash:hash,destination:address,amount:'1000',nullifiers:[nullifier],state:'prepared',
-  body:{id:crypto.randomUUID().replaceAll('-',''),slot:{root:'0',nullifiers:[nullifier],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:1},publics:['0','0','1000','0','0'],proof:{pi_a:[],pi_b:[],pi_c:[]},ciphertext:'00',program:hex.encode(ArkAddress.decode(address).pkScript.subarray(2))}};
+  body:{id:crypto.randomUUID().replaceAll('-',''),slot:{root:'0',nullifiers:[nullifier],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:1},publics:['0',nullifier,'0','0','1000','0',String(destinationFieldOf(ArkAddress.decode(address).pkScript.subarray(2)))],proof:{pi_a:[],pi_b:[],pi_c:[]},ciphertext:'00',program:hex.encode(ArkAddress.decode(address).pkScript.subarray(2))}};
 }
+
+for(const field of ['legacy','nf0','nf1','deposit','withdraw','asset','destination'] as const)test(`saved Lightning funding rejects inconsistent ${field} public signals without releasing its reservation`,()=>{
+ const record=spend('tampered');assert.equal(validateLightningSpend(record,owner,pool),record);
+ if(field==='legacy')record.body.publics=['0','0','1000','0','0'];
+ else record.body.publics[{nf0:1,nf1:2,deposit:3,withdraw:4,asset:5,destination:6}[field]]='2';
+ assert.throws(()=>validateLightningSpend(record,owner,pool),/invalid; its funds remain reserved/);
+ assert.equal(record.state,'prepared');assert.deepEqual(record.nullifiers,['1']);
+});
 test('IndexedDB atomically rejects invoice and nullifier reuse, including a different pool and after reload',async()=>{
  const name=`ln-spends-${crypto.randomUUID()}`,a=new IndexedDbLightningRepository(name),b=new IndexedDbLightningRepository(name),first=spend('first');
  const results=await Promise.allSettled([a.create(first),b.create(spend('second','another-pool','2'))]);
@@ -111,8 +120,15 @@ function shieldingRecord(id:string,coin:{txid:string;vout:number;value:number;sc
  const record=spend(id),reference=`${coin.txid}:${coin.vout}`,savedCoin={txid:coin.txid,vout:coin.vout,value:coin.value,tapTree:'00',leaf:'00'};
  delete record.paymentHash;delete record.body.program;
  return {...record,kind:'shield',reference,destination:coin.script,amount:String(coin.value),coin:savedCoin,
-  body:{...record.body,publics:['0',String(coin.value),'0','0','0'],coin:{txid:coin.txid,vout:coin.vout,tapTree:'00',leaf:'00'}}};
+  body:{...record.body,publics:['0',record.nullifiers[0]!,'0',String(coin.value),'0','0','0'],coin:{txid:coin.txid,vout:coin.vout,tapTree:'00',leaf:'00'}}};
 }
+
+test('saved Lightning shielding rejects a destination public signal without releasing its reservation',()=>{
+ const record=shieldingRecord('tampered',{txid:'ab'.repeat(32),vout:0,value:1000,script:'00'});
+ assert.equal(validateLightningSpend(record,owner,pool),record);record.body.publics[6]='2';
+ assert.throws(()=>validateLightningSpend(record,owner,pool),/invalid; its funds remain reserved/);
+ assert.equal(record.state,'prepared');assert.deepEqual(record.nullifiers,['1']);
+});
 
 test('a conclusively dropped payout shielding attempt retries under a new id with the same outpoint reference',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],attemptIds:string[]=[],references:string[]=[];
@@ -188,7 +204,7 @@ test('acceptance ambiguity reconstructs the same durable artifact and resumes it
 async function interruptedFunding(){
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false};
  const service=await createPrivateLightning(options),q=await service.quote({to:'invoice'});f.failAccept();await assert.rejects(service.accept(q),/lost acceptance response/);await service[Symbol.asyncDispose]();
- const record=spend('lightning-fund-0',pool,'1','01'.repeat(32));record.amount='1003';record.body.publics[2]='1003';record.expiresAt=q.expiresAt;
+ const record=spend('lightning-fund-0',pool,'1','01'.repeat(32));record.amount='1003';record.body.publics[4]='1003';record.expiresAt=q.expiresAt;
  await journal.create(record);return {...f,journal,options,record};
 }
 

@@ -1,5 +1,6 @@
 import {ArkAddress,type Identity} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
+import {destinationFieldOf} from '../../packages/protocol/src/rollup/notes.ts';
 import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus,type transferBody} from './pool.ts';
 
 export type LightningTransferBody=ReturnType<typeof transferBody>;
@@ -23,15 +24,16 @@ export const lightningSpendConflict=(a:LightningSpendRecord,b:LightningSpendReco
 export function validateLightningSpend(value:LightningSpendRecord,owner:string,pool:string):LightningSpendRecord {
  const r=value,b=r?.body,fail=()=>{throw new Error('The saved Lightning spend is invalid; its funds remain reserved.');};
  if(!r||r.v!==1||r.owner!==owner||r.pool!==pool||!r.id||!r.reference||!['fund','shield'].includes(r.kind)||!['prepared','included','dropped'].includes(r.state)||!/^\d+$/.test(r.amount)||BigInt(r.amount)<330n)fail();
- if(!b||!/^[0-9a-f]{32}$/.test(b.id)||!Array.isArray(r.nullifiers)||!r.nullifiers.length||r.nullifiers.some(n=>!/^\d+$/.test(n)||BigInt(n)<=0n)||JSON.stringify(r.nullifiers)!==JSON.stringify(b.slot?.nullifiers)||!Array.isArray(b.publics)||b.publics.length!==5||b.asset!==undefined)fail();
+ if(!b||!/^[0-9a-f]{32}$/.test(b.id)||!Array.isArray(r.nullifiers)||r.nullifiers.length!==1||r.nullifiers.some(n=>!/^\d+$/.test(n)||BigInt(n)<=0n)||JSON.stringify(r.nullifiers)!==JSON.stringify(b.slot?.nullifiers)||!Array.isArray(b.publics)||b.publics.length!==7||b.publics[1]!==r.nullifiers[0]||b.publics[2]!=='0'||b.asset!==undefined)fail();
  if(r.state==='included'&&(!r.txid||!/^[0-9a-f]{64}$/.test(r.txid)))fail();
  if(r.expiresAt!==undefined&&(r.kind!=='fund'||!Number.isSafeInteger(r.expiresAt)||r.expiresAt<=0))fail();
  if(r.kind==='fund'){
-  if(!r.paymentHash||!/^[0-9a-f]{64}$/.test(r.paymentHash)||r.coin||b.coin||!r.destination||b.publics[1]!=='0'||b.publics[2]!==r.amount||b.publics[3]!=='0')fail();
-  if(b.program!==hex.encode(ArkAddress.decode(r.destination!).pkScript.subarray(2)))fail();
+  if(!r.paymentHash||!/^[0-9a-f]{64}$/.test(r.paymentHash)||r.coin||b.coin||!r.destination||b.publics[3]!=='0'||b.publics[4]!==r.amount||b.publics[5]!=='0')fail();
+  const program=ArkAddress.decode(r.destination!).pkScript.subarray(2);
+  if(b.program!==hex.encode(program)||b.publics[6]!==String(destinationFieldOf(program)))fail();
  }else{
   const c=r.coin;
-  if(!c||!/^[0-9a-f]{64}$/.test(c.txid)||!Number.isSafeInteger(c.vout)||c.vout<0||!Number.isSafeInteger(c.value)||String(c.value)!==r.amount||!c.tapTree||!c.leaf||!r.destination||r.paymentHash||b.program||b.publics[1]!==r.amount||b.publics[2]!=='0'||b.publics[3]!=='0')fail();
+  if(!c||!/^[0-9a-f]{64}$/.test(c.txid)||!Number.isSafeInteger(c.vout)||c.vout<0||!Number.isSafeInteger(c.value)||String(c.value)!==r.amount||!c.tapTree||!c.leaf||!r.destination||r.paymentHash||b.program||b.publics[3]!==r.amount||b.publics[4]!=='0'||b.publics[5]!=='0'||b.publics[6]!=='0')fail();
   if(!b.coin||b.coin.txid!==c!.txid||b.coin.vout!==c!.vout||b.coin.tapTree!==c!.tapTree||b.coin.leaf!==c!.leaf)fail();
  }
  JSON.stringify(r);

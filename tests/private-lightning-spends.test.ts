@@ -60,7 +60,7 @@ test('Lightning funding persists one exact private withdrawal before POST and ne
   await fund(wallet,[400n,900n]);
   wallet.prover={prove:async()=>{proofs++;return prover.prove(undefined as never,'spend');}};
   wallet.getSpendableVtxos=async()=>{throw new Error('ordinary coins touched');};wallet.send=async()=>{throw new Error('native send touched');};
-  wallet.api=includedApi(body=>{posts++;const saved=store.rows.get('fund-1')!;assert.deepEqual(body,saved.body);assert.equal(saved.state,'prepared');assert.equal(saved.destination,destination);assert.equal(saved.amount,'700');assert.equal(saved.body.program,hex.encode(ArkAddress.decode(destination).pkScript.subarray(2)));assert.equal(saved.nullifiers.length,1);assert.equal(saved.body.publics[2],'700');});
+  wallet.api=includedApi(body=>{posts++;const saved=store.rows.get('fund-1')!;assert.deepEqual(body,saved.body);assert.equal(saved.state,'prepared');assert.equal(saved.destination,destination);assert.equal(saved.amount,'700');assert.equal(saved.body.program,hex.encode(ArkAddress.decode(destination).pkScript.subarray(2)));assert.equal(saved.nullifiers.length,1);assert.equal(saved.body.publics[4],'700');});
   assert.equal(await wallet.fundLightning('fund-1',PAYMENT,destination,700n,store),TXID);
   assert.equal(store.rows.get('fund-1')!.state,'included');assert.equal(posts,1);assert.equal(proofs,1);
   assert.equal(await wallet.fundLightning('fund-1',PAYMENT,destination,700n,store),TXID);assert.equal(posts,1);assert.equal(proofs,1);
@@ -127,7 +127,7 @@ test('one external HD payout is shielded directly and only its child signer sign
   wallet.getSpendableVtxos=async()=>{throw new Error('ordinary coins touched');};wallet.send=async()=>{throw new Error('native send touched');};
   wallet.api=(async(path:string,body?:any)=>{
    if(path.startsWith('/batches'))return {total:0,batches:[]};
-   if(path==='/spends'){posted=true;assert.equal(store.rows.get('shield')!.state,'prepared');assert.equal(body.publics[1],'1000');assert.equal(body.coin.txid,coin.txid);return {};}
+   if(path==='/spends'){posted=true;assert.equal(store.rows.get('shield')!.state,'prepared');assert.equal(body.publics[3],'1000');assert.equal(body.coin.txid,coin.txid);return {};}
    if(path.endsWith('/sign')){signed=true;const input=Transaction.fromPSBT(base64.decode(body.arkTx)).getInput(1);assert.equal(input.tapScriptSig?.length,1);assert.equal(hex.encode(input.tapScriptSig![0]![0].pubKey),hex.encode(key));return {};}
    if(!posted)throw missing();return signed?{status:'included',txid:TXID}:signing;
   }) as PoolApi;

@@ -13,12 +13,13 @@ export interface HdReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
 }
-interface ReceiveState {v:1;enabled:true;receivers:HdLnurlReceiver[];cursors:Record<string,number>;payouts:HdLnurlPayout[]}
+interface ReceiveState {v:1;enabled:true;receivers:HdLnurlReceiver[];pending?:string;cursors:Record<string,number>;payouts:HdLnurlPayout[]}
 export interface HdLnurlConfig {
  identity:Identity;companion:Wallet;journal:HdReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;
  onAllocation?:(payout:HdLnurlPayout)=>Promise<void>;
 }
 const TESTNET_BIP32={public:0x043587cf,private:0x04358394};
+const HD_UNAVAILABLE='The Lightning address service needs an update to support private HD receiving.';
 const indexOf=(index:number)=>{if(!Number.isSafeInteger(index)||index<0||index>=0x80000000)throw new Error('Invalid HD receive allocation index');return index;};
 const empty=():ReceiveState=>({v:1,enabled:true,receivers:[],cursors:{},payouts:[]});
 
@@ -72,7 +73,9 @@ export function createHdLnurl(config:HdLnurlConfig){
   receiveScript(branch.hd,0);return branch;
  };
  const request=async<T,>(path:string,init?:RequestInit):Promise<T>=>{
-  const response=await guardedFetch(`${baseUrl}${path}`,{...init,headers:{Authorization:`Bearer ${await token()}`,...init?.headers}}),body=await response.json();
+  const response=await guardedFetch(`${baseUrl}${path}`,{...init,headers:{Authorization:`Bearer ${await token()}`,...init?.headers}});
+  const body=await response.json().catch(()=>{throw new Error(response.status===404?HD_UNAVAILABLE:`Lightning address service returned an invalid response (HTTP ${response.status}).`);});
+  if(body?.error==='arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required')throw new Error(HD_UNAVAILABLE);
   if(!response.ok||body?.status==='ERROR'||typeof body?.error==='string')throw new Error(typeof body?.error==='string'?body.error:typeof body?.reason==='string'?body.reason:`Lightning address request failed (${response.status})`);
   return body as T;
  };
@@ -80,6 +83,7 @@ export function createHdLnurl(config:HdLnurlConfig){
   if(typeof row.handle!=='string'||!row.handle||typeof row.domain!=='string'||row.domain.toLowerCase()!==domain||typeof row.lnurl!=='string'||typeof row.status!=='string'||(row.lightningAddress!==null&&typeof row.lightningAddress!=='string'))throw new Error('Invalid Lightning address registration');
   return {handle:row.handle,domain,lightningAddress:row.lightningAddress??undefined,lnurl:row.lnurl,status:row.status};
  };
+ const registeredReceivers=async()=>(await client.listAddresses(await token())).filter(row=>row.domain.toLowerCase()===domain).map(fromAddress);
  const bind=async(receiver:HdLnurlReceiver,hd:HdReceiveConfig)=>{
   const answer=await request<{receiveMode?:string}>(`/lnurl/address/${encodeURIComponent(receiver.handle)}/arkade`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({domain,hd})});
   if(answer?.receiveMode!=='hd')throw new Error('Lightning address server did not confirm private HD receive mode');
@@ -118,11 +122,12 @@ export function createHdLnurl(config:HdLnurlConfig){
  const recover=({explicit=false}:{explicit?:boolean}={})=>serial(async()=>{
   let state=await load();if(!state&&!explicit)return [];
   if(!state){state=empty();await save(state);}
-  const addresses=(await client.listAddresses(await token())).filter(row=>row.domain.toLowerCase()===domain).map(fromAddress);
+  if(!explicit&&!state.receivers.length&&!state.payouts.length)return [];
+  const addresses=await registeredReceivers();
   if(explicit){
    const branch=await currentBranch(),active=addresses.filter(row=>row.status==='active');
    for(const receiver of active)await bind(receiver,branch.hd);
-   await save({...state,receivers:active});
+   await save({...state,pending:undefined,receivers:active});
   }
   for(const receiver of addresses)await restore(receiver);
   return (await load())!.receivers;
@@ -134,9 +139,14 @@ export function createHdLnurl(config:HdLnurlConfig){
   claim:(options:{username?:string;domain?:string;claimCode?:string}={})=>serial(async()=>{
    if(options.domain!==undefined&&options.domain.toLowerCase()!==domain)throw new Error('Lightning address domain must match this service');
    let state=await load();if(!state){state=empty();await save(state);}
-   const branch=await currentBranch(),registered=fromAddress(await client.registerAddress({token:await token(),domain,...(options.username?{username:options.username}:{}),...(options.claimCode?{claimCode:options.claimCode}:{})}));
+   const branch=await currentBranch(),owned=(await registeredReceivers()).filter(row=>row.status==='active');
+   const automatic=!options.username&&!options.claimCode;
+   const existing=automatic?owned.find(row=>state.receivers.some(saved=>saved.handle===row.handle))??owned.find(row=>row.handle===state.pending):undefined;
+   if(automatic&&!existing&&owned.length)throw new Error('A Lightning address already exists. Use Recover a Lightning address to enable it here explicitly.');
+   const registered=existing??fromAddress(await client.registerAddress({token:await token(),domain,...(options.username?{username:options.username}:{}),...(options.claimCode?{claimCode:options.claimCode}:{})}));
+   if(!existing)await save({...state,pending:registered.handle});
    await bind(registered,branch.hd);
-   await save({...state,receivers:[registered,...state.receivers.filter(row=>row.handle!==registered.handle)]});
+   await save({...state,pending:undefined,receivers:[registered,...state.receivers.filter(row=>row.handle!==registered.handle)]});
    await restore(registered);return registered;
   }),
   recover,

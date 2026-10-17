@@ -25,8 +25,8 @@ function setup(){
  const config={identity,companion,journal,owner:'owner',pool:'pool',baseUrl:`https://${domain}`,fetch:async(url:string,init?:RequestInit)=>{requests.push({url,init});return respond(url,init);},onAllocation:async(value:unknown)=>{if(callbackFailure)throw new Error('payout failed');payouts.push(value);}};
  const service=createHdLnurl(config);
  const claim=async()=>{
-  let hd:HdReceiveConfig|undefined;
-  respond=async(url,init)=>{if(url.endsWith('/arkade')){hd=JSON.parse(String(init?.body)).hd;return json({receiveMode:'hd'});}if(init?.method==='POST')return json(receiver);if(url.includes('/allocations'))return json({allocations:[],nextAfter:0});return json([receiver]);};
+  let hd:HdReceiveConfig|undefined,registered=false;
+  respond=async(url,init)=>{if(url.endsWith('/arkade')){hd=JSON.parse(String(init?.body)).hd;return json({receiveMode:'hd'});}if(init?.method==='POST'){registered=true;return json(receiver);}if(url.includes('/allocations'))return json({allocations:[],nextAfter:0});return json(registered?[receiver]:[]);};
   await service.claim();return hd!;
  };
  return {service,config,state,requests,watched,payouts,claim,signed:()=>signed,respond:(fn:typeof respond)=>{respond=fn;},watchFailure:(value:boolean)=>{watchFailure=value;},saveFailure:(value:boolean)=>{saveFailure=value;},callbackFailure:(value:boolean)=>{callbackFailure=value;}};
@@ -44,7 +44,7 @@ test('HD alias exports only its scoped public branch and requires explicit serve
  assert.ok(!JSON.stringify(body).includes(hdIdentity.descriptor.match(/tpub[^/]+/)![0]));
  assert.equal((await f.service.current())?.lightningAddress,receiver.lightningAddress);
  assert.ok(f.requests.every(r=>r.init?.redirect==='error'&&r.init.credentials==='omit'));
- const old=setup();old.respond(async(_url,init)=>json(init?.method==='POST'&&String(init.body).includes('"hd"')?{ok:true}:receiver));
+ const old=setup();old.respond(async(url,init)=>json(init?.method==='POST'&&String(init.body).includes('"hd"')?{ok:true}:url.endsWith('/lnurl/address')&&init?.method!=='POST'?[]:receiver));
  await assert.rejects(old.service.claim(),/confirm.*HD|support.*HD/);assert.equal(await old.service.current(),undefined);
 });
 
@@ -150,4 +150,53 @@ test('HD history rejects an oversized page before any watch, payout or cursor wr
  f.respond(async(url)=>url.endsWith('/lnurl/address')?json([receiver]):url.includes('after=0&')?json({allocations:rows,nextAfter:101}):json({allocations:[],nextAfter:101}));
  await assert.rejects(f.service.recover(),{message:'Invalid HD receive allocation page'});
  assert.equal(f.watched.length,0);assert.equal(f.payouts.length,0);assert.deepEqual(f.state,before);assert.equal((await f.service.allocations()).length,0);
+});
+
+test('failed HD registration retries the existing alias after the server is updated',async()=>{
+ const f=setup(),aliases:typeof receiver[]=[];let supported=false;
+ f.respond(async(url,init)=>{
+  if(url.endsWith('/lnurl/address')){if(init?.method==='POST'){aliases.push(receiver);return json(receiver);}return json(aliases);}
+  if(url.endsWith('/arkade'))return supported?json({receiveMode:'hd'}):json({error:'arkadeAddress and a compressed-hex claimPublicKey (02/03 + 64 hex) are required'},400);
+  return json({allocations:[],nextAfter:0});
+ });
+ await assert.rejects(f.service.claim(),/support.*HD receiving/);await assert.rejects(f.service.claim(),/support.*HD receiving/);
+ assert.equal(f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&r.init?.method==='POST').length,1);
+ assert.equal(await f.service.current(),undefined);
+ const before=f.requests.length;assert.deepEqual(await f.service.recover(),[]);assert.equal(f.requests.length,before);
+ supported=true;assert.equal((await createHdLnurl(f.config).claim()).handle,receiver.handle);
+ assert.equal(f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&r.init?.method==='POST').length,1);
+});
+
+test('a lost registration response requires explicit recovery without consuming another alias',async()=>{
+ const f=setup(),aliases:typeof receiver[]=[];
+ f.respond(async(url,init)=>{
+  if(url.endsWith('/lnurl/address')){if(init?.method==='POST'){aliases.push(receiver);throw new TypeError('connection closed');}return json(aliases);}
+  if(url.endsWith('/arkade'))return json({receiveMode:'hd'});
+  return json({allocations:[],nextAfter:0});
+ });
+ await assert.rejects(f.service.claim(),/Request failed/);
+ await assert.rejects(f.service.claim(),/Recover a Lightning address/);
+ assert.equal(f.requests.filter(r=>r.url.endsWith('/arkade')).length,0);
+ await f.service.recover({explicit:true});assert.equal((await f.service.current())?.handle,receiver.handle);
+ assert.equal(aliases.length,1);
+});
+
+test('claim does not automatically replace an existing alias binding from another wallet',async()=>{
+ const f=setup();f.respond(async()=>json([receiver]));
+ await assert.rejects(f.service.claim(),/Recover a Lightning address/);
+ assert.equal(f.requests.filter(r=>r.init?.method==='POST').length,0);assert.equal(await f.service.current(),undefined);
+});
+
+test('claim reuses its acknowledged alias rather than another active owned alias',async()=>{
+ const f=setup();await f.claim();const before=f.requests.length;
+ f.respond(async(url,init)=>url.endsWith('/lnurl/address')?json([{...receiver,handle:'other'},receiver]):init?.method==='POST'?json({receiveMode:'hd'}):json({allocations:[],nextAfter:0}));
+ assert.equal((await f.service.claim()).handle,receiver.handle);
+ assert.deepEqual(f.requests.slice(before).filter(r=>r.init?.method==='POST').map(r=>r.url),[`https://${domain}/lnurl/address/alice/arkade`]);
+});
+
+test('an older server without allocation history reports missing HD support instead of a JSON parser error',async()=>{
+ const f=setup();await f.claim();
+ f.respond(async(url)=>url.endsWith('/lnurl/address')?json([receiver]):new Response('<!DOCTYPE html><title>Not found</title>',{status:404,headers:{'content-type':'text/html'}}));
+ await assert.rejects(f.service.recover(),/support.*HD receiving/);
+ assert.equal((await f.service.allocations()).length,0);
 });
