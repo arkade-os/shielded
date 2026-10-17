@@ -25,9 +25,9 @@ export function pageCache(source:ShieldedNoteRepository){
  return {repository,close(){closed=true;},async drain(){await Promise.allSettled([...writes]);}};
 }
 
-export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>){
+export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose()){
  let cancelled=false,wallet:W|undefined,disposal:Promise<void>|undefined,closing:Promise<W|undefined>|undefined;
- const dispose=()=>disposal??=wallet!.dispose();
+ const dispose=()=>disposal??=disposeWallet(wallet!);
  const ready=(async()=>{
   const prepared=await prepare();if(cancelled)return;
   wallet=await create(prepared);
@@ -86,14 +86,15 @@ export function pageSheet(render:(state:StepState|undefined)=>void){
 
 type QuoteContext={wallet:object;revision:number;key:string};
 export function pageQuotes(render:()=>void){
- let generation=0,selected:{context:QuoteContext;quote?:RouteQuote;error?:string}|undefined;
+ let generation=0,selected:{context:QuoteContext;quote?:RouteQuote;error?:string;pending?:boolean}|undefined;
  const matches=(a:QuoteContext,b:QuoteContext)=>a.wallet===b.wallet&&a.revision===b.revision&&a.key===b.key;
  const clear=()=>{generation++;selected=undefined;};
  return {
   clear,
-  read(context:QuoteContext):{quote?:RouteQuote;error?:string}{return selected&&matches(selected.context,context)?selected:{};},
+  invalidate(context:QuoteContext){if(selected&&!matches(selected.context,context))clear();},
+  read(context:QuoteContext):{quote?:RouteQuote;error?:string;pending?:boolean}{return selected&&matches(selected.context,context)?selected:{};},
   load(context:QuoteContext,route:()=>Promise<RouteQuote>){
-   const mine=++generation;selected={context};
+   const mine=++generation;selected={context,pending:true};render();
    void Promise.resolve().then(route).then(quote=>{if(mine===generation){selected={context,quote};render();}},error=>{if(mine===generation){selected={context,error:errorText(error)};render();}});
    return()=>{if(mine===generation)clear();};
   },

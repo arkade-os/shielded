@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type Identity,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RollupAccount,type BuiltSpend,type HistoryEntry,type OwnedNote,type PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
 import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
@@ -12,17 +12,18 @@ import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type
 import {bearerAccount,bearerKeysOf,bearerOf,claimSpends,linkOf,type LinkRecord} from './bearer.ts';
 import {freshAccount} from './checkpoint.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
-import type {SwapClient} from '@arkade-os/swap';
+import type {PrivateLightningService} from './lightning-wallet.ts';
 import {lightningRails} from './lightning.ts';
-import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
+import {DUST,pickNote,poolApiOf,shieldPlan,transferBody,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
-import {submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
+import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 import {WATCHDOG_MS,catchUp,catchUpAfterEvent,idle,type OnBatch} from './sync.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:BuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;bornAt?:number;fetcher?:typeof fetch};
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;fetcher?:typeof fetch};
 
 export function shieldedKeysOf(hash:Hash,secret:string){
  const keys=deriveRollupKeys2(secret,MUTINYNET_KEY_NETWORK),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
@@ -37,8 +38,9 @@ export function shieldedKeysOf(hash:Hash,secret:string){
 export class NoteReservation {
  readonly inFlight=new Set<bigint>();
  private queue:Promise<unknown>=Promise.resolve();
+ constructor(private readonly beforePick?:()=>Promise<void>){}
  pick<T>(choose:()=>Promise<T>,nullifiersOf:(chosen:T)=>bigint[]):Promise<T>{
-  const next=this.queue.then(async()=>{const chosen=await choose();for(const n of nullifiersOf(chosen))this.inFlight.add(n);return chosen;});
+  const next=this.queue.then(async()=>{await this.beforePick?.();const chosen=await choose();for(const n of nullifiersOf(chosen))this.inFlight.add(n);return chosen;});
   this.queue=next.then(()=>undefined,()=>undefined);
   return next;
  }
@@ -100,10 +102,12 @@ export class ShieldedWallet extends Wallet {
  prover!:ShieldedProver;
  account!:RollupAccount;
  self!:RollupRecipient;
- readonly notes=new NoteReservation();
+ readonly notes=new NoteReservation(()=>this.restoreLightningSpends());
  repository?:ShieldedNoteRepository;
  /** Set by the page once the wallet exists (the client needs it); adds the Lightning rails, and is disposed first. */
- swaps?:SwapClient;
+ swaps?:PrivateLightningService;
+ private lightningStore?:LightningSpendStore;
+ private readonly lightningSubmissions=new Map<string,Promise<string>>();
  resumed=false;
  repositoryError?:string;
  private derived!:ReturnType<typeof shieldedKeysOf>;
@@ -140,6 +144,7 @@ export class ShieldedWallet extends Wallet {
    // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
    const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,bornAt:config.bornAt??0,api:wallet.api,onBatch:(cursor,batch,account)=>wallet.watchLinks(cursor-1,batch,account),watched:()=>wallet.openLinkNullifiers()});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
+   await wallet.restoreLightningSpends(config.lightningSpendStore);
    for(const txid of loaded.listings)wallet.listings.add(txid);
    for(const link of loaded.links)wallet.linkRecords.set(link.key,link);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field));
@@ -297,6 +302,79 @@ export class ShieldedWallet extends Wallet {
   return (await this.getSpendableVtxos()).map(v=>({txid:v.txid,vout:v.vout,value:v.value,...(v.expiresAt instanceof Date?{expiresAt:v.expiresAt.getTime()}:{}),...(v.assets?.length?{assets:v.assets.map(a=>({assetId:a.assetId,amount:BigInt(a.amount)}))}:{})}));
  }
  isPoolPayout(coin:{txid:string}){return this.account.txids.has(coin.txid);}
+ async restoreLightningSpends(store?:LightningSpendStore):Promise<void>{
+  if(store){if(this.lightningStore&&this.lightningStore!==store)throw new Error('Lightning funding must use the wallet\'s durable journal.');this.lightningStore=store;}
+  if(!this.account||!this.lightningStore)return;
+  const owner=String(this.self.owner),pool=this.token;
+  const records=(await this.lightningStore.list(owner,pool)).map(r=>validateLightningSpend(r,owner,pool));
+  for(const record of records){
+   if(record.state==='dropped')continue;
+   for(const nullifier of record.nullifiers)this.notes.inFlight.add(BigInt(nullifier));
+   if(record.coin)this.used.add(`${record.coin.txid}:${record.coin.vout}`);
+  }
+ }
+ private async prepareLightning(request:Pick<LightningSpendRecord,'id'|'reference'|'kind'|'amount'>&Partial<Pick<LightningSpendRecord,'paymentHash'|'destination'|'coin'|'expiresAt'>>,store:LightningSpendStore,build:()=>Promise<{built:BuiltSpend;extra?:SubmitMember['extra']}>){
+  this.assertOpen();await this.restoreLightningSpends(store);
+  const owner=String(this.self.owner),pool=this.token;
+  return this.notes.pick(async()=>{
+   this.assertOpen();
+   const existing=await store.get(owner,pool,request.id);
+   if(existing){
+    validateLightningSpend(existing,owner,pool);
+    if(!sameLightningSpendRequest(existing,{...existing,...request,coin:request.coin,expiresAt:request.expiresAt}))throw new Error('This Lightning artifact belongs to a different funding request.');
+    return existing;
+   }
+   const prior=await store.list(owner,pool);
+   if(prior.some(r=>r.state!=='dropped'&&(r.reference===request.reference||!!request.paymentHash&&r.paymentHash===request.paymentHash||!!request.coin&&r.coin?.txid===request.coin.txid&&r.coin?.vout===request.coin.vout)))throw new Error('A Lightning payment or payout is already funded or reserved.');
+   const {built,extra}=await build(),proof=await this.prover.prove(built,'spend');this.assertOpen();
+   const candidate:LightningSpendRecord={v:1,...request,owner,pool,nullifiers:built.witness.slot.nullifiers.map(String),body:transferBody(randomSubmissionId(),built,proof,extra),state:'prepared'};
+   validateLightningSpend(candidate,owner,pool);
+   const saved=validateLightningSpend(await store.create(candidate),owner,pool);
+   if(!sameLightningSpendRequest(saved,candidate))throw new Error('The Lightning journal returned a different funding request.');
+   return saved;
+  },record=>{if(record.coin&&record.state!=='dropped')this.used.add(`${record.coin.txid}:${record.coin.vout}`);return record.state==='dropped'?[]:record.nullifiers.map(BigInt);});
+ }
+ private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
+  const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
+  const run=(async()=>{
+   const api:PoolApi=async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{const guard=()=>{this.assertOpen();signal?.throwIfAborted();beforeRequest?.();};guard();return this.api<T>(path,body,guard);};
+   const final=await submitLightningSpend(record,store,{api,identity,poolScript:this.poolScript,step});
+   if(final.status==='dropped'){
+    this.notes.release(record.nullifiers.map(BigInt));if(record.coin)this.used.delete(`${record.coin.txid}:${record.coin.vout}`);
+    await this.restoreLightningSpends();this.changed();throw new Error(final.reason??'The pool dropped this Lightning spend.');
+   }
+   await this.finish(final);this.changed();return final.txid!;
+  })();
+  this.lightningSubmissions.set(record.id,run);
+  try{return await run;}finally{if(this.lightningSubmissions.get(record.id)===run)this.lightningSubmissions.delete(record.id);}
+ }
+ async fundLightning(id:string,paymentHash:string,verifiedHTLCaddress:string,amount:bigint,store:LightningSpendStore,signal?:AbortSignal,expiresAt?:number):Promise<string>{
+  this.assertOpen();signal?.throwIfAborted();
+  if(!id||!/^[0-9a-f]{64}$/.test(paymentHash)||amount<BigInt(DUST)||expiresAt!==undefined&&(!Number.isSafeInteger(expiresAt)||expiresAt<=0))throw new Error('A Lightning funding request needs its artifact, payment hash, full amount, and valid deadline.');
+  const address=ArkAddress.decode(verifiedHTLCaddress),pool=ArkAddress.decode(this.ownPoolAddress);
+  if(address.hrp!==pool.hrp||hex.encode(address.serverPubKey)!==hex.encode(pool.serverPubKey))throw new Error('The Lightning HTLC belongs to another Arkade server.');
+  const destination=address.encode(),program=address.pkScript.subarray(2);
+  const record=await this.prepareLightning({id,reference:paymentHash,kind:'fund',paymentHash,destination,amount:String(amount),...(expiresAt!==undefined?{expiresAt}:{})},store,async()=>{
+   const input=pickNote(this.account.notes(),amount,this.notes.inFlight);
+   if(!input)throw new Error('No single pool note covers the full Lightning payment.');
+   return {built:await this.account.spend({input,withdraw:amount,program},this.self),extra:{program}};
+  });
+  return this.runLightning(record,this.identity,store,undefined,signal);
+ }
+ async shieldLightning(singleVirtualCoin:ExtendedVirtualCoin,descriptorSigner:Identity,store:LightningSpendStore,request:{id:string;reference:string;signal?:AbortSignal}):Promise<ShieldedPaymentHandle>{
+  this.assertOpen();request.signal?.throwIfAborted();const input=singleVirtualCoin;
+  if(!request.id||!/^[0-9a-f]{64}$/i.test(input.txid)||!Number.isSafeInteger(input.vout)||input.vout<0||!Number.isSafeInteger(input.value)||input.value<DUST||input.assets?.length||input.isSpent||input.spentBy||input.isSwept||input.isUnrolled||!input.tapTree||!input.intentTapLeafScript)throw new Error('Shield one spendable plain Lightning payout at a time.');
+  const coin={txid:input.txid.toLowerCase(),vout:input.vout,value:input.value,tapTree:hex.encode(input.tapTree),leaf:walletIntentLeafScriptHex(input.intentTapLeafScript)};
+  if(request.reference!==`${coin.txid}:${coin.vout}`)throw new Error('The Lightning payout reference must identify its outpoint.');
+  const tree=VtxoScript.decode(input.tapTree);tree.findLeaf(coin.leaf);
+  if(hex.encode(tree.pkScript)!==input.script.toLowerCase()||!coin.leaf.includes(hex.encode(await descriptorSigner.xOnlyPublicKey())))throw new Error('The Lightning payout script does not match its child signer.');
+  const handle=shieldedHandle({id:request.id,title:`Shielding ${sats(input.value)} Lightning sats`,steps:shieldedSteps.shield,railId:'shielded-lightning-deposit'},async step=>{
+   step(0);
+   const record=await this.prepareLightning({id:request.id,reference:request.reference,kind:'shield',destination:input.script.toLowerCase(),amount:String(input.value),coin},store,async()=>({built:await this.account.spend({deposit:BigInt(input.value)},this.self),extra:{coin:{txid:coin.txid,vout:coin.vout,tapTree:coin.tapTree,leaf:coin.leaf}}}));
+   return {txid:await this.runLightning(record,descriptorSigner,store,step,request.signal)};
+  });
+  return this.announce(handle);
+ }
  /** `skipPayouts` is what auto-shield wants and the "Shield again" button does not: a payout is only shielded on request. */
  planFor(coins:readonly ArkCoin[],skipPayouts=true){
   return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS});
@@ -328,11 +406,11 @@ export class ShieldedWallet extends Wallet {
  private async nativeSpend(inputs:readonly {txid:string;vout:number}[]|undefined,run:()=>Promise<string>){
   this.assertOpen();
   if(this.selfSending)throw new Error('A shield deposit coin is being prepared. Try again when it is ready.');
-  if(inputs?.some(coin=>this.reserved(coin)))throw new Error('A selected coin is reserved for shielding.');
   this.nativeOperations++;
-  try{return await run();}finally{this.nativeOperations--;}
+  try{await this.restoreLightningSpends();this.assertOpen();if(inputs?.some(coin=>this.reserved(coin)))throw new Error('A selected coin is reserved for shielding.');return await run();}finally{this.nativeOperations--;}
  }
  override async getSpendableVtxos(...args:Parameters<Wallet['getSpendableVtxos']>){
+  await this.restoreLightningSpends();
   const coins=await super.getSpendableVtxos(...args);
   return args[0]?.genericallySpendableOnly?coins.filter(coin=>!this.reserved(coin)):coins;
  }
@@ -351,6 +429,7 @@ export class ShieldedWallet extends Wallet {
 
  async shield(coins?:readonly ArkCoin[]):Promise<ShieldedPaymentHandle|undefined>{
   this.assertOpen();
+  if(this.lightningStore){await this.restoreLightningSpends();this.assertOpen();}
   if(this.selfSending||this.nativeOperations)return undefined;
   const available=coins??await this.coins();
   this.assertOpen();
@@ -513,11 +592,11 @@ export class ShieldedWallet extends Wallet {
   throw new Error('The deposit coin did not appear in your Arkade wallet.');
  }
  override async dispose():Promise<void>{
-  const swaps=this.swaps;this.swaps=undefined;
-  await swaps?.[Symbol.asyncDispose]().catch(()=>{});
   this.stopped=true;
   if(this.timer)clearTimeout(this.timer);
   this.timer=undefined;
+  const swaps=this.swaps;this.swaps=undefined;
+  await swaps?.[Symbol.asyncDispose]().catch(()=>{});
   for(const off of this.unwatch)try{off();}catch{/* a torn-down manager is already stopped */}
   this.unwatch=[];this.changeListeners.clear();this.actionListeners.clear();this.latestAction=undefined;
   await super.dispose();

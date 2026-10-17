@@ -28,6 +28,17 @@ test('a wallet returned after cancellation is disposed once and never published'
  assert.equal(await session.ready,undefined);await closed;await session.close();assert.equal(disposals,1);
 });
 
+test('closing a wallet drains its private receive watcher before disposing its wallets and journal',async()=>{
+ const events:string[]=[],release=deferred();
+ const owned={dispose:async()=>{events.push('wallet');}};
+ const session=openPageWallet(async()=>undefined,async()=>owned,async wallet=>{
+  events.push('watcher');await release.promise;await wallet.dispose();events.push('companion');events.push('journal');
+ });
+ await session.ready;const closed=session.close();await flush();assert.deepEqual(events,['watcher']);
+ release.resolve();await closed;await session.close();
+ assert.deepEqual(events,['watcher','wallet','companion','journal']);
+});
+
 test('restore drains an accepted cache write and rejects later action-finish writes',async()=>{
  const repo=new InMemoryShieldedNoteRepository(),entered=deferred(),release=deferred(),events:string[]=[];
  const save=repo.saveAccount.bind(repo);repo.saveAccount=async(...args)=>{entered.resolve();await release.promise;await save(...args);events.push('saved');};
@@ -120,6 +131,18 @@ test('zero-sat asset activities preserve the actual SDK sent and received direct
 });
 
 const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({railId,amount:500,fee:0,total:500,send}) as RouteQuote;
+
+test('editing a payment invalidates a pending quote without requesting another one',async()=>{
+ let routes=0;const result=deferred<RouteQuote>(),quotes=pageQuotes(()=>{});
+ const context={wallet:{},revision:1,key:'invoice:500'};
+ quotes.invalidate(context);assert.equal(routes,0);
+ quotes.load(context,()=>{routes++;return result.promise;});
+ assert.equal(quotes.read(context).pending,true);await flush();assert.equal(routes,1);
+ const edited={...context,key:'invoice:600'};quotes.invalidate(edited);
+ assert.equal(quotes.read(edited).pending,undefined);assert.equal(quotes.read(context).pending,undefined);
+ result.resolve(quoteOf('lightning'));await flush();
+ assert.equal(routes,1);assert.equal(quotes.read(context).quote,undefined);assert.equal(quotes.read(edited).quote,undefined);
+});
 
 test('a pending quote cannot publish after the request, funds or wallet changes',async()=>{
  const quotes=pageQuotes(()=>{}),wallet={},context={wallet,revision:1,key:'alice:500'},first=deferred<RouteQuote>();
