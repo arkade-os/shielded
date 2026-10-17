@@ -106,6 +106,61 @@ function serviceFixture(){
   failAccept(){throwAfterPersist=true;},overrideSend(params:Record<string,unknown>){sendOverride=params;},terminalOnAccept(){terminalOnAccept=true;}};
 }
 
+const flushTasks=async()=>{for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
+function shieldingRecord(id:string,coin:{txid:string;vout:number;value:number;script:string}):LightningSpendRecord{
+ const record=spend(id),reference=`${coin.txid}:${coin.vout}`,savedCoin={txid:coin.txid,vout:coin.vout,value:coin.value,tapTree:'00',leaf:'00'};
+ delete record.paymentHash;delete record.body.program;
+ return {...record,kind:'shield',reference,destination:coin.script,amount:String(coin.value),coin:savedCoin,
+  body:{...record.body,publics:['0',String(coin.value),'0','0','0'],coin:{txid:coin.txid,vout:coin.vout,tapTree:'00',leaf:'00'}}};
+}
+
+test('a conclusively dropped payout shielding attempt retries under a new id with the same outpoint reference',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],attemptIds:string[]=[],references:string[]=[];
+ const options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:(error:Error)=>errors.push(error)};
+ const service=await createPrivateLightning(options);
+ try{
+  await service.receive({via:'lightning',amount:1000n});const payout=(await journal.payouts(hex.encode(await root.xOnlyPublicKey()),pool))[0]!;
+  const coin={txid:'ab'.repeat(32),vout:0,value:1000,script:payout.script};f.base.getVtxos=async()=>[coin] as never;
+  f.wallet.shieldLightning=async(_coin,_signer,store,request)=>{
+   assert.ok([...f.live].some(name=>name.endsWith(`-shield-${coin.txid}:0`)));
+   const old=await store.get(owner,pool,request.id);
+   if(old)return {settled:async()=>{if(old.state==='dropped')throw new Error('previous attempt dropped');}} as never;
+   attemptIds.push(request.id);references.push(request.reference);
+   await store.create(shieldingRecord(request.id,coin));await store.finish(owner,pool,request.id,attemptIds.length===1?{state:'dropped',reason:'pool rejected'}:{state:'included',txid:'cd'.repeat(32)});
+   return {settled:async()=>{if(attemptIds.length===1)throw new Error('pool rejected');}} as never;
+  };
+  await service.registerPayouts([payout]);await flushTasks();assert.equal(errors.length,1);
+  await service.registerPayouts([payout]);await flushTasks();
+  assert.equal(attemptIds.length,2);assert.notEqual(attemptIds[0],attemptIds[1]);assert.deepEqual(references,[`${coin.txid}:0`,`${coin.txid}:0`]);
+  assert.deepEqual((await journal.list(owner,pool)).map(record=>record.state),['dropped','included']);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+for(const state of ['prepared','included'] as const)test(`reload reuses the original ${state} shielding id and durable body without another POST`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false};
+ const first=await createPrivateLightning(options);await first.receive({via:'lightning',amount:1000n});await first[Symbol.asyncDispose]();
+ const payout=(await journal.payouts(hex.encode(await root.xOnlyPublicKey()),pool))[0]!,coin={txid:'ab'.repeat(32),vout:0,value:1000,script:payout.script},id=`lightning-shield-${coin.txid}:0${state==='prepared'?'-1':''}`;
+ const saved=shieldingRecord(id,coin);await journal.create(saved);if(state==='included')await journal.finish(owner,pool,id,{state,txid:'cd'.repeat(32)});
+ let calls=0,posts=0;f.base.getVtxos=async()=>[coin] as never;
+ f.wallet.shieldLightning=async(_coin,_signer,store,request)=>{calls++;assert.equal(request.id,id);assert.equal(request.reference,`${coin.txid}:0`);const existing=await store.get(owner,pool,id);if(!existing)posts++;assert.deepEqual(existing!.body,saved.body);return {settled:async()=>{if(state==='prepared')throw new Error('ambiguous pool reply');}} as never;};
+ const restored=await createPrivateLightning(options);
+ try{await flushTasks();assert.equal(calls,1);assert.equal(posts,0);assert.equal((await journal.list(owner,pool)).length,1);}finally{await restored[Symbol.asyncDispose]();}
+});
+
+test('startup ensures every artifact contract before one combined payout scan and reconstructs a missing payout journal',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),artifactOwner=hex.encode(await root.xOnlyPublicKey());
+ for(let i=0;i<3;i++){const artifact=await materializeLightningArtifact(f.base,await journal.allocateArtifact(artifactOwner,pool,'receive'));await journal.updateArtifact(artifactOwner,pool,artifact);}
+ let scans=0;f.base.getVtxos=async()=>{scans++;assert.equal(f.contracts.length,3);return [];};
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{assert.equal(scans,1);assert.equal((await journal.payouts(artifactOwner,pool)).length,3);}finally{await service[Symbol.asyncDispose]();}
+});
+
+test('startup refuses an artifact with a descriptor but incomplete payout settings',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),artifactOwner=hex.encode(await root.xOnlyPublicKey()),artifact=await journal.allocateArtifact(artifactOwner,pool,'receive');
+ await journal.updateArtifact(artifactOwner,pool,{...artifact,descriptor:root.descriptor.replace('*','0')});
+ await assert.rejects(createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false}),/Incomplete saved Lightning artifact/);
+});
+
 test('private Lightning funds only the verified full HTLC from the pool and persists distinct unpaid receive artifacts',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository();
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});

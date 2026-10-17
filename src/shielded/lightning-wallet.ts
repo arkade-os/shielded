@@ -100,7 +100,10 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    if(!payout||coin.assets?.length||shielding.has(outpoint))continue;
    if(coin.value<DUST){report(new Error(`This individual Lightning payout is below the pool minimum of ${DUST} sats and cannot be shielded alone.`));continue;}
    const task=(async()=>{const release=await acquireSession(`${namespace}-shield-${outpoint}`);try{
-    const handle=await wallet.shieldLightning(coin,lightningSigner(companion,payout.descriptor),journal,{id:`lightning-shield-${outpoint}`,reference:outpoint,signal:operations.signal});await handle.settled();
+    const attempts=(await journal.list(String(wallet.self.owner),pool)).filter(record=>record.kind==='shield'&&record.reference===outpoint),existing=attempts.find(record=>record.state!=='dropped'),baseId=`lightning-shield-${outpoint}`;
+    let id=existing?.id??baseId;
+    if(!existing&&attempts.length){let suffix=attempts.length;do{id=`${baseId}-${suffix++}`;}while(attempts.some(record=>record.id===id));}
+    const handle=await wallet.shieldLightning(coin,lightningSigner(companion,payout.descriptor),journal,{id,reference:outpoint,signal:operations.signal});await handle.settled();
    }finally{await release();}})();
    shielding.set(outpoint,task);void task.catch(report).finally(()=>shielding.delete(outpoint));
   }
@@ -123,7 +126,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const pubKey=deriveDescriptorLeafPubKey(artifact.descriptor),manager=await companion.getContractManager();
   await manager.createContract({type:'default',script:artifact.script,address:artifact.address,watch:'watched',
    params:{pubKey:hex.encode(pubKey),serverPubKey:artifact.serverPubKey,csvTimelock:artifact.csvTimelock},metadata:{signingDescriptor:artifact.descriptor}});
-  await registerPayouts([{id:artifact.id,descriptor:artifact.descriptor,address:artifact.address,script:artifact.script}]);
+  return {id:artifact.id,descriptor:artifact.descriptor,address:artifact.address,script:artifact.script};
  };
  const open=async(artifact:LightningArtifact):Promise<Session>=>{
   const release=await acquireSession(`${namespace}-${artifact.id}`),repository=repositoryFor(`${namespace}-${artifact.id}`);
@@ -172,7 +175,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   if(receive&&amount<BigInt(DUST))throw new Error(`Each individual Lightning payout needs at least ${DUST} sats to enter the shielded pool.`);
   if(send&&!wallet.canWithdraw(amount))throw new Error('No single unreserved pool note covers this Lightning payment');
   const artifact=await materializeLightningArtifact(companion,await journal.allocateArtifact(owner,pool,send?'send':'receive'));
-  await journal.updateArtifact(owner,pool,artifact);await watchArtifact(artifact);
+  await journal.updateArtifact(owner,pool,artifact);await registerPayouts([await watchArtifact(artifact)]);
   const session=await open(artifact);
   try{
    const quoted=await session.client.quote(input);
@@ -205,9 +208,10 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  let offPayout:()=>void=()=>{};
  const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);listeners.clear();};
  try{
-  await journal.artifacts(owner,pool);await registerPayouts(await journal.payouts(owner,pool));
-  for(const artifact of await journal.artifacts(owner,pool)){
-   if(artifact.descriptor)await watchArtifact(artifact);
+  const artifacts=await journal.artifacts(owner,pool),restoredPayouts=await journal.payouts(owner,pool);
+  for(const artifact of artifacts)if(artifact.descriptor)restoredPayouts.push(await watchArtifact(artifact));
+  await registerPayouts(restoredPayouts);
+  for(const artifact of artifacts){
    if(artifact.state==='accepted'){const session=await open(artifact);await startSession(session);}
   }
   if(legacyRecovery){
