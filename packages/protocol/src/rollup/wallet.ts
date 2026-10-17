@@ -38,7 +38,9 @@ async function noteKey(shared: Uint8Array, index: number) {
 }
 const IV = new Uint8Array(12);
 
-export async function sealRollupNotes(to: readonly [RollupRecipient, RollupRecipient], notes: readonly [RollupNote, RollupNote], ephemeral: Uint8Array = x25519.utils.randomSecretKey()): Promise<Uint8Array> {
+export async function sealRollupNotes(to: readonly [RollupRecipient, RollupRecipient], notes: readonly [RollupNote, RollupNote]): Promise<Uint8Array> {
+ // The ephemeral key is always drawn here, never supplied: a reused ephemeral would repeat the AES key under the fixed IV.
+ const ephemeral = x25519.utils.randomSecretKey();
  const record = new Uint8Array(ROLLUP_RECORD_BYTES);
  record.set(x25519.getPublicKey(ephemeral), 0);
  for (const i of [0, 1] as const) {
