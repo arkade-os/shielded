@@ -34,7 +34,7 @@ function checkPackage(pkg:ExitPackage,outpoint:string,quote:ExitQuote,onchain:On
 }
 
 export function createLightningRecovery(o:{owner:string;pool:string;companion:Wallet;journal:LightningRepository;acquireSession:(name:string)=>Promise<()=>Promise<void>>;options:(outpoint:string)=>Promise<ExitOptions>;stopShielding:(outpoint:string)=>Promise<void>;reconcileShielding:(outpoint:string)=>Promise<void>;changed:()=>void;report:(error:unknown)=>void}){
- const quotes=new Map<string,{quote:ExitQuote;at:number}>();let closed=false,preparing:Promise<LightningRecovery>|undefined,job:Promise<void>|undefined,controller:AbortController|undefined;
+ const quotes=new Map<string,{quote:ExitQuote;at:number}>(),validated=new Map<string,string>();let closed=false,preparing:Promise<LightningRecovery>|undefined,job:Promise<void>|undefined,controller:AbortController|undefined;
  const assertOpen=()=>{if(closed)throw new Error('Private Lightning service is closed');};
  let validationWallet:Promise<OnchainWallet>|undefined;
  const onchain=()=>validationWallet??=OnchainWallet.create(o.companion.identity,'mutinynet',o.companion.onchainProvider);
@@ -43,7 +43,10 @@ export function createLightningRecovery(o:{owner:string;pool:string;companion:Wa
   if(!records||typeof records!=='object'||Array.isArray(records))throw new Error('Unreadable onchain recovery; shielding remains paused.');
   for(const [key,record] of Object.entries(records)){
    if(!record||record.v!==1||key!==record.outpoint||!/^([0-9a-f]{64}):(0|[1-9]\d*)$/.test(record.outpoint)||!record.pool||!Number.isSafeInteger(record.createdAt)||!['preparing','ready','paused','complete','shielded'].includes(record.state)||!record.quote||!['preparing','shielded'].includes(record.state)&&!record.package)throw new Error('Unreadable onchain recovery; shielding remains paused.');
-   if(record.package)checkPackage(deserializeExitPackage(serializeExitPackage(record.package)),record.outpoint,record.quote,await onchain());
+   if(record.package){
+    const serialized=serializeExitPackage(record.package),binding=JSON.stringify([record.quote,serialized]);
+    if(validated.get(record.outpoint)!==binding){checkPackage(deserializeExitPackage(serialized),record.outpoint,record.quote,await onchain());validated.set(record.outpoint,binding);}
+   }
   }
   return records;
  };

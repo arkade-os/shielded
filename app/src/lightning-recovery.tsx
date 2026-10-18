@@ -26,9 +26,9 @@ export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick
   const id=++request.current;setPending(true);setError('');
   try{await action();const saved=await service.getRecovery(outpoint);if(id===request.current)setRecovery(saved);}
   catch(cause){if(id===request.current)setError(errorText(cause));}
-  finally{if(id===request.current)setPending(false);}
+  finally{if(id===request.current){setPending(false);setUnderstood(false);}}
  };
- const delay=quote?.vtxos[0]?.delay;
+ const delay=quote?.vtxos[0]?.delay,savedDelay=recovery?.package?.vtxos[0]?.delay;
  return <><dt>Onchain recovery</dt><dd>
   <p className="stock-muted">Checking a quote looks up this payout and your onchain funding address with the Bitcoin explorer. The quote check signs and broadcasts nothing.</p>
   <button type="button" className="stock-ghost stock-mini" disabled={disabled||pending} onClick={()=>void load()}>{pending?'Checking recovery…':quote?'Refresh recovery quote':'Check onchain recovery'}</button>
@@ -55,13 +55,13 @@ export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick
    {recovery.error&&<p className="stock-blocked">{recovery.error}</p>}
    {recovery.package&&<>
     <p>{formatNumber(recovery.package.totals.recoveredSats)} sats after the sweep fee; {formatNumber(recovery.package.totals.totalFeeSats)} sats total mining fees. Destination: <code>{recovery.package.sweepAddress}</code>.</p>
-    <p>Upfront funding: {formatNumber(recovery.package.totals.fundingRequiredSats)} sats. Recovery delay: {formatNumber(recovery.package.vtxos[0]!.delay!.value)} {recovery.package.vtxos[0]!.delay!.type} after the payout confirms onchain.</p>
+    <p>Upfront funding: {formatNumber(recovery.package.totals.fundingRequiredSats)} sats. Recovery delay: {savedDelay?`${formatNumber(savedDelay.value)} ${savedDelay.type} after the payout confirms onchain`:'Unavailable; reload before starting recovery'}.</p>
     {recovery.package.validUntil!==undefined&&<p className="stock-muted">The underlying batch expires {new Date(recovery.package.validUntil*1000).toLocaleString()}; the operator may sweep after expiry.</p>}
     <a className="stock-ghost stock-mini" download={`shielded-exit-${outpoint.replace(':','-')}.json`} href={`data:application/json;charset=utf-8,${encodeURIComponent(serializeExitPackage(recovery.package))}`}>Save recovery package</a>
     <p className="stock-muted">The package contains signed transactions, no private keys. Keep a copy: it can finish this recovery without your browser. It reveals the payout, fees and destination.</p>
     {recovery.state!=='complete'&&(recovery.running?<button type="button" className="stock-ghost stock-mini" disabled={pending} onClick={()=>void act(()=>service.pauseRecovery())}>Pause recovery</button>:<>
      <label><input type="checkbox" checked={understood} onChange={e=>setUnderstood(e.target.checked)}/>I understand starting recovery publishes this payout on Bitcoin and cannot undo transactions already broadcast. Its original delay still applies.</label>
-     <button type="button" disabled={disabled||pending||!understood} onClick={()=>void act(()=>service.startRecovery(outpoint))}>Start or resume onchain recovery</button>
+     <button type="button" disabled={disabled||pending||!understood||!savedDelay} onClick={()=>void act(()=>service.startRecovery(outpoint))}>Start or resume onchain recovery</button>
     </>)}
     <p className="stock-muted">Closing or pausing stops this browser's executor; it cannot recall transactions. Reopen this receipt to resume the saved package.</p>
    </>}
