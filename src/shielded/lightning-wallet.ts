@@ -7,7 +7,7 @@ import {DUST} from './pool.ts';
 import type {LightningArtifact,LightningPayout,LightningRepository} from './lightning-repository.ts';
 import type {ShieldedWallet} from './wallet.ts';
 import {createLightningRecovery,recoveryLock,type LightningRecovery} from './lightning-recovery.ts';
-import {LightningSwapRepository,repairLightningReceipt} from './lightning-receipt.ts';
+import {LightningSwapRepository,ReceiptStoreCompatibilityError,repairLightningReceipt} from './lightning-receipt.ts';
 
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
  registerPayouts(records:LightningPayout[]):Promise<void>;
@@ -97,7 +97,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    const record=await repository.getSwapRecord(artifact.quoteId);
    if(record?.family==='rfq'&&record.kind==='lightning_send'&&record.state==='settled'&&!record.refundTxid&&record.fundingTxid&&/^[0-9a-f]{64}$/.test(record.fundingTxid)&&Number.isSafeInteger(Number(record.give.amount))&&Number(record.give.amount)>0){receipts.set(record.id,record);wallet.changed();}
   }
-  catch{report(new Error('A saved Lightning receipt could not be verified; it remains unchanged.'));}
+  catch(error){report(error instanceof ReceiptStoreCompatibilityError?error:new Error('A saved Lightning receipt could not be verified; it remains unchanged.'));}
  };
  const assertOpen=()=>{if(stopped)throw new Error('Private Lightning service is closed');};
  const getActivityHistory=async():Promise<Activity[]>=>{

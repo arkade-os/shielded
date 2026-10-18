@@ -178,6 +178,21 @@ test('startup repairs an ended send receipt under its session lock without start
   finally{await restored[Symbol.asyncDispose]();}
  }finally{await service[Symbol.asyncDispose]();}
 });
+
+test('startup reports only the safe receipt schema diagnostic and leaves an unsupported store unchanged',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),poolName=`schema-${crypto.randomUUID()}`,errors:Error[]=[];
+ Object.assign(f.wallet.pool.status.pool!,{token:poolName});
+ const artifact={...await journal.allocateArtifact(ownerKey,poolName,'send'),state:'ended' as const,quoteId:'old-quote'};await journal.updateArtifact(ownerKey,poolName,artifact);
+ const name=`shielded-lightning-${ownerKey}-${poolName}-${artifact.id}`,original={id:artifact.quoteId,state:'refunded',profile:{signer:'must-not-leak'}};
+ const db=await new Promise<IDBDatabase>((resolve,reject)=>{const request=indexedDB.open(name,6);request.onupgradeneeded=()=>request.result.createObjectStore('swapRecords',{keyPath:'id'});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+ await new Promise<void>((resolve,reject)=>{const tx=db.transaction('swapRecords','readwrite');tx.objectStore('swapRecords').put(original);tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});
+ const service=await createPrivateLightning({...f,companion:f.base,journal,repositoryFor:name=>new LightningSwapRepository(name),legacyRecovery:false,onError:error=>errors.push(error)});
+ try{
+  assert.equal(errors.length,1);assert.match(errors[0]!.message,/expected version 5.*found version 6/);assert.ok(!errors[0]!.message.includes('must-not-leak'));
+  const saved=await new Promise((resolve,reject)=>{const request=db.transaction('swapRecords','readonly').objectStore('swapRecords').get(original.id);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  assert.deepEqual(saved,original);assert.equal(f.funded.length,0);assert.equal(f.starts.length,0);assert.equal(f.live.size,0);
+ }finally{db.close();await service[Symbol.asyncDispose]();}
+});
 async function recoveryFixture(journal:LightningRepository=new InMemoryLightningRepository()){
  const f=serviceFixture(),repository=new InMemoryContractRepository();
  Object.assign(f.base,{offchainTapscript:new DefaultVtxo.Script({pubKey:await root.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'blocks',value:2048n}})});

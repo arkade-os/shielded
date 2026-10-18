@@ -39,6 +39,12 @@ test('all shipped classifier copies are hash-pinned, idempotent and reject drift
  writeFileSync(join(root,'package.json'),JSON.stringify({version:'0.1.0-rc.27'}));assert.throws(()=>patchSwapClaim(directory),/requires rc.23/);
 });
 
+test('the claim patch rejects a non-dist directory before reading package metadata',t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-swap-layout-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ assert.throws(()=>patchSwapClaim(root),/expected.*dist.*directory/i);
+ assert.throws(()=>patchSwapClaim(join(root,'dist')),/expected.*dist.*directory/i);
+});
+
 for(const [format,read] of readers.entries()){
  test(`${format?'CJS':'ESM'} claim waits for a matching witness at the same checkpoint txid`,async()=>{
   const tx=spend(),id=tx.id,source=indexer([{...a,spentBy:id,arkTxId:'c3'.repeat(32)}],[tx]);

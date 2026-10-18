@@ -44,3 +44,19 @@ test('known refunds, unsettled evidence and unsupported repositories never rewri
  assert.equal(await repairLightningReceipt(unsupported,proof.indexer,original.id),false);assert.equal(proof.reads(),0);
  await repo[Symbol.asyncDispose]();
 });
+
+for(const [version,store] of [[6,'swapRecords'],[5,'otherRecords']] as const)test(`receipt storage reports incompatible version ${version} / ${store} without changing saved data`,async()=>{
+ const name=`receipt-schema-${crypto.randomUUID()}`,original=record();
+ const db=await new Promise<IDBDatabase>((resolve,reject)=>{
+  const request=indexedDB.open(name,version);request.onupgradeneeded=()=>request.result.createObjectStore(store,{keyPath:'id'});
+  request.onerror=()=>reject(request.error);request.onsuccess=()=>resolve(request.result);
+ });
+ await new Promise<void>((resolve,reject)=>{const tx=db.transaction(store,'readwrite');tx.objectStore(store).put(original);tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});
+ const repository=new LightningSwapRepository(name),compatibleError=(error:unknown)=>error instanceof Error&&error.name==='ReceiptStoreCompatibilityError'&&error.message.includes('expected version 5')&&error.message.includes(`found version ${version}`)&&(store==='swapRecords'||error.message.includes('missing swapRecords'));
+ try{
+  await assert.rejects(repository.getSwapRecord(original.id),compatibleError);
+  await assert.rejects(repository.saveSwapRecordIfUnchanged(original,{...original,state:'settled'}),compatibleError);
+  const saved=await new Promise((resolve,reject)=>{const request=db.transaction(store,'readonly').objectStore(store).get(original.id);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  assert.deepEqual(saved,original);
+ }finally{db.close();await repository[Symbol.asyncDispose]();}
+});

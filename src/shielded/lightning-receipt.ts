@@ -6,19 +6,34 @@ import {hex} from '@scure/base';
 export interface ConditionalSwapRepository extends AssetSwapRepository {
  saveSwapRecordIfUnchanged(expected:SwapRecord,next:SwapRecord):Promise<boolean>;
 }
+export class ReceiptStoreCompatibilityError extends Error {
+ override name='ReceiptStoreCompatibilityError';
+ constructor(version:number,hasStore:boolean){super(`Lightning receipt storage expected version 5 with swapRecords; found version ${version}${hasStore?'':', missing swapRecords'}. The saved receipt remains unchanged.`);}
+}
 export class LightningSwapRepository extends IndexedDbAssetSwapRepository implements ConditionalSwapRepository {
  constructor(private readonly receiptDatabase:string){super(receiptDatabase);}
- async saveSwapRecordIfUnchanged(expected:SwapRecord,next:SwapRecord):Promise<boolean>{
-  if(expected.id!==next.id)return false;
-  const expectedJson=JSON.stringify(expected);
+ private async openReceiptStore():Promise<IDBDatabase>{
   const db=await new Promise<IDBDatabase>((resolve,reject)=>{
    const request=indexedDB.open(this.receiptDatabase);
    request.onupgradeneeded=()=>request.transaction!.abort();
    request.onerror=()=>reject(new Error('The saved Lightning receipt database could not be opened.'));
    request.onsuccess=()=>resolve(request.result);
   });
+  const hasStore=db.objectStoreNames.contains('swapRecords');
+  if(db.version!==5||!hasStore){db.close();throw new ReceiptStoreCompatibilityError(db.version,hasStore);}
+  return db;
+ }
+ override async getSwapRecord(id:string):Promise<SwapRecord|undefined>{
+  try{return await super.getSwapRecord(id);}
+  catch(error){
+   if(['VersionError','NotFoundError'].includes((error as {name?:string})?.name??'')){const db=await this.openReceiptStore();db.close();}
+   throw error;
+  }
+ }
+ async saveSwapRecordIfUnchanged(expected:SwapRecord,next:SwapRecord):Promise<boolean>{
+  if(expected.id!==next.id)return false;
+  const expectedJson=JSON.stringify(expected),db=await this.openReceiptStore();
   try{
-   if(db.version!==5||!db.objectStoreNames.contains('swapRecords'))throw new Error('The Lightning receipt database format changed.');
    const tx=db.transaction('swapRecords','readwrite'),done=awaitTransaction(tx),store=tx.objectStore('swapRecords');let saved=false;
    const request=store.get(expected.id);
    request.onsuccess=()=>{if(JSON.stringify(request.result)!==expectedJson)return;store.put(next);saved=true;};

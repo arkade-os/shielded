@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {readFileSync,statSync,writeFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
-import {dirname,join} from 'node:path';
+import {basename,dirname,join,resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 // Backport ts-sdk PR1089 (11097c06): absent claim evidence never proves a refund.
@@ -30,6 +30,7 @@ export function patchSource(source,file){
  const imports=file.endsWith('.cjs')
   ?'var {decodeTapscript: shieldedDecodeTapscript, scriptFromTapLeafScript: shieldedLeafScript} = require("@arkade-os/sdk");'
   :'import {decodeTapscript as shieldedDecodeTapscript, scriptFromTapLeafScript as shieldedLeafScript} from "@arkade-os/sdk";';
+ // These non-conditional refund types belong to the pinned rc.23 VHTLC; other package layouts require review.
  const helper=`${imports}
 function shieldedRefundLeaf(tx, inputIndex) {
   const input = tx.getInput(inputIndex), witness = input.finalScriptWitness, leaves = input.tapLeafScript ?? [];
@@ -44,6 +45,7 @@ function shieldedRefundLeaf(tx, inputIndex) {
  return source.slice(0,start)+helper+body+source.slice(end);
 }
 export function patchSwapClaim(directory=dirname(createRequire(import.meta.url).resolve('@arkade-os/swap'))){
+ if(basename(resolve(directory))!=='dist'||!statSync(directory,{throwIfNoEntry:false})?.isDirectory())throw new Error('Swap claim patch expected the package dist directory.');
  const pkg=JSON.parse(readFileSync(join(directory,'../package.json'),'utf8'));
  if(pkg.version!=='0.1.0-rc.23')throw new Error(`Swap claim patch requires rc.23; found ${pkg.version}`);
  const pending=[];
