@@ -6,7 +6,7 @@ import {errorText} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 
 const formatNumber=(value:number)=>value.toLocaleString('en-US');
-export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick<PrivateLightningService,'quoteRecovery'|'getRecovery'|'prepareRecovery'|'startRecovery'|'pauseRecovery'>;outpoint:string;disabled:boolean}){
+export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick<PrivateLightningService,'quoteRecovery'|'getRecovery'|'prepareRecovery'|'repairRecovery'|'startRecovery'|'pauseRecovery'>;outpoint:string;disabled:boolean}){
  const [quote,setQuote]=useState<ExitQuote>(),[pending,setPending]=useState(false),[error,setError]=useState(''),request=useRef(0);
  const [recovery,setRecovery]=useState<LightningRecovery>(),[understood,setUnderstood]=useState(false);
  useEffect(()=>{setQuote(undefined);setPending(false);setError('');setRecovery(undefined);setUnderstood(false);return()=>{request.current++;};},[service,outpoint]);
@@ -36,7 +36,7 @@ export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick
   {quote&&<div className="stock-address" role="status">
    <dl>
     <dt>Recovered after the sweep fee</dt><dd>{formatNumber(quote.totals.recoveredSats)} sats</dd>
-    <dt>Total mining fees</dt><dd>{formatNumber(quote.totals.totalFeeSats)} sats at {formatNumber(quote.feeRate)} sat/vB</dd>
+    <dt>Total mining fees</dt><dd>{formatNumber(quote.totals.totalFeeSats)} sats; target {formatNumber(quote.feeRate)} sat/vB</dd>
     <dt>Transactions</dt><dd>{quote.totals.txCount}</dd>
     {delay&&<><dt>Recovery delay</dt><dd>{formatNumber(delay.value)} {delay.type} after the payout confirms onchain</dd></>}
     <dt>Total onchain funding</dt><dd>{formatNumber(quote.totals.fundingRequiredSats)} sats</dd>
@@ -57,7 +57,8 @@ export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick
     <p>{formatNumber(recovery.package.totals.recoveredSats)} sats after the sweep fee; {formatNumber(recovery.package.totals.totalFeeSats)} sats total mining fees. Destination: <code>{recovery.package.sweepAddress}</code>.</p>
     <p>Upfront funding: {formatNumber(recovery.package.totals.fundingRequiredSats)} sats. Recovery delay: {savedDelay?`${formatNumber(savedDelay.value)} ${savedDelay.type} after the payout confirms onchain`:'Unavailable; reload before starting recovery'}.</p>
     {recovery.package.validUntil!==undefined&&<p className="stock-muted">The underlying batch expires {new Date(recovery.package.validUntil*1000).toLocaleString()}; the operator may sweep after expiry.</p>}
-    <a className="stock-ghost stock-mini" download={`shielded-exit-${outpoint.replace(':','-')}.json`} href={`data:application/json;charset=utf-8,${encodeURIComponent(serializeExitPackage(recovery.package))}`}>Save recovery package</a>
+    {recovery.needsWitnessRepair?<><p className="stock-muted">This saved package is missing public witness data. Complete it before downloading; this signs and broadcasts nothing.</p><button type="button" className="stock-ghost stock-mini" disabled={disabled||pending||recovery.running} onClick={()=>void act(()=>service.repairRecovery(outpoint))}>Complete saved recovery package</button></>:<a className="stock-ghost stock-mini" download={`shielded-exit-${outpoint.replace(':','-')}.json`} href={`data:application/json;charset=utf-8,${encodeURIComponent(serializeExitPackage(recovery.package))}`}>Save recovery package</a>}
+    {recovery.originalPackage&&<p className="stock-muted">This package was completed with missing public witness data. Save this updated copy if you downloaded it earlier. Its payments and transaction IDs are unchanged.</p>}
     <p className="stock-muted">The package contains signed transactions, no private keys. Keep a copy: it can finish this recovery without your browser. It reveals the payout, fees and destination.</p>
     {recovery.state!=='complete'&&(recovery.running?<button type="button" className="stock-ghost stock-mini" disabled={pending} onClick={()=>void act(()=>service.pauseRecovery())}>Pause recovery</button>:<>
      <label><input type="checkbox" checked={understood} onChange={e=>setUnderstood(e.target.checked)}/>I understand starting recovery publishes this payout on Bitcoin and cannot undo transactions already broadcast. Its original delay still applies.</label>
