@@ -6,11 +6,16 @@ import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {DUST} from './pool.ts';
 import type {LightningArtifact,LightningPayout,LightningRepository} from './lightning-repository.ts';
 import type {ShieldedWallet} from './wallet.ts';
+import {createLightningRecovery,recoveryLock,type LightningRecovery} from './lightning-recovery.ts';
 
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
  registerPayouts(records:LightningPayout[]):Promise<void>;
  getActivityHistory():Promise<Activity[]>;
  quoteRecovery(outpoint:string):Promise<ExitQuote>;
+ getRecovery(outpoint:string):Promise<LightningRecovery|undefined>;
+ prepareRecovery(outpoint:string,quote:ExitQuote):Promise<LightningRecovery>;
+ startRecovery(outpoint:string):Promise<void>;
+ pauseRecovery():Promise<void>;
  [Symbol.asyncDispose]():Promise<void>;
 }
 export const lightningOwner=async(wallet:Pick<Wallet,'identity'>)=>hex.encode(await wallet.identity.xOnlyPublicKey());
@@ -77,14 +82,14 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const owner=await lightningOwner(companion),pool=wallet.pool.status.pool!.token,namespace=`shielded-lightning-${owner}-${pool}`;
  const sessions=new Map<string,Session>(),listeners=new Set<(update:SwapUpdate)=>void>(),updates=new Map<string,SwapUpdate>();
  const operations=new AbortController();
- const payouts=new Map<string,LightningPayout>(),shielding=new Map<string,Promise<void>>();
+ const payouts=new Map<string,LightningPayout>(),shielding=new Map<string,Promise<void>>(),shieldingControllers=new Map<string,AbortController>();
  let stopped=false,timer:ReturnType<typeof setTimeout>|undefined,legacy:SwapClient|undefined,legacyRepository:AssetSwapRepository|undefined,releaseLegacy:(()=>Promise<void>)|undefined,offLegacy:(()=>void)|undefined;
  const discoveryRepository=repositoryFor(`${namespace}-markets`),discovery=clientFactory({...config,wallet:companion,repository:discoveryRepository,policy:{drive:'readonly'}});
  const forward=(update:SwapUpdate)=>{updates.set(update.swap.id,update);for(const listener of listeners)try{listener(update);}catch{}};
  const report=(error:unknown)=>{try{onError?.(error instanceof Error?error:new Error(String(error)));}catch{}};
  const assertOpen=()=>{if(stopped)throw new Error('Private Lightning service is closed');};
  const getActivityHistory=async():Promise<Activity[]>=>{
-  assertOpen();if(!payouts.size)return [];
+  assertOpen();
   const manager=await companion.getContractManager(),[contracts,spends,artifacts]=await Promise.all([manager.getContractsWithVtxos(undefined,undefined,{unspentOnly:false}),journal.list(String(wallet.self.owner),pool),journal.artifacts(owner,pool)]);
   const rows=new Map<string,Activity>();
   for(const {contract,vtxos} of contracts){
@@ -92,11 +97,16 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    for(const coin of vtxos){
     if(coin.script!==contract.script)continue;
     const outpoint=`${coin.txid}:${coin.vout}`,attempts=spends.filter(record=>record.kind==='shield'&&record.reference===outpoint);
-    const outcome=attempts.some(r=>r.state==='included')?'shielded':coin.value<DUST?'below-minimum':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':attempts.length?'retrying':'received';
+    const recoveryState=await recovery.get(outpoint),outcome=recoveryState?.state==='complete'?'onchain-recovered':recoveryState?.state==='shielded'?'shielded':recoveryState?'onchain-recovery':attempts.some(r=>r.state==='included')?'shielded':coin.value<DUST?'below-minimum':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':attempts.length?'retrying':'received';
     const id=`shielded-lightning:receive:${outpoint}`,createdAt=coin.createdAt.getTime(),settled=!coin.isPreconfirmed;
     rows.set(id,{id,amount:coin.value,createdAt,settled,intent:{kind:'lightning-receive',label:artifacts.some(a=>a.kind==='send'&&a.script===contract.script)?'Lightning refund':'Received via Lightning',outcome,metadata:{outpoint}},
      txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:coin.txid},type:TxType.TxReceived,amount:coin.value,createdAt,settled}]});
    }
+  }
+  for(const saved of await recovery.list()){
+   const id=`shielded-lightning:receive:${saved.outpoint}`;if(rows.has(id))continue;
+   const amount=saved.quote.vtxos[0]!.value!,createdAt=saved.createdAt,txid=saved.outpoint.split(':')[0]!,outcome=saved.state==='complete'?'onchain-recovered':saved.state==='shielded'?'shielded':'onchain-recovery';
+   rows.set(id,{id,amount,createdAt,settled:false,intent:{kind:'lightning-receive',label:'Lightning payout recovery',outcome,metadata:{outpoint:saved.outpoint}},txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:txid},type:TxType.TxReceived,amount,createdAt,settled:false}]});
   }
   return [...rows.values()].sort((a,b)=>b.createdAt-a.createdAt);
  };
@@ -116,15 +126,17 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   if(stopped||!payouts.size)return;
   for(const coin of await companion.getVtxos({withRecoverable:false})){
    const payout=payouts.get(coin.script),outpoint=`${coin.txid}:${coin.vout}`;
-   if(!payout||coin.assets?.length||shielding.has(outpoint))continue;
+   if(!payout||coin.assets?.length||shielding.has(outpoint)||await recovery.held(outpoint))continue;
    if(coin.value<DUST){report(new Error(`This individual Lightning payout is below the pool minimum of ${DUST} sats and cannot be shielded alone.`));continue;}
-   const task=(async()=>{const release=await acquireSession(`${namespace}-shield-${outpoint}`);try{
+   const controller=new AbortController();shieldingControllers.set(outpoint,controller);
+   const task=(async()=>{const release=await acquireSession(recoveryLock(owner,outpoint));try{
+    if(await recovery.held(outpoint))return;
     const attempts=(await journal.list(String(wallet.self.owner),pool)).filter(record=>record.kind==='shield'&&record.reference===outpoint),existing=attempts.find(record=>record.state!=='dropped'),baseId=`lightning-shield-${outpoint}`;
     let id=existing?.id??baseId;
     if(!existing&&attempts.length){let suffix=attempts.length;do{id=`${baseId}-${suffix++}`;}while(attempts.some(record=>record.id===id));}
-    const handle=await wallet.shieldLightning(coin,lightningSigner(companion,payout.descriptor),journal,{id,reference:outpoint,signal:operations.signal});await handle.settled();
+    const handle=await wallet.shieldLightning(coin,lightningSigner(companion,payout.descriptor),journal,{id,reference:outpoint,signal:AbortSignal.any([operations.signal,controller.signal])});await handle.settled();
    }finally{await release();}})();
-   shielding.set(outpoint,task);wallet.changed();void task.catch(report).finally(()=>{shielding.delete(outpoint);wallet.changed();});
+   shielding.set(outpoint,task);wallet.changed();void task.catch(report).finally(()=>{shielding.delete(outpoint);shieldingControllers.delete(outpoint);wallet.changed();});
   }
  };
  const validatePayouts=async(records:LightningPayout[])=>{
@@ -140,7 +152,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   }
   return scripts;
  };
- const quoteRecovery=async(outpoint:string):Promise<ExitQuote>=>{
+ const recoveryOptions=async(outpoint:string)=>{
   assertOpen();const parsed=/^([0-9a-f]{64}):(0|[1-9]\d*)$/.exec(outpoint),vout=Number(parsed?.[2]);
   if(!parsed||!Number.isSafeInteger(vout)||vout>0xffffffff)throw new Error('Invalid Lightning payout outpoint');
   const requested={txid:parsed[1]!,vout},{vtxos}=await companion.indexerProvider.getVtxos({outpoints:[requested]}),coin=vtxos[0];
@@ -148,15 +160,21 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const payout=payouts.get(coin.script);if(!payout)throw new Error('This output is not a saved Lightning payout for this wallet.');
   const [script]=await validatePayouts([payout]);
   const attempts=await journal.list(String(wallet.self.owner),pool);
-  if(attempts.some(r=>r.kind==='shield'&&r.reference===outpoint&&r.state==='included'))throw new Error('This Lightning payout is already shielded.');
+  if(attempts.some(r=>r.kind==='shield'&&r.reference===outpoint&&r.state==='included'))throw Object.assign(new Error('This Lightning payout is already shielded.'),{code:'lightning-payout-shielded'});
   const onchain=await OnchainWallet.create(companion.identity,'mutinynet',companion.onchainProvider);
-  const quote=await UnilateralExit.estimate({wallet:companion,onchainWallet:onchain,sweepAddress:onchain.address,vtxos:[requested],networkName:'mutinynet'});
+  return {options:{wallet:companion,onchainWallet:onchain,sweepAddress:onchain.address,vtxos:[requested],networkName:'mutinynet' as const},coin,script:script!};
+ };
+ const quoteRecovery=async(outpoint:string):Promise<ExitQuote>=>{
+  const {options,coin,script}=await recoveryOptions(outpoint),quote=await UnilateralExit.estimate(options);
   assertOpen();const info=quote.vtxos[0],delay=script!.options.csvTimelock;
   if(quote.vtxos.length!==1||info?.outpoint!==outpoint)throw new Error('The recovery quote does not match this Lightning payout.');
   if(info.skipped)throw new Error(`Onchain recovery is unavailable: ${info.skipped}`);
   if(info.value!==coin.value||info.delay?.type!==delay.type||BigInt(info.delay.value)!==delay.value||quote.totals.recoveredSats<=0)throw new Error('The recovery quote does not match the original payout contract.');
-  return quote;
+  recovery.remember(outpoint,quote);return quote;
  };
+ const recovery=createLightningRecovery({owner,pool,companion,journal,acquireSession,options:async outpoint=>(await recoveryOptions(outpoint)).options,
+  stopShielding:async outpoint=>{shieldingControllers.get(outpoint)?.abort();await shielding.get(outpoint)?.catch(()=>{});},
+  reconcileShielding:outpoint=>wallet.reconcileLightningPayout(outpoint,journal),changed:()=>wallet.changed(),report});
  const registerPayouts=async(records:LightningPayout[])=>{
   await validatePayouts(records);const manager=await companion.getContractManager();
   await journal.savePayouts(owner,pool,records);
@@ -249,7 +267,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   return swap as ReceiveRequest<C>;
  };
  let offPayout:()=>void=()=>{};
- const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);listeners.clear();};
+ const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();await recovery.dispose();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);listeners.clear();};
  try{
   const artifacts=await journal.artifacts(owner,pool),restoredPayouts=await journal.payouts(owner,pool);
   for(const artifact of artifacts)if(artifact.descriptor)restoredPayouts.push(await watchArtifact(artifact));
@@ -268,7 +286,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   });
   const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
-  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,quoteRecovery,
+  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
  }catch(error){await dispose();throw error;}
 }

@@ -7,9 +7,9 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {base64,hex} from '@scure/base';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
-import {IndexedDbLightningRepository,InMemoryLightningRepository} from '../src/shielded/lightning-repository.ts';
-import {artifactWallet,createPrivateLightning,materializeLightningArtifact} from '../src/shielded/lightning-wallet.ts';
-import type {ShieldedWallet} from '../src/shielded/wallet.ts';
+import {IndexedDbLightningRepository,InMemoryLightningRepository,type LightningRepository} from '../src/shielded/lightning-repository.ts';
+import {artifactWallet,createPrivateLightning,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
+import {ShieldedWallet} from '../src/shielded/wallet.ts';
 import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
 
 globalThis.indexedDB=indexedDB;
@@ -76,13 +76,13 @@ test('create-if-absent returns the original durable body when the same logical a
 });
 
 function serviceFixture(){
- const contracts:any[]=[],receivers=new Set<(event:any)=>void>(),funded:any[]=[],shielded:any[]=[],provisioned:string[]=[],starts:string[]=[],closed:string[]=[],live=new Set<string>(),configs:SwapClientConfig[]=[],historyReads:any[][]=[],changes:number[]=[];
+ const contracts:any[]=[],receivers=new Set<(event:any)=>void>(),funded:any[]=[],shielded:any[]=[],provisioned:string[]=[],starts:string[]=[],closed:string[]=[],live=new Set<string>(),configs:SwapClientConfig[]=[],historyReads:any[][]=[],changes:number[]=[],refreshed:unknown[]=[];
  const manager={createContract:async(params:any)=>{const old=contracts.find(c=>c.script===params.script);if(old)return old;const contract={...params,createdAt:Date.now()};contracts.push(contract);return contract;},getContracts:async()=>contracts,
   getContractsWithVtxos:async(...args:any[])=>{historyReads.push(args);return contracts.map(contract=>({contract,vtxos:contract.vtxos??[]}));},
-  setContractWatchState:async()=>{},onContractEvent:(fn:any)=>{receivers.add(fn);return()=>receivers.delete(fn);}};
+  refreshOutpoints:async(points:unknown)=>{refreshed.push(points);return [];},setContractWatchState:async()=>{},onContractEvent:(fn:any)=>{receivers.add(fn);return()=>receivers.delete(fn);}};
  const base=Object.assign(companion(),{getContractManager:async()=>manager,getVtxos:async()=>[]});
  const ordinaryAddress=script.address('tark',server).encode();
- const wallet={pool:{status:{pool:{token:pool}}},self:{owner:owner},inFlight:new Set(),shieldedNotes:()=>[{amount:5000n,nullifier:1n}],canWithdraw:(n:bigint)=>n<=5000n,restoreLightningSpends:async()=>{},
+ const wallet={pool:{status:{pool:{token:pool}}},token:pool,used:new Set(),notes:{release:()=>{}},self:{owner:owner},inFlight:new Set(),shieldedNotes:()=>[{amount:5000n,nullifier:1n}],canWithdraw:(n:bigint)=>n<=5000n,restoreLightningSpends:async()=>{},assertOpen:()=>{},reconcileLightningPayout:ShieldedWallet.prototype.reconcileLightningPayout,
   changed:()=>changes.push(changes.length),getAddress:async()=>ordinaryAddress,fundLightning:async(...args:any[])=>{funded.push(args);return 'ab'.repeat(32);},shieldLightning:async(...args:any[])=>{shielded.push(args);return {settled:async()=>{}};}} as unknown as ShieldedWallet;
  const repositories=new Map<string,InMemoryAssetSwapRepository>();
  const repositoryFor=(name:string)=>{let repo=repositories.get(name);if(!repo){repo=new InMemoryAssetSwapRepository();repositories.set(name,repo);}return repo;};
@@ -113,7 +113,7 @@ function serviceFixture(){
   } as unknown as SwapClient;
   return client;
  };
- return {base,wallet,repositoryFor,acquireSession,clientFactory,funded,shielded,provisioned,starts,closed,live,repositories,contracts,receivers,configs,historyReads,changes,
+ return {base,wallet,repositoryFor,acquireSession,clientFactory,funded,shielded,provisioned,starts,closed,live,repositories,contracts,receivers,configs,historyReads,changes,refreshed,
   failAccept(){throwAfterPersist=true;},overrideSend(params:Record<string,unknown>){sendOverride=params;},terminalOnAccept(){terminalOnAccept=true;}};
 }
 
@@ -152,8 +152,8 @@ for(const failedStage of ['markets','resolve'] as const)test(`explicit invoice d
 });
 
 const flushTasks=async()=>{for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
-async function recoveryFixture(){
- const f=serviceFixture(),journal=new InMemoryLightningRepository(),repository=new InMemoryContractRepository();
+async function recoveryFixture(journal:LightningRepository=new InMemoryLightningRepository()){
+ const f=serviceFixture(),repository=new InMemoryContractRepository();
  Object.assign(f.base,{offchainTapscript:new DefaultVtxo.Script({pubKey:await root.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'blocks',value:2048n}})});
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
  await service.receive({via:'lightning',amount:1000n});
@@ -165,6 +165,119 @@ async function recoveryFixture(){
   onchainProvider:{getCoins:async()=>[],getFeeRate:async()=>1,getTxStatus:async()=>({confirmed:true,block_height:100,block_time:1000}),broadcastTransaction:async(...args:unknown[])=>{broadcasts.push(args);throw new Error('Recovery quote broadcast');}}});
  return {...f,journal,service,contract,coin,requests,broadcasts,outpoint:`${coin.txid}:${coin.vout}`};
 }
+
+async function fundedRecoveryFixture(journal?:LightningRepository){
+ const f=await recoveryFixture(journal),payer=SingleKey.fromHex('22'.repeat(32)),operator=SingleKey.fromHex('03'.repeat(32));
+ const input=new DefaultVtxo.Script({pubKey:await payer.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'seconds',value:1024n}}),parent=new Transaction({version:3});
+ parent.addInput({txid:'cd'.repeat(32),index:0,witnessUtxo:{script:input.pkScript,amount:BigInt(f.coin.value)},tapLeafScript:[input.forfeit()]});
+ parent.addOutput({script:hex.decode(f.coin.script),amount:BigInt(f.coin.value)});parent.addOutput(P2A);
+ const signed=await operator.sign(await payer.sign(parent));f.coin.txid=signed.id;f.coin.vout=0;f.outpoint=`${signed.id}:0`;
+ const confirmed=new Set<string>(),sent:string[][]=[];
+ Object.assign(f.base,{signInputsByWitnessScript:(tx:Transaction)=>lightningSigner(f.base,f.contract.metadata.signingDescriptor).sign(tx)});
+ Object.assign(f.base.indexerProvider,{getVtxoChain:async()=>({chain:[{txid:signed.id,type:'INDEXER_CHAINED_TX_TYPE_ARK',spends:[]}]}),getVirtualTxs:async()=>({txs:[base64.encode(signed.toPSBT())]})});
+ Object.assign(f.base.onchainProvider,{getTxStatus:async(txid:string)=>{if(!confirmed.has(txid))throw new Error('not onchain');return {confirmed:true,blockHeight:100,blockTime:1000};},
+  getCoins:async()=>[{txid:'ee'.repeat(32),vout:0,value:100000,status:{confirmed:true}}],getChainTip:async()=>({height:2148,time:999999}),
+  broadcastTransaction:async(...txs:string[])=>{sent.push(txs);for(const raw of txs)confirmed.add(Transaction.fromRaw(hex.decode(raw)).id);return Transaction.fromRaw(hex.decode(txs[0]!)).id;}});
+ return {...f,sent,confirmed};
+}
+
+function whenRecovered(wallet:ShieldedWallet,service:PrivateLightningService,outpoint:string){
+ const changed=wallet.changed.bind(wallet);return new Promise<void>((resolve,reject)=>{wallet.changed=()=>{changed();void service.getRecovery(outpoint).then(record=>{if(record?.state==='complete')resolve();},reject);};});
+}
+
+test('funded recovery persists the real signed package before any broadcast and resumes that exact package after service restart',{timeout:15000},async()=>{
+ const name=`ln-exit-${crypto.randomUUID()}`,f=await fundedRecoveryFixture(new IndexedDbLightningRepository(name));
+ try{
+  const quote=await f.service.quoteRecovery(f.outpoint),prepared=await f.service.prepareRecovery(f.outpoint,quote);
+  assert.equal(prepared.state,'ready');assert.equal(prepared.package!.steps[0]!.kind,'broadcast');assert.deepEqual(f.sent,[]);
+  const sweep=prepared.package!.steps.find(s=>s.kind==='sweep')!;
+  assert.equal(sweep.kind,'sweep');assert.equal(sweep.delay.value,2048);assert.equal(Transaction.fromRaw(hex.decode(sweep.hex)).getInput(0).sequence,2048);
+  assert.deepEqual(await f.service.getRecovery(f.outpoint),prepared);
+  await f.service[Symbol.asyncDispose]();await f.journal[Symbol.asyncDispose]();
+  const reopened=new IndexedDbLightningRepository(name),restored=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal:reopened,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+  try{
+   assert.deepEqual(await restored.getRecovery(f.outpoint),prepared);assert.deepEqual(f.sent,[]);
+   const finished=whenRecovered(f.wallet,restored,f.outpoint);await restored.startRecovery(f.outpoint);await finished;
+   const complete=await restored.getRecovery(f.outpoint);assert.equal(complete!.state,'complete',complete!.error??JSON.stringify(complete!.event));
+   assert.equal(f.sent.length,3);assert.equal(f.sent[0]![0],prepared.package!.steps[0]!.kind==='broadcast'?prepared.package!.steps[0]!.hex:'');
+   assert.equal(f.sent[2]![0],sweep.hex);assert.deepEqual(complete!.package,prepared.package);assert.equal(f.refreshed.length,2);
+  }finally{await restored[Symbol.asyncDispose]();await reopened[Symbol.asyncDispose]();}
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a failed durable package write never broadcasts and leaves shielding held across reload',async t=>{
+ const f=await fundedRecoveryFixture(),save=f.journal.saveReceiveState.bind(f.journal);
+ t.mock.method(f.journal,'saveReceiveState',async(owner:string,pool:string,key:string,state:any)=>{if(Object.values(state).some((r:any)=>r.package))throw new Error('disk full');return save(owner,pool,key,state);});
+ try{
+  const quote=await f.service.quoteRecovery(f.outpoint);await assert.rejects(f.service.prepareRecovery(f.outpoint,quote),/disk full/);
+  assert.equal((await f.service.getRecovery(f.outpoint))!.state,'preparing');assert.deepEqual(f.sent,[]);
+  f.base.getVtxos=async()=>[f.coin] as never;for(const listener of f.receivers)listener({type:'connection_reset'});await flushTasks();assert.deepEqual(f.shielded,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('an unresolved shield attempt blocks recovery without discarding its journal or reservation',async()=>{
+ const f=await fundedRecoveryFixture(),held=shieldingRecord('ambiguous',f.coin);await f.journal.create(held);Object.assign(f.wallet,{api:async()=>({status:'pending'})});
+ try{
+  const quote=await f.service.quoteRecovery(f.outpoint);await assert.rejects(f.service.prepareRecovery(f.outpoint,quote),/shielding.*unresolved/i);
+  assert.deepEqual(await f.journal.get(owner,pool,held.id),held);assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('recovery refuses substituted or stale quotes and never treats failed executor events as completion',async t=>{
+ const f=await fundedRecoveryFixture();
+ try{
+  const quote=await f.service.quoteRecovery(f.outpoint);await assert.rejects(f.service.prepareRecovery(f.outpoint,{...quote}),/quote/i);
+  await f.service.prepareRecovery(f.outpoint,quote);
+  t.mock.method(f.base.onchainProvider,'broadcastTransaction',async()=>{throw new Error('response lost');});
+  await f.service.startRecovery(f.outpoint);await flushTasks();
+  const paused=await f.service.getRecovery(f.outpoint);assert.equal(paused!.state,'paused');assert.match(paused!.error!,/response lost/);assert.ok(paused!.package);assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('resuming a mempool parent with a missing fee child relays the exact saved pair',{timeout:15000},async t=>{
+ const f=await fundedRecoveryFixture();
+ try{
+  const prepared=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),pkg=prepared.package!;
+  const parent=pkg.steps.find(s=>s.kind==='package')!,splitter=pkg.steps[0]!;assert.equal(parent.kind,'package');assert.equal(splitter.kind,'broadcast');
+  f.confirmed.add(splitter.txid);const status=f.base.onchainProvider.getTxStatus.bind(f.base.onchainProvider);
+  t.mock.method(f.base.onchainProvider,'getTxStatus',async(txid:string)=>txid===parent.parentTxid&&!f.confirmed.has(txid)?{confirmed:false}:status(txid));
+  const finished=whenRecovered(f.wallet,f.service,f.outpoint);await f.service.startRecovery(f.outpoint);await finished;
+  assert.deepEqual(f.sent[0],[parent.parentHex,parent.childHex]);const complete=await f.service.getRecovery(f.outpoint);assert.equal(complete!.state,'complete',complete!.error??JSON.stringify(complete!.event));
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('pausing during a status read prevents the SDK from broadcasting afterwards and retains the package',async t=>{
+ const f=await fundedRecoveryFixture();let entered!:()=>void,release!:()=>void;
+ const reading=new Promise<void>(r=>{entered=r;}),barrier=new Promise<void>(r=>{release=r;});
+ try{
+  const prepared=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),saved=prepared.package;
+  t.mock.method(f.base.onchainProvider,'getTxStatus',async()=>{entered();await barrier;throw new Error('missing');});
+  await f.service.startRecovery(f.outpoint);await reading;
+  const paused=f.service.pauseRecovery();release();await paused;
+  assert.deepEqual(f.sent,[]);assert.equal((await f.service.getRecovery(f.outpoint))!.state,'paused');assert.deepEqual((await f.service.getRecovery(f.outpoint))!.package,saved);
+ }finally{release?.();await f.service[Symbol.asyncDispose]();}
+});
+
+test('stale quotes and preparation over the quoted budget are refused before any funds move',async t=>{
+ const f=await fundedRecoveryFixture();
+ try{
+  const stale=await f.service.quoteRecovery(f.outpoint),now=Date.now(),clock=t.mock.method(Date,'now',()=>now+300_001);
+  await assert.rejects(f.service.prepareRecovery(f.outpoint,stale),/Refresh.*quote/);clock.mock.restore();
+  const original=UnilateralExit.prepare;t.mock.method(UnilateralExit,'prepare',async(options:Parameters<typeof original>[0])=>{const pkg=await original(options);pkg.totals.totalFeeSats+=10000;return pkg;});
+  await assert.rejects(f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),/quoted budget/);assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a missing shielding status is ambiguous while an explicit drop reconciles only its exact reservation',async()=>{
+ const f=await fundedRecoveryFixture(),held=shieldingRecord('old',f.coin),paths:string[]=[];
+ await f.journal.create(held);Object.assign(f.wallet,{api:async(path:string)=>{paths.push(path);throw Object.assign(new Error('not found'),{status:404});}});
+ try{
+  const quote=await f.service.quoteRecovery(f.outpoint);await assert.rejects(f.service.prepareRecovery(f.outpoint,quote),/not found/);assert.deepEqual(await f.journal.get(owner,pool,held.id),held);
+  Object.assign(f.wallet,{api:async(path:string)=>{paths.push(path);return {status:'dropped',reason:'invalid script'};}});
+  await f.service.prepareRecovery(f.outpoint,quote);
+  assert.deepEqual(paths,[`/spends/${held.body.id}`,`/spends/${held.body.id}`]);assert.equal((await f.journal.get(owner,pool,held.id))!.state,'dropped');assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
 
 test('a Lightning recovery quote uses the original block-delay contract without signing, allocating or changing pending shielding',async t=>{
  const f=await recoveryFixture(),sign=t.mock.method(root,'sign',async()=>{throw new Error('Recovery quote signed');}),signDescriptor=t.mock.method(root,'signDescriptorTransactions',async()=>{throw new Error('Recovery quote signed descriptor');});
@@ -178,6 +291,55 @@ test('a Lightning recovery quote uses the original block-delay contract without 
   assert.deepEqual(await f.journal.list(owner,pool),[held]);assert.deepEqual(await f.journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool),artifacts);assert.deepEqual(await f.journal.payouts(hex.encode(await root.xOnlyPublicKey()),pool),payouts);
   assert.equal(sign.mock.callCount(),0);assert.equal(signDescriptor.mock.callCount(),0);assert.deepEqual(f.broadcasts,[]);assert.deepEqual(f.funded,[]);assert.deepEqual(f.shielded,[]);
  }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a shielding inclusion racing preparation is terminal and stays shielded in history',async()=>{
+ const f=await fundedRecoveryFixture();
+ try{
+  const quote=await f.service.quoteRecovery(f.outpoint),held=shieldingRecord('landed',f.coin);await f.journal.create(held);await f.journal.finish(owner,pool,held.id,{state:'included',txid:'cd'.repeat(32)});
+  await assert.rejects(f.service.prepareRecovery(f.outpoint,quote),/already shielded/);
+  assert.equal((await f.service.getRecovery(f.outpoint))!.state,'shielded');assert.equal((await f.service.getActivityHistory())[0]!.intent!.outcome,'shielded');assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('an older pool reservation blocks recovery without querying the new pool or releasing the old body',async()=>{
+ const f=await fundedRecoveryFixture(),held={...shieldingRecord('older-pool',f.coin),pool:'previous-pool'};let reads=0;
+ await f.journal.create(held);Object.assign(f.wallet,{api:async()=>{reads++;throw new Error('wrong pool queried');}});
+ try{
+  await assert.rejects(f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),/original pool.*unresolved/);
+  assert.equal(reads,0);assert.deepEqual(await f.journal.get(owner,held.pool,held.id),held);assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a saved recovery retains its receipt and controls after the pool is reset',async()=>{
+ const f=await fundedRecoveryFixture();
+ try{
+  const prepared=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint));await f.service[Symbol.asyncDispose]();
+  f.wallet.pool.status.pool!.token='new-pool';Object.assign(f.wallet,{token:'new-pool'});f.contracts.length=0;
+  const restored=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal:f.journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+  try{
+   const rows=await restored.getActivityHistory();assert.equal(rows.length,1);assert.equal(rows[0]!.intent!.metadata!.outpoint,f.outpoint);assert.equal(rows[0]!.intent!.outcome,'onchain-recovery');
+   assert.deepEqual((await restored.getRecovery(f.outpoint))!.package,prepared.package);assert.deepEqual(f.sent,[]);
+  }finally{await restored[Symbol.asyncDispose]();}
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('restoring a package with a substituted wallet destination blocks execution',async()=>{
+ const f=await fundedRecoveryFixture();
+ try{
+  await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint));const rootOwner=hex.encode(await root.xOnlyPublicKey());
+  const records=await f.journal.getReceiveState<Record<string,any>>(rootOwner,'onchain-recovery','active-exit');records![f.outpoint].package.sweepAddress='foreign';
+  await f.journal.saveReceiveState(rootOwner,'onchain-recovery','active-exit',records);
+  await assert.rejects(f.service.startRecovery(f.outpoint),/does not match/);assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('IndexedDB finds payout reservations across pools after closing and reopening the journal',async()=>{
+ const name=`ln-exit-pools-${crypto.randomUUID()}`,first=new IndexedDbLightningRepository(name),coin={txid:'ab'.repeat(32),vout:0,value:1000,script:'00'};
+ const a={...shieldingRecord('pool-a',coin),pool:'A'},b={...shieldingRecord('pool-b',coin),pool:'B'};await first.create(a);await first.create(b);await first[Symbol.asyncDispose]();
+ const restored=new IndexedDbLightningRepository(name);
+ try{assert.deepEqual((await restored.payoutSpends(owner,a.reference)).map(r=>r.pool).sort(),['A','B']);assert.deepEqual(await restored.payoutSpends('foreign',a.reference),[]);}
+ finally{await restored[Symbol.asyncDispose]();}
 });
 
 test('pending payout ancestry quotes fee children, total funding and only confirmed fee-wallet funds',async()=>{
@@ -310,7 +472,7 @@ test('a conclusively dropped payout shielding attempt retries under a new id wit
   await service.receive({via:'lightning',amount:1000n});const payout=(await journal.payouts(hex.encode(await root.xOnlyPublicKey()),pool))[0]!;
   const coin={txid:'ab'.repeat(32),vout:0,value:1000,script:payout.script};f.base.getVtxos=async()=>[coin] as never;
   f.wallet.shieldLightning=async(_coin,_signer,store,request)=>{
-   assert.ok([...f.live].some(name=>name.endsWith(`-shield-${coin.txid}:0`)));
+   assert.ok([...f.live].some(name=>name.endsWith(`-payout-${coin.txid}:0`)));
    const old=await store.get(owner,pool,request.id);
    if(old)return {settled:async()=>{if(old.state==='dropped')throw new Error('previous attempt dropped');}} as never;
    attemptIds.push(request.id);references.push(request.reference);
