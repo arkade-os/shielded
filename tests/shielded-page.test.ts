@@ -77,6 +77,20 @@ test('a pending explorer read does not delay later Lightning refreshes or overla
  const close=refresh.close();slow.resolve(1);await close;assert.equal(explorerReads,1);
 });
 
+test('wallet disposal drains its own readers before closing resources even when a replacement refresh starts',async()=>{
+ const oldRead=deferred(),newRead=deferred(),events:string[]=[],wallet={},replacement={};let published=0;
+ const refreshes=new WeakMap<object,{close:()=>Promise<void>}>();
+ const old=page.pageRefresh({history:async()=>{events.push('read');await oldRead.promise;events.push('read done');return 1;}},()=>{published++;});
+ refreshes.set(wallet,old);old.request();await flush();
+ const closed=page.disposeAfterPageReads(wallet,refreshes,async()=>{events.push('wallet');events.push('companion');events.push('journal');});
+ const next=page.pageRefresh({history:async()=>{await newRead.promise;return 2;}},()=>{published++;});
+ refreshes.set(replacement,next);next.request();const parallel=old.close();await flush();
+ assert.deepEqual(events,['read']);assert.equal(published,0);
+ oldRead.resolve();await Promise.all([closed,parallel]);
+ assert.deepEqual(events,['read','read done','wallet','companion','journal']);assert.equal(published,0);
+ newRead.resolve();await flush();assert.equal(published,1);await next.close();
+});
+
 test('a cancelled asynchronous preparation never creates an auto-shielding wallet',async()=>{
  const prepared=deferred<number>();let creates=0;
  const session=openPageWallet(()=>prepared.promise,async()=>{creates++;return {dispose:async()=>{}};});

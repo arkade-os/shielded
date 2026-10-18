@@ -18,7 +18,7 @@ import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} f
 import {birthCheckpoint} from '../../src/shielded/checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageRefresh,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageCache,pageRefresh,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 
@@ -70,6 +70,7 @@ export default function RollupWallet(){
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
  const refreshRef=useRef<{request:()=>void}|undefined>(undefined);
+ const refreshes=useRef(new WeakMap<object,{close:()=>Promise<void>}>());
  if(!cacheRef.current)cacheRef.current=pageCache(new IndexedDBShieldedNoteRepository());
  if(!sheetRef.current)sheetRef.current=pageSheet(setSheet);
  const sheetOwner=sheetRef.current;
@@ -158,12 +159,12 @@ export default function RollupWallet(){
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createHdLnurl>|undefined;
-  const dispose=async(created:ShieldedWallet)=>{
+  const dispose=(created:ShieldedWallet)=>disposeAfterPageReads(created,refreshes.current,async()=>{
    try{await lnurl?.dispose();}finally{
     if(lnurlRef.current===lnurl)lnurlRef.current=undefined;
     try{await created.dispose();}finally{try{await companion?.dispose();}finally{await journal[Symbol.asyncDispose]();}}
    }
-  };
+  });
   const session=openPageWallet(async()=>{
    const poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
    return hash;
@@ -225,7 +226,7 @@ export default function RollupWallet(){
    if(wallet.repositoryError)setPoolError(`Your saved notes could not be read or saved: ${wallet.repositoryError}`);
   });
   const close=async()=>{await refresh.close();sessions.current.delete(close);};
-  refreshRef.current=refresh;sessions.current.add(close);
+  refreshes.current.set(wallet,refresh);refreshRef.current=refresh;sessions.current.add(close);
   return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
  },[wallet]);
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);

@@ -84,6 +84,11 @@ export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in key
  return {request(){for(const read of reads)read.request();},async close(){closed=true;await Promise.all(reads.map(read=>read.drain()));}};
 }
 
+export async function disposeAfterPageReads(wallet:object,refreshes:WeakMap<object,{close:()=>Promise<void>}>,dispose:()=>Promise<void>){
+ const owned=refreshes.get(wallet);await owned?.close();
+ await dispose();
+}
+
 export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'recordSent'|'save'|'repositoryError'>,storage:Pick<Storage,'getItem'|'removeItem'>,current:()=>boolean){
  const raw=storage.getItem(SENT);if(!raw)return;
  const stored=JSON.parse(raw) as Record<string,SentRecord|string>;
