@@ -1,5 +1,5 @@
 import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,OnchainWallet,TxType,UnilateralExit,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,isVtxoSpent,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type Activity,type ExitQuote,type IWallet,type Identity,type SendParams,type WalletConfig} from '@arkade-os/sdk';
-import {IndexedDbAssetSwapRepository,createSwapClient,isBtcAssetLenient,type AssetSwapRepository,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
+import {createSwapClient,isBtcAssetLenient,type AssetSwapRepository,type CorridorSwapRecord,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
 import {hex} from '@scure/base';
 import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -7,6 +7,7 @@ import {DUST} from './pool.ts';
 import type {LightningArtifact,LightningPayout,LightningRepository} from './lightning-repository.ts';
 import type {ShieldedWallet} from './wallet.ts';
 import {createLightningRecovery,recoveryLock,type LightningRecovery} from './lightning-recovery.ts';
+import {LightningSwapRepository,ReceiptStoreCompatibilityError,repairLightningReceipt} from './lightning-receipt.ts';
 
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
  registerPayouts(records:LightningPayout[]):Promise<void>;
@@ -79,20 +80,35 @@ interface PrivateLightningOptions extends ClientOptions {
 }
 interface Session {artifact:LightningArtifact;repository:AssetSwapRepository;client:SwapClient;view:IWallet;release:()=>Promise<void>;off:()=>void;initialized:boolean;accepting:boolean;funding?:Promise<void>;retiring?:Promise<void>;needsFundingRetry?:boolean;quote?:Quote;closing?:Promise<void>}
 export async function createPrivateLightning(options:PrivateLightningOptions):Promise<PrivateLightningService>{
- const {wallet,companion,journal,repositoryFor=name=>new IndexedDbAssetSwapRepository(name),clientFactory=createSwapClient,acquireSession=acquireLightningSession,legacyRecovery=true,onError,...config}=options;
+ const {wallet,companion,journal,repositoryFor=name=>new LightningSwapRepository(name),clientFactory=createSwapClient,acquireSession=acquireLightningSession,legacyRecovery=true,onError,...config}=options;
  const owner=await lightningOwner(companion),pool=wallet.pool.status.pool!.token,namespace=`shielded-lightning-${owner}-${pool}`;
  const sessions=new Map<string,Session>(),listeners=new Set<(update:SwapUpdate)=>void>(),updates=new Map<string,SwapUpdate>();
  const operations=new AbortController();
  const payouts=new Map<string,LightningPayout>(),shielding=new Map<string,Promise<void>>(),shieldingControllers=new Map<string,AbortController>();
+ const receipts=new Map<string,CorridorSwapRecord>();
  let stopped=false,timer:ReturnType<typeof setTimeout>|undefined,legacy:SwapClient|undefined,legacyRepository:AssetSwapRepository|undefined,releaseLegacy:(()=>Promise<void>)|undefined,offLegacy:(()=>void)|undefined;
  const discoveryRepository=repositoryFor(`${namespace}-markets`),discovery=clientFactory({...config,wallet:companion,repository:discoveryRepository,policy:{drive:'readonly'}});
  const forward=(update:SwapUpdate)=>{updates.set(update.swap.id,update);for(const listener of listeners)try{listener(update);}catch{}};
  const report=(error:unknown)=>{try{onError?.(error instanceof Error?error:new Error(String(error)));}catch{}};
+ const repairReceipt=async(artifact:LightningArtifact,repository:AssetSwapRepository)=>{
+  if(artifact.kind!=='send'||!artifact.quoteId)return;
+  try{
+   await repairLightningReceipt(repository,companion.indexerProvider,artifact.quoteId);
+   const record=await repository.getSwapRecord(artifact.quoteId);
+   if(record?.family==='rfq'&&record.kind==='lightning_send'&&record.state==='settled'&&!record.refundTxid&&record.fundingTxid&&/^[0-9a-f]{64}$/.test(record.fundingTxid)&&Number.isSafeInteger(Number(record.give.amount))&&Number(record.give.amount)>0){receipts.set(record.id,record);wallet.changed();}
+  }
+  catch(error){report(error instanceof ReceiptStoreCompatibilityError?error:new Error('A saved Lightning receipt could not be verified; it remains unchanged.'));}
+ };
  const assertOpen=()=>{if(stopped)throw new Error('Private Lightning service is closed');};
  const getActivityHistory=async():Promise<Activity[]>=>{
   assertOpen();
   const manager=await companion.getContractManager(),[contracts,spends,artifacts]=await Promise.all([manager.getContractsWithVtxos(undefined,undefined,{unspentOnly:false}),journal.list(String(wallet.self.owner),pool),journal.artifacts(owner,pool)]);
   const rows=new Map<string,Activity>();
+  for(const record of receipts.values()){
+   const amount=Number(record.give.amount),createdAt=record.createdAt*1000,txid=record.fundingTxid!;
+   rows.set(`shielded-lightning:send:${record.id}`,{id:`shielded-lightning:send:${record.id}`,amount:-amount,createdAt,settled:true,intent:{kind:'lightning-send',label:'Paid via Lightning',outcome:'paid',metadata:{fundingTxid:txid}},
+    txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:txid},type:TxType.TxSent,amount,createdAt,settled:true}]});
+  }
   for(const {contract,vtxos} of contracts){
    if(!payouts.has(contract.script))continue;
    for(const coin of vtxos){
@@ -111,17 +127,19 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   }
   return [...rows.values()].sort((a,b)=>b.createdAt-a.createdAt);
  };
- const close=(session:Session)=>session.closing??=(async()=>{await session.funding?.catch(()=>{});session.off();await session.client[Symbol.asyncDispose]();await session.repository[Symbol.asyncDispose]?.();await session.release();sessions.delete(session.artifact.id);})();
+ const close=(session:Session)=>session.closing??=(async()=>{await session.funding?.catch(()=>{});await session.retiring?.catch(()=>{});session.off();await session.client[Symbol.asyncDispose]();await session.repository[Symbol.asyncDispose]?.();await session.release();sessions.delete(session.artifact.id);})();
  const bind=(session:Session)=>{session.off=session.client.onUpdate(update=>{
-  forward(update);if(!terminal.has(update.outcome)||session.artifact.state!=='accepted')return;
-  session.retiring=(async()=>{
+  forward(update);if(!terminal.has(update.outcome)||session.artifact.state!=='accepted'||session.retiring)return;
+  const retiring=(async()=>{
    if(session.artifact.kind==='send'){
     const funding=await journal.get(String(wallet.self.owner),pool,`lightning-fund-${session.artifact.index}`);
     if(funding?.state==='prepared')return;
     if(funding?.state==='included'&&!['paid','refunded'].includes(update.outcome)){report(new Error('Lightning funding is confirmed and still needs HTLC recovery.'));return;}
+    await repairReceipt(session.artifact,session.repository);
    }
-   session.artifact.state='ended';await journal.updateArtifact(owner,pool,session.artifact);if(session.initialized&&!session.accepting&&!session.funding)await close(session);await scan();
-  })();void session.retiring.catch(report);
+   session.artifact.state='ended';await journal.updateArtifact(owner,pool,session.artifact);await scan();
+  })();session.retiring=retiring;
+  void retiring.then(async()=>{if(artifactEnded(session.artifact)&&session.initialized&&!session.accepting&&!session.funding)await close(session);}).catch(report).finally(()=>{if(session.retiring===retiring)session.retiring=undefined;});
  });};
  const scan=async()=>{
   if(stopped||!payouts.size)return;
@@ -194,6 +212,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const release=await acquireSession(`${namespace}-${artifact.id}`),repository=repositoryFor(`${namespace}-${artifact.id}`);
   let client:SwapClient|undefined;
   try{
+   await repairReceipt(artifact,repository);
    const view=await artifactWallet(companion,artifact,async params=>{
     const keys=Object.keys(params),payment=params as unknown as {address:string;amount:number};
     if(keys.some(key=>!['address','amount'].includes(key))||typeof payment.address!=='string'||!Number.isSafeInteger(payment.amount)||payment.amount<=0||!artifact.quoteId||!Number.isSafeInteger(artifact.expiresAt)||artifact.expiresAt!<=0)throw new Error('Private Lightning can fund only its verified HTLC');
@@ -252,7 +271,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   assertOpen();const session=[...sessions.values()].find(s=>s.quote===quoted);
   if(!session)throw new Error('Lightning quote is no longer active; request another quote');
   const artifact=session.artifact;session.accepting=true;artifact.state='accepted';await journal.updateArtifact(owner,pool,artifact);
-  try{const swap=await session.client.accept(quoted);if(!artifactEnded(artifact))await session.client.start();return swap;}
+  try{const swap=await session.client.accept(quoted);await session.retiring;if(!stopped&&!artifactEnded(artifact))await session.client.start();return swap;}
   catch(error){
    const stored=await session.repository.getSwapRecord(quoted.id);await close(session);
    if(stored&&!artifactEnded(artifact)){const resumed=await open(artifact);await startSession(resumed);}
@@ -275,6 +294,13 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   await registerPayouts(restoredPayouts);
   for(const artifact of artifacts){
    if(artifact.state==='accepted'){const session=await open(artifact);await startSession(session);}
+   else if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
+    try{
+     const release=await acquireSession(`${namespace}-${artifact.id}`);
+     try{const repository=repositoryFor(`${namespace}-${artifact.id}`);try{await repairReceipt(artifact,repository);}finally{await repository[Symbol.asyncDispose]?.();}}
+     finally{await release();}
+    }catch{report(new Error('A saved Lightning receipt is unavailable; it remains unchanged.'));}
+   }
   }
   if(legacyRecovery){
    const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`);legacyRepository=repositoryFor(`shielded-swaps-${address}`);

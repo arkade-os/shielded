@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
-import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
+import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
@@ -18,7 +18,7 @@ import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} f
 import {birthCheckpoint} from '../../src/shielded/checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 
@@ -225,7 +225,7 @@ export default function RollupWallet(){
    if(restoring.current||!mounted.current)return;
    if(fundsRef.current?.wallet===wallet)fundsRef.current.watch.update(data.coins);
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
-   if(data.history||data.lightningHistory)setRows([...(data.history??[]),...(data.lightningHistory??[])].sort((a,b)=>b.createdAt-a.createdAt));
+   if(data.history||data.lightningHistory)setRows(pageActivityHistory(data.history??[],data.lightningHistory??[]));
    setRefreshError(Object.values(errors).join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
    if(wallet.repositoryError)setPoolError(`Your saved notes could not be read or saved: ${wallet.repositoryError}`);
   });
@@ -236,7 +236,8 @@ export default function RollupWallet(){
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
- const requestKey=JSON.stringify([tab,to,amount,assetId,withSats]);
+ const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
+ const requestKey=JSON.stringify([tab,to,amount,assetId,carrier]);
  const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};
  const {quote,error:quoteError,pending:quoting}=quotes.read(quoteContext);
  useEffect(()=>{
@@ -246,7 +247,7 @@ export default function RollupWallet(){
   if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current||quoting)return;
   const funds=fundsRef.current;if(funds?.wallet!==wallet)return;
   quotes.load({...quoteContext,revision:funds.watch.update()},()=>{
-   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(withSats||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
+   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(carrier||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
    return wallet.router().route(request);
   });
  };
@@ -351,7 +352,7 @@ export default function RollupWallet(){
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
      <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
-     {assetId&&to.trim()&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
+     {arkAssetRecipient&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
      <p className="stock-muted">A shielded address pays privately from up to three of your notes, up to {sats(maxSend)} {unit}. An Arkade address leaves the pool, and the amount and destination become public. Lightning funds its swap directly from one pool note. Leave To empty to create a claim link instead: whoever opens it first gets the amount.</p>
      {to.trim()&&<p className="stock-muted">Get quote contacts the payment service for Lightning invoices and addresses. It shares the invoice or address and amount; payment happens after you confirm the quote.</p>}
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
@@ -368,7 +369,7 @@ export default function RollupWallet(){
     {!rows.length?<p className="stock-muted">{synced?'Nothing yet. Fund your Arkade address and it shows up here.':'Reading the pool…'}</p>:<ul>{rows.map(item=>{
      const kind=item.intent?.kind,received=activityReceived(item),newest=item.txs[item.txs.length-1]!;
      const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
-     const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:item.settled?'Settled':'Preconfirmed';
+     const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='unshield'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
      const id=newest.key.arkTxid||newest.key.commitmentTxid,asset=newest.assets?.[0];
      return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
        <b className={received?'in':'out'}>{received?'+':'−'}{asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}</b><time>{when(item.createdAt)}</time></summary>

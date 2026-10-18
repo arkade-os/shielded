@@ -15,6 +15,8 @@ import {artifactWallet,createPrivateLightning,lightningSigner,materializeLightni
 import {ShieldedWallet} from '../src/shielded/wallet.ts';
 import {checkRecoveryWitnessRepair,completeRecoveryWitnesses} from '../src/shielded/lightning-exit-witness.ts';
 import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
+import {LightningSwapRepository} from '../src/shielded/lightning-receipt.ts';
+import {pageActivityHistory} from '../app/src/shielded-page.ts';
 
 globalThis.indexedDB=indexedDB;
 const owner='owner',pool='pool',secret='11'.repeat(32);
@@ -156,6 +158,42 @@ for(const failedStage of ['markets','resolve'] as const)test(`explicit invoice d
 });
 
 const flushTasks=async()=>{for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
+test('startup repairs an ended send receipt under its session lock without starting a payment client',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
+ const artifact={...await journal.allocateArtifact(ownerKey,pool,'send'),state:'ended' as const,quoteId:'old-quote'};await journal.updateArtifact(ownerKey,pool,artifact);
+ const name=`shielded-lightning-${ownerKey}-${pool}-${artifact.id}`,repository=new LightningSwapRepository(name),preimage=new Uint8Array(32).fill(7),paymentHash=hex.encode(sha256(preimage));
+ const tx=new Transaction({allowUnknownInputs:true,allowUnknownOutputs:true}),funding='aa'.repeat(32);
+ tx.addInput({txid:funding,index:1});tx.addOutput({script:script.pkScript,amount:2113n});setArkPsbtField(tx,0,ConditionWitness,[preimage]);
+ const saved={id:artifact.quoteId,family:'rfq',kind:'lightning_send',state:'refunded',lockupPkScript:hex.encode(script.pkScript),lock:{hash:paymentHash},profile:{custom:'keep'},fundingTxid:funding,give:{amount:'2113'},createdAt:1,updatedAt:1} as unknown as SwapRecord;
+ await repository.saveSwapRecord(saved);await repository[Symbol.asyncDispose]();let reads=0;
+ Object.assign(f.base,{indexerProvider:{getVtxos:async()=>{assert.equal(f.live.has(name),true);reads++;return {vtxos:[{txid:funding,vout:1,spentBy:tx.id,arkTxId:'bb'.repeat(32)}]};},getVirtualTxs:async()=>({txs:[base64.encode(tx.toPSBT())]})}});
+ const service=await createPrivateLightning({...f,companion:f.base,journal,repositoryFor:db=>new LightningSwapRepository(db),legacyRecovery:false});
+ try{
+  const reopened=new LightningSwapRepository(name),corrected=await reopened.getSwapRecord(saved.id);assert.ok(corrected?.family==='rfq');assert.equal(corrected.state,'settled');await reopened[Symbol.asyncDispose]();
+  assert.equal(reads,1);assert.equal(f.configs.length,1);assert.equal(f.starts.length,0);assert.equal(f.funded.length,0);assert.equal(f.live.size,0);
+  assert.equal((await journal.artifacts(ownerKey,pool))[0]!.state,'ended');
+  const history=await service.getActivityHistory();assert.equal(history.length,1);assert.equal(history[0]!.intent?.label,'Paid via Lightning');assert.equal(history[0]!.amount,-2113);assert.equal(history[0]!.intent?.metadata?.fundingTxid,funding);
+  await service[Symbol.asyncDispose]();
+  const restored=await createPrivateLightning({...f,companion:f.base,journal,repositoryFor:db=>new LightningSwapRepository(db),legacyRecovery:false});
+  try{assert.deepEqual(await restored.getActivityHistory(),history);assert.equal(reads,1);assert.equal(f.starts.length,0);assert.equal(f.funded.length,0);}
+  finally{await restored[Symbol.asyncDispose]();}
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('startup reports only the safe receipt schema diagnostic and leaves an unsupported store unchanged',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),poolName=`schema-${crypto.randomUUID()}`,errors:Error[]=[];
+ Object.assign(f.wallet.pool.status.pool!,{token:poolName});
+ const artifact={...await journal.allocateArtifact(ownerKey,poolName,'send'),state:'ended' as const,quoteId:'old-quote'};await journal.updateArtifact(ownerKey,poolName,artifact);
+ const name=`shielded-lightning-${ownerKey}-${poolName}-${artifact.id}`,original={id:artifact.quoteId,state:'refunded',profile:{signer:'must-not-leak'}};
+ const db=await new Promise<IDBDatabase>((resolve,reject)=>{const request=indexedDB.open(name,6);request.onupgradeneeded=()=>request.result.createObjectStore('swapRecords',{keyPath:'id'});request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+ await new Promise<void>((resolve,reject)=>{const tx=db.transaction('swapRecords','readwrite');tx.objectStore('swapRecords').put(original);tx.oncomplete=()=>resolve();tx.onabort=()=>reject(tx.error);});
+ const service=await createPrivateLightning({...f,companion:f.base,journal,repositoryFor:name=>new LightningSwapRepository(name),legacyRecovery:false,onError:error=>errors.push(error)});
+ try{
+  assert.equal(errors.length,1);assert.match(errors[0]!.message,/expected version 5.*found version 6/);assert.ok(!errors[0]!.message.includes('must-not-leak'));
+  const saved=await new Promise((resolve,reject)=>{const request=db.transaction('swapRecords','readonly').objectStore('swapRecords').get(original.id);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
+  assert.deepEqual(saved,original);assert.equal(f.funded.length,0);assert.equal(f.starts.length,0);assert.equal(f.live.size,0);
+ }finally{db.close();await service[Symbol.asyncDispose]();}
+});
 async function recoveryFixture(journal:LightningRepository=new InMemoryLightningRepository()){
  const f=serviceFixture(),repository=new InMemoryContractRepository();
  Object.assign(f.base,{offchainTapscript:new DefaultVtxo.Script({pubKey:await root.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'blocks',value:2048n}})});
@@ -792,6 +830,55 @@ test('terminal updates during acceptance dispose once after the payment returns 
   assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool))[0]!.state,'ended');
   assert.equal(f.contracts.length,1);
  }finally{await service[Symbol.asyncDispose]();}
+});
+
+for(const disposeDuringRepair of [false,true])test(`live terminal receipt repair uses atomic IndexedDB persistence ${disposeDuringRepair?'while disposal waits':'and enriches payer history'}`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),poolName=`live-receipt-${crypto.randomUUID()}`,errors:Error[]=[];
+ Object.assign(f.wallet.pool.status.pool!,{token:poolName});
+ const preimage=new Uint8Array(32).fill(8),paymentHash=hex.encode(sha256(preimage)),funding='ab'.repeat(32),tx=new Transaction({allowUnknownInputs:true,allowUnknownOutputs:true});
+ tx.addInput({txid:funding,index:1});tx.addOutput({script:script.pkScript,amount:1003n});setArkPsbtField(tx,0,ConditionWitness,[preimage]);
+ let release!:()=>void,emit!:(update:SwapUpdate)=>void,repository!:LightningSwapRepository,name='',casEntered=false,committed=false,disposed=false,reads=0;
+ const gate=new Promise<void>(resolve=>{release=resolve;});
+ const repositoryFor=(db:string)=>{
+  const store=new LightningSwapRepository(db);if(db.endsWith('-markets'))return store;
+  repository=store;name=db;const save=store.saveSwapRecordIfUnchanged.bind(store),close=store[Symbol.asyncDispose].bind(store);
+  store.saveSwapRecordIfUnchanged=async(expected,next)=>{casEntered=true;await gate;assert.equal(disposed,false);assert.ok(f.live.has(name));committed=await save(expected,next);return committed;};
+  store[Symbol.asyncDispose]=async()=>{assert.equal(committed,true);disposed=true;await close();};return store;
+ };
+ const clientFactory=(config:SwapClientConfig)=>{
+  const client=f.clientFactory(config);if(config.policy?.drive==='readonly')return client;
+  return {...client,quote:async(input:Parameters<SwapClient['quote']>[0])=>({...await client.quote(input),lock:{hash:paymentHash}}),
+   onUpdate:(listener:(update:SwapUpdate)=>void)=>{emit=listener;return client.onUpdate(listener);}} as SwapClient;
+ };
+ Object.assign(f.base,{indexerProvider:{getVtxos:async()=>{assert.ok(f.live.has(name));reads++;return {vtxos:[{txid:funding,vout:1,spentBy:tx.id,arkTxId:'bb'.repeat(32)}]};},getVirtualTxs:async()=>({txs:[base64.encode(tx.toPSBT())]})}});
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
+ let closing:Promise<void>|undefined;
+ try{
+  const quote=await service.quote({to:'invoice'}),accepted=await service.accept(quote);
+  assert.equal(accepted.outcome,'open');assert.equal(f.starts.length,1);assert.equal(f.funded.length,1);assert.equal(reads,0);assert.equal(casEntered,false);
+  const stored=await repository.getSwapRecord(quote.id);assert.ok(stored?.family==='rfq');assert.equal(stored.state,'created');
+  const refunded={...stored,state:'refunded' as const,fundingTxid:funding,profile:{...stored.profile,custom:'preserve-live-metadata'}};
+  await repository.saveSwapRecord(refunded);
+  emit({swap:{...accepted,outcome:'refunded'},outcome:'refunded',detail:{family:'rfq',state:'refunded'}} as unknown as SwapUpdate);
+  await flushTasks();assert.equal(casEntered,true);assert.equal(reads,1);const pending=await repository.getSwapRecord(quote.id);assert.ok(pending?.family==='rfq');assert.equal(pending.state,'refunded');
+  if(disposeDuringRepair){closing=service[Symbol.asyncDispose]();await flushTasks();}
+  assert.equal(disposed,false);assert.equal(committed,false);assert.ok(f.live.has(name));assert.equal(f.closed.length,0);
+  release();if(closing)await closing;else await flushTasks();
+  assert.equal(committed,true);assert.equal(disposed,true);assert.equal(f.live.size,0);assert.equal(f.funded.length,1);assert.deepEqual(errors,[]);
+  const reopened=new LightningSwapRepository(name);
+  try{
+   const corrected=await reopened.getSwapRecord(quote.id);assert.ok(corrected?.family==='rfq');assert.equal(corrected.state,'settled');
+   assert.equal(corrected.settlementPreimageHex,hex.encode(preimage));assert.equal(hex.encode(sha256(hex.decode(corrected.settlementPreimageHex!))),paymentHash);
+   assert.deepEqual(corrected.profile,refunded.profile);assert.equal(corrected.fundingTxid,funding);assert.equal(corrected.refundTxid,undefined);
+  }finally{await reopened[Symbol.asyncDispose]();}
+  assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),poolName))[0]!.state,'ended');
+  if(!disposeDuringRepair){
+   const history=await service.getActivityHistory();assert.equal(history.length,1);assert.equal(history[0]!.amount,-1003);assert.equal(history[0]!.intent?.outcome,'paid');assert.equal(history[0]!.intent?.metadata?.fundingTxid,funding);
+   const withdrawal={...history[0]!,id:'pool-withdrawal',intent:{kind:'unshield' as const,label:'Withdrawn from the pool',metadata:{batch:146}}};
+   const merged=pageActivityHistory([withdrawal],history);assert.equal(merged.length,1);assert.equal(merged[0]!.id,withdrawal.id);assert.equal(merged[0]!.intent?.label,'Paid via Lightning');assert.equal(merged[0]!.intent?.outcome,'paid');
+   assert.equal(merged[0]!.amount,withdrawal.amount);assert.deepEqual(merged[0]!.txs,withdrawal.txs);assert.deepEqual(merged[0]!.intent?.metadata,withdrawal.intent.metadata);
+  }
+ }finally{release();await closing;await service[Symbol.asyncDispose]();}
 });
 
 test('legacy recovery opens the exact previous store and disables every new funding send',async()=>{

@@ -11,6 +11,16 @@ export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sen
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 export const errorText=(error:unknown)=>error instanceof Error?error.message:typeof error==='string'?error:'The action failed.';
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
+export function pageActivityHistory(history:Activity[],lightning:Activity[]){
+ const receipts=lightning.filter(row=>row.intent?.kind==='lightning-send'&&row.intent.outcome==='paid');
+ const matches=(row:Activity,receipt:Activity)=>row.intent?.kind==='unshield'&&!activityReceived(row)&&row.amount===receipt.amount&&typeof receipt.intent?.metadata?.fundingTxid==='string'&&row.txs.some(tx=>tx.key.arkTxid===receipt.intent!.metadata!.fundingTxid);
+ const rows=history.map(row=>{
+  const candidates=receipts.filter(receipt=>matches(row,receipt));
+  if(candidates.length!==1||history.filter(item=>matches(item,candidates[0]!)).length!==1)return row;
+  return {...row,intent:{...row.intent!,label:'Paid via Lightning',outcome:'paid'}};
+ });
+ return [...rows,...lightning.filter(row=>row.intent?.kind!=='lightning-send')].sort((a,b)=>b.createdAt-a.createdAt);
+}
 
 export function pageCache(source:ShieldedNoteRepository){
  let closed=false;
