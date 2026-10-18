@@ -4,6 +4,7 @@ import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
 import {idle} from '../../src/shielded/sync.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
+import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {watchHandle,type StepState} from '../../src/shielded/handle.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
@@ -131,6 +132,21 @@ export function pageSheet(render:(state:StepState|undefined)=>void){
   clear(){generation++;off();off=()=>{};state=undefined;render(undefined);},
   stop(){generation++;off();off=()=>{};},
  };
+}
+
+type QuoteFunds={token?:string;notes:readonly {nullifier:bigint;asset:bigint;amount:bigint}[];inFlight:ReadonlySet<bigint>};
+export function pageQuoteFunds(read:()=>QuoteFunds,invalidate:()=>void){
+ const ordered=(rows:unknown[][])=>rows.map(row=>JSON.stringify(row)).sort();
+ const fingerprint=(coins:readonly ArkCoin[])=>{
+  const funds=read();
+  return JSON.stringify([funds.token,ordered(funds.notes.map(note=>[String(note.nullifier),String(note.asset),String(note.amount)])),[...funds.inFlight].map(String).sort(),
+   ordered(coins.map(coin=>[coin.txid,coin.vout,coin.value,coin.expiresAt,ordered((coin.assets??[]).map(asset=>[asset.assetId,String(asset.amount)]))]))]);
+ };
+ let revision=0,coins:readonly ArkCoin[]=[],key=fingerprint(coins);
+ return {get revision(){return revision;},update(nextCoins=coins){
+  const next=fingerprint(nextCoins);coins=nextCoins;
+  if(next!==key){key=next;revision++;invalidate();}return revision;
+ }};
 }
 
 type QuoteContext={wallet:object;revision:number;key:string};
