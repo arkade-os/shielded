@@ -371,7 +371,7 @@ export default function RollupWallet(){
      const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:item.settled?'Settled':'Preconfirmed';
      const id=newest.key.arkTxid||newest.key.commitmentTxid,asset=newest.assets?.[0];
      return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
-       <b className={received?'in':'out'}>{received?'+':'−'}{asset?`${sats(asset.amount)} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}</b><time>{when(item.createdAt)}</time></summary>
+       <b className={received?'in':'out'}>{received?'+':'−'}{asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}</b><time>{when(item.createdAt)}</time></summary>
       <dl>
        <dt>Where</dt><dd>{whereOf(kind,received)}</dd>
        {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
