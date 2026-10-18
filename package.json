@@ -7,9 +7,13 @@
     "node": ">=24"
   },
   "scripts": {
+    "preserver": "node tools/patch-swap-claim.mjs",
     "server": "node --experimental-eventsource --import tsx src/server.ts",
+    "preapp": "node tools/patch-swap-claim.mjs",
     "app": "vite --config app/vite.config.ts --host 127.0.0.1",
+    "prebuild": "node tools/patch-swap-claim.mjs",
     "build": "tsc --noEmit && vite build --config app/vite.config.ts",
+    "pretest": "node tools/patch-swap-claim.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "vm:build": "node --import tsx tools/build-vm.ts",
     "circom": "node tools/prepare-circom.mjs",

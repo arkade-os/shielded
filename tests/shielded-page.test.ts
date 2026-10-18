@@ -209,6 +209,21 @@ test('zero-sat asset activities preserve the actual SDK sent and received direct
 
 const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({railId,amount:500,fee:0,total:500,send}) as RouteQuote;
 
+test('a paid Lightning receipt enriches exactly one matching withdrawal without duplicating its debit',()=>{
+ const tx={key:{arkTxid:'funding',boardingTxid:'',commitmentTxid:''},type:TxType.TxSent,amount:2113,settled:true,createdAt:100};
+ const withdrawal:Activity={id:'pool-row',amount:-2113,createdAt:100,settled:true,txs:[tx],intent:{kind:'unshield',label:'Withdrawn from the pool',metadata:{batch:146,notes:1}}};
+ const receipt:Activity={id:'receipt',amount:-2113,createdAt:200,settled:true,txs:[tx],intent:{kind:'lightning-send',label:'Paid via Lightning',outcome:'paid',metadata:{fundingTxid:'funding'}}};
+ const incoming:Activity={id:'incoming',amount:2000,createdAt:150,settled:false,txs:[],intent:{kind:'lightning-receive',outcome:'shielding'}};
+ const rows=page.pageActivityHistory([withdrawal],[receipt,incoming]);assert.equal(rows.length,2);assert.equal(rows[0],incoming);
+ const paid=rows[1]!;assert.equal(paid.id,withdrawal.id);assert.equal(paid.amount,-2113);assert.equal(paid.txs,withdrawal.txs);assert.deepEqual(paid.intent?.metadata,withdrawal.intent!.metadata);
+ assert.equal(paid.intent?.label,'Paid via Lightning');assert.equal(paid.intent?.outcome,'paid');assert.equal(activityReceived(paid),false);
+ assert.deepEqual(page.pageActivityHistory([withdrawal],[receipt,incoming]),rows);
+ for(const unbound of [{...receipt,amount:-2000},{...receipt,intent:{...receipt.intent!,metadata:{fundingTxid:'other'}}}]){
+  const untouched=page.pageActivityHistory([withdrawal],[unbound,incoming]);assert.equal(untouched.length,2);assert.equal(untouched[1],withdrawal);
+ }
+ const ambiguous=page.pageActivityHistory([withdrawal,{...withdrawal,id:'another'}],[receipt]);assert.equal(ambiguous.length,2);assert.ok(ambiguous.every(row=>row.intent?.label==='Withdrawn from the pool'));
+});
+
 test('same-funds pool, watchdog and quote-read notifications preserve one slow quote and its explicit confirmation',async()=>{
  let routes=0,sends=0;const quotes=pageQuotes(()=>{}),pending=deferred<RouteQuote>();
  const snapshot={token:'pool',batch:1,notes:[{nullifier:1n,asset:0n,amount:1000n}],inFlight:new Set<bigint>()};
