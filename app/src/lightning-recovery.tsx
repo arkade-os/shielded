@@ -16,6 +16,7 @@ export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick
  };
  const delay=quote?.vtxos[0]?.delay;
  return <><dt>Onchain recovery</dt><dd>
+  <p className="stock-muted">Checks this payout and your onchain funding address with the Bitcoin explorer. Nothing is signed or sent.</p>
   <button type="button" className="stock-ghost stock-mini" disabled={disabled||pending} onClick={()=>void load()}>{pending?'Checking recovery…':quote?'Refresh recovery quote':'Check onchain recovery'}</button>
   {error&&<p className="stock-blocked" role="alert">{error}</p>}
   {quote&&<div className="stock-address" role="status">
@@ -30,7 +31,7 @@ export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick
     {quote.shortfallSats>0&&<><dt>Fee funding address</dt><dd><div className="stock-copy"><code>{quote.fundingAddress}</code><CopyButton value={quote.fundingAddress}/></div></dd></>}
     <dt>Recovery destination</dt><dd><code>{quote.fundingAddress}</code></dd>
    </dl>
-   <p className="stock-muted">This is a quote. Nothing is signed or sent, and shielding is not cancelled. Starting recovery would publish the payout on Bitcoin; its delay starts at onchain confirmation. Fee funding includes the fee transaction outputs; unused funds stay in your onchain wallet.</p>
+   <p className="stock-muted">Shielding continues while you view this quote. Starting recovery would publish the payout on Bitcoin; its delay starts at onchain confirmation. Fee funding includes the fee transaction outputs; unused funds stay in your onchain wallet.</p>
    {quote.validUntil!==undefined&&<p className="stock-muted">The underlying batch expires {new Date(quote.validUntil*1000).toLocaleString()}. Refresh the quote before starting recovery.</p>}
   </div>}
  </dd></>;
