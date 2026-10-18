@@ -1,4 +1,4 @@
-import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,TxType,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type Activity,type IWallet,type Identity,type SendParams,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,OnchainWallet,TxType,UnilateralExit,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,isVtxoSpent,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type Activity,type ExitQuote,type IWallet,type Identity,type SendParams,type WalletConfig} from '@arkade-os/sdk';
 import {IndexedDbAssetSwapRepository,createSwapClient,isBtcAssetLenient,type AssetSwapRepository,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
 import {hex} from '@scure/base';
 import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
@@ -10,6 +10,7 @@ import type {ShieldedWallet} from './wallet.ts';
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
  registerPayouts(records:LightningPayout[]):Promise<void>;
  getActivityHistory():Promise<Activity[]>;
+ quoteRecovery(outpoint:string):Promise<ExitQuote>;
  [Symbol.asyncDispose]():Promise<void>;
 }
 export const lightningOwner=async(wallet:Pick<Wallet,'identity'>)=>hex.encode(await wallet.identity.xOnlyPublicKey());
@@ -126,15 +127,38 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    shielding.set(outpoint,task);wallet.changed();void task.catch(report).finally(()=>{shielding.delete(outpoint);wallet.changed();});
   }
  };
- const registerPayouts=async(records:LightningPayout[])=>{
+ const validatePayouts=async(records:LightningPayout[])=>{
   assertOpen();const manager=await companion.getContractManager(),contracts=await manager.getContracts();
+  const scripts:DefaultVtxo.Script[]=[];
   for(const record of records){
    const contract=contracts.find(c=>c.script===record.script),pubKey=deriveDescriptorLeafPubKey(record.descriptor);
    lightningSigner(companion,record.descriptor);
    if(!contract||contract.type!=='default'||contract.address!==record.address||contract.metadata?.signingDescriptor!==record.descriptor||contract.params.pubKey!==hex.encode(pubKey))throw new Error('Lightning payout contract does not match its recoverable descriptor');
    const script=new DefaultVtxo.Script({pubKey,serverPubKey:hex.decode(String(contract.params.serverPubKey)),csvTimelock:sequenceToTimelock(Number(contract.params.csvTimelock))});
    if(hex.encode(script.pkScript)!==record.script||hex.encode(ArkAddress.decode(record.address).pkScript)!==record.script)throw new Error('Lightning payout script does not match its contract');
+   scripts.push(script);
   }
+  return scripts;
+ };
+ const quoteRecovery=async(outpoint:string):Promise<ExitQuote>=>{
+  assertOpen();const parsed=/^([0-9a-f]{64}):(0|[1-9]\d*)$/.exec(outpoint),vout=Number(parsed?.[2]);
+  if(!parsed||!Number.isSafeInteger(vout)||vout>0xffffffff)throw new Error('Invalid Lightning payout outpoint');
+  const requested={txid:parsed[1]!,vout},{vtxos}=await companion.indexerProvider.getVtxos({outpoints:[requested]}),coin=vtxos[0];
+  if(vtxos.length!==1||!coin||coin.txid!==requested.txid||coin.vout!==vout||isVtxoSpent(coin)||coin.isSwept||coin.assets?.length)throw new Error('This Lightning payout is missing, spent, swept or carries an asset.');
+  const payout=payouts.get(coin.script);if(!payout)throw new Error('This output is not a saved Lightning payout for this wallet.');
+  const [script]=await validatePayouts([payout]);
+  const attempts=await journal.list(String(wallet.self.owner),pool);
+  if(attempts.some(r=>r.kind==='shield'&&r.reference===outpoint&&r.state==='included'))throw new Error('This Lightning payout is already shielded.');
+  const onchain=await OnchainWallet.create(companion.identity,'mutinynet',companion.onchainProvider);
+  const quote=await UnilateralExit.estimate({wallet:companion,onchainWallet:onchain,sweepAddress:onchain.address,vtxos:[requested],networkName:'mutinynet'});
+  assertOpen();const info=quote.vtxos[0],delay=script!.options.csvTimelock;
+  if(quote.vtxos.length!==1||info?.outpoint!==outpoint)throw new Error('The recovery quote does not match this Lightning payout.');
+  if(info.skipped)throw new Error(`Onchain recovery is unavailable: ${info.skipped}`);
+  if(info.value!==coin.value||info.delay?.type!==delay.type||BigInt(info.delay.value)!==delay.value||quote.totals.recoveredSats<=0)throw new Error('The recovery quote does not match the original payout contract.');
+  return quote;
+ };
+ const registerPayouts=async(records:LightningPayout[])=>{
+  await validatePayouts(records);const manager=await companion.getContractManager();
   await journal.savePayouts(owner,pool,records);
   for(const record of records){payouts.set(record.script,record);await manager.setContractWatchState(record.script,'watched');}
   wallet.changed();
@@ -244,7 +268,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   });
   const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
-  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,
+  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,quoteRecovery,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
  }catch(error){await dispose();throw error;}
 }
