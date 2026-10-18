@@ -18,7 +18,7 @@ import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} f
 import {birthCheckpoint} from '../../src/shielded/checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageCache,pageRefresh,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 
@@ -50,6 +50,7 @@ const LINK_STATE={unclaimed:'Unclaimed',claimed:'Claimed','taken-back':'Taken ba
 type ClaimView={notes:{asset:bigint;amount:bigint}[];mine:boolean}|{error:string};
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
+ const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState('');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
@@ -68,6 +69,8 @@ export default function RollupWallet(){
  const busyRef=useRef(false),restoring=useRef(false),mounted=useRef(false);
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
+ const refreshRef=useRef<{request:()=>void}|undefined>(undefined);
+ const refreshes=useRef(new WeakMap<object,{close:()=>Promise<void>}>());
  if(!cacheRef.current)cacheRef.current=pageCache(new IndexedDBShieldedNoteRepository());
  if(!sheetRef.current)sheetRef.current=pageSheet(setSheet);
  const sheetOwner=sheetRef.current;
@@ -75,11 +78,12 @@ export default function RollupWallet(){
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
 
  useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);localStorage.setItem(BORN,'new');localStorage.setItem(CREATED,String(Date.now()));setSecret(fresh);}},[secret]);
- // One read before the wallet exists: it needs the pool phase, network and token to be created at all.
+ // The wallet needs the pool phase, network and token before creation.
  useEffect(()=>{
-  let stop=false;
-  void (async()=>{try{const status=await rollupApi<RollupPoolStatus>('/status');if(!stop&&!restoring.current){poolRef.current=status;setPool(status);if(status.phase==='ready')setInitialPool(status);setPoolError('');}}catch(error){if(!stop)setPoolError(errorText(error));}})();
-  return()=>{stop=true;};
+  const controller=new AbortController();
+  void retryPageRead(()=>rollupApi<RollupPoolStatus>('/status'),controller.signal,{onError:error=>{if(!restoring.current)setStartupError(errorText(error));}})
+   .then(status=>{if(status&&!controller.signal.aborted&&!restoring.current){poolRef.current=status;setPool(status);if(status.phase==='ready')setInitialPool(status);setStartupError('');}}).catch(()=>{});
+  return()=>controller.abort();
  },[]);
 
  /** Any handle, shielded or plain, rendered through one sheet. */
@@ -152,32 +156,42 @@ export default function RollupWallet(){
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
   const status=initialPool,network=status.network;
-  const journal=new IndexedDbLightningRepository();
+  let journal:IndexedDbLightningRepository;
+  let nativeOpened=false;
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createHdLnurl>|undefined;
-  const dispose=async(created:ShieldedWallet)=>{
-   await lnurl?.dispose();if(lnurlRef.current===lnurl)lnurlRef.current=undefined;
-   try{await created.dispose();}finally{try{await companion?.dispose();}finally{await journal[Symbol.asyncDispose]();}}
-  };
+  const dispose=(created:ShieldedWallet)=>disposeAfterPageReads(created,refreshes.current,async()=>{
+   try{await lnurl?.dispose();}finally{
+    if(lnurlRef.current===lnurl)lnurlRef.current=undefined;
+    try{await created.dispose();}finally{try{await companion?.dispose();}finally{await journal[Symbol.asyncDispose]();}}
+   }
+  });
   const session=openPageWallet(async()=>{
    const poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
    return hash;
   },async hash=>{
-   const bornAt=bornAtFor(localStorage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
-   const created=await ShieldedWallet.create({
-    identity:SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret),
-    arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl),
-    storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
-    settlementConfig:false,walletMode:'static',
-    pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
-    shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
-   });
+   journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
+   let created:ShieldedWallet|undefined;
    try{
+    const bornAt=bornAtFor(localStorage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
+    created=await ShieldedWallet.create({
+     identity:SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret),
+     arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl),
+     storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
+     settlementConfig:false,walletMode:'static',
+     pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
+     shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
+    });
+    nativeOpened=true;
     companion=await createLightningWallet(secret,{arkProvider:created.arkProvider,indexerProvider:created.indexerProvider,onchainProvider:created.onchainProvider});
     const swaps=await createPrivateLightning({wallet:created,companion,journal,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));}});created.swaps=swaps;
     lnurl=createHdLnurl({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onAllocation:payout=>swaps.registerPayouts([payout])});
-   }catch(error){await dispose(created).catch(()=>{});throw error;}
-   return created;
-  },dispose);
+    return created;
+   }catch(error){
+    try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
+    catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
+    throw error;
+   }
+  },dispose,{shouldRetry:()=>!nativeOpened,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupError(errorText(error));}});
   let legacy=Promise.resolve(),closing:Promise<void>|undefined;
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
   const close=()=>{
@@ -187,6 +201,7 @@ export default function RollupWallet(){
   sessions.current.add(close);
   void session.ready.then(created=>{
    if(!created||!current())return;
+   setStartupError('');
    unwatch.push(created.onShieldedChange(()=>{if(current()){fundsRevision.current++;quotes.clear();setTick(t=>t+1);}}));
    unwatch.push(created.onAction(handle=>{if(current())sheetOwner.watch(handle,handle.title);}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
@@ -196,23 +211,25 @@ export default function RollupWallet(){
    void lnurl!.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
    lnurl!.start(error=>{if(current())setLnError(errorText(error));});
    setWallet(created);
-  }).catch(error=>{if(current())setPoolError(errorText(error));});
+  }).catch(error=>{if(current())setStartupError(errorText(error));});
   return()=>{void close().catch(()=>{});};
  },[initialPool,secret]);
 
  // No page timer: the wallet's watcher stream and its 60 s watchdog are what move `tick`.
  useEffect(()=>{
   if(!wallet)return;
-  let stop=false;
-  void (async()=>{
-   try{
-    const [list,balance,address,history,lightningHistory]=await Promise.all([wallet.coins(),wallet.getBalance(),wallet.getAddress(),wallet.getActivityHistory(),wallet.swaps?.getActivityHistory()??[]]);
-    if(!stop&&!restoring.current){setCoins(list);setArkAvailable(balance.available);setArkAddress(address);setRows([...history,...lightningHistory].sort((a,b)=>b.createdAt-a.createdAt));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
-     if(wallet.repositoryError)setPoolError(`Your saved notes could not be read or saved: ${wallet.repositoryError}`);}
-   }catch(error){if(!stop&&!restoring.current)setPoolError(errorText(error));}
-  })();
-  return()=>{stop=true;};
- },[wallet,tick]);
+  const refresh=pageRefresh({coins:()=>wallet.coins(),balance:()=>wallet.getBalance(),address:()=>wallet.getAddress(),history:()=>wallet.getActivityHistory(),lightningHistory:async()=>wallet.swaps?.getActivityHistory()??[]},(data,errors)=>{
+   if(restoring.current||!mounted.current)return;
+   if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
+   if(data.history||data.lightningHistory)setRows([...(data.history??[]),...(data.lightningHistory??[])].sort((a,b)=>b.createdAt-a.createdAt));
+   setRefreshError(Object.values(errors).join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
+   if(wallet.repositoryError)setPoolError(`Your saved notes could not be read or saved: ${wallet.repositoryError}`);
+  });
+  const close=async()=>{await refresh.close();sessions.current.delete(close);};
+  refreshes.current.set(wallet,refresh);refreshRef.current=refresh;sessions.current.add(close);
+  return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
+ },[wallet]);
+ useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
  const requestKey=JSON.stringify([tab,to,amount,assetId,withSats,tick]);
@@ -273,7 +290,7 @@ export default function RollupWallet(){
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Test funds only, with development-only proving keys. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
   {wallet?.operatorDown&&<section className="stock-warning" role="alert"><strong>The pool operator is not answering</strong><span>Your notes are safe, but only the operator renews the pool. If it stays down, the pool head and every payout from it expire {wallet.operatorDown.headExpiresAt?`on ${when(wallet.operatorDown.headExpiresAt)}`:'within a week of its last renewal'}. To withdraw without the operator, see <a href="https://github.com/arkade-os/shielded#if-the-operator-stops">If the operator stops</a>.</span></section>}
-  {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{poolError||pool?.message}</p></div></section>}
+  {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{startupError||poolError||pool?.message}</p></div></section>}
   {ready&&<>
    {claim&&<section className="stock-card"><h2>{claimView&&'mine' in claimView&&claimView.mine?'Your claim link':'A claim link for you'}</h2>
     {claimProblem?<p className="stock-blocked">{claimProblem}</p>
@@ -290,6 +307,8 @@ export default function RollupWallet(){
      {reserves.filter(id=>assetUnits(id)>0n).map(id=><div key={id}><small>ASSET {short(id)}</small><b>{sats(assetUnits(id))} units</b></div>)}</div>
     {inFlight&&<p className="stock-muted">Notes are in flight; they come back as spendable notes once the batch lands.</p>}
     {poolError&&<p className="stock-blocked">{poolError}</p>}
+    {startupError&&<p className="stock-blocked">{startupError}</p>}
+    {refreshError&&<p className="stock-blocked">{refreshError}</p>}
    </section>
    {sheet&&<section className={'stock-card stock-activity'+(sheet.done?' finished':sheet.error?' failed':'')}><div className="stock-activity-head"><h2>{sheet.title}</h2></div>
     <ol className="stock-steps">{sheet.steps.map((label,i)=><li key={label} className={sheet.error&&i===sheet.current?'error':i<sheet.current||sheet.done?'done':i===sheet.current?'active':''}><i/>{label}</li>)}</ol>
