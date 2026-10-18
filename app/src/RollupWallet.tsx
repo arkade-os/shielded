@@ -20,6 +20,7 @@ import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmo
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,errorText,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
+import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
@@ -347,6 +348,7 @@ export default function RollupWallet(){
        {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
        {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={newest.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
        <dt>Status</dt><dd>{status}</dd>
+       {kind==='lightning-receive'&&item.intent?.outcome!=='shielded'&&wallet?.swaps&&typeof item.intent?.metadata?.outpoint==='string'&&<LightningRecoveryQuote service={wallet.swaps} outpoint={item.intent.metadata.outpoint} disabled={busy||restoring.current}/>}
        {revealFor(item)}
       </dl></details></li>;
     })}</ul>}
