@@ -40,7 +40,7 @@ test('all shipped classifier copies are hash-pinned, idempotent and reject drift
 });
 
 test('the claim patch rejects a non-dist directory before reading package metadata',t=>{
- const root=mkdtempSync(join(tmpdir(),'shielded-swap-layout-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const root=mkdtempSync(join(tmpdir(),'shielded-swap-layout-'));t.after(()=>{assert.equal(dirname(resolve(root)),resolve(tmpdir()));assert.ok(root.startsWith(join(tmpdir(),'shielded-swap-layout-')));rmSync(root,{recursive:true,force:true});});
  assert.throws(()=>patchSwapClaim(root),/expected.*dist.*directory/i);
  assert.throws(()=>patchSwapClaim(join(root,'dist')),/expected.*dist.*directory/i);
 });
