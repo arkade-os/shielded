@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ActivityRegistry,makeHandle,TxType,Wallet,type Activity,type ArkTransaction,type RouteQuote} from '@arkade-os/sdk';
+import {ActivityRegistry,makeHandle,ProviderUnavailableError,TxType,Wallet,type Activity,type ArkTransaction,type RouteQuote} from '@arkade-os/sdk';
 import {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {catchUp,idle} from '../src/shielded/sync.ts';
 import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from '../app/src/shielded-page.ts';
+import * as page from '../app/src/shielded-page.ts';
 
 const deferred=<T=void>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
@@ -13,6 +14,68 @@ const storageOf=()=>{
  return {get length(){return rows.size;},key:(i:number)=>[...rows.keys()][i]??null,getItem:(k:string)=>rows.get(k)??null,setItem:(k:string,v:string)=>{rows.set(k,v);},removeItem:(k:string)=>{rows.delete(k);}};
 };
 const snapshot={v:1,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
+
+test('startup retries transient creation without repeating preparation and closes the one successful wallet',async()=>{
+ let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');
+ const session=openPageWallet(async()=>++prepares,async value=>{
+  assert.equal(value,1);if(++creates===1)throw failure;return {dispose:async()=>{disposals++;}};
+ },undefined,{delayMs:1,onError:error=>errors.push(error)});
+ assert.ok(await session.ready);assert.equal(prepares,1);assert.equal(creates,2);assert.deepEqual(errors,[failure]);
+ await session.close();await session.close();assert.equal(disposals,1);
+});
+
+test('startup cancellation wakes retry backoff without another creation',async()=>{
+ let creates=0;const failed=deferred();
+ const session=openPageWallet(async()=>1,async()=>{creates++;throw Object.assign(new Error('limited'),{status:429});},undefined,{delayMs:60_000,onError:()=>failed.resolve()});
+ await Promise.race([session.ready.catch(()=>{}),failed.promise]);await session.close();
+ assert.equal(await session.ready,undefined);assert.equal(creates,1);
+});
+
+test('startup does not retry a definitive refusal or invalid wallet data',async()=>{
+ for(const failure of [Object.assign(new Error('denied'),{status:403}),new Error('invalid secret')]){
+  let creates=0;const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1});
+  await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);
+ }
+});
+
+test('a transient setup failure cannot recreate a native wallet that already started payment work',async()=>{
+ let creates=0;const failure=new ProviderUnavailableError('companion unavailable');
+ const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,shouldRetry:()=>false});
+ await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);
+});
+
+test('pool startup retries an outage and does not publish a read completed after cancellation',async()=>{
+ const controller=new AbortController();let reads=0;
+ assert.equal(await page.retryPageRead(async()=>{if(++reads===1)throw new Error('The pool did not answer (503).');return 'ready';},controller.signal,{delayMs:1}),'ready');
+ const pending=deferred<string>(),read=page.retryPageRead(()=>pending.promise,controller.signal);
+ controller.abort();pending.resolve('obsolete');assert.equal(await read,undefined);
+});
+
+test('refresh publishes independent successes and clears only recovered read errors',async()=>{
+ let broken=true;const hang=deferred<number>(),seen:{values:Record<string,unknown>;errors:Record<string,string>}[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{if(broken)throw new Error('explorer down');return 12;},address:async()=>'ark',history:()=>hang.promise,lightning:async()=>['incoming']},(values,errors)=>seen.push({values:{...values},errors:{...errors}}));
+ refresh.request();await flush();
+ assert.equal(seen.at(-1)!.values.address,'ark');assert.deepEqual(seen.at(-1)!.values.lightning,['incoming']);assert.equal(seen.at(-1)!.errors.balance,'explorer down');
+ hang.resolve(1);await flush();broken=false;refresh.request();await flush();
+ assert.equal(seen.at(-1)!.values.balance,12);assert.deepEqual(seen.at(-1)!.errors,{});await refresh.close();
+});
+
+test('refresh coalesces notifications and drains an active read without publishing after close',async()=>{
+ const first=deferred<number>(),second=deferred<number>();let reads=0,active=0,maximum=0,published=0;
+ const refresh=page.pageRefresh({value:async()=>{maximum=Math.max(maximum,++active);const value=await (++reads===1?first:second).promise;active--;return value;}},()=>{published++;});
+ refresh.request();await flush();refresh.request();refresh.request();assert.equal(reads,1);
+ first.resolve(1);await flush();assert.equal(reads,2);assert.equal(maximum,1);assert.equal(published,1);
+ refresh.request();let closed=false;const close=refresh.close().then(()=>{closed=true;});await flush();assert.equal(closed,false);
+ second.resolve(2);await close;assert.equal(reads,2);assert.equal(published,1);refresh.request();await flush();assert.equal(reads,2);
+});
+
+test('a pending explorer read does not delay later Lightning refreshes or overlap itself',async()=>{
+ const slow=deferred<number>();let explorerReads=0,lightningReads=0;const seen:number[]=[];
+ const refresh=page.pageRefresh({explorer:async()=>{explorerReads++;return slow.promise;},lightning:async()=>++lightningReads},data=>{if(data.lightning!==undefined)seen.push(data.lightning);});
+ refresh.request();await flush();refresh.request();await flush();
+ assert.equal(explorerReads,1);assert.equal(lightningReads,2);assert.equal(seen.at(-1),2);
+ const close=refresh.close();slow.resolve(1);await close;assert.equal(explorerReads,1);
+});
 
 test('a cancelled asynchronous preparation never creates an auto-shielding wallet',async()=>{
  const prepared=deferred<number>();let creates=0;

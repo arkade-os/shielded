@@ -1,4 +1,4 @@
-import {TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
+import {isRetryableProviderError,TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
@@ -25,19 +25,63 @@ export function pageCache(source:ShieldedNoteRepository){
  return {repository,close(){closed=true;},async drain(){await Promise.allSettled([...writes]);}};
 }
 
-export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose()){
+type PageRetry={delayMs?:number;onError?:(error:unknown)=>void;shouldRetry?:()=>boolean};
+function retryablePageError(error:unknown){
+ if(!(error instanceof Error))return false;
+ const status=(error as Error&{status?:number}).status;
+ if(status!==undefined)return status===408||status===429||status>=500;
+ return isRetryableProviderError(error)||/^The pool did not answer \((?:5\d\d|network error)\)\.$/.test(error.message);
+}
+export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,options:PageRetry={}):Promise<T|undefined>{
+ for(let attempt=0;!signal.aborted;attempt++){
+  try{const value=await read();return signal.aborted?undefined:value;}
+  catch(error){
+   if(signal.aborted)return;
+   options.onError?.(error);if(!retryablePageError(error)||options.shouldRetry?.()===false)throw error;
+   await new Promise<void>(resolve=>{
+    const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
+    const timer=setTimeout(done,Math.min((options.delayMs??5000)*2**Math.min(attempt,4),60_000)*(1+Math.random()/4));
+    signal.addEventListener('abort',done,{once:true});if(signal.aborted)done();
+   });
+  }
+ }
+}
+
+export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose(),retry:PageRetry={}){
  let cancelled=false,wallet:W|undefined,disposal:Promise<void>|undefined,closing:Promise<W|undefined>|undefined;
+ const controller=new AbortController();
  const dispose=()=>disposal??=disposeWallet(wallet!);
  const ready=(async()=>{
   const prepared=await prepare();if(cancelled)return;
-  wallet=await create(prepared);
-  if(cancelled){await dispose();return;}
+  await retryPageRead(async()=>{wallet=await create(prepared);return wallet;},controller.signal,retry);
+  if(cancelled){if(wallet)await dispose();return;}
   return wallet;
  })();
  return {ready,active:()=>!cancelled,close(){
-  cancelled=true;
+  cancelled=true;controller.abort();
   return closing??=(async()=>{await ready.catch(()=>{});if(wallet)await dispose();return wallet;})();
  }};
+}
+
+export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void){
+ let closed=false;
+ const values:Partial<T>={},errors:Partial<Record<keyof T,string>>={};
+ const reads=(Object.keys(readers) as (keyof T)[]).map(key=>{
+  let queued=false,running:Promise<void>|undefined;
+  const request=()=>{
+   if(closed)return;queued=true;
+   running??=Promise.resolve().then(async()=>{
+    while(queued&&!closed){
+     queued=false;
+     try{const value=await readers[key]();if(closed)return;values[key]=value;delete errors[key];}
+     catch(error){if(closed)return;errors[key]=errorText(error);}
+     if(!closed)publish({...values},{...errors});
+    }
+   }).finally(()=>{running=undefined;if(queued&&!closed)request();});
+  };
+  return {request,drain:()=>running};
+ });
+ return {request(){for(const read of reads)read.request();},async close(){closed=true;await Promise.all(reads.map(read=>read.drain()));}};
 }
 
 export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'recordSent'|'save'|'repositoryError'>,storage:Pick<Storage,'getItem'|'removeItem'>,current:()=>boolean){
