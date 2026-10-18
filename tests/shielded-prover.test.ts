@@ -92,3 +92,35 @@ for(const dated of [false,true])test(`a long Retry-After ${dated?'date':'delay'}
  t.mock.timers.tick(1);const recovered=wallet.prove(built,'spend');await flush();assert.equal(calls,2);t.mock.timers.reset();assert.ok(await recovered);
  prover.prefetchProvingKeys(pool);assert.ok(await wallet.prove(built,'spend'));assert.equal(calls,2);
 });
+
+for(const body of [false,true])test(`a stalled ${body?'response body':'fetch'} aborts and retries one shared download`,async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
+ let calls=0,aborts=0;const signals:(AbortSignal|null|undefined)[]=[];
+ t.mock.method(globalThis,'fetch',async(_url:unknown,init?:RequestInit)=>{
+  const signal=init?.signal;signals.push(signal);if(++calls!==1)return new Response(wasm);
+  const stalled=()=>new Promise<ArrayBuffer>((_,reject)=>{signal?.addEventListener('abort',()=>{aborts++;reject(signal.reason);},{once:true});});
+  if(!body){await stalled();return new Response(wasm);}
+  const response=new Response(wasm);t.mock.method(response,'arrayBuffer',stalled);return response;
+ });
+ const url=`/stalled-${body}.wasm`,pending=prover.loadProvingFile(url);assert.equal(prover.loadProvingFile(url),pending);await flush();
+ t.mock.timers.tick(119_999);await flush();assert.equal(aborts,0);assert.equal(calls,1);
+ t.mock.timers.tick(1);await flush();assert.equal(aborts,1);assert.equal(calls,1);assert.equal(prover.loadProvingFile(url),pending);
+ t.mock.timers.tick(999);await flush();assert.equal(calls,1);t.mock.timers.tick(1);await flush();
+ assert.deepEqual(await pending,new Uint8Array(wasm));assert.equal(calls,2);assert.equal(signals[0]?.aborted,true);assert.equal(signals[1]?.aborted,false);
+ t.mock.timers.tick(120_000);await flush();assert.equal(signals[1]?.aborted,false);assert.equal(aborts,1);assert.equal(calls,2);
+});
+
+test('exhausted download timeouts evict the failed promise so a later request can recover',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
+ let calls=0,healthy=false;
+ t.mock.method(globalThis,'fetch',async(_url:unknown,init?:RequestInit)=>{
+  calls++;if(healthy)return new Response(wasm);
+  return new Promise<Response>((_,reject)=>{init?.signal?.addEventListener('abort',()=>reject(init.signal!.reason),{once:true});});
+ });
+ let settled=false;const pending=outcome(prover.loadProvingFile('/timeouts.wasm'));void pending.then(()=>{settled=true;});await flush();
+ for(let attempt=0;attempt<5;attempt++){
+  t.mock.timers.tick(120_000);await flush();if(attempt<4){t.mock.timers.tick(1000*2**attempt);await flush();}
+ }
+ assert.equal(settled,true);assert.equal(calls,5);assert.match(String((await pending).error),/timed out/i);
+ healthy=true;assert.deepEqual(await prover.loadProvingFile('/timeouts.wasm'),new Uint8Array(wasm));assert.equal(calls,6);
+});

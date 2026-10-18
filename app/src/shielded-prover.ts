@@ -15,8 +15,10 @@ export function loadProvingFile(url:string,priority:RequestPriority='auto'):Prom
  const loading=(async()=>{
   for(let attempt=0;;attempt++){
    let response:Response|undefined,failure:unknown;
-   try{response=await fetch(url,{priority});if(response.ok)return new Uint8Array(await response.arrayBuffer());}
+   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(new Error(`The proving file ${url} download timed out.`)),120_000);
+   try{response=await fetch(url,{priority,signal:controller.signal});if(response.ok)return new Uint8Array(await response.arrayBuffer());}
    catch(error){failure=error;}
+   finally{clearTimeout(timer);}
    if(response&&!response.ok){
     failure=new Error(`The proving file ${url} answered HTTP ${response.status}.`);
     if(response.status!==429&&response.status<500)throw failure;
