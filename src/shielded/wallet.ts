@@ -14,6 +14,7 @@ import {bearerAccount,bearerKeysOf,bearerOf,claimSpends,linkOf,type LinkRecord} 
 import {freshAccount} from './checkpoint.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {PrivateLightningService} from './lightning-wallet.ts';
+import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
 import {sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
 import {DUST,pickNote,poolApiOf,shieldPlan,transferBody,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
@@ -313,6 +314,21 @@ export class ShieldedWallet extends Wallet {
    for(const nullifier of record.nullifiers)this.notes.inFlight.add(BigInt(nullifier));
    if(record.coin)this.used.add(`${record.coin.txid}:${record.coin.vout}`);
   }
+ }
+ async reconcileLightningPayout(outpoint:string,store:LightningRepository):Promise<void>{
+  this.assertOpen();const owner=String(this.self.owner),pool=this.token;
+  for(const record of await store.payoutSpends(owner,outpoint)){
+   if(record.kind!=='shield'||record.reference!==outpoint||record.state==='dropped')continue;
+   validateLightningSpend(record,owner,record.pool);
+   if(record.state==='included')throw Object.assign(new Error('This Lightning payout is already shielded.'),{code:'lightning-payout-shielded'});
+   if(record.pool!==pool)throw new Error('The previous shielding attempt in its original pool is unresolved; its reservation is retained.');
+   const status=await this.api<SpendStatus>(`/spends/${record.body.id}`);
+   if(status.status==='included')throw Object.assign(new Error('This Lightning payout is already shielded.'),{code:'lightning-payout-shielded'});
+   if(status.status!=='dropped')throw new Error('The previous shielding attempt is unresolved; its reservation is retained.');
+   await store.finish(owner,pool,record.id,{state:'dropped',reason:status.reason});
+   this.notes.release(record.nullifiers.map(BigInt));if(record.coin)this.used.delete(`${record.coin.txid}:${record.coin.vout}`);
+  }
+  await this.restoreLightningSpends(store);this.changed();
  }
  private async prepareLightning(request:Pick<LightningSpendRecord,'id'|'reference'|'kind'|'amount'>&Partial<Pick<LightningSpendRecord,'paymentHash'|'destination'|'coin'|'expiresAt'>>,store:LightningSpendStore,build:()=>Promise<{built:BuiltSpend;extra?:SubmitMember['extra']}>){
   this.assertOpen();await this.restoreLightningSpends(store);

@@ -20,6 +20,7 @@ export interface LightningRepository extends LightningSpendStore,AsyncDisposable
  savePayouts(owner:string,pool:string,payouts:LightningPayout[]):Promise<void>;
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
+ payoutSpends(owner:string,outpoint:string):Promise<LightningSpendRecord[]>;
 }
 const copy=<T>(value:T):T=>structuredClone(value);
 function stateOf(value:JournalState|undefined,owner:string,pool:string):JournalState{
@@ -33,6 +34,7 @@ function stateOf(value:JournalState|undefined,owner:string,pool:string):JournalS
 abstract class Journal implements LightningRepository {
  protected abstract run<T>(owner:string,pool:string,write:boolean,work:(state:JournalState,counter:JournalCounter)=>T):Promise<T>;
  abstract [Symbol.asyncDispose]():Promise<void>;
+ abstract payoutSpends(owner:string,outpoint:string):Promise<LightningSpendRecord[]>;
  allocateArtifact(owner:string,pool:string,kind:LightningArtifact['kind']){return this.run(owner,pool,true,(state,counter)=>{
   if(counter.next>=0x80000000)throw new Error('Lightning HD branch exhausted');
   const index=counter.next++,artifact:LightningArtifact={id:`lightning-${index}`,index,kind,state:'allocated',createdAt:Date.now()};state.next=index+1;
@@ -83,6 +85,11 @@ abstract class Journal implements LightningRepository {
 export class InMemoryLightningRepository extends Journal {
  private rows=new Map<string,JournalState>();
  private counters=new Map<string,JournalCounter>();
+ async payoutSpends(owner:string,outpoint:string){
+  const records:LightningSpendRecord[]=[];
+  for(const [key,value] of this.rows){const [storedOwner,pool]=JSON.parse(key);if(storedOwner===owner)records.push(...stateOf(copy(value),owner,pool).spends.filter(r=>r.kind==='shield'&&r.reference===outpoint));}
+  return records;
+ }
  protected async run<T>(owner:string,pool:string,write:boolean,work:(state:JournalState,counter:JournalCounter)=>T):Promise<T>{
   const key=JSON.stringify([owner,pool]),state=stateOf(copy(this.rows.get(key)),owner,pool),counter=counterOf(copy(this.counters.get(owner)),state);
   const result=work(state,counter);
@@ -99,6 +106,17 @@ export class IndexedDbLightningRepository extends Journal {
   request.onupgradeneeded=()=>request.result.createObjectStore('journal');
   request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
  });}
+ async payoutSpends(owner:string,outpoint:string){
+  const db=await this.open();return new Promise<LightningSpendRecord[]>((resolve,reject)=>{
+   const tx=db.transaction('journal','readonly'),request=tx.objectStore('journal').openCursor(),records:LightningSpendRecord[]=[];let error:unknown;
+   request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;try{
+    const [storedOwner,pool]=JSON.parse(String(cursor.key));
+    if(storedOwner===owner&&pool!=='hd-allocation-counter')records.push(...stateOf(cursor.value,owner,pool).spends.filter(r=>r.kind==='shield'&&r.reference===outpoint));
+    cursor.continue();
+   }catch(cause){error=cause;tx.abort();}};
+   tx.oncomplete=()=>resolve(copy(records));tx.onabort=()=>reject(error??tx.error);tx.onerror=()=>reject(error??tx.error);
+  });
+ }
  protected async run<T>(owner:string,pool:string,write:boolean,work:(state:JournalState,counter:JournalCounter)=>T):Promise<T>{
   const db=await this.open(),key=JSON.stringify([owner,pool]);
   return new Promise<T>((resolve,reject)=>{
