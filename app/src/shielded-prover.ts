@@ -6,8 +6,12 @@ import type {ShieldedProver} from '../../src/shielded/wallet.ts';
 
 export const JOIN_READY='shielded-rollup-join-ready-v1';
 const files=new Map<string,Promise<Uint8Array>>();
+const cooldowns=new Map<string,number>();
+const cooldownError=(url:string,until:number)=>new Error(`The proving file ${url} is temporarily unavailable. Retry in ${Math.ceil((until-Date.now())/1000)} seconds.`);
 export function loadProvingFile(url:string,priority:RequestPriority='auto'):Promise<Uint8Array>{
  const cached=files.get(url);if(cached)return cached;
+ const cooldown=cooldowns.get(url);if(cooldown&&cooldown>Date.now())return Promise.reject(cooldownError(url,cooldown));
+ cooldowns.delete(url);
  const loading=(async()=>{
   for(let attempt=0;;attempt++){
    let response:Response|undefined,failure:unknown;
@@ -17,9 +21,11 @@ export function loadProvingFile(url:string,priority:RequestPriority='auto'):Prom
     failure=new Error(`The proving file ${url} answered HTTP ${response.status}.`);
     if(response.status!==429&&response.status<500)throw failure;
    }
-   if(attempt>=4)throw failure;
    const header=response?.headers.get('Retry-After')?.trim();
    const retryAfter=header?(/^\d+$/.test(header)?Number(header)*1000:Date.parse(header)-Date.now()):NaN;
+   if(retryAfter>0)cooldowns.set(url,Date.now()+retryAfter);
+   if(retryAfter>30_000)throw cooldownError(url,cooldowns.get(url)!);
+   if(attempt>=4)throw failure;
    const backoff=1000*2**attempt*(1+Math.random()/4),delay=Math.max(backoff,Number.isFinite(retryAfter)?retryAfter:0);
    const until=Date.now()+delay;
    for(let remaining;(remaining=until-Date.now())>0;)await new Promise(resolve=>setTimeout(resolve,Math.min(remaining,2_147_483_647)));

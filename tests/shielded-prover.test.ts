@@ -76,3 +76,19 @@ test('Retry-After HTTP dates are honored before another file request',async t=>{
  const pending=outcome(prover.loadProvingFile('/dated.zkey'));await flush();t.mock.timers.tick(9999);await flush();assert.equal(calls,1);
  t.mock.timers.tick(1);await flush();assert.equal((await pending).error,undefined);assert.equal(calls,2);
 });
+
+for(const dated of [false,true])test(`a long Retry-After ${dated?'date':'delay'} rejects promptly and blocks prefetch and proving until its deadline`,async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
+ let calls=0,settled=false;
+ t.mock.method(globalThis,'fetch',async(url:unknown)=>{
+  if(!String(url).includes('.wasm'))return new Response(zkey);
+  return ++calls===1?new Response('limited',{status:429,headers:{'Retry-After':dated?new Date(4_600_000).toUTCString():'3600'}}):new Response(wasm);
+ });
+ const pool=status(`long-cooldown-${dated}`),wallet=prover.browserProver(()=>pool);
+ const pending=outcome(wallet.prove(built,'spend'));void pending.then(()=>{settled=true;});await flush();
+ assert.equal(settled,true,'a long cooldown must reject without awaiting its timer');assert.match(String((await pending).error),/retry.*3600.*seconds/i);assert.equal(calls,1);
+ prover.prefetchProvingKeys(pool);await assert.rejects(wallet.prove(built,'spend'),/retry/i);assert.equal(calls,1);
+ t.mock.timers.tick(3_599_999);await assert.rejects(wallet.prove(built,'spend'),/retry/i);assert.equal(calls,1);
+ t.mock.timers.tick(1);const recovered=wallet.prove(built,'spend');await flush();assert.equal(calls,2);t.mock.timers.reset();assert.ok(await recovered);
+ prover.prefetchProvingKeys(pool);assert.ok(await wallet.prove(built,'spend'));assert.equal(calls,2);
+});
