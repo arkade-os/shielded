@@ -209,6 +209,49 @@ test('zero-sat asset activities preserve the actual SDK sent and received direct
 
 const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({railId,amount:500,fee:0,total:500,send}) as RouteQuote;
 
+test('same-funds pool, watchdog and quote-read notifications preserve one slow quote and its explicit confirmation',async()=>{
+ let routes=0,sends=0;const quotes=pageQuotes(()=>{}),pending=deferred<RouteQuote>();
+ const snapshot={token:'pool',batch:1,notes:[{nullifier:1n,asset:0n,amount:1000n}],inFlight:new Set<bigint>()};
+ const funds=page.pageQuoteFunds(()=>snapshot,quotes.clear),coins=[{txid:'a',vout:0,value:100},{txid:'b',vout:1,value:200}];
+ funds.update(coins);const context={wallet:{},revision:funds.revision,key:'invoice:500'};
+ quotes.load(context,()=>{routes++;return pending.promise;});await flush();
+ snapshot.batch++;funds.update([...coins].reverse());funds.update();funds.update(coins.map(coin=>({...coin})));
+ assert.equal(funds.revision,context.revision);assert.equal(quotes.read(context).pending,true);assert.equal(routes,1);
+ const displayed=quoteOf('lightning',async()=>{sends++;return 'paid';});pending.resolve(displayed);await flush();
+ funds.update();assert.equal(quotes.read(context).quote,displayed);assert.equal(sends,0);
+ assert.equal(await quotes.send({...context,revision:funds.revision},displayed),'paid');assert.equal(sends,1);assert.equal(routes,1);
+});
+
+for(const change of ['note','reservation','native-outpoint','native-asset','pool'] as const)test(`an actual ${change} change invalidates a quote even without a balance change`,async()=>{
+ let sends=0;const quotes=pageQuotes(()=>{}),snapshot={token:'pool',notes:[{nullifier:1n,asset:0n,amount:1000n}],inFlight:new Set<bigint>()};
+ const coins=[{txid:'a',vout:0,value:100,assets:[{assetId:'asset',amount:3n}]}],funds=page.pageQuoteFunds(()=>snapshot,quotes.clear);
+ funds.update(coins);const context={wallet:{},revision:funds.revision,key:'recipient:500'},displayed=quoteOf('shielded',async()=>{sends++;});
+ quotes.load(context,async()=>displayed);await flush();
+ if(change==='note')snapshot.notes[0]!.nullifier=2n;
+ if(change==='reservation')snapshot.inFlight.add(1n);
+ if(change==='native-outpoint')coins[0]!.txid='replacement';
+ if(change==='native-asset')coins[0]!.assets[0]!.amount=2n;
+ if(change==='pool')snapshot.token='replacement-pool';
+ const revision=funds.update(coins);assert.notEqual(revision,context.revision);assert.equal(quotes.read(context).quote,undefined);
+ await assert.rejects(quotes.send({...context,revision},displayed),/changed/);assert.equal(sends,0);
+});
+
+test('fresh confirmation reads reject a changed native coin before sending the displayed quote',async()=>{
+ let sends=0;const quotes=pageQuotes(()=>{}),funds=page.pageQuoteFunds(()=>({token:'pool',notes:[],inFlight:new Set<bigint>()}),quotes.clear);
+ const coins=[{txid:'original',vout:0,value:500}],read=deferred<typeof coins>();funds.update(coins);
+ const context={wallet:{},revision:funds.revision,key:'recipient:500'},displayed=quoteOf('ark',async()=>{sends++;});
+ quotes.load(context,async()=>displayed);await flush();
+ const sending=(async()=>quotes.send({...context,revision:funds.update(await read.promise)},displayed))();
+ read.resolve([{txid:'replacement',vout:0,value:500}]);await assert.rejects(sending,/changed/);assert.equal(sends,0);
+});
+
+test('an actual reservation change suppresses a late quote result without another remote quote',async()=>{
+ let routes=0;const pending=deferred<RouteQuote>(),quotes=pageQuotes(()=>{}),inFlight=new Set<bigint>();
+ const funds=page.pageQuoteFunds(()=>({token:'pool',notes:[{nullifier:1n,asset:0n,amount:500n}],inFlight}),quotes.clear),context={wallet:{},revision:funds.revision,key:'invoice:500'};
+ quotes.load(context,()=>{routes++;return pending.promise;});await flush();inFlight.add(1n);funds.update();
+ pending.resolve(quoteOf('lightning'));await flush();assert.equal(routes,1);assert.equal(quotes.read({...context,revision:funds.revision}).quote,undefined);
+});
+
 test('editing a payment invalidates a pending quote without requesting another one',async()=>{
  let routes=0;const result=deferred<RouteQuote>(),quotes=pageQuotes(()=>{});
  const context={wallet:{},revision:1,key:'invoice:500'};

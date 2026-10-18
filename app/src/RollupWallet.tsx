@@ -18,7 +18,7 @@ import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} f
 import {birthCheckpoint} from '../../src/shielded/checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageCache,pageRefresh,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
 import {CopyButton} from './components.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 
@@ -62,7 +62,8 @@ export default function RollupWallet(){
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
  const lnurlRef=useRef<ReturnType<typeof createHdLnurl>|undefined>(undefined);
  const [,setQuoteRevision]=useState(0);
- const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined),fundsRevision=useRef(0);
+ const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
+ const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
  if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
  const quotes=quoteRef.current;
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined);
@@ -116,7 +117,7 @@ export default function RollupWallet(){
   busyRef.current=true;setBusy(true);quotes.clear();
   try{const txid=await renewPageCoins(()=>wallet.renew(),sheetOwner);if(!txid&&mounted.current&&!restoring.current)setPoolError('Nothing needed renewing.');}
   catch{}
-  finally{if(mounted.current&&!restoring.current){busyRef.current=false;setBusy(false);fundsRevision.current++;setTick(t=>t+1);}}
+  finally{if(mounted.current&&!restoring.current){busyRef.current=false;setBusy(false);fundsRef.current?.watch.update();setTick(t=>t+1);}}
  };
 
  const lightning=async(action:()=>Promise<void>)=>{
@@ -202,8 +203,10 @@ export default function RollupWallet(){
   void session.ready.then(created=>{
    if(!created||!current())return;
    setStartupError('');
-   unwatch.push(created.onShieldedChange(()=>{if(current()){fundsRevision.current++;quotes.clear();setTick(t=>t+1);}}));
-   unwatch.push(created.onAction(handle=>{if(current())sheetOwner.watch(handle,handle.title);}));
+   const funds=pageQuoteFunds(()=>({token:created.pool.status.pool?.token,notes:created.mergeableAssets().flatMap(asset=>created.shieldedNotes(asset)),inFlight:created.inFlight}),()=>{quotes.clear();setQuoteRevision(v=>v+1);});
+   fundsRef.current={wallet:created,watch:funds};
+   unwatch.push(created.onShieldedChange(()=>{if(current()){funds.update();setTick(t=>t+1);}}));
+   unwatch.push(created.onAction(handle=>{if(current()){funds.update();quotes.clear();sheetOwner.watch(handle,handle.title);}}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes could not be read, so the wallet is reading the pool again: ${created.repositoryError}`);
    unwatch.push(created.swaps!.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
@@ -220,6 +223,7 @@ export default function RollupWallet(){
   if(!wallet)return;
   const refresh=pageRefresh({coins:()=>wallet.coins(),balance:()=>wallet.getBalance(),address:()=>wallet.getAddress(),history:()=>wallet.getActivityHistory(),lightningHistory:async()=>wallet.swaps?.getActivityHistory()??[]},(data,errors)=>{
    if(restoring.current||!mounted.current)return;
+   if(fundsRef.current?.wallet===wallet)fundsRef.current.watch.update(data.coins);
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
    if(data.history||data.lightningHistory)setRows([...(data.history??[]),...(data.lightningHistory??[])].sort((a,b)=>b.createdAt-a.createdAt));
    setRefreshError(Object.values(errors).join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
@@ -232,15 +236,16 @@ export default function RollupWallet(){
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
- const requestKey=JSON.stringify([tab,to,amount,assetId,withSats,tick]);
- const quoteContext={wallet:wallet??quotes,revision:fundsRevision.current,key:requestKey};
+ const requestKey=JSON.stringify([tab,to,amount,assetId,withSats]);
+ const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};
  const {quote,error:quoteError,pending:quoting}=quotes.read(quoteContext);
  useEffect(()=>{
   quotes.invalidate(quoteContext);
- },[wallet,requestKey]);
+ },[wallet,requestKey,quoteContext.revision]);
  const getQuote=()=>{
   if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current||quoting)return;
-  quotes.load(quoteContext,()=>{
+  const funds=fundsRef.current;if(funds?.wallet!==wallet)return;
+  quotes.load({...quoteContext,revision:funds.watch.update()},()=>{
    const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(withSats||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
    return wallet.router().route(request);
   });
@@ -284,7 +289,12 @@ export default function RollupWallet(){
    :<button type="button" className="stock-ghost stock-mini" onClick={()=>setRevealed(r=>({...r,[item.id]:link}))}>Create a reveal link</button>}</dd></>;
  };
 
- const submit=()=>{if(quote)void run(()=>quotes.send({...quoteContext,revision:fundsRevision.current},quote),routeCopy(quote.railId).title);else getQuote();};
+ const submit=()=>{if(quote)void run(async()=>{
+  const funds=fundsRef.current;if(!funds||funds.wallet!==wallet)throw new Error('The wallet changed. Review its route again.');
+  const currentCoins=await wallet!.coins();
+  if(!mounted.current||restoring.current||fundsRef.current!==funds)throw new Error('The wallet changed. Review its route again.');
+  return quotes.send({...quoteContext,revision:funds.watch.update(currentCoins)},quote);
+ },routeCopy(quote.railId).title);else getQuote();};
 
  return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
   <section className="stock-warning"><strong>Mutinynet test pool</strong><span>Test funds only, with development-only proving keys. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</span></section>
