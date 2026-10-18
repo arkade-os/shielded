@@ -1,9 +1,10 @@
 import {OnchainWallet,Transaction,UnilateralExit,deserializeExitPackage,serializeExitPackage,timelockToSequence,type ExecutorEvent,type ExitOptions,type ExitPackage,type ExitQuote,type OnchainProvider,type Wallet} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import type {LightningRepository} from './lightning-repository.ts';
+import {checkRecoveryWitnessRepair,completeRecoveryWitnesses,needsRecoveryWitnessRepair} from './lightning-exit-witness.ts';
 
 export interface LightningRecovery {
- v:1;outpoint:string;pool:string;createdAt:number;state:'preparing'|'ready'|'paused'|'complete'|'shielded';quote:ExitQuote;package?:ExitPackage;event?:ExecutorEvent;error?:string;running?:boolean;
+ v:1;outpoint:string;pool:string;createdAt:number;state:'preparing'|'ready'|'paused'|'complete'|'shielded';quote:ExitQuote;package?:ExitPackage;originalPackage?:ExitPackage;event?:ExecutorEvent;error?:string;running?:boolean;needsWitnessRepair?:boolean;
 }
 export const recoveryLock=(owner:string,outpoint:string)=>`shielded-lightning-${owner}-payout-${outpoint}`;
 const storagePool='onchain-recovery',storageKey='active-exit';
@@ -34,7 +35,7 @@ function checkPackage(pkg:ExitPackage,outpoint:string,quote:ExitQuote,onchain:On
 }
 
 export function createLightningRecovery(o:{owner:string;pool:string;companion:Wallet;journal:LightningRepository;acquireSession:(name:string)=>Promise<()=>Promise<void>>;options:(outpoint:string)=>Promise<ExitOptions>;stopShielding:(outpoint:string)=>Promise<void>;reconcileShielding:(outpoint:string)=>Promise<void>;changed:()=>void;report:(error:unknown)=>void}){
- const quotes=new Map<string,{quote:ExitQuote;at:number}>(),validated=new Map<string,string>();let closed=false,preparing:Promise<LightningRecovery>|undefined,job:Promise<void>|undefined,controller:AbortController|undefined;
+ const quotes=new Map<string,{quote:ExitQuote;at:number}>(),validated=new Map<string,string>(),needsWitness=new Map<string,boolean>();let closed=false,preparing:Promise<LightningRecovery>|undefined,job:Promise<void>|undefined,controller:AbortController|undefined;
  const assertOpen=()=>{if(closed)throw new Error('Private Lightning service is closed');};
  let validationWallet:Promise<OnchainWallet>|undefined;
  const onchain=()=>validationWallet??=OnchainWallet.create(o.companion.identity,'mutinynet',o.companion.onchainProvider);
@@ -44,14 +45,14 @@ export function createLightningRecovery(o:{owner:string;pool:string;companion:Wa
   for(const [key,record] of Object.entries(records)){
    if(!record||record.v!==1||key!==record.outpoint||!/^([0-9a-f]{64}):(0|[1-9]\d*)$/.test(record.outpoint)||!record.pool||!Number.isSafeInteger(record.createdAt)||!['preparing','ready','paused','complete','shielded'].includes(record.state)||!record.quote||!['preparing','shielded'].includes(record.state)&&!record.package)throw new Error('Unreadable onchain recovery; shielding remains paused.');
    if(record.package){
-    const serialized=serializeExitPackage(record.package),binding=JSON.stringify([record.quote,serialized]);
-    if(validated.get(record.outpoint)!==binding){checkPackage(deserializeExitPackage(serialized),record.outpoint,record.quote,await onchain());validated.set(record.outpoint,binding);}
+    const serialized=serializeExitPackage(record.package),binding=JSON.stringify([record.quote,serialized,record.originalPackage]);
+    if(validated.get(record.outpoint)!==binding){checkPackage(deserializeExitPackage(serialized),record.outpoint,record.quote,await onchain());if(record.originalPackage)checkRecoveryWitnessRepair(record.originalPackage,record.package);needsWitness.set(record.outpoint,needsRecoveryWitnessRepair(record.package));validated.set(record.outpoint,binding);}
    }
   }
   return records;
  };
  const save=async(record:LightningRecovery)=>{const records=await load();records[record.outpoint]=record;await o.journal.saveReceiveState(o.owner,storagePool,storageKey,records);o.changed();};
- const get=async(outpoint:string)=>{const record=(await load())[outpoint];return record?{...record,running:!!job&&!terminal(record)}:undefined;};
+ const get=async(outpoint:string)=>{const record=(await load())[outpoint];return record?{...record,running:!!job&&!terminal(record),needsWitnessRepair:needsWitness.get(outpoint)??false}:undefined;};
  const held=async(outpoint:string)=>!!(await load())[outpoint];
  const remember=(outpoint:string,quote:ExitQuote)=>{quotes.set(outpoint,{quote,at:Date.now()});};
  const prepareInner=async(outpoint:string,quote:ExitQuote)=>{
@@ -73,9 +74,10 @@ export function createLightningRecovery(o:{owner:string;pool:string;companion:Wa
     const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
    }});
    const staged=await OnchainWallet.create(o.companion.identity,'mutinynet',provider);
-   const pkg=await UnilateralExit.prepare({...options,onchainWallet:staged,feeRate:quote.feeRate,mode:'funded'});assertOpen();checkPackage(pkg,outpoint,quote,staged);
+   const original=await UnilateralExit.prepare({...options,onchainWallet:staged,feeRate:quote.feeRate,mode:'funded'}),pkg=await completeRecoveryWitnesses(original,o.companion);assertOpen();checkPackage(pkg,outpoint,quote,staged);
    const broadcast=pkg.steps.find(s=>s.kind==='broadcast');if(splitter!==broadcast?.hex)throw new Error('The staged funding transaction changed.');
-   record.package=pkg;record.state='ready';await save(record);return (await get(outpoint))!;
+   record.package=pkg;if(serializeExitPackage(original)!==serializeExitPackage(pkg))record.originalPackage=original;
+   record.state='ready';await save(record);return (await get(outpoint))!;
   }catch(error){
    if(record&&!record.package&&(error as {code?:string})?.code==='lightning-payout-shielded'){record.state='shielded';await save(record);}
    throw error;
@@ -85,6 +87,16 @@ export function createLightningRecovery(o:{owner:string;pool:string;companion:Wa
   if(preparing)return Promise.reject(new Error('A recovery package is already being prepared.'));
   const task=prepareInner(outpoint,quote);preparing=task;void task.finally(()=>{if(preparing===task)preparing=undefined;}).catch(()=>{});return task;
  };
+ const repairRecord=async(record:LightningRecovery)=>{
+  if(!record.package)throw new Error('Prepare and save this payout recovery first.');
+  const corrected=await completeRecoveryWitnesses(record.package,o.companion);assertOpen();
+  if(serializeExitPackage(corrected)!==serializeExitPackage(record.package)){record.originalPackage??=record.package;record.package=corrected;checkRecoveryWitnessRepair(record.originalPackage,corrected);await save(record);}
+ };
+ const repair=async(outpoint:string)=>{
+  assertOpen();const release=await o.acquireSession(`shielded-lightning-${o.owner}-onchain-exit`);let releasePayout:(()=>Promise<void>)|undefined;
+  try{const record=(await load())[outpoint];if(!record?.package)throw new Error('Prepare and save this payout recovery first.');releasePayout=await o.acquireSession(recoveryLock(o.owner,outpoint));await repairRecord(record);return (await get(outpoint))!;}
+  finally{await releasePayout?.();await release();}
+ };
  const start=async(outpoint:string)=>{
   assertOpen();if(job)throw new Error('Onchain recovery is already running.');
   const release=await o.acquireSession(`shielded-lightning-${o.owner}-onchain-exit`);let releasePayout:(()=>Promise<void>)|undefined;
@@ -92,6 +104,7 @@ export function createLightningRecovery(o:{owner:string;pool:string;companion:Wa
    const record=(await load())[outpoint];assertOpen();if(!record?.package)throw new Error('Prepare and save this payout recovery first.');
    if(record.state==='complete'){await release();return;}
    await o.stopShielding(outpoint);releasePayout=await o.acquireSession(recoveryLock(o.owner,outpoint));assertOpen();
+   await repairRecord(record);
    controller=new AbortController();const signal=controller.signal,pkg=record.package;
    const provider:OnchainProvider=new Proxy(o.companion.onchainProvider,{get(target,key){
     if(key==='broadcastTransaction')return async(...args:Parameters<OnchainProvider['broadcastTransaction']>)=>{assertOpen();signal.throwIfAborted();return target.broadcastTransaction(...args);};
@@ -119,5 +132,5 @@ export function createLightningRecovery(o:{owner:string;pool:string;companion:Wa
   }catch(error){await releasePayout?.();await release();throw error;}
  };
  const pause=async()=>{controller?.abort();await job;};
- return {get,list:async()=>Object.values(await load()),held,remember,prepare,start,pause,async dispose(){closed=true;await pause();await preparing?.catch(()=>{});}};
+ return {get,list:async()=>Object.values(await load()),held,remember,prepare,repair,start,pause,async dispose(){closed=true;await pause();await preparing?.catch(()=>{});}};
 }

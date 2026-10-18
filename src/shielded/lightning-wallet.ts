@@ -14,6 +14,7 @@ export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,
  quoteRecovery(outpoint:string):Promise<ExitQuote>;
  getRecovery(outpoint:string):Promise<LightningRecovery|undefined>;
  prepareRecovery(outpoint:string,quote:ExitQuote):Promise<LightningRecovery>;
+ repairRecovery(outpoint:string):Promise<LightningRecovery>;
  startRecovery(outpoint:string):Promise<void>;
  pauseRecovery():Promise<void>;
  [Symbol.asyncDispose]():Promise<void>;
@@ -286,7 +287,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   });
   const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
-  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,startRecovery:recovery.start,pauseRecovery:recovery.pause,
+  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,registerPayouts,getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
  }catch(error){await dispose();throw error;}
 }

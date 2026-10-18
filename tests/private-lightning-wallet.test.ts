@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {indexedDB} from 'fake-indexeddb';
-import {ArkAddress,DefaultVtxo,InMemoryContractRepository,MnemonicIdentity,P2A,SingleKey,Transaction,UnilateralExit,getNetwork,provisionClaimSecret,provisionRefundKey,sequenceToTimelock,timelockToSequence,type Wallet} from '@arkade-os/sdk';
+import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,DefaultVtxo,InMemoryContractRepository,MnemonicIdentity,P2A,SingleKey,Transaction,UnilateralExit,VtxoScript,getNetwork,provisionClaimSecret,provisionRefundKey,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
+import {Script} from '@scure/btc-signer';
+import {sha256} from '@noble/hashes/sha2.js';
+import {ripemd160} from '@noble/hashes/legacy.js';
 import {InMemoryAssetSwapRepository,type Quote,type SwapClient,type SwapClientConfig,type SwapRecord,type SwapUpdate} from '@arkade-os/swap';
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {base64,hex} from '@scure/base';
@@ -10,6 +13,7 @@ import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
 import {IndexedDbLightningRepository,InMemoryLightningRepository,type LightningRepository} from '../src/shielded/lightning-repository.ts';
 import {artifactWallet,createPrivateLightning,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
 import {ShieldedWallet} from '../src/shielded/wallet.ts';
+import {checkRecoveryWitnessRepair,completeRecoveryWitnesses} from '../src/shielded/lightning-exit-witness.ts';
 import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
 
 globalThis.indexedDB=indexedDB;
@@ -166,10 +170,12 @@ async function recoveryFixture(journal:LightningRepository=new InMemoryLightning
  return {...f,journal,service,contract,coin,requests,broadcasts,outpoint:`${coin.txid}:${coin.vout}`};
 }
 
-async function fundedRecoveryFixture(journal?:LightningRepository){
+async function fundedRecoveryFixture(journal?:LightningRepository,conditional=false){
  const f=await recoveryFixture(journal),payer=SingleKey.fromHex('22'.repeat(32)),operator=SingleKey.fromHex('03'.repeat(32));
- const input=new DefaultVtxo.Script({pubKey:await payer.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'seconds',value:1024n}}),parent=new Transaction({version:3});
- parent.addInput({txid:'cd'.repeat(32),index:0,witnessUtxo:{script:input.pkScript,amount:BigInt(f.coin.value)},tapLeafScript:[input.forfeit()]});
+ const preimage=new Uint8Array(32).fill(7),condition=Script.encode(['SIZE',new Uint8Array([32]),'EQUALVERIFY','HASH160',ripemd160(sha256(preimage)),'EQUAL']);
+ const input=conditional?new VtxoScript([ConditionMultisigTapscript.encode({conditionScript:condition,pubkeys:[await payer.xOnlyPublicKey(),server]}).script]):new DefaultVtxo.Script({pubKey:await payer.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'seconds',value:1024n}}),parent=new Transaction({version:3});
+ parent.addInput({txid:'cd'.repeat(32),index:0,witnessUtxo:{script:input.pkScript,amount:BigInt(f.coin.value)},tapLeafScript:[conditional?input.leaves[0]!: (input as DefaultVtxo.Script).forfeit()]});
+ if(conditional)setArkPsbtField(parent,0,ConditionWitness,[preimage]);
  parent.addOutput({script:hex.decode(f.coin.script),amount:BigInt(f.coin.value)});parent.addOutput(P2A);
  const signed=await operator.sign(await payer.sign(parent));f.coin.txid=signed.id;f.coin.vout=0;f.outpoint=`${signed.id}:0`;
  const confirmed=new Set<string>(),sent:string[][]=[];
@@ -178,12 +184,105 @@ async function fundedRecoveryFixture(journal?:LightningRepository){
  Object.assign(f.base.onchainProvider,{getTxStatus:async(txid:string)=>{if(!confirmed.has(txid))throw new Error('not onchain');return {confirmed:true,blockHeight:100,blockTime:1000};},
   getCoins:async()=>[{txid:'ee'.repeat(32),vout:0,value:100000,status:{confirmed:true}}],getChainTip:async()=>({height:2148,time:999999}),
   broadcastTransaction:async(...txs:string[])=>{sent.push(txs);for(const raw of txs)confirmed.add(Transaction.fromRaw(hex.decode(raw)).id);return Transaction.fromRaw(hex.decode(txs[0]!)).id;}});
- return {...f,sent,confirmed};
+ return {...f,sent,confirmed,preimage,signedParent:signed};
 }
 
 function whenRecovered(wallet:ShieldedWallet,service:PrivateLightningService,outpoint:string){
  const changed=wallet.changed.bind(wallet);return new Promise<void>((resolve,reject)=>{wallet.changed=()=>{changed();void service.getRecovery(outpoint).then(record=>{if(record?.state==='complete')resolve();},reject);};});
 }
+
+test('recovery preparation retains the public hashlock witness omitted by the SDK finalizer',async()=>{
+ const f=await fundedRecoveryFixture(undefined,true);
+ try{
+  const prepared=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint));
+  const parent=prepared.package!.steps.find(s=>s.kind==='package')!;assert.equal(parent.kind,'package');
+  const witness=Transaction.fromRaw(hex.decode(parent.parentHex)).getInput(0).finalScriptWitness!;
+  assert.deepEqual(witness.at(-3),f.preimage);assert.equal(witness.length,5);assert.deepEqual(f.sent,[]);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('resuming an old conditional package saves its witness repair before broadcast without signing again',{timeout:15000},async t=>{
+ const f=await fundedRecoveryFixture(undefined,true);
+ try{
+  const prepared=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint));
+  const parent=prepared.package!.steps.find(s=>s.kind==='package')!;assert.equal(parent.kind,'package');
+  const unsigned=f.signedParent.clone();unsigned.finalize();parent.parentHex=unsigned.hex;
+  delete (prepared as any).originalPackage;
+  const rootOwner=hex.encode(await root.xOnlyPublicKey());
+  await f.journal.saveReceiveState(rootOwner,'onchain-recovery','active-exit',{[f.outpoint]:prepared});
+  const original=structuredClone(prepared.package),broadcast=f.base.onchainProvider.broadcastTransaction.bind(f.base.onchainProvider);
+  t.mock.method(root,'sign',async()=>{throw new Error('Repair signed');});
+  t.mock.method(root,'signDescriptorTransactions',async()=>{throw new Error('Repair signed descriptor');});
+  t.mock.method(f.base.onchainProvider,'broadcastTransaction',async(...args:string[])=>{
+   const saved=await f.service.getRecovery(f.outpoint);assert.deepEqual((saved as any).originalPackage,original);
+   const step=saved!.package!.steps.find(s=>s.kind==='package')!;assert.equal(step.kind,'package');
+   assert.deepEqual(Transaction.fromRaw(hex.decode(step.parentHex)).getInput(0).finalScriptWitness!.at(-3),f.preimage);
+   return broadcast(...args);
+  });
+  const finished=whenRecovered(f.wallet,f.service,f.outpoint);await f.service.startRecovery(f.outpoint);await finished;
+  assert.deepEqual((await f.service.getRecovery(f.outpoint) as any).originalPackage,original);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a condition repair rejects a wrong public preimage before saving or broadcasting',async t=>{
+ const f=await fundedRecoveryFixture(undefined,true);
+ try{
+  const wrong=f.signedParent.clone();wrong.updateInput(0,{unknown:undefined});setArkPsbtField(wrong,0,ConditionWitness,[new Uint8Array(32).fill(8)]);
+  t.mock.method(f.base.indexerProvider,'getVirtualTxs',async()=>({txs:[base64.encode(wrong.toPSBT())]}));
+  await assert.rejects(f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),/condition witness/);
+  assert.deepEqual(f.sent,[]);assert.equal((await f.service.getRecovery(f.outpoint))!.state,'preparing');
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('repair-only export persists the original backup atomically and does not sign or broadcast',async t=>{
+ const f=await fundedRecoveryFixture(undefined,true);
+ try{
+  const saved=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),parent=saved.package!.steps.find(s=>s.kind==='package')!;assert.equal(parent.kind,'package');
+  const old=f.signedParent.clone();old.finalize();parent.parentHex=old.hex;delete saved.originalPackage;
+  const rootOwner=hex.encode(await root.xOnlyPublicKey()),original=structuredClone(saved.package);
+  await f.journal.saveReceiveState(rootOwner,'onchain-recovery','active-exit',{[f.outpoint]:saved});
+  assert.equal((await f.service.getRecovery(f.outpoint))!.needsWitnessRepair,true);
+  t.mock.method(root,'sign',async()=>{throw new Error('Repair signed');});t.mock.method(root,'signDescriptorTransactions',async()=>{throw new Error('Repair signed descriptor');});
+  const write=t.mock.method(f.journal,'saveReceiveState',async()=>{throw new Error('repair disk full');});
+  await assert.rejects(f.service.repairRecovery(f.outpoint),/repair disk full/);
+  assert.deepEqual((await f.service.getRecovery(f.outpoint))!.package,original);assert.deepEqual(f.sent,[]);write.mock.restore();
+  const repaired=await f.service.repairRecovery(f.outpoint);assert.deepEqual(repaired.originalPackage,original);assert.equal(repaired.needsWitnessRepair,false);assert.deepEqual(f.sent,[]);
+  t.mock.method(f.base.indexerProvider,'getVirtualTxs',async()=>{throw new Error('repair refetched');});
+  assert.deepEqual(await f.service.repairRecovery(f.outpoint),repaired);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a conditional transaction falls back to the indexer for an input omitted from the local PSBT',async t=>{
+ const f=await fundedRecoveryFixture(undefined,true);
+ try{
+  const saved=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),parent=saved.package!.steps.find(s=>s.kind==='package')!;assert.equal(parent.kind,'package');
+  const source=new Transaction({version:3}),input=f.signedParent.getInput(0);
+  for(let i=0;i<2;i++){source.addInput({txid:input.txid,index:i,witnessUtxo:input.witnessUtxo,tapLeafScript:input.tapLeafScript});setArkPsbtField(source,i,ConditionWitness,[f.preimage]);}
+  for(let i=0;i<f.signedParent.outputsLength;i++)source.addOutput(f.signedParent.getOutput(i));
+  const full=await SingleKey.fromHex('03'.repeat(32)).sign(await SingleKey.fromHex('22'.repeat(32)).sign(source)),partial=full.clone();partial.updateInput(1,{unknown:undefined});
+  const raw=full.clone();raw.finalize();const pkg=structuredClone(saved.package!);pkg.steps=[{...parent,parentTxid:raw.id,parentHex:raw.hex}];
+  let reads=0;
+  const repaired=await completeRecoveryWitnesses(pkg,{virtualTxRepository:{getVirtualTx:async()=>({psbt:base64.encode(partial.toPSBT())})},indexerProvider:{getVirtualTxs:async()=>{reads++;return {txs:[base64.encode(full.toPSBT())]};}}} as never);
+  const step=repaired.steps[0]!;assert.equal(step.kind,'package');const tx=Transaction.fromRaw(hex.decode(step.parentHex));
+  assert.equal(reads,1);for(let i=0;i<2;i++)assert.deepEqual(tx.getInput(i).finalScriptWitness!.at(-3),f.preimage);
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
+
+test('a saved condition repair cannot change signatures, payments, fee children, or package totals',async()=>{
+ const f=await fundedRecoveryFixture(undefined,true);
+ try{
+  const saved=await f.service.prepareRecovery(f.outpoint,await f.service.quoteRecovery(f.outpoint)),original=saved.originalPackage!;
+  assert.ok(original);checkRecoveryWitnessRepair(original,saved.package!);
+  for(const change of ['signature','destination','child','totals'] as const){
+   const altered=structuredClone(saved.package!),parent=altered.steps.find(s=>s.kind==='package')!;assert.equal(parent.kind,'package');
+   if(change==='signature'){const tx=Transaction.fromRaw(hex.decode(parent.parentHex)),witness=tx.getInput(0).finalScriptWitness!;witness[0]![0]^=1;tx.updateInput(0,{finalScriptWitness:witness});parent.parentHex=tx.hex;}
+   else if(change==='destination')altered.sweepAddress='tb1pforeign';
+   else if(change==='child')parent.childHex+='00';
+   else altered.totals.recoveredSats++;
+   assert.throws(()=>checkRecoveryWitnessRepair(original,altered),/condition witness/);
+  }
+ }finally{await f.service[Symbol.asyncDispose]();}
+});
 
 test('funded recovery persists the real signed package before any broadcast and resumes that exact package after service restart',{timeout:15000},async()=>{
  const name=`ln-exit-${crypto.randomUUID()}`,f=await fundedRecoveryFixture(new IndexedDbLightningRepository(name));
