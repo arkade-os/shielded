@@ -36,7 +36,8 @@ function checkPackage(pkg:ExitPackage,outpoint:string,quote:ExitQuote,onchain:On
 export function createLightningRecovery(o:{owner:string;pool:string;companion:Wallet;journal:LightningRepository;acquireSession:(name:string)=>Promise<()=>Promise<void>>;options:(outpoint:string)=>Promise<ExitOptions>;stopShielding:(outpoint:string)=>Promise<void>;reconcileShielding:(outpoint:string)=>Promise<void>;changed:()=>void;report:(error:unknown)=>void}){
  const quotes=new Map<string,{quote:ExitQuote;at:number}>();let closed=false,preparing:Promise<LightningRecovery>|undefined,job:Promise<void>|undefined,controller:AbortController|undefined;
  const assertOpen=()=>{if(closed)throw new Error('Private Lightning service is closed');};
- const onchain=()=>OnchainWallet.create(o.companion.identity,'mutinynet',o.companion.onchainProvider);
+ let validationWallet:Promise<OnchainWallet>|undefined;
+ const onchain=()=>validationWallet??=OnchainWallet.create(o.companion.identity,'mutinynet',o.companion.onchainProvider);
  const load=async()=>{
   const records=await o.journal.getReceiveState<Record<string,LightningRecovery>>(o.owner,storagePool,storageKey)??{};
   if(!records||typeof records!=='object'||Array.isArray(records))throw new Error('Unreadable onchain recovery; shielding remains paused.');

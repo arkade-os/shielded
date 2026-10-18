@@ -9,12 +9,13 @@ const formatNumber=(value:number)=>value.toLocaleString('en-US');
 export function LightningRecoveryQuote({service,outpoint,disabled}:{service:Pick<PrivateLightningService,'quoteRecovery'|'getRecovery'|'prepareRecovery'|'startRecovery'|'pauseRecovery'>;outpoint:string;disabled:boolean}){
  const [quote,setQuote]=useState<ExitQuote>(),[pending,setPending]=useState(false),[error,setError]=useState(''),request=useRef(0);
  const [recovery,setRecovery]=useState<LightningRecovery>(),[understood,setUnderstood]=useState(false);
- useEffect(()=>{setQuote(undefined);setPending(false);setError('');return()=>{request.current++;};},[service,outpoint]);
+ useEffect(()=>{setQuote(undefined);setPending(false);setError('');setRecovery(undefined);setUnderstood(false);return()=>{request.current++;};},[service,outpoint]);
  useEffect(()=>{
-  let stopped=false;setRecovery(undefined);setUnderstood(false);
-  const refresh=async()=>{try{const saved=await service.getRecovery(outpoint);if(!stopped)setRecovery(saved);}catch(cause){if(!stopped)setError(errorText(cause));}};
-  void refresh();const timer=setInterval(()=>void refresh(),2000);return()=>{stopped=true;clearInterval(timer);};
- },[service,outpoint]);
+  if(recovery?.state==='complete'||recovery?.state==='shielded')return;
+  let stopped=false;
+  const refresh=async()=>{const id=request.current;try{const saved=await service.getRecovery(outpoint);if(!stopped&&id===request.current)setRecovery(saved);}catch(cause){if(!stopped&&id===request.current)setError(errorText(cause));}};
+  void refresh();const timer=setInterval(()=>void refresh(),recovery?.running?2000:15000);return()=>{stopped=true;clearInterval(timer);};
+ },[service,outpoint,recovery?.running,recovery?.state]);
  const load=async()=>{
   const id=++request.current;setPending(true);setError('');setQuote(undefined);
   try{const result=await service.quoteRecovery(outpoint);if(id===request.current)setQuote(result);}
