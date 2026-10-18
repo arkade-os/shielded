@@ -11,6 +11,10 @@ export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 const rateLimitedUntil=new Map<string,number>();
 const admissionLimitedUntil=new Map<string,number>();
+class PoolRequestError extends Error {
+ constructor(message:string,readonly status?:number,options?:ErrorOptions){super(message,options);}
+ get transient(){return this.status===undefined||this.status===429||this.status>=500;}
+}
 
 /** Retries outages and rate limits; definitive refusals surface at once. */
 export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{
@@ -22,7 +26,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   beforeRequest?.();
   let response:Response|undefined;
   try{response=await fetcher(origin+'/api/rollup'+path,request);}
-  catch(error){if(attempt>=4)throw error;}
+  catch(error){if(attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
   if(response&&response.status<500){
    const json=await response.json().catch(()=>({}));
    const metadata=json&&typeof json==='object'?json:{};
@@ -33,10 +37,10 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
     cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(Number.isSafeInteger(delay)&&delay>=0?Math.max(1000,delay):60_000)));
     if(attempt<4)continue;
    }
-   if(!response.ok)throw Object.assign(new Error(metadata.error??`The pool answered ${response.status}.`),{status:response.status,...(typeof metadata.code==='string'?{code:metadata.code}:{})});
+   if(!response.ok)throw Object.assign(new PoolRequestError(metadata.error??`The pool answered ${response.status}.`,response.status),typeof metadata.code==='string'?{code:metadata.code}:{});
    return json as T;
   }
-  if(attempt>=4)throw new Error(`The pool did not answer (${response?.status??'network error'}).`);
+  if(attempt>=4)throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
   await sleep(pauseMs);
  }
 }
@@ -93,9 +97,11 @@ export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Pr
  let signed='',interval=pollMs;
  for(const end=Date.now()+deadlineMs;;){
   if(Date.now()>end)throw new Error('The spend did not settle in time; the pool may still include it.');
-  const status=await api<SpendStatus>('/spends/'+id);
-  if(status.status==='included'||status.status==='dropped')return status;
-  if(status.status==='signing'){
+  let status:SpendStatus|undefined;
+  try{status=await api<SpendStatus>('/spends/'+id);}
+  catch(error){if(!(error instanceof PoolRequestError)||!error.transient)throw error;}
+  if(status?.status==='included'||status?.status==='dropped')return status;
+  if(status?.status==='signing'){
    if(status.arkTx!==signed){await onSigning(status);signed=status.arkTx!;}
    interval=pollMs;
   }

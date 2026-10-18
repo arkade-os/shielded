@@ -163,3 +163,70 @@ test('pending polling slows down but observes a new signing round well inside it
  assert.equal((await pending).status,'included');assert.ok(polls.length<=8,String(polls.length));
  assert.ok(signed[0]!>=1_012_001&&signed[0]!<=1_017_001,String(signed[0]));
 });
+
+for(const failure of ['503','network','429'] as const)test(`an accepted spend survives exhausted ${failure} status reads without another POST`,async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const reads:string[]=[];let posts=0,signs=0;
+ const fetcher=(async(url:unknown,init?:RequestInit)=>{
+  if(init?.method==='POST'){posts++;return Response.json({status:'pending'});}
+  reads.push(String(url));
+  if(reads.length<=5){
+   if(failure==='network')throw new TypeError('fetch failed');
+   return new Response('temporary outage',{status:Number(failure),headers:{'Retry-After':'1'}});
+  }
+  return Response.json({status:'included',batch:146,txid:'settled'});
+ }) as typeof fetch;
+ const api=poolApiOf(`https://accepted-${failure}.test`,fetcher);
+ await api('/spends',{id:'accepted'});
+ const pending=outcome(waitForSpend('accepted',async()=>{signs++;},api,1000,30_000));
+ await flush();for(let i=0;i<6;i++){t.mock.timers.tick(1000);await flush();}
+ assert.deepEqual(await pending,{value:{status:'included',batch:146,txid:'settled'},error:undefined});
+ assert.equal(posts,1);assert.equal(signs,0);assert.equal(reads.length,6);
+ assert.ok(reads.every(url=>url.endsWith('/spends/accepted')));
+});
+
+test('a status outage preserves the batch already signed and does not sign it twice',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ let reads=0,signs=0;
+ const fetcher=(async()=>{
+  reads++;
+  if(reads>=2&&reads<=6)return new Response('unavailable',{status:503});
+  return Response.json(reads<8?{status:'signing',arkTx:'same-batch'}:{status:'included'});
+ }) as typeof fetch;
+ const pending=outcome(waitForSpend('signed',async()=>{signs++;},poolApiOf('https://signed-outage.test',fetcher)));
+ await flush();for(let i=0;i<10;i++){t.mock.timers.tick(1000);await flush();}
+ assert.equal((await pending).value?.status,'included');assert.equal(signs,1);assert.equal(reads,8);
+});
+
+test('exhausted signature POST failures propagate without repeating the signing callback',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ let reads=0,posts=0,signs=0;
+ const fetcher=(async(_url:unknown,init?:RequestInit)=>{
+  if(init?.method==='POST'){posts++;return new Response('unavailable',{status:503});}
+  reads++;return Response.json({status:'signing',arkTx:'batch'});
+ }) as typeof fetch;
+ const api=poolApiOf('https://signature-failure.test',fetcher);
+ const pending=outcome(waitForSpend('a',async()=>{signs++;await api('/spends/a/sign',{arkTx:'signed'});},api));
+ await flush();for(let i=0;i<8;i++){t.mock.timers.tick(1000);await flush();}
+ assert.match((await pending).error?.message??'',/503/);assert.equal(signs,1);assert.equal(posts,5);assert.equal(reads,1);
+});
+
+test('definitive status refusals and unclassified API errors remain terminal',async()=>{
+ for(const status of [400,404,409]){
+  let reads=0;
+  const fetcher=(async()=>{reads++;return Response.json({error:'definitive refusal'},{status});}) as typeof fetch;
+  await assert.rejects(waitForSpend('a',async()=>{},poolApiOf(`https://status-refusal-${status}.test`,fetcher)),(error:{status?:number})=>error.status===status);
+  assert.equal(reads,1);
+ }
+ const unexpected=new TypeError('invalid local state');let reads=0;
+ await assert.rejects(waitForSpend('a',async()=>{},async()=>{reads++;throw unexpected;}),error=>error===unexpected);assert.equal(reads,1);
+});
+
+test('status outages retain the original polling deadline and never imply the spend was dropped',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ let reads=0;
+ const fetcher=(async()=>{reads++;return new Response('unavailable',{status:503});}) as typeof fetch;
+ const pending=outcome(waitForSpend('a',async()=>{},poolApiOf('https://status-deadline.test',fetcher),1000,4500));
+ await flush();for(let i=0;i<6;i++){t.mock.timers.tick(1000);await flush();}
+ assert.match((await pending).error?.message??'',/did not settle in time; the pool may still include it/);assert.equal(reads,5);
+});
