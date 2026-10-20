@@ -1,8 +1,8 @@
 import { ANCHOR_TAG, EPOCH_KIND_BYTE, EPOCH_NULLIFIER_DEPTH, EPOCH_NULLIFIERS, EPOCH_SLOTS, EPOCH_TAG, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RS_TAG, RollupRejection, STATE_TAG, SUBTREE_DEPTH, WIN_TAG, WINDOW_DEPTH, type EpochBatchKind } from './constants.ts';
 import { EpochArchive } from './epoch-archive.ts';
-import { groupIdOf, sha256le248, statementOf, type Hash } from './notes.ts';
+import { sha256le248, statementOf, type Hash } from './notes.ts';
 import { RollupNullifiers } from './nullifiers.ts';
-import { bindingOf } from './state.ts';
+import { bindingOf, validateGroups } from './state.ts';
 import { DeepTree } from './tree.ts';
 
 export interface EpochAnchorRef { epoch: number; root: bigint }
@@ -16,18 +16,6 @@ export const epochBindingOf = (kind: EpochBatchKind, oldCommitment: bigint, newC
  binding.set([EPOCH_KIND_BYTE[kind], EPOCH_SLOTS[kind]], 3);
  return binding;
 };
-
-function validateGroups(hash: Hash, slots: EpochSlot[]): void {
- const bad = (why: string) => new RollupRejection('group-invalid', why);
- for (let i = 0; i < slots.length; i++) {
-  const { groupId, groupSize } = slots[i];
-  if (![0, 2, 3].includes(groupSize) || (groupId === 0n) !== (groupSize === 0)) throw bad('A group has two or three members and a nonzero id.');
-  if (groupId === 0n || (i > 0 && slots[i - 1].groupId === groupId)) continue;
-  const members = slots.slice(i, i + groupSize);
-  if (members.length !== groupSize || members.some(member => member.groupId !== groupId || member.groupSize !== groupSize) || slots[i + groupSize]?.groupId === groupId) throw bad('Group members must fill consecutive slots exactly.');
-  if (groupIdOf(hash, members.map(member => member.nullifiers[0])) !== groupId) throw bad('The group id does not commit to its members.');
- }
-}
 
 export class EpochState {
  epoch = 0;
@@ -96,7 +84,7 @@ export class EpochState {
    nfRoot: this.nullifiers.root(), nfCount: BigInt(this.nullifiers.count()),
    rPrev: this.prevNoteRoot, prevNfRoot: this.prevNfRoot, epoch: BigInt(this.epoch), epochLen: BigInt(this.epochLen),
    erRoot: this.archive.root(), erCount: BigInt(this.archive.count()), rsRoot: this.recovered.root(), rsCount: BigInt(this.recovered.count()),
-   winRoot: this.window.root(), batchCount: BigInt(batchCount), batchQ: BigInt(Math.floor(batchCount / this.epochLen)), batchR: BigInt(batchCount % this.epochLen),
+   winRoot: this.window.root(), batchCount: BigInt(batchCount), batchQ: BigInt(Math.floor(batchCount / 2 ** WINDOW_DEPTH)),
    winOldLeaf: this.window.node(0, windowSlot), winSlotPath: this.window.path(windowSlot),
   };
   const parts = [this.notes, this.nullifiers, this.window];

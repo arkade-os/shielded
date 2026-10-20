@@ -10,7 +10,7 @@ const le32 = (value: bigint) => Uint8Array.from({ length: 32 }, (_, i) => Number
 export const bindingOf = (kind: BatchKind, oldCommitment: bigint, newCommitment: bigint, daRoot: bigint, blockRoot: bigint) =>
  Uint8Array.from([0x53, 0x48, 2, BATCH_KIND_BYTE[kind], BATCH_SLOTS, ...le32(oldCommitment), ...le32(newCommitment), ...le32(daRoot), ...le32(blockRoot)]);
 
-function validateGroups(hash: Hash, slots: BatchSlot[]): void {
+export function validateGroups(hash: Hash, slots: Pick<BatchSlot, 'nullifiers' | 'groupId' | 'groupSize'>[]): void {
  const bad = (why: string) => new RollupRejection('group-invalid', why);
  for (let i = 0; i < slots.length; i++) {
   const { groupId, groupSize } = slots[i];

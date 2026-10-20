@@ -86,11 +86,11 @@ test('undoLast restores the prior commitment, and a failed apply changes nothing
 test('the witness carries every circuit field and proves non-membership against the previous set', () => {
  const state = EpochState.genesis(hash, 1024);
  state.apply('spend', fill(state));
- state.batchCount = 2 * 1024 + 2;
+ state.batchCount = 3 * 64 + 5;
  const { witness } = state.apply('spend', fill(state));
- const fields = 'pub anchor rCurRoot rCurEpoch nf cm ctDigest groupId groupSize winIdx winPath predIdx pred predPath appendPath nmIdx nmLeaf nmPath statement noteRoot noteCount noteSlot slotPath nfRoot nfCount rPrev prevNfRoot epoch epochLen erRoot erCount rsRoot rsCount winRoot winNewEpoch batchCount batchQ batchR winOldLeaf winSlotPath';
+ const fields = 'pub anchor rCurRoot rCurEpoch nf cm ctDigest groupId groupSize winIdx winPath predIdx pred predPath appendPath nmIdx nmLeaf nmPath statement noteRoot noteCount noteSlot slotPath nfRoot nfCount rPrev prevNfRoot epoch epochLen erRoot erCount rsRoot rsCount winRoot winNewEpoch batchCount batchQ winOldLeaf winSlotPath';
  assert.deepEqual(Object.keys(witness).sort(), fields.split(' ').sort());
- assert.deepEqual([witness.batchQ, witness.batchR], [2n, 2n]);
+ assert.equal(witness.batchQ, 3n);
  const previous = new RollupNullifiers(hash, EPOCH_NULLIFIER_DEPTH);
  assert.equal(witness.prevNfRoot, previous.root());
  assert.deepEqual(witness.nmLeaf, Array(BATCH_SLOTS).fill([0n, 0n, 0n]));
