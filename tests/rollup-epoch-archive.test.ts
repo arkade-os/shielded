@@ -29,6 +29,8 @@ const archived = () => {
  archive.append(0, 1234n, nf0, epochSet(22n));
  return archive;
 };
+// Epoch 1 archives a different NF[1] than epoch 0 did, so the overwrite of sets[1] shows in witness(0).
+const appendTwo = (archive: EpochArchive) => { archive.append(1, 4321n, epochSet(5n), epochSet(44n)); archive.append(2, 8765n, epochSet(44n), epochSet(66n)); };
 
 test('the first append is the pseudo-epoch at index 0', () => {
  const archive = new EpochArchive(hash), empty = epochSet(), nf0 = epochSet(11n);
@@ -96,6 +98,43 @@ test('rollback removes what was appended since begin', () => {
  const direct = archived();
  next(archive); next(direct);
  assert.equal(archive.root(), direct.root());
+});
+
+test('rollback undoes two appends and restores the set the first one overwrote', () => {
+ const archive = archived(), root = archive.root(), witnesses = () => [-1, 0].map(e => archive.witness(e, 33n)), before = witnesses(), overwritten = archive['sets'].get(1);
+ archive.begin();
+ appendTwo(archive);
+ assert.equal(archive.count(), 4);
+ assert.notDeepEqual(archive.witness(0, 33n).nonMemberB, before[1].nonMemberB);
+ archive.rollback();
+ assert.equal(archive.count(), 2);
+ assert.equal(archive.root(), root);
+ assert.deepEqual([-1, 0, 1, 2].map(e => archive.has(e)), [true, true, false, false]);
+ assert.deepEqual(witnesses(), before);
+ assert.equal(archive['sets'].get(1), overwritten);
+});
+
+// witness() reads only archived epochs, so a stale entry above them shows only in the maps.
+test('rollback restores both maps exactly, and without a begin it changes nothing', () => {
+ const archive = archived(), keys = () => [[...archive['records'].keys()], [...archive['sets'].keys()]], before = keys();
+ archive.rollback();
+ assert.deepEqual(keys(), before);
+ archive.begin();
+ appendTwo(archive);
+ archive.rollback();
+ assert.deepEqual(keys(), before);
+});
+
+test('begin, append and rollback never walk the archived maps', () => {
+ const archive = archived();
+ let walks = 0;
+ class Counted<V> extends Map<number, V> { [Symbol.iterator]() { walks++; return super[Symbol.iterator](); } }
+ archive['records'] = new Counted(archive['records']);
+ archive['sets'] = new Counted(archive['sets']);
+ archive.begin();
+ appendTwo(archive);
+ archive.rollback();
+ assert.equal(walks, 0);
 });
 
 test('a clone does not share appends with the archive it came from', () => {

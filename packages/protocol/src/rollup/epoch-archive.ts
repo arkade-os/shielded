@@ -13,7 +13,7 @@ export const erLeafIndexOf = (epoch: number) => epoch + 1;
 export class EpochArchive {
  private records = new Map<number, ArchivedEpoch>();
  private sets = new Map<number, RollupNullifiers>();
- private saved?: { records: Map<number, ArchivedEpoch>; sets: Map<number, RollupNullifiers> };
+ private log?: [Map<number, unknown>, number, unknown][];
  constructor(private readonly hash: Hash, readonly tree = new DeepTree(hash, ARCHIVE_DEPTH)) {}
  count(): number { return this.records.size; }
  root(): bigint { return this.tree.root(); }
@@ -27,9 +27,10 @@ export class EpochArchive {
   if (index !== this.count()) throw new Error(`Epoch ${epoch} is not the next to archive.`);
   const archived = { epoch, noteFinal, nfFinal: frozen.root(), nfNextFinal: frozenNext.root() };
   this.tree.set(index, this.leafOf(epoch, noteFinal, archived.nfFinal, archived.nfNextFinal));
-  this.records.set(epoch, archived);
-  this.sets.set(epoch, frozen); this.sets.set(epoch + 1, frozenNext);
+  this.put(this.records, epoch, archived);
+  this.put(this.sets, epoch, frozen); this.put(this.sets, epoch + 1, frozenNext);
  }
+ private put<V>(map: Map<number, V>, key: number, value: V): void { this.log?.push([map, key, map.get(key)]); map.set(key, value); }
  witness(epoch: number, nullifier: bigint): RecoverWitness {
   const archived = this.records.get(epoch);
   if (!archived) throw new RollupRejection('recover-unarchived', `Epoch ${epoch} is not archived.`);
@@ -41,10 +42,11 @@ export class EpochArchive {
   copy.records = new Map(this.records); copy.sets = new Map(this.sets);
   return copy;
  }
- begin(): void { this.saved = { records: new Map(this.records), sets: new Map(this.sets) }; this.tree.begin(); }
+ /** Journals appends until rollback(), so a batch that archives nothing costs nothing; a later begin() drops the journal. */
+ begin(): void { this.log = []; this.tree.begin(); }
  rollback(): void {
-  if (this.saved) { this.records = this.saved.records; this.sets = this.saved.sets; }
-  this.saved = undefined;
+  for (const [map, key, prior] of (this.log ?? []).reverse()) if (prior === undefined) map.delete(key); else map.set(key, prior);
+  this.log = undefined;
   this.tree.rollback();
  }
 }
