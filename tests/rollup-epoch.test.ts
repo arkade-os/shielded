@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import { ARCHIVE_DEPTH, BATCH_SLOTS, EPOCH_NULLIFIER_DEPTH, EPOCH_TAG, ER_TAG, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_FIELD, RS_TAG, STATE_TAG, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
-import { EpochState, anchorOf, windowLeafOf } from '../packages/protocol/src/rollup/epoch.ts';
+import { ARCHIVE_DEPTH, BATCH_SLOTS, EPOCH_NULLIFIER_DEPTH, EPOCH_TAG, ER_TAG, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_FIELD, RS_TAG, STATE_TAG, SUBTREE_DEPTH, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
+import { EpochState, anchorOf, windowLeafOf, type EpochBatchResult } from '../packages/protocol/src/rollup/epoch.ts';
 import { groupIdOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { bindingOf } from '../packages/protocol/src/rollup/state.ts';
@@ -12,6 +12,11 @@ import { epochHarness, rejection } from './fixtures/epoch.ts';
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
 const { dummyInput, deposit, fastSlot, fill, recoverSlot } = epochHarness(hash);
+const slotsFor = (state: EpochState, kind: EpochBatchKind) => kind === 'spend' ? fill(state)
+ : kind === 'join' ? Array.from({ length: BATCH_SLOTS }, () => deposit(state, 0n, { inputs: [dummyInput(), dummyInput()] }).slot)
+ : [recoverSlot(state, 0, dummyInput())];
+const nullifiersOf = (result: EpochBatchResult) => result.witness.nf as bigint[][];
+const chainOf = (full: EpochState, kind: EpochBatchKind) => { const result = full.apply(kind, slotsFor(full, kind)); return [kind, nullifiersOf(result), result.blockRoot] as const; };
 
 test('genesis validates EPOCH_LEN against the nullifier depth', () => {
  assert.equal(EpochState.genesis(hash, 1_677_721).epochLen, 1_677_721);
@@ -282,4 +287,43 @@ test('undoing a batch after a rotation keeps the archived epoch', () => {
  state.apply('spend', fill(state));
  state.undoLast();
  assert.deepEqual(kept(), before);
+});
+
+test('a follower reaches the same commitment across three rotations and every kind', () => {
+ const full = EpochState.genesis(hash, 4), follower = EpochState.genesis(hash, 4, false);
+ // epochLen 4, so batches 1-4 are epoch 0 and the first archived epoch is reachable from batch 9
+ const script: EpochBatchKind[] = ['spend', 'join', 'spend', 'spend', 'join', 'spend', 'spend', 'join', 'spend', 'recover', 'spend', 'join', 'recover'];
+ for (const kind of script) {
+  const result = full.apply(kind, slotsFor(full, kind));
+  assert.equal(follower.applyFromChain(kind, nullifiersOf(result), result.blockRoot), full.commitment());
+  assert.equal(follower.epoch, full.epoch);
+ }
+ assert.ok(full.epoch >= 3);
+ assert.equal(follower.archive.root(), full.archive.root());
+ assert.equal(follower.recovered.root(), full.recovered.root());
+});
+
+test('a follower rotates before it checks room, then checks the set its kind inserts into', () => {
+ const full = EpochState.genesis(hash, 3), follower = EpochState.genesis(hash, 3, false);
+ for (let i = 0; i < 6; i++) follower.applyFromChain(...chainOf(full, 'spend'));
+ follower.noteCount = 2 ** 32;
+ follower.nullifiers.count = () => 2 ** EPOCH_NULLIFIER_DEPTH;
+ assert.equal(follower.applyFromChain(...chainOf(full, 'join')), full.commitment()); // batch 7 rotates, so the full trees are the ones it closes
+ follower.nullifiers.count = () => 2 ** EPOCH_NULLIFIER_DEPTH;
+ assert.ok(follower.applyFromChain(...chainOf(full, 'recover')));
+ const spend = chainOf(full, 'spend');
+ assert.throws(() => follower.applyFromChain(...spend), rejection('nullifier-tree-full'));
+});
+
+test('a failed applyFromChain changes nothing, and undoLast reverts a rotating one', () => {
+ const full = EpochState.genesis(hash, 2), follower = EpochState.genesis(hash, 2, false);
+ for (let i = 0; i < 2; i++) follower.applyFromChain(...chainOf(full, 'spend'));
+ const before = follower.commitment(), [kind, nullifiers, blockRoot] = chainOf(full, 'spend');
+ assert.throws(() => follower.applyFromChain(kind, nullifiers.map(() => nullifiers[0]), blockRoot), rejection('double-spend'));
+ assert.equal(follower.commitment(), before);
+ assert.equal(follower.applyFromChain(kind, nullifiers, blockRoot), full.commitment());
+ assert.equal(follower.epoch, 1);
+ follower.undoLast();
+ assert.equal(follower.commitment(), before);
+ assert.equal(follower.applyFromChain(kind, nullifiers, blockRoot), full.commitment());
 });

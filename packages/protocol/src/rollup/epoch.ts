@@ -74,38 +74,23 @@ export class EpochState {
   validateGroups(this.hash, slots);
   const inField = (v: bigint) => v >= 0n && v < ROLLUP_FIELD;
   if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur.root) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments.');
-  const oldCommitment = this.commitment(), pubs: bigint[] = [], { notes, nullifiers, prevNf, prevNoteRoot, epoch, noteCount, batchCount } = this;
-  const windowSlot = batchCount % 2 ** WINDOW_DEPTH, epochR = batchCount % this.epochLen, rotate = epochR === 0 && batchCount > 0;
+  const oldCommitment = this.commitment(), pubs: bigint[] = [], { nullifiers, prevNoteRoot, epoch, noteCount, batchCount } = this;
+  const windowSlot = batchCount % 2 ** WINDOW_DEPTH, epochR = batchCount % this.epochLen;
   const before = {
    noteRoot: this.notes.root(), noteCount: BigInt(noteCount),
    nfRoot: this.nullifiers.root(), nfCount: BigInt(this.nullifiers.count()),
    rPrev: this.prevNoteRoot, prevNfRoot: this.prevNfRoot, epoch: BigInt(this.epoch), epochLen: BigInt(this.epochLen),
    erRoot: this.archive.root(), erCount: BigInt(this.archive.count()), rsRoot: this.recovered.root(), rsCount: BigInt(this.recovered.count()),
    winRoot: this.window.root(), batchCount: BigInt(batchCount), batchQ: BigInt(Math.floor(batchCount / 2 ** WINDOW_DEPTH)),
-   epochQ: BigInt(Math.floor(batchCount / this.epochLen)), epochR: BigInt(epochR), rotate: BigInt(rotate),
+   epochQ: BigInt(Math.floor(batchCount / this.epochLen)), epochR: BigInt(epochR),
    // Set on every batch, rotating or not, so a circuit can check the append unconditionally and keep it only when it rotates.
    erLeaf: this.archive.leafOf(epoch - 1, prevNoteRoot, this.prevNfRoot, nullifiers.root()), erAppendPath: this.archive.tree.path(this.archive.count()),
    winOldLeaf: this.window.node(0, windowSlot), winSlotPath: this.window.path(windowSlot),
   };
-  // Rotation replaces notes, nullifiers and prevNf, so undo rolls back the captured objects and puts them back.
-  const parts = [notes, nullifiers, this.window, this.archive, this.recovered];
-  for (const part of parts) part.begin();
-  this.undo = () => {
-   for (const part of parts) part.rollback();
-   this.notes = notes; this.nullifiers = nullifiers; this.prevNf = prevNf; this.prevNoteRoot = prevNoteRoot; this.epoch = epoch; this.noteCount = noteCount; this.batchCount = batchCount; this.undo = undefined;
-  };
   try {
-   if (rotate) {
-    this.archive.append(epoch - 1, prevNoteRoot, prevNf, nullifiers);
-    this.prevNoteRoot = notes.root(); this.prevNf = nullifiers;
-    this.notes = new DeepTree(this.hash, NOTE_DEPTH); this.nullifiers = new RollupNullifiers(this.hash, EPOCH_NULLIFIER_DEPTH);
-    this.noteCount = 0; this.epoch += 1;
-   }
-   if (this.noteCount + 2 ** SUBTREE_DEPTH > 2 ** NOTE_DEPTH) throw new RollupRejection('note-tree-full', 'The note tree is full.');
-   const target = kind === 'recover' ? this.recovered : this.nullifiers;
-   if (target.count() + width * m > 2 ** target.depth) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
+   const rotated = this.begin(kind);
    const noteSlot = this.noteCount / 2 ** SUBTREE_DEPTH;
-   const start = { rotNoteRoot: this.notes.root(), rotNfRoot: this.nullifiers.root(), rotNfCount: BigInt(this.nullifiers.count()), noteSlot: BigInt(noteSlot), slotPath: this.notes.path(noteSlot, SUBTREE_DEPTH) };
+   const start = { rotate: BigInt(rotated), rotNoteRoot: this.notes.root(), rotNfRoot: this.nullifiers.root(), rotNfCount: BigInt(this.nullifiers.count()), noteSlot: BigInt(noteSlot), slotPath: this.notes.path(noteSlot, SUBTREE_DEPTH) };
    const lists: Record<string, unknown[]> = {}, put = (fields: Record<string, unknown>) => { for (const key in fields) (lists[key] ??= []).push(fields[key]); };
    let da = 0n;
    for (const slot of slots) {
@@ -135,19 +120,58 @@ export class EpochState {
    let level = Array.from({ length: 2 ** SUBTREE_DEPTH }, (_, i) => commitments[i] ?? 0n);
    while (level.length > 1) level = Array.from({ length: level.length / 2 }, (_, i) => this.hash([level[2 * i], level[2 * i + 1]]));
    const blockRoot = level[0];
-   if (this.leaves) commitments.forEach((commitment, offset) => this.notes.set(this.noteCount + offset, commitment));
-   else this.notes.setAt(SUBTREE_DEPTH, noteSlot, blockRoot);
-   this.noteCount += 2 ** SUBTREE_DEPTH;
-   this.window.set(windowSlot, windowLeafOf(this.hash, { epoch: this.epoch, root: this.notes.root() }));
-   this.batchCount += 1;
+   this.seal(blockRoot, commitments);
    const binding = epochBindingOf(kind, oldCommitment, this.commitment(), da, blockRoot);
    const statement = sha256le248(binding);
-   return { witness: { ...lists, statement, ...before, ...start, winNewEpoch: BigInt(this.epoch) }, publicSignals: [...pubs, statement], binding, daRoot: da, blockRoot, rotated: rotate };
-  } catch (error) { this.undo(); throw error; }
+   return { witness: { ...lists, statement, ...before, ...start, winNewEpoch: BigInt(this.epoch) }, publicSignals: [...pubs, statement], binding, daRoot: da, blockRoot, rotated };
+  } catch (error) { this.undoLast(); throw error; }
+ }
+
+ /** Advances state from chain data alone to the commitment apply reaches: rotation follows the batch count and the kind routes each nullifier, so no anchor, rCur or origin is needed. */
+ applyFromChain(kind: EpochBatchKind, slotNullifiers: bigint[][], blockRoot: bigint): bigint {
+  const width = EPOCH_SLOTS[kind], m = EPOCH_NULLIFIERS[kind];
+  if (slotNullifiers.length !== width) throw new RollupRejection('slot-count', `A batch has exactly ${width} slots.`);
+  if (slotNullifiers.some(nullifiers => nullifiers.length !== m)) throw new RollupRejection('slot-shape', `A ${kind} slot spends ${m} note(s).`);
+  try {
+   this.begin(kind);
+   for (const nullifier of slotNullifiers.flat()) (kind === 'recover' ? this.recovered : this.nullifiers).insert(nullifier);
+   this.seal(blockRoot);
+   return this.commitment();
+  } catch (error) { this.undoLast(); throw error; }
  }
 
  undoLast(): void {
   if (!this.undo) throw new Error('There is no batch to undo.');
   this.undo();
+ }
+
+ /** Journals the batch, then rotates if the batch count says so; room is checked only after rotation, so the batch that closes a full epoch still lands. */
+ private begin(kind: EpochBatchKind): boolean {
+  const { notes, nullifiers, prevNf, prevNoteRoot, epoch, noteCount, batchCount } = this, rotated = batchCount % this.epochLen === 0 && batchCount > 0;
+  // Rotation replaces notes, nullifiers and prevNf, so undo rolls back the captured objects and puts them back.
+  const parts = [notes, nullifiers, this.window, this.archive, this.recovered];
+  for (const part of parts) part.begin();
+  this.undo = () => {
+   for (const part of parts) part.rollback();
+   this.notes = notes; this.nullifiers = nullifiers; this.prevNf = prevNf; this.prevNoteRoot = prevNoteRoot; this.epoch = epoch; this.noteCount = noteCount; this.batchCount = batchCount; this.undo = undefined;
+  };
+  if (rotated) {
+   this.archive.append(epoch - 1, prevNoteRoot, prevNf, nullifiers);
+   this.prevNoteRoot = notes.root(); this.prevNf = nullifiers;
+   this.notes = new DeepTree(this.hash, NOTE_DEPTH); this.nullifiers = new RollupNullifiers(this.hash, EPOCH_NULLIFIER_DEPTH);
+   this.noteCount = 0; this.epoch += 1;
+  }
+  if (this.noteCount + 2 ** SUBTREE_DEPTH > 2 ** NOTE_DEPTH) throw new RollupRejection('note-tree-full', 'The note tree is full.');
+  const target = kind === 'recover' ? this.recovered : this.nullifiers;
+  if (target.count() + EPOCH_SLOTS[kind] * EPOCH_NULLIFIERS[kind] > 2 ** target.depth) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
+  return rotated;
+ }
+
+ private seal(blockRoot: bigint, commitments?: bigint[]): void {
+  if (this.leaves && commitments) commitments.forEach((commitment, offset) => this.notes.set(this.noteCount + offset, commitment));
+  else this.notes.setAt(SUBTREE_DEPTH, this.noteCount / 2 ** SUBTREE_DEPTH, blockRoot);
+  this.noteCount += 2 ** SUBTREE_DEPTH;
+  this.window.set(this.batchCount % 2 ** WINDOW_DEPTH, windowLeafOf(this.hash, { epoch: this.epoch, root: this.notes.root() }));
+  this.batchCount += 1;
  }
 }
