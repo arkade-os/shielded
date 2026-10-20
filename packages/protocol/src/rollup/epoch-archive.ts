@@ -21,7 +21,7 @@ export class EpochArchive {
  leafOf(epoch: number, noteFinal: bigint, nfFinal: bigint, nfNextFinal: bigint): bigint {
   return this.hash([ER_TAG, BigInt(erLeafIndexOf(epoch)), noteFinal, nfFinal, nfNextFinal]);
  }
- /** Keeps both sets by reference, NF[e+1] once for archives e and e+1, so neither may change while archived. */
+ /** Keeps both sets by reference, NF[e+1] once for archives e and e+1, and clone() shares them too, so a caller must never insert into frozen or frozenNext after this call. */
  append(epoch: number, noteFinal: bigint, frozen: RollupNullifiers, frozenNext: RollupNullifiers): void {
   const index = erLeafIndexOf(epoch);
   if (index !== this.count()) throw new Error(`Epoch ${epoch} is not the next to archive.`);
