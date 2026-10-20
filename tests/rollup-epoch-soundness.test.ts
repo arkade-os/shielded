@@ -21,8 +21,12 @@ const mint = (state: EpochState, dummy = dummyInput(), random = fresh()) => {
 };
 const spend = (state: EpochState, note: ClientInput, rCur?: EpochAnchorRef) => state.apply('spend', fill(state, [deposit(state, 0n, { inputs: [note] }, rCur).slot]));
 const recover = (state: EpochState, origin: number, note: ClientInput) => state.apply('recover', [recoverSlot(state, origin, note)]);
-// From the first rotation on, a dummy recover slot opens the archived pseudo-epoch -1: one slot, a tenth of a spend batch's cost.
-const idle = (state: EpochState) => state.batchCount < state.epochLen ? state.apply('spend', fill(state)) : recover(state, -1, dummyInput());
+// Rotations alternate spend and recover batches so both kinds rotate. The other batches idle on a dummy recover slot once
+// epoch -1 is archived, a tenth of a spend batch's cost.
+const idle = (state: EpochState) => {
+ const full = state.batchCount < state.epochLen || (state.batchCount % state.epochLen === 0 && state.epoch % 2 === 0);
+ return full ? state.apply('spend', fill(state)) : recover(state, -1, dummyInput());
+};
 const advance = (state: EpochState, epoch: number) => { while (state.epoch < epoch) idle(state); };
 
 test('same instance: fast in e then fast in e is refused by the insert', () => {
