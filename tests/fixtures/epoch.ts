@@ -11,8 +11,10 @@ export function epochHarness(hash: Hash) {
  const fresh = () => ++counter;
  const dummyInput = () => ({ amount: 0n, ask: fresh(), nk: fresh(), rho: fresh(), index: 0, path: Array(32).fill(0n) });
  const deposit = (state: EpochState, amount: bigint, extra: Partial<ClientSpend> = {}, rCur: EpochAnchorRef = { epoch: state.epoch, root: state.latestRoot() }) => {
+  // The next batch rotates before its slots run, so they open against the root this epoch ends on.
+  const rPrev = state.batchCount > 0 && state.batchCount % state.epochLen === 0 ? state.notes.root() : state.prevNoteRoot;
   const witness = clientWitness(hash, {
-   domain: ROLLUP_DOMAIN, root: anchorOf(hash, state.prevNoteRoot, rCur.root), asset: BTC_ASSET, inputs: [dummyInput()],
+   domain: ROLLUP_DOMAIN, root: anchorOf(hash, rPrev, rCur.root), asset: BTC_ASSET, inputs: [dummyInput()],
    outputs: [{ amount, owner, random: fresh() }, { amount: 0n, owner, random: fresh() }],
    deposit: amount, withdraw: 0n, destination: 0n, ctDigest: fresh(), groupId: 0n, groupSize: 0, ...extra,
   });
@@ -22,5 +24,5 @@ export function epochHarness(hash: Hash) {
  };
  const fastSlot = (state: EpochState, amount = 0n, rCur?: EpochAnchorRef) => deposit(state, amount, {}, rCur).slot;
  const fill = (state: EpochState, first: EpochSlot[] = []) => [...first, ...Array.from({ length: BATCH_SLOTS - first.length }, () => fastSlot(state))];
- return { owner, fresh, deposit, fastSlot, fill };
+ return { owner, fresh, dummyInput, deposit, fastSlot, fill };
 }

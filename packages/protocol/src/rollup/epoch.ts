@@ -72,25 +72,41 @@ export class EpochState {
   const width = EPOCH_SLOTS[kind], m = EPOCH_NULLIFIERS[kind];
   if (slots.length !== width) throw new RollupRejection('slot-count', `A batch has exactly ${width} slots.`);
   if (slots.some(slot => slot.nullifiers.length !== m)) throw new RollupRejection('slot-shape', `A ${kind} slot spends ${m} note(s).`);
-  if (this.noteCount + 2 ** SUBTREE_DEPTH > 2 ** NOTE_DEPTH) throw new RollupRejection('note-tree-full', 'The note tree is full.');
-  if (this.nullifiers.count() + width * m > 2 ** EPOCH_NULLIFIER_DEPTH) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
   validateGroups(this.hash, slots);
   const inField = (v: bigint) => v >= 0n && v < ROLLUP_FIELD;
   if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur.root) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments.');
-  const oldCommitment = this.commitment(), pubs: bigint[] = [], noteCount = this.noteCount, batchCount = this.batchCount;
-  const noteSlot = noteCount / 2 ** SUBTREE_DEPTH, windowSlot = batchCount % 2 ** WINDOW_DEPTH;
+  const oldCommitment = this.commitment(), pubs: bigint[] = [], { notes, nullifiers, prevNf, prevNoteRoot, epoch, noteCount, batchCount } = this;
+  const windowSlot = batchCount % 2 ** WINDOW_DEPTH, epochR = batchCount % this.epochLen, rotate = epochR === 0 && batchCount > 0;
+  const erRoot = this.archive.root(), erCount = this.archive.count();
   const before = {
-   noteRoot: this.notes.root(), noteCount: BigInt(noteCount), noteSlot: BigInt(noteSlot), slotPath: this.notes.path(noteSlot, SUBTREE_DEPTH),
+   noteRoot: this.notes.root(), noteCount: BigInt(noteCount),
    nfRoot: this.nullifiers.root(), nfCount: BigInt(this.nullifiers.count()),
    rPrev: this.prevNoteRoot, prevNfRoot: this.prevNfRoot, epoch: BigInt(this.epoch), epochLen: BigInt(this.epochLen),
-   erRoot: this.archive.root(), erCount: BigInt(this.archive.count()), rsRoot: this.recovered.root(), rsCount: BigInt(this.recovered.count()),
+   erRoot, erCount: BigInt(erCount), rsRoot: this.recovered.root(), rsCount: BigInt(this.recovered.count()),
    winRoot: this.window.root(), batchCount: BigInt(batchCount), batchQ: BigInt(Math.floor(batchCount / 2 ** WINDOW_DEPTH)),
+   epochQ: BigInt(Math.floor(batchCount / this.epochLen)), epochR: BigInt(epochR), rotate: BigInt(rotate),
+   // Set on every batch, rotating or not, so a circuit can check the append unconditionally and keep it only when it rotates.
+   erOldRoot: erRoot, erOldCount: BigInt(erCount), erLeaf: this.archive.leafOf(epoch - 1, prevNoteRoot, this.prevNfRoot, nullifiers.root()), erAppendPath: this.archive.tree.path(erCount),
    winOldLeaf: this.window.node(0, windowSlot), winSlotPath: this.window.path(windowSlot),
   };
-  const parts = [this.notes, this.nullifiers, this.window];
+  // Rotation replaces notes, nullifiers and prevNf, so undo rolls back the captured objects and puts them back.
+  const parts = [notes, nullifiers, this.window, this.archive];
   for (const part of parts) part.begin();
-  this.undo = () => { for (const part of parts) part.rollback(); this.noteCount = noteCount; this.batchCount = batchCount; this.undo = undefined; };
+  this.undo = () => {
+   for (const part of parts) part.rollback();
+   this.notes = notes; this.nullifiers = nullifiers; this.prevNf = prevNf; this.prevNoteRoot = prevNoteRoot; this.epoch = epoch; this.noteCount = noteCount; this.batchCount = batchCount; this.undo = undefined;
+  };
   try {
+   if (rotate) {
+    this.archive.append(epoch - 1, prevNoteRoot, prevNf, nullifiers);
+    this.prevNoteRoot = notes.root(); this.prevNf = nullifiers;
+    this.notes = new DeepTree(this.hash, NOTE_DEPTH); this.nullifiers = new RollupNullifiers(this.hash, EPOCH_NULLIFIER_DEPTH);
+    this.noteCount = 0; this.epoch += 1;
+   }
+   if (this.noteCount + 2 ** SUBTREE_DEPTH > 2 ** NOTE_DEPTH) throw new RollupRejection('note-tree-full', 'The note tree is full.');
+   if (this.nullifiers.count() + width * m > 2 ** EPOCH_NULLIFIER_DEPTH) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
+   const noteSlot = this.noteCount / 2 ** SUBTREE_DEPTH;
+   const start = { rotNoteRoot: this.notes.root(), rotNfRoot: this.nullifiers.root(), rotNfCount: BigInt(this.nullifiers.count()), noteSlot: BigInt(noteSlot), slotPath: this.notes.path(noteSlot, SUBTREE_DEPTH) };
    const lists = { pub: [], anchor: [], rCurRoot: [], rCurEpoch: [], nf: [], cm: [], ctDigest: [], groupId: [], groupSize: [], winIdx: [], winPath: [], predIdx: [], pred: [], predPath: [], appendPath: [], nmIdx: [], nmLeaf: [], nmPath: [] } as Record<string, unknown[]>;
    let da = 0n;
    for (const slot of slots) {
@@ -117,14 +133,14 @@ export class EpochState {
    let level = Array.from({ length: 2 ** SUBTREE_DEPTH }, (_, i) => commitments[i] ?? 0n);
    while (level.length > 1) level = Array.from({ length: level.length / 2 }, (_, i) => this.hash([level[2 * i], level[2 * i + 1]]));
    const blockRoot = level[0];
-   if (this.leaves) commitments.forEach((commitment, offset) => this.notes.set(noteCount + offset, commitment));
+   if (this.leaves) commitments.forEach((commitment, offset) => this.notes.set(this.noteCount + offset, commitment));
    else this.notes.setAt(SUBTREE_DEPTH, noteSlot, blockRoot);
    this.noteCount += 2 ** SUBTREE_DEPTH;
    this.window.set(windowSlot, windowLeafOf(this.hash, { epoch: this.epoch, root: this.notes.root() }));
    this.batchCount += 1;
    const binding = epochBindingOf(kind, oldCommitment, this.commitment(), da, blockRoot);
    const statement = sha256le248(binding);
-   return { witness: { ...lists, statement, ...before, winNewEpoch: BigInt(this.epoch) }, publicSignals: [...pubs, statement], binding, daRoot: da, blockRoot, rotated: false };
+   return { witness: { ...lists, statement, ...before, ...start, winNewEpoch: BigInt(this.epoch) }, publicSignals: [...pubs, statement], binding, daRoot: da, blockRoot, rotated: rotate };
   } catch (error) { this.undo(); throw error; }
  }
 
