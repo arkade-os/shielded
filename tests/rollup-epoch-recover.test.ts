@@ -111,10 +111,10 @@ test('room is checked only in the set a batch inserts into: RS for recover, the 
 
 test('a recover witness opens the archive leaf, both archived sets and RS', () => {
  const { state, note } = withNote(5), w = state.apply('recover', [recoverSlot(state, 0, note)]).witness as Record<string, any>;
- const fields = 'pub anchor nf cm ctDigest groupId groupSize origin erIdx erPath erNoteFinal nfA nfB nmaIdx nmaLeaf nmaPath nmbIdx nmbLeaf nmbPath rsPredIdx rsPred rsPredPath rsAppendPath statement noteRoot noteCount noteSlot slotPath nfRoot nfCount rPrev prevNfRoot epoch epochLen erRoot erCount rsRoot rsCount winRoot winNewEpoch batchCount batchQ winOldLeaf winSlotPath epochQ epochR rotate rotNoteRoot rotNfRoot rotNfCount erLeaf erAppendPath';
+ const fields = 'pub anchor nf cm ctDigest groupId groupSize erIdx erPath erNoteFinal nfA nfB nmaIdx nmaLeaf nmaPath nmbIdx nmbLeaf nmbPath rsPredIdx rsPred rsPredPath rsAppendPath statement noteRoot noteCount noteSlot slotPath nfRoot nfCount rPrev prevNfRoot epoch epochLen erRoot erCount rsRoot rsCount winRoot winNewEpoch batchCount batchQ winOldLeaf winSlotPath epochQ epochR rotate rotNoteRoot rotNfRoot rotNfCount erLeaf erAppendPath';
  assert.deepEqual(Object.keys(w).sort(), fields.split(' ').sort());
  const leaf = (values: bigint[]) => hash([NULLIFIER_TAG, ...values]), [nf] = w.nf[0];
- assert.deepEqual([w.origin[0], w.erIdx[0], w.anchor[0]], [0n, 1n, anchorOf(hash, w.erNoteFinal[0], w.erNoteFinal[0])]);
+ assert.deepEqual([w.erIdx[0], w.anchor[0]], [1n, anchorOf(hash, w.erNoteFinal[0], w.erNoteFinal[0])]);
  assert.equal(erOpened(w), w.erRoot);
  assert.equal(foldPath(hash, leaf(w.nmaLeaf[0]), Number(w.nmaIdx[0]), w.nmaPath[0]), w.nfA[0]);
  assert.equal(foldPath(hash, leaf(w.nmbLeaf[0]), Number(w.nmbIdx[0]), w.nmbPath[0]), w.nfB[0]);

@@ -116,7 +116,7 @@ export class EpochState {
      const [nullifier] = slot.nullifiers, { erIndex, erPath, archived: { noteFinal, nfFinal, nfNextFinal }, nonMemberA: a, nonMemberB: b } = this.archive.witness(origin, nullifier);
      if (anchor !== anchorOf(this.hash, noteFinal, noteFinal)) throw new RollupRejection('stale-anchor', 'The anchor does not open against the archived note root.');
      const rs = this.recovered.insert(nullifier);
-     put({ origin: BigInt(origin), erIdx: BigInt(erIndex), erPath, erNoteFinal: noteFinal, nfA: nfFinal, nfB: nfNextFinal, nmaIdx: BigInt(a.index), nmaLeaf: a.leaf, nmaPath: a.path, nmbIdx: BigInt(b.index), nmbLeaf: b.leaf, nmbPath: b.path });
+     put({ erIdx: BigInt(erIndex), erPath, erNoteFinal: noteFinal, nfA: nfFinal, nfB: nfNextFinal, nmaIdx: BigInt(a.index), nmaLeaf: a.leaf, nmaPath: a.path, nmbIdx: BigInt(b.index), nmbLeaf: b.leaf, nmbPath: b.path });
      put({ rsPredIdx: BigInt(rs.predIdx), rsPred: rs.pred, rsPredPath: rs.predPath, rsAppendPath: rs.appendPath });
     } else {
      // The tag test runs first: windowLeafOf cannot hash a fractional epoch.
