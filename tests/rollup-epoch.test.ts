@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import { ARCHIVE_DEPTH, BATCH_SLOTS, EPOCH_NULLIFIER_DEPTH, EPOCH_TAG, ER_TAG, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_FIELD, RS_TAG, STATE_TAG, SUBTREE_DEPTH, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
+import { ARCHIVE_DEPTH, BATCH_SLOTS, EPOCH_NULLIFIER_DEPTH, EPOCH_NULLIFIERS, EPOCH_SLOTS, EPOCH_TAG, ER_TAG, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_FIELD, RS_TAG, STATE_TAG, SUBTREE_DEPTH, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
 import { EpochState, anchorOf, windowLeafOf, type EpochBatchResult } from '../packages/protocol/src/rollup/epoch.ts';
 import { groupIdOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
@@ -18,9 +18,10 @@ const slotsFor = (state: EpochState, kind: EpochBatchKind) => kind === 'spend' ?
 const nullifiersOf = (result: EpochBatchResult) => result.witness.nf as bigint[][];
 const chainOf = (full: EpochState, kind: EpochBatchKind) => { const result = full.apply(kind, slotsFor(full, kind)); return [kind, nullifiersOf(result), result.blockRoot] as const; };
 
-test('genesis validates EPOCH_LEN against the nullifier depth', () => {
- assert.equal(EpochState.genesis(hash, 1_677_721).epochLen, 1_677_721);
- for (const bad of [0, -1, 1.5, NaN, 1_677_722]) assert.throws(() => EpochState.genesis(hash, bad), rejection('epoch-length'));
+test('genesis bounds EPOCH_LEN at 2^20, which keeps an epoch inside one nullifier set', () => {
+ assert.equal(EpochState.genesis(hash, 2 ** 20).epochLen, 2 ** 20);
+ for (const bad of [0, -1, 1.5, NaN, 2 ** 20 + 1]) assert.throws(() => EpochState.genesis(hash, bad), rejection('epoch-length'));
+ assert.ok(1 + EPOCH_SLOTS.join * EPOCH_NULLIFIERS.join * 2 ** 20 <= 2 ** EPOCH_NULLIFIER_DEPTH);
 });
 
 test('a batch appends 32 leaves, writes a tagged window leaf and fills both digest slots', () => {
@@ -276,7 +277,9 @@ test('the rotating batch refuses a nullifier of the epoch it closes and a c-2 ta
  state.apply('spend', fill(state, [deposit(state, 0n, { inputs: [input] }).slot]));
  assert.deepEqual([state.epoch, state.batchCount % state.epochLen], [1, 0]);
  assert.throws(() => state.apply('spend', fill(state, [deposit(state, 0n, { inputs: [input] }).slot])), rejection('double-spend'));
- assert.throws(() => state.apply('spend', fill(state, [fastSlot(state, 0n, { epoch: 0, root: twoEpochsBack })])), rejection('window-tag'));
+ const ref = { epoch: 0, root: twoEpochsBack };
+ assert.ok(state.windowIndex(ref) >= 0);
+ assert.throws(() => state.apply('spend', fill(state, [fastSlot(state, 0n, ref)])), rejection('window-tag'));
  assert.equal(state.apply('spend', fill(state)).rotated, true);
 });
 
@@ -326,4 +329,20 @@ test('a failed applyFromChain changes nothing, and undoLast reverts a rotating o
  follower.undoLast();
  assert.equal(follower.commitment(), before);
  assert.equal(follower.applyFromChain(kind, nullifiers, blockRoot), full.commitment());
+});
+
+test('a full archive refuses the batch that would rotate in both apply paths and still takes the others', () => {
+ const full = EpochState.genesis(hash, 2), follower = EpochState.genesis(hash, 2, false);
+ follower.applyFromChain(...chainOf(full, 'spend'));
+ for (const state of [full, follower]) state.archive.count = () => 2 ** ARCHIVE_DEPTH;
+ const plain = full.apply('spend', fill(full));
+ assert.equal(plain.rotated, false);
+ assert.equal(follower.applyFromChain('spend', nullifiersOf(plain), plain.blockRoot), full.commitment());
+ const slots = fill(full), rotating = full.clone().apply('spend', slots);
+ const kept = (state: EpochState) => ({ commitment: state.commitment(), epoch: state.epoch, noteCount: state.noteCount });
+ const before = kept(full);
+ assert.equal(rotating.rotated, true);
+ assert.throws(() => full.apply('spend', slots), rejection('archive-full'));
+ assert.throws(() => follower.applyFromChain('spend', nullifiersOf(rotating), rotating.blockRoot), rejection('archive-full'));
+ assert.deepEqual([kept(full), kept(follower)], [before, before]);
 });

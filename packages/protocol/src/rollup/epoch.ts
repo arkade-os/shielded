@@ -1,4 +1,4 @@
-import { ANCHOR_TAG, EPOCH_KIND_BYTE, EPOCH_NULLIFIER_DEPTH, EPOCH_NULLIFIERS, EPOCH_SLOTS, EPOCH_TAG, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RS_TAG, RollupRejection, STATE_TAG, SUBTREE_DEPTH, WIN_TAG, WINDOW_DEPTH, type EpochBatchKind } from './constants.ts';
+import { ANCHOR_TAG, ARCHIVE_DEPTH, EPOCH_KIND_BYTE, EPOCH_NULLIFIER_DEPTH, EPOCH_NULLIFIERS, EPOCH_SLOTS, EPOCH_TAG, MAX_EPOCH_LEN, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RS_TAG, RollupRejection, STATE_TAG, SUBTREE_DEPTH, WIN_TAG, WINDOW_DEPTH, type EpochBatchKind } from './constants.ts';
 import { EpochArchive } from './epoch-archive.ts';
 import { sha256le248, statementOf, type Hash } from './notes.ts';
 import { RollupNullifiers } from './nullifiers.ts';
@@ -41,10 +41,11 @@ export class EpochState {
   this.window.set(2 ** WINDOW_DEPTH - 1, windowLeafOf(hash, { epoch: 0, root: this.prevNoteRoot }));
  }
  static genesis(hash: Hash, epochLen: number, leaves = true): EpochState {
-  if (!Number.isSafeInteger(epochLen) || epochLen < 1 || 1 + EPOCH_SLOTS.join * EPOCH_NULLIFIERS.join * epochLen > 2 ** EPOCH_NULLIFIER_DEPTH) throw new RollupRejection('epoch-length', 'An epoch is a positive whole number of batches whose nullifiers fit one epoch set.');
+  if (!Number.isSafeInteger(epochLen) || epochLen < 1 || epochLen > MAX_EPOCH_LEN) throw new RollupRejection('epoch-length', `An epoch is a positive whole number of batches, at most ${MAX_EPOCH_LEN}.`);
   return new EpochState(hash, epochLen, leaves);
  }
  get prevNfRoot(): bigint { return this.prevNf.root(); }
+ private get archiveFull(): boolean { return this.archive.count() >= 2 ** ARCHIVE_DEPTH; }
  clone(): EpochState {
   const copy = new EpochState(this.hash, this.epochLen, this.leaves);
   copy.epoch = this.epoch; copy.notes = this.notes.clone(); copy.nullifiers = this.nullifiers.clone(); copy.window = this.window.clone();
@@ -84,7 +85,8 @@ export class EpochState {
    winRoot: this.window.root(), batchCount: BigInt(batchCount), batchQ: BigInt(Math.floor(batchCount / 2 ** WINDOW_DEPTH)),
    epochQ: BigInt(Math.floor(batchCount / this.epochLen)), epochR: BigInt(epochR),
    // Set on every batch, rotating or not, so a circuit can check the append unconditionally and keep it only when it rotates.
-   erLeaf: this.archive.leafOf(epoch - 1, prevNoteRoot, this.prevNfRoot, nullifiers.root()), erAppendPath: this.archive.tree.path(this.archive.count()),
+   // A full archive has no free slot: its non-rotating batches carry zeros here, and begin() refuses the one that rotates.
+   erLeaf: this.archive.leafOf(epoch - 1, prevNoteRoot, this.prevNfRoot, nullifiers.root()), erAppendPath: this.archiveFull ? Array(ARCHIVE_DEPTH).fill(0n) : this.archive.tree.path(this.archive.count()),
    winOldLeaf: this.window.node(0, windowSlot), winSlotPath: this.window.path(windowSlot),
   };
   try {
@@ -156,6 +158,7 @@ export class EpochState {
    this.notes = notes; this.nullifiers = nullifiers; this.prevNf = prevNf; this.prevNoteRoot = prevNoteRoot; this.epoch = epoch; this.noteCount = noteCount; this.batchCount = batchCount; this.undo = undefined;
   };
   if (rotated) {
+   if (this.archiveFull) throw new RollupRejection('archive-full', 'The epoch archive is full.');
    this.archive.append(epoch - 1, prevNoteRoot, prevNf, nullifiers);
    this.prevNoteRoot = notes.root(); this.prevNf = nullifiers;
    this.notes = new DeepTree(this.hash, NOTE_DEPTH); this.nullifiers = new RollupNullifiers(this.hash, EPOCH_NULLIFIER_DEPTH);

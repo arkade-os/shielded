@@ -113,15 +113,8 @@ const play = (fast: number) => {
  return paid;
 };
 
-test('two instances sharing N pay out at most once each', () => {
- let most = 0;
- for (let fast = 0; fast < 16; fast++) {
-  const paid = play(fast);
-  assert.ok(paid.x <= 1 && paid.y <= 1, `fast ${fast}: ${JSON.stringify(paid)}`);
-  assert.ok(paid.x + paid.y <= 2, `fast ${fast}: ${JSON.stringify(paid)}`);
-  most = Math.max(most, paid.x + paid.y);
- }
- assert.equal(most, 2);
+test('two instances sharing N are paid once each, but y loses to the RS entry of x when nothing was spent fast', () => {
+ for (let fast = 0; fast < 16; fast++) assert.deepEqual(play(fast), { x: 1, y: fast ? 1 : 0 }, `fast ${fast}`);
 });
 
 test('recovering one instance blocks the other recovery through RS', () => {
