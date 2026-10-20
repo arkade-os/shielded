@@ -138,3 +138,54 @@ test('recovering one instance blocks the other recovery through RS', () => {
   assert.throws(() => recovers[second](state), rejection('double-spend'));
  }
 });
+
+type EpochModelRules = { fastReach?: 1 | 2; fastChecks?: 0 | 1; recNext?: boolean; recRs?: boolean; recMinAge?: 1 | 2 };
+type ModelState = [c: number, nf: string[][], rs: string[], inst: [number, string][], spent: boolean[]];
+const withValue = (set: string[], n: string) => [...new Set([...set, n])].sort();
+
+const exploreEpochModel = ({ epochs, instances, values, dummies, fastReach = 1, fastChecks = 1, recNext = true, recRs = true, recMinAge = 2 }: { epochs: number; instances: number; values: readonly string[]; dummies: boolean } & EpochModelRules): { violation?: string; states: number } => {
+ const fast = (c: number, n: string, nf: string[][]) => !nf.slice(Math.max(0, c - fastChecks), c + 1).some((set) => set.includes(n));
+ const put = (nf: string[][], c: number, n: string) => nf.map((set, k) => k === c ? withValue(set, n) : set);
+ const start: ModelState = [0, Array.from({ length: epochs }, () => []), [], [], []];
+ // A Map iterates in insertion order and visits keys added meanwhile, so it is both the visited set and the BFS queue.
+ const seen = new Map([[JSON.stringify(start), start]]);
+ const add = (state: ModelState) => { const key = JSON.stringify(state); if (!seen.has(key)) seen.set(key, state); };
+ for (const [c, nf, rs, inst, spent] of seen.values()) {
+  if (c + 1 < epochs) add([c + 1, nf, rs, inst, spent]);
+  // Creation inserts nothing: the slot's own dummy nullifier is another value, so a free create only over-approximates the attacker.
+  if (inst.length < instances) for (const n of values) add([c, nf, rs, [...inst, [c, n]], [...spent, false]]);
+  if (dummies) for (const n of values) if (fast(c, n, nf)) add([c, put(nf, c, n), rs, inst, spent]);
+  for (const [i, [e, n]] of inst.entries()) {
+   const paths: ('fast' | 'recover')[] = [];
+   if (c - fastReach <= e && e <= c && fast(c, n, nf)) paths.push('fast');
+   if (e <= c - recMinAge && !nf[e].includes(n) && !(recNext && nf[e + 1].includes(n)) && !(recRs && rs.includes(n))) paths.push('recover');
+   for (const path of paths) {
+    if (spent[i]) return { violation: `instance ${i} (epoch ${e}, nf ${n}) accepted twice at epoch ${c} via ${path}; nf=${JSON.stringify(nf)} rs=${JSON.stringify(rs)} inst=${JSON.stringify(inst)}`, states: seen.size };
+    const done = spent.map((was, j) => was || j === i);
+    add(path === 'fast' ? [c, put(nf, c, n), rs, inst, done] : [c, nf, withValue(rs, n), inst, done]);
+   }
+  }
+ }
+ return { states: seen.size };
+};
+
+const EPOCH_MODEL_MUTANTS: ({ name: string } & EpochModelRules)[] = [
+ { name: 'fast path skips NF[c-1]', fastChecks: 0 },
+ { name: 'grace band: fast path reaches NT[c-2]', fastReach: 2 },
+ { name: 'recovery skips nfFinal[e+1]', recNext: false },
+ { name: 'recovery skips RS', recRs: false },
+ { name: 'recovery may name a live epoch (e = c-1)', recMinAge: 1 },
+];
+
+test('no instance is accepted twice under any interleaving, at the reference state counts', () => {
+ for (const [opts, states] of [[{ epochs: 6, instances: 3, values: ['A', 'B'], dummies: false }, 26_598], [{ epochs: 4, instances: 2, values: ['A', 'B'], dummies: true }, 10_582]] as const) {
+  const result = exploreEpochModel(opts);
+  assert.equal(result.violation, undefined);
+  assert.equal(result.states, states);
+ }
+});
+
+test('every rule mutant is caught by the model check', () => {
+ for (const { name, ...rules } of EPOCH_MODEL_MUTANTS)
+  assert.ok(exploreEpochModel({ epochs: 6, instances: 3, values: ['A', 'B'], dummies: false, ...rules }).violation, name);
+});
