@@ -77,16 +77,15 @@ export class EpochState {
   if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur.root) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments.');
   const oldCommitment = this.commitment(), pubs: bigint[] = [], { notes, nullifiers, prevNf, prevNoteRoot, epoch, noteCount, batchCount } = this;
   const windowSlot = batchCount % 2 ** WINDOW_DEPTH, epochR = batchCount % this.epochLen, rotate = epochR === 0 && batchCount > 0;
-  const erRoot = this.archive.root(), erCount = this.archive.count();
   const before = {
    noteRoot: this.notes.root(), noteCount: BigInt(noteCount),
    nfRoot: this.nullifiers.root(), nfCount: BigInt(this.nullifiers.count()),
    rPrev: this.prevNoteRoot, prevNfRoot: this.prevNfRoot, epoch: BigInt(this.epoch), epochLen: BigInt(this.epochLen),
-   erRoot, erCount: BigInt(erCount), rsRoot: this.recovered.root(), rsCount: BigInt(this.recovered.count()),
+   erRoot: this.archive.root(), erCount: BigInt(this.archive.count()), rsRoot: this.recovered.root(), rsCount: BigInt(this.recovered.count()),
    winRoot: this.window.root(), batchCount: BigInt(batchCount), batchQ: BigInt(Math.floor(batchCount / 2 ** WINDOW_DEPTH)),
    epochQ: BigInt(Math.floor(batchCount / this.epochLen)), epochR: BigInt(epochR), rotate: BigInt(rotate),
    // Set on every batch, rotating or not, so a circuit can check the append unconditionally and keep it only when it rotates.
-   erOldRoot: erRoot, erOldCount: BigInt(erCount), erLeaf: this.archive.leafOf(epoch - 1, prevNoteRoot, this.prevNfRoot, nullifiers.root()), erAppendPath: this.archive.tree.path(erCount),
+   erLeaf: this.archive.leafOf(epoch - 1, prevNoteRoot, this.prevNfRoot, nullifiers.root()), erAppendPath: this.archive.tree.path(this.archive.count()),
    winOldLeaf: this.window.node(0, windowSlot), winSlotPath: this.window.path(windowSlot),
   };
   // Rotation replaces notes, nullifiers and prevNf, so undo rolls back the captured objects and puts them back.

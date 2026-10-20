@@ -89,11 +89,11 @@ test('the witness carries every circuit field and proves non-membership against 
  state.apply('spend', fill(state));
  state.batchCount = 3 * 64 + 5;
  const { witness } = state.apply('spend', fill(state));
- const fields = 'pub anchor rCurRoot rCurEpoch nf cm ctDigest groupId groupSize winIdx winPath predIdx pred predPath appendPath nmIdx nmLeaf nmPath statement noteRoot noteCount noteSlot slotPath nfRoot nfCount rPrev prevNfRoot epoch epochLen erRoot erCount rsRoot rsCount winRoot winNewEpoch batchCount batchQ winOldLeaf winSlotPath epochQ epochR rotate rotNoteRoot rotNfRoot rotNfCount erOldRoot erOldCount erLeaf erAppendPath';
+ const fields = 'pub anchor rCurRoot rCurEpoch nf cm ctDigest groupId groupSize winIdx winPath predIdx pred predPath appendPath nmIdx nmLeaf nmPath statement noteRoot noteCount noteSlot slotPath nfRoot nfCount rPrev prevNfRoot epoch epochLen erRoot erCount rsRoot rsCount winRoot winNewEpoch batchCount batchQ winOldLeaf winSlotPath epochQ epochR rotate rotNoteRoot rotNfRoot rotNfCount erLeaf erAppendPath';
  assert.deepEqual(Object.keys(witness).sort(), fields.split(' ').sort());
  assert.equal(witness.batchQ, 3n);
  assert.deepEqual([witness.epochQ, witness.epochR, witness.rotate], [0n, 197n, 0n]);
- assert.deepEqual([witness.rotNoteRoot, witness.rotNfRoot, witness.rotNfCount, witness.erOldRoot, witness.erOldCount], [witness.noteRoot, witness.nfRoot, witness.nfCount, witness.erRoot, witness.erCount]);
+ assert.deepEqual([witness.rotNoteRoot, witness.rotNfRoot, witness.rotNfCount], [witness.noteRoot, witness.nfRoot, witness.nfCount]);
  assert.equal(witness.erLeaf, hash([ER_TAG, 0n, witness.rPrev as bigint, witness.prevNfRoot as bigint, witness.nfRoot as bigint]));
  const previous = new RollupNullifiers(hash, EPOCH_NULLIFIER_DEPTH);
  assert.equal(witness.prevNfRoot, previous.root());
@@ -179,7 +179,7 @@ test('a rotating batch opens the old state, appends the archive leaf and starts 
  const old = { noteRoot: state.notes.root(), nfRoot: state.nullifiers.root(), rPrev: state.prevNoteRoot, prevNfRoot: state.prevNfRoot, erRoot: state.archive.root(), erPath: state.archive.tree.path(1) };
  const { witness } = state.apply('spend', fill(state));
  assert.deepEqual([witness.epochQ, witness.epochR, witness.rotate, witness.epoch, witness.winNewEpoch], [2n, 0n, 1n, 1n, 2n]);
- assert.deepEqual([witness.noteRoot, witness.nfRoot, witness.rPrev, witness.prevNfRoot, witness.erOldRoot, witness.erOldCount], [old.noteRoot, old.nfRoot, old.rPrev, old.prevNfRoot, old.erRoot, 1n]);
+ assert.deepEqual([witness.noteRoot, witness.nfRoot, witness.rPrev, witness.prevNfRoot, witness.erRoot, witness.erCount], [old.noteRoot, old.nfRoot, old.rPrev, old.prevNfRoot, old.erRoot, 1n]);
  const empty = new DeepTree(hash, NOTE_DEPTH);
  assert.deepEqual([witness.rotNoteRoot, witness.rotNfRoot, witness.rotNfCount, witness.noteSlot], [empty.root(), new RollupNullifiers(hash, EPOCH_NULLIFIER_DEPTH).root(), 1n, 0n]);
  assert.deepEqual(witness.slotPath, empty.path(0, SUBTREE_DEPTH));
@@ -258,4 +258,25 @@ test('EPOCH_LEN 1 and 2 rotate every batch or every other batch', () => {
  assert.equal(one.archive.has(0), true);
  const two = EpochState.genesis(hash, 2);
  assert.deepEqual([0, 1, 2, 3].map(() => two.apply('spend', fill(two)).rotated), [false, false, true, false]);
+});
+
+test('the rotating batch refuses a nullifier of the epoch it closes and a c-2 tagged root', () => {
+ const state = EpochState.genesis(hash, 4), input = dummyInput();
+ state.apply('spend', fill(state));
+ const twoEpochsBack = state.latestRoot();
+ for (let i = 0; i < 6; i++) state.apply('spend', fill(state));
+ state.apply('spend', fill(state, [deposit(state, 0n, { inputs: [input] }).slot]));
+ assert.deepEqual([state.epoch, state.batchCount % state.epochLen], [1, 0]);
+ assert.throws(() => state.apply('spend', fill(state, [deposit(state, 0n, { inputs: [input] }).slot])), rejection('double-spend'));
+ assert.throws(() => state.apply('spend', fill(state, [fastSlot(state, 0n, { epoch: 0, root: twoEpochsBack })])), rejection('window-tag'));
+ assert.equal(state.apply('spend', fill(state)).rotated, true);
+});
+
+test('undoing a batch after a rotation keeps the archived epoch', () => {
+ const state = EpochState.genesis(hash, 2);
+ for (let i = 0; i < 3; i++) state.apply('spend', fill(state));
+ const kept = () => ({ commitment: state.commitment(), count: state.archive.count() }), before = kept();
+ state.apply('spend', fill(state));
+ state.undoLast();
+ assert.deepEqual(kept(), before);
 });
