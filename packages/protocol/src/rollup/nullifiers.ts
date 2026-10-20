@@ -4,6 +4,7 @@ import { DeepTree } from './tree.ts';
 
 export interface NullifierLeaf { value: bigint; nextIndex: number; nextValue: bigint }
 export interface InsertionWitness { predIdx: number; pred: [bigint, bigint, bigint]; predPath: bigint[]; appendPath: bigint[] }
+export interface NonMemberWitness { index: number; leaf: [bigint, bigint, bigint]; path: bigint[] }
 
 // Indexed (sorted linked list) nullifier set, sentinel at index 0, as circuits/rollup/lib.circom IndexedInsert proves it.
 export class RollupNullifiers {
@@ -13,8 +14,8 @@ export class RollupNullifiers {
  private sorted: bigint[] = [];
  private index = new Map<bigint, number>();
  private log?: { value: bigint; predIdx: number; pred: NullifierLeaf; at: number; had?: number }[];
- constructor(private readonly hash: Hash) {
-  this.tree = new DeepTree(hash, NULLIFIER_DEPTH);
+ constructor(private readonly hash: Hash, readonly depth: number = NULLIFIER_DEPTH) {
+  this.tree = new DeepTree(hash, depth);
   this.tree.set(0, this.leafHash(this.leaves[0]));
  }
  private leafHash(leaf: NullifierLeaf): bigint { return this.hash([NULLIFIER_TAG, leaf.value, BigInt(leaf.nextIndex), leaf.nextValue]); }
@@ -22,7 +23,7 @@ export class RollupNullifiers {
  count(): number { return this.leaves.length; }
  has(value: bigint): boolean { return this.index.has(value); }
  clone(): RollupNullifiers {
-  const copy = new RollupNullifiers(this.hash);
+  const copy = new RollupNullifiers(this.hash, this.depth);
   copy.tree = this.tree.clone();
   copy.leaves = this.leaves.map(leaf => ({ ...leaf }));
   copy.sorted = [...this.sorted];
@@ -57,13 +58,21 @@ export class RollupNullifiers {
   this.log = undefined;
   this.tree.rollback();
  }
- insert(value: bigint): InsertionWitness {
+ private locate(value: bigint): { at: number; predIdx: number } {
   if (value <= 0n || value >= ROLLUP_FIELD) throw new RollupRejection('nullifier-range', 'The nullifier is zero or outside the field.');
   if (this.has(value)) throw new RollupRejection('double-spend', 'The nullifier is already spent.');
-  if (this.leaves.length >= 2 ** NULLIFIER_DEPTH) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
   let at = 0, hi = this.sorted.length;
   while (at < hi) { const mid = (at + hi) >>> 1; if (this.sorted[mid] < value) at = mid + 1; else hi = mid; }
-  const predIdx = at === 0 ? 0 : this.index.get(this.sorted[at - 1])!;
+  return { at, predIdx: at === 0 ? 0 : this.index.get(this.sorted[at - 1])! };
+ }
+ /** The low leaf proving the value absent; the maximum's leaf carries nextIndex 0 and nextValue 0, meaning no upper bound. */
+ nonMember(value: bigint): NonMemberWitness {
+  const { predIdx } = this.locate(value), low = this.leaves[predIdx];
+  return { index: predIdx, leaf: [low.value, BigInt(low.nextIndex), low.nextValue], path: this.tree.path(predIdx) };
+ }
+ insert(value: bigint): InsertionWitness {
+  const { at, predIdx } = this.locate(value);
+  if (this.leaves.length >= 2 ** this.depth) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
   const prior = this.leaves[predIdx], count = this.leaves.length;
   const witness: InsertionWitness = { predIdx, pred: [prior.value, BigInt(prior.nextIndex), prior.nextValue], predPath: this.tree.path(predIdx), appendPath: [] };
   this.leaves[predIdx] = { value: prior.value, nextIndex: count, nextValue: value };

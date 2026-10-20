@@ -70,3 +70,32 @@ test('clones do not share leaves', () => {
  assert.equal(set.has(9n), false);
  assert.equal(set.count(), 1);
 });
+
+test('a shallower set keeps its own capacity bound', () => {
+ const set = new RollupNullifiers(hash, 3);
+ assert.equal(set.depth, 3);
+ for (let v = 1n; v <= 7n; v++) set.insert(v);
+ assert.throws(() => set.insert(8n), (e: unknown) => e instanceof RollupRejection && e.code === 'nullifier-tree-full');
+ assert.equal(set.clone().depth, 3);
+});
+
+test('non-membership opens the low leaf under the frozen root', () => {
+ const set = new RollupNullifiers(hash);
+ [50n, 10n, 30n].forEach(v => set.insert(v));
+ const below = set.nonMember(5n);
+ assert.deepEqual(below.leaf, [0n, 2n, 10n]);
+ const between = set.nonMember(20n);
+ assert.deepEqual(between.leaf, [10n, 3n, 30n]);
+ const above = set.nonMember(99n);
+ assert.deepEqual(above.leaf, [50n, 0n, 0n]);
+ assert.equal(set.tree.node(0, above.index), hash([NULLIFIER_TAG, ...above.leaf]));
+ assert.deepEqual(above.path, set.tree.path(above.index));
+ assert.equal(above.path.length, 32);
+});
+
+test('non-membership of a present or out-of-range value is refused', () => {
+ const set = new RollupNullifiers(hash);
+ set.insert(7n);
+ assert.throws(() => set.nonMember(7n), (e: unknown) => e instanceof RollupRejection && e.code === 'double-spend');
+ assert.throws(() => set.nonMember(0n), (e: unknown) => e instanceof RollupRejection && e.code === 'nullifier-range');
+});
