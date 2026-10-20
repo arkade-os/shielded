@@ -82,6 +82,12 @@ test('a recover anchor must open against the archived note root of its origin', 
  assert.ok(state.apply('recover', [slot]));
 });
 
+test('a recover slot ignores rCur, so the anchor opens noteFinal[e] twice', () => {
+ const { state, note } = withNote(5), slot = recoverSlot(state, 0, note), live = state.latestRoot();
+ assert.throws(() => state.apply('recover', [{ ...slot, rCur: { epoch: 0, root: live }, anchor: anchorOf(hash, live, live) }]), rejection('stale-anchor'));
+ assert.ok(state.apply('recover', [{ ...slot, rCur: { epoch: state.epoch, root: live } }]));
+});
+
 test('a recover batch can be the batch that rotates, and undoLast restores RS and the archive', () => {
  const { state, note } = withNote(4), slot = recoverSlot(state, 0, note);
  const snapshot = () => ({ commitment: state.commitment(), epoch: state.epoch, erCount: state.archive.count(), rsRoot: state.recovered.root(), rsCount: state.recovered.count() });
