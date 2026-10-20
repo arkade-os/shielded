@@ -68,7 +68,6 @@ export class EpochState {
  latestRoot(): bigint { return this.notes.root(); }
 
  apply(kind: EpochBatchKind, slots: EpochSlot[]): EpochBatchResult {
-  if (kind === 'recover') throw new Error('Recover batches are not implemented.');
   const width = EPOCH_SLOTS[kind], m = EPOCH_NULLIFIERS[kind];
   if (slots.length !== width) throw new RollupRejection('slot-count', `A batch has exactly ${width} slots.`);
   if (slots.some(slot => slot.nullifiers.length !== m)) throw new RollupRejection('slot-shape', `A ${kind} slot spends ${m} note(s).`);
@@ -89,7 +88,7 @@ export class EpochState {
    winOldLeaf: this.window.node(0, windowSlot), winSlotPath: this.window.path(windowSlot),
   };
   // Rotation replaces notes, nullifiers and prevNf, so undo rolls back the captured objects and puts them back.
-  const parts = [notes, nullifiers, this.window, this.archive];
+  const parts = [notes, nullifiers, this.window, this.archive, this.recovered];
   for (const part of parts) part.begin();
   this.undo = () => {
    for (const part of parts) part.rollback();
@@ -103,28 +102,32 @@ export class EpochState {
     this.noteCount = 0; this.epoch += 1;
    }
    if (this.noteCount + 2 ** SUBTREE_DEPTH > 2 ** NOTE_DEPTH) throw new RollupRejection('note-tree-full', 'The note tree is full.');
-   if (this.nullifiers.count() + width * m > 2 ** EPOCH_NULLIFIER_DEPTH) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
+   const target = kind === 'recover' ? this.recovered : this.nullifiers;
+   if (target.count() + width * m > 2 ** target.depth) throw new RollupRejection('nullifier-tree-full', 'The nullifier set is full.');
    const noteSlot = this.noteCount / 2 ** SUBTREE_DEPTH;
    const start = { rotNoteRoot: this.notes.root(), rotNfRoot: this.nullifiers.root(), rotNfCount: BigInt(this.nullifiers.count()), noteSlot: BigInt(noteSlot), slotPath: this.notes.path(noteSlot, SUBTREE_DEPTH) };
-   const lists = { pub: [], anchor: [], rCurRoot: [], rCurEpoch: [], nf: [], cm: [], ctDigest: [], groupId: [], groupSize: [], winIdx: [], winPath: [], predIdx: [], pred: [], predPath: [], appendPath: [], nmIdx: [], nmLeaf: [], nmPath: [] } as Record<string, unknown[]>;
+   const lists: Record<string, unknown[]> = {}, put = (fields: Record<string, unknown>) => { for (const key in fields) (lists[key] ??= []).push(fields[key]); };
    let da = 0n;
    for (const slot of slots) {
-    const { anchor, rCur } = slot;
-    // The tag test runs first: windowLeafOf cannot hash a fractional epoch.
-    const winIdx = rCur.epoch === this.epoch || rCur.epoch === this.epoch - 1 ? this.windowIndex(rCur) : -1;
-    if (winIdx < 0) throw new RollupRejection('window-tag', 'The spend anchors on a root that is not a window leaf of a live epoch.');
-    if (anchor !== anchorOf(this.hash, this.prevNoteRoot, rCur.root)) throw new RollupRejection('stale-anchor', 'The anchor does not open against this batch\'s previous-epoch root.');
-    const pub = statementOf(this.hash, { domain: ROLLUP_DOMAIN, ...slot, root: anchor });
+    const { anchor, rCur, origin = NaN } = slot, pub = statementOf(this.hash, { domain: ROLLUP_DOMAIN, ...slot, root: anchor });
     pubs.push(pub);
-    lists.pub.push(pub); lists.anchor.push(anchor); lists.rCurRoot.push(rCur.root); lists.rCurEpoch.push(BigInt(rCur.epoch));
-    lists.nf.push(slot.nullifiers); lists.cm.push(slot.commitments);
-    lists.ctDigest.push(slot.ctDigest); lists.groupId.push(slot.groupId); lists.groupSize.push(BigInt(slot.groupSize));
-    lists.winIdx.push(BigInt(winIdx)); lists.winPath.push(this.window.path(winIdx));
-    for (const nullifier of slot.nullifiers) {
-     const absent = this.prevNf.nonMember(nullifier), insertion = this.nullifiers.insert(nullifier);
-     lists.nmIdx.push(BigInt(absent.index)); lists.nmLeaf.push(absent.leaf); lists.nmPath.push(absent.path);
-     lists.predIdx.push(BigInt(insertion.predIdx)); lists.pred.push(insertion.pred);
-     lists.predPath.push(insertion.predPath); lists.appendPath.push(insertion.appendPath);
+    put({ pub, anchor, nf: slot.nullifiers, cm: slot.commitments, ctDigest: slot.ctDigest, groupId: slot.groupId, groupSize: BigInt(slot.groupSize) });
+    if (kind === 'recover') {
+     const [nullifier] = slot.nullifiers, { erIndex, erPath, archived: { noteFinal, nfFinal, nfNextFinal }, nonMemberA: a, nonMemberB: b } = this.archive.witness(origin, nullifier);
+     if (anchor !== anchorOf(this.hash, noteFinal, noteFinal)) throw new RollupRejection('stale-anchor', 'The anchor does not open against the archived note root.');
+     const rs = this.recovered.insert(nullifier);
+     put({ origin: BigInt(origin), erIdx: BigInt(erIndex), erPath, erNoteFinal: noteFinal, nfA: nfFinal, nfB: nfNextFinal, nmaIdx: BigInt(a.index), nmaLeaf: a.leaf, nmaPath: a.path, nmbIdx: BigInt(b.index), nmbLeaf: b.leaf, nmbPath: b.path });
+     put({ rsPredIdx: BigInt(rs.predIdx), rsPred: rs.pred, rsPredPath: rs.predPath, rsAppendPath: rs.appendPath });
+    } else {
+     // The tag test runs first: windowLeafOf cannot hash a fractional epoch.
+     const winIdx = rCur.epoch === this.epoch || rCur.epoch === this.epoch - 1 ? this.windowIndex(rCur) : -1;
+     if (winIdx < 0) throw new RollupRejection('window-tag', 'The spend anchors on a root that is not a window leaf of a live epoch.');
+     if (anchor !== anchorOf(this.hash, this.prevNoteRoot, rCur.root)) throw new RollupRejection('stale-anchor', 'The anchor does not open against this batch\'s previous-epoch root.');
+     put({ rCurRoot: rCur.root, rCurEpoch: BigInt(rCur.epoch), winIdx: BigInt(winIdx), winPath: this.window.path(winIdx) });
+     for (const nullifier of slot.nullifiers) {
+      const absent = this.prevNf.nonMember(nullifier), insertion = this.nullifiers.insert(nullifier);
+      put({ nmIdx: BigInt(absent.index), nmLeaf: absent.leaf, nmPath: absent.path, predIdx: BigInt(insertion.predIdx), pred: insertion.pred, predPath: insertion.predPath, appendPath: insertion.appendPath });
+     }
     }
     da = this.hash([da, ...slot.nullifiers, slot.commitments[0], slot.commitments[1], slot.ctDigest]);
    }

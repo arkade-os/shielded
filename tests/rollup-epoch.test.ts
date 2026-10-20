@@ -11,7 +11,7 @@ import { epochHarness, rejection } from './fixtures/epoch.ts';
 
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
-const { dummyInput, deposit, fastSlot, fill } = epochHarness(hash);
+const { dummyInput, deposit, fastSlot, fill, recoverSlot } = epochHarness(hash);
 
 test('genesis validates EPOCH_LEN against the nullifier depth', () => {
  assert.equal(EpochState.genesis(hash, 1_677_721).epochLen, 1_677_721);
@@ -127,11 +127,14 @@ test('a clone and an operator state apply a batch exactly as the leaf state does
  }
  const copy = state.clone(), slots = fill(state);
  assert.deepEqual(copy.apply('spend', slots), state.apply('spend', slots));
- const kept = () => ({ commitment: state.commitment(), erRoot: state.archive.root(), erCount: state.archive.count(), prevNfRoot: state.prevNfRoot });
+ const kept = () => ({ commitment: state.commitment(), erRoot: state.archive.root(), erCount: state.archive.count(), prevNfRoot: state.prevNfRoot, rsRoot: state.recovered.root(), rsCount: state.recovered.count() });
  const before = kept(), rotating = fill(copy), result = copy.apply('spend', rotating);
  assert.equal(result.rotated, true);
  assert.deepEqual(kept(), before);
  assert.deepEqual(state.apply('spend', rotating), result);
+ const recovering = [recoverSlot(copy, 0, dummyInput())], unrecovered = kept(), recovered = copy.apply('recover', recovering);
+ assert.deepEqual(kept(), unrecovered);
+ assert.deepEqual(state.apply('recover', recovering), recovered);
 });
 
 test('rotation fires on every positive multiple of EPOCH_LEN and never otherwise', () => {
