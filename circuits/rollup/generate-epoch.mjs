@@ -17,8 +17,8 @@ const mains=[batch('epoch-batch-spend',1,0),batch('epoch-batch-join',2,1),recove
 const all=[...clients,...mains.map(([name])=>name)],names=process.argv.slice(2);
 if(names.some(name=>!all.includes(name)))throw new Error(`generate-epoch.mjs builds only ${all.join(', ')}.`);
 for(const file of readdirSync(source).filter(name=>/^epoch.*\.circom$/.test(name))){
- const line=readFileSync(path.join(source,file),'utf8').split('\n').findIndex(text=>/<--|-->/.test(text));
- if(line>=0)throw new Error(`circuits/rollup/${file}:${line+1} uses <-- or -->, which assigns without a constraint.`);
+ const line=readFileSync(path.join(source,file),'utf8').split('\n').findIndex(text=>/<--|-->|\bassert\s*\(/.test(text));
+ if(line>=0)throw new Error(`circuits/rollup/${file}:${line+1} uses <--, --> or assert(, which the r1cs does not enforce.`);
 }
 cpSync(path.join(root,'node_modules','circomlib','circuits'),path.join(out,'circomlib','circuits'),{recursive:true,force:true});
 for(const name of ['lib','epoch',...clients])cpSync(path.join(source,name+'.circom'),path.join(out,name+'.circom'));

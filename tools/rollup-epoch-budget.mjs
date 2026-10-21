@@ -38,7 +38,7 @@ for (const [name, pin] of Object.entries(pins)) {
   }
   const fit = actual.nConstraints + actual.nPubInputs + actual.nOutputs;
   if (fit > LIMIT) problems.push(`${name} fit ${fit} exceeds ${LIMIT} by ${fit - LIMIT}`);
-  for (const key of Object.keys(pin)) if (actual[key] !== pin[key]) problems.push(`${name} ${key} pinned ${pin[key]}, compiled ${actual[key]}`);
+  for (const key of ['nConstraints', 'nPubInputs', 'nOutputs', 'sha256']) if (actual[key] !== pin[key]) problems.push(`${name} ${key} pinned ${pin[key]}, compiled ${actual[key]}`);
   console.log(row([name, actual.nConstraints, actual.nPubInputs, actual.nOutputs, fit, LIMIT - fit, actual.sha256 === pin.sha256 ? 'ok' : 'MISMATCH']));
 }
 await globalThis.curve_bn128?.terminate();

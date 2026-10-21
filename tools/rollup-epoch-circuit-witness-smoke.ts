@@ -6,7 +6,7 @@ import { BATCH_SLOTS, BTC_ASSET, EPOCH_NULLIFIER_DEPTH, GROUP_TAG, NULLIFIER_TAG
 import { toCircuitInput, type ClientInput, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
 import { EpochState, anchorOf, epochBindingOf, windowLeafOf, type EpochBatchResult, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
 import { EPOCH_DERIVED_FIELDS, epochBatchInput, epochClientInput } from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import { akOf, groupIdOf, noteOf, ownerOf, sha256le248, statementOf } from '../packages/protocol/src/rollup/notes.ts';
+import { akOf, assetFieldOf, groupIdOf, noteOf, outputRhoOf, ownerOf, sha256le248, statementOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { epochHarness, foldPath, rPrevFor } from '../tests/fixtures/epoch.ts';
 
@@ -67,18 +67,47 @@ await accepts('client spend of a previous-epoch note (sel 1)', 'epoch-spend', pr
 await accepts('client deposit through a dummy input', 'epoch-spend', dep.input);
 await accepts('client join across both live epochs (sel 0 and 1)', 'epoch-join', cross.input, true);
 await rejects('client join whose previous-epoch note claims the current tree', 'epoch-join', epochClientInput(hash, spend([noteC, noteA]), at([0n, 0n])).input, /EpochJoin_\d+ line: 29/);
+await rejects('client join whose current-epoch note claims the previous tree', 'epoch-join', epochClientInput(hash, spend([noteC, noteA]), at([1n, 1n])).input, /EpochJoin_\d+ line: 29/);
+
+const realNf = [cur.slot.nullifiers[0], prev.slot.nullifiers[0]], asset = assetFieldOf(new Uint8Array(34).fill(9));
+// The forger's statement is consistent end to end: its commitments derive from the nullifiers it publishes.
+const forge = (s: ClientSpend, sel: bigint[], nullifiers: bigint[]) => {
+ const w = epochClientInput(hash, s, at(sel)), commitments = s.outputs.map((out, o) => noteOf(hash, ROLLUP_DOMAIN, out.amount, s.asset, out.owner, outputRhoOf(hash, ROLLUP_DOMAIN, out.random, nullifiers, o))) as [bigint, bigint];
+ return { ...w.input, pub: statementOf(hash, { domain: ROLLUP_DOMAIN, ...w.slot, nullifiers, commitments }) };
+};
+await rejects('client asset deposit hiding its asset', 'epoch-spend', { ...epochClientInput(hash, spend([dummyInput()], { asset, deposit: 500n, outputs: outputs(500n) }), at([0n])).input, boundaryAsset: 0n }, /EpochSpend_\d+ line: 40/);
+await rejects('client spend publishing an asset without a boundary leg', 'epoch-spend', { ...cur.input, boundaryAsset: 5n }, /EpochSpend_\d+ line: 40/);
+await rejects('client output larger than its input', 'epoch-spend', epochClientInput(hash, spend([noteC], { outputs: outputs(3001n) }), at([0n])).input, /EpochSpend_\d+ line: 38/);
+await rejects('client destination without a withdrawal', 'epoch-spend', { ...cur.input, destination: 5n }, /EpochSpend_\d+ line: 39/);
+await rejects('dummy spend publishing a real note\'s nullifier', 'epoch-spend', forge(spend([{ ...dummyInput(), nk: noteC.nk, rho: noteC.rho }]), [0n], [realNf[0]]), /EpochSpend_\d+ line: 46/);
+await rejects('client spend with the viewing key but no spend authority', 'epoch-spend', { ...cur.input, ask: 999n }, /EpochSpend_\d+ line: 27/);
+await rejects('client spend with a swapped nullifier key', 'epoch-spend', epochClientInput(hash, spend([{ ...noteC, nk: noteC.nk + 1n }]), at([0n])).input, /EpochSpend_\d+ line: 27/);
+await rejects('client spend publishing a nullifier it did not derive', 'epoch-spend', { ...cur.input, pub: statementOf(hash, { domain: ROLLUP_DOMAIN, ...cur.slot, nullifiers: [1n] }) }, /EpochSpend_\d+ line: 46/);
+await rejects('client spend whose on-chain nullifier is not the note\'s', 'epoch-spend', { ...cur.input, nf0: realNf[0] + 1n }, /EpochSpend_\d+ line: 48/);
+await rejects('client spend blanking its on-chain nullifier', 'epoch-spend', { ...cur.input, nf0: 0n }, /EpochSpend_\d+ line: 48/);
+await rejects('client spend smuggling a second nullifier', 'epoch-spend', { ...cur.input, nf1: 1n }, /EpochSpend_\d+ line: 48/);
+await rejects('client join with its two on-chain nullifiers swapped', 'epoch-join', { ...cross.input, nf0: cross.input.nf1, nf1: cross.input.nf0 }, /EpochJoin_\d+ line: 52/);
+await rejects('client join spending one note twice', 'epoch-join', epochClientInput(hash, spend([noteC, noteC]), at([0n, 0n])).input, /EpochJoin_\d+ line: 33/);
+await rejects('client join output larger than its inputs', 'epoch-join', epochClientInput(hash, spend([noteC, noteA], { outputs: outputs(4001n) }), at([0n, 1n])).input, /EpochJoin_\d+ line: 42/);
+await rejects('client join destination without a withdrawal', 'epoch-join', { ...cross.input, destination: 5n }, /EpochJoin_\d+ line: 43/);
+await rejects('client join publishing an asset without a boundary leg', 'epoch-join', { ...cross.input, boundaryAsset: 5n }, /EpochJoin_\d+ line: 44/);
+await rejects('client join with the viewing key but no spend authority', 'epoch-join', { ...cross.input, ask: [ask, 999n] }, /EpochJoin_\d+ line: 29/);
+await rejects('client join with a swapped nullifier key', 'epoch-join', epochClientInput(hash, spend([noteC, { ...noteA, nk: noteA.nk + 1n }]), at([0n, 1n])).input, /EpochJoin_\d+ line: 29/);
+await rejects('dummy join input publishing a real note\'s nullifier', 'epoch-join', forge(spend([noteC, { ...dummyInput(), nk: noteA.nk, rho: noteA.rho }]), [0n, 0n], realNf), /EpochJoin_\d+ line: 50/);
 
 const forged: ClientInput = { ...noteA, amount: 10n ** 18n, path: Array(32).fill(0n) };
 const T = foldPath(hash, noteOf(hash, ROLLUP_DOMAIN, forged.amount, BTC_ASSET, owner, forged.rho), 0, forged.path);
 const sel = ((T - rCur) * invMod(rPrev - rCur, ROLLUP_FIELD) % ROLLUP_FIELD + ROLLUP_FIELD) % ROLLUP_FIELD;
 const inflated = epochClientInput(hash, spend([forged]), at([sel])).input;
 const inflatedJoin = epochClientInput(hash, spend([noteC, forged]), at([0n, sel])).input;
+const inflatedFirst = epochClientInput(hash, spend([forged, noteC]), at([sel, 0n])).input;
 for (let i = 0; i < 2; i++) state.apply('spend', fill(state));
 const strayRoot = epochClientInput(hash, spend([noteA]), at([1n])).input;
 await rejects('client spend with a non-boolean sel proving membership in a forged root', 'epoch-spend', inflated, /EpochSpend_\d+ line: 25/);
 await rejects('client deposit whose dummy input carries a non-boolean sel', 'epoch-spend', epochClientInput(hash, spend([dummyInput()], { deposit: 500n, outputs: outputs(500n) }), at([2n])).input, /EpochSpend_\d+ line: 25/);
 await rejects('client spend whose note is in neither anchored tree', 'epoch-spend', strayRoot, /EpochSpend_\d+ line: 27/);
 await rejects('client join with a non-boolean sel on its second input', 'epoch-join', inflatedJoin, /EpochJoin_\d+ line: 27/);
+await rejects('client join with a non-boolean sel on its first input', 'epoch-join', inflatedFirst, /EpochJoin_\d+ line: 27/);
 
 const joinSlots = (s: EpochState) => Array.from({ length: BATCH_SLOTS }, () => deposit(s, 0n, { inputs: [dummyInput(), dummyInput()] }).slot);
 const pool = EpochState.genesis(hash, 4), first = pool.apply('spend', fill(pool));
@@ -86,6 +115,7 @@ const [g0, g1] = [fastSlot(pool), fastSlot(pool)], groupId = groupIdOf(hash, [g0
 const grouped = pool.apply('spend', fill(pool, [{ ...g0, groupId, groupSize: 2 }, { ...g1, groupId, groupSize: 2 }]));
 const joined = pool.apply('join', joinSlots(pool));
 const replayed = forced(state, 'spend', fill(state, [{ ...fastSlot(state), nullifiers: c.slot.nullifiers }]));
+const [j0, ...jRest] = joinSlots(state), replayedJoin = forced(state, 'join', [{ ...j0, nullifiers: [j0.nullifiers[0], c.slot.nullifiers[0]] }, ...jRest]);
 // Epoch 2, mid-epoch; slot 1 anchors on the c-1 leaf, so both branches of the window tag run.
 const midAfter = state.clone(), mid = midAfter.apply('spend', fill(state, [fastSlot(state), fastSlot(state, 0n, { epoch: state.epoch - 1, root: state.prevNoteRoot })]));
 assert.deepEqual([first, grouped, joined, mid].map(batch => batch.rotated), [false, false, false, false]);
@@ -119,6 +149,7 @@ await rejects('a root claimed from the wrong window slot', 'epoch-batch-spend', 
 await rejects('a window pair tagged with a future epoch', 'epoch-batch-spend', slot0('rCurEpoch', epoch + 1n), /EpochBatch_\d+ line: 97/);
 
 await rejects('a nullifier already in the frozen previous set', 'epoch-batch-spend', epochBatchInput(replayed.witness), /NonMember_\d+ line: 18/);
+await rejects('a join whose second nullifier is already in the frozen previous set', 'epoch-batch-join', epochBatchInput(replayedJoin.witness), /NonMember_\d+ line: 18/);
 await rejects('a forged low leaf', 'epoch-batch-spend', slot0('nmLeaf', [nmLeaf[0][0] + 1n, ...nmLeaf[0].slice(1)]), /NonMember_\d+ line: 12/);
 await rejects('a low leaf carrying nextIdx 0 with a non-zero nextValue', 'epoch-batch-spend', slot0('nmLeaf', [nmLeaf[0][0], 0n, 1n]), /NonMember_\d+ line: 12/);
 // Each tail check is linear, so --O2 folds it and the constraint count cannot show it deleted; misplaced() re-binds the statement, leaving only the tie.
