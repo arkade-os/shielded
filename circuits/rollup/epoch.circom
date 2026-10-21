@@ -36,7 +36,7 @@ template EpochRotation(DER, EMPTY_NOTE, EMPTY_NF) {
  erCount === epoch; // inductive already; asserted so "ER holds only epochs below c-1" needs no history (D2)
  component erBits=Num2Bits(DER); erBits.in <== erCount;
  component erLeaf=Poseidon(5);
- erLeaf.inputs[0] <== ER_TAG; erLeaf.inputs[1] <== epoch; erLeaf.inputs[2] <== rPrev;
+ erLeaf.inputs[0] <== ER_TAG; erLeaf.inputs[1] <== epoch; erLeaf.inputs[2] <== rPrev; // archives epoch-1, which leaves the fast path now
  erLeaf.inputs[3] <== prevNfRoot; erLeaf.inputs[4] <== nfRoot;
  component erEmpty=MerkleRoot(DER); component erNew=MerkleRoot(DER);
  erEmpty.leaf <== 0; erNew.leaf <== erLeaf.out;
@@ -51,7 +51,7 @@ template EpochRotation(DER, EMPTY_NOTE, EMPTY_NF) {
  rNoteRoot <== noteRoot+rotate*(EMPTY_NOTE-noteRoot);
  rNoteCount <== noteCount-rotate*noteCount;
  rNfRoot <== nfRoot+rotate*(EMPTY_NF-nfRoot);
- rNfCount <== nfCount+rotate*(1-nfCount);
+ rNfCount <== nfCount+rotate*(1-nfCount); // 1, not 0: a fresh indexed tree holds its sentinel
  rErRoot <== erRoot+rotate*(erNew.root-erRoot);
  rEpoch <== epoch+rotate; rErCount <== erCount+rotate;
  for(var j=0;j<6;j++) winBits[j] <== kBits.out[j];
@@ -95,7 +95,7 @@ template EpochBatch(N, M, KIND, DOMAIN, Z, DNF, DER, EMPTY_NOTE, EMPTY_NF) {
   wTree[i]=MerkleRoot(WD); wTree[i].leaf <== wLeaf[i].out;
   for(var j=0;j<WD;j++) { wTree[i].bits[j] <== wBits[i].out[j]; wTree[i].siblings[j] <== winPath[i][j]; }
   wTree[i].root === winRoot;
-  // A window outlives an epoch shorter than 64 batches, so it can hold a c-2 root, whose spends NF[c-1] never saw.
+  // A window outlives an epoch shorter than 64 batches, so it can hold a c-2 root, whose spends NF[c-1] never saw. At epoch 0 this also admits p-1, which no window leaf carries.
   (rCurEpoch[i]-rot.rEpoch)*(rCurEpoch[i]-rot.rEpoch+1) === 0;
 
   for(var k=0;k<M;k++) {
@@ -194,7 +194,7 @@ template EpochRecoverBatch(N, DNF, DER, DRS, KIND, DOMAIN, Z, EMPTY_NOTE, EMPTY_
   erBits[i]=Num2Bits(DER); erBits[i].in <== erIdx[i];
   erTree[i]=MerkleRoot(DER); erTree[i].leaf <== erLeaf[i].out;
   for(var j=0;j<DER;j++) { erTree[i].bits[j] <== erBits[i].out[j]; erTree[i].siblings[j] <== erPath[i][j]; }
-  // After this batch's own append, so a rotating batch can recover the epoch it archives (R19).
+  // After this batch's own append, so a rotating batch can recover the epoch it archives (R19). Slots from rot.rEpoch up are still empty, so erIdx needs no upper bound.
   erTree[i].root === rot.rErRoot;
 
   absentA[i]=NonMember(DNF, NF_TAG); absentA[i].nf <== nf[i][0]; absentA[i].root <== nfA[i]; absentA[i].idx <== nmaIdx[i];
