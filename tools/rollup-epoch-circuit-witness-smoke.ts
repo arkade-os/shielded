@@ -98,9 +98,10 @@ await accepts('epoch batch join, two nullifiers per slot', 'epoch-batch-join', e
 const midInput = epochBatchInput(mid.witness), { epoch, epochLen, epochQ, epochR, batchCount, batchQ, erAppendPath, nmLeaf } = mid.witness as Record<string, any>;
 const slot0 = (key: string, value: unknown) => ({ ...midInput, [key]: [value, ...(midInput[key] as unknown[]).slice(1)] });
 const bits = (line: number) => new RegExp(`Num2Bits_\\d+ line: 38\\nError in template EpochRotation_\\d+ line: ${line}\\n`);
-// circom 2.2.2 gives an undeclared input size 0, so the calculator says "Too many values", never "Signal not found".
+// An undeclared key reads as size 0 or as missing, depending on the build's input hash layout; either message means it is not an input.
+const notInput = (field: string) => new RegExp(`(Too many values for input signal ${field}|Signal ${field} not found)\\n`);
 for (const field of EPOCH_DERIVED_FIELDS)
- await rejects(`a batch may not supply ${field}`, 'epoch-batch-spend', { ...midInput, [field]: mid.witness[field] }, new RegExp(`Too many values for input signal ${field}\\n`));
+ await rejects(`a batch may not supply ${field}`, 'epoch-batch-spend', { ...midInput, [field]: mid.witness[field] }, notInput(field));
 // epochR = epochLen + r keeps the quotient identity true, so only the range check refuses it.
 await rejects('epochR at or above EPOCH_LEN', 'epoch-batch-spend', { ...midInput, epochR: epochLen + epochR, epochQ: epochQ - 1n }, /EpochRotation_\d+ line: 31/);
 await rejects('epochR out of its 21-bit range', 'epoch-batch-spend', { ...midInput, epochR: 2n ** 21n }, bits(29));
@@ -204,5 +205,5 @@ await rejects('a nullifier present in the second archived set', 'epoch-batch-rec
 await rejects('a second recovery of the same note', 'epoch-batch-recover', epochBatchInput(forcedRs.witness), /IndexedInsert_\d+ line: 49\n/);
 await rejects('a recover slot claiming a group', 'epoch-batch-recover', reopened({ groupId: [hash([GROUP_TAG, recInput.nf[0][0], 0n, 0n])], groupSize: [2n] }), /GroupRule_\d+ line: 135\n/);
 for (const field of EPOCH_DERIVED_FIELDS)
- await rejects(`a recover batch may not supply ${field}`, 'epoch-batch-recover', { ...recInput, [field]: rec.witness[field] }, new RegExp(`Too many values for input signal ${field}\\n`));
+ await rejects(`a recover batch may not supply ${field}`, 'epoch-batch-recover', { ...recInput, [field]: rec.witness[field] }, notInput(field));
 process.exit(0);
