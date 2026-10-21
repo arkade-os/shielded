@@ -9,7 +9,7 @@ const source=path.join(root,'circuits','rollup'),out=path.join(source,'build');
 mkdirSync(out,{recursive:true});
 const poseidon=await buildPoseidon(),hash=values=>BigInt(poseidon.F.toObject(poseidon(values))),zeros=[0n];
 for(let level=0;level<32;level++)zeros.push(hash([zeros[level],zeros[level]]));
-const EMPTY_NOTE=zeros[32],EMPTY_NF=zeros.slice(0,25).reduce((node,zero)=>hash([node,zero]),hash([20261007301n,0n,0n,0n]));
+const EMPTY_NOTE=zeros[32],EMPTY_NF=zeros.slice(0,25).reduce((node,zero)=>hash([node,zero]),hash([20261007301n,0n,0n,0n])); // RollupNullifiers' empty root: sentinel Poseidon(NULLIFIER_TAG,0,0,0) at index 0, folded up 25 levels
 const clients=['epoch-spend','epoch-join'];
 const batch=(name,perSlot,kind)=>[name,`component main {public [pub, statement]} = EpochBatch(${process.env.ROLLUP_SLOTS??10}, ${perSlot}, ${kind}, 20261017000, [${zeros.slice(0,6).join(',')}], 25, 20, ${EMPTY_NOTE}, ${EMPTY_NF});`];
 const recover=['epoch-batch-recover',`component main {public [pub, statement]} = EpochRecoverBatch(1, 25, 20, 32, 2, 20261017000, [${zeros.slice(0,6).join(',')}], ${EMPTY_NOTE}, ${EMPTY_NF});`];
