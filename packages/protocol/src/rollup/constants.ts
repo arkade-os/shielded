@@ -27,6 +27,7 @@ export type BatchKind = 'spend' | 'join';
 export const BATCH_KIND_BYTE: Record<BatchKind, number> = { spend: 0, join: 1 };
 export type EpochBatchKind = 'spend' | 'join' | 'recover';
 export const EPOCH_KIND_BYTE: Record<EpochBatchKind, number> = { spend: 0, join: 1, recover: 2 };
+export const EPOCH_BINDING_VERSION = 4;
 export const EPOCH_SLOTS: Record<EpochBatchKind, number> = { spend: BATCH_SLOTS, join: BATCH_SLOTS, recover: 1 };
 export const EPOCH_NULLIFIERS: Record<EpochBatchKind, number> = { spend: 1, join: 2, recover: 1 };
 

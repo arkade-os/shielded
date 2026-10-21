@@ -1,11 +1,12 @@
 import {arkade,asset,buildOffchainTx,CSVMultisigTapscript,EmulatorPacket,Extension,MultisigTapscript,PrevArkTxField,setArkPsbtField,UnknownPacket,VtxoScript,type Transaction} from '@arkade-os/sdk';
 import {RawWitness} from '@scure/btc-signer';
-import type {BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import type {EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 
 export const ROLLUP_STATE_PACKET=0x87;
 const BASE_FIELD=21888242871839275222246405745257275088696311157297823662689037894645226208583n;
 
 export interface RollupLeaves {batch:Uint8Array;batchJoin:Uint8Array;reserve:Uint8Array;renew:Uint8Array}
+export interface RollupEpochLeaves extends RollupLeaves {batchRecover:Uint8Array}
 export interface SnarkProof {pi_a:string[];pi_b:string[][];pi_c:string[]}
 export interface RollupCoin {txid:string;vout:number;value:number;sourceTx:Uint8Array;tapTree:Uint8Array;leaf:ReturnType<VtxoScript['findLeaf']>}
 /** A slot's boundary legs; an asset payout's carrier sats come from the next slot, a BTC payout to the same program. */
@@ -17,12 +18,12 @@ export interface RollupBatch {
  legs:RollupLeg[];
  token:string;
  asset?:string;
- leaves:RollupLeaves;
+ leaves:RollupLeaves|RollupEpochLeaves;
  witness:Uint8Array[];
  newPacket:Uint8Array;
  checkpoint:CSVMultisigTapscript.Type;
  /** The head coin's leaf must be the same kind's. */
- kind?:BatchKind;
+ kind?:EpochBatchKind;
 }
 
 function fail(message:string):never{throw new Error('Rollup batch: '+message);}
@@ -34,6 +35,15 @@ export function rollupPoolTree(serverKey:Uint8Array,emulatorKey:Uint8Array,leave
  const exit=CSVMultisigTapscript.encode({timelock:{type:exitDelay.type,value:BigInt(exitDelay.value)},pubkeys:[tweak(leaves.batch)]}).script;
  // Of five leaves the tree puts indices 0, 1 and 4 at depth 2: the three a weight-critical batch can spend.
  return {tree:new VtxoScript([batch,batchJoin,exit,renew,reserve]),batch,batchJoin,reserve,renew};
+}
+
+export function rollupEpochPoolTree(serverKey:Uint8Array,emulatorKey:Uint8Array,leaves:RollupEpochLeaves,exitDelay:{type:'seconds'|'blocks';value:number}){
+ const tweak=(script:Uint8Array)=>arkade.computeArkadeScriptPublicKey(emulatorKey,script);
+ const collab=(script:Uint8Array)=>MultisigTapscript.encode({pubkeys:[serverKey,tweak(script)]}).script;
+ const batch=collab(leaves.batch),batchJoin=collab(leaves.batchJoin),batchRecover=collab(leaves.batchRecover),reserve=collab(leaves.reserve),renew=collab(leaves.renew);
+ const exit=CSVMultisigTapscript.encode({timelock:{type:exitDelay.type,value:BigInt(exitDelay.value)},pubkeys:[tweak(leaves.batch)]}).script;
+ // Of six leaves the tree puts only indices 4 and 5 at depth 2, so the weight-critical batch and batchJoin go last; reserve pays +32 WU at depth 3.
+ return {tree:new VtxoScript([exit,renew,reserve,batchRecover,batch,batchJoin]),batch,batchJoin,batchRecover,reserve,renew};
 }
 
 function scriptNum(value:bigint):Uint8Array {
@@ -96,7 +106,8 @@ export function buildRollupBatchTx(b:RollupBatch):{arkTx:Transaction;checkpoints
   const outs=[...(remaining>0n?[asset.AssetOutput.create(1,remaining)]:[]),...assetPayouts.map(p=>asset.AssetOutput.create(p.vout,p.amount))];
   groups.push(asset.AssetGroup.create(id(b.asset),null,inputs,outs,[]));
  }
- const entries=[{vin:0,script:b.kind==='join'?b.leaves.batchJoin:b.leaves.batch,witness:RawWitness.encode(b.witness)},...(b.reserve?[{vin:1,script:b.leaves.reserve,witness:RawWitness.encode([])}]:[])];
+ const script=b.kind==='recover'?('batchRecover' in b.leaves&&b.leaves.batchRecover?.length?b.leaves.batchRecover:fail('a recover batch needs the recover leaf.')):b.kind==='join'?b.leaves.batchJoin:b.leaves.batch;
+ const entries=[{vin:0,script,witness:RawWitness.encode(b.witness)},...(b.reserve?[{vin:1,script:b.leaves.reserve,witness:RawWitness.encode([])}]:[])];
  const ext=Extension.create([asset.Packet.create(groups),EmulatorPacket.create(entries),new UnknownPacket(ROLLUP_STATE_PACKET,b.newPacket)]);
  const built=buildOffchainTx(coins.map(c=>({txid:c.txid,vout:c.vout,value:c.value,tapTree:c.tapTree,tapLeafScript:c.leaf})),[...outputs,ext.txOut()],b.checkpoint);
  coins.forEach((coin,vin)=>setArkPsbtField(built.arkTx,vin,PrevArkTxField,coin.sourceTx));

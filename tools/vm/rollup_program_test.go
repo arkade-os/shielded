@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -79,6 +80,35 @@ func TestRollupBatchLeafRejectsProofAndStateAttacks(t *testing.T) {
 	rollupExpectReject(t, "spend-kind statement on a join leaf", b, "OP_VERIFY")
 }
 
+func TestRollupBatchLeafSeparatesBindingVersions(t *testing.T) {
+	// A version-4 leaf must refuse a batch whose proofs signed the version-2 statement, and the reverse.
+	// Same Kind and Slots in both directions, so only magic[2] differs.
+	for _, v := range [][2]byte{{4, 2}, {2, 4}} {
+		w := newRollupWorldAt(t, 10, 0, v[0], 7)
+		if push := []byte{5, 'S', 'H', v[0], 0, 10}; !bytes.Contains(w.leaf.Script, push) {
+			t.Errorf("version %d leaf lacks the pushdata %x", v[0], push)
+		}
+		b := rollupTransfers(w)
+		if err := b.execute(); err != nil {
+			t.Fatalf("version %d: honest batch rejected: %v", v[0], err)
+		}
+		w.version = v[1]
+		b.prove()
+		b.buildWitness()
+		rollupExpectReject(t, fmt.Sprintf("version-%d statement on a version-%d leaf", v[1], v[0]), b, "OP_VERIFY")
+	}
+	if push := []byte{5, 'S', 'H', 4, 2, 1}; !bytes.Contains(newRollupWorldAt(t, 1, 2, 4, 13).leaf.Script, push) {
+		t.Errorf("recover leaf lacks the pushdata %x", push)
+	}
+	client, batch := rollupFixtureKeys(t)
+	for version := byte(0); version < 6; version++ {
+		_, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Version: version, Client: client, Batch: batch})
+		if (err == nil) != (version == 2 || version == 4) {
+			t.Errorf("version %d: %v", version, err)
+		}
+	}
+}
+
 func TestRollupBatchLeafKeepsTheHead(t *testing.T) {
 	fresh := func() *rollupBatch { return rollupTransfers(newRollupWorld(t, 10, 0, 7)) }
 	b := fresh()
@@ -92,4 +122,35 @@ func TestRollupBatchLeafKeepsTheHead(t *testing.T) {
 	b = fresh()
 	b.group(b.w.token).Outputs[0].Vout = 1
 	rollupExpectReject(t, "pool token moved off the head", b, "does not preserve source assets")
+}
+
+func TestRollupRecoverLeafAcceptsAWidthOneBatch(t *testing.T) {
+	w := newRollupWorldAt(t, 1, 2, 4, 13)
+	b := w.batchOf([]rollupLeg{{}}, false)
+	if err := b.execute(); err != nil {
+		t.Fatalf("width-1 recover batch rejected: %v", err)
+	}
+}
+
+func TestRollupRecoverProofIsNotSpendableThroughAnotherLeaf(t *testing.T) {
+	// The binding's KIND byte is the separation (epoch.circom:262, constants.ts EPOCH_KIND_BYTE).
+	var w *rollupWorld
+	for _, k := range [][2]byte{{1, 2}, {2, 0}} {
+		w = newRollupWorldAt(t, 1, k[0], 4, 13)
+		b := w.batchOf([]rollupLeg{{}}, false)
+		if err := b.execute(); err != nil {
+			t.Fatalf("kind %d: honest batch rejected: %v", k[0], err)
+		}
+		b.batchKind = k[1]
+		b.buildWitness()
+		rollupExpectReject(t, fmt.Sprintf("kind-%d statement on a kind-%d leaf", k[1], k[0]), b, "OP_VERIFY")
+	}
+	cfg := rollupLeafConfig{Slots: 1, Kind: 3, Version: 4, Client: w.client.key, Batch: w.batch.key}
+	if _, err := buildRollupBatchLeaf(cfg); err == nil || !strings.Contains(err.Error(), "kind 0, 1 or 2") {
+		t.Errorf("kind-3 leaf: %v", err)
+	}
+	cfg.Slots, cfg.Kind = 10, 2
+	if _, err := buildRollupBatchLeaf(cfg); err == nil || !strings.Contains(err.Error(), "batch public inputs") {
+		t.Errorf("kind-2 leaf at 10 slots on a 2-public batch key: %v", err)
+	}
 }

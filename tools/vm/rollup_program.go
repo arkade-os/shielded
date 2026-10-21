@@ -22,10 +22,11 @@ const (
 var rollupProofFields = []string{"Ax", "Ay", "B0", "B1", "B2", "B3", "Cx", "Cy"}
 
 type rollupLeafConfig struct {
-	Slots  int
-	Kind   byte // 0 spend, 1 join
-	Client rollupKey
-	Batch  rollupKey
+	Slots   int
+	Kind    byte // 0 spend, 1 join, 2 recover
+	Version byte // binding version: 2 genesis 3, 4 epoch
+	Client  rollupKey
+	Batch   rollupKey
 }
 
 type rollupLeaf struct {
@@ -51,8 +52,8 @@ func rollupWitnessNames(slots int) []string {
 }
 
 func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
-	if c.Slots < 1 || c.Slots > rollupMaxSlots || c.Kind > 1 {
-		return rollupLeaf{}, errors.New("rollup leaf needs 1-11 slots and kind 0 or 1")
+	if c.Slots < 1 || c.Slots > rollupMaxSlots || c.Kind > 2 || (c.Version != 2 && c.Version != 4) {
+		return rollupLeaf{}, errors.New("rollup leaf needs 1-11 slots, kind 0, 1 or 2 and version 2 or 4")
 	}
 	if len(c.Client.IC) != 8 || len(c.Batch.IC) != c.Slots+2 {
 		return rollupLeaf{}, errors.New("rollup keys need 7 client and slots+1 batch public inputs")
@@ -68,7 +69,7 @@ func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
 	s.op(arkade.OP_PUSHCURRENTINPUTINDEX, 0, "idx")
 	s.op(txscript.OP_NOT, 1, "head")
 	s.op(txscript.OP_VERIFY, 1)
-	emitRollupBinding(s, c.Kind, n)
+	emitRollupBinding(s, c.Version, c.Kind, n)
 	emitRollupReserve(s)
 	s.small(0, "nall")
 	s.small(0, "nbtc")
@@ -154,11 +155,11 @@ func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
 	return rollupLeaf{Script: script, ECMul: s.ecmul, Pairs: n + 5}, nil
 }
 
-// emitRollupBinding rebuilds the 101-byte statement preimage from the parent's
+// emitRollupBinding rebuilds the 133-byte statement preimage from the parent's
 // state packet and this transaction's, and seeds Fiat-Shamir with its hash and
 // the hash of this input's whole witness.
-func emitRollupBinding(s *rollupStack, kind byte, n int) {
-	s.b.AddData([]byte{'S', 'H', 2, kind, byte(n)})
+func emitRollupBinding(s *rollupStack, version, kind byte, n int) {
+	s.b.AddData([]byte{'S', 'H', version, kind, byte(n)})
 	s.push("pre")
 	s.small(rollupStatePacket, "type")
 	s.small(0, "vin")

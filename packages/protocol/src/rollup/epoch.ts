@@ -1,4 +1,4 @@
-import { ANCHOR_TAG, ARCHIVE_DEPTH, EPOCH_KIND_BYTE, EPOCH_NULLIFIER_DEPTH, EPOCH_NULLIFIERS, EPOCH_SLOTS, EPOCH_TAG, MAX_EPOCH_LEN, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RS_TAG, RollupRejection, STATE_TAG, SUBTREE_DEPTH, WIN_TAG, WINDOW_DEPTH, type EpochBatchKind } from './constants.ts';
+import { ANCHOR_TAG, ARCHIVE_DEPTH, EPOCH_BINDING_VERSION, EPOCH_KIND_BYTE, EPOCH_NULLIFIER_DEPTH, EPOCH_NULLIFIERS, EPOCH_SLOTS, EPOCH_TAG, MAX_EPOCH_LEN, NOTE_DEPTH, RECOVERED_DEPTH, ROLLUP_DOMAIN, ROLLUP_FIELD, RS_TAG, RollupRejection, STATE_TAG, SUBTREE_DEPTH, WIN_TAG, WINDOW_DEPTH, type EpochBatchKind } from './constants.ts';
 import { EpochArchive } from './epoch-archive.ts';
 import { sha256le248, statementOf, type Hash } from './notes.ts';
 import { RollupNullifiers } from './nullifiers.ts';
@@ -13,7 +13,7 @@ export const anchorOf = (hash: Hash, rPrev: bigint, rCur: bigint) => hash([ANCHO
 export const windowLeafOf = (hash: Hash, ref: EpochAnchorRef) => hash([WIN_TAG, BigInt(ref.epoch), ref.root]);
 export const epochBindingOf = (kind: EpochBatchKind, oldCommitment: bigint, newCommitment: bigint, daRoot: bigint, blockRoot: bigint) => {
  const binding = bindingOf('spend', oldCommitment, newCommitment, daRoot, blockRoot);
- binding.set([EPOCH_KIND_BYTE[kind], EPOCH_SLOTS[kind]], 3);
+ binding.set([EPOCH_BINDING_VERSION, EPOCH_KIND_BYTE[kind], EPOCH_SLOTS[kind]], 2);
  return binding;
 };
 

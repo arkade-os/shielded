@@ -149,7 +149,7 @@ template EpochBatch(N, M, KIND, DOMAIN, Z, DNF, DER, EMPTY_NOTE, EMPTY_NF) {
  newState.inputs[3] <== nfRoots[N*M]; newState.inputs[4] <== rot.rNfCount+N*M; newState.inputs[5] <== wNew.root;
  newState.inputs[6] <== batchCount+1; newState.inputs[7] <== newEpoch.out; newState.inputs[8] <== rs.out;
 
- component bind=Binding(KIND, N);
+ component bind=EpochBinding(KIND, N);
  bind.fields[0] <== oldState.out; bind.fields[1] <== newState.out; bind.fields[2] <== daChain[N];
  bind.fields[3] <== append.subRoot;
  bind.statement === statement;
@@ -250,8 +250,26 @@ template EpochRecoverBatch(N, DNF, DER, DRS, KIND, DOMAIN, Z, EMPTY_NOTE, EMPTY_
  newState.inputs[3] <== rot.rNfRoot; newState.inputs[4] <== rot.rNfCount; newState.inputs[5] <== wNew.root;
  newState.inputs[6] <== batchCount+1; newState.inputs[7] <== newEpoch.out; newState.inputs[8] <== newRs.out;
 
- component bind=Binding(KIND, N);
+ component bind=EpochBinding(KIND, N);
  bind.fields[0] <== oldState.out; bind.fields[1] <== newState.out; bind.fields[2] <== daChain[N];
  bind.fields[3] <== append.subRoot;
  bind.statement === statement;
+}
+
+// lib.circom's Binding at version byte 4, copied rather than parameterised because lib.circom is frozen with genesis 3.
+template EpochBinding(KIND, N) {
+ signal input fields[4]; signal output statement;
+ var magic[5]=[83,72,4,KIND,N];
+ component sha=Sha256(133*8); component fb[4];
+ for(var i=0;i<5;i++) for(var b=0;b<8;b++) sha.in[i*8+b] <== (magic[i]>>(7-b))&1;
+ for(var f=0;f<4;f++) {
+  fb[f]=Num2Bits_strict(); fb[f].in <== fields[f];
+  for(var i=0;i<32;i++) for(var b=0;b<8;b++) {
+   if(i*8+7-b<254) sha.in[(5+32*f+i)*8+b] <== fb[f].out[i*8+7-b];
+   else sha.in[(5+32*f+i)*8+b] <== 0;
+  }
+ }
+ var sv=0;
+ for(var i=0;i<31;i++) for(var b=0;b<8;b++) sv += sha.out[i*8+b]*(2**(8*i+7-b));
+ statement <== sv;
 }

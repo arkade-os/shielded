@@ -21,6 +21,8 @@
     "rollup:compile:epoch": "node circuits/rollup/generate-epoch.mjs",
     "rollup:pin": "node tools/rollup-r1cs-pin.mjs",
     "rollup:budget:epoch": "node --max-old-space-size=8192 tools/rollup-epoch-budget.mjs",
+    "rollup:setup:epoch-dev": "node --max-old-space-size=8192 tools/rollup-setup.mjs --development-only --single-thread --circuits epoch-spend,epoch-batch-recover --out circuits/rollup/build/keys-epoch-dev",
+    "rollup:fixture:epoch-covenant": "node --import tsx tools/rollup-epoch-covenant-fixture.ts",
     "test:rollup:witness": "node --import tsx tools/rollup-circuit-witness-smoke.ts",
     "test:rollup:epoch-witness": "node --import tsx tools/rollup-epoch-circuit-witness-smoke.ts",
     "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",

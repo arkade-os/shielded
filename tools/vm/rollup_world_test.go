@@ -55,6 +55,7 @@ type rollupLeg struct {
 type rollupWorld struct {
 	slots              int
 	kind               byte
+	version            byte
 	rng                *rand.Rand
 	client, batch      *rollupTrapdoor
 	leaf               rollupLeaf
@@ -71,11 +72,16 @@ type rollupWorld struct {
 
 func newRollupWorld(t *testing.T, slots int, kind byte, seed int64) *rollupWorld {
 	t.Helper()
+	return newRollupWorldAt(t, slots, kind, 2, seed)
+}
+
+func newRollupWorldAt(t *testing.T, slots int, kind, version byte, seed int64) *rollupWorld {
+	t.Helper()
 	rng := rand.New(rand.NewSource(seed))
 	client := newRollupTrapdoor(rng, nil, 7)
 	batch := newRollupTrapdoor(rng, client, slots+1)
-	w := &rollupWorld{slots: slots, kind: kind, rng: rng, client: client, batch: batch}
-	leaf, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: slots, Kind: kind, Client: client.key, Batch: batch.key})
+	w := &rollupWorld{slots: slots, kind: kind, version: version, rng: rng, client: client, batch: batch}
+	leaf, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: slots, Kind: kind, Version: version, Client: client.key, Batch: batch.key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +198,7 @@ func (b *rollupBatch) prove() {
 }
 
 func (b *rollupBatch) binding() []byte {
-	out := []byte{'S', 'H', 2, b.batchKind, byte(b.w.slots)}
+	out := []byte{'S', 'H', b.w.version, b.batchKind, byte(b.w.slots)}
 	out = append(out, b.w.oldPacket[:32]...)
 	return append(out, b.newPacket...)
 }

@@ -194,3 +194,38 @@ func TestRollupReserveLeafRejectsAttacks(t *testing.T) {
 	b.assets[len(b.assets)-1].Outputs[0].Vout = 4
 	rollupExpectReject(t, "reserve's second asset rerouted", b, "does not preserve source assets")
 }
+
+func TestRollupRecoverLeafRejectsWidthOneEdges(t *testing.T) {
+	// An asset payout in the only slot has no next slot to carry its sats, so emitRollupLegs
+	// takes the i == n-1 OP_RETURN branch (rollup_program.go:275-276) at i == 0.
+	w := newRollupWorldAt(t, 1, 2, 4, 13)
+	dest := rollupProgram(0xb2)
+	b := w.batchOf([]rollupLeg{{wd: 300, asset: true, dest: dest}}, true)
+	b.tx.TxOut = append(b.tx.TxOut[:2], append([]*wire.TxOut{wire.NewTxOut(330, rollupP2TR(dest))}, b.tx.TxOut[2:]...)...)
+	rollupSetOutput(b.group(b.w.x), 2, 300)
+	rollupExpectReject(t, "asset payout in the only slot", b, "script returned early")
+
+	b = w.batchOf([]rollupLeg{{wd: 330, dest: dest}}, true)
+	if err := b.execute(); err != nil {
+		t.Fatalf("BTC payout beside the reserve rejected: %v", err)
+	}
+	x := b.group(b.w.x)
+	rollupSetOutput(x, 1, b.w.xIn-1)
+	rollupSetOutput(x, 2, 1)
+	rollupExpectReject(t, "reserve asset leaving output 1", b, "OP_NUMEQUALVERIFY")
+
+	b = w.batchOf([]rollupLeg{{dep: 5000, inSats: 5000}}, false)
+	if err := b.execute(); err != nil || b.tx.TxOut[0].Value != w.headIn+5000 {
+		t.Fatalf("BTC deposit: head %d, %v", b.tx.TxOut[0].Value, err)
+	}
+	b.tx.TxOut[0].Value--
+	rollupExpectReject(t, "deposit credited one sat short", b, "OP_NUMEQUALVERIFY")
+
+	b = w.batchOf([]rollupLeg{{}}, false)
+	b.depositAs[0] = new(big.Int).Sub(rollupScalarField, big.NewInt(5))
+	b.prove()
+	b.buildWitness()
+	b.witness[b.slotItem(0, 11)] = []byte{0x85}
+	b.tx.TxOut[0].Value -= 5
+	rollupExpectReject(t, "negative deposit drains the head", b, "OP_VERIFY")
+}
