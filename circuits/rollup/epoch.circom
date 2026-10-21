@@ -24,7 +24,7 @@ template EpochRotation(DER, EMPTY_NOTE, EMPTY_NF) {
  signal input batchCount; signal input batchQ; signal input epoch; signal input epochLen; signal input epochQ; signal input epochR; signal input noteRoot; signal input noteCount; signal input nfRoot; signal input nfCount; signal input rPrev; signal input prevNfRoot; signal input erRoot; signal input erCount; signal input erAppendPath[DER];
  signal output rotate; signal output rEpoch; signal output rPrevNote; signal output rPrevNf; signal output rNoteRoot; signal output rNoteCount; signal output rNfRoot; signal output rNfCount; signal output rErRoot; signal output rErCount; signal output winBits[6];
  component kBits=Num2Bits(6); kBits.in <== batchCount-batchQ*64;
- component qBits=Num2Bits(32); qBits.in <== batchQ; // 2^38 batches, where lib.circom's Batch allows 2^32
+ component qBits=Num2Bits(34); qBits.in <== batchQ; // 2^40 batches: 2^20 epochs of MAX_EPOCH_LEN 2^20
  component lenBits=Num2Bits(21); lenBits.in <== epochLen;
  component rBits=Num2Bits(21); rBits.in <== epochR;
  component qeBits=Num2Bits(32); qeBits.in <== epochQ; // epochQ*epochLen cannot wrap, so the remainder is unique
