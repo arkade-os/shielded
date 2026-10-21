@@ -25,7 +25,7 @@ template EpochRotation(DER, EMPTY_NOTE, EMPTY_NF) {
  signal output rotate; signal output rEpoch; signal output rPrevNote; signal output rPrevNf; signal output rNoteRoot; signal output rNoteCount; signal output rNfRoot; signal output rNfCount; signal output rErRoot; signal output rErCount; signal output winBits[6];
  component kBits=Num2Bits(6); kBits.in <== batchCount-batchQ*64;
  component qBits=Num2Bits(34); qBits.in <== batchQ; // 2^40 batches: 2^20 epochs of MAX_EPOCH_LEN 2^20
- component lenBits=Num2Bits(21); lenBits.in <== epochLen;
+ component lenBits=Num2Bits(21); lenBits.in <== epochLen; var MAX_EPOCH_LEN=1048576; component lenMax=LessThan(21); lenMax.in[0] <== epochLen; lenMax.in[1] <== MAX_EPOCH_LEN+1; lenMax.out === 1;
  component rBits=Num2Bits(21); rBits.in <== epochR;
  component qeBits=Num2Bits(32); qeBits.in <== epochQ; // epochQ*epochLen cannot wrap, so the remainder is unique
  component inRange=LessThan(21); inRange.in[0] <== epochR; inRange.in[1] <== epochLen; inRange.out === 1;

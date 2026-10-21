@@ -11,9 +11,9 @@ const LIMIT = 1_048_575;
 const pins = {
   'epoch-spend': { nConstraints: 11_079, nPubInputs: 7, nOutputs: 0, sha256: '39320faffecf66e43fe9edb8cab07f2a1dd6628ad3075d11fbecb167f50b8afa' },
   'epoch-join': { nConstraints: 20_068, nPubInputs: 7, nOutputs: 0, sha256: '0af7c61fc31549d1f239f4e4b0f6966517f355fe94c01f1d6f05d5f1202905d7' },
-  'epoch-batch-spend': { nConstraints: 554_038, nPubInputs: 11, nOutputs: 0, sha256: 'c6caa00ce22388a1f9704880f5d4875548983b8bd2e87ed749f55c037dc9d441' },
-  'epoch-batch-join': { nConstraints: 953_418, nPubInputs: 11, nOutputs: 0, sha256: '327b2c96eb24a0d6a2069f3c0d7374afa8b4d9d922278121922834d7d8c12017' },
-  'epoch-batch-recover': { nConstraints: 185_132, nPubInputs: 2, nOutputs: 0, sha256: '0d53fcc7e1d5f38928fdd12b5e64962564f26597837ed1225a1305fe2a1f06e0' },
+  'epoch-batch-spend': { nConstraints: 554_059, nPubInputs: 11, nOutputs: 0, sha256: 'ac891c2b5a948c7081fc05626919364b126c6dcf80f58fdb11c23926047dad6f' },
+  'epoch-batch-join': { nConstraints: 953_439, nPubInputs: 11, nOutputs: 0, sha256: 'f23b2106756a2631b68616ccf781868e196b1ae1f658748733fc0eba70af7548' },
+  'epoch-batch-recover': { nConstraints: 185_153, nPubInputs: 2, nOutputs: 0, sha256: '3d9316bf41701c4f2735a9f523c9c26d70d920c5a5218e010691f54e62e5eb6d' },
 };
 
 const build = join(fileURLToPath(new URL('../', import.meta.url)), 'circuits', 'rollup', 'build');

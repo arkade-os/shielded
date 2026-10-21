@@ -146,6 +146,8 @@ await rejects('epochQ by field division, which would rotate mid-epoch', 'epoch-b
 await rejects('batchQ by field division, which would write another window slot', 'epoch-batch-spend', { ...midInput, batchQ: invMod(64n, ROLLUP_FIELD) }, bits(27));
 await rejects('erCount not equal to epoch', 'epoch-batch-spend', { ...midInput, erCount: epoch + 1n }, /EpochRotation_\d+ line: 36/);
 await rejects('a forged archive append path', 'epoch-batch-spend', { ...midInput, erAppendPath: [erAppendPath[0] + 1n, ...erAppendPath.slice(1)] }, /EpochRotation_\d+ line: 48/);
+const wide = EpochState.genesis(hash, 4); (wide as { epochLen: number }).epochLen = 2 ** 20 + 1;
+await rejects('an EPOCH_LEN above MAX_EPOCH_LEN, which the model refuses at genesis', 'epoch-batch-spend', epochBatchInput(wide.apply('spend', fill(wide)).witness), /EpochRotation_\d+ line: 28\n/);
 await rejects('a root claimed from the wrong window slot', 'epoch-batch-spend', slot0('winIdx', 5n), /EpochBatch_\d+ line: 97/);
 // No window leaf carries a future tag, so membership fires before the tag check can.
 await rejects('a window pair tagged with a future epoch', 'epoch-batch-spend', slot0('rCurEpoch', epoch + 1n), /EpochBatch_\d+ line: 97/);
