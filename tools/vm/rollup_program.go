@@ -23,7 +23,7 @@ var rollupProofFields = []string{"Ax", "Ay", "B0", "B1", "B2", "B3", "Cx", "Cy"}
 
 type rollupLeafConfig struct {
 	Slots   int
-	Kind    byte // 0 spend, 1 join
+	Kind    byte // 0 spend, 1 join, 2 recover
 	Version byte // binding version: 2 genesis 3, 4 epoch
 	Client  rollupKey
 	Batch   rollupKey
@@ -52,8 +52,8 @@ func rollupWitnessNames(slots int) []string {
 }
 
 func buildRollupBatchLeaf(c rollupLeafConfig) (rollupLeaf, error) {
-	if c.Slots < 1 || c.Slots > rollupMaxSlots || c.Kind > 1 || (c.Version != 2 && c.Version != 4) {
-		return rollupLeaf{}, errors.New("rollup leaf needs 1-11 slots, kind 0 or 1 and version 2 or 4")
+	if c.Slots < 1 || c.Slots > rollupMaxSlots || c.Kind > 2 || (c.Version != 2 && c.Version != 4) {
+		return rollupLeaf{}, errors.New("rollup leaf needs 1-11 slots, kind 0, 1 or 2 and version 2 or 4")
 	}
 	if len(c.Client.IC) != 8 || len(c.Batch.IC) != c.Slots+2 {
 		return rollupLeaf{}, errors.New("rollup keys need 7 client and slots+1 batch public inputs")
