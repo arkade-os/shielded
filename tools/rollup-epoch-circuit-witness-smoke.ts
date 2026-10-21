@@ -68,6 +68,7 @@ const inflatedJoin = epochClientInput(hash, spend([noteC, forged]), at([0n, sel]
 for (let i = 0; i < 2; i++) state.apply('spend', fill(state));
 const strayRoot = epochClientInput(hash, spend([noteA]), at([1n])).input;
 await rejects('client spend with a non-boolean sel proving membership in a forged root', 'epoch-spend', inflated, /EpochSpend_\d+ line: 25/);
+await rejects('client deposit whose dummy input carries a non-boolean sel', 'epoch-spend', epochClientInput(hash, spend([dummyInput()], { deposit: 500n, outputs: outputs(500n) }), at([2n])).input, /EpochSpend_\d+ line: 25/);
 await rejects('client spend whose note is in neither anchored tree', 'epoch-spend', strayRoot, /EpochSpend_\d+ line: 27/);
 await rejects('client join with a non-boolean sel on its second input', 'epoch-join', inflatedJoin, /EpochJoin_\d+ line: 27/);
 process.exit(0);
