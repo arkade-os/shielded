@@ -118,8 +118,6 @@ func readRollupSnarkJSFixture(t *testing.T, path string) rollupSnarkJSFixture {
 }
 
 func TestRollupRecoverLeafVerifiesRealEpochProofs(t *testing.T) {
-	// client 7 publics, batch 2; Version 4, Kind 2, Slots 1.
-	// The fixture's packets are the model's, so the leaf rebuilds the exact 133-byte preimage the circuit hashed.
 	f := readRollupSnarkJSFixture(t, rollupEpochSnarkJSFixturePath)
 	client, err := parseRollupKey(f.ClientKey, 7)
 	if err != nil {
@@ -152,6 +150,12 @@ func TestRollupRecoverLeafVerifiesRealEpochProofs(t *testing.T) {
 	if err := b.execute(); err != nil {
 		t.Fatalf("real epoch recover batch rejected: %v", err)
 	}
+	g := f
+	g.Slots = []rollupSnarkJSProof{f.Slots[0]}
+	g.Slots[0].Proof.C = f.Batch.Proof.C
+	b.witness = rollupFixtureWitness(t, g)
+	rollupExpectReject(t, "a client proof the slot did not sign", b, "OP_VERIFY")
+	b.witness = rollupFixtureWitness(t, f)
 	w.leaf = leaf(2)
 	rollupExpectReject(t, "the version-4 proofs on a version-2 leaf", b, "OP_VERIFY")
 	w.leaf = leaf(4)
