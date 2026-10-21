@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import * as snarkjs from 'snarkjs';
 import { buildPoseidon } from 'circomlibjs';
-import { BATCH_SLOTS, BTC_ASSET, EPOCH_NULLIFIER_DEPTH, GROUP_TAG, NULLIFIER_TAG, ROLLUP_DOMAIN, ROLLUP_FIELD, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
+import { BATCH_SLOTS, BTC_ASSET, EPOCH_NULLIFIER_DEPTH, GROUP_TAG, NULLIFIER_TAG, ROLLUP_DOMAIN, ROLLUP_FIELD, SUBTREE_DEPTH, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
 import { toCircuitInput, type ClientInput, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
-import { EpochState, anchorOf, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
+import { EpochState, anchorOf, epochBindingOf, windowLeafOf, type EpochBatchResult, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
 import { EPOCH_DERIVED_FIELDS, epochBatchInput, epochClientInput } from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import { akOf, groupIdOf, noteOf, ownerOf, statementOf } from '../packages/protocol/src/rollup/notes.ts';
+import { akOf, groupIdOf, noteOf, ownerOf, sha256le248, statementOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { epochHarness, foldPath, rPrevFor } from '../tests/fixtures/epoch.ts';
 
@@ -87,7 +87,7 @@ const grouped = pool.apply('spend', fill(pool, [{ ...g0, groupId, groupSize: 2 }
 const joined = pool.apply('join', joinSlots(pool));
 const replayed = forced(state, 'spend', fill(state, [{ ...fastSlot(state), nullifiers: c.slot.nullifiers }]));
 // Epoch 2, mid-epoch; slot 1 anchors on the c-1 leaf, so both branches of the window tag run.
-const mid = state.apply('spend', fill(state, [fastSlot(state), fastSlot(state, 0n, { epoch: state.epoch - 1, root: state.prevNoteRoot })]));
+const midAfter = state.clone(), mid = midAfter.apply('spend', fill(state, [fastSlot(state), fastSlot(state, 0n, { epoch: state.epoch - 1, root: state.prevNoteRoot })]));
 assert.deepEqual([first, grouped, joined, mid].map(batch => batch.rotated), [false, false, false, false]);
 assert.notEqual(mid.witness.rPrev, (mid.witness.rCurRoot as bigint[])[0]);
 await accepts('epoch batch spend, mid-epoch, rPrev != rCur', 'epoch-batch-spend', epochBatchInput(mid.witness), true);
@@ -121,6 +121,19 @@ await rejects('a window pair tagged with a future epoch', 'epoch-batch-spend', s
 await rejects('a nullifier already in the frozen previous set', 'epoch-batch-spend', epochBatchInput(replayed.witness), /NonMember_\d+ line: 18/);
 await rejects('a forged low leaf', 'epoch-batch-spend', slot0('nmLeaf', [nmLeaf[0][0] + 1n, ...nmLeaf[0].slice(1)]), /NonMember_\d+ line: 12/);
 await rejects('a low leaf carrying nextIdx 0 with a non-zero nextValue', 'epoch-batch-spend', slot0('nmLeaf', [nmLeaf[0][0], 0n, 1n]), /NonMember_\d+ line: 12/);
+// Each tail check is linear, so --O2 folds it and the constraint count cannot show it deleted; misplaced() re-binds the statement, leaving only the tie.
+const misplaced = (before: EpochState, after: EpochState, kind: EpochBatchKind, batch: EpochBatchResult) => {
+ const w = batch.witness as Record<string, any>, slot = Number(w.noteSlot) + 1, forged = after.clone();
+ forged.notes = before.notes.clone(); forged.notes.setAt(SUBTREE_DEPTH, slot, batch.blockRoot);
+ forged.window.set(Number(w.batchCount) % 64, windowLeafOf(hash, { epoch: forged.epoch, root: forged.notes.root() }));
+ const statement = sha256le248(epochBindingOf(kind, before.commitment(), forged.commitment(), batch.daRoot, batch.blockRoot));
+ return { ...epochBatchInput(w), noteSlot: BigInt(slot), slotPath: before.notes.path(slot, SUBTREE_DEPTH), statement };
+};
+const { pub: midPub, winOldLeaf, statement } = mid.witness as Record<string, any>;
+await rejects('a batch pub that does not open its slot', 'epoch-batch-spend', slot0('pub', midPub[0] + 1n), /EpochBatch_\d+ line: 91\n/);
+await rejects('a batch block appended one slot ahead', 'epoch-batch-spend', misplaced(state, midAfter, 'spend', mid), /EpochBatch_\d+ line: 126\n/);
+await rejects('a batch window slot that does not open winRoot', 'epoch-batch-spend', { ...midInput, winOldLeaf: winOldLeaf + 1n }, /EpochBatch_\d+ line: 135\n/);
+await rejects('a batch statement that does not bind the transition', 'epoch-batch-spend', { ...midInput, statement: statement + 1n }, /EpochBatch_\d+ line: 155\n/);
 
 // epochLen 4: the fifth batch is the first rotation (erCount 0) and the ninth the second.
 pool.apply('spend', fill(pool));
@@ -177,7 +190,7 @@ spendNote(vault, noteY);
 // rotRec opens index 0 while its own rotation appends index 1, a sibling on that path, so the pre-rotation path differs.
 const preRotationPath = vault.archive.tree.path(0), rotRec = vault.clone().apply('recover', [recoverSlot(vault, -1, dummyInput())]);
 const recovered = recovery(vault, 0, noteZ), ownRec = vault.apply('recover', [recovered.slot]);
-const rec = vault.clone().apply('recover', [recoverSlot(vault, 0, noteW)]), pseudo = vault.clone().apply('recover', [recoverSlot(vault, -1, dummyInput())]);
+const recAfter = vault.clone(), rec = recAfter.apply('recover', [recoverSlot(vault, 0, noteW)]), pseudo = vault.clone().apply('recover', [recoverSlot(vault, -1, dummyInput())]);
 const afterRecover = vault.clone().apply('spend', fill(vault, [deposit(vault, 0n, { inputs: [noteFrom(recovered)] }).slot]));
 assert.deepEqual([rotRec, ownRec, rec, pseudo, afterRecover].map(batch => batch.rotated), [true, true, false, false, false]);
 assert.notDeepEqual(preRotationPath, (rotRec.witness.erPath as bigint[][])[0]);
@@ -204,6 +217,10 @@ await rejects('a nullifier present in the first archived set', 'epoch-batch-reco
 await rejects('a nullifier present in the second archived set', 'epoch-batch-recover', epochBatchInput(forcedB.witness), absent(205));
 await rejects('a second recovery of the same note', 'epoch-batch-recover', epochBatchInput(forcedRs.witness), /IndexedInsert_\d+ line: 49\n/);
 await rejects('a recover slot claiming a group', 'epoch-batch-recover', reopened({ groupId: [hash([GROUP_TAG, recInput.nf[0][0], 0n, 0n])], groupSize: [2n] }), /GroupRule_\d+ line: 135\n/);
+await rejects('a pub that does not open the slot', 'epoch-batch-recover', { ...recInput, pub: [recInput.pub[0] + 1n] }, /EpochRecoverBatch_\d+ line: 189\n/);
+await rejects('a block appended one slot ahead', 'epoch-batch-recover', misplaced(vault, recAfter, 'recover', rec), /EpochRecoverBatch_\d+ line: 225\n/);
+await rejects('a window slot that does not open winRoot', 'epoch-batch-recover', { ...recInput, winOldLeaf: recInput.winOldLeaf + 1n }, /EpochRecoverBatch_\d+ line: 234\n/);
+await rejects('a statement that does not bind the transition', 'epoch-batch-recover', { ...recInput, statement: recInput.statement + 1n }, /EpochRecoverBatch_\d+ line: 256\n/);
 for (const field of EPOCH_DERIVED_FIELDS)
  await rejects(`a recover batch may not supply ${field}`, 'epoch-batch-recover', { ...recInput, [field]: rec.witness[field] }, notInput(field));
 process.exit(0);
