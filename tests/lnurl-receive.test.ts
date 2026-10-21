@@ -138,6 +138,8 @@ test('the HD journal migrates without network and keeps every recorded payout wa
  f.funded.add(at(8).script);await f.service.check();
  assert.deepEqual(f.registered[0]!,legacy);assert.deepEqual(f.registered[1]!.map(row=>row.script),[6,7,8].map(i=>at(i).script));
  assert.equal(f.bound()[0]!.arkadeAddress,at(9).address);
+ // Legacy payouts reuse the contracts the HD code created; registerPayouts rejects one that is missing.
+ assert.deepEqual(f.watched.map(row=>row.script),[6,7,8,9].map(i=>at(i).script));
  await f.service.check();assert.equal(f.saved()!.next,10);assert.equal(f.bound().length,2);
  for(const row of legacy)assert.ok(hdIdentity.ownsDescriptor(row.descriptor));
  assert.ok(f.state.has(f.key('pool',legacyKey)));
@@ -149,7 +151,7 @@ test('phrase recovery watches every /2/7 child up to the last funded one and bin
  const payouts=await f.service.payouts();
  assert.equal(payouts.length,122);assert.deepEqual(payouts.slice(0,121).map(row=>row.index),Array.from({length:121},(_,i)=>i));
  assert.equal(f.saved()!.next,122);assert.equal(f.bound()[0]!.arkadeAddress,at(121).address);
- assert.ok(f.registered.flat().some(row=>row.script===at(3).script));
+ const scripts=f.registered.flat().map(row=>row.script);assert.equal(new Set(scripts).size,scripts.length);assert.ok(scripts.includes(at(3).script));
 });
 
 test('recovery on an unused seed binds index 0 after one gap of scanning',async()=>{

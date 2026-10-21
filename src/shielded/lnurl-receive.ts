@@ -127,7 +127,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   await save(state);await watch([row]);
  };
  const bind=async(state:ReceiveState,server:ServerState)=>{
-  const row=state.payouts.find(p=>p.script===server.current)!;
+  const row=state.payouts.find(p=>p.script===server.current);
+  if(!row)throw new Error('The bound Lightning receive address is missing from local state');
   try{for(const receiver of server.receivers)if(receiver.status==='active')await client.registerArkadeIdentity({token:await token(),handle:receiver.handle,domain,arkadeAddress:row.address,claimPublicKey:row.claimPublicKey});}
   catch(error){
    if(!(error instanceof LnurlError)||error.code!=='invalid_rails')throw error;
@@ -173,8 +174,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   recover:()=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey]??={receivers:[]};await save(state);
    server.receivers=(await registeredReceivers()).filter(row=>row.status==='active');delete server.pending;
-   const branch=await currentBranch();await adopt(state,branch,0,await scan(branch,0,RECOVERY_GAP));
    if(!watched){await watch(state.payouts);watched=true;}
+   const branch=await currentBranch();await adopt(state,branch,0,await scan(branch,0,RECOVERY_GAP));
    await settle(state,server);return server.receivers;
   }),
   check,
