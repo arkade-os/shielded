@@ -39,7 +39,27 @@ jobs:
       - run: npm ci
       - run: npm run circom
       - run: npm run rollup:compile
+      - run: npm run rollup:pin
       - run: npm run test:rollup:witness
+  epoch-circuits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/cache@v4
+        with:
+          path: .deps
+          key: rollup-circom-2.2.2-linux-compiler-e976b5e8
+      - run: npm ci
+      - run: npm run circom
+      - run: npm run rollup:compile:epoch
+      - run: npm run rollup:budget:epoch
+      - run: npm run test:rollup:epoch-witness
   dokploy-image:
     runs-on: ubuntu-latest
     timeout-minutes: 45

@@ -1,0 +1,50 @@
+pragma circom 2.1.6;
+include "lib.circom";
+
+// One input note (amount 0 = dummy, for deposits), two outputs, one asset.
+// Public: pub (statement hash), then the boundary legs the covenant checks.
+template EpochSpend(DEPTH) {
+ signal input pub; signal input nf0; signal input nf1; signal input deposit; signal input withdraw; signal input boundaryAsset; signal input destination;
+ signal input domain; signal input rPrev; signal input rCur; signal input sel; signal input ctDigest; signal input groupId; signal input groupSize; signal input asset;
+ signal input inAmount; signal input inRho; signal input ask; signal input nk;
+ signal input path[DEPTH]; signal input bits[DEPTH];
+ signal input outAmount[2]; signal input outOwner[2]; signal input outRandom[2];
+
+ component range[5];
+ for(var i=0;i<5;i++) range[i]=Num2Bits(64);
+ range[0].in <== inAmount; range[1].in <== outAmount[0]; range[2].in <== outAmount[1];
+ range[3].in <== deposit; range[4].in <== withdraw;
+
+ var AK_TAG=20261009101; component ak=Poseidon(2); ak.inputs[0] <== AK_TAG; ak.inputs[1] <== ask; component owner=Poseidon(3); owner.inputs[0] <== domain; owner.inputs[1] <== ak.out; owner.inputs[2] <== nk;
+ component note=Poseidon(5); note.inputs[0] <== domain; note.inputs[1] <== inAmount; note.inputs[2] <== asset;
+ note.inputs[3] <== owner.out; note.inputs[4] <== inRho;
+ component merkle=MerkleRoot(DEPTH); merkle.leaf <== note.out;
+ for(var i=0;i<DEPTH;i++) { merkle.siblings[i] <== path[i]; merkle.bits[i] <== bits[i]; }
+ component dummy=IsZero(); dummy.in <== inAmount;
+ // Unconditional, a dummy included: sel = (T-rCur)/(rPrev-rCur) puts any root T on the mux.
+ sel*(sel-1) === 0;
+ signal anchorRoot <== rCur+sel*(rPrev-rCur);
+ (merkle.root-anchorRoot)*(1-dummy.out) === 0;
+ var ANCHOR_TAG=20261020401; component anchor=Poseidon(3); anchor.inputs[0] <== ANCHOR_TAG; anchor.inputs[1] <== rPrev; anchor.inputs[2] <== rCur;
+ // A full viewing key shares nk and a dummy skips membership, so a dummy's nullifier is tagged apart from real ones.
+ var DUMMY_TAG=20261009301; component nf=Poseidon(3); nf.inputs[0] <== domain+dummy.out*(DUMMY_TAG-domain); nf.inputs[1] <== nk; nf.inputs[2] <== inRho;
+
+ component rho[2]; component cm[2];
+ for(var o=0;o<2;o++) {
+  rho[o]=Poseidon(4); rho[o].inputs[0] <== domain; rho[o].inputs[1] <== outRandom[o]; rho[o].inputs[2] <== nf.out; rho[o].inputs[3] <== o;
+  cm[o]=Poseidon(5); cm[o].inputs[0] <== domain; cm[o].inputs[1] <== outAmount[o]; cm[o].inputs[2] <== asset;
+  cm[o].inputs[3] <== outOwner[o]; cm[o].inputs[4] <== rho[o].out;
+ }
+ inAmount+deposit === outAmount[0]+outAmount[1]+withdraw;
+ component noWithdraw=IsZero(); noWithdraw.in <== withdraw; noWithdraw.out*destination === 0;
+ component noLeg=IsZero(); noLeg.in <== deposit+withdraw; boundaryAsset === asset*(1-noLeg.out);
+
+ component statement=Poseidon(8);
+ statement.inputs[0] <== domain; statement.inputs[1] <== anchor.out; statement.inputs[2] <== nf.out;
+ statement.inputs[3] <== cm[0].out; statement.inputs[4] <== cm[1].out; statement.inputs[5] <== ctDigest;
+ statement.inputs[6] <== groupId; statement.inputs[7] <== groupSize;
+ statement.out === pub;
+ // The chain carries the nullifier, so it must be this note's, not any other.
+ nf.out === nf0; nf1 === 0;
+}
+component main {public [pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination]} = EpochSpend(32);
