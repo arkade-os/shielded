@@ -87,6 +87,8 @@ await rejects('client spend whose on-chain nullifier is not the note\'s', 'epoch
 await rejects('client spend blanking its on-chain nullifier', 'epoch-spend', { ...cur.input, nf0: 0n }, /EpochSpend_\d+ line: 48/);
 await rejects('client spend smuggling a second nullifier', 'epoch-spend', { ...cur.input, nf1: 1n }, /EpochSpend_\d+ line: 48/);
 await rejects('client join with its two on-chain nullifiers swapped', 'epoch-join', { ...cross.input, nf0: cross.input.nf1, nf1: cross.input.nf0 }, /EpochJoin_\d+ line: 52/);
+await rejects('client join whose first on-chain nullifier is not the note\'s', 'epoch-join', { ...cross.input, nf0: realNf[0] + 1n }, /EpochJoin_\d+ line: 52/);
+await rejects('client join whose second on-chain nullifier is not the note\'s', 'epoch-join', { ...cross.input, nf1: realNf[1] + 1n }, /EpochJoin_\d+ line: 52/);
 await rejects('client join spending one note twice', 'epoch-join', epochClientInput(hash, spend([noteC, noteC]), at([0n, 0n])).input, /EpochJoin_\d+ line: 33/);
 await rejects('client join output larger than its inputs', 'epoch-join', epochClientInput(hash, spend([noteC, noteA], { outputs: outputs(4001n) }), at([0n, 1n])).input, /EpochJoin_\d+ line: 42/);
 await rejects('client join destination without a withdrawal', 'epoch-join', { ...cross.input, destination: 5n }, /EpochJoin_\d+ line: 43/);
