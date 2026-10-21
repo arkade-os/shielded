@@ -135,18 +135,17 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(!server.refused){server.refused=true;await save(state);}
    throw new Error(HD_REFUSED,{cause:error});
   }
-  if(server.boundAt===undefined||server.refused){server.boundAt??=now();delete server.refused;await save(state);}
+  if(server.boundAt===undefined||server.refused||server.migrated){server.boundAt??=now();delete server.refused;delete server.migrated;await save(state);}
  };
  const settle=async(state:ReceiveState,server:ServerState)=>{
   if(!server.receivers.some(row=>row.status==='active'))return;
-  // HD services hand out /2/7 children the journal never saw: catch up once after migration, then follow them while refused.
+  // HD services hand out /2/7 children the journal never saw: catch up until the first static bind lands, then follow them while refused.
   if(server.refused||server.migrated){
    const branch=await currentBranch(),high=await scan(branch,state.next,server.migrated?RECOVERY_GAP:SCAN_BATCH);
    if(high>=state.next)await adopt(state,branch,state.next,high);
-   if(server.migrated){delete server.migrated;await save(state);}
   }
   const current=state.payouts.find(row=>row.script===server.current);
-  if(!current||(server.boundAt!==undefined&&(now()-server.boundAt>=ROTATE_AFTER_MS||(await used([current.script])).size>0)))await advance(state,server);
+  if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server);
   await bind(state,server);
  };
  const check=()=>serial(async()=>{

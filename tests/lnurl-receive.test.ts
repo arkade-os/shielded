@@ -145,6 +145,16 @@ test('the HD journal migrates without network and keeps every recorded payout wa
  assert.ok(f.state.has(f.key('pool',legacyKey)));
 });
 
+test('after a failed first bind, migration keeps scanning and replaces a reserved child the HD service paid',async()=>{
+ const f=setup({aliases:[receiver]}),legacy=[{id:'lnurl:legacy',descriptor:at(2).descriptor,address:at(2).address,script:at(2).script}];
+ f.state.set(f.key('pool',legacyKey),{v:1,enabled:true,receivers:[{handle:'alice',domain,lightningAddress:receiver.lightningAddress,lnurl:'LNURL',status:'active'}],cursors:{},payouts:legacy});
+ f.reply(()=>{throw new TypeError('connection closed');});
+ await assert.rejects(f.service.check(),/Request failed/);assert.equal(f.bound()[0]!.arkadeAddress,at(3).address);
+ f.funded.add(at(3).script);f.funded.add(at(6).script);f.reply(()=>json({ok:true}));await f.service.check();
+ assert.equal(f.bound().at(-1)!.arkadeAddress,at(7).address);assert.ok(f.registered.flat().some(row=>row.script===at(6).script));
+ const scans=f.scans();await f.service.check();assert.equal(f.scans()-scans,1);
+});
+
 test('phrase recovery watches every /2/7 child up to the last funded one and binds above it',async()=>{
  const f=setup({aliases:[receiver]});f.funded.add(at(3).script);f.funded.add(at(120).script);f.funded.add(at(120+RECOVERY_GAP+60).script);
  assert.deepEqual((await f.service.recover()).map(row=>row.handle),['alice']);
