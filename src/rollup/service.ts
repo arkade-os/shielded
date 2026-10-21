@@ -8,7 +8,7 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,CHECKPOINT_EVERY,SUBTREE_DEPTH,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {checkpointOf} from '../../packages/protocol/src/rollup/frontier.ts';
 import {encodeScan} from '../../packages/protocol/src/rollup/scan.ts';
@@ -17,12 +17,13 @@ import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
 import {validateStockCheckpoint} from '../stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
+import type {StockReleasePin} from '../stock/journal.ts';
 import {isStorageLocked} from '../storage.ts';
 import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts';
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
-import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupLeaves} from './covenant.ts';
-import {loadRollupLeaves} from './leaves.ts';
+import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
+import {loadRollupLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupRecord,type RollupTimings} from './operator.ts';
 import {createRollupProver} from './prover.ts';
 import {carriedReserves,flushRollupIntent,leftoverRenewal,renewalChunks,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
@@ -31,6 +32,11 @@ import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store
 import {createRollupTransport} from './transport.ts';
 
 export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend','batch-join'].flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])] as const;
+const EPOCH_CIRCUITS=['epoch-spend','epoch-join','epoch-batch-spend','epoch-batch-join','epoch-batch-recover'];
+const EPOCH_KEY_FILES=['manifest.json',...EPOCH_CIRCUITS.flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])];
+export type RollupPoolKind='classic'|'epoch';
+export const EPOCH_LEN_FLOOR=64;
+export const rollupKeyFilesOf=(kind:RollupPoolKind):readonly string[]=>kind==='classic'?ROLLUP_KEY_FILES:EPOCH_KEY_FILES;
 // A batch closes as soon as a spend is admitted, and a lone spend takes ten pads, so two batches' worth stay ready.
 const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TARGET=2*BATCH_SLOTS;
 // The batch-join setup alone peaked at 4.11 GiB single-threaded; the server process needs room beside it.
@@ -48,7 +54,7 @@ export interface RollupStatus {
  proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;
 }
 export interface RollupSpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
-interface Genesis {version:1;token:string;txid:string;archive:RollupArchive;serverKey:string;emulatorKey:string}
+interface Genesis {version:1|2;token:string;txid:string;archive:RollupArchive;serverKey:string;emulatorKey:string;epochLen?:number}
 interface Session {arkTx:string;checkpoints:string[];vin:number;signed?:{arkTx:string;checkpoint:string}}
 
 const sha=(bytes:Uint8Array|string)=>createHash('sha256').update(bytes).digest('hex');
@@ -58,9 +64,9 @@ const readJson=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 
 type KeyManifest={circuits:Record<string,{files:Record<string,string>}>};
 /** Every served file must be in the manifest and match it, so a key set that lacks a circuit fails closed. */
-export function verifyRollupKeys(keys:string):KeyManifest {
+export function verifyRollupKeys(keys:string,kind:RollupPoolKind='classic'):KeyManifest {
  const manifest=readJson<KeyManifest>(join(keys,'manifest.json')),listed:Record<string,string>=Object.assign({},...Object.values(manifest.circuits).map(c=>c.files));
- for(const name of ROLLUP_KEY_FILES.filter(n=>n!=='manifest.json')){
+ for(const name of rollupKeyFilesOf(kind).filter(n=>n!=='manifest.json')){
   if(!listed[name])throw new Error(`Rollup key ${name} is missing from the manifest.`);
   if(sha(readFileSync(join(keys,name)))!==listed[name])throw new Error(`Rollup key ${name} does not match its manifest.`);
  }
@@ -69,14 +75,38 @@ export function verifyRollupKeys(keys:string):KeyManifest {
 /** Moves a finished key set over a leftover incomplete one; a set with a manifest may be a live pool's, so it is never replaced. */
 const promoteRollupKeys=(partial:string,keys:string)=>{if(!existsSync(join(keys,'manifest.json')))rmSync(keys,{recursive:true,force:true});renameSync(partial,keys);};
 /** Installs a pre-built key set whole or not at all, so a broken mount is fixed by mounting again. */
-export function installRollupKeys(from:string,keys:string){
+export function installRollupKeys(from:string,keys:string,kind:RollupPoolKind='classic'){
  const partial=keys+'.partial';rmSync(partial,{recursive:true,force:true});mkdirSync(partial,{recursive:true,mode:0o700});
- for(const name of ROLLUP_KEY_FILES)copyFileSync(join(from,name),join(partial,name));
- verifyRollupKeys(partial);promoteRollupKeys(partial,keys);
+ for(const name of rollupKeyFilesOf(kind))copyFileSync(join(from,name),join(partial,name));
+ verifyRollupKeys(partial,kind);promoteRollupKeys(partial,keys);
 }
-export const rollupKeyPath=(keys:string,name:string)=>(ROLLUP_KEY_FILES as readonly string[]).includes(name)?join(keys,name):undefined;
+export const rollupKeyPath=(keys:string,name:string,kind:RollupPoolKind='classic')=>rollupKeyFilesOf(kind).includes(name)?join(keys,name):undefined;
 /** The journal pin's programs hash: every leaf hashed on its own, so no byte can move between leaves unnoticed. */
 export const rollupProgramsHash=(leaves:Pick<RollupLeaves,'batch'|'batchJoin'|'reserve'|'renew'>)=>sha([leaves.batch,leaves.batchJoin,leaves.reserve,leaves.renew].map(leaf=>sha(leaf)).join(''));
+export const rollupEpochProgramsHash=(leaves:RollupEpochLeaves)=>sha([leaves.batch,leaves.batchJoin,leaves.batchRecover,leaves.reserve,leaves.renew].map(leaf=>sha(leaf)).join(''));
+/** A classic (genesis-3) pool's journal pin: any byte it moves orphans the live journal. */
+export const rollupClassicPin=(o:{leaves:RollupLeaves;manifest:Uint8Array;checkpoint:Uint8Array;genesisTxid:string;serverKey:string;emulatorKey:string}):StockReleasePin=>
+ ({version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-genesis2'),programsHash:rollupProgramsHash(o.leaves),artifactsHash:sha(o.manifest),checkpointHash:sha(o.checkpoint),genesisTxid:o.genesisTxid,serverKey:o.serverKey,emulatorKey:o.emulatorKey});
+export const rollupSpecOf=(kind:RollupPoolKind,token:string,operator:string):RollupLeavesSpec=>kind==='classic'
+ ?{clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',clientJoinKey:'keys/join.vkey.json',batchJoinKey:'keys/batch-join.vkey.json',slots:BATCH_SLOTS,token,operator}
+ :{clientKey:'keys/epoch-spend.vkey.json',batchKey:'keys/epoch-batch-spend.vkey.json',clientJoinKey:'keys/epoch-join.vkey.json',batchJoinKey:'keys/epoch-batch-join.vkey.json',batchRecoverKey:'keys/epoch-batch-recover.vkey.json',slots:BATCH_SLOTS,token,operator,epoch:true};
+/** An epoch pool keeps the four names; its recover key is served but not advertised until Plan 4b. */
+export function rollupProvingOf(kind:RollupPoolKind,files:Record<string,string>):NonNullable<RollupStatus['proving']> {
+ const pair=(c:string)=>({wasm:files[`${c}.wasm`]!,zkey:files[`${c}.zkey`]!});
+ return kind==='classic'?{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')}
+  :{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join')};
+}
+/** The persisted genesis decides; SHIELDED_ROLLUP_EPOCH_LEN only shapes a pool that has no genesis yet. */
+export function rollupPoolKindOf(o:{genesis?:{version:number;epochLen?:number};epochLenEnv?:string}):{kind:RollupPoolKind;epochLen?:number} {
+ const epoch=(epochLen:unknown)=>{
+  if(typeof epochLen!=='number'||!Number.isSafeInteger(epochLen)||epochLen<EPOCH_LEN_FLOOR||epochLen>MAX_EPOCH_LEN)throw new Error(`The rollup epoch length must be a whole number of batches from ${EPOCH_LEN_FLOOR} to ${MAX_EPOCH_LEN}; got ${JSON.stringify(epochLen)}.`);
+  return {kind:'epoch' as const,epochLen};
+ };
+ if(!o.genesis)return o.epochLenEnv===undefined?{kind:'classic'}:epoch(/^[1-9][0-9]*$/.test(o.epochLenEnv)?Number(o.epochLenEnv):o.epochLenEnv);
+ if(o.genesis.version===1)return {kind:'classic'};
+ if(o.genesis.version===2)return epoch(o.genesis.epochLen);
+ throw new Error(`The rollup genesis has version ${JSON.stringify(o.genesis.version)}, which this build cannot open; run the build that created it.`);
+}
 
 /**
  * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
@@ -90,14 +120,14 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const secrets=readJson<{wallet:string;operator:string}>(secretsPath),identity=SingleKey.fromHex(secrets.wallet),operatorSecret=hex.decode(secrets.operator);
  const poseidon=await buildPoseidon(),hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
  let status:RollupStatus={version:1,phase:'starting',message:'Starting the rollup pool.',minimumFundingSats:MINIMUM_FUNDING_SATS};
- let manifest:KeyManifest|undefined,setup:ChildProcess|undefined,setupFailures=0,setupRetryAt=0;
+ let manifest:KeyManifest|undefined,poolKind:RollupPoolKind='classic',setup:ChildProcess|undefined,setupFailures=0,setupRetryAt=0;
 
  /** Ready keys, or undefined while the one-time setup runs in a child process. */
- function ensureKeys():KeyManifest|undefined {
+ function ensureKeys(kind:RollupPoolKind):KeyManifest|undefined {
   if(manifest)return manifest;
   if(!existsSync(join(keys,'manifest.json'))){
    if(existsSync(join(o.directory,'genesis.json')))throw new Error('The rollup keys are missing from a pool that already exists; restore the volume.');
-   if(o.bundled&&existsSync(join(o.bundled,'manifest.json')))installRollupKeys(o.bundled,keys);
+   if(o.bundled&&existsSync(join(o.bundled,'manifest.json')))installRollupKeys(o.bundled,keys,kind);
    else{
     const memory=process.constrainedMemory()||totalmem(),gib=(bytes:number)=>(bytes/1024**3).toFixed(1)+' GiB';
     // The batch key setup holds gigabytes; refuse a small host and back off after failures.
@@ -106,7 +136,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     if(!setup&&Date.now()>=setupRetryAt){
      const partial=keys+'.partial';rmSync(partial,{recursive:true,force:true});
      status={...status,phase:'keys',message:`Generating the development proving keys (one time). Memory: ${gib(memory)}.`};
-     setup=execFile(process.execPath,[o.setupTool,'--development-only','--single-thread','--build',o.circuits,'--ptau',join(o.directory,'ptau','powersOfTau28_hez_final_20.ptau'),'--out',partial],{maxBuffer:16*1024*1024,windowsHide:true},error=>{
+     setup=execFile(process.execPath,[o.setupTool,'--development-only','--single-thread','--build',o.circuits,'--ptau',join(o.directory,'ptau','powersOfTau28_hez_final_20.ptau'),'--out',partial,...(kind==='epoch'?['--circuits',EPOCH_CIRCUITS.join()]:[])],{maxBuffer:16*1024*1024,windowsHide:true},error=>{
       setup=undefined;
       if(error){setupFailures++;setupRetryAt=Date.now()+SETUP_RETRY_MS;status={...status,message:`Key setup failed (${setupFailures}/${SETUP_ATTEMPTS}): `+error.message.slice(0,300)};log(status.message);return;}
       promoteRollupKeys(partial,keys);rmSync(join(o.directory,'ptau'),{recursive:true,force:true});log('development proving keys ready');
@@ -116,9 +146,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     return undefined;
    }
   }
-  manifest=verifyRollupKeys(keys);
-  const files:Record<string,string>=Object.assign({},...Object.values(manifest.circuits).map(c=>c.files)),pair=(c:string)=>({wasm:files[`${c}.wasm`]!,zkey:files[`${c}.zkey`]!});
-  status={...status,proving:{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')}};
+  manifest=verifyRollupKeys(keys,kind);poolKind=kind;
+  status={...status,proving:rollupProvingOf(kind,Object.assign({},...Object.values(manifest.circuits).map(c=>c.files)))};
   return manifest;
  }
  let live:{operator:RollupOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupPoolTree>;leaves:Awaited<ReturnType<typeof loadRollupLeaves>>;indexer:RestIndexerProvider}|undefined;
@@ -158,7 +187,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  }
 
  const spec=async(token:string)=>{
-  writeFileSync(join(o.directory,'spec.json'),JSON.stringify({clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',clientJoinKey:'keys/join.vkey.json',batchJoinKey:'keys/batch-join.vkey.json',slots:BATCH_SLOTS,token,operator:hex.encode(schnorr.getPublicKey(operatorSecret))}));
+  writeFileSync(join(o.directory,'spec.json'),JSON.stringify(rollupSpecOf(poolKind,token,hex.encode(schnorr.getPublicKey(operatorSecret)))));
   return loadRollupLeaves(o.vmBinary,join(o.directory,'spec.json'));
  };
 
@@ -214,7 +243,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const checkpoint=validateStockCheckpoint(info.checkpointTapscript,info.forfeitPubkey),indexer=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
   const prover=(name:string)=>createRollupProver({wasm:join(keys,`${name}.wasm`),zkey:join(keys,`${name}.zkey`)},o.rapidsnark);
   const operator=await openRollupOperator({directory:join(o.directory,'operator'),
-   pin:{version:1,network:'mutinynet',descriptorProfileId:sha('rollup-v2-genesis2'),programsHash:rollupProgramsHash(leaves),artifactsHash:sha(readFileSync(join(keys,'manifest.json'))),checkpointHash:sha(checkpoint.script),genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey},
+   pin:rollupClassicPin({leaves,manifest:readFileSync(join(keys,'manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey:network.serverKey,emulatorKey:network.emulatorKey}),
    genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint,
    clientKey:{spend:readJson(join(keys,'spend.vkey.json')),join:readJson(join(keys,'join.vkey.json'))},hash,prover:{spend:prover('batch-spend'),join:prover('batch-join')},transport:createRollupTransport(network),signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,batchWaitMs:0,joinWaitMs:0,
    onDrop:(ids,reason)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});}});
@@ -339,8 +368,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   step:async()=>{
    if(live||stopped)return;
    try{
-    if(!ensureKeys())return;
     const path=join(o.directory,'genesis.json'),known=existsSync(path)?readJson<Genesis>(path):undefined;
+    const {kind}=rollupPoolKindOf({genesis:known,epochLenEnv:process.env.SHIELDED_ROLLUP_EPOCH_LEN});
+    if(!ensureKeys(kind))return;
+    if(kind==='epoch')throw new Error('The epoch pool keys are ready, but this build cannot open an epoch pool yet.');
     const network=await preflightStockMutinynet({...o.endpoints,...(known?{expected:{serverKey:known.serverKey,emulatorKey:known.emulatorKey}}:{})});
     const saved=known??await genesis(network);
     if(saved)await open(network,saved);
@@ -353,7 +384,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   },
   ready:()=>!!live,
   // The batch key is published too, so anyone can prove a batch, and the pool keeps moving, if this operator stops.
-  keyFile:(name:string)=>manifest?rollupKeyPath(keys,name):undefined,
+  keyFile:(name:string)=>manifest?rollupKeyPath(keys,name,poolKind):undefined,
   batches:(from:number,limit:number)=>{
    const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
