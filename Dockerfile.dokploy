@@ -7,13 +7,13 @@ RUN curl -fsSLo rapidsnark.zip https://github.com/iden3/rapidsnark/releases/down
  && unzip -q rapidsnark.zip && mkdir -p /out && install -m 0755 rapidsnark-linux-x86_64-v0.0.8/bin/prover /out/rapidsnark
 
 # The ceremony's proving keys, each checked against the manifest pinned in the repo; the host never runs a setup.
-FROM --platform=linux/amd64 node:24-trixie-slim AS rollup-keys
+FROM --platform=linux/amd64 node:24.22.1-trixie-slim AS rollup-keys
 ARG SHIELDED_ROLLUP_KEYS_URL=https://github.com/arkade-os/shielded/releases/download/rollup-genesis-3-keys
 WORKDIR /keys
 COPY tools/fetch-rollup-keys.mjs rollup-keys/genesis-3.json ./
 RUN node fetch-rollup-keys.mjs genesis-3.json "$SHIELDED_ROLLUP_KEYS_URL" /out/rollup-keys
 
-FROM --platform=linux/amd64 node:24-trixie-slim AS app-build
+FROM --platform=linux/amd64 node:24.22.1-trixie-slim AS app-build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -27,7 +27,7 @@ RUN go mod download
 COPY tools/vm/ ./
 RUN mkdir -p /out && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/shielded-vm .
 
-FROM --platform=linux/amd64 node:24-trixie-slim AS runtime
+FROM --platform=linux/amd64 node:24.22.1-trixie-slim AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8792 SHIELDED_DATA_DIR=/data SHIELDED_ROLLUP_KEYS=/app/rollup-keys
 WORKDIR /app
 RUN mkdir -p /data && chown node:node /data
