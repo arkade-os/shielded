@@ -105,3 +105,62 @@ func TestRollupLeavesManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestRollupEpochLeavesManifest(t *testing.T) {
+	f := readRollupSnarkJSFixture(t, rollupEpochSnarkJSFixturePath)
+	// rollupSharedSetup needs every key on one phase-1 setup, and the dev keys cover only epoch-spend and epoch-batch-recover: the join
+	// client is the spend key with another delta, as a second phase-2 contribution gives, and the 11-public batch key is the recover key widened.
+	joinClient, wide := f.ClientKey, f.BatchKey
+	joinClient.Delta2 = f.BatchKey.Delta2
+	wide.NPublic = 11
+	for len(wide.IC) < 12 {
+		wide.IC = append(wide.IC, wide.IC[len(wide.IC)-1])
+	}
+	dir := t.TempDir()
+	for name, key := range map[string]snarkJSVerificationKey{"spend.json": f.ClientKey, "join.json": joinClient, "batch.json": wide, "recover.json": f.BatchKey} {
+		encoded, _ := json.Marshal(key)
+		if err := os.WriteFile(filepath.Join(dir, name), encoded, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := asset.AssetId{Index: 0}
+	token.Txid[0] = 0xcc
+	operator := hex.EncodeToString(schnorr.SerializePubKey(rollupRenewalOperator.PubKey()))
+	spec, _ := json.Marshal(rollupLeavesSpec{ClientKey: "spend.json", BatchKey: "batch.json", ClientJoinKey: "join.json", BatchJoinKey: "batch.json", BatchRecoverKey: "recover.json", Slots: 10, Token: token.String(), Operator: operator, Epoch: true})
+	if err := os.WriteFile(filepath.Join(dir, "spec.json"), spec, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := buildRollupLeaves(filepath.Join(dir, "spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoverLeaf := func(client snarkJSVerificationKey) string {
+		c, err := parseRollupKey(client, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := parseRollupKey(f.BatchKey, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 1, Kind: 2, Version: 4, Client: c, Batch: b})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hex.EncodeToString(leaf.Script)
+	}
+	if got.BatchRecover == "" || got.Batch == got.BatchJoin || got.BatchRecover == got.Batch || got.BatchRecover == got.BatchJoin {
+		t.Fatal("an epoch manifest needs three distinct leaves")
+	}
+	if got.BatchRecover != recoverLeaf(f.ClientKey) {
+		t.Error("batchRecover is not the kind-2, version-4 leaf over the spend client key")
+	}
+	if got.BatchRecover == recoverLeaf(joinClient) {
+		t.Error("batchRecover was built over the join client key")
+	}
+	for leaf, push := range map[string][]byte{got.Batch: {5, 'S', 'H', 4, 0, 10}, got.BatchJoin: {5, 'S', 'H', 4, 1, 10}} {
+		if script, _ := hex.DecodeString(leaf); !bytes.Contains(script, push) {
+			t.Errorf("epoch leaf lacks the pushdata %x", push)
+		}
+	}
+}
