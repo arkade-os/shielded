@@ -32,11 +32,24 @@ export class EpochArchive {
  }
  private put<V>(map: Map<number, V>, key: number, value: V): void { this.log?.push([map, key, map.get(key)]); map.set(key, value); }
  witness(epoch: number, nullifier: bigint): RecoverWitness {
-  const archived = this.records.get(epoch);
+  const archived = this.records.get(epoch), frozen = this.sets.get(epoch), frozenNext = this.sets.get(epoch + 1);
   if (!archived) throw new RollupRejection('recover-unarchived', `Epoch ${epoch} is not archived.`);
+  if (!frozen || !frozenNext) throw new RollupRejection('recover-unarchived', `Epoch ${epoch} is archived, but its nullifier sets are not loaded.`);
   const erIndex = erLeafIndexOf(epoch);
-  return { erIndex, erPath: this.tree.path(erIndex), archived, nonMemberA: this.sets.get(epoch)!.nonMember(nullifier), nonMemberB: this.sets.get(epoch + 1)!.nonMember(nullifier) };
+  return { erIndex, erPath: this.tree.path(erIndex), archived, nonMemberA: frozen.nonMember(nullifier), nonMemberB: frozenNext.nonMember(nullifier) };
  }
+ list(): ArchivedEpoch[] { return [...this.records.values()]; }
+ /** Takes records read back for this archive's tree; witness() refuses each epoch until load() has installed both of its sets. */
+ restore(records: readonly ArchivedEpoch[]): void {
+  if (records.some((r, i) => erLeafIndexOf(r.epoch) !== i || this.leafOf(r.epoch, r.noteFinal, r.nfFinal, r.nfNextFinal) !== this.tree.node(0, i))) throw new Error('The archived epochs are not the archive tree\'s leaves in order.');
+  this.records = new Map(records.map(r => [r.epoch, r])); this.sets = new Map();
+ }
+ load(epoch: number, set: RollupNullifiers): void {
+  const root = this.records.get(epoch)?.nfFinal ?? this.records.get(epoch - 1)?.nfNextFinal;
+  if (root === undefined || set.root() !== root) throw new Error(`The nullifier set for epoch ${epoch} does not match an archived root.`);
+  this.sets.set(epoch, set);
+ }
+ loaded(epoch: number): boolean { return this.sets.has(epoch); }
  clone(): EpochArchive {
   const copy = new EpochArchive(this.hash, this.tree.clone());
   copy.records = new Map(this.records); copy.sets = new Map(this.sets);

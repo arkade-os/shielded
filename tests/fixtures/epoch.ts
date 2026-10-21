@@ -9,8 +9,7 @@ export const foldPath = (hash: Hash, leaf: bigint, index: number, path: bigint[]
  const bits = pathBits(index, path.length);
  return path.reduce((node, sibling, level) => (bits[level] ? hash([sibling, node]) : hash([node, sibling])), leaf);
 };
-// The next batch rotates before its slots run, so they open against the root this epoch ends on.
-export const rPrevFor = (state: EpochState) => state.batchCount > 0 && state.batchCount % state.epochLen === 0 ? state.notes.root() : state.prevNoteRoot;
+export const rPrevFor = (state: EpochState) => state.nextAnchorRoot();
 
 export function epochHarness(hash: Hash) {
  const nk = 8n, owner = ownerOf(hash, ROLLUP_DOMAIN, 7n, nk);
@@ -33,8 +32,8 @@ export function epochHarness(hash: Hash) {
   const amount = (input.outAmount as bigint[])[out], rho = outputRhoOf(hash, ROLLUP_DOMAIN, (input.outRandom as bigint[])[out], slot.nullifiers, out);
   return { amount, ask: fresh(), nk, rho, index: 0, path: Array(32).fill(0n), nullifier: inputNullifierOf(hash, ROLLUP_DOMAIN, { amount, nk, rho }) };
  };
- // The root epoch e closed on, or the latest root if e has not closed. witness() is the archive's only read; no Poseidon nullifier is 1n.
- const noteFinalOf = (state: EpochState, e: number) => state.archive.has(e) ? state.archive.witness(e, 1n).archived.noteFinal : e === state.epoch - 1 ? state.prevNoteRoot : state.latestRoot();
+ // The root epoch e closed on, or the latest root if e has not closed.
+ const noteFinalOf = (state: EpochState, e: number) => state.archive.list().find(archived => archived.epoch === e)?.noteFinal ?? (e === state.epoch - 1 ? state.prevNoteRoot : state.latestRoot());
  const recovery = (state: EpochState, origin: number, note: ClientInput) => {
   const noteFinal = noteFinalOf(state, origin), witness = deposit(state, note.amount, { root: anchorOf(hash, noteFinal, noteFinal), inputs: [note], deposit: 0n }, { epoch: origin, root: noteFinal });
   return { ...witness, slot: { ...witness.slot, origin } };

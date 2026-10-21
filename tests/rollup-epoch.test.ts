@@ -48,7 +48,7 @@ test('the anchor must open against the batch prevNoteRoot', () => {
  const state = EpochState.genesis(hash, 1024);
  state.apply('spend', fill(state));
  const slot = fastSlot(state);
- assert.throws(() => state.apply('spend', fill(state, [{ ...slot, anchor: anchorOf(hash, state.latestRoot(), slot.rCur.root) }])), rejection('stale-anchor'));
+ assert.throws(() => state.apply('spend', fill(state, [{ ...slot, anchor: anchorOf(hash, state.latestRoot(), slot.rCur!.root) }])), rejection('stale-anchor'));
  assert.doesNotThrow(() => state.apply('spend', fill(state, [slot])));
 });
 
@@ -143,6 +143,19 @@ test('a clone and an operator state apply a batch exactly as the leaf state does
  assert.deepEqual(state.apply('recover', recovering), recovered);
 });
 
+test('a restored state reaches the same commitment as the one it was taken from', () => {
+ const state = EpochState.genesis(hash, 2);
+ for (let i = 0; i < 5; i++) state.apply('spend', fill(state));
+ state.apply('recover', slotsFor(state, 'recover'));
+ const restored = EpochState.restore(hash, {
+  epoch: state.epoch, epochLen: state.epochLen, notes: state.notes.clone(), nullifiers: state.nullifiers.clone(), window: state.window.clone(), archive: state.archive.clone(),
+  recovered: state.recovered.clone(), prevNf: state['prevNf'].clone(), prevNoteRoot: state.prevNoteRoot, noteCount: state.noteCount, batchCount: state.batchCount,
+ });
+ assert.equal(restored.commitment(), state.commitment());
+ for (const kind of ['spend', 'recover'] as const) { const slots = slotsFor(state, kind); assert.deepEqual(restored.apply(kind, slots), state.apply(kind, slots)); }
+ assert.equal(state.epoch, 3);
+});
+
 test('rotation fires on every positive multiple of EPOCH_LEN and never otherwise', () => {
  const state = EpochState.genesis(hash, 4);
  const rotated = Array.from({ length: 12 }, () => state.apply('spend', fill(state)).rotated);
@@ -224,6 +237,17 @@ test('an anchor built before a rotation is stale after it', () => {
  const slot = fastSlot(state, 5n);
  assert.deepEqual(Array.from({ length: 4 }, () => state.apply('spend', fill(state)).rotated), [false, false, false, true]);
  assert.throws(() => state.apply('spend', fill(state, [slot])), rejection('stale-anchor'));
+});
+
+test('nextAnchorRoot is the root the next batch opens against, across a rotation', () => {
+ const state = EpochState.genesis(hash, 4);
+ const against = (rPrev: bigint) => { const slot = fastSlot(state); return fill(state, [{ ...slot, anchor: anchorOf(hash, rPrev, slot.rCur!.root) }]); };
+ for (const rotates of [false, false, false, false, true, false]) {
+  const [next, other] = rotates ? [state.notes.root(), state.prevNoteRoot] : [state.prevNoteRoot, state.notes.root()];
+  assert.deepEqual([state.rotatesNext(), state.nextAnchorRoot()], [rotates, next]);
+  if (state.batchCount > 0) assert.throws(() => state.apply('spend', against(other)), rejection('stale-anchor'));
+  assert.equal(state.apply('spend', against(next)).rotated, rotates);
+ }
 });
 
 test('undoLast across a rotation restores the previous epoch whole', () => {
