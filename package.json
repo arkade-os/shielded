@@ -20,6 +20,7 @@
     "rollup:compile": "node circuits/rollup/generate.mjs",
     "rollup:compile:epoch": "node circuits/rollup/generate-epoch.mjs",
     "rollup:pin": "node tools/rollup-r1cs-pin.mjs",
+    "rollup:budget:epoch": "node --max-old-space-size=8192 tools/rollup-epoch-budget.mjs",
     "test:rollup:witness": "node --import tsx tools/rollup-circuit-witness-smoke.ts",
     "test:rollup:epoch-witness": "node --import tsx tools/rollup-epoch-circuit-witness-smoke.ts",
     "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
