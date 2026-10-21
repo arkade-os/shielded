@@ -6,6 +6,7 @@ export const ROLLUP_STATE_PACKET=0x87;
 const BASE_FIELD=21888242871839275222246405745257275088696311157297823662689037894645226208583n;
 
 export interface RollupLeaves {batch:Uint8Array;batchJoin:Uint8Array;reserve:Uint8Array;renew:Uint8Array}
+export interface RollupEpochLeaves extends RollupLeaves {batchRecover:Uint8Array}
 export interface SnarkProof {pi_a:string[];pi_b:string[][];pi_c:string[]}
 export interface RollupCoin {txid:string;vout:number;value:number;sourceTx:Uint8Array;tapTree:Uint8Array;leaf:ReturnType<VtxoScript['findLeaf']>}
 /** A slot's boundary legs; an asset payout's carrier sats come from the next slot, a BTC payout to the same program. */
@@ -34,6 +35,15 @@ export function rollupPoolTree(serverKey:Uint8Array,emulatorKey:Uint8Array,leave
  const exit=CSVMultisigTapscript.encode({timelock:{type:exitDelay.type,value:BigInt(exitDelay.value)},pubkeys:[tweak(leaves.batch)]}).script;
  // Of five leaves the tree puts indices 0, 1 and 4 at depth 2: the three a weight-critical batch can spend.
  return {tree:new VtxoScript([batch,batchJoin,exit,renew,reserve]),batch,batchJoin,reserve,renew};
+}
+
+export function rollupEpochPoolTree(serverKey:Uint8Array,emulatorKey:Uint8Array,leaves:RollupEpochLeaves,exitDelay:{type:'seconds'|'blocks';value:number}){
+ const tweak=(script:Uint8Array)=>arkade.computeArkadeScriptPublicKey(emulatorKey,script);
+ const collab=(script:Uint8Array)=>MultisigTapscript.encode({pubkeys:[serverKey,tweak(script)]}).script;
+ const batch=collab(leaves.batch),batchJoin=collab(leaves.batchJoin),batchRecover=collab(leaves.batchRecover),reserve=collab(leaves.reserve),renew=collab(leaves.renew);
+ const exit=CSVMultisigTapscript.encode({timelock:{type:exitDelay.type,value:BigInt(exitDelay.value)},pubkeys:[tweak(leaves.batch)]}).script;
+ // Of six leaves the tree puts only indices 4 and 5 at depth 2, so the weight-critical batch and batchJoin go last; reserve pays +32 WU at depth 3.
+ return {tree:new VtxoScript([exit,renew,reserve,batchRecover,batch,batchJoin]),batch,batchJoin,batchRecover,reserve,renew};
 }
 
 function scriptNum(value:bigint):Uint8Array {

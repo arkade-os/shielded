@@ -7,8 +7,9 @@ import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,SingleKey,Unknown
 import {base64,hex} from '@scure/base';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
-import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
+import {buildRollupBatchTx,rollupEpochPoolTree,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
+import {rollupProgramsHash} from '../src/rollup/service.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 
@@ -33,12 +34,22 @@ async function world(){
  legs[3]={deposit:0n,withdraw:1000n,asset:false,program:hex.decode(fixture.payoutProgram)};
  const witness=rollupWitness(fixture.batch.proof,fixture.slots.map(s=>({proof:s.proof,publics:s.publicSignals.map(BigInt)})));
  const checkpoint=CSVMultisigTapscript.encode({pubkeys:[server],timelock:{type:'seconds',value:2048n}});
- return {leaves,legs,witness,checkpoint,server,pool,head:coin(0,pool.tree,pool.batch),joinHead:coin(0,pool.tree,pool.batchJoin),deposit:coin(1,userTree,userCollab)};
+ return {leaves,legs,witness,checkpoint,server,emulator,pool,head:coin(0,pool.tree,pool.batch),joinHead:coin(0,pool.tree,pool.batchJoin),deposit:coin(1,userTree,userCollab)};
 }
 
 test('the pool tree keeps every leaf a batch spends at Taproot depth 2',async()=>{
  const {pool}=await world(),depth=(script:Uint8Array)=>(pool.tree.findLeaf(hex.encode(script))[0].merklePath??[]).length;
  assert.deepEqual([pool.batch,pool.batchJoin,pool.reserve].map(depth),[2,2,2]);
+});
+
+test('the genesis-3 pool script is unchanged and the epoch pool is a different script',async()=>{
+ const {leaves,server,emulator,pool:five}=await world();
+ const epoch=rollupEpochPoolTree(server,emulator,{...leaves,batchRecover:Uint8Array.of(0x52)},{type:'seconds',value:2048});
+ assert.notDeepEqual(epoch.tree.pkScript,five.tree.pkScript);
+ assert.equal(hex.encode(five.tree.pkScript),'5120cb04f7f13f283010b626cd17db70b4f02e165ffa318c8692759674b57fb27577');
+ assert.equal(rollupProgramsHash(leaves),'6d6740d6f21c7255f7ebcd29b85eaae207f74c1e6b1ca0a541fa9c83813ff231');
+ const depth=(script:Uint8Array)=>(epoch.tree.findLeaf(hex.encode(script))[0].merklePath??[]).length;
+ assert.deepEqual([epoch.batch,epoch.batchJoin,epoch.batchRecover,epoch.reserve].map(depth),[2,2,3,3]);
 });
 
 test('a join batch names the join leaf and carries no boundary leg',async()=>{

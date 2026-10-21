@@ -14,7 +14,7 @@ import (
 const rollupMaxTxWeight = 40_000
 
 // rollupLeafAndControl returns a two-key leaf and the control block of the
-// leaf at index in a tree of the given size: the pool tree has five leaves, a
+// leaf at index in a tree of the given size: the epoch pool tree has six leaves, a
 // user VTXO two. Every pool leaf is a two-key script, so only the depth varies.
 func rollupLeafAndControl(t *testing.T, leaves, index int) (leaf, control []byte) {
 	t.Helper()
@@ -41,9 +41,9 @@ func rollupLeafAndControl(t *testing.T, leaves, index int) (leaf, control []byte
 func (b *rollupBatch) signedWeight(t *testing.T) int {
 	t.Helper()
 	tx := b.finalTx()
-	// Indices follow rollupPoolTree in src/rollup/covenant.ts: [batch, batchJoin, exit, renew, reserve].
-	headLeaf, headControl := rollupLeafAndControl(t, 5, int(b.batchKind))
-	reserveLeaf, reserveControl := rollupLeafAndControl(t, 5, 4)
+	// Indices follow rollupEpochPoolTree in src/rollup/covenant.ts: [exit, renew, reserve, batchRecover, batch, batchJoin].
+	headLeaf, headControl := rollupLeafAndControl(t, 6, [...]int{4, 5, 3}[b.batchKind])
+	reserveLeaf, reserveControl := rollupLeafAndControl(t, 6, 2)
 	userLeaf, userControl := rollupLeafAndControl(t, 2, 0)
 	for i := range tx.TxIn {
 		leaf, control := userLeaf, userControl
@@ -100,8 +100,8 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 	for i := range payouts {
 		payouts[i] = rollupLeg{wd: 100_000_000, dest: rollupProgram(byte(0x30 + i))}
 	}
-	baseline := map[string]int{"transfers only": 35392, "deposits, payouts and an asset": 38678,
-		"10 deposits of 1 BTC": 39856, "10 payouts of 1 BTC": 38560, "reserve and 7 deposit inputs": 39760}
+	baseline := map[string]int{"transfers only": 35392, "deposits, payouts and an asset": 38710,
+		"10 deposits of 1 BTC": 39856, "10 payouts of 1 BTC": 38560, "reserve and 7 deposit inputs": 39792}
 	for _, mix := range []struct {
 		name    string
 		legs    []rollupLeg
@@ -118,7 +118,7 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 			t.Errorf("%s: %d WU is over the live %d WU limit", mix.name, weight, rollupMaxTxWeight)
 		}
 		if want, ok := baseline[mix.name]; ok && weight != want {
-			t.Errorf("%s: %d WU, was %d with four pool leaves", mix.name, weight, want)
+			t.Errorf("%s: %d WU, was %d with six pool leaves", mix.name, weight, want)
 		}
 	}
 	join := newRollupWorld(t, 10, 1, 11)
@@ -126,6 +126,10 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 	// A join batch carries no boundary leg, so it needs less headroom than a spend.
 	if weight := weigh(join, "join batch, no legs", make([]rollupLeg, 10), false); weight > rollupMaxTxWeight-3_000 {
 		t.Errorf("join batch: %d WU leaves under 3,000 WU of headroom", weight)
+	}
+	recovery := newRollupWorldAt(t, 1, 2, 4, 11)
+	if weight := weigh(recovery, "recover batch, width 1, no legs", make([]rollupLeg, 1), false); weight > rollupMaxTxWeight-20_000 {
+		t.Errorf("recover batch: %d WU leaves under 20,000 WU of headroom", weight)
 	}
 	if next := rollupReserveDepositInputs + 1; next <= 9 {
 		if weight := weigh(w, fmt.Sprintf("reserve and %d deposit inputs", next), rollupDeposits(next, true), true); weight <= rollupMaxTxWeight {
