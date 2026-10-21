@@ -4,9 +4,9 @@ import * as snarkjs from 'snarkjs';
 import { buildPoseidon } from 'circomlibjs';
 import { BATCH_SLOTS, BTC_ASSET, EPOCH_NULLIFIER_DEPTH, NULLIFIER_TAG, ROLLUP_DOMAIN, ROLLUP_FIELD, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
 import { toCircuitInput, type ClientInput, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
-import { EpochState, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
+import { EpochState, anchorOf, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
 import { EPOCH_DERIVED_FIELDS, epochBatchInput, epochClientInput } from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import { akOf, groupIdOf, noteOf, ownerOf } from '../packages/protocol/src/rollup/notes.ts';
+import { akOf, groupIdOf, noteOf, ownerOf, statementOf } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { epochHarness, foldPath, rPrevFor } from '../tests/fixtures/epoch.ts';
 
@@ -80,10 +80,11 @@ await rejects('client deposit whose dummy input carries a non-boolean sel', 'epo
 await rejects('client spend whose note is in neither anchored tree', 'epoch-spend', strayRoot, /EpochSpend_\d+ line: 27/);
 await rejects('client join with a non-boolean sel on its second input', 'epoch-join', inflatedJoin, /EpochJoin_\d+ line: 27/);
 
+const joinSlots = (s: EpochState) => Array.from({ length: BATCH_SLOTS }, () => deposit(s, 0n, { inputs: [dummyInput(), dummyInput()] }).slot);
 const pool = EpochState.genesis(hash, 4), first = pool.apply('spend', fill(pool));
 const [g0, g1] = [fastSlot(pool), fastSlot(pool)], groupId = groupIdOf(hash, [g0.nullifiers[0], g1.nullifiers[0]]);
 const grouped = pool.apply('spend', fill(pool, [{ ...g0, groupId, groupSize: 2 }, { ...g1, groupId, groupSize: 2 }]));
-const joined = pool.apply('join', Array.from({ length: BATCH_SLOTS }, () => deposit(pool, 0n, { inputs: [dummyInput(), dummyInput()] }).slot));
+const joined = pool.apply('join', joinSlots(pool));
 const replayed = forced(state, 'spend', fill(state, [{ ...fastSlot(state), nullifiers: c.slot.nullifiers }]));
 // Epoch 2, mid-epoch; slot 1 anchors on the c-1 leaf, so both branches of the window tag run.
 const mid = state.apply('spend', fill(state, [fastSlot(state), fastSlot(state, 0n, { epoch: state.epoch - 1, root: state.prevNoteRoot })]));
@@ -119,6 +120,38 @@ await rejects('a window pair tagged with a future epoch', 'epoch-batch-spend', s
 await rejects('a nullifier already in the frozen previous set', 'epoch-batch-spend', epochBatchInput(replayed.witness), /NonMember_\d+ line: 18/);
 await rejects('a forged low leaf', 'epoch-batch-spend', slot0('nmLeaf', [nmLeaf[0][0] + 1n, ...nmLeaf[0].slice(1)]), /NonMember_\d+ line: 12/);
 await rejects('a low leaf carrying nextIdx 0 with a non-zero nextValue', 'epoch-batch-spend', slot0('nmLeaf', [nmLeaf[0][0], 0n, 1n]), /NonMember_\d+ line: 12/);
+
+// epochLen 4: the fifth batch is the first rotation (erCount 0) and the ninth the second.
+pool.apply('spend', fill(pool));
+const firstRotation = pool.apply('spend', fill(pool));
+for (let i = 0; i < 3; i++) pool.apply('spend', fill(pool));
+const secondRotation = pool.apply('spend', fill(pool));
+const one = EpochState.genesis(hash, 1);
+for (let i = 0; i < 2; i++) one.apply('spend', fill(one));
+const len1 = one.apply('spend', fill(one));
+// epochLen 2: the fifth batch rotates into epoch 2, so the root of batch 1, tagged epoch 0, is a c-2 leaf the window still holds.
+const two = EpochState.genesis(hash, 2);
+two.apply('spend', fill(two));
+const twoBack = { epoch: two.epoch, root: two.latestRoot() };
+for (let i = 0; i < 3; i++) two.apply('spend', fill(two));
+const len2 = two.clone().apply('spend', fill(two)), rotatingJoin = two.clone().apply('join', joinSlots(two));
+assert.deepEqual([firstRotation, secondRotation, len1, len2, rotatingJoin].map(batch => batch.rotated), Array(5).fill(true));
+assert.deepEqual([firstRotation, secondRotation].map(batch => batch.witness.erCount), [0n, 1n]);
+await accepts('the first rotation ever: an empty archive and the pseudo-epoch leaf', 'epoch-batch-spend', epochBatchInput(firstRotation.witness), true);
+await accepts('a later rotation, archiving epoch 0', 'epoch-batch-spend', epochBatchInput(secondRotation.witness));
+await accepts('a rotating join batch, 20 nullifiers from the sentinel', 'epoch-batch-join', epochBatchInput(rotatingJoin.witness), true);
+await accepts('EPOCH_LEN 1, where every batch after the first rotates', 'epoch-batch-spend', epochBatchInput(len1.witness));
+await accepts('EPOCH_LEN 2', 'epoch-batch-spend', epochBatchInput(len2.witness));
+// The model refuses a c-2 slot, so slot 0 is forged: a real pre-batch window leaf, with pub recomputed over the post-rotation anchor.
+const reanchor = (witness: Record<string, unknown>) => {
+ const input = epochBatchInput(witness) as Record<string, any>, index = two.windowIndex(twoBack);
+ const set0 = (key: string, value: unknown) => [value, ...input[key].slice(1)];
+ const pub = statementOf(hash, { domain: ROLLUP_DOMAIN, root: anchorOf(hash, rPrevFor(two), twoBack.root), nullifiers: input.nf[0], commitments: input.cm[0], ctDigest: input.ctDigest[0], groupId: input.groupId[0], groupSize: Number(input.groupSize[0]) });
+ return { ...input, pub: set0('pub', pub), rCurRoot: set0('rCurRoot', twoBack.root), rCurEpoch: set0('rCurEpoch', BigInt(twoBack.epoch)), winIdx: set0('winIdx', BigInt(index)), winPath: set0('winPath', two.window.path(index)) };
+};
+await rejects('a rotating spend batch anchoring on a c-2 tagged root', 'epoch-batch-spend', reanchor(len2.witness), /EpochBatch_\d+ line: 99/);
+await rejects('a rotating join batch anchoring on a c-2 tagged root', 'epoch-batch-join', reanchor(rotatingJoin.witness), /EpochBatch_\d+ line: 99/);
+
 const set = new RollupNullifiers(hash, EPOCH_NULLIFIER_DEPTH);
 for (const value of [10n, 20n, 30n]) set.insert(value);
 const low = set.nonMember(25n);
