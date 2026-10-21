@@ -13,7 +13,7 @@ export interface LnurlReceiveJournal {
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
 }
 interface Destination extends LnurlPayout {index:number;claimPublicKey:string;params?:{pubKey:string;serverPubKey:string;csvTimelock:string}}
-interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true}
+interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true}
 interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<string,ServerState>}
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
 export interface LnurlReceiveConfig {
@@ -71,7 +71,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const legacy=await config.journal.getReceiveState<LegacyState>(config.owner,config.pool,`lnurl-hd-v1:${serverKey}`);
   if(!legacy)return;
   if(legacy.v!==1||!Array.isArray(legacy.receivers)||!Array.isArray(legacy.payouts))throw new Error('Invalid local HD receive state');
-  state.servers[serverKey]={receivers:legacy.receivers,...(legacy.pending?{pending:legacy.pending}:{})};
+  state.servers[serverKey]={receivers:legacy.receivers,migrated:true,...(legacy.pending?{pending:legacy.pending}:{})};
   for(const payout of legacy.payouts){
    const index=indexOf(Number(/\/2\/7\/(\d+)\)$/.exec(payout.descriptor)?.[1]));
    if(!state.payouts.some(row=>row.script===payout.script))state.payouts.push({id:payout.id,descriptor:payout.descriptor,address:payout.address,script:payout.script,index,claimPublicKey:hex.encode(deriveDescriptorLeafCompressedPubKey(payout.descriptor))});
@@ -138,8 +138,12 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  };
  const settle=async(state:ReceiveState,server:ServerState)=>{
   if(!server.receivers.some(row=>row.status==='active'))return;
-  // An HD alias keeps handing out /2/7 children until its service drops HD, so follow them by scanning.
-  if(server.refused){const branch=await currentBranch(),high=await scan(branch,state.next,SCAN_BATCH);if(high>=state.next)await adopt(state,branch,state.next,high);}
+  // HD services hand out /2/7 children the journal never saw: catch up once after migration, then follow them while refused.
+  if(server.refused||server.migrated){
+   const branch=await currentBranch(),high=await scan(branch,state.next,server.migrated?RECOVERY_GAP:SCAN_BATCH);
+   if(high>=state.next)await adopt(state,branch,state.next,high);
+   if(server.migrated){delete server.migrated;await save(state);}
+  }
   const current=state.payouts.find(row=>row.script===server.current);
   if(!current||(server.boundAt!==undefined&&(now()-server.boundAt>=ROTATE_AFTER_MS||(await used([current.script])).size>0)))await advance(state,server);
   await bind(state,server);

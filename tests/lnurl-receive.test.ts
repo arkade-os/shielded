@@ -135,8 +135,10 @@ test('the HD journal migrates without network and keeps every recorded payout wa
  assert.equal((await f.service.current())?.handle,'alice');assert.equal(await f.service.enabled(),true);
  assert.deepEqual((await f.service.payouts()).map(row=>[row.id,row.index,row.claimPublicKey]),[[legacy[0]!.id,0,at(0).claimPublicKey],[legacy[1]!.id,5,at(5).claimPublicKey]]);
  assert.equal(f.requests.length,0);assert.equal(f.saved(),undefined);
- await f.service.check();
- assert.deepEqual(f.registered[0]!,legacy);assert.equal(f.bound()[0]!.arkadeAddress,at(6).address);
+ f.funded.add(at(8).script);await f.service.check();
+ assert.deepEqual(f.registered[0]!,legacy);assert.deepEqual(f.registered[1]!.map(row=>row.script),[6,7,8].map(i=>at(i).script));
+ assert.equal(f.bound()[0]!.arkadeAddress,at(9).address);
+ await f.service.check();assert.equal(f.saved()!.next,10);assert.equal(f.bound().length,2);
  for(const row of legacy)assert.ok(hdIdentity.ownsDescriptor(row.descriptor));
  assert.ok(f.state.has(f.key('pool',legacyKey)));
 });
