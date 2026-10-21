@@ -18,8 +18,10 @@
     "vm:build": "node --import tsx tools/build-vm.ts",
     "circom": "node tools/prepare-circom.mjs",
     "rollup:compile": "node circuits/rollup/generate.mjs",
+    "rollup:compile:epoch": "node circuits/rollup/generate-epoch.mjs",
     "rollup:pin": "node tools/rollup-r1cs-pin.mjs",
     "test:rollup:witness": "node --import tsx tools/rollup-circuit-witness-smoke.ts",
+    "test:rollup:epoch-witness": "node --import tsx tools/rollup-epoch-circuit-witness-smoke.ts",
     "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
     "fallback": "node --max-old-space-size=8192 --experimental-eventsource --import tsx tools/rollup-fallback.ts"
   },
