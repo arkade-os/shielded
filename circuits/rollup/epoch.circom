@@ -154,3 +154,104 @@ template EpochBatch(N, M, KIND, DOMAIN, Z, DNF, DER, EMPTY_NOTE, EMPTY_NF) {
  bind.fields[3] <== append.subRoot;
  bind.statement === statement;
 }
+
+// Width-1 recovery of a note from an archived epoch e <= c-2 (§4.4, D9): ER membership, both archived sets, then RS.
+template EpochRecoverBatch(N, DNF, DER, DRS, KIND, DOMAIN, Z, EMPTY_NOTE, EMPTY_NF) {
+ var D=32; var SUB=5; var WD=6; var NF_TAG=20261007301; var STATE_TAG=20261007001; var GROUP_TAG=20261007401;
+ var WIN_TAG=20261020001; var ER_TAG=20261020101; var EPOCH_TAG=20261020201; var RS_TAG=20261020301; var ANCHOR_TAG=20261020401;
+ signal input pub[N]; signal input statement;
+ signal input nf[N][1]; signal input cm[N][2]; signal input ctDigest[N]; signal input groupId[N]; signal input groupSize[N];
+ signal input erIdx[N]; signal input erPath[N][DER]; signal input erNoteFinal[N]; signal input nfA[N]; signal input nfB[N];
+ signal input nmaIdx[N]; signal input nmaLeaf[N][3]; signal input nmaPath[N][DNF]; signal input nmbIdx[N]; signal input nmbLeaf[N][3]; signal input nmbPath[N][DNF];
+ signal input rsPredIdx[N]; signal input rsPred[N][3]; signal input rsPredPath[N][DRS]; signal input rsAppendPath[N][DRS];
+ signal input noteRoot; signal input noteCount; signal input noteSlot; signal input slotPath[D-SUB];
+ signal input nfRoot; signal input nfCount;
+ signal input winRoot; signal input batchCount; signal input batchQ; signal input winOldLeaf; signal input winSlotPath[WD];
+ signal input rPrev; signal input prevNfRoot; signal input epoch; signal input epochLen; signal input epochQ; signal input epochR;
+ signal input erRoot; signal input erCount; signal input erAppendPath[DER]; signal input rsRoot; signal input rsCount;
+
+ component rot=EpochRotation(DER, EMPTY_NOTE, EMPTY_NF);
+ rot.batchCount <== batchCount; rot.batchQ <== batchQ; rot.epoch <== epoch; rot.epochLen <== epochLen; rot.epochQ <== epochQ; rot.epochR <== epochR;
+ rot.noteRoot <== noteRoot; rot.noteCount <== noteCount; rot.nfRoot <== nfRoot; rot.nfCount <== nfCount;
+ rot.rPrev <== rPrev; rot.prevNfRoot <== prevNfRoot; rot.erRoot <== erRoot; rot.erCount <== erCount;
+ for(var j=0;j<DER;j++) rot.erAppendPath[j] <== erAppendPath[j];
+
+ component anchor[N]; component open[N]; component erLeaf[N]; component erBits[N]; component erTree[N];
+ component absentA[N]; component absentB[N]; component ins[N]; component da[N];
+ signal rsRoots[N+1]; signal daChain[N+1]; rsRoots[0] <== rsRoot; daChain[0] <== 0;
+ for(var i=0;i<N;i++) {
+  // No rCur input: the anchor opens the archived root twice, so the client proof can only reach NT[e].
+  anchor[i]=Poseidon(3); anchor[i].inputs[0] <== ANCHOR_TAG; anchor[i].inputs[1] <== erNoteFinal[i]; anchor[i].inputs[2] <== erNoteFinal[i];
+  open[i]=Poseidon(8);
+  open[i].inputs[0] <== DOMAIN; open[i].inputs[1] <== anchor[i].out; open[i].inputs[2] <== nf[i][0];
+  open[i].inputs[3] <== cm[i][0]; open[i].inputs[4] <== cm[i][1]; open[i].inputs[5] <== ctDigest[i];
+  open[i].inputs[6] <== groupId[i]; open[i].inputs[7] <== groupSize[i];
+  open[i].out === pub[i];
+
+  // erIdx is the leaf's position and its hashed e+1 at once (R17). No erIdx >= 1 bound: only a dummy opens the pseudo-epoch leaf.
+  erLeaf[i]=Poseidon(5); erLeaf[i].inputs[0] <== ER_TAG; erLeaf[i].inputs[1] <== erIdx[i]; erLeaf[i].inputs[2] <== erNoteFinal[i];
+  erLeaf[i].inputs[3] <== nfA[i]; erLeaf[i].inputs[4] <== nfB[i];
+  erBits[i]=Num2Bits(DER); erBits[i].in <== erIdx[i];
+  erTree[i]=MerkleRoot(DER); erTree[i].leaf <== erLeaf[i].out;
+  for(var j=0;j<DER;j++) { erTree[i].bits[j] <== erBits[i].out[j]; erTree[i].siblings[j] <== erPath[i][j]; }
+  // After this batch's own append, so a rotating batch can recover the epoch it archives (R19).
+  erTree[i].root === rot.rErRoot;
+
+  absentA[i]=NonMember(DNF, NF_TAG); absentA[i].nf <== nf[i][0]; absentA[i].root <== nfA[i]; absentA[i].idx <== nmaIdx[i];
+  for(var j=0;j<3;j++) absentA[i].pred[j] <== nmaLeaf[i][j];
+  for(var j=0;j<DNF;j++) absentA[i].path[j] <== nmaPath[i][j];
+  absentB[i]=NonMember(DNF, NF_TAG); absentB[i].nf <== nf[i][0]; absentB[i].root <== nfB[i]; absentB[i].idx <== nmbIdx[i];
+  for(var j=0;j<3;j++) absentB[i].pred[j] <== nmbLeaf[i][j];
+  for(var j=0;j<DNF;j++) absentB[i].path[j] <== nmbPath[i][j];
+
+  ins[i]=IndexedInsert(DRS, NF_TAG); ins[i].nf <== nf[i][0]; ins[i].count <== rsCount+i; ins[i].oldRoot <== rsRoots[i];
+  ins[i].predIdx <== rsPredIdx[i];
+  for(var j=0;j<3;j++) ins[i].pred[j] <== rsPred[i][j];
+  for(var j=0;j<DRS;j++) { ins[i].predPath[j] <== rsPredPath[i][j]; ins[i].appendPath[j] <== rsAppendPath[i][j]; }
+  rsRoots[i+1] <== ins[i].newRoot;
+
+  da[i]=Poseidon(5); da[i].inputs[0] <== daChain[i]; da[i].inputs[1] <== nf[i][0];
+  da[i].inputs[2] <== cm[i][0]; da[i].inputs[3] <== cm[i][1]; da[i].inputs[4] <== ctDigest[i];
+  daChain[i+1] <== da[i].out;
+ }
+
+ component groups=GroupRule(N, GROUP_TAG);
+ for(var i=0;i<N;i++) { groups.groupId[i] <== groupId[i]; groups.groupSize[i] <== groupSize[i]; groups.first[i] <== nf[i][0]; }
+
+ component append=AppendSubtree(2*N, SUB, D, Z);
+ for(var i=0;i<N;i++) { append.leaves[2*i] <== cm[i][0]; append.leaves[2*i+1] <== cm[i][1]; }
+ append.noteRoot <== rot.rNoteRoot; append.noteSlot <== noteSlot;
+ for(var i=0;i<D-SUB;i++) append.slotPath[i] <== slotPath[i];
+ rot.rNoteCount === noteSlot*(1<<SUB);
+
+ component wNewLeaf=Poseidon(3); wNewLeaf.inputs[0] <== WIN_TAG; wNewLeaf.inputs[1] <== rot.rEpoch; wNewLeaf.inputs[2] <== append.newRoot;
+ component wOld=MerkleRoot(WD); component wNew=MerkleRoot(WD);
+ wOld.leaf <== winOldLeaf; wNew.leaf <== wNewLeaf.out;
+ for(var j=0;j<WD;j++) {
+  wOld.bits[j] <== rot.winBits[j]; wNew.bits[j] <== rot.winBits[j];
+  wOld.siblings[j] <== winSlotPath[j]; wNew.siblings[j] <== winSlotPath[j];
+ }
+ wOld.root === winRoot;
+
+ component oldEpoch=Poseidon(7); component newEpoch=Poseidon(7); component oldRs=Poseidon(3); component newRs=Poseidon(3);
+ oldEpoch.inputs[0] <== EPOCH_TAG; oldEpoch.inputs[1] <== epoch; oldEpoch.inputs[2] <== epochLen; oldEpoch.inputs[3] <== rPrev;
+ oldEpoch.inputs[4] <== prevNfRoot; oldEpoch.inputs[5] <== erRoot; oldEpoch.inputs[6] <== erCount;
+ newEpoch.inputs[0] <== EPOCH_TAG; newEpoch.inputs[1] <== rot.rEpoch; newEpoch.inputs[2] <== epochLen; newEpoch.inputs[3] <== rot.rPrevNote;
+ newEpoch.inputs[4] <== rot.rPrevNf; newEpoch.inputs[5] <== rot.rErRoot; newEpoch.inputs[6] <== rot.rErCount;
+ oldRs.inputs[0] <== RS_TAG; oldRs.inputs[1] <== rsRoot; oldRs.inputs[2] <== rsCount;
+ newRs.inputs[0] <== RS_TAG; newRs.inputs[1] <== rsRoots[N]; newRs.inputs[2] <== rsCount+N;
+
+ component oldState=Poseidon(9); component newState=Poseidon(9);
+ oldState.inputs[0] <== STATE_TAG; oldState.inputs[1] <== noteRoot; oldState.inputs[2] <== noteCount;
+ oldState.inputs[3] <== nfRoot; oldState.inputs[4] <== nfCount; oldState.inputs[5] <== winRoot;
+ oldState.inputs[6] <== batchCount; oldState.inputs[7] <== oldEpoch.out; oldState.inputs[8] <== oldRs.out;
+ // Recovery never inserts into the epoch set, but a rotation still resets it.
+ newState.inputs[0] <== STATE_TAG; newState.inputs[1] <== append.newRoot; newState.inputs[2] <== rot.rNoteCount+(1<<SUB);
+ newState.inputs[3] <== rot.rNfRoot; newState.inputs[4] <== rot.rNfCount; newState.inputs[5] <== wNew.root;
+ newState.inputs[6] <== batchCount+1; newState.inputs[7] <== newEpoch.out; newState.inputs[8] <== newRs.out;
+
+ component bind=Binding(KIND, N);
+ bind.fields[0] <== oldState.out; bind.fields[1] <== newState.out; bind.fields[2] <== daChain[N];
+ bind.fields[3] <== append.subRoot;
+ bind.statement === statement;
+}

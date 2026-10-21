@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import * as snarkjs from 'snarkjs';
 import { buildPoseidon } from 'circomlibjs';
-import { BATCH_SLOTS, BTC_ASSET, EPOCH_NULLIFIER_DEPTH, NULLIFIER_TAG, ROLLUP_DOMAIN, ROLLUP_FIELD, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
+import { BATCH_SLOTS, BTC_ASSET, EPOCH_NULLIFIER_DEPTH, GROUP_TAG, NULLIFIER_TAG, ROLLUP_DOMAIN, ROLLUP_FIELD, type EpochBatchKind } from '../packages/protocol/src/rollup/constants.ts';
 import { toCircuitInput, type ClientInput, type ClientSpend } from '../packages/protocol/src/rollup/client.ts';
 import { EpochState, anchorOf, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
 import { EPOCH_DERIVED_FIELDS, epochBatchInput, epochClientInput } from '../packages/protocol/src/rollup/epoch-circuit.ts';
@@ -12,7 +12,7 @@ import { epochHarness, foldPath, rPrevFor } from '../tests/fixtures/epoch.ts';
 
 const build = process.argv[2] ?? join(process.cwd(), 'circuits', 'rollup', 'build');
 const artifact = (name: string) => ({ wasm: join(build, `${name}_js`, `${name}.wasm`), r1cs: join(build, `${name}.r1cs`) });
-const circuits = { 'epoch-spend': artifact('epoch-spend'), 'epoch-join': artifact('epoch-join'), 'epoch-batch-spend': artifact('epoch-batch-spend'), 'epoch-batch-join': artifact('epoch-batch-join'), 'epoch-nonmember': artifact('epoch-nonmember') };
+const circuits = { 'epoch-spend': artifact('epoch-spend'), 'epoch-join': artifact('epoch-join'), 'epoch-batch-spend': artifact('epoch-batch-spend'), 'epoch-batch-join': artifact('epoch-batch-join'), 'epoch-batch-recover': artifact('epoch-batch-recover'), 'epoch-nonmember': artifact('epoch-nonmember') };
 type Circuit = keyof typeof circuits;
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
@@ -40,7 +40,7 @@ function forced(state: EpochState, kind: EpochBatchKind, slots: EpochSlot[]) {
  try { const result = state.apply(kind, slots); state.undoLast(); return result; } finally { RollupNullifiers.prototype.has = has; }
 }
 
-const { fresh, dummyInput, deposit, fastSlot, fill, noteFrom } = epochHarness(hash);
+const { fresh, dummyInput, deposit, fastSlot, fill, noteFrom, recovery, recoverSlot } = epochHarness(hash);
 // The harness owner's ak is not an akOf output, so these notes get a spendable owner; 8n is the harness nk that noteFrom carries.
 const ask = 7n, owner = ownerOf(hash, ROLLUP_DOMAIN, akOf(hash, ask), 8n);
 const outputs = (amount: bigint): ClientSpend['outputs'] => [{ amount, owner, random: fresh() }, { amount: 0n, owner, random: fresh() }];
@@ -164,4 +164,45 @@ await rejects('harness: the value is present', 'epoch-nonmember', harness(30n, l
 await rejects('harness: the low leaf is above the nullifier', 'epoch-nonmember', harness(15n, low.leaf), /NonMember_\d+ line: 13/);
 await rejects('harness: nextIdx 0 with a non-zero nextValue', 'epoch-nonmember', harness(25n, [20n, 0n, 30n]), /NonMember_\d+ line: 16/);
 await rejects('harness: a path that does not fold to the root', 'epoch-nonmember', { ...honest, path: [honest.path[0] + 1n, ...honest.path.slice(1)] }, /NonMember_\d+ line: 12/);
+
+// epochLen 2: X, Y, Z and W land in epoch 0, X is spent in epoch 0 and Y in epoch 1; the fifth batch rotates into epoch 2 and archives epoch 0.
+const vault = EpochState.genesis(hash, 2), minted = Array.from({ length: 4 }, () => deposit(vault, 1000n));
+vault.apply('spend', fill(vault, minted.map(made => made.slot)));
+const [noteX, noteY, noteZ, noteW] = minted.map(made => noteFrom(made));
+const spendNote = (s: EpochState, note: ClientInput) => s.apply('spend', fill(s, [deposit(s, 0n, { inputs: [note] }).slot]));
+spendNote(vault, noteX);
+vault.apply('spend', fill(vault));
+spendNote(vault, noteY);
+// rotRec opens index 0 while its own rotation appends index 1, a sibling on that path, so the pre-rotation path differs.
+const preRotationPath = vault.archive.tree.path(0), rotRec = vault.clone().apply('recover', [recoverSlot(vault, -1, dummyInput())]);
+const recovered = recovery(vault, 0, noteZ), ownRec = vault.apply('recover', [recovered.slot]);
+const rec = vault.clone().apply('recover', [recoverSlot(vault, 0, noteW)]), pseudo = vault.clone().apply('recover', [recoverSlot(vault, -1, dummyInput())]);
+const afterRecover = vault.clone().apply('spend', fill(vault, [deposit(vault, 0n, { inputs: [noteFrom(recovered)] }).slot]));
+assert.deepEqual([rotRec, ownRec, rec, pseudo, afterRecover].map(batch => batch.rotated), [true, true, false, false, false]);
+assert.notDeepEqual(preRotationPath, (rotRec.witness.erPath as bigint[][])[0]);
+await accepts('a recover batch for an archived epoch-0 note', 'epoch-batch-recover', epochBatchInput(rec.witness), true);
+await accepts('a rotating recover batch, opening the archive after its own append', 'epoch-batch-recover', epochBatchInput(rotRec.witness), true);
+await accepts('a rotating recover batch recovering the epoch its own rotation archives', 'epoch-batch-recover', epochBatchInput(ownRec.witness));
+await accepts('a dummy-only recover batch against the pseudo-epoch leaf', 'epoch-batch-recover', epochBatchInput(pseudo.witness));
+await accepts('a recovered note then fast-spent as a current-epoch note', 'epoch-batch-spend', epochBatchInput(afterRecover.witness));
+
+const [forcedA, forcedB, forcedRs] = [noteX, noteY, noteZ].map(note => forced(vault, 'recover', [recoverSlot(vault, 0, note)]));
+const recInput = epochBatchInput(rec.witness) as Record<string, any>, { epoch: recEpoch, erAppendPath: recAppend } = rec.witness as Record<string, any>;
+// pub reopened over the changed slot, so the statement still opens and the archive or group rule is what refuses.
+const reopened = (changes: Record<string, unknown[]>) => {
+ const s = { ...recInput, ...changes }, root = anchorOf(hash, s.erNoteFinal[0], s.erNoteFinal[0]);
+ return { ...s, pub: [statementOf(hash, { domain: ROLLUP_DOMAIN, root, nullifiers: s.nf[0], commitments: s.cm[0], ctDigest: s.ctDigest[0], groupId: s.groupId[0], groupSize: Number(s.groupSize[0]) })] };
+};
+const er = /EpochRecoverBatch_\d+ line: 198\n/, absent = (line: number) => new RegExp(`NonMember_\\d+ line: 18\\nError in template EpochRecoverBatch_\\d+ line: ${line}\\n`);
+await rejects('a recover batch naming the live epoch', 'epoch-batch-recover', { ...recInput, erIdx: [recEpoch], erPath: [recAppend] }, er);
+await rejects('a forged archived note root', 'epoch-batch-recover', reopened({ erNoteFinal: [recInput.erNoteFinal[0] + 1n] }), er);
+await rejects('a forged archived nullifier root', 'epoch-batch-recover', { ...recInput, nfA: [recInput.nfA[0] + 1n] }, er);
+await rejects('a forged archive path', 'epoch-batch-recover', { ...recInput, erPath: [[recInput.erPath[0][0] + 1n, ...recInput.erPath[0].slice(1)]] }, er);
+await rejects('a rotating recover batch opening the pre-rotation archive root', 'epoch-batch-recover', { ...epochBatchInput(rotRec.witness), erPath: [preRotationPath] }, er);
+await rejects('a nullifier present in the first archived set', 'epoch-batch-recover', epochBatchInput(forcedA.witness), absent(202));
+await rejects('a nullifier present in the second archived set', 'epoch-batch-recover', epochBatchInput(forcedB.witness), absent(205));
+await rejects('a second recovery of the same note', 'epoch-batch-recover', epochBatchInput(forcedRs.witness), /IndexedInsert_\d+ line: 49\n/);
+await rejects('a recover slot claiming a group', 'epoch-batch-recover', reopened({ groupId: [hash([GROUP_TAG, recInput.nf[0][0], 0n, 0n])], groupSize: [2n] }), /GroupRule_\d+ line: 135\n/);
+for (const field of EPOCH_DERIVED_FIELDS)
+ await rejects(`a recover batch may not supply ${field}`, 'epoch-batch-recover', { ...recInput, [field]: rec.witness[field] }, new RegExp(`Too many values for input signal ${field}\\n`));
 process.exit(0);
