@@ -1,8 +1,8 @@
 import {EmulatorPacket,Extension,type Transaction} from '@arkade-os/sdk';
 import {RawWitness} from '@scure/btc-signer';
 import {hex} from '@scure/base';
-import {BATCH_SLOTS,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
-import {ROLLUP_STATE_PACKET,type RollupLeaves} from './covenant.ts';
+import {BATCH_SLOTS,EPOCH_NULLIFIERS,EPOCH_SLOTS,type BatchKind,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {ROLLUP_STATE_PACKET,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
 
 const same=(a:Uint8Array,b:Uint8Array)=>hex.encode(a)===hex.encode(b);
@@ -12,19 +12,27 @@ function scriptNum(item:Uint8Array):bigint {
 }
 const le=(item:Uint8Array)=>item.reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n);
 
-/** What an accepted batch transaction itself proves: each slot's public inputs and the new state packet. */
-export function readBatchTx(tx:Transaction,leaves:RollupLeaves){
+function readBatchFacts<K extends string>(tx:Transaction,table:readonly {script:Uint8Array;kind:K;slots:number;nullifiers:number}[]){
  const ext=Extension.fromTx(tx),packet=ext.getPacketByType(EmulatorPacket.PACKET_TYPE),state=ext.getPacketByType(ROLLUP_STATE_PACKET)?.serialize();
  const entry=packet?EmulatorPacket.fromBytes(packet.serialize()).entries.find(e=>e.vin===0):undefined;
- const kind:BatchKind|undefined=!entry?.witness?undefined:same(entry.script,leaves.batch)?'spend':same(entry.script,leaves.batchJoin)?'join':undefined;
- if(!kind)throw new Error('The transaction does not spend the pool head through a batch leaf.');
+ const leaf=!entry?.witness?undefined:table.find(l=>same(entry.script,l.script));
+ if(!leaf)throw new Error('The transaction does not spend the pool head through a batch leaf.');
  if(!state||state.length!==96)throw new Error('The transaction carries no rollup state packet.');
  const items=RawWitness.decode(entry!.witness!);
- if(items.length!==8+BATCH_SLOTS*15)throw new Error('The batch witness has the wrong shape.');
+ if(items.length!==8+leaf.slots*15)throw new Error('The batch witness has the wrong shape.');
  // Per slot after the 8 proof items: pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination. Slots run last to first.
- const parsed=Array.from({length:BATCH_SLOTS},(_,i)=>{const at=8+(BATCH_SLOTS-1-i)*15+8,p=items.slice(at,at+7);
-  return {publics:[scriptNum(p[0]!),scriptNum(p[1]!),scriptNum(p[2]!),scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:kind==='join'?[scriptNum(p[1]!),scriptNum(p[2]!)]:[scriptNum(p[1]!)]};});
- return {kind,publics:parsed.map(s=>s.publics),nullifiers:parsed.map(s=>s.nullifiers),commitment:le(state.subarray(0,32)),daRoot:le(state.subarray(32,64)),noteBlockRoot:le(state.subarray(64))};
+ const parsed=Array.from({length:leaf.slots},(_,i)=>{const at=8+(leaf.slots-1-i)*15+8,p=items.slice(at,at+7);
+  return {publics:[scriptNum(p[0]!),scriptNum(p[1]!),scriptNum(p[2]!),scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:[scriptNum(p[1]!),scriptNum(p[2]!)].slice(0,leaf.nullifiers)};});
+ return {kind:leaf.kind,publics:parsed.map(s=>s.publics),nullifiers:parsed.map(s=>s.nullifiers),commitment:le(state.subarray(0,32)),daRoot:le(state.subarray(32,64)),noteBlockRoot:le(state.subarray(64))};
+}
+
+/** What an accepted batch transaction itself proves: each slot's public inputs and the new state packet. */
+export function readBatchTx(tx:Transaction,leaves:RollupLeaves){
+ return readBatchFacts<BatchKind>(tx,[{script:leaves.batch,kind:'spend',slots:BATCH_SLOTS,nullifiers:1},{script:leaves.batchJoin,kind:'join',slots:BATCH_SLOTS,nullifiers:2}]);
+}
+export function readEpochBatchTx(tx:Transaction,leaves:RollupEpochLeaves){
+ const row=(script:Uint8Array,kind:EpochBatchKind)=>({script,kind,slots:EPOCH_SLOTS[kind],nullifiers:EPOCH_NULLIFIERS[kind]});
+ return readBatchFacts(tx,[row(leaves.batch,'spend'),row(leaves.batchJoin,'join'),row(leaves.batchRecover,'recover')]);
 }
 
 export interface ChainOnlyBatch {kind:BatchKind;noteBlockRoot:string;slots:{root:string;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[]}[]}

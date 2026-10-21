@@ -91,7 +91,7 @@ func TestRollupLeavesManifest(t *testing.T) {
 	joinLeaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Version: 2, Client: client, Batch: batch})
 	reserve, _ := buildRollupReserveLeaf(token)
 	renew, _ := buildRollupRenewalLeaf(token, operator)
-	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), BatchJoin: hex.EncodeToString(joinLeaf.Script), Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 40, Pairs: 15}
+	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), BatchJoin: hex.EncodeToString(joinLeaf.Script), BatchRecover: "", Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 40, Pairs: 15}
 	if got != want {
 		t.Fatalf("manifest differs from the direct builds: ecmul %d pairs %d", got.ECMul, got.Pairs)
 	}
