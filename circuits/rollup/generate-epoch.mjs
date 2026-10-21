@@ -1,4 +1,4 @@
-import {cpSync, mkdirSync, writeFileSync} from 'node:fs';
+import {cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -15,6 +15,10 @@ const clients=['epoch-spend','epoch-join'];
 const mains=[];
 const all=[...clients,...mains.map(([name])=>name)],names=process.argv.slice(2);
 if(names.some(name=>!all.includes(name)))throw new Error(`generate-epoch.mjs builds only ${all.join(', ')}.`);
+for(const file of readdirSync(source).filter(name=>/^epoch.*\.circom$/.test(name))){
+ const line=readFileSync(path.join(source,file),'utf8').split('\n').findIndex(text=>/<--|-->/.test(text));
+ if(line>=0)throw new Error(`circuits/rollup/${file}:${line+1} uses <-- or -->, which assigns without a constraint.`);
+}
 cpSync(path.join(root,'node_modules','circomlib','circuits'),path.join(out,'circomlib','circuits'),{recursive:true,force:true});
 for(const name of ['lib',...clients])cpSync(path.join(source,name+'.circom'),path.join(out,name+'.circom'));
 for(const [name,main] of mains)writeFileSync(path.join(out,name+'.circom'),`pragma circom 2.1.6;\ninclude "epoch.circom";\n${main}\n`);

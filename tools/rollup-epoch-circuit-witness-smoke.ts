@@ -59,6 +59,7 @@ await accepts('client spend of a current-epoch note (sel 0)', 'epoch-spend', cur
 await accepts('client spend of a previous-epoch note (sel 1)', 'epoch-spend', prev.input);
 await accepts('client deposit through a dummy input', 'epoch-spend', dep.input);
 await accepts('client join across both live epochs (sel 0 and 1)', 'epoch-join', cross.input, true);
+await rejects('client join whose previous-epoch note claims the current tree', 'epoch-join', epochClientInput(hash, spend([noteC, noteA]), at([0n, 0n])).input, /EpochJoin_\d+ line: 29/);
 
 const forged: ClientInput = { ...noteA, amount: 10n ** 18n, path: Array(32).fill(0n) };
 const T = foldPath(hash, noteOf(hash, ROLLUP_DOMAIN, forged.amount, BTC_ASSET, owner, forged.rho), 0, forged.path);
