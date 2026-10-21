@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -77,6 +78,32 @@ func TestRollupBatchLeafRejectsProofAndStateAttacks(t *testing.T) {
 	b.batchKind = 0
 	b.buildWitness()
 	rollupExpectReject(t, "spend-kind statement on a join leaf", b, "OP_VERIFY")
+}
+
+func TestRollupBatchLeafSeparatesBindingVersions(t *testing.T) {
+	// A version-4 leaf must refuse a batch whose proofs signed the version-2 statement, and the reverse.
+	// Same Kind and Slots in both directions, so only magic[2] differs.
+	for _, v := range [][2]byte{{4, 2}, {2, 4}} {
+		w := newRollupWorldAt(t, 10, 0, v[0], 7)
+		if push := []byte{5, 'S', 'H', v[0], 0, 10}; !bytes.Contains(w.leaf.Script, push) {
+			t.Errorf("version %d leaf lacks the pushdata %x", v[0], push)
+		}
+		b := rollupTransfers(w)
+		if err := b.execute(); err != nil {
+			t.Fatalf("version %d: honest batch rejected: %v", v[0], err)
+		}
+		w.version = v[1]
+		b.prove()
+		b.buildWitness()
+		rollupExpectReject(t, fmt.Sprintf("version-%d statement on a version-%d leaf", v[1], v[0]), b, "OP_VERIFY")
+	}
+	client, batch := rollupFixtureKeys(t)
+	for version := byte(0); version < 6; version++ {
+		_, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Version: version, Client: client, Batch: batch})
+		if (err == nil) != (version == 2 || version == 4) {
+			t.Errorf("version %d: %v", version, err)
+		}
+	}
 }
 
 func TestRollupBatchLeafKeepsTheHead(t *testing.T) {

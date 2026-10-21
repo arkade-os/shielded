@@ -61,11 +61,11 @@ func rollupFixtureKeys(t *testing.T) (client, batch rollupKey) {
 // The join leaf is the spend leaf with another kind byte: same length, same budgets.
 func TestRollupJoinLeafMatchesTheSpendLeafShape(t *testing.T) {
 	client, batch := rollupFixtureKeys(t)
-	spend, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 0, Client: client, Batch: batch})
+	spend, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 0, Version: 2, Client: client, Batch: batch})
 	if err != nil {
 		t.Fatal(err)
 	}
-	join, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Client: client, Batch: batch})
+	join, err := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Version: 2, Client: client, Batch: batch})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +87,8 @@ func TestRollupLeavesManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, batch := rollupFixtureKeys(t)
-	leaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Client: client, Batch: batch})
-	joinLeaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Client: client, Batch: batch})
+	leaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Version: 2, Client: client, Batch: batch})
+	joinLeaf, _ := buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Kind: 1, Version: 2, Client: client, Batch: batch})
 	reserve, _ := buildRollupReserveLeaf(token)
 	renew, _ := buildRollupRenewalLeaf(token, operator)
 	want := rollupLeavesManifest{Batch: hex.EncodeToString(leaf.Script), BatchJoin: hex.EncodeToString(joinLeaf.Script), Reserve: hex.EncodeToString(reserve), Renew: hex.EncodeToString(renew), ECMul: 40, Pairs: 15}

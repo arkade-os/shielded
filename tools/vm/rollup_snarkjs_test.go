@@ -83,7 +83,7 @@ func TestRollupBatchLeafVerifiesSnarkJSProofs(t *testing.T) {
 		return b
 	}
 	w := newRollupWorld(t, 10, 0, 1)
-	if w.leaf, err = buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Client: client, Batch: batch}); err != nil {
+	if w.leaf, err = buildRollupBatchLeaf(rollupLeafConfig{Slots: 10, Version: 2, Client: client, Batch: batch}); err != nil {
 		t.Fatal(err)
 	}
 	newPacket := decode(f.NewPacket)

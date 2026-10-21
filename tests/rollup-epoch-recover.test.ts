@@ -33,7 +33,7 @@ test('recovering an epoch-0 note in epoch 2 inserts into RS, not NF', () => {
  assert.equal(state.nullifiers.count(), before);
  assert.equal(state.noteCount, noteCountBefore + 32); // a width-1 batch still fills one block
  assert.equal(state.notes.node(SUBTREE_DEPTH, noteCountBefore / 32), result.blockRoot);
- assert.deepEqual([...result.binding.subarray(0, 5)], [0x53, 0x48, 2, 2, 1]);
+ assert.deepEqual([...result.binding.subarray(0, 5)], [0x53, 0x48, 4, 2, 1]);
  assert.equal(state.recovered.has(note.nullifier), true);
 });
 

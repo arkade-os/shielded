@@ -56,7 +56,7 @@ func buildRollupLeaves(specFile string) (rollupLeavesManifest, error) {
 		if err != nil {
 			return rollupLeavesManifest{}, fmt.Errorf("%sbatch key: %w", keys[0], err)
 		}
-		if leaves[kind], err = buildRollupBatchLeaf(rollupLeafConfig{Slots: spec.Slots, Kind: byte(kind), Client: client, Batch: batch}); err != nil {
+		if leaves[kind], err = buildRollupBatchLeaf(rollupLeafConfig{Slots: spec.Slots, Kind: byte(kind), Version: 2, Client: client, Batch: batch}); err != nil {
 			return rollupLeavesManifest{}, err
 		}
 	}

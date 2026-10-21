@@ -36,8 +36,8 @@ test('a batch appends 32 leaves, writes a tagged window leaf and fills both dige
  assert.equal(state.nullifiers.count(), 1 + BATCH_SLOTS);
  assert.equal(state.window.node(0, 0), windowLeafOf(hash, { epoch: 0, root: state.notes.root() }));
  assert.equal(result.binding.length, 133);
- assert.deepEqual([...result.binding.subarray(0, 5)], [0x53, 0x48, 2, 0, BATCH_SLOTS]);
- assert.deepEqual(result.binding, bindingOf('spend', oldCommitment, state.commitment(), result.daRoot, result.blockRoot));
+ assert.deepEqual([...result.binding.subarray(0, 5)], [0x53, 0x48, 4, 0, BATCH_SLOTS]);
+ assert.deepEqual(result.binding.subarray(5), bindingOf('spend', oldCommitment, state.commitment(), result.daRoot, result.blockRoot).subarray(5));
  const emptyNf = new RollupNullifiers(hash, EPOCH_NULLIFIER_DEPTH).root();
  assert.equal(state.epochDigest(), hash([EPOCH_TAG, 0n, 1024n, new DeepTree(hash, NOTE_DEPTH).root(), emptyNf, new DeepTree(hash, ARCHIVE_DEPTH).root(), 0n]));
  assert.equal(state.rsDigest(), hash([RS_TAG, new RollupNullifiers(hash, RECOVERED_DEPTH).root(), 1n]));
