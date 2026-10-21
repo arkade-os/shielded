@@ -97,13 +97,14 @@ export function rollupProvingOf(kind:RollupPoolKind,files:Record<string,string>)
   :{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join')};
 }
 /** The persisted genesis decides; SHIELDED_ROLLUP_EPOCH_LEN only shapes a pool that has no genesis yet. */
-export function rollupPoolKindOf(o:{genesis?:{version:number;epochLen?:number};epochLenEnv?:string}):{kind:RollupPoolKind;epochLen?:number} {
+export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};epochLenEnv?:string}):{kind:RollupPoolKind;epochLen?:number} {
  const epoch=(epochLen:unknown)=>{
   if(typeof epochLen!=='number'||!Number.isSafeInteger(epochLen)||epochLen<EPOCH_LEN_FLOOR||epochLen>MAX_EPOCH_LEN)throw new Error(`The rollup epoch length must be a whole number of batches from ${EPOCH_LEN_FLOOR} to ${MAX_EPOCH_LEN}; got ${JSON.stringify(epochLen)}.`);
   return {kind:'epoch' as const,epochLen};
  };
  if(!o.genesis)return o.epochLenEnv===undefined?{kind:'classic'}:epoch(/^[1-9][0-9]*$/.test(o.epochLenEnv)?Number(o.epochLenEnv):o.epochLenEnv);
- if(o.genesis.version===1)return {kind:'classic'};
+ // Only a classic pool can lack the field (an epoch genesis always writes 2), and refusing it would block the live pool.
+ if(o.genesis.version===1||o.genesis.version===undefined)return {kind:'classic'};
  if(o.genesis.version===2)return epoch(o.genesis.epochLen);
  throw new Error(`The rollup genesis has version ${JSON.stringify(o.genesis.version)}, which this build cannot open; run the build that created it.`);
 }

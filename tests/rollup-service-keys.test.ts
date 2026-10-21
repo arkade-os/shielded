@@ -85,6 +85,13 @@ test('the pool kind comes from the persisted genesis, and an unknown version is 
  assert.throws(()=>rollupPoolKindOf({genesis:{version:2}}),/epoch length/);
 });
 
+test('a genesis without a version reads as classic, and the env cannot change that',()=>{
+ assert.deepEqual(rollupPoolKindOf({genesis:{}}),{kind:'classic'});
+ assert.deepEqual(rollupPoolKindOf({genesis:{},epochLenEnv:'128'}),{kind:'classic'});
+ assert.throws(()=>rollupPoolKindOf({genesis:{version:3}}),/version 3/);
+ assert.throws(()=>rollupPoolKindOf({genesis:{version:2}}),/epoch length/);
+});
+
 test('a genesis epoch length is at least 64 and at most 2**20',()=>{
  for(const bad of ['0','1','63',String(2**20+1),'128.5','x'])assert.throws(()=>rollupPoolKindOf({epochLenEnv:bad}),/epoch length/,bad);
  assert.deepEqual(rollupPoolKindOf({epochLenEnv:String(2**20)}),{kind:'epoch',epochLen:2**20});
@@ -125,8 +132,11 @@ test('a classic genesis keeps the classic key list under SHIELDED_ROLLUP_EPOCH_L
   const live=await stepOnce({genesis:{version:1},keys:bundle()});
   assert.match(live.message,/preflight/);
   assert.deepEqual(Object.keys(live.proving??{}),['spend','join','batch','batchJoin']);
+  const pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
+  assert.deepEqual(live.proving,{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')});
   assert.equal(live.keyFile('spend.zkey'),join(live.keys,'spend.zkey'));
   assert.equal(live.keyFile('epoch-spend.zkey'),undefined);
+  assert.match((await stepOnce({genesis:{},keys:bundle()})).message,/preflight/);
   assert.match((await stepOnce({genesis:{version:3}})).message,/version 3/);
  }finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
 });
