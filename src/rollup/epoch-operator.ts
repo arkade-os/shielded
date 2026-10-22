@@ -1,19 +1,22 @@
-import {mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {existsSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Transaction,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {ARCHIVE_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf} from '../../packages/protocol/src/rollup/notes.ts';
+import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openStockJournal} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSelection,type RollupSpend} from './batcher.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,type RollupCoin,type RollupEpochLeaves} from './covenant.ts';
+import {encodeEpochNfArchive,epochNfArchivePath,readEpochNfArchive} from './epoch-archive-file.ts';
+import {encodeEpochSnapshot,readEpochSnapshot} from './epoch-snapshot.ts';
 import {readEpochBatchTx,spentCoins} from './external.ts';
 import {ROLLUP_GROUP_WAIT_MS,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupOperatorOptions,type RollupPoolCoin,type RollupTick} from './operator.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
-import {headCommitment} from './snapshot.ts';
+import {headCommitment,writeSnapshot} from './snapshot.ts';
 
 /** A spend with `origin` set is a recovery of a note from that archived epoch. */
 export interface RollupEpochSpend extends Omit<RollupSpend,'slot'> {slot:EpochSlot;origin?:number}
@@ -21,7 +24,7 @@ export interface EpochRecordSlot {anchor:string;rCur?:{epoch:number;root:string}
 /** One accepted batch as published; the block root is always kept, so a replay never needs an archived nullifier set. */
 export interface RollupEpochRecord {kind:EpochBatchKind;slots:EpochRecordSlot[];noteBlockRoot:string;txid?:string;at?:number}
 interface RollupEpochPlan {version:1;request:StockWireRequest;record:RollupEpochRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
-export interface RollupEpochOperatorOptions extends Omit<RollupOperatorOptions,'leaves'|'clientKey'|'prover'|'signDeposits'|'snapshotEvery'> {
+export interface RollupEpochOperatorOptions extends Omit<RollupOperatorOptions,'leaves'|'clientKey'|'prover'|'signDeposits'> {
  epochLen:number;
  leaves:RollupEpochLeaves;
  clientKey:Record<EpochBatchKind,unknown>;
@@ -30,6 +33,7 @@ export interface RollupEpochOperatorOptions extends Omit<RollupOperatorOptions,'
 }
 
 const KINDS=['spend','join','recover'] as const;
+const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
 const slotOf=(s:Omit<EpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
@@ -58,8 +62,10 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
- const state=EpochState.genesis(o.hash,o.epochLen,false);
- const applyRecord=(r:RollupEpochRecord)=>state.applyFromChain(r.kind,r.slots.map(s=>s.nullifiers.map(BigInt)),BigInt(r.noteBlockRoot));
+ const frozenDir=join(o.directory,'nullifiers');mkdirSync(frozenDir,{recursive:true});
+ const frozenPath=(epoch:number)=>epochNfArchivePath(frozenDir,epoch);
+ let state=EpochState.genesis(o.hash,o.epochLen,false);
+ const applyRecord=(s:EpochState,r:RollupEpochRecord)=>s.applyFromChain(r.kind,r.slots.map(sl=>sl.nullifiers.map(BigInt)),BigInt(r.noteBlockRoot));
  const poolCoin=(c:RollupPoolCoin,leaf:Uint8Array):RollupCoin=>({txid:c.txid,vout:c.vout,value:c.value,sourceTx:hex.decode(c.sourceTxHex),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(leaf))});
  const headOf=(plan:RollupEpochPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
  const keptPath=(plan:RollupEpochPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
@@ -83,18 +89,58 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   },
   apply:(archive,plan,receipt)=>{
    writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));
-   if(state.batchCount===archive.batches)applyRecord(plan.record);
+   if(state.batchCount===archive.batches)applyRecord(state,plan.record);
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
    const reserves=plan.asset?{...archive.reserves,[plan.asset]:{...coin(1),amount:plan.reserveAmount!}}:archive.reserves;
    return {...archive,head:coin(0),reserves,batches:archive.batches+1};
   },
  });
- const atOpen=journal.status().archive,committed=headCommitment(atOpen.head.sourceTxHex);
+ const atOpen=journal.status().archive,committed=headCommitment(atOpen.head.sourceTxHex),snapshotPath=join(o.directory,'snapshot.bin');
  if(committed===undefined)console.warn(`[rollup] The pool head ${atOpen.head.txid} carries no readable state packet; the state is replayed from genesis and cannot be checked against it.`);
+ // The pseudo-epoch -1 spent nothing, so its set is empty and has no file.
+ const frozenSet=(epoch:number,root:bigint)=>epoch<0?new RollupNullifiers(o.hash,EPOCH_NULLIFIER_DEPTH):readEpochNfArchive(frozenPath(epoch),o.hash,{epoch,root});
+ let snapshotAt=0,crossed:[number,RollupNullifiers][]=[];
+ const replay=(s:EpochState)=>{
+  crossed=[];
+  for(let n=s.batchCount;n<atOpen.batches;n++){const epoch=s.epoch;applyRecord(s,JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord);if(s.epoch>epoch)crossed.push([epoch,s.prevNf]);}
+  return s;
+ };
+ /** A snapshot is used only with its previous epoch's set rebuilt from its archive file, and once the batches after it replay to the head's commitment. */
+ const resumed=():EpochState|undefined=>{
+  if(committed===undefined||!existsSync(snapshotPath))return undefined;
+  const ignore=(why:string)=>{console.warn(`[rollup] Ignoring ${snapshotPath}: ${why}; replaying ${atOpen.batches} batches from genesis.`);return undefined;};
+  try{
+   const parts=readEpochSnapshot(snapshotPath,o.hash,o.pin,atOpen.batches);
+   if(!parts)return ignore('it is damaged, from another pool or format, or ahead of the journal');
+   const s=EpochState.restore(o.hash,{...parts,prevNf:frozenSet(parts.epoch-1,parts.prevNfRoot)},false),from=s.batchCount,reached=replay(s).commitment();
+   if(reached===committed){snapshotAt=from;return s;}
+   return ignore(`resumed at batch ${from} it reaches commitment ${reached}, but the head commits to ${committed}`);
+  }catch(error){return ignore((error as Error).message);}
+ };
  try{
-  for(let n=0;n<atOpen.batches;n++)applyRecord(JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord);
+  state=resumed()??replay(state);
   if(committed!==undefined&&state.commitment()!==committed)throw new Error(`Replaying ${atOpen.batches} batches gives commitment ${state.commitment()}, but the pool head commits to ${committed}; a batch record is wrong, so the pool does not open.`);
  }catch(error){journal.close();throw error;}
+ // Rewritten from the replayed state, which also heals a file lost between its batch's acceptance and its write.
+ try{for(const [epoch,set] of crossed)writeSnapshot(frozenPath(epoch),encodeEpochNfArchive(epoch,set));}catch(error){console.warn(`[rollup] Could not write a nullifier archive: ${(error as Error).message}`);}
+ // Only accepted state is written: run() applies a batch long before the journal holds it, and undoLast() may still take it back.
+ const persist=(every:number)=>{
+  try{
+   const status=journal.status(),frozen=frozenPath(state.epoch-1);
+   if(status.pending||state.batchCount!==status.archive.batches)return;
+   if(state.epoch>0&&!existsSync(frozen))writeSnapshot(frozen,encodeEpochNfArchive(state.epoch-1,state.prevNf));
+   if(state.batchCount-snapshotAt<every)return;
+   writeSnapshot(snapshotPath,encodeEpochSnapshot(state,o.pin));snapshotAt=state.batchCount;
+  }catch(error){console.warn(`[rollup] Could not write the epoch snapshot or its archive file: ${(error as Error).message}`);}
+ };
+ /** Loads an archived origin's two frozen sets; a file that is missing or does not rebuild its root refuses only the recovery that needs it. */
+ const preload=(origin:number)=>{
+  const record=state.archive.list().find(r=>r.epoch===origin);
+  if(record)for(const [epoch,root] of [[origin,record.nfFinal],[origin+1,record.nfNextFinal]] as const)if(!state.archive.loaded(epoch)){
+   try{state.archive.load(epoch,epoch===state.epoch-1?state.prevNf:frozenSet(epoch,root));}
+   catch(error){throw new RollupRejection('recover-unarchived',`Recovering a note of epoch ${origin} needs ${frozenPath(epoch)}, which will not load: ${(error as Error).message}`);}
+  }
+ };
  const pending:Record<EpochBatchKind,RollupEpochSpend[]>={spend:[],join:[],recover:[]},padding:Record<EpochBatchKind,RollupEpochSpend[]>={spend:[],join:[],recover:[]};
  let inflight:RollupEpochSpend[]=[],inflightPadding:RollupEpochSpend[]=[],inflightKind:EpochBatchKind='spend',busy=false,coinCap:number|undefined;
  // An index into KINDS: after a batch of one kind the next kind leads, so none can starve.
@@ -148,6 +194,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    const origin=spend.origin!,nf=nullifiers[0]!,riding=!state.archive.has(origin);
    // The rotating batch archives epoch-1 from live state: its final root is prevNoteRoot, its frozen sets prevNf and nullifiers.
    if(riding&&(state.prevNf.has(nf)||state.nullifiers.has(nf)))throw new RollupRejection('double-spend','The note was already spent in its own epoch or the next.');
+   if(!riding)preload(origin);
    const noteFinal=riding?state.prevNoteRoot:state.archive.witness(origin,nf).archived.noteFinal;
    if(anchor!==anchorOf(o.hash,noteFinal,noteFinal))throw new RollupRejection('stale-anchor','The recovery does not open against the final note root of its origin epoch.');
   }else{
@@ -209,7 +256,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   const started=now(),oldest=Math.min(...clients.map(s=>s.receivedAt));
   try{
    if(selection.asset&&!reserveCoin)gate(()=>{throw new Error(`No reserve for asset ${selection.asset}.`);});
-   const result=gate(()=>state.apply(kind,selection.spends.map(s=>s.slot)));applied=true;
+   const result=gate(()=>{if(kind==='recover')preload(selection.spends[0]!.origin!);return state.apply(kind,selection.spends.map(s=>s.slot));});applied=true;
    const proof=await o.prover[kind].prove(result.witness,result.publicSignals),proved=now();
    const witness=rollupWitness(proof,selection.spends.map(s=>({proof:s.proof,publics:s.publics})));
    const reserve=reserveCoin?{...poolCoin(reserveCoin,pool.reserve),amount:BigInt(reserveCoin.amount)}:undefined;
@@ -289,6 +336,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
      if(state.batchCount>archive.batches)state.undoLast();
      padding[inflightKind].unshift(...inflightPadding);pending[inflightKind].unshift(...inflight);inflight=[];inflightPadding=[];
     }
+    if(facts.kind==='recover')for(const s of slots??[])if(s.origin!==undefined)preload(s.origin);
     const replica=state.clone();
     if(slots){
      const replay=replica.apply(facts.kind,slots.map(slotOf));
@@ -303,6 +351,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     state.applyFromChain(facts.kind,facts.nullifiers,facts.noteBlockRoot);
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
+    persist(o.snapshotEvery??SNAPSHOT_EVERY);
     return {batch:archive.batches-1,txid:tx.id};
    }finally{busy=false;}
   },
@@ -336,7 +385,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
      try{const ran=await run(kind);if(ran){if('txid' in ran)lead=(lead+i+1)%KINDS.length;return ran;}}catch(error){if((error as Error).message!=='padding')throw error;short??=kind;}
     }
     return short?{blocked:`Not enough padding ${short==='join'?'joins':'spends'}.`}:undefined;
-   }finally{busy=false;}
+   }finally{persist(o.snapshotEvery??SNAPSHOT_EVERY);busy=false;}
   },
   close:()=>journal.close(),
  };
