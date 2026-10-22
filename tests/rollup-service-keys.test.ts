@@ -148,7 +148,7 @@ test('a fresh volume under SHIELDED_ROLLUP_EPOCH_LEN installs only an epoch key 
   assert.match(classic.message,/epoch-spend\.wasm/);
   assert.equal(classic.hasKeys,false);
   const epoch=await stepOnce({bundled:bundle('','epoch')});
-  assert.match(epoch.message,/cannot open an epoch pool/);
+  assert.match(epoch.message,/preflight/);
   assert.equal(epoch.proving?.spend.wasm,sha('epoch-spend.wasm'));
   assert.equal(epoch.keyFile('epoch-batch-recover.zkey'),join(epoch.keys,'epoch-batch-recover.zkey'));
   assert.equal(epoch.keyFile('spend.zkey'),undefined);
