@@ -27,7 +27,7 @@ export class EpochState {
  prevNoteRoot: bigint;
  noteCount = 0;
  batchCount = 0;
- private prevNf: RollupNullifiers;
+ prevNf: RollupNullifiers;
  private undo?: () => void;
  private constructor(private readonly hash: Hash, readonly epochLen: number, private readonly leaves: boolean) {
   this.notes = new DeepTree(hash, NOTE_DEPTH);
