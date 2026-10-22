@@ -22,7 +22,10 @@ emulator and operator.
 
 `-rollup-leaves spec.json` prints the pool's batch, reserve and renewal leaves
 as hex. The spec names the client and batch verification keys, relative to the
-spec file, plus the batch size, pool token and operator key.
+spec file, plus the batch size, pool token and operator key. `epoch` builds the
+batch leaves at version 4 instead of 2 and adds a recover leaf, printed as
+`batchRecover` (empty otherwise). `batchRecoverKey`, a 2-public verification
+key named like the others, is required when `epoch` is set.
 
 ## Build and run
 
