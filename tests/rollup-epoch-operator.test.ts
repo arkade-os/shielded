@@ -8,7 +8,7 @@ import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,scriptFromTapLeaf
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
-import {EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
+import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
@@ -56,6 +56,7 @@ const spendOf=(w:{slot:EpochSlot;publicSignals:bigint[]},extra:Partial<Spend>={}
 const fastSpend=(s:EpochState)=>spendOf(deposit(s,0n));
 const joinSpend=(s:EpochState)=>spendOf(deposit(s,0n,{inputs:[dummyInput(),dummyInput()]}));
 const recoverSpend=(s:EpochState,origin:number,note:Parameters<typeof recovery>[2])=>spendOf(recovery(s,origin,note),{origin});
+const reanchored=(s:Spend,anchor:bigint):Spend=>{const slot={...s.slot,anchor};return {...s,slot,publics:[statementOf(hash,{domain:ROLLUP_DOMAIN,...slot,root:anchor}),...s.publics.slice(1)] as unknown as Spend['publics']};};
 const padsFor=(s:EpochState,kind:'spend'|'join',count:number)=>Array.from({length:count},()=>({...(kind==='join'?joinSpend(s):fastSpend(s)),receivedAt:Infinity}));
 
 async function world(epochLen:number){
@@ -126,10 +127,20 @@ test('a recover batch built in TypeScript is accepted by the real recover leaf',
 });
 
 test('admission refuses every recover submission the policy forbids',async t=>{
- const w=await world(2),op=await w.open(t),minted=deposit(op.state,1000n),note=noteFrom(minted);
+ const w=await world(2),op=await w.open(t),minted=deposit(op.state,1000n),spentNote=noteFrom(minted);
  await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
- for(let n=0;n<4;n++)await land(op,'spend',[fastSpend(op.state)]);
+ const moved=deposit(op.state,1000n,{inputs:[spentNote],deposit:0n}),note=noteFrom(moved);
+ await land(op,'spend',[spendOf(moved)]);
+ for(let n=0;n<2;n++)await land(op,'spend',[fastSpend(op.state)]);
+ const unsound=():[string,Spend,RejectionCode][]=>[
+  ['a note its epoch already spent',recoverSpend(op.state,0,spentNote),'double-spend'],
+  ['an anchor that opens another tree',reanchored(recoverSpend(op.state,0,note),anchorOf(hash,op.state.latestRoot(),op.state.latestRoot())),'stale-anchor'],
+ ];
+ assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[1,false,true]);
+ for(const [label,spend,code] of unsound())await assert.rejects(op.submit({...spend,id:label}),rejection(code),`${label}, riding the rotation`);
+ await land(op,'spend',[fastSpend(op.state)]);
  assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[2,true,false]);
+ for(const [label,spend,code] of unsound())await assert.rejects(op.submit({...spend,id:label}),rejection(code),label);
  const good=recoverSpend(op.state,0,note),[nf]=good.slot.nullifiers,program=new Uint8Array(32).fill(0x52);
  const publics=(at:Record<number,bigint>)=>good.publics.map((p,i)=>at[i]??p) as unknown as Spend['publics'],from=(origin:number)=>({...good,origin,slot:{...good.slot,origin}});
  const refused:[string,Spend,RegExp][]=[
@@ -145,6 +156,8 @@ test('admission refuses every recover submission the policy forbids',async t=>{
  ];
  for(const [label,spend,reason] of refused)await assert.rejects(op.submit({...spend,id:label}),reason,label);
  assert.deepEqual(op.pendingIds(),[],'nothing was admitted');
+ // The lead is on join, so the recover lane runs before the spend lane: an admitted unsound recovery would throw first.
+ await land(op,'spend',[fastSpend(op.state)]);
  await op.submit(good);
  assert.deepEqual(op.pendingIds(),[good.id]);
 });

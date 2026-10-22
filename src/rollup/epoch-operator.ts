@@ -144,7 +144,13 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   const siblings=pending.spend.filter(s=>groupId!==0n&&s.slot.groupId===groupId);
   if(groupId!==0n&&(siblings.length>=groupSize||siblings.some(s=>s.slot.groupSize!==groupSize)))throw new RollupRejection('group-invalid','The group is already complete or disagrees on its size.');
   if(nullifiers.some(nf=>spent(nf,kind)))throw new RollupRejection('double-spend','The note is already spent or pending.');
-  if(kind!=='recover'){
+  if(kind==='recover'){
+   const origin=spend.origin!,nf=nullifiers[0]!,riding=!state.archive.has(origin);
+   // The rotating batch archives epoch-1 from live state: its final root is prevNoteRoot, its frozen sets prevNf and nullifiers.
+   if(riding&&(state.prevNf.has(nf)||state.nullifiers.has(nf)))throw new RollupRejection('double-spend','The note was already spent in its own epoch or the next.');
+   const noteFinal=riding?state.prevNoteRoot:state.archive.witness(origin,nf).archived.noteFinal;
+   if(anchor!==anchorOf(o.hash,noteFinal,noteFinal))throw new RollupRejection('stale-anchor','The recovery does not open against the final note root of its origin epoch.');
+  }else{
    const epoch=state.epoch+(state.rotatesNext()?1:0);
    if((rCur!.epoch!==epoch&&rCur!.epoch!==epoch-1)||state.windowIndex(rCur!)<0)throw new RollupRejection('window-tag','The spend anchors on a root that is not a window leaf of a live epoch.');
    if(anchor!==anchorOf(o.hash,state.nextAnchorRoot(),rCur!.root))throw new RollupRejection('stale-anchor','The spend opens against another previous-epoch root than the next batch does; prove it again.');
