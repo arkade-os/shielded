@@ -112,6 +112,24 @@ test('checkpoints are served only for the batch counts the operator vouches for'
  assert.deepEqual(asked,[128,192],'a malformed number never reaches the operator');
 });
 
+test('a scan the pool cannot encode is refused with 501, never answered as an empty scan',async(t)=>{
+ const api=await serve({ready:()=>true,scan:()=>undefined});t.after(api.close);
+ const refused=await fetch(api.base+'/scan?from=0');
+ assert.equal(refused.status,501);
+ assert.equal(refused.headers.get('cache-control'),'no-store');
+ assert.match((await refused.json()).error,/Plan 4b/);
+});
+
+test('a classic pool\'s scan is answered 200, uncached, with the service\'s scan verbatim',async(t)=>{
+ const asked:[number,number][]=[];const scan={from:2,total:3,data:'AAEC'};
+ const api=await serve({ready:()=>true,scan:(from:number,limit:number)=>{asked.push([from,limit]);return scan;}});t.after(api.close);
+ const answered=await fetch(api.base+'/scan?from=2');
+ assert.equal(answered.status,200);
+ assert.equal(answered.headers.get('cache-control'),'no-store');
+ assert.deepEqual(await answered.json(),scan);
+ assert.deepEqual(asked,[[2,500]]);
+});
+
 test('spends admitted at once are capped across all addresses, and the cap frees as checks finish',async(t)=>{
  let release=()=>{};const held=new Promise<void>(r=>{release=r;});let admitted=0;
  const api=await serve({ready:()=>true,submit:async s=>{if(s.id==='d'.repeat(32))throw new Error('Invalid client proof.');admitted++;await held;}});t.after(api.close);

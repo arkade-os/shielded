@@ -3,8 +3,9 @@ import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
-import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,SingleKey,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
+import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,scriptFromTapLeafScript,SingleKey,TapTreeCoder,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
+import {TAP_LEAF_VERSION} from '@scure/btc-signer/payment.js';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 import {BATCH_SLOTS,type BatchKind} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
@@ -38,7 +39,7 @@ async function world(spec:Partial<RollupLeavesSpec>={}){
  const witness=rollupWitness(fixture.batch.proof,fixture.slots.map(s=>({proof:s.proof,publics:s.publicSignals.map(BigInt)})));
  const checkpoint=CSVMultisigTapscript.encode({pubkeys:[server],timelock:{type:'seconds',value:2048n}});
  const recover={head:coin(0,epoch.tree,epoch.batchRecover,epochParent),deposits:[],legs:[{deposit:0n,withdraw:0n,asset:false}],token,leaves:epochLeaves,witness:rollupWitness(fixture.batch.proof,[{proof:fixture.slots[0]!.proof,publics:fixture.slots[0]!.publicSignals.map(BigInt)}]),newPacket:hex.decode(fixture.newPacket),checkpoint,kind:'recover' as const};
- return {leaves,legs,witness,checkpoint,server,emulator,pool,recover,head:coin(0,pool.tree,pool.batch),joinHead:coin(0,pool.tree,pool.batchJoin),deposit:coin(1,userTree,userCollab)};
+ return {leaves,legs,witness,checkpoint,server,emulator,pool,epoch,recover,head:coin(0,pool.tree,pool.batch),joinHead:coin(0,pool.tree,pool.batchJoin),deposit:coin(1,userTree,userCollab)};
 }
 
 test('the pool tree keeps every leaf a batch spends at Taproot depth 2',async()=>{
@@ -55,6 +56,18 @@ test('the genesis-3 pool script is unchanged and the epoch pool is a different s
  assert.equal(rollupProgramsHash(leaves),'6d6740d6f21c7255f7ebcd29b85eaae207f74c1e6b1ca0a541fa9c83813ff231');
  const depth=(script:Uint8Array)=>(epoch.tree.findLeaf(hex.encode(script))[0].merklePath??[]).length;
  assert.deepEqual([epoch.batch,epoch.batchJoin,epoch.batchRecover,epoch.reserve].map(depth),[2,2,3,3]);
+});
+
+test('the six-leaf epoch tree survives every tapTree encoding a writer produces',async()=>{
+ const {epoch}=await world();
+ // The SDK's toBIP371TapTree, which the package does not export. Not leaf[0].version: a control block's version carries the key's parity bit.
+ const bip371=TapTreeCoder.encode(epoch.tree.leaves.map(leaf=>({depth:leaf[0].merklePath.length,version:TAP_LEAF_VERSION,script:Uint8Array.from(scriptFromTapLeafScript(leaf))})));
+ for(const bytes of [epoch.tree.encode(),bip371]){
+  assert.deepEqual(VtxoScript.decode(bytes).scripts,epoch.tree.scripts);
+  assert.equal(hex.encode(VtxoScript.decode(bytes).pkScript),hex.encode(epoch.tree.pkScript));
+ }
+ assert.notDeepEqual(TapTreeCoder.decode(bip371).map(l=>l.script),epoch.tree.scripts);   // six is a count where DFS order differs
+ assert.equal(hex.encode(epoch.tree.tweakedPublicKey),'2a7b49273f971b6160f9430e044d2e3498531f5bfd97fa5cd5bb8f225e22d7ce');
 });
 
 test('a join batch names the join leaf and carries no boundary leg',async()=>{

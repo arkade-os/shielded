@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import { EPOCH_NULLIFIER_DEPTH, ER_TAG, NULLIFIER_TAG, RECOVERED_DEPTH, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
-import { EpochState, anchorOf } from '../packages/protocol/src/rollup/epoch.ts';
+import { BATCH_SLOTS, EPOCH_NULLIFIER_DEPTH, ER_TAG, NULLIFIER_TAG, RECOVERED_DEPTH, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
+import { EpochState, anchorOf, type EpochSlot } from '../packages/protocol/src/rollup/epoch.ts';
 import { epochHarness, foldPath, rejection } from './fixtures/epoch.ts';
 
 const poseidon = await buildPoseidon();
@@ -86,6 +86,15 @@ test('a recover slot ignores rCur, so the anchor opens noteFinal[e] twice', () =
  const { state, note } = withNote(5), slot = recoverSlot(state, 0, note), live = state.latestRoot();
  assert.throws(() => state.apply('recover', [{ ...slot, rCur: { epoch: 0, root: live }, anchor: anchorOf(hash, live, live) }]), rejection('stale-anchor'));
  assert.ok(state.apply('recover', [{ ...slot, rCur: { epoch: state.epoch, root: live } }]));
+});
+
+test('a recover slot carries no rCur, and a fast-path slot without one is refused', () => {
+ const { state, note } = withNote(5), bare = ({ rCur, ...slot }: EpochSlot): EpochSlot => slot;
+ const join = () => deposit(state, 0n, { inputs: [dummyInput(), dummyInput()] }).slot;
+ assert.throws(() => state.apply('spend', fill(state, [bare(fastSlot(state))])), rejection('window-tag'));
+ assert.throws(() => state.apply('join', [bare(join()), ...Array.from({ length: BATCH_SLOTS - 1 }, join)]), rejection('window-tag'));
+ const slot = recoverSlot(state, 0, note), withCur = state.clone().apply('recover', [slot]);
+ assert.deepEqual(state.apply('recover', [bare(slot)]), withCur);
 });
 
 test('a recover batch can be the batch that rotates, and undoLast restores RS and the archive', () => {

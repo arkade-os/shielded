@@ -6,7 +6,7 @@ import { bindingOf, validateGroups } from './state.ts';
 import { DeepTree } from './tree.ts';
 
 export interface EpochAnchorRef { epoch: number; root: bigint }
-export interface EpochSlot { anchor: bigint; rCur: EpochAnchorRef; nullifiers: bigint[]; commitments: [bigint, bigint]; ctDigest: bigint; groupId: bigint; groupSize: number; origin?: number }
+export interface EpochSlot { anchor: bigint; rCur?: EpochAnchorRef; nullifiers: bigint[]; commitments: [bigint, bigint]; ctDigest: bigint; groupId: bigint; groupSize: number; origin?: number }
 export interface EpochBatchResult { witness: Record<string, unknown>; publicSignals: bigint[]; binding: Uint8Array; daRoot: bigint; blockRoot: bigint; rotated: boolean }
 
 export const anchorOf = (hash: Hash, rPrev: bigint, rCur: bigint) => hash([ANCHOR_TAG, rPrev, rCur]);
@@ -44,6 +44,14 @@ export class EpochState {
   if (!Number.isSafeInteger(epochLen) || epochLen < 1 || epochLen > MAX_EPOCH_LEN) throw new RollupRejection('epoch-length', `An epoch is a positive whole number of batches, at most ${MAX_EPOCH_LEN}.`);
   return new EpochState(hash, epochLen, leaves);
  }
+ static restore(hash: Hash, s: { epoch: number; epochLen: number; notes: DeepTree; nullifiers: RollupNullifiers; window: DeepTree; archive: EpochArchive; recovered: RollupNullifiers; prevNf: RollupNullifiers; prevNoteRoot: bigint; noteCount: number; batchCount: number }, leaves = true): EpochState {
+  const state = EpochState.genesis(hash, s.epochLen, leaves);
+  state.epoch = s.epoch; state.notes = s.notes; state.nullifiers = s.nullifiers; state.window = s.window; state.archive = s.archive;
+  state.recovered = s.recovered; state.prevNf = s.prevNf; state.prevNoteRoot = s.prevNoteRoot; state.noteCount = s.noteCount; state.batchCount = s.batchCount;
+  return state;
+ }
+ /** Private behind this getter so no caller can reassign it between begin() and the undo that puts the captured set back. */
+ get prevNfSet(): RollupNullifiers { return this.prevNf; }
  get prevNfRoot(): bigint { return this.prevNf.root(); }
  private get archiveFull(): boolean { return this.archive.count() >= 2 ** ARCHIVE_DEPTH; }
  clone(): EpochState {
@@ -67,6 +75,9 @@ export class EpochState {
  }
  /** The newest window leaf is always this root tagged with the current epoch. */
  latestRoot(): bigint { return this.notes.root(); }
+ rotatesNext(): boolean { return this.batchCount > 0 && this.batchCount % this.epochLen === 0; }
+ /** The next batch rotates before its slots run, so they open against the root this epoch ends on. */
+ nextAnchorRoot(): bigint { return this.rotatesNext() ? this.notes.root() : this.prevNoteRoot; }
 
  apply(kind: EpochBatchKind, slots: EpochSlot[]): EpochBatchResult {
   const width = EPOCH_SLOTS[kind], m = EPOCH_NULLIFIERS[kind];
@@ -74,7 +85,7 @@ export class EpochState {
   if (slots.some(slot => slot.nullifiers.length !== m)) throw new RollupRejection('slot-shape', `A ${kind} slot spends ${m} note(s).`);
   validateGroups(this.hash, slots);
   const inField = (v: bigint) => v >= 0n && v < ROLLUP_FIELD;
-  if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur.root) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments.');
+  if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur?.root ?? 0n) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments, and its anchor, window root and ciphertext digest are field elements.');
   const oldCommitment = this.commitment(), pubs: bigint[] = [], { nullifiers, prevNoteRoot, epoch, noteCount, batchCount } = this;
   const windowSlot = batchCount % 2 ** WINDOW_DEPTH, epochR = batchCount % this.epochLen;
   const before = {
@@ -106,6 +117,7 @@ export class EpochState {
      put({ erIdx: BigInt(erIndex), erPath, erNoteFinal: noteFinal, nfA: nfFinal, nfB: nfNextFinal, nmaIdx: BigInt(a.index), nmaLeaf: a.leaf, nmaPath: a.path, nmbIdx: BigInt(b.index), nmbLeaf: b.leaf, nmbPath: b.path });
      put({ rsPredIdx: BigInt(rs.predIdx), rsPred: rs.pred, rsPredPath: rs.predPath, rsAppendPath: rs.appendPath });
     } else {
+     if (!rCur) throw new RollupRejection('window-tag', 'A fast-path slot must name the window leaf it anchors on.');
      // The tag test runs first: windowLeafOf cannot hash a fractional epoch.
      const winIdx = rCur.epoch === this.epoch || rCur.epoch === this.epoch - 1 ? this.windowIndex(rCur) : -1;
      if (winIdx < 0) throw new RollupRejection('window-tag', 'The spend anchors on a root that is not a window leaf of a live epoch.');
@@ -149,7 +161,7 @@ export class EpochState {
 
  /** Journals the batch, then rotates if the batch count says so; room is checked only after rotation, so the batch that closes a full epoch still lands. */
  private begin(kind: EpochBatchKind): boolean {
-  const { notes, nullifiers, prevNf, prevNoteRoot, epoch, noteCount, batchCount } = this, rotated = batchCount % this.epochLen === 0 && batchCount > 0;
+  const { notes, nullifiers, prevNf, prevNoteRoot, epoch, noteCount, batchCount } = this, rotated = this.rotatesNext();
   // Rotation replaces notes, nullifiers and prevNf, so undo rolls back the captured objects and puts them back.
   const parts = [notes, nullifiers, this.window, this.archive, this.recovered];
   for (const part of parts) part.begin();

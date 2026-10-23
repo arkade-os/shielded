@@ -31,6 +31,7 @@ export function readBatchTx(tx:Transaction,leaves:RollupLeaves){
  return readBatchFacts<BatchKind>(tx,[{script:leaves.batch,kind:'spend',slots:BATCH_SLOTS,nullifiers:1},{script:leaves.batchJoin,kind:'join',slots:BATCH_SLOTS,nullifiers:2}]);
 }
 export function readEpochBatchTx(tx:Transaction,leaves:RollupEpochLeaves){
+ if(!leaves.batchRecover?.length)throw new Error('These leaves have no recover leaf, so they are not an epoch pool\'s; read genesis-3 batches with readBatchTx.');
  const row=(script:Uint8Array,kind:EpochBatchKind)=>({script,kind,slots:EPOCH_SLOTS[kind],nullifiers:EPOCH_NULLIFIERS[kind]});
  return readBatchFacts(tx,[row(leaves.batch,'spend'),row(leaves.batchJoin,'join'),row(leaves.batchRecover,'recover')]);
 }

@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"testing"
 
+	arklib "github.com/arkade-os/arkd/pkg/ark-lib"
+	"github.com/arkade-os/arkd/pkg/ark-lib/asset"
 	scriptlib "github.com/arkade-os/arkd/pkg/ark-lib/script"
+	"github.com/arkade-os/emulator/pkg/arkade"
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/txscript/v2"
 	"github.com/btcsuite/btcd/wire/v2"
 )
@@ -135,5 +140,56 @@ func TestRollupBatchFitsTheLiveWeightLimit(t *testing.T) {
 		if weight := weigh(w, fmt.Sprintf("reserve and %d deposit inputs", next), rollupDeposits(next, true), true); weight <= rollupMaxTxWeight {
 			t.Errorf("the reserve deposit budget is stale: %d inputs fit at %d WU", next, weight)
 		}
+	}
+}
+
+// The leaves, keys and exit delay are those of world() in tests/rollup-batch-tx.test.ts, whose epoch tree pins the same key.
+func TestRollupEpochTreeDerivesTheSameTaprootKeyAsTheSDK(t *testing.T) {
+	var token asset.AssetId
+	copy(token.Txid[:], bytes.Repeat([]byte{0xcc}, 32))
+	manifest, err := buildRollupLeaves(writeRollupLeavesSpec(t, rollupLeavesSpec{Slots: 10, Token: token.String(), Operator: hex.EncodeToString(bytes.Repeat([]byte{0xaa}, 32))}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	program := func(text string) []byte {
+		b, err := hex.DecodeString(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	server, _ := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{1}, 32))
+	emulator, _ := btcec.PrivKeyFromBytes(bytes.Repeat([]byte{2}, 32))
+	tweak := func(leaf []byte) *btcec.PublicKey {
+		return arkade.ComputeArkadeScriptPublicKey(emulator.PubKey(), arkade.ArkadeScriptHash(leaf))
+	}
+	collab := func(leaf []byte) scriptlib.Closure {
+		return &scriptlib.MultisigClosure{PubKeys: []*btcec.PublicKey{server.PubKey(), tweak(leaf)}}
+	}
+	batch := program(manifest.Batch)
+	exit := &scriptlib.CSVMultisigClosure{
+		MultisigClosure: scriptlib.MultisigClosure{PubKeys: []*btcec.PublicKey{tweak(batch)}},
+		Locktime:        arklib.RelativeLocktime{Type: arklib.LocktimeTypeSecond, Value: 2048},
+	}
+	closures := []scriptlib.Closure{exit, collab(program(manifest.Renew)), collab(program(manifest.Reserve)), collab([]byte{0x52}), collab(batch), collab(program(manifest.BatchJoin))}
+	scripts := make([]string, len(closures))
+	for i, closure := range closures {
+		script, err := closure.Script()
+		if err != nil {
+			t.Fatal(err)
+		}
+		scripts[i] = hex.EncodeToString(script)
+	}
+	vtxo, err := scriptlib.ParseVtxoScript(scripts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := vtxo.TapTree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sdkKey = "2a7b49273f971b6160f9430e044d2e3498531f5bfd97fa5cd5bb8f225e22d7ce"
+	if got := hex.EncodeToString(schnorr.SerializePubKey(key)); got != sdkKey {
+		t.Errorf("arkd derives %s from the six epoch leaves, the SDK test pins %s", got, sdkKey)
 	}
 }

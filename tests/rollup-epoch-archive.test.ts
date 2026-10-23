@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import { ARCHIVE_DEPTH, EPOCH_NULLIFIER_DEPTH, ER_TAG, NOTE_DEPTH, NULLIFIER_TAG, RollupRejection } from '../packages/protocol/src/rollup/constants.ts';
-import { EpochArchive, erLeafIndexOf } from '../packages/protocol/src/rollup/epoch-archive.ts';
+import { ARCHIVE_DEPTH, EPOCH_NULLIFIER_DEPTH, ER_TAG, NOTE_DEPTH, NULLIFIER_TAG, ROLLUP_FIELD, RollupRejection } from '../packages/protocol/src/rollup/constants.ts';
+import { EpochArchive, erLeafIndexOf, type ArchivedEpoch } from '../packages/protocol/src/rollup/epoch-archive.ts';
 import type { Hash } from '../packages/protocol/src/rollup/notes.ts';
 import { RollupNullifiers } from '../packages/protocol/src/rollup/nullifiers.ts';
 import { DeepTree, pathBits } from '../packages/protocol/src/rollup/tree.ts';
@@ -145,4 +145,48 @@ test('a clone does not share appends with the archive it came from', () => {
  assert.equal(archive.count(), 2);
  assert.equal(archive.root(), root);
  assert.equal(archive.has(1), false);
+});
+
+const restoredFrom = (archive: EpochArchive) => { const copy = new EpochArchive(hash, archive.tree.clone()); copy.restore(archive.list()); return copy; };
+const leavesOf = (set: RollupNullifiers) => { const leaves: { value: bigint; nextIndex: number }[] = []; set.scanLeaves((value, nextIndex) => leaves.push({ value, nextIndex })); return leaves; };
+
+test('an archive refuses a frozen set whose root is not the archived one', () => {
+ const archive = restoredFrom(archived());
+ // NF[1] is pinned only by epoch 0's nfNextFinal, and epoch 2 by nothing.
+ for (const [epoch, set] of [[0, epochSet(12n)], [1, epochSet(11n)], [2, epochSet()]] as const) assert.throws(() => archive.load(epoch, set), /does not match/);
+ assert.deepEqual([-1, 0, 1].map(e => archive.loaded(e)), [false, false, false]);
+ archive.load(-1, epochSet()); archive.load(0, epochSet(11n)); archive.load(1, epochSet(22n));
+ assert.deepEqual([-1, 0, 1, 2].map(e => archive.loaded(e)), [true, true, true, false]);
+});
+
+test('a recover witness for an epoch whose set is not loaded is a rejection, not a crash', () => {
+ const original = archived(), archive = restoredFrom(original);
+ assert.deepEqual([archive.count(), archive.root(), archive.list()], [original.count(), original.root(), original.list()]);
+ assert.throws(() => archive.witness(0, 33n), rejection('recover-unarchived'));
+ archive.load(0, epochSet(11n));
+ assert.throws(() => archive.witness(0, 33n), rejection('recover-unarchived'));
+ const copy = archive.clone();
+ copy.load(1, epochSet(22n));
+ assert.deepEqual([archive.loaded(1), copy.witness(0, 33n)], [false, original.witness(0, 33n)]);
+});
+
+test('a restored archive refuses records that are not its tree leaves in order', () => {
+ const original = archived(), records = original.list(), extra: ArchivedEpoch = { epoch: 1, noteFinal: 1n, nfFinal: 2n, nfNextFinal: 3n };
+ for (const bad of [records.slice(1), [...records].reverse(), [records[0], { ...records[1], noteFinal: 1235n }], [...records, extra], records.slice(0, -1)])
+  assert.throws(() => new EpochArchive(hash, original.tree.clone()).restore(bad), /tree/);
+});
+
+test('fromLeaves rebuilds a set whose root, nonMember and insert match an inserted one', () => {
+ const set = epochSet(...Array.from({ length: 63 }, (_, i) => BigInt((37 * i) % 64 + 1))), leaves = leavesOf(set);
+ let hashes = 0;
+ const rebuilt = RollupNullifiers.fromLeaves(values => { hashes++; return hash(values); }, EPOCH_NULLIFIER_DEPTH, leaves);
+ assert.ok(hashes < 4 * (leaves.length + EPOCH_NULLIFIER_DEPTH), `${hashes} hashes`);
+ assert.deepEqual([rebuilt.root(), rebuilt.count(), rebuilt.depth], [set.root(), set.count(), EPOCH_NULLIFIER_DEPTH]);
+ assert.deepEqual(rebuilt.nonMember(28n), set.nonMember(28n));
+ assert.deepEqual(rebuilt.insert(28n), set.insert(28n));
+ assert.equal(rebuilt.root(), set.root());
+ const edit = (i: number, leaf: Partial<{ value: bigint; nextIndex: number }>) => leaves.map((old, k) => (k === i ? { ...old, ...leaf } : old));
+ const max = leaves.findIndex(leaf => leaf.value > 0n && leaf.nextIndex === 0);
+ for (const bad of [edit(1, { value: leaves[2].value }), edit(1, { nextIndex: leaves.length })]) assert.throws(() => RollupNullifiers.fromLeaves(hash, EPOCH_NULLIFIER_DEPTH, bad), /sorted list/);
+ assert.throws(() => RollupNullifiers.fromLeaves(hash, EPOCH_NULLIFIER_DEPTH, edit(max, { value: leaves[max].value + ROLLUP_FIELD })), /field/);
 });

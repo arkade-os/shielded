@@ -18,6 +18,19 @@ export class RollupNullifiers {
   this.tree = new DeepTree(hash, depth);
   this.tree.set(0, this.leafHash(this.leaves[0]));
  }
+ static fromLeaves(hash: Hash, depth: number, leaves: readonly { value: bigint; nextIndex: number }[]): RollupNullifiers {
+  // Poseidon reduces mod p, so a leaf holding v + p rebuilds v's root while has(v) answers false.
+  if (leaves.some(({ value }) => value >= ROLLUP_FIELD)) throw new Error('A nullifier leaf is outside the field.');
+  const set = new RollupNullifiers(hash, depth), tree = new DeepTree(hash, depth);
+  let level = leaves.map(({ value, nextIndex }) => set.leafHash({ value, nextIndex, nextValue: leaves[nextIndex]?.value ?? 0n }));
+  for (let l = 0; l <= depth; l++) {
+   level.forEach((node, i) => tree.place(l, i, node));
+   if (l < depth) level = Array.from({ length: Math.ceil(level.length / 2) }, (_, i) => hash([level[2 * i], level[2 * i + 1] ?? tree.empty[l]]));
+  }
+  set.tree = tree;
+  set.loadLeaves(leaves);
+  return set;
+ }
  private leafHash(leaf: NullifierLeaf): bigint { return this.hash([NULLIFIER_TAG, leaf.value, BigInt(leaf.nextIndex), leaf.nextValue]); }
  root(): bigint { return this.tree.root(); }
  count(): number { return this.leaves.length; }
