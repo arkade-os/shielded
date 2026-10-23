@@ -7,7 +7,7 @@ import {test,type TestContext} from 'node:test';
 import {asset,CSVMultisigTapscript,SingleKey,Transaction,UnknownPacket} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,EPOCH_NULLIFIER_DEPTH,ROLLUP_FIELD,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,EPOCH_NULLIFIER_DEPTH,ROLLUP_FIELD,SUBTREE_DEPTH,WINDOW_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import {RollupNullifiers} from '../packages/protocol/src/rollup/nullifiers.ts';
 import {rollupEpochPoolTree,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
@@ -31,33 +31,35 @@ const resealed=(bytes:Buffer,edit:(b:Buffer)=>void)=>{const b=Buffer.from(bytes)
 /** epochLen 2: batches 2 and 4 rotate, archiving epochs -1 and 0, then batch 5 recovers a note of epoch 0. */
 const grown=()=>{
  const s=EpochState.genesis(hash,2,false);
- let nf0=s.prevNf;
- for(let n=0;n<5;n++){s.apply('spend',fill(s));if(n===2)nf0=s.prevNf;}
+ let nf0=s.prevNfSet;
+ for(let n=0;n<5;n++){s.apply('spend',fill(s));if(n===2)nf0=s.prevNfSet;}
  s.apply('recover',[recoverSlot(s,0,dummyInput())]);
  return {s,nf0};
 };
 
 test('an epoch snapshot plus its archive file restores the state it was taken from',()=>{
  const {s,nf0}=grown(),dir=mkdtempSync(join(tmpdir(),'rollup-epoch-snapshot-')),bytes=encodeEpochSnapshot(s,pin),file=(e:number)=>epochNfArchivePath(dir,e);
- writeSnapshot(file(0),encodeEpochNfArchive(0,nf0));writeSnapshot(file(1),encodeEpochNfArchive(1,s.prevNf));
+ writeSnapshot(file(0),encodeEpochNfArchive(0,nf0));writeSnapshot(file(1),encodeEpochNfArchive(1,s.prevNfSet));
  const parts=decodeEpochSnapshot(bytes,hash,pin,6)!,restored=EpochState.restore(hash,{...parts,prevNf:readEpochNfArchive(file(1),hash,{epoch:1,root:parts.prevNfRoot})},false);
  assert.deepEqual([restored.commitment(),restored.epoch,restored.archive.count()],[s.commitment(),2,2]);
  assert.deepEqual(encodeEpochSnapshot(restored,pin),bytes);
  const next=[recoverSlot(s,0,dummyInput())];
  assert.throws(()=>restored.apply('recover',next),rejection('recover-unarchived'),'a restored archive holds no frozen set until its file is loaded');
- restored.archive.load(0,readEpochNfArchive(file(0),hash,{epoch:0,root:restored.archive.list()[1]!.nfFinal}));restored.archive.load(1,restored.prevNf);
+ restored.archive.load(0,readEpochNfArchive(file(0),hash,{epoch:0,root:restored.archive.list()[1]!.nfFinal}));restored.archive.load(1,restored.prevNfSet);
  assert.deepEqual(restored.apply('recover',next),s.apply('recover',next));
 });
 
 test('a snapshot from another pin, another version, or a damaged body is ignored, not half-read',()=>{
  const {s}=grown(),good=encodeEpochSnapshot(s,pin),flipped=Buffer.from(good);flipped[200]!^=1;
- const reencoded=(edit:(r:EpochState)=>void)=>{const r=EpochState.restore(hash,{...decodeEpochSnapshot(good,hash,pin,6)!,prevNf:s.prevNf},false);edit(r);return encodeEpochSnapshot(r,pin);};
+ const reencoded=(edit:(r:EpochState)=>void)=>{const r=EpochState.restore(hash,{...decodeEpochSnapshot(good,hash,pin,6)!,prevNf:s.prevNfSet},false);edit(r);return encodeEpochSnapshot(r,pin);};
  const cases:Record<string,[Buffer,StockReleasePin?]>={
   'another pin':[good,{...pin,genesisTxid:'ee'.repeat(32)}],'another version':[resealed(good,b=>{b.writeUInt16LE(EPOCH_SNAPSHOT_VERSION+1,4);})],'a flipped body byte':[flipped],truncated:[good.subarray(0,-1)],
   'an archive node off its children':[reencoded(r=>r.archive.tree.place(1,0,r.archive.tree.node(1,0)+1n))],
   'an archive record off its tree leaf':[reencoded(r=>{const list=r.archive.list();r.archive.list=()=>list.map((a,i)=>i===1?{...a,nfFinal:a.nfFinal+1n}:a);})],
   // Poseidon reduces mod p, so the largest value plus p keeps the list sorted and the root unchanged.
   'a hot nullifier past the field':[reencoded(r=>{const scan=r.nullifiers.scanLeaves.bind(r.nullifiers);r.nullifiers.scanLeaves=visit=>scan((value,next)=>visit(next===0&&value>0n?value+ROLLUP_FIELD:value,next));})],
+  // Its value hashes its children, so consistent() passes and only the level bound can refuse it.
+  'a node above its tree':[reencoded(r=>{const scan=r.window.scan.bind(r.window);r.window.scan=visit=>{scan(visit);visit(WINDOW_DEPTH+1,0,hash([r.window.root(),r.window.empty[WINDOW_DEPTH]]));};})],
  };
  assert.ok(decodeEpochSnapshot(reencoded(()=>{}),hash,pin,6));
  for(const [name,[bytes,p=pin]] of Object.entries(cases))assert.equal(decodeEpochSnapshot(bytes,hash,p,6),undefined,name);
@@ -188,4 +190,22 @@ test('after a restart a recovery loads its origin\'s archive files at admission,
  const c=await w.open(t);
  await assert.rejects(c.submit(recoverSpend(c.state,0)),(error:unknown)=>rejection('recover-unarchived')(error)&&(error as Error).message.includes(w.nf(0)));
  await land(c,fastSpend(c.state));
+});
+
+test('following a recovery with its record needs the origin\'s archive file, and the refusal names the chain-only follow',async t=>{
+ const w=await world(),op=await w.open(t),followerDir=mkdtempSync(join(tmpdir(),'rollup-epoch-follower-'));
+ for(let n=0;n<5;n++)await land(op,fastSpend(op.state));
+ const b=await w.open(t,followerDir);
+ for(let n=0;n<5;n++)await b.follow({...landedTx(w,n),at:1});
+ b.close();
+ await op.submit(recoverSpend(op.state,0));
+ const tick=await op.tick();
+ assert.ok(tick&&'txid' in tick,JSON.stringify(tick));
+ const follower=await w.open(t,followerDir);
+ rmSync(epochNfArchivePath(join(followerDir,'nullifiers'),0));
+ const unmoved=[follower.state.commitment(),follower.status().archive.batches];
+ await assert.rejects(follower.follow({...landedTx(w,5),slots:recordAt(w,5).slots,at:1}),(error:unknown)=>rejection('recover-unarchived')(error)&&/chain-only/.test((error as Error).message));
+ assert.deepEqual([follower.state.commitment(),follower.status().archive.batches],unmoved,'the refused follow advanced nothing');
+ assert.deepEqual(await follower.follow({...landedTx(w,5),at:1}),{batch:5,txid:landedTx(w,5).tx.id});
+ assert.equal(follower.state.commitment(),op.state.commitment());
 });

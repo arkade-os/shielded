@@ -102,7 +102,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  let snapshotAt=0,crossed:[number,RollupNullifiers][]=[];
  const replay=(s:EpochState)=>{
   crossed=[];
-  for(let n=s.batchCount;n<atOpen.batches;n++){const epoch=s.epoch;applyRecord(s,JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord);if(s.epoch>epoch)crossed.push([epoch,s.prevNf]);}
+  for(let n=s.batchCount;n<atOpen.batches;n++){const epoch=s.epoch;applyRecord(s,JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord);if(s.epoch>epoch)crossed.push([epoch,s.prevNfSet]);}
   return s;
  };
  /** A snapshot is used only with its previous epoch's set rebuilt from its archive file, and once the batches after it replay to the head's commitment. */
@@ -128,17 +128,17 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   try{
    const status=journal.status(),frozen=frozenPath(state.epoch-1);
    if(status.pending||state.batchCount!==status.archive.batches)return;
-   if(state.epoch>0&&!existsSync(frozen))writeSnapshot(frozen,encodeEpochNfArchive(state.epoch-1,state.prevNf));
+   if(state.epoch>0&&!existsSync(frozen))writeSnapshot(frozen,encodeEpochNfArchive(state.epoch-1,state.prevNfSet));
    if(state.batchCount-snapshotAt<every)return;
    writeSnapshot(snapshotPath,encodeEpochSnapshot(state,o.pin));snapshotAt=state.batchCount;
   }catch(error){console.warn(`[rollup] Could not write the epoch snapshot or its archive file: ${(error as Error).message}`);}
  };
  /** Loads an archived origin's two frozen sets; a file that is missing or does not rebuild its root refuses only the recovery that needs it. */
- const preload=(origin:number)=>{
+ const preload=(origin:number,hint='')=>{
   const record=state.archive.list().find(r=>r.epoch===origin);
   if(record)for(const [epoch,root] of [[origin,record.nfFinal],[origin+1,record.nfNextFinal]] as const)if(!state.archive.loaded(epoch)){
-   try{state.archive.load(epoch,epoch===state.epoch-1?state.prevNf:frozenSet(epoch,root));}
-   catch(error){throw new RollupRejection('recover-unarchived',`Recovering a note of epoch ${origin} needs ${frozenPath(epoch)}, which will not load: ${(error as Error).message}`);}
+   try{state.archive.load(epoch,epoch===state.epoch-1?state.prevNfSet:frozenSet(epoch,root));}
+   catch(error){throw new RollupRejection('recover-unarchived',`Recovering a note of epoch ${origin} needs ${frozenPath(epoch)}, which will not load${hint}: ${(error as Error).message}`);}
   }
  };
  const pending:Record<EpochBatchKind,RollupEpochSpend[]>={spend:[],join:[],recover:[]},padding:Record<EpochBatchKind,RollupEpochSpend[]>={spend:[],join:[],recover:[]};
@@ -156,7 +156,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  // The batch that rotates archives the epoch before last, and a recovery may ride that very batch.
  const archived=(origin:number)=>state.archive.has(origin)||(state.rotatesNext()&&origin===state.epoch-1);
  // After a rotation the previous epoch's set is the current one, so only the current set is checked across it.
- const spent=(nf:bigint,kind:EpochBatchKind)=>(kind==='recover'?state.recovered.has(nf):state.nullifiers.has(nf)||(!state.rotatesNext()&&state.prevNf.has(nf)))
+ const spent=(nf:bigint,kind:EpochBatchKind)=>(kind==='recover'?state.recovered.has(nf):state.nullifiers.has(nf)||(!state.rotatesNext()&&state.prevNfSet.has(nf)))
   ||[...queued(pending),...inflight,...queued(padding)].some(s=>s.slot.nullifiers.includes(nf));
  const unitsOf=(list:readonly RollupEpochSpend[],pick:(s:RollupEpochSpend)=>boolean)=>{
   const ids=new Set(list.filter(s=>pick(s)&&s.slot.groupId!==0n).map(s=>s.slot.groupId));
@@ -193,7 +193,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   if(kind==='recover'){
    const origin=spend.origin!,nf=nullifiers[0]!,riding=!state.archive.has(origin);
    // The rotating batch archives epoch-1 from live state: its final root is prevNoteRoot, its frozen sets prevNf and nullifiers.
-   if(riding&&(state.prevNf.has(nf)||state.nullifiers.has(nf)))throw new RollupRejection('double-spend','The note was already spent in its own epoch or the next.');
+   if(riding&&(state.prevNfSet.has(nf)||state.nullifiers.has(nf)))throw new RollupRejection('double-spend','The note was already spent in its own epoch or the next.');
    if(!riding)preload(origin);
    const noteFinal=riding?state.prevNoteRoot:state.archive.witness(origin,nf).archived.noteFinal;
    if(anchor!==anchorOf(o.hash,noteFinal,noteFinal))throw new RollupRejection('stale-anchor','The recovery does not open against the final note root of its origin epoch.');
@@ -315,7 +315,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   pendingIds:()=>[...queued(pending),...inflight].map(s=>s.id),
   padding:(kind?:EpochBatchKind)=>kind?padding[kind].length:queued(padding).length,
   status:()=>journal.status(),
-  /** Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`. */
+  /** Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`. With `slots` a recovery needs its origin's archive file, and without them (chain-only) it needs none. */
   follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<EpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
    try{
@@ -336,7 +336,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
      if(state.batchCount>archive.batches)state.undoLast();
      padding[inflightKind].unshift(...inflightPadding);pending[inflightKind].unshift(...inflight);inflight=[];inflightPadding=[];
     }
-    if(facts.kind==='recover')for(const s of slots??[])if(s.origin!==undefined)preload(s.origin);
+    if(facts.kind==='recover')for(const s of slots??[])if(s.origin!==undefined)preload(s.origin,' (restore it, or follow this batch chain-only, without slots)');
     const replica=state.clone();
     if(slots){
      const replay=replica.apply(facts.kind,slots.map(slotOf));

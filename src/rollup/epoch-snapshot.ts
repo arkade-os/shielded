@@ -44,7 +44,7 @@ export function decodeEpochSnapshot(bytes:Buffer,hash:Hash,pin:StockReleasePin,b
   const epochBatches=batchCount-epochLen*epoch;
   if(batchCount>batches||epoch!==(batchCount?Math.floor((batchCount-1)/epochLen):0)||noteCount!==2**SUBTREE_DEPTH*epochBatches)return undefined;
   const prevNoteRoot=field(),prevNfRoot=field();
-  const fill=(tree:DeepTree,end:number)=>{for(let n=u32();n>0;n--){const level=bytes.readUInt8(at++),index=u32();if(index*2**level>=end)throw new Error('A snapshot node lies past its frontier.');tree.place(level,index,field());}return tree;};
+  const fill=(tree:DeepTree,end:number)=>{for(let n=u32();n>0;n--){const level=bytes.readUInt8(at++),index=u32();if(level>tree.depth||index*2**level>=end)throw new Error('A snapshot node lies above its tree or past its frontier.');tree.place(level,index,field());}return tree;};
   // Genesis seeds the window ring at its last slot, so the whole ring is its frontier.
   const notes=fill(new DeepTree(hash,NOTE_DEPTH),noteCount),window=fill(new DeepTree(hash,WINDOW_DEPTH),2**WINDOW_DEPTH),tree=fill(new DeepTree(hash,ARCHIVE_DEPTH),erCount);
   const set=(depth:number,count:number)=>{const leaves=getLeaves(bytes,at,count);at+=36*count;return RollupNullifiers.fromLeaves(hash,depth,leaves);};

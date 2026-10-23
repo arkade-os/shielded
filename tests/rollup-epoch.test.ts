@@ -149,11 +149,23 @@ test('a restored state reaches the same commitment as the one it was taken from'
  state.apply('recover', slotsFor(state, 'recover'));
  const restored = EpochState.restore(hash, {
   epoch: state.epoch, epochLen: state.epochLen, notes: state.notes.clone(), nullifiers: state.nullifiers.clone(), window: state.window.clone(), archive: state.archive.clone(),
-  recovered: state.recovered.clone(), prevNf: state['prevNf'].clone(), prevNoteRoot: state.prevNoteRoot, noteCount: state.noteCount, batchCount: state.batchCount,
+  recovered: state.recovered.clone(), prevNf: state.prevNfSet.clone(), prevNoteRoot: state.prevNoteRoot, noteCount: state.noteCount, batchCount: state.batchCount,
  });
  assert.equal(restored.commitment(), state.commitment());
  for (const kind of ['spend', 'recover'] as const) { const slots = slotsFor(state, kind); assert.deepEqual(restored.apply(kind, slots), state.apply(kind, slots)); }
  assert.equal(state.epoch, 3);
+});
+
+test('the previous epoch\'s set is read through prevNfSet, and undoLast puts back that very set', () => {
+ const state = EpochState.genesis(hash, 2);
+ for (let i = 0; i < 2; i++) state.apply('spend', fill(state));
+ const frozen = state.prevNfSet;
+ state.apply('spend', fill(state));
+ assert.notEqual(state.prevNfSet, frozen);
+ state.undoLast();
+ assert.equal(state.prevNfSet, frozen);
+ // @ts-expect-error prevNf is private: reassigned between begin() and undoLast() it would escape the undo
+ const _reassign = () => { state.prevNf = frozen; };
 });
 
 test('rotation fires on every positive multiple of EPOCH_LEN and never otherwise', () => {

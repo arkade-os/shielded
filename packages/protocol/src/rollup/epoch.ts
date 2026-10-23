@@ -27,7 +27,7 @@ export class EpochState {
  prevNoteRoot: bigint;
  noteCount = 0;
  batchCount = 0;
- prevNf: RollupNullifiers;
+ private prevNf: RollupNullifiers;
  private undo?: () => void;
  private constructor(private readonly hash: Hash, readonly epochLen: number, private readonly leaves: boolean) {
   this.notes = new DeepTree(hash, NOTE_DEPTH);
@@ -50,6 +50,8 @@ export class EpochState {
   state.recovered = s.recovered; state.prevNf = s.prevNf; state.prevNoteRoot = s.prevNoteRoot; state.noteCount = s.noteCount; state.batchCount = s.batchCount;
   return state;
  }
+ /** Private behind this getter so no caller can reassign it between begin() and the undo that puts the captured set back. */
+ get prevNfSet(): RollupNullifiers { return this.prevNf; }
  get prevNfRoot(): bigint { return this.prevNf.root(); }
  private get archiveFull(): boolean { return this.archive.count() >= 2 ** ARCHIVE_DEPTH; }
  clone(): EpochState {
@@ -83,7 +85,7 @@ export class EpochState {
   if (slots.some(slot => slot.nullifiers.length !== m)) throw new RollupRejection('slot-shape', `A ${kind} slot spends ${m} note(s).`);
   validateGroups(this.hash, slots);
   const inField = (v: bigint) => v >= 0n && v < ROLLUP_FIELD;
-  if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur?.root ?? 0n) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments.');
+  if (slots.some(slot => slot.commitments.length !== 2 || !slot.commitments.every(inField) || !inField(slot.anchor) || !inField(slot.rCur?.root ?? 0n) || !inField(slot.ctDigest))) throw new RollupRejection('slot-shape', 'A slot has two field-element commitments, and its anchor, window root and ciphertext digest are field elements.');
   const oldCommitment = this.commitment(), pubs: bigint[] = [], { nullifiers, prevNoteRoot, epoch, noteCount, batchCount } = this;
   const windowSlot = batchCount % 2 ** WINDOW_DEPTH, epochR = batchCount % this.epochLen;
   const before = {
