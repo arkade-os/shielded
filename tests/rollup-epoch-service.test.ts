@@ -4,7 +4,7 @@ import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {basename,join} from 'node:path';
-import {after,test} from 'node:test';
+import {after,test,type TestContext} from 'node:test';
 import express from 'express';
 import {ArkAddress,asset,CSVMultisigTapscript,scriptFromTapLeafScript,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {secp256k1} from '@noble/curves/secp256k1.js';
@@ -12,17 +12,19 @@ import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {buildRollupTransfer,randomField} from '../packages/protocol/src/rollup/account.ts';
-import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import {decodeEpochScan} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
+import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,type RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../src/rollup/http.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import type {RollupArchive,RollupTransport} from '../src/rollup/operator.ts';
+import type {RollupArchive,RollupRecord,RollupTransport} from '../src/rollup/operator.ts';
 import {openRollupService,rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupPoolKind,type RollupService} from '../src/rollup/service.ts';
 import {encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
@@ -109,11 +111,18 @@ async function ready(net:Offline,directory:string,keys:string,epochLen?:string){
 const until=async(what:string,done:()=>boolean,net:Offline)=>{for(let i=0;i<600&&!done();i++)await new Promise(r=>setTimeout(r,100));assert.ok(done(),`${what}; log: ${net.logs.slice(-5).join(' | ')}`);};
 const epochSpend=(w:{slot:unknown;publicSignals:bigint[]},origin?:number)=>({id:hex.encode(randomBytes(16)),slot:w.slot,publics:w.publicSignals,proof,...(origin!==undefined?{origin}:{})}) as never;
 const batchesOf=(service:RollupService,from:number,limit:number)=>service.batches(from,limit).batches as unknown as RollupEpochRecord[];
+type ScanPage={from:number;total:number;data:string};
+/** The rollup router over `service` on a loopback port, as a wallet reaches it; closed with `t`. */
+async function listen(t:TestContext,service:RollupService){
+ const app=express();app.use('/api/rollup',createRollupRouter(()=>service));
+ const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));t.after(()=>new Promise(r=>server.close(r)));
+ return (path:string)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`);
+}
 type Stored={id:string;slot:{nullifiers:bigint[]}};
 /** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would. */
 const pendingOnDisk=(directory:string,...spends:Stored[])=>{const store=openSpendStore(join(directory,'spends'));for(const s of spends)store.save({id:s.id,status:'pending',nullifier:String(s.slot.nullifiers[0]),at:Date.now(),spend:encodeSpend(s as never)});};
 
-test('an epoch service opens an epoch pool, rotates, and lands a recover batch that reads included after a restart',async()=>{
+test('an epoch service opens an epoch pool, rotates, and lands a recover batch that reads included after a restart',async t=>{
  const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-service-');
  const first=await ready(net,directory,keys,'64'),saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8'));
  const leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(directory,'spec.json')),pool=rollupEpochPoolTree(hex.decode(serverKey),hex.decode(emulatorKey),leaves,exitDelay);
@@ -158,12 +167,35 @@ test('an epoch service opens an epoch pool, rotates, and lands a recover batch t
  assert.equal(service.status().pool!.root,String(mirror.latestRoot()));
  assert.notEqual(service.status().pool!.root,opened);
  assert.deepEqual(service.spend((recover as {id:string}).id),{status:'included',batch:65,txid:recoverTx.id});
- assert.deepEqual([service.checkpoint(64),service.scan(0,66)],[undefined,undefined],'past a rotation, a global checkpoint or scan would be wrong');
+ assert.equal(service.checkpoint(64),undefined,'past a rotation, a global checkpoint would be wrong');
+ const request=await listen(t,service);
+ await t.test('an epoch pool serves /scan, and its page decodes to the batches it served',async()=>{
+  const answer=await request('/api/rollup/scan?from=0'),page=await answer.json() as ScanPage;
+  assert.deepEqual([answer.status,answer.headers.get('cache-control'),page.from,page.total],[200,'no-store',0,66]);
+  const entries=decodeEpochScan(base64.decode(page.data),0,64),served=batchesOf(service,0,66);
+  assert.deepEqual(entries.map(e=>[e.batch,e.epoch,e.blockInEpoch,e.rotated]),served.map((_,n)=>[n,n<64?0:1,n%64,n===64]));
+  assert.deepEqual(entries.map(e=>[e.kind,e.txid,e.at,e.root]),served.map(r=>[r.kind,r.txid,r.at,BigInt(r.noteBlockRoot)]));
+  assert.deepEqual(entries.map(e=>e.slots.map(s=>s.nullifiers)),served.map(r=>r.slots.map(s=>s.nullifiers.map(nf=>nullifierHint(BigInt(nf))))));
+  assert.deepEqual(entries.slice(64).map(e=>[e.kind,e.slots.length]),[['spend',BATCH_SLOTS],['recover',1]]);
+  const tail=await (await request('/api/rollup/scan?from=64&limit=2')).json() as ScanPage;
+  assert.deepEqual([tail.from,tail.total,decodeEpochScan(base64.decode(tail.data),tail.from,64)],[64,66,entries.slice(64)]);
+ });
+ await t.test('a recorded block root that the live note tree does not hold is refused, not served',()=>{
+  const path=join(directory,'operator','batches','65.json'),original=readFileSync(path,'utf8'),record=JSON.parse(original) as RollupEpochRecord;
+  writeFileSync(path,JSON.stringify({...record,noteBlockRoot:String(BigInt(record.noteBlockRoot)+1n)}));
+  try{
+   assert.throws(()=>service.scan(64,2),/live note tree/);
+   assert.equal(service.scan(0,64).total,66,'a closed epoch has no live tree to differ from');
+  }finally{writeFileSync(path,original);}
+  assert.equal(service.scan(64,2).total,66);
+ });
+ const beforeRestart=service.scan(0,66);
  service.close();
  // Restore skips a record with no spend body, which leaves it to the sweep.
  pendingOnDisk(directory,recover);
  openSpendStore(join(directory,'spends')).save({id:'swept',status:'pending',nullifier:String((recover as Stored).slot.nullifiers[0]),at:Date.now()});
  const reopened=await ready(net,directory,keys);
+ assert.deepEqual(reopened.scan(0,66),beforeRestart,'a replayed state passes the live-tree check and serves the same page');
  assert.deepEqual(reopened.spend((recover as Stored).id),{status:'included'},'restore reads the recovered set');
  await until('the sweep settles the record restore skipped',()=>reopened.spend('swept')?.status!=='pending',net);
  assert.deepEqual(reopened.spend('swept'),{status:'included'},'so does the sweep');
@@ -180,7 +212,7 @@ test('on restart an epoch pool keeps an included spend included and drops a wait
  assert.deepEqual([service.spend(landed.id),service.spend(waiting.id)],[{status:'included'},{status:'dropped',reason:'An epoch pool does not re-admit pending spends after a restart; build the spend again.'}]);
 });
 
-test('a classic service is byte-identical to today',async()=>{
+test('a classic service is byte-identical to today',async t=>{
  const net=offline(),keys=keySet('classic'),directory=scratch('rollup-classic-service-');
  const service=await ready(net,directory,keys,undefined),status=service.status(),pool=status.pool!;
  assert.deepEqual([Object.keys(status).sort(),Object.keys(pool).sort()],[STATUS_KEYS,POOL_KEYS]);
@@ -201,6 +233,15 @@ test('a classic service is byte-identical to today',async()=>{
  assert.deepEqual(Object.keys(service.status().pool!).sort(),[...POOL_KEYS,'lastBatch'].sort());
  assert.notEqual(service.status().pool!.root,pool.root);
  assert.ok(net.proved.includes('batch-spend')&&net.proved.includes('spend'));
+ await t.test('a classic pool /scan is byte-identical to today',async()=>{
+  const record=service.batches(0,1).batches[0] as RollupRecord,commitments=record.slots.flatMap(s=>s.commitments.map(BigInt));
+  let level=Array.from({length:2**SUBTREE_DEPTH},(_,i)=>commitments[i]??0n);
+  while(level.length>1)level=Array.from({length:level.length/2},(_,i)=>hash([level[2*i]!,level[2*i+1]!]));
+  const page=await (await (await listen(t,service))('/api/rollup/scan?from=0')).json() as ScanPage;
+  assert.deepEqual(page,{from:0,total:1,data:base64.encode(encodeScan([{record,root:level[0]!}]))});
+  assert.deepEqual(decodeScan(base64.decode(page.data),0).map(b=>[b.kind,b.root,b.slots.length]),[['spend',level[0]!,BATCH_SLOTS]]);
+  assert.equal(base64.decode(page.data).length,453);
+ });
  service.close();
  // The journal reopens under the harness-pinned classic builder, and refuses the epoch one.
  const pinned={leaves,manifest:readFileSync(join(directory,'keys','manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey,emulatorKey};
@@ -209,14 +250,9 @@ test('a classic service is byte-identical to today',async()=>{
  await assert.rejects(openStockJournal(join(directory,'operator','journal'),rollupEpochPin({...pinned,leaves:{...leaves,batchRecover:leaves.batch}}),saved.archive,hooks).then(j=>j.close()),/changed/);
 });
 
-test('the epoch pool refuses /scan and /checkpoints rather than serving a wrong frontier',async t=>{
- const net=offline(),service=await ready(net,scratch('rollup-epoch-http-'),keySet('epoch'),'64');
- const app=express();app.use('/api/rollup',createRollupRouter(()=>service));
- const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));t.after(()=>new Promise(r=>server.close(r)));
- const request=(path:string)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`);
- const scan=await request('/api/rollup/scan?from=0');
- assert.equal(scan.status,501);
- assert.match((await scan.json()).error,/Plan 4b/);
+test('the epoch pool serves an empty /scan, and still refuses /checkpoints rather than serving a wrong frontier',async t=>{
+ const net=offline(),service=await ready(net,scratch('rollup-epoch-http-'),keySet('epoch'),'64'),request=await listen(t,service);
+ assert.deepEqual(await (await request('/api/rollup/scan?from=0')).json(),{from:0,total:0,data:''});
  assert.equal((await request('/api/rollup/checkpoints/64')).status,404);
  assert.deepEqual(await (await request('/api/rollup/times')).json(),{every:CHECKPOINT_EVERY,at:[]});
  assert.deepEqual(await (await request('/api/rollup/batches')).json(),{from:0,total:0,batches:[]});

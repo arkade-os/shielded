@@ -112,12 +112,13 @@ test('checkpoints are served only for the batch counts the operator vouches for'
  assert.deepEqual(asked,[128,192],'a malformed number never reaches the operator');
 });
 
-test('a scan the pool cannot encode is refused with 501, never answered as an empty scan',async(t)=>{
- const api=await serve({ready:()=>true,scan:()=>undefined});t.after(api.close);
- const refused=await fetch(api.base+'/scan?from=0');
- assert.equal(refused.status,501);
- assert.equal(refused.headers.get('cache-control'),'no-store');
- assert.match((await refused.json()).error,/Plan 4b/);
+test('a scan is asked for a global batch range of at most 500, and a malformed range never reaches the service',async(t)=>{
+ const asked:[number,number][]=[];
+ const api=await serve({ready:()=>true,scan:(from:number,limit:number)=>{asked.push([from,limit]);return {from,total:0,data:''};}});t.after(api.close);
+ for(const query of ['from=-1','from=1.5','from=x','limit=0','limit=-3','limit=x'])assert.equal((await fetch(api.base+'/scan?'+query)).status,400,query);
+ assert.equal((await fetch(api.base+'/scan?from=64&limit=9999')).status,200);
+ assert.equal((await fetch(api.base+'/scan?from=3&limit=7')).status,200);
+ assert.deepEqual(asked,[[64,500],[3,7]]);
 });
 
 test('a classic pool\'s scan is answered 200, uncached, with the service\'s scan verbatim',async(t)=>{

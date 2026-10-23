@@ -12,6 +12,7 @@ import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH,type BatchKind}
 import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {EpochState} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
+import {encodeEpochScan,rotatesAt} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import {checkpointOf} from '../../packages/protocol/src/rollup/frontier.ts';
 import {encodeScan} from '../../packages/protocol/src/rollup/scan.ts';
 import {RollupState} from '../../packages/protocol/src/rollup/state.ts';
@@ -25,7 +26,7 @@ import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
-import {openRollupEpochOperator,type RollupEpochOperator} from './epoch-operator.ts';
+import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord} from './epoch-operator.ts';
 import {loadRollupEpochLeaves,loadRollupLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupPoolCoin,type RollupRecord,type RollupTimings,type RollupTransport} from './operator.ts';
 import {createRollupProver,type CircuitArtifacts,type RollupProver,type verifyRollupProof} from './prover.ts';
@@ -449,12 +450,20 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));
    return {from,total,batches:list};
   },
-  /** A restore's compact view of committed batches; the block roots come off the operator's note tree. */
+  /** A restore's compact view of committed batches; a classic pool's block roots come off the operator's note tree. */
   scan:(from:number,limit:number)=>{
    const operator=live?.operator;
    if(!operator)return {from,total:0,data:''};
-   // encodeScan needs BATCH_SLOTS slots a batch, so a one-slot recover batch has no encoding, and skipping it would desync a wallet.
-   if(operator.state instanceof EpochState)return undefined;
+   if(operator.state instanceof EpochState){
+    const state=operator.state,total=operator.status().archive.batches,entries=[];
+    for(let n=from;n<Math.min(total,from+limit);n++){
+     const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${n}.json`)),root=BigInt(record.noteBlockRoot),epoch=Math.floor(n/state.epochLen);
+     // The live tree holds only the current epoch, so a closed epoch's root is the record's alone.
+     if(epoch===state.epoch&&root!==state.notes.node(SUBTREE_DEPTH,n-epoch*state.epochLen))throw new Error(`Batch ${n}'s recorded block root is not the one the live note tree holds.`);
+     entries.push({record,root,rotated:rotatesAt(n,state.epochLen)});
+    }
+    return {from,total,data:base64.encode(encodeEpochScan(entries))};
+   }
    const total=operator.status().archive.batches,to=Math.min(total,from+limit),entries=[];
    for(let n=from;n<to;n++)entries.push({record:readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)),root:operator.state.notes.node(SUBTREE_DEPTH,n)});
    return {from,total,data:base64.encode(encodeScan(entries))};
