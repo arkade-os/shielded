@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {basename,join} from 'node:path';
 import {after} from 'node:test';
 import express from 'express';
 import {ArkAddress,asset,CSVMultisigTapscript,Transaction,UnknownPacket} from '@arkade-os/sdk';
@@ -20,10 +20,10 @@ import {offlineNativeFixture} from './native.ts';
 const poseidon=await buildPoseidon();
 export const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
 export const sha=(data:string|Uint8Array)=>createHash('sha256').update(data).digest('hex');
-const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
-const token=asset.AssetId.create('cc'.repeat(32),0).toString();
+export const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
+export const token=asset.AssetId.create('cc'.repeat(32),0).toString();
 const [serverPub,emulatorPub]=['01','02'].map(b=>secp256k1.getPublicKey(hex.decode(b.repeat(32)),true));
-export const serverKey=hex.encode(serverPub!.subarray(1)),emulatorKey=hex.encode(emulatorPub!.subarray(1));
+export const serverKey=hex.encode(serverPub!.subarray(1)),emulatorKey=hex.encode(emulatorPub!.subarray(1)),exitDelay={type:'seconds' as const,value:2048};
 export const checkpoint=CSVMultisigTapscript.encode({pubkeys:[serverPub!.subarray(1)],timelock:{type:'seconds',value:4096n}});
 export const proof:SnarkProof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
 
@@ -44,8 +44,8 @@ after(async()=>{
  for(const dir of scratches)rmSync(dir,{recursive:true,force:true,maxRetries:10});
  if(failed.length)throw failed[0];
 });
-const scratch=(prefix:string)=>{const dir=mkdtempSync(join(tmpdir(),prefix));scratches.push(dir);return dir;};
-const keySet=(kind:RollupPoolKind)=>{
+export const scratch=(prefix:string)=>{const dir=mkdtempSync(join(tmpdir(),prefix));scratches.push(dir);return dir;};
+export const keySet=(kind:RollupPoolKind)=>{
  const dir=scratch('rollup-service-keys-'),files:Record<string,string>={};
  for(const name of rollupKeyFilesOf(kind).filter(n=>n!=='manifest.json')){
   const body=name.endsWith('.vkey.json')?JSON.stringify(vkeys[name.slice(0,-10)]):name;
@@ -57,8 +57,8 @@ const keySet=(kind:RollupPoolKind)=>{
 const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fromString(token),null,[asset.AssetInput.create(0,1n)],[asset.AssetOutput.create(0,1n)],[])]);
 
 /** The Arkade Service, indexer and operator wallet in memory; every batch it is sent lands, since stub proofs cannot pass the covenant. */
-function offline(){
- const txs=new Map<string,Transaction>(),sent:{payload:Uint8Array;script:string}[]=[],logs:string[]=[];
+export function offline(){
+ const txs=new Map<string,Transaction>(),landed:Transaction[]=[],sent:{payload:Uint8Array;script:string}[]=[],proved:string[]=[],logs:string[]=[];
  const coins:{txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[];isSpent:boolean;expiresAt:Date}[]=[];
  const head=(tx:Transaction)=>{
   for(const c of coins)c.isSpent||=c.txid===hex.encode(tx.getInput(0).txid!)&&c.vout===tx.getInput(0).index;
@@ -70,7 +70,7 @@ function offline(){
  const transport:RollupTransport={
   submit:async request=>{
    if(gate){const {held,waiting}=gate;gate=undefined;held.reached=true;await waiting;}
-   const tx=Transaction.fromPSBT(base64.decode(request.arkTx));head(tx);
+   const tx=Transaction.fromPSBT(base64.decode(request.arkTx));landed.push(tx);head(tx);
    return {txid:tx.id,checkpointTxids:request.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)).id),signedArkTx:request.arkTx,signedCheckpointTxs:request.checkpoints,weights:{ark:0,checkpoints:[]},network:'mutinynet',finality:'operator-preconfirmed'};
   },
   lookup:async()=>undefined,verify:()=>{},unspent:async()=>true,spentBy:async()=>undefined,
@@ -89,16 +89,17 @@ function offline(){
   getVirtualTxs:async(ids:string[])=>({txs:ids.flatMap(id=>txs.has(id)?[base64.encode(txs.get(id)!.toPSBT())]:[])}),
  };
  const providers={wallet:async()=>wallet as never,info:async()=>({checkpointTapscript:hex.encode(checkpoint.script),forfeitPubkey:hex.encode(serverPub!)}),indexer:indexer as never,transport:transport as never,
-  prover:()=>({prove:async()=>proof}),verify:async()=>true};
+  prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));return proof;}}),verify:async()=>true};
  const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:hex.encode(serverPub!),maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:hex.encode(emulatorPub!),version:'test'}};
  const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
  const open=(directory:string,keys:string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
   endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers});
- return {logs,open,hold,newHead};
+ return {transport,landed,sent,proved,logs,open,hold,newHead};
 }
-type Offline=ReturnType<typeof offline>;
+export type Offline=ReturnType<typeof offline>;
 
-async function ready(net:Offline,directory:string,keys:string,epochLen?:string){
+/** One step of a service on `directory`, which must reach `ready`; closed with the file's other closers. */
+export async function ready(net:Offline,directory:string,keys:string,epochLen?:string){
  if(epochLen)process.env.SHIELDED_ROLLUP_EPOCH_LEN=epochLen;
  try{const service=await net.open(directory,keys);closers.push(()=>service.close());await service.step();assert.equal(service.status().phase,'ready',service.status().message);return service;}
  finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
