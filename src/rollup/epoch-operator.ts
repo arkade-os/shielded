@@ -65,6 +65,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const frozenDir=join(o.directory,'nullifiers');mkdirSync(frozenDir,{recursive:true});
  const frozenPath=(epoch:number)=>epochNfArchivePath(frozenDir,epoch);
  let state=EpochState.genesis(o.hash,o.epochLen,false);
+ // What /status may advertise: run() applies a batch to `state` before the network accepts it, so only the capture points below move this.
+ const acceptedOf=(s:EpochState)=>({acceptedRoot:s.latestRoot(),acceptedPrevNoteRoot:s.prevNoteRoot,acceptedEpoch:s.epoch,acceptedErCount:s.archive.count(),acceptedRsCount:s.recovered.count(),acceptedNullifiers:s.nullifiers.count()});
+ let accepted=acceptedOf(state);
  const applyRecord=(s:EpochState,r:RollupEpochRecord)=>s.applyFromChain(r.kind,r.slots.map(sl=>sl.nullifiers.map(BigInt)),BigInt(r.noteBlockRoot));
  const poolCoin=(c:RollupPoolCoin,leaf:Uint8Array):RollupCoin=>({txid:c.txid,vout:c.vout,value:c.value,sourceTx:hex.decode(c.sourceTxHex),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(leaf))});
  const headOf=(plan:RollupEpochPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
@@ -90,6 +93,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   apply:(archive,plan,receipt)=>{
    writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));
    if(state.batchCount===archive.batches)applyRecord(state,plan.record);
+   accepted=acceptedOf(state);
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
    const reserves=plan.asset?{...archive.reserves,[plan.asset]:{...coin(1),amount:plan.reserveAmount!}}:archive.reserves;
    return {...archive,head:coin(0),reserves,batches:archive.batches+1};
@@ -121,6 +125,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   state=resumed()??replay(state);
   if(committed!==undefined&&state.commitment()!==committed)throw new Error(`Replaying ${atOpen.batches} batches gives commitment ${state.commitment()}, but the pool head commits to ${committed}; a batch record is wrong, so the pool does not open.`);
  }catch(error){journal.close();throw error;}
+ accepted=acceptedOf(state);
  // Rewritten from the replayed state, which also heals a file lost between its batch's acceptance and its write.
  try{for(const [epoch,set] of crossed)writeSnapshot(frozenPath(epoch),encodeEpochNfArchive(epoch,set));}catch(error){console.warn(`[rollup] Could not write a nullifier archive: ${(error as Error).message}`);}
  // Only accepted state is written: run() applies a batch long before the journal holds it, and undoLast() may still take it back.
@@ -314,7 +319,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   pending:()=>queued(pending).length,
   pendingIds:()=>[...queued(pending),...inflight].map(s=>s.id),
   padding:(kind?:EpochBatchKind)=>kind?padding[kind].length:queued(padding).length,
-  status:()=>journal.status(),
+  status:()=>({...journal.status(),...accepted}),
   /** Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`. With `slots` a recovery needs its origin's archive file, and without them (chain-only) it needs none. */
   follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<EpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
@@ -351,6 +356,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     state.applyFromChain(facts.kind,facts.nullifiers,facts.noteBlockRoot);
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
+    accepted=acceptedOf(state);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
     return {batch:archive.batches-1,txid:tx.id};
    }finally{busy=false;}
@@ -391,3 +397,4 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  };
 }
 export type RollupEpochOperator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
+export type RollupEpochStatus=ReturnType<RollupEpochOperator['status']>;

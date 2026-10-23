@@ -23,12 +23,10 @@ import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupP
 import {encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
-import {checkpoint,emulatorKey,exitDelay,hash,keySet,le32,listen,offline,proof,ready,scratch,serverKey,sha,token,until} from './fixtures/epoch-service.ts';
+import {checkpoint,emulatorKey,EPOCH_POOL_KEYS,exitDelay,hash,keySet,le32,listen,offline,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 import './rollup-genesis3-contract.test.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
-const POOL_KEYS=['address','batches','head','maxReserves','operator','padding','pending','reserves','root','script','token'];
-const STATUS_KEYS=['fundingAddress','fundingSats','message','minimumFundingSats','network','phase','pool','proving','version'];
 // rollupEpochPin with the inputs below, as of its introduction: once a genesis-4 pool is live, a move orphans its journal.
 const EPOCH_PIN_FINGERPRINT='93a57a93d9a0f81b50838b1cbbdc3d66acbfaab916adca6e07c45a92f221458e';
 
@@ -148,6 +146,7 @@ test('a classic service is byte-identical to today',async t=>{
  await service.submit({id:hex.encode(randomBytes(16)),slot:built.witness.slot,publics:built.witness.publicSignals as never,proof,ciphertext:built.ciphertext});
  await until('a classic batch lands',()=>service.status().pool!.batches===1,net);
  assert.deepEqual(Object.keys(service.status().pool!).sort(),[...POOL_KEYS,'lastBatch'].sort());
+ assert.deepEqual(Object.keys(service.status().pool!.lastBatch!).sort(),['at','batch','proveMs','publishMs','waitedMs']);
  assert.notEqual(service.status().pool!.root,pool.root);
  assert.ok(net.proved.includes('batch-spend')&&net.proved.includes('spend'));
  await t.test('a classic pool /scan is byte-identical to today',async()=>{
@@ -174,7 +173,7 @@ test('the epoch pool serves an empty /scan, and still refuses /checkpoints rathe
  assert.deepEqual(await (await request('/api/rollup/times')).json(),{every:CHECKPOINT_EVERY,at:[]});
  assert.deepEqual(await (await request('/api/rollup/batches')).json(),{from:0,total:0,batches:[]});
  const status=await (await request('/api/rollup/status')).json();
- assert.deepEqual([Object.keys(status).sort(),Object.keys(status.pool).sort()],[STATUS_KEYS,POOL_KEYS],'the same keys as a classic pool');
+ assert.deepEqual([Object.keys(status).sort(),Object.keys(status.pool).sort()],[STATUS_KEYS,[...POOL_KEYS,...EPOCH_POOL_KEYS].sort()],'a classic pool\'s keys, and the epoch fields beside them');
  assert.equal(status.pool.root,String(EpochState.genesis(hash,64).latestRoot()));
 });
 
@@ -207,7 +206,7 @@ test('an epoch genesis writes version 2 and reads back as epoch; a classic one k
 
 test('each epoch proving name serves its own circuit',()=>{
  const files=Object.fromEntries(rollupKeyFilesOf('epoch').map(n=>[n,sha(n)])),pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
- assert.deepEqual(rollupProvingOf('epoch',files),{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join')});
+ assert.deepEqual(rollupProvingOf('epoch',files),{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join'),batchRecover:pair('epoch-batch-recover')});
 });
 
 test('the epoch journal pin is its own, and never the classic one',()=>{

@@ -26,7 +26,7 @@ import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
-import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord} from './epoch-operator.ts';
+import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord,type RollupEpochStatus} from './epoch-operator.ts';
 import {loadRollupEpochLeaves,loadRollupLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupPoolCoin,type RollupRecord,type RollupTimings,type RollupTransport} from './operator.ts';
 import {createRollupProver,type CircuitArtifacts,type RollupProver,type verifyRollupProof} from './prover.ts';
@@ -50,12 +50,13 @@ const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
 
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
-export type RollupStatusBatch={batch:number;at:number}&RollupTimings;
+export type RollupStatusBatch={batch:number;at:number;rotated?:boolean}&RollupTimings;
 export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
- pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;lastBatch?:RollupStatusBatch;reserves:Record<string,string>;maxReserves:number};
+ pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;lastBatch?:RollupStatusBatch;reserves:Record<string,string>;maxReserves:number;
+  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number};
  network?:StockNetworkInfo;
- proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>;
+ proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};
 }
 export interface RollupSpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 interface Genesis {version:1|2;token:string;txid:string;archive:RollupArchive;serverKey:string;emulatorKey:string;epochLen?:number}
@@ -114,12 +115,14 @@ export const rollupGenesisOf=(o:{token:string;head:RollupPoolCoin;serverKey:stri
 export const rollupSpecOf=(kind:RollupPoolKind,token:string,operator:string):RollupLeavesSpec=>kind==='classic'
  ?{clientKey:'keys/spend.vkey.json',batchKey:'keys/batch-spend.vkey.json',clientJoinKey:'keys/join.vkey.json',batchJoinKey:'keys/batch-join.vkey.json',slots:BATCH_SLOTS,token,operator}
  :{clientKey:'keys/epoch-spend.vkey.json',batchKey:'keys/epoch-batch-spend.vkey.json',clientJoinKey:'keys/epoch-join.vkey.json',batchJoinKey:'keys/epoch-batch-join.vkey.json',batchRecoverKey:'keys/epoch-batch-recover.vkey.json',slots:BATCH_SLOTS,token,operator,epoch:true};
-/** An epoch pool keeps the four names; its recover key is served but not advertised until Plan 4b. */
+/** An epoch pool also advertises its recover batch key, the one a fallback proves with; a classic pool has none. */
 export function rollupProvingOf(kind:RollupPoolKind,files:Record<string,string>):NonNullable<RollupStatus['proving']> {
  const pair=(c:string)=>({wasm:files[`${c}.wasm`]!,zkey:files[`${c}.zkey`]!});
  return kind==='classic'?{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')}
-  :{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join')};
+  :{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join'),batchRecover:pair('epoch-batch-recover')};
 }
+/** An epoch pool's own /status fields, all as of the last accepted batch. */
+const epochFieldsOf=(epochLen:number,batches:number,a:RollupEpochStatus)=>({epoch:a.acceptedEpoch,epochLen,batchesInEpoch:batches-a.acceptedEpoch*epochLen,prevNoteRoot:String(a.acceptedPrevNoteRoot),erCount:a.acceptedErCount,rsCount:a.acceptedRsCount,nullifiers:a.acceptedNullifiers,heapBytes:process.memoryUsage().heapUsed});
 /** The persisted genesis decides; SHIELDED_ROLLUP_EPOCH_LEN only shapes a pool that has no genesis yet. */
 export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};epochLenEnv?:string}):{kind:RollupPoolKind;epochLen?:number} {
  const epoch=(epochLen:unknown)=>{
@@ -329,7 +332,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    running=true;again=false;
    try{
     if(!paused){
-     try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`+(r.timings?` (waited ${r.timings.waitedMs} ms, proved in ${r.timings.proveMs} ms, published in ${r.timings.publishMs} ms)`:''));if(r.timings)lastBatch={batch:r.batch,at:Date.now(),...r.timings};included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
+     try{ticking=operator.tick();const r=await ticking as Awaited<ReturnType<RollupOperator['tick']>>;if(r&&'txid' in r){log(`batch ${r.batch} ${r.txid}`+(r.timings?` (waited ${r.timings.waitedMs} ms, proved in ${r.timings.proveMs} ms, published in ${r.timings.publishMs} ms)`:''));if(r.timings)lastBatch={batch:r.batch,at:Date.now(),...r.timings,...(operator.state instanceof EpochState?{rotated:rotatesAt(r.batch,operator.state.epochLen)}:{})};included(r.batch,r.txid);blocked=undefined;}else if(r){note(r.blocked);blocked={message:r.blocked,since:blocked?.since??Date.now()};}else blocked=undefined;}
      catch(error){note((error as Error).message);blocked={message:(error as Error).message,since:blocked?.since??Date.now()};}
      finally{ticking=undefined;}
      sweep();
@@ -420,10 +423,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  return {
   status:():RollupStatus=>{
    if(!live)return status;
-   const {operator,genesis,address,network,pool}=live,{archive}=operator.status(),{state}=operator;
-   // EpochState has no window-indexed rootAfter; Plan 4b adds the epoch fields.
-   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(state instanceof EpochState?state.latestRoot():state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
-    reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES}};
+   const {operator,genesis,address,network,pool}=live,view=operator.status(),{archive}=view,{state}=operator;
+   // EpochState has no rootAfter (its window holds hashes), so an epoch pool reports what its operator remembers as accepted.
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(state instanceof EpochState?(view as RollupEpochStatus).acceptedRoot:state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
+    reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES,
+    ...(state instanceof EpochState?epochFieldsOf(state.epochLen,archive.batches,view as RollupEpochStatus):{})}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
   step:async()=>{

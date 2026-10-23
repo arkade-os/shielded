@@ -18,6 +18,7 @@ export class EpochArchive {
  count(): number { return this.records.size; }
  root(): bigint { return this.tree.root(); }
  has(epoch: number): boolean { return this.records.has(epoch); }
+ record(epoch: number): ArchivedEpoch | undefined { return this.records.get(epoch); }
  leafOf(epoch: number, noteFinal: bigint, nfFinal: bigint, nfNextFinal: bigint): bigint {
   return this.hash([ER_TAG, BigInt(erLeafIndexOf(epoch)), noteFinal, nfFinal, nfNextFinal]);
  }

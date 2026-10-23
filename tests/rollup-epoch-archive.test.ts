@@ -40,6 +40,8 @@ test('the first append is the pseudo-epoch at index 0', () => {
  assert.equal(archive.tree.node(0, 0), hash([ER_TAG, 0n, emptyNotes, empty.root(), nf0.root()]));
  assert.equal(archive.has(-1), true);
  assert.equal(archive.has(0), false);
+ assert.deepEqual(archive.record(-1), { epoch: -1, noteFinal: emptyNotes, nfFinal: empty.root(), nfNextFinal: nf0.root() });
+ assert.equal(archive.record(0), undefined);
 });
 
 test('a witness carries the archive path and both non-membership proofs', () => {

@@ -87,6 +87,7 @@ type World=Awaited<ReturnType<typeof world>>;
 type Operator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
 const recordAt=(w:World,n:number)=>JSON.parse(readFileSync(join(w.dir,'batches',`${n}.json`),'utf8')) as RollupEpochRecord;
 const landedTx=(w:World,n:number)=>({tx:Transaction.fromPSBT(base64.decode(w.landed[n]!.arkTx)),checkpoints:w.landed[n]!.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)))});
+const acceptedOf=(s:EpochState)=>({acceptedRoot:s.latestRoot(),acceptedPrevNoteRoot:s.prevNoteRoot,acceptedEpoch:s.epoch,acceptedErCount:s.archive.count(),acceptedRsCount:s.recovered.count(),acceptedNullifiers:s.nullifiers.count()});
 
 /** Admits the clients, pads their batch with slots proved against the anchor it opens with, and lands it. */
 async function land(op:Operator,kind:'spend'|'join'|'recover',clients:Spend[]){
@@ -213,13 +214,17 @@ test('every batch is refused once the epoch archive is full',async t=>{
 test('a followed batch reproduces the state the transaction committed to, for all three kinds',async t=>{
  const w=await world(2),a=await w.open(t);
  await history(w,a);
+ assert.deepEqual(a.status(),{...a.status(),...acceptedOf(a.state)},'a batch the operator landed is accepted');
  const withRecords=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-follower-'))}),chainOnly=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-chain-'))});
- const recover=landedTx(w,4),record=recordAt(w,4);
+ const recover=landedTx(w,4),record=recordAt(w,4),mirror=EpochState.genesis(hash,2,false);
  for(let n=0;n<KINDS.length;n++){
   if(n===4)await assert.rejects(withRecords.follow({...recover,slots:record.slots.map(s=>({...s,origin:1})),at:1}),/not archived|anchor/,'a recover record naming another origin');
+  const landed=recordAt(w,n);
+  mirror.applyFromChain(landed.kind,landed.slots.map(s=>s.nullifiers.map(BigInt)),BigInt(landed.noteBlockRoot));
   for(const b of [withRecords,chainOnly]){
    assert.deepEqual(await b.follow({...landedTx(w,n),...(b===withRecords?{slots:recordAt(w,n).slots}:{}),at:1}),{batch:n,txid:landedTx(w,n).tx.id});
    assert.equal(headCommitment(b.status().archive.head.sourceTxHex),b.state.commitment(),`batch ${n} reaches the packet it carries`);
+   assert.deepEqual(b.status(),{...b.status(),...acceptedOf(mirror)},`batch ${n} is accepted, across the rotations at 2 and 4`);
   }
  }
  assert.deepEqual([withRecords.state.commitment(),chainOnly.state.commitment()],[a.state.commitment(),a.state.commitment()]);

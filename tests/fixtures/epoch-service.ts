@@ -26,6 +26,11 @@ const [serverPub,emulatorPub]=['01','02'].map(b=>secp256k1.getPublicKey(hex.deco
 export const serverKey=hex.encode(serverPub!.subarray(1)),emulatorKey=hex.encode(emulatorPub!.subarray(1)),exitDelay={type:'seconds' as const,value:2048};
 export const checkpoint=CSVMultisigTapscript.encode({pubkeys:[serverPub!.subarray(1)],timelock:{type:'seconds',value:4096n}});
 export const proof:SnarkProof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
+// What a genesis-3 wallet reads from /status; never edited to fit a new field, which belongs on an epoch pool only.
+export const STATUS_KEYS=['fundingAddress','fundingSats','message','minimumFundingSats','network','phase','pool','proving','version'];
+export const POOL_KEYS=['address','batches','head','maxReserves','operator','padding','pending','reserves','root','script','token'];
+export const PROVING_KEYS=['batch','batchJoin','join','spend'];
+export const EPOCH_POOL_KEYS=['batchesInEpoch','epoch','epochLen','erCount','heapBytes','nullifiers','prevNoteRoot','rsCount'];
 
 // Shared-setup verifying keys from the committed fixtures; wasm and zkey are stand-ins.
 const vkeys=(()=>{
