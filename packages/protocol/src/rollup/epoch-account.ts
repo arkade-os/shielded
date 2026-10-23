@@ -1,17 +1,23 @@
 import { hex } from '@scure/base';
 import type { RollupEpochRecord } from '../../../../src/rollup/epoch-operator.ts';
-import type { RollupKeys } from './account.ts';
-import { BTC_ASSET, EPOCH_NULLIFIERS, EPOCH_SLOTS, MAX_EPOCH_LEN, ROLLUP_DOMAIN, SUBTREE_DEPTH } from './constants.ts';
+import { randomField, type RollupKeys, type SpendRequest } from './account.ts';
+import { BTC_ASSET, EPOCH_NULLIFIERS, EPOCH_SLOTS, MAX_EPOCH_LEN, ROLLUP_DOMAIN, SUBTREE_DEPTH, type EpochBatchKind } from './constants.ts';
+import type { EpochAnchorRef } from './epoch.ts';
+import { epochTransfer, type EpochBuiltSpend } from './epoch-circuit.ts';
 import { rotatesAt, type EpochScanBatch } from './epoch-scan.ts';
 import { NoteFrontier } from './frontier.ts';
-import { akOf, noteOf, nullifierOf, ownerOf, type Hash } from './notes.ts';
+import { akOf, groupIdOf, noteOf, nullifierOf, ownerOf, type Hash } from './notes.ts';
 import { nullifierHint } from './scan.ts';
-import { openRollupNotes, rollupViewTag, viewEcdh, type Ecdh, type RollupNote } from './wallet.ts';
+import { openRollupNotes, rollupViewTag, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
 
 export interface EpochOwnedNote extends RollupNote { epoch: number; index: number; nullifier: bigint }
 export interface EpochHistoryEntry { kind: 'shield' | 'receive' | 'send' | 'withdraw' | 'merge' | 'renew' | 'recover'; batch: number; epoch: number; txid?: string; at?: number; amounts: { asset: bigint; amount: bigint }[]; spent: bigint[]; created: EpochOwnedNote[]; destination?: bigint; slots: number[] }
+/** The anchor the next batch will accept, and the selector each input needs. Mirrors the operator's admission check exactly. */
+export interface EpochAnchorPlan { rPrev: bigint; rCur: EpochAnchorRef; liveEpoch: number; rotatesNext: boolean }
+export interface EpochSpendRequest extends Omit<SpendRequest, 'input' | 'inputs'> { input?: EpochOwnedNote; inputs?: [EpochOwnedNote, EpochOwnedNote] }
 
-const BLOCK = 2 ** SUBTREE_DEPTH;
+const BLOCK = 2 ** SUBTREE_DEPTH, CARRIER_SATS = 330n, CONSOLIDATE_ABOVE = 8;
+const byAmount = (a: EpochOwnedNote, b: EpochOwnedNote) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
 // trap: every epoch record carries noteBlockRoot, so its presence (the classic test) would read every full batch as chain-only.
 const chainOnly = (record: RollupEpochRecord) => record.slots.every(s => s.commitments[0] === '0' && s.commitments[1] === '0');
 const blockRootOf = (hash: Hash, leaves: bigint[]) => {
@@ -28,6 +34,8 @@ export class EpochAccount {
  readonly txids = new Set<string>();
  private readonly owned = new Map<bigint, EpochOwnedNote>();
  private frontier: NoteFrontier;
+ /** The epoch before the current one, kept for its notes' paths: its tree never changes again. */
+ private closed?: NoteFrontier;
  private prev: bigint | undefined;
  private count = 0;
  private current = 0;
@@ -120,6 +128,7 @@ export class EpochAccount {
 
  private rotate(): void {
   this.prev = this.frontier.root();
+  this.closed = this.frontier;
   this.frontier = new NoteFrontier(this.hash);
   this.current++;
  }
@@ -144,4 +153,64 @@ export class EpochAccount {
 
  notes(asset = BTC_ASSET): EpochOwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.epoch - b.epoch || a.index - b.index); }
  balance(asset = BTC_ASSET): bigint { return this.notes(asset).reduce((sum, n) => sum + n.amount, 0n); }
+
+ anchorPlan(): EpochAnchorPlan {
+  const rotatesNext = rotatesAt(this.count, this.epochLen), rPrev = rotatesNext ? this.latestRoot() : this.prev;
+  if (rPrev === undefined) throw new Error('This account has not learned the root the previous epoch closed on, so it cannot anchor a spend.');
+  return { rPrev, rCur: { epoch: this.current, root: this.latestRoot() }, liveEpoch: this.current + Number(rotatesNext), rotatesNext };
+ }
+ selFor(note: EpochOwnedNote, plan: EpochAnchorPlan): 0n | 1n { return note.epoch === plan.liveEpoch ? 0n : 1n; }
+ /** False once the next batch archives the note's epoch, one batch before the note leaves the window. */
+ spendable(note: EpochOwnedNote, plan = this.anchorPlan()): boolean { return note.epoch >= plan.liveEpoch - 1; }
+ private usable(asset: bigint, inFlight: ReadonlySet<bigint>): EpochOwnedNote[] {
+  const plan = this.anchorPlan();
+  return this.notes(asset).filter(n => !inFlight.has(n.nullifier) && this.spendable(n, plan));
+ }
+
+ async spend(request: EpochSpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<EpochBuiltSpend> {
+  if (this.keys.ask === undefined) throw new Error('This wallet holds a full viewing key, not the spend authority.');
+  const plan = this.anchorPlan(), owned = request.inputs ?? (request.input ? [request.input] : []);
+  if (!owned.every(n => this.spendable(n, plan))) throw new Error('That note is off the fast path; it needs a recovery.');
+  const paths = owned.map(n => (n.epoch === this.current ? this.frontier : this.closed)?.path(n.index));
+  return epochTransfer(this.hash, { rPrev: plan.rPrev, rCur: plan.rCur, sel: owned.map(n => this.selFor(n, plan)), ask: this.keys.ask, nk: this.keys.nk, self, request, paths, ...(group ? { group } : {}) }, random);
+ }
+ join(inputs: [EpochOwnedNote, EpochOwnedNote], self: RollupRecipient, to?: SpendRequest['to']): Promise<EpochBuiltSpend> {
+  return this.spend({ asset: inputs[0].asset, inputs, ...(to ? { to } : {}) }, self);
+ }
+ async consolidate(self: RollupRecipient, asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set(), above = CONSOLIDATE_ABOVE): Promise<{ inputs: [EpochOwnedNote, EpochOwnedNote]; built: EpochBuiltSpend } | undefined> {
+  const notes = this.usable(asset, inFlight).sort(byAmount);
+  if (notes.length <= above) return undefined;
+  const inputs: [EpochOwnedNote, EpochOwnedNote] = [notes[0]!, notes[1]!];
+  return { inputs, built: await this.join(inputs, self) };
+ }
+ /** Group members must be submitted in the returned order, the order the group id commits to. */
+ async pay(recipient: RollupRecipient | ((firstNullifier: bigint) => RollupRecipient), amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: Exclude<EpochBatchKind, 'recover'>; spends: EpochBuiltSpend[] }> {
+  const notes = this.usable(asset, inFlight).sort((a, b) => byAmount(b, a));
+  const to = (first: EpochOwnedNote) => (typeof recipient === 'function' ? recipient(first.nullifier) : recipient);
+  const single = notes.filter(n => n.amount >= amount).pop();
+  if (single) return { kind: 'spend', spends: [await this.spend({ asset, input: single, to: { recipient: to(single), amount } }, self)] };
+  if (prefer.join && notes.length > 1 && notes[0]!.amount + notes[1]!.amount >= amount) return { kind: 'join', spends: [await this.join([notes[0]!, notes[1]!], self, { recipient: to(notes[0]!), amount })] };
+  const chosen: EpochOwnedNote[] = [];
+  for (const note of notes) { if (chosen.reduce((sum, n) => sum + n.amount, 0n) >= amount || chosen.length === 3) break; chosen.push(note); }
+  if (chosen.length < 2 || chosen.reduce((sum, n) => sum + n.amount, 0n) < amount) throw new Error('No three notes together cover this amount.');
+  const group = { id: groupIdOf(this.hash, chosen.map(n => n.nullifier)), size: chosen.length }, payee = to(chosen[0]!);
+  let left = amount;
+  const legs: EpochBuiltSpend[] = [];
+  for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient: payee, amount: part } }, self, randomField, group)); }
+  return { kind: 'spend', spends: legs };
+ }
+ async depositAsset(asset: bigint, units: bigint, sats: bigint, self: RollupRecipient): Promise<[EpochBuiltSpend, EpochBuiltSpend]> {
+  const dummies = [{ nk: randomField(), rho: randomField() }, { nk: randomField(), rho: randomField() }] as const;
+  const group = { id: groupIdOf(this.hash, dummies.map(d => nullifierOf(this.hash, ROLLUP_DOMAIN, d.nk, d.rho, true))), size: 2 };
+  return [await this.spend({ asset, deposit: units, dummy: dummies[0] }, self, randomField, group), await this.spend({ deposit: sats, dummy: dummies[1] }, self, randomField, group)];
+ }
+ async withdrawAsset(asset: bigint, units: bigint, program: Uint8Array, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), sats = CARRIER_SATS): Promise<[EpochBuiltSpend, EpochBuiltSpend]> {
+  if (sats < CARRIER_SATS) throw new Error(`An asset payout carries at least ${CARRIER_SATS} sats.`);
+  const smallest = (list: EpochOwnedNote[], amount: bigint) => list.filter(n => n.amount >= amount).sort(byAmount)[0];
+  const note = smallest(this.usable(asset, inFlight), units), carrier = smallest(this.usable(BTC_ASSET, inFlight), sats);
+  if (!note) throw new Error('No single note of this asset covers the amount.');
+  if (!carrier) throw new Error(`Withdrawing an asset needs a BTC note of at least ${sats} sats for its carrier.`);
+  const group = { id: groupIdOf(this.hash, [note.nullifier, carrier.nullifier]), size: 2 };
+  return [await this.spend({ asset, input: note, withdraw: units, program }, self, randomField, group), await this.spend({ input: carrier, withdraw: sats, program }, self, randomField, group)];
+ }
 }

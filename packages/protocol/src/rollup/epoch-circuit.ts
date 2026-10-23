@@ -1,8 +1,9 @@
-import { buildRollupTransfer, randomField } from './account.ts';
-import { clientWitness, type ClientSpend, type ClientWitness } from './client.ts';
+import { buildRollupTransfer, randomField, type BuiltSpend, type SpendRequest } from './account.ts';
+import { clientWitness, inputNullifierOf, type ClientSpend, type ClientWitness } from './client.ts';
+import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN } from './constants.ts';
 import { anchorOf, type EpochAnchorRef, type EpochSlot } from './epoch.ts';
-import type { Hash } from './notes.ts';
-import type { RollupRecipient } from './wallet.ts';
+import { destinationFieldOf, outputRhoOf, type Hash } from './notes.ts';
+import { ctDigestOf, sealRollupNotes, type RollupNote, type RollupRecipient } from './wallet.ts';
 
 /** Witness keys the epoch circuits compute themselves (D1): supplying one must fail, so the adapter drops them. */
 export const EPOCH_DERIVED_FIELDS = ['anchor', 'rotate', 'rotNoteRoot', 'rotNfRoot', 'rotNfCount', 'winNewEpoch', 'erLeaf'] as const;
@@ -22,4 +23,34 @@ export async function epochPaddingTransfer(hash: Hash, o: { rPrev: bigint; rCur:
  const { witness, ciphertext } = await buildRollupTransfer(hash, { root: anchorOf(hash, o.rPrev, o.rCur.root), ask: random(), nk: random(), self: o.self, request: {}, width: o.width }, random);
  const { root: anchor, ...rest } = witness.slot;
  return { witness: reanchored(witness, { rPrev: o.rPrev, rCur: o.rCur.root, sel: Array(o.width).fill(0n) }), ciphertext, slot: { ...rest, anchor, rCur: o.rCur } };
+}
+
+export interface EpochBuiltSpend extends BuiltSpend { slot: EpochSlot }
+/**
+ * buildRollupTransfer's body on an epoch pool: one sel per note input, 0 for every dummy. Inputs are told apart by nullifier,
+ * because a leaf index repeats in every epoch and the classic index check would refuse a join across two epochs.
+ */
+export async function epochTransfer(hash: Hash, o: { rPrev: bigint; rCur: EpochAnchorRef; sel: (0n | 1n)[]; ask: bigint; nk: bigint; self: RollupRecipient; request: SpendRequest; paths?: (bigint[] | undefined)[]; group?: { id: bigint; size: number } }, random = randomField): Promise<EpochBuiltSpend> {
+ const { request } = o, asset = request.asset ?? BTC_ASSET, deposit = request.deposit ?? 0n, withdraw = request.withdraw ?? 0n, paid = request.to?.amount ?? 0n;
+ const owned = request.inputs ?? (request.input ? [request.input] : []), width = owned.length === 2 ? 2 : 1;
+ if (o.sel.length !== owned.length || owned.some((n, k) => !o.paths?.[k] || n.asset !== asset)) throw new Error('A note input needs its path, its sel and the asset it holds.');
+ if (width === 2 && (deposit || withdraw || o.group)) throw new Error('A join carries no deposit, withdrawal or group.');
+ const inputs = Array.from({ length: width }, (_, k) => owned[k]
+  ? { amount: owned[k]!.amount, ask: o.ask, nk: o.nk, rho: owned[k]!.rho, index: owned[k]!.index, path: o.paths![k]! }
+  : { amount: 0n, ask: random(), nk: request.dummy?.nk ?? random(), rho: request.dummy?.rho ?? random(), index: 0, path: Array<bigint>(NOTE_DEPTH).fill(0n) });
+ if ((withdraw > 0n) !== !!request.program) throw new Error('A withdrawal needs exactly one payout program.');
+ const change = inputs.reduce((sum, i) => sum + i.amount, 0n) + deposit - withdraw - paid;
+ if (change < 0n || paid < 0n || deposit < 0n || withdraw < 0n) throw new Error('The spend does not balance.');
+ const outputs = request.to ? [{ amount: paid, to: request.to.recipient }, { amount: change, to: o.self }] : [{ amount: change, to: o.self }, { amount: 0n, to: o.self }];
+ const randoms = [random(), random()], nullifiers = inputs.map(i => inputNullifierOf(hash, ROLLUP_DOMAIN, i));
+ if (nullifiers[0] === nullifiers[1]) throw new Error('A join spends two different notes.');
+ const notes = outputs.map((out, j) => ({ amount: out.amount, asset, rho: outputRhoOf(hash, ROLLUP_DOMAIN, randoms[j]!, nullifiers, j) })) as [RollupNote, RollupNote];
+ const ciphertext = await sealRollupNotes([outputs[0]!.to, outputs[1]!.to], notes);
+ const witness = epochClientInput(hash, {
+  domain: ROLLUP_DOMAIN, root: 0n, asset, inputs, // root: epochClientInput replaces it with the anchor
+  outputs: [{ amount: outputs[0]!.amount, owner: outputs[0]!.to.owner, random: randoms[0]! }, { amount: outputs[1]!.amount, owner: outputs[1]!.to.owner, random: randoms[1]! }],
+  deposit, withdraw, destination: request.program ? destinationFieldOf(request.program) : 0n, ctDigest: ctDigestOf(ciphertext), groupId: o.group?.id ?? 0n, groupSize: o.group?.size ?? 0,
+ }, { rPrev: o.rPrev, rCur: o.rCur.root, sel: inputs.map((_, k) => o.sel[k] ?? 0n) });
+ const { root: anchor, ...rest } = witness.slot;
+ return { witness, ciphertext, change, slot: { ...rest, anchor, rCur: o.rCur } };
 }

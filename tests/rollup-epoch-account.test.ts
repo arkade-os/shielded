@@ -5,15 +5,16 @@ import { buildPoseidon } from 'circomlibjs';
 import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
 import type { PoolApi } from '../src/shielded/pool.ts';
 import type { SpendRequest } from '../packages/protocol/src/rollup/account.ts';
-import { CHECKPOINT_EVERY, NOTE_DEPTH, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
+import { BTC_ASSET, CHECKPOINT_EVERY, NOTE_DEPTH, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
 import { EpochAccount, type EpochOwnedNote } from '../packages/protocol/src/rollup/epoch-account.ts';
+import type { EpochBuiltSpend } from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import { decodeEpochScan } from '../packages/protocol/src/rollup/epoch-scan.ts';
 import { NoteFrontier } from '../packages/protocol/src/rollup/frontier.ts';
 import { destinationFieldOf, groupIdOf, noteOf } from '../packages/protocol/src/rollup/notes.ts';
 import { rollupRecipientOf, type RollupRecipient } from '../packages/protocol/src/rollup/wallet.ts';
 import { deriveRollupKeys2 } from '../packages/protocol/src/wallet-keys.ts';
 import { foldPath } from './fixtures/epoch.ts';
-import { epochPool, type PoolSpend } from './fixtures/epoch-pool.ts';
+import { epochPool, opens, posted, type PoolSpend } from './fixtures/epoch-pool.ts';
 
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
@@ -231,4 +232,38 @@ test('the fake pool answers in the shapes Plan 4b pins', async () => {
  assert.equal(NoteFrontier.at(hash, checkpoint).root(), state.latestRoot());
  for (const path of ['/checkpoints/0/63', '/checkpoints/1/64', '/checkpoints/0/128', `/checkpoints/${CHECKPOINT_EVERY}`, '/nope']) await assert.rejects(api(path), { status: 404 }, path);
  assert.deepEqual(await api('/times'), { every: CHECKPOINT_EVERY, at: [pool.records[0]!.at] });
+});
+
+test('a join of (epoch 0, index 0) and (epoch 1, index 0) is built and admitted', async () => {
+ const pool = epochPool(hash, 2), account = alice(2);
+ pool.land('spend', [await pool.deposit(aliceTo, 500n)]);
+ pool.land();
+ pool.land('spend', [await pool.deposit(aliceTo, 600n)]);
+ await replay(account, pool.api);
+ const [old, cur] = account.notes();
+ assert.deepEqual([old!.epoch, old!.index, cur!.epoch, cur!.index], [0, 0, 1, 0], 'one leaf index in two epochs');
+ await assert.rejects(account.join([cur!, cur!], aliceTo), /two different notes/);
+ const joined = await account.join([old!, cur!], aliceTo);
+ assert.deepEqual(joined.witness.input.sel, [1n, 0n]);
+ assert.ok(opens(hash, account.owner, joined, [old!, cur!]));
+ pool.land('join', [posted(joined)]);
+ await replay(account, pool.api);
+ assert.deepEqual(account.notes().map(n => [n.epoch, n.amount]), [[1, 1100n]]);
+});
+
+test('pay, consolidate, depositAsset and withdrawAsset build spends the pool admits, across a rotation', async () => {
+ const pool = epochPool(hash, 4), account = alice(4), program = new Uint8Array(32).fill(0xab);
+ const land = async (spends: EpochBuiltSpend[]) => { pool.land(spends[0]!.slot.nullifiers.length === 2 ? 'join' : 'spend', spends.map(posted)); await replay(account, pool.api); };
+ pool.land('spend', [...await Promise.all([100n, 200n, 300n, 400n, 500n].map(amount => pool.deposit(aliceTo, amount))), await pool.transfer({ ask: 0n, nk: 0n, self: aliceTo, request: { deposit: 40n, asset: 7n } })]);
+ await replay(account, pool.api);
+ await land(await account.withdrawAsset(7n, 30n, program, aliceTo));
+ await land(await account.depositAsset(9n, 25n, 330n, aliceTo));
+ await land((await account.pay(bobTo, 450n, aliceTo)).spends);
+ const joined = await account.pay(bobTo, 600n, aliceTo, new Set(), BTC_ASSET, { join: true });
+ await land(joined.spends);
+ const grouped = await account.pay(bobTo, 340n, aliceTo);
+ await land(grouped.spends);
+ await land([(await account.consolidate(aliceTo, BTC_ASSET, new Set(), 2))!.built]);
+ assert.deepEqual([joined.kind, grouped.kind, grouped.spends.length, account.epoch], ['join', 'spend', 3, 1]);
+ assert.deepEqual([account.balance(), account.balance(7n), account.balance(9n), account.notes().length], [110n, 10n, 25n, 2]);
 });
