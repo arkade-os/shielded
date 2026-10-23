@@ -112,6 +112,20 @@ test('checkpoints are served only for the batch counts the operator vouches for'
  assert.deepEqual(asked,[128,192],'a malformed number never reaches the operator');
 });
 
+test('an epoch checkpoint is asked for by two whole numbers, and neither route reaches the other\'s handler',async(t)=>{
+ const asked:[number,number][]=[],askedOne:number[]=[],found={epoch:3,blocks:128,filled:['5']};
+ const api=await serve({ready:()=>true,checkpointAt:(epoch:number,blocks:number)=>{asked.push([epoch,blocks]);return epoch===3&&blocks===128?found:undefined;},checkpoint:(blocks:number)=>{askedOne.push(blocks);return undefined;}});t.after(api.close);
+ const answered=await fetch(api.base+'/checkpoints/3/128');
+ assert.deepEqual([answered.status,answered.headers.get('cache-control'),await answered.json()],[200,'no-store',found]);
+ for(const path of ['/checkpoints/3/192','/checkpoints/0/0'])assert.equal((await fetch(api.base+path)).status,404,path);
+ const refused=await fetch(api.base+'/checkpoints/4/128');
+ assert.deepEqual([refused.status,refused.headers.get('cache-control'),typeof (await refused.json()).error],[404,'no-store','string']);
+ for(const path of ['/checkpoints/03/128','/checkpoints/3/0128','/checkpoints/-3/128','/checkpoints/3/-128','/checkpoints/x/128','/checkpoints/3/x','/checkpoints/12345678901/128','/checkpoints/3/12345678901'])assert.equal((await fetch(api.base+path)).status,404,path);
+ assert.deepEqual(asked,[[3,128],[3,192],[0,0],[4,128]],'a malformed number never reaches the service');
+ assert.equal((await fetch(api.base+'/checkpoints/128')).status,404);
+ assert.deepEqual([asked.length,askedOne],[4,[128]],'the one-segment form keeps its own handler');
+});
+
 test('a scan is asked for a global batch range of at most 500, and a malformed range never reaches the service',async(t)=>{
  const asked:[number,number][]=[];
  const api=await serve({ready:()=>true,scan:(from:number,limit:number)=>{asked.push([from,limit]);return {from,total:0,data:''};}});t.after(api.close);

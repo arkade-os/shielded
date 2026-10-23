@@ -63,6 +63,13 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!checkpoint){res.status(404).json({error:'There is no checkpoint at that batch.'});return;}
   res.json(checkpoint);
  });
+ router.get('/checkpoints/:epoch/:blocks',(req,res)=>{
+  const whole=/^(0|[1-9][0-9]{0,9})$/,{epoch,blocks}=req.params;
+  const checkpoint=whole.test(epoch)&&whole.test(blocks)?service()!.checkpointAt(Number(epoch),Number(blocks)):undefined;
+  res.setHeader('Cache-Control','no-store');
+  if(!checkpoint){res.status(404).json({error:'There is no checkpoint at that epoch and batch count.'});return;}
+  res.json(checkpoint);
+ });
  router.post('/external',async(req,res)=>{
   try{
    const b=req.body??{};

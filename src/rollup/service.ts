@@ -481,6 +481,12 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(operator?.state instanceof EpochState)return undefined;
    return operator&&blocks>0&&blocks%CHECKPOINT_EVERY===0&&blocks<=operator.status().archive.batches?checkpointOf(operator.state.notes,blocks):undefined;
   },
+  /** The current epoch's frontier after a multiple of CHECKPOINT_EVERY of its accepted batches; a closed epoch's tree is gone, and `state` runs ahead of the journal while a batch is in flight. */
+  checkpointAt:(epoch:number,blocks:number)=>{
+   const operator=live?.operator,state=operator?.state;
+   if(!operator||!(state instanceof EpochState))return undefined;
+   return epoch===state.epoch&&blocks>0&&blocks%CHECKPOINT_EVERY===0&&blocks<=operator.status().archive.batches-epoch*state.epochLen?{epoch,...checkpointOf(state.notes,blocks)}:undefined;
+  },
   /** Fills a deposit coin from the indexer; the client names the outpoint and the tree that locks it. */
   depositCoin:resolveCoin,
   /** Follows a batch another prover got accepted; its transaction, checkpoints and reserve come from the indexer, never the caller. */
