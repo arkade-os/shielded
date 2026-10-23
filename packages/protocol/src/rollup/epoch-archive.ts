@@ -41,7 +41,8 @@ export class EpochArchive {
  list(): ArchivedEpoch[] { return [...this.records.values()]; }
  /** Takes records read back for this archive's tree; witness() refuses each epoch until load() has installed both of its sets. */
  restore(records: readonly ArchivedEpoch[]): void {
-  if (records.some((r, i) => erLeafIndexOf(r.epoch) !== i || this.leafOf(r.epoch, r.noteFinal, r.nfFinal, r.nfNextFinal) !== this.tree.node(0, i))) throw new Error('The archived epochs are not the archive tree\'s leaves in order.');
+  if (records.some((r, i) => erLeafIndexOf(r.epoch) !== i || this.leafOf(r.epoch, r.noteFinal, r.nfFinal, r.nfNextFinal) !== this.tree.node(0, i))
+   || (records.length < 2 ** ARCHIVE_DEPTH && this.tree.node(0, records.length) !== this.tree.empty[0])) throw new Error('The archived epochs are not the archive tree\'s leaves in order.');
   this.records = new Map(records.map(r => [r.epoch, r])); this.sets = new Map();
  }
  load(epoch: number, set: RollupNullifiers): void {

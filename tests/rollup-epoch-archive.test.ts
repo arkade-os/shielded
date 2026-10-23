@@ -172,7 +172,7 @@ test('a recover witness for an epoch whose set is not loaded is a rejection, not
 
 test('a restored archive refuses records that are not its tree leaves in order', () => {
  const original = archived(), records = original.list(), extra: ArchivedEpoch = { epoch: 1, noteFinal: 1n, nfFinal: 2n, nfNextFinal: 3n };
- for (const bad of [records.slice(1), [...records].reverse(), [records[0], { ...records[1], noteFinal: 1235n }], [...records, extra]])
+ for (const bad of [records.slice(1), [...records].reverse(), [records[0], { ...records[1], noteFinal: 1235n }], [...records, extra], records.slice(0, -1)])
   assert.throws(() => new EpochArchive(hash, original.tree.clone()).restore(bad), /tree/);
 });
 

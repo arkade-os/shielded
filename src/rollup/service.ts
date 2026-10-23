@@ -73,6 +73,9 @@ const sha=(bytes:Uint8Array|string)=>createHash('sha256').update(bytes).digest('
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
 const readJson=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
+/** A recovery spends into the recovered set, which only an epoch pool keeps. */
+const landed=(state:RollupState|EpochState,nf:bigint)=>state.nullifiers.has(nf)||(state instanceof EpochState&&state.recovered.has(nf));
+const EPOCH_RESTART_DROP='An epoch pool does not re-admit pending spends after a restart; build the spend again.';
 
 type KeyManifest={circuits:Record<string,{files:Record<string,string>}>};
 /** Every served file must be in the manifest and match it, so a key set that lacks a circuit fails closed. */
@@ -201,6 +204,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(Date.now()-record.at>3600_000){store.remove(record.id);continue;}
    tracked.set(record.id,{status:record.status,nullifier:record.nullifier,at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})});
    if(record.status!=='pending'||!record.spend)continue;
+   // The spend store keeps only classic slot fields, so an epoch spend cannot be decoded back.
+   if(operator.state instanceof EpochState){settle(record.id,landed(operator.state,BigInt(record.nullifier))?{status:'included'}:{status:'dropped',reason:EPOCH_RESTART_DROP});continue;}
    if(operator.state.nullifiers.has(BigInt(record.nullifier))){settle(record.id,{status:'included'});continue;}
    try{const coin=record.spend.coin?await resolveCoin(record.spend.coin):undefined;await (operator as RollupOperator).submit({...decodeSpend(record.spend),...(coin?{coin}:{})});}
    catch(error){settle(record.id,{status:'dropped',reason:'It could not be re-admitted after the pool restarted: '+(error as Error).message});}
@@ -312,7 +317,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const sweep=()=>{
    const waiting=new Set(operator.pendingIds());
    for(const [id,t] of tracked){
-    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id))settle(id,operator.state.nullifiers.has(BigInt(t.nullifier))?{status:'included'}:{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
+    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id))settle(id,landed(operator.state,BigInt(t.nullifier))?{status:'included'}:{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
     if(Date.now()-t.at>3600_000){tracked.delete(id);store.remove(id);}
    }
   };

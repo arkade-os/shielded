@@ -22,17 +22,20 @@ export function encodeEpochNfArchive(epoch:number,set:RollupNullifiers):Buffer {
  return out;
 }
 
-const decode=(bytes:Buffer,hash:Hash,epoch:number)=>{
+const decode=(bytes:Buffer,hash:Hash,epoch:number):RollupNullifiers|string=>{
  try{
   const count=bytes.readUInt32LE(10),body=HEADER+LEAF*count;
-  if(bytes.length!==body+32||!bytes.subarray(0,4).equals(MAGIC)||bytes.readUInt16LE(4)!==VERSION||bytes.readUInt32LE(6)!==epoch||!sha256(bytes.subarray(0,body)).equals(bytes.subarray(body)))return undefined;
+  if(bytes.length!==body+32)return `it is ${bytes.length} bytes, not the ${body+32} its count of ${count} needs`;
+  if(!bytes.subarray(0,4).equals(MAGIC)||bytes.readUInt16LE(4)!==VERSION)return 'it is not a version-1 nullifier archive';
+  if(bytes.readUInt32LE(6)!==epoch)return `it is labelled epoch ${bytes.readUInt32LE(6)}`;
+  if(!sha256(bytes.subarray(0,body)).equals(bytes.subarray(body)))return 'its checksum does not match';
   return RollupNullifiers.fromLeaves(hash,EPOCH_NULLIFIER_DEPTH,getLeaves(bytes,HEADER,count));
- }catch{return undefined;}
+ }catch(error){return (error as Error).message;}
 };
 
 /** The frozen set the file rebuilds; one comparison with the root the archive holds refuses every other file, damaged or not. */
 export function readEpochNfArchive(path:string,hash:Hash,expect:{epoch:number;root:bigint}):RollupNullifiers {
  const set=decode(readFileSync(path),hash,expect.epoch);
- if(set?.root()!==expect.root)throw new Error(`The nullifier archive ${path} does not rebuild the root epoch ${expect.epoch} archived.`);
+ if(typeof set==='string'||set.root()!==expect.root)throw new Error(`The nullifier archive ${path} does not rebuild the root epoch ${expect.epoch} archived: ${typeof set==='string'?set:'it rebuilds another root'}.`);
  return set;
 }

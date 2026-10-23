@@ -78,9 +78,9 @@ test('a nullifier archive file is refused unless it rebuilds the archived root',
  const file=(name:string,bytes:Buffer)=>{const path=join(dir,name);writeFileSync(path,bytes);return path;};
  const flipped=(at:number)=>{const b=Buffer.from(good);b[at]!^=1;return b;};
  assert.deepEqual(readEpochNfArchive(file('good',good),hash,expect).root(),expect.root);
- const bad={truncatedFile:good.subarray(0,-1),flippedLeafByte:flipped(14+36),anotherEpochsFile:encodeEpochNfArchive(0,nf0),flippedTrailer:flipped(good.length-1),relabeledSet:encodeEpochNfArchive(1,nf0)};
- const accepted=Object.entries(bad).filter(([name,bytes])=>{try{readEpochNfArchive(file(name,bytes),hash,expect);return true;}catch(error){return !/archive/.test((error as Error).message);}});
- assert.deepEqual(accepted.map(([name])=>name),[]);
+ const bad:Record<string,[Buffer,RegExp]>={truncatedFile:[good.subarray(0,-1),/bytes, not the/],flippedLeafByte:[flipped(14+36),/checksum/],anotherEpochsFile:[encodeEpochNfArchive(0,nf0),/labelled epoch 0/],
+  flippedTrailer:[flipped(good.length-1),/checksum/],relabeledSet:[encodeEpochNfArchive(1,nf0),/another root/]};
+ for(const [name,[bytes,cause]] of Object.entries(bad))assert.throws(()=>readEpochNfArchive(file(name,bytes),hash,expect),(error:Error)=>/does not rebuild the root epoch 1 archived: /.test(error.message)&&cause.test(error.message),name);
 });
 
 const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-epoch-covenant-snarkjs.json','utf8')) as {clientKey:{vk_delta_2:unknown;IC:unknown[]};batchKey:{vk_delta_2:unknown;IC:unknown[]}};
