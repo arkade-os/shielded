@@ -43,7 +43,10 @@ test('a fresh directory with an epoch length writes a version-2 genesis and neve
   first.close();
   // The other direction needs no refusal: the version-2 genesis alone reopens an epoch pool, of its own length.
   const again=await ready(net,directory,keys);
-  assert.deepEqual([again.epochPool,again.status().pool!.epochLen],[true,length],String(epochLen));
+  assert.deepEqual([again.epochPool,again.status().pool!.epochLen],[true,length],`reopened with no option, written with ${epochLen}`);
+  again.close();
+  const same=await ready(net,directory,keys,epochLen);
+  assert.deepEqual([same.epochPool,same.status().pool!.epochLen],[true,length],`reopened with ${epochLen}`);
  }
 });
 
@@ -52,6 +55,7 @@ test('rollupPoolKindOf accepts a number and a decimal string alike, and refuses 
  for(const epochLen of [64,'64',2**20,String(2**20)])assert.equal(rollupPoolKindOf({epochLen}).kind,'epoch',String(epochLen));
  for(const epochLen of [63,'63',2**20+1,String(2**20+1),128.5,'128.5',NaN,'x',''])assert.throws(()=>rollupPoolKindOf({epochLen}),/epoch length/,String(epochLen));
  assert.deepEqual(rollupPoolKindOf({genesis:{version:1},epochLen:128}),{kind:'classic'});
+ assert.deepEqual(rollupPoolKindOf({genesis:{version:2,epochLen:64},epochLen:128}),{kind:'epoch',epochLen:64});
 });
 
 test('the service reads no epoch length from the environment',async()=>{
