@@ -69,7 +69,7 @@ export function offline(){
   for(const c of coins)c.isSpent||=c.txid===hex.encode(tx.getInput(0).txid!)&&c.vout===tx.getInput(0).index;
   txs.set(tx.id,tx);coins.push({txid:tx.id,vout:0,value:Number(tx.getOutput(0).amount),script:hex.encode(tx.getOutput(0).script!),assets:[{assetId:token,amount:1n}],isSpent:false,expiresAt:new Date(Date.now()+30*86400_000)});
  };
- let gate:{held:{reached:boolean;release():void};waiting:Promise<void>}|undefined;
+ let gate:{held:{reached:boolean;release():void};waiting:Promise<void>}|undefined,proveMs=0;
  /** The next batch sent holds at the transport until released, after the operator has already applied it to its state. */
  const hold=()=>{let release=()=>{};const held={reached:false,release:()=>release()};gate={held,waiting:new Promise<void>(r=>{release=r;})};return held;};
  const transport:RollupTransport={
@@ -94,12 +94,12 @@ export function offline(){
   getVirtualTxs:async(ids:string[])=>({txs:ids.flatMap(id=>txs.has(id)?[base64.encode(txs.get(id)!.toPSBT())]:[])}),
  };
  const providers={wallet:async()=>wallet as never,info:async()=>({checkpointTapscript:hex.encode(checkpoint.script),forfeitPubkey:hex.encode(serverPub!)}),indexer:indexer as never,transport:transport as never,
-  prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));return proof;}}),verify:async()=>true};
+  prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));if(proveMs)await new Promise(r=>setTimeout(r,proveMs));return proof;}}),verify:async()=>true};
  const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:hex.encode(serverPub!),maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:hex.encode(emulatorPub!),version:'test'}};
  const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
  const open=(directory:string,keys:string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
   endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers});
- return {transport,landed,sent,proved,logs,open,hold,newHead};
+ return {transport,landed,sent,proved,logs,open,hold,newHead,delay:(ms:number)=>{proveMs=ms;}};
 }
 export type Offline=ReturnType<typeof offline>;
 

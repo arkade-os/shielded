@@ -7,7 +7,7 @@ import {test,type TestContext} from 'node:test';
 import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,scriptFromTapLeafScript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
+import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
@@ -81,7 +81,7 @@ async function world(epochLen:number){
   pin:{version:1 as const,network:'local-stock' as const,descriptorProfileId:sha('rollup-epoch-test'),programsHash:sha(leaves.batchRecover),artifactsHash:sha('stub'),checkpointHash:sha(checkpoint.script),genesisTxid:parent.id,serverKey:hex.encode(server),emulatorKey:hex.encode(emulator)},
   genesis:{version:1 as const,head:{txid:parent.id,vout:0,value:100_330,sourceTxHex:hex.encode(parent.toBytes())},reserves:{},batches:0},
   clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},verify:async()=>true};
- return {dir,landed,coin,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
+ return {dir,landed,coin,transport,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 type World=Awaited<ReturnType<typeof world>>;
 type Operator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
@@ -180,6 +180,39 @@ test('admission refuses a fast-path slot apply would refuse, with a rejection ra
  assert.deepEqual(op.pendingIds(),[good.id]);
 });
 
+test('a pad whose rCur has no root is refused once, and the next tick still builds a batch',async t=>{
+ const w=await world(2),op=await w.open(t),good=fastSpend(op.state);
+ const bad:[string,unknown][]=[['no root',{epoch:0}],['a root outside the field',{epoch:0,root:ROLLUP_FIELD}],['a fractional epoch',{epoch:0.5,root:1n}]];
+ for(const [label,rCur] of bad){
+  const slot={...good.slot,rCur:rCur as never};
+  await assert.rejects(op.submit({...good,id:label,slot}),rejection('slot-shape'),label);
+  assert.throws(()=>op.addPadding([{...good,slot,receivedAt:Infinity}]),rejection('slot-shape'),label);
+ }
+ assert.deepEqual([op.padding(),op.pending()],[0,0]);
+ await land(op,'spend',[good]);
+});
+
+test('the padding queue is empty immediately after the rotating batch is accepted, not one tick later',async t=>{
+ const w=await world(2),drops:[string[],string][]=[],seen:[boolean,number][]=[];
+ let op!:Operator;
+ const probe={prove:async()=>{seen.push([op.state.rotatesNext(),op.padding()]);return proof;}};
+ op=await w.open(t,{prover:{spend:probe,join:probe,recover:probe},onDrop:(ids,reason)=>drops.push([ids,reason])});
+ op.addPadding([...padsFor(op.state,'spend',3),...padsFor(op.state,'join',3)]);
+ await land(op,'spend',[fastSpend(op.state)]);
+ assert.deepEqual([op.padding('spend'),op.padding('join'),drops],[3,3,[]],'a batch that ends no epoch leaves the queues be');
+ await land(op,'spend',[fastSpend(op.state)]);
+ assert.deepEqual(seen,[[false,6],[true,0]],'the queue was already empty while the epoch\'s last batch was being proved');
+ assert.deepEqual([op.padding('spend'),op.padding('join'),drops.flatMap(([ids])=>ids).length],[0,0,6]);
+ for(const [,reason] of drops)assert.match(reason,/rotation/);
+});
+
+test('a receipt the operator cannot read leaves the accepted view at the last accepted batch',async t=>{
+ const w=await world(2),op=await w.open(t,{transport:{...w.transport,submit:async(request,first)=>({...await w.transport.submit(request,first),signedArkTx:'not a psbt'})}});
+ await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ assert.deepEqual(Object.keys((await op.tick())!),['blocked']);
+ assert.deepEqual(op.status(),{...op.status(),...acceptedOf(EpochState.genesis(hash,2,false))});
+});
+
 test('a rotation drops every stale in-flight spend and pad with a reason, and the next batch lands',async t=>{
  const drops:[string[],string][]=[],w=await world(64),op=await w.open(t,{onDrop:(ids,reason)=>drops.push([ids,reason])});
  for(let n=0;n<63;n++)await land(op,'spend',[fastSpend(op.state)]);
@@ -188,7 +221,7 @@ test('a rotation drops every stale in-flight spend and pad with a reason, and th
  for(const s of clients)await op.submit(s);
  op.addPadding(spare);
  assert.ok('txid' in (await op.tick())!);
- assert.deepEqual([op.state.rotatesNext(),op.pendingIds(),op.padding()],[true,[clients.at(-1)!.id],BATCH_SLOTS-1]);
+ assert.deepEqual([op.state.rotatesNext(),op.pendingIds(),op.padding()],[true,[clients.at(-1)!.id],0]);
  const next=fastSpend(op.state);
  await op.submit(next);op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
  assert.equal((await op.tick() as {batch:number}).batch,64);

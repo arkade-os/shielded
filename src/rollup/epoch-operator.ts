@@ -93,9 +93,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   apply:(archive,plan,receipt)=>{
    writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));
    if(state.batchCount===archive.batches)applyRecord(state,plan.record);
-   accepted=acceptedOf(state);
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
    const reserves=plan.asset?{...archive.reserves,[plan.asset]:{...coin(1),amount:plan.reserveAmount!}}:archive.reserves;
+   accepted=acceptedOf(state);
    return {...archive,head:coin(0),reserves,batches:archive.batches+1};
   },
  });
@@ -154,8 +154,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const proven=new WeakSet<RollupEpochSpend>(),checked=new WeakSet<RollupEpochSpend>();
  const selectable=(s:RollupEpochSpend)=>proven.has(s)&&checked.has(s);
  const kindOf=(s:{slot:EpochSlot;origin?:number}):EpochBatchKind=>{
-  const kind=s.origin!==undefined?'recover':s.slot.nullifiers.length===2?'join':'spend';
+  const kind=s.origin!==undefined?'recover':s.slot.nullifiers.length===2?'join':'spend',{rCur}=s.slot;
   if(s.slot.nullifiers.length!==EPOCH_NULLIFIERS[kind]||s.slot.origin!==s.origin)throw new RollupRejection('slot-shape','A slot spends one note (a spend or a recovery) or two (a join), and only a recovery names an origin, on its spend and its slot alike.');
+  if(rCur&&(!Number.isSafeInteger(rCur.epoch)||!inField(rCur.root)))throw new RollupRejection('slot-shape','A window leaf is a whole epoch and a field-element root.');
   return kind;
  };
  // The batch that rotates archives the epoch before last, and a recovery may ride that very batch.
@@ -190,7 +191,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    if(!archived(spend.origin!))throw new RollupRejection('recover-unarchived',`Epoch ${spend.origin} is not archived; a note of a live epoch takes the fast path.`);
   }else if(!rCur)throw new RollupRejection('window-tag','A fast-path slot must name the window leaf it anchors on.');
   if(nullifiers.some(nf=>!inField(nf)||nf===0n))throw new RollupRejection('nullifier-range','The nullifier is zero or outside the field.');
-  if(commitments.length!==2||![...commitments,anchor,ctDigest,groupId].every(inField)||(rCur&&(!Number.isSafeInteger(rCur.epoch)||!inField(rCur.root))))throw new RollupRejection('slot-shape','A slot has two field-element commitments, and its anchor and window root are field elements.');
+  if(commitments.length!==2||![...commitments,anchor,ctDigest,groupId].every(inField))throw new RollupRejection('slot-shape','A slot has two field-element commitments, and its anchor is a field element.');
   if(![0,2,3].includes(groupSize)||(groupId===0n)!==(groupSize===0))throw new RollupRejection('group-invalid','A group has two or three members and a nonzero id.');
   const siblings=pending.spend.filter(s=>groupId!==0n&&s.slot.groupId===groupId);
   if(groupId!==0n&&(siblings.length>=groupSize||siblings.some(s=>s.slot.groupSize!==groupSize)))throw new RollupRejection('group-invalid','The group is already complete or disagrees on its size.');
@@ -228,6 +229,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  };
 
  const dropped=(list:Iterable<RollupEpochSpend>,reason:string)=>{const ids=[...list].map(s=>s.id);if(ids.length)o.onDrop?.(ids,reason);};
+ // The batch that ends an epoch moves the anchor the next one opens against, so every pad queued before it is stale already.
+ const flushPadding=()=>{for(const kind of KINDS){dropped(padding[kind],'An epoch rotation made its anchor stale; prove it again.');padding[kind]=[];}};
  const run=async(kind:EpochBatchKind):Promise<RollupTick>=>{
   if(state.archive.count()>=2**ARCHIVE_DEPTH)throw new RollupRejection('archive-full','The epoch archive is full, so no batch of any kind can be proved again.');
   const live=(s:RollupEpochSpend)=>kind==='recover'?archived(s.origin!)&&!s.slot.nullifiers.some(nf=>state.recovered.has(nf))
@@ -262,6 +265,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   try{
    if(selection.asset&&!reserveCoin)gate(()=>{throw new Error(`No reserve for asset ${selection.asset}.`);});
    const result=gate(()=>{if(kind==='recover')preload(selection.spends[0]!.origin!);return state.apply(kind,selection.spends.map(s=>s.slot));});applied=true;
+   if(state.rotatesNext())flushPadding();
    const proof=await o.prover[kind].prove(result.witness,result.publicSignals),proved=now();
    const witness=rollupWitness(proof,selection.spends.map(s=>({proof:s.proof,publics:s.publics})));
    const reserve=reserveCoin?{...poolCoin(reserveCoin,pool.reserve),amount:BigInt(reserveCoin.amount)}:undefined;

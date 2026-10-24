@@ -10,7 +10,7 @@ import {buildRollupTransfer,randomField} from '../packages/protocol/src/rollup/a
 import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import {decodeEpochScan} from '../packages/protocol/src/rollup/epoch-scan.ts';
+import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
@@ -23,7 +23,7 @@ import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupP
 import {encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
-import {checkpoint,emulatorKey,EPOCH_POOL_KEYS,exitDelay,hash,keySet,le32,listen,offline,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
+import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,exitDelay,hash,keySet,le32,listen,offline,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 import './rollup-genesis3-contract.test.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
@@ -175,6 +175,7 @@ test('the epoch pool serves an empty /scan, and still refuses /checkpoints rathe
  const status=await (await request('/api/rollup/status')).json();
  assert.deepEqual([Object.keys(status).sort(),Object.keys(status.pool).sort()],[STATUS_KEYS,[...POOL_KEYS,...EPOCH_POOL_KEYS].sort()],'a classic pool\'s keys, and the epoch fields beside them');
  assert.equal(status.pool.root,String(EpochState.genesis(hash,64).latestRoot()));
+ assert.deepEqual([status.pool.epoch,status.pool.batchesInEpoch,status.pool.prevNoteRoot,status.pool.erCount,status.pool.rsCount,status.pool.nullifiers],[0,0,status.pool.root,0,1,1],'the empty epoch 0, whose previous root is its own');
 });
 
 test('epoch padding is proved against the root the next batch opens against',async()=>{
@@ -193,6 +194,27 @@ test('epoch padding is proved against the root the next batch opens against',asy
  const joins=await pads(state.nextAnchorRoot(),2);
  assert.deepEqual(joins[0]!.witness.input.sel,[0n,0n]);
  state.apply('join',joins.map(p=>p.slot));
+});
+
+const chainRecord=(n:number):RollupEpochRecord=>({kind:'spend',slots:Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',nullifiers:[String(hash([78n,BigInt(n),BigInt(s)]))],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[]})),
+ noteBlockRoot:String(hash([77n,BigInt(n)])),txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1000});
+
+test('the stall across a rotation is measured and the pool resumes',async t=>{
+ const {net,service}=await bakedPool({epochLen:64,batches:63,record:chainRecord}),pool=()=>service.status().pool!;
+ const spend=()=>{const p=pool(),view={epoch:p.epoch,latestRoot:()=>BigInt(p.root),nextAnchorRoot:()=>BigInt(rotatesAt(p.batches,64)?p.root:p.prevNoteRoot!)};return epochSpend(deposit(view as unknown as EpochState,0n));};
+ // Two kinds at PADDING_TARGET, filled before the delay starts. A full batch of clients takes no pad, so all of them are stale at the rotation.
+ await until('both padding queues are full',()=>pool().padding===4*BATCH_SLOTS,net);
+ net.delay(100);
+ await Promise.all(Array.from({length:BATCH_SLOTS},()=>service.submit(spend())));
+ await until('the last batch of epoch 0 lands',()=>pool().batches===64,net);
+ const final=BigInt(pool().root);
+ await service.submit(spend());
+ await until('the first batch of epoch 1 lands',()=>pool().batches===65,net);
+ const [last,first]=batchesOf(service,63,2);
+ t.diagnostic(`rotation stall ${first!.at!-last!.at!} ms with 100 ms stub proofs`);
+ assert.equal(last!.slots.some(s=>s.ciphertext),false,'the last batch of the epoch took no padding');
+ assert.deepEqual([pool().epoch,pool().batchesInEpoch],[1,1]);
+ for(const s of first!.slots)assert.equal(s.anchor,String(anchorOf(hash,final,BigInt(s.rCur!.root))),'every slot opens against epoch 0\'s final root');
 });
 
 test('an epoch genesis writes version 2 and reads back as epoch; a classic one keeps its bytes',()=>{
