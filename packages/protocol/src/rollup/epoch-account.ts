@@ -35,7 +35,7 @@ const noteIn = (n: SnapshotEpochNote): EpochOwnedNote => ({ amount: BigInt(n.amo
 const byAmount = (a: EpochOwnedNote, b: EpochOwnedNote) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
 const uniform = () => crypto.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
 // trap: every epoch record carries noteBlockRoot, so its presence (the classic test) would read every full batch as chain-only.
-const chainOnly = (record: RollupEpochRecord) => record.slots.every(s => s.commitments[0] === '0' && s.commitments[1] === '0');
+export const chainOnly = (record: RollupEpochRecord) => record.slots.every(s => s.commitments[0] === '0' && s.commitments[1] === '0');
 const blockRootOf = (hash: Hash, leaves: bigint[]) => {
  let level = Array.from({ length: BLOCK }, (_, i) => leaves[i] ?? 0n);
  while (level.length > 1) level = Array.from({ length: level.length / 2 }, (_, i) => hash([level[2 * i]!, level[2 * i + 1]!]));

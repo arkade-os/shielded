@@ -176,7 +176,7 @@ test('an epoch mirror resumes where it stopped instead of re-fetching every batc
  cacheEpoch(dir,epochFixture.records.slice(0,3));
  assert.deepEqual([mirrorStart(dir),epochMirrorStart(dir)],[0,3],'every epoch record carries noteBlockRoot');
  cacheEpoch(dir,[blank(epochFixture.records[3]!),epochFixture.records[4]!],3);
- assert.equal(epochMirrorStart(dir),3,'a chain-only record is fetched again');
+ assert.equal(epochMirrorStart(dir),5,'a chain-only record the pool served is final');
  // The real CLI against a pool whose batch 128 was followed chain-only.
  const record=epochRecord(64),full=(n:number)=>{const r=record(n);return n===128?r:{...r,slots:r.slots.map((s,i)=>({...s,commitments:[String(n+1),String(i+1)] as [string,string]}))};};
  const {directory:pool,service}=await bakedPool({epochLen:64,batches:130,record:full}),request=await listen(service),froms:number[]=[],files:string[]=[],{batches,archiveFile}=service;
@@ -192,13 +192,25 @@ test('an epoch mirror resumes where it stopped instead of re-fetching every batc
  assert.deepEqual([froms,files,readdirSync(join(mirror,'nullifiers'))],[[0,100],['epoch-0.nf','epoch-1.nf'],['epoch-1.nf']],'the tampered archive is never written, and the one after it still is');
  writeFileSync(served,good);froms.length=0;files.length=0;
  await fallback();
- assert.deepEqual([froms,files],[[128],['epoch-0.nf']],'the second run starts at the chain-only batch and fetches only the archive it lacks');
+ assert.deepEqual([froms,files],[[130],['epoch-0.nf']],'the second run fetches no batch again, since the pool served 128 chain-only, and only the archive it lacks');
  assert.equal(cachedBatchNumbers(mirror).length,130);
  for(const name of ['epoch-0.nf','epoch-1.nf'])assert.deepEqual(readFileSync(join(mirror,'nullifiers',name)),readFileSync(join(pool,'operator','nullifiers',name)),name);
  assert.equal(readFileSync(join(mirror,'spec.json'),'utf8'),readFileSync(join(pool,'spec.json'),'utf8'),'the epoch spec, as the pool wrote its own');
  const mirrored=JSON.parse(readFileSync(join(mirror,'pool.json'),'utf8')),{network}=mirrored,leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(mirror,'spec.json'));
  assert.deepEqual([Object.keys(mirrored).sort(),mirrored.epochLen],[['epochLen','network','operator','script','token'],64]);
  assert.equal(hex.encode(rollupEpochPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay).tree.pkScript),mirrored.script,'the mirrored spec and keys rebuild the pool script');
+});
+
+test('a mirror fetches again only the placeholders its own chain walk wrote, never a chain-only record the pool served',t=>{
+ const dir=directory(t),stamped=epochFixture.records.map((r,i)=>({...r,txid:String(i+1).padStart(64,'0')})),bare=(r:RollupEpochRecord)=>({...r,slots:r.slots.map(s=>({...s,commitments:['0','0'] as [string,string]}))});
+ const {at:_,...walked}=bare(stamped[3]!);
+ cacheEpoch(dir,[stamped[0]!,bare(stamped[1]!),stamped[2]!,walked,stamped[4]!]);
+ assert.equal(epochMirrorStart(dir),3,'the walk\'s placeholder at 3, not the pool\'s own chain-only batch 1');
+ cacheEpoch(dir,[bare(stamped[3]!)],3);
+ assert.equal(epochMirrorStart(dir),5,'the pool\'s chain-only record replaces the placeholder, and is final');
+ const upgraded=directory(t);cacheEpoch(upgraded,[...stamped.slice(0,3),walked]);
+ cacheEpoch(upgraded,[stamped[3]!],3);cacheEpoch(upgraded,[walked],3);cacheEpoch(upgraded,[bare(stamped[3]!)],3);
+ assert.deepEqual([read(upgraded,3),epochMirrorStart(upgraded)],[stamped[3],4],'a full record replaces it, and no chain-only record ever replaces a full one');
 });
 
 test('withdraw on an epoch mirror never writes the classic spec over its own',async t=>{
