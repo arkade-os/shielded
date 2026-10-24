@@ -129,13 +129,13 @@ export function rollupProvingOf(kind:RollupPoolKind,files:Record<string,string>)
 }
 /** An epoch pool's own /status fields, all as of the last accepted batch except heapBytes, a live process gauge. */
 const epochFieldsOf=(epochLen:number,batches:number,a:RollupEpochStatus)=>({epoch:a.acceptedEpoch,epochLen,batchesInEpoch:batches-a.acceptedEpoch*epochLen,prevNoteRoot:String(a.acceptedPrevNoteRoot),erCount:a.acceptedErCount,rsCount:a.acceptedRsCount,nullifiers:a.acceptedNullifiers,heapBytes:process.memoryUsage().heapUsed});
-/** The persisted genesis decides; SHIELDED_ROLLUP_EPOCH_LEN only shapes a pool that has no genesis yet. */
-export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};epochLenEnv?:string}):{kind:RollupPoolKind;epochLen?:number} {
+/** The persisted genesis decides; the epoch length only shapes a pool that has no genesis yet. */
+export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};epochLen?:number|string}):{kind:RollupPoolKind;epochLen?:number} {
  const epoch=(epochLen:unknown)=>{
   if(typeof epochLen!=='number'||!Number.isSafeInteger(epochLen)||epochLen<EPOCH_LEN_FLOOR||epochLen>MAX_EPOCH_LEN)throw new Error(`The rollup epoch length must be a whole number of batches from ${EPOCH_LEN_FLOOR} to ${MAX_EPOCH_LEN}; got ${JSON.stringify(epochLen)}.`);
   return {kind:'epoch' as const,epochLen};
  };
- if(!o.genesis)return o.epochLenEnv===undefined?{kind:'classic'}:epoch(/^[1-9][0-9]*$/.test(o.epochLenEnv)?Number(o.epochLenEnv):o.epochLenEnv);
+ if(!o.genesis)return o.epochLen===undefined?{kind:'classic'}:epoch(typeof o.epochLen==='string'&&/^[1-9][0-9]*$/.test(o.epochLen)?Number(o.epochLen):o.epochLen);
  // Only a classic pool can lack the field (an epoch genesis always writes 2), and refusing it would block the live pool.
  if(o.genesis.version===1||o.genesis.version===undefined)return {kind:'classic'};
  if(o.genesis.version===2)return epoch(o.genesis.epochLen);
@@ -146,7 +146,7 @@ export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};
  * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
  * `bundled` already holds keys. Afterwards the volume's keys define the pool, whatever later images hold.
  */
-export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string;fetcher?:typeof fetch};renewBeforeMs?:number;log?:(message:string)=>void;providers?:RollupServiceProviders}){
+export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string;fetcher?:typeof fetch};renewBeforeMs?:number;epochLen?:number|string;log?:(message:string)=>void;providers?:RollupServiceProviders}){
  const log=o.log??((message:string)=>console.log('[rollup] '+message)),keys=join(o.directory,'keys'),p=o.providers??{};
  mkdirSync(o.directory,{recursive:true,mode:0o700});
  const secretsPath=join(o.directory,'secrets.json');
@@ -254,6 +254,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const raw=(await indexer.getVirtualTxs([head.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===head!.txid)!;
   if(!Extension.fromTx(raw).getPacketByType(ROLLUP_STATE_PACKET))throw new Error('The pool head carries no state packet.');
   const saved=rollupGenesisOf({token,head:{txid:head.txid,vout:head.vout,value:head.value,sourceTxHex:hex.encode(raw.toBytes(true,true))},serverKey:network.serverKey,emulatorKey:network.emulatorKey,...(epochLen===undefined?{}:{epochLen})});
+  if(o.epochLen!==undefined&&saved.version!==2)throw new Error('Refusing to write a classic genesis: the service was given an epoch length.');
   writeFileSync(join(o.directory,'genesis.json'),JSON.stringify(saved),{flag:'wx'});
   log(`genesis ${head.txid}:${head.vout} token ${token}`);
   return saved;
@@ -447,7 +448,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(live||stopped)return;
    try{
     const path=join(o.directory,'genesis.json'),known=existsSync(path)?readJson<Genesis>(path):undefined;
-    const {kind,epochLen}=rollupPoolKindOf({genesis:known,epochLenEnv:process.env.SHIELDED_ROLLUP_EPOCH_LEN});
+    const {kind,epochLen}=rollupPoolKindOf({genesis:known,epochLen:o.epochLen});
+    if(o.epochLen!==undefined&&kind==='classic')throw new Error('This directory holds a classic pool; an epoch pool needs its own data directory.');
     if(!ensureKeys(kind))return;
     const network=await preflightStockMutinynet({...o.endpoints,...(known?{expected:{serverKey:known.serverKey,emulatorKey:known.emulatorKey}}:{})});
     const saved=known??await genesis(network,epochLen);

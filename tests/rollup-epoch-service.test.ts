@@ -126,7 +126,7 @@ test('a classic service is byte-identical to today',async t=>{
  const saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8'));
  assert.deepEqual([Object.keys(saved),Object.keys(saved.archive),Object.keys(saved.archive.head),saved.version,saved.archive.version],
   [['version','token','txid','serverKey','emulatorKey','archive'],['version','head','reserves','batches'],['txid','vout','value','sourceTxHex'],1,1]);
- assert.deepEqual(rollupPoolKindOf({genesis:saved,epochLenEnv:'128'}),{kind:'classic'});
+ assert.deepEqual(rollupPoolKindOf({genesis:saved,epochLen:'128'}),{kind:'classic'});
  // A batch through the classic padding path.
  const recipient=rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey());
  const built=await buildRollupTransfer(hash,{root:RollupState.genesis(hash).latestRoot(),ask:randomField(),nk:randomField(),self:recipient,request:{},width:1});

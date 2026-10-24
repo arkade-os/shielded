@@ -77,24 +77,24 @@ test('an install replaces a leftover key directory that has no manifest, but nev
 
 test('the pool kind comes from the persisted genesis, and an unknown version is refused',()=>{
  assert.deepEqual(rollupPoolKindOf({genesis:{version:1}}),{kind:'classic'});
- assert.deepEqual(rollupPoolKindOf({genesis:{version:1},epochLenEnv:'128'}),{kind:'classic'});
+ assert.deepEqual(rollupPoolKindOf({genesis:{version:1},epochLen:'128'}),{kind:'classic'});
  assert.deepEqual(rollupPoolKindOf({genesis:{version:2,epochLen:128}}),{kind:'epoch',epochLen:128});
  assert.deepEqual(rollupPoolKindOf({}),{kind:'classic'});
- assert.deepEqual(rollupPoolKindOf({epochLenEnv:'128'}),{kind:'epoch',epochLen:128});
+ assert.deepEqual(rollupPoolKindOf({epochLen:'128'}),{kind:'epoch',epochLen:128});
  assert.throws(()=>rollupPoolKindOf({genesis:{version:3}}),/version 3/);
  assert.throws(()=>rollupPoolKindOf({genesis:{version:2}}),/epoch length/);
 });
 
-test('a genesis without a version reads as classic, and the env cannot change that',()=>{
+test('a genesis without a version reads as classic, and an epoch length cannot change that',()=>{
  assert.deepEqual(rollupPoolKindOf({genesis:{}}),{kind:'classic'});
- assert.deepEqual(rollupPoolKindOf({genesis:{},epochLenEnv:'128'}),{kind:'classic'});
+ assert.deepEqual(rollupPoolKindOf({genesis:{},epochLen:'128'}),{kind:'classic'});
  assert.throws(()=>rollupPoolKindOf({genesis:{version:3}}),/version 3/);
  assert.throws(()=>rollupPoolKindOf({genesis:{version:2}}),/epoch length/);
 });
 
 test('a genesis epoch length is at least 64 and at most 2**20',()=>{
- for(const bad of ['0','1','63',String(2**20+1),'128.5','x'])assert.throws(()=>rollupPoolKindOf({epochLenEnv:bad}),/epoch length/,bad);
- assert.deepEqual(rollupPoolKindOf({epochLenEnv:String(2**20)}),{kind:'epoch',epochLen:2**20});
+ for(const bad of ['0','1','63',String(2**20+1),'128.5','x'])assert.throws(()=>rollupPoolKindOf({epochLen:bad}),/epoch length/,bad);
+ assert.deepEqual(rollupPoolKindOf({epochLen:String(2**20)}),{kind:'epoch',epochLen:2**20});
 });
 
 test('each pool kind gets its own key files, and the classic list never moves',()=>{
@@ -117,40 +117,34 @@ test('the epoch programs hash covers the recover leaf and is not the genesis-3 h
 });
 
 /** One step() on a fresh data directory; an endpoint with a path fails the preflight before any request is sent. */
-async function stepOnce(o:{genesis?:object;keys?:string;bundled?:string}){
+async function stepOnce(o:{genesis?:object;keys?:string;bundled?:string;epochLen?:number|string}){
  const directory=mkdtempSync(join(tmpdir(),'rollup-data-')),keys=join(directory,'keys');
  if(o.genesis)writeFileSync(join(directory,'genesis.json'),JSON.stringify(o.genesis));
  if(o.keys)installRollupKeys(o.keys,keys);
- const service=await openRollupService({directory,circuits:directory,setupTool:directory,vmBinary:DEFAULT_VM_BINARY,endpoints:{arkUrl:'http://127.0.0.1/offline'},log:()=>{},...(o.bundled?{bundled:o.bundled}:{})});
+ const service=await openRollupService({directory,circuits:directory,setupTool:directory,vmBinary:DEFAULT_VM_BINARY,endpoints:{arkUrl:'http://127.0.0.1/offline'},log:()=>{},...(o.bundled?{bundled:o.bundled}:{}),...(o.epochLen===undefined?{}:{epochLen:o.epochLen})});
  try{await service.step();return {...service.status(),keys,hasKeys:existsSync(keys),keyFile:service.keyFile};}
  finally{service.close();rmSync(directory,{recursive:true,force:true});}
 }
 
-test('a classic genesis keeps the classic key list under SHIELDED_ROLLUP_EPOCH_LEN, and an unknown version is refused before the keys',async()=>{
- process.env.SHIELDED_ROLLUP_EPOCH_LEN='128';
- try{
-  const live=await stepOnce({genesis:{version:1},keys:bundle()});
-  assert.match(live.message,/preflight/);
-  assert.deepEqual(Object.keys(live.proving??{}),['spend','join','batch','batchJoin']);
-  const pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
-  assert.deepEqual(live.proving,{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')});
-  assert.equal(live.keyFile('spend.zkey'),join(live.keys,'spend.zkey'));
-  assert.equal(live.keyFile('epoch-spend.zkey'),undefined);
-  assert.match((await stepOnce({genesis:{},keys:bundle()})).message,/preflight/);
-  assert.match((await stepOnce({genesis:{version:3}})).message,/version 3/);
- }finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
+test('a classic genesis keeps the classic key list, and an unknown version is refused before the keys',async()=>{
+ const live=await stepOnce({genesis:{version:1},keys:bundle()});
+ assert.match(live.message,/preflight/);
+ assert.deepEqual(Object.keys(live.proving??{}),['spend','join','batch','batchJoin']);
+ const pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
+ assert.deepEqual(live.proving,{spend:pair('spend'),join:pair('join'),batch:pair('batch-spend'),batchJoin:pair('batch-join')});
+ assert.equal(live.keyFile('spend.zkey'),join(live.keys,'spend.zkey'));
+ assert.equal(live.keyFile('epoch-spend.zkey'),undefined);
+ assert.match((await stepOnce({genesis:{},keys:bundle()})).message,/preflight/);
+ assert.match((await stepOnce({genesis:{version:3}})).message,/version 3/);
 });
 
-test('a fresh volume under SHIELDED_ROLLUP_EPOCH_LEN installs only an epoch key set, and stops before the network',async()=>{
- process.env.SHIELDED_ROLLUP_EPOCH_LEN='128';
- try{
-  const classic=await stepOnce({bundled:bundle()});
-  assert.match(classic.message,/epoch-spend\.wasm/);
-  assert.equal(classic.hasKeys,false);
-  const epoch=await stepOnce({bundled:bundle('','epoch')});
-  assert.match(epoch.message,/preflight/);
-  assert.equal(epoch.proving?.spend.wasm,sha('epoch-spend.wasm'));
-  assert.equal(epoch.keyFile('epoch-batch-recover.zkey'),join(epoch.keys,'epoch-batch-recover.zkey'));
-  assert.equal(epoch.keyFile('spend.zkey'),undefined);
- }finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
+test('a fresh volume given an epoch length installs only an epoch key set, and stops before the network',async()=>{
+ const classic=await stepOnce({bundled:bundle(),epochLen:128});
+ assert.match(classic.message,/epoch-spend\.wasm/);
+ assert.equal(classic.hasKeys,false);
+ const epoch=await stepOnce({bundled:bundle('','epoch'),epochLen:128});
+ assert.match(epoch.message,/preflight/);
+ assert.equal(epoch.proving?.spend.wasm,sha('epoch-spend.wasm'));
+ assert.equal(epoch.keyFile('epoch-batch-recover.zkey'),join(epoch.keys,'epoch-batch-recover.zkey'));
+ assert.equal(epoch.keyFile('spend.zkey'),undefined);
 });

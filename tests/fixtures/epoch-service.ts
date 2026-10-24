@@ -125,17 +125,15 @@ export function offline(){
   prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));if(proveMs)await new Promise(r=>setTimeout(r,proveMs));return proof;}}),verify:async(_key:unknown,_publics:unknown,p:SnarkProof)=>p.pi_a[0]!==badProof.pi_a[0]};
  const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:hex.encode(serverPub!),maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:hex.encode(emulatorPub!),version:'test'}};
  const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
- const open=(directory:string,keys:string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
-  endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers});
+ const open=(directory:string,keys:string,epochLen?:number|string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
+  endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers,...(epochLen===undefined?{}:{epochLen})});
  return {transport,landed,sent,proved,logs,open,hold,newHead,fund,delay:(ms:number)=>{proveMs=ms;}};
 }
 export type Offline=ReturnType<typeof offline>;
 
 /** One step of a service on `directory`, which must reach `ready`; closed with the file's other closers. */
-export async function ready(net:Offline,directory:string,keys:string,epochLen?:string){
- if(epochLen)process.env.SHIELDED_ROLLUP_EPOCH_LEN=epochLen;
- try{const service=await net.open(directory,keys);closers.push(()=>service.close());await service.step();assert.equal(service.status().phase,'ready',service.status().message);return service;}
- finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
+export async function ready(net:Offline,directory:string,keys:string,epochLen?:number|string){
+ const service=await net.open(directory,keys,epochLen);closers.push(()=>service.close());await service.step();assert.equal(service.status().phase,'ready',service.status().message);return service;
 }
 export const until=async(what:string,done:()=>boolean,net:Offline)=>{for(let i=0;i<600&&!done();i++)await new Promise(r=>setTimeout(r,100));assert.ok(done(),`${what}; log: ${net.logs.slice(-5).join(' | ')}`);};
 
