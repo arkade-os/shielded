@@ -10,10 +10,10 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import {F1Field} from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
-import {ROLLUP_DOMAIN,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
+import {ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
-import {noteOf} from '../packages/protocol/src/rollup/notes.ts';
+import {EPOCH_DERIVED_FIELDS} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupNullifiers} from '../packages/protocol/src/rollup/nullifiers.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
@@ -24,8 +24,7 @@ import {buildEpochFallbackBatch,openEpochReplica,type EpochFallbackSpend,type Ep
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupSpecOf,type RollupService} from '../src/rollup/service.ts';
 import {cacheBatch,cacheEpochArchive,replayEpochMirror} from '../tools/rollup-cache.ts';
-import {foldPath} from './fixtures/epoch.ts';
-import {epochPool,posted} from './fixtures/epoch-pool.ts';
+import {epochPool,opens,posted} from './fixtures/epoch-pool.ts';
 import {hash,le32,listen,proof as stub,scratch,token} from './fixtures/epoch-service.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 
@@ -49,7 +48,10 @@ const toyClient=async(publics:readonly bigint[])=>{
  return w===null?undefined:(await snarkjs.groth16.fullProve({pub,nf0,nf1,deposit,withdraw,boundaryAsset,destination,w:String(w)},toy('covenant-client.wasm'),toy('covenant-client.zkey'))).proof as SnarkProof;
 };
 const proved=async(build:()=>Promise<EpochFallbackSpend['built']>):Promise<EpochFallbackSpend>=>{for(;;){const built=await build(),proof=await toyClient(built.witness.publicSignals);if(proof)return {built,proof};}};
-const toyBatch={prove:async(_input:Record<string,unknown>,expected:readonly bigint[])=>(await snarkjs.groth16.fullProve({x:Array.from({length:11},(_,i)=>String(expected[i]??0n))},toy('covenant-batch.wasm'),toy('covenant-batch.zkey'))).proof as SnarkProof};
+const toyBatch={prove:async(input:Record<string,unknown>,expected:readonly bigint[])=>{
+ assert.ok('statement' in input&&EPOCH_DERIVED_FIELDS.every(key=>!(key in input)),'the batch prover gets the circuit\'s input, never a field the circuit derives');
+ return (await snarkjs.groth16.fullProve({x:Array.from({length:11},(_,i)=>String(expected[i]??0n))},toy('covenant-batch.wasm'),toy('covenant-batch.zkey'))).proof as SnarkProof;
+}};
 
 const [aliceKeys,bobKeys]=['11','22'].map(b=>deriveRollupKeys2(b.repeat(32),'mutinynet')) as [ReturnType<typeof deriveRollupKeys2>,ReturnType<typeof deriveRollupKeys2>];
 const [alice,bob]=[aliceKeys,bobKeys].map(k=>rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));
@@ -100,12 +102,10 @@ test('a replica replayed from mirrored records reaches the pool\'s commitment ac
  assert.equal(replica.state.commitment(),world.state.commitment(),'through a recover batch, with no archive file in the mirror');
 });
 
-test('the replica produces a path for a note in a closed epoch, and it folds to the archived noteFinal',async()=>{
- const replica=await open(mirrorOf()),account=await accountOf(aliceKeys,replica),[old,recent]=account.notes();
- const folds=(n:typeof old)=>foldPath(hash,noteOf(hash,ROLLUP_DOMAIN,n.amount,n.asset,account.owner,n.rho),n.index,replica.path(n.epoch,n.index));
- assert.deepEqual([old.epoch,recent.epoch],[0,1]);
- assert.equal(folds(old),replica.state.archive.record(0)!.noteFinal,'epoch 0, archived');
- assert.equal(folds(recent),replica.state.prevNoteRoot,'epoch 1, closed and not yet archived');
+test('a record whose anchor is wrong but whose chain facts are right no longer stops the replica',async()=>{
+ const records=structuredClone(world.records);records[5]!.slots[1]!.anchor='1';
+ const replica=await bound(mirrorOf(records)),account=await accountOf(aliceKeys,replica);
+ assert.deepEqual([replica.state.commitment(),account.balance()],[world.state.commitment(),8000n]);
 });
 
 test('a tampered archive file is refused against the ER leaf the replica rebuilt',async()=>{
@@ -175,10 +175,11 @@ test('publish posts an epoch record /external accepts, and a chain-only record w
  assert.deepEqual(calls,[[paid.txid,paid.slots.map(({publics:_,...slot})=>slot)],[bare.txid,undefined]]);
 });
 
-test('a replica over a chain-only record reaches the right commitment and refuses to produce a path in that block',async()=>{
- const replica=await open(mirrorOf()),[recovered]=world.records[9]!.slots;
- assert.equal(replica.state.commitment(),world.state.commitment());
- assert.throws(()=>replica.path(2,64),/no path for leaf 64 of epoch 2/,'batch 10 is block 2 of epoch 2, followed chain-only');
- assert.equal(foldPath(hash,BigInt(recovered!.commitments[0]),32,replica.path(2,32)),replica.state.latestRoot(),'a full block of that epoch still opens');
+test('a replica over a chain-only record reaches the right commitment, and a note of that epoch still spends',async()=>{
+ const replica=await bound(mirrorOf()),account=await accountOf(bobKeys,replica),note=account.notes().find(n=>n.epoch===2)!;
+ assert.equal(replica.state.commitment(),world.state.commitment(),'batch 10, in the note\'s epoch, was followed chain-only');
+ const mine=await account.spend({input:note,withdraw:400n,program:new Uint8Array(32).fill(0xcd)},bob);
+ assert.ok(opens(hash,account.owner,mine,[note]),'the account\'s path folds to the root its sel selects');
+ replica.state.clone().apply('spend',[mine.slot,...await Promise.all(Array.from({length:9},async()=>(await replica.pad()).slot))]);
 });
 
