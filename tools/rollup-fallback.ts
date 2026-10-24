@@ -1,7 +1,7 @@
 // The liveness fallback (spec section 4): the pool's batch leaf checks proofs, not who submits, so anyone can move it.
 //   mirror  <pool-url> <dir>            save the pool's parameters, proving keys, batch records and (epoch pool) checked nullifier archives while the operator is up
 //   withdraw <dir> <sats> <tark1…>       prove and submit a batch paying out from the wallet in SHIELDED_PHRASE
-//   recover <dir> <origin>              (epoch pool) prove and submit a width-1 batch recovering the wallet's largest note of that epoch
+//   recover <dir> <origin>              (epoch pool) prove and submit a width-1 batch recovering the wallet's largest BTC note of that epoch
 //   publish <dir> <pool-url> <batch>     hand a batch this tool landed to the operator, so it can follow it
 import {createHash} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
@@ -183,8 +183,8 @@ async function recover(dir:string,origin:number){
  if(pool.epochLen===undefined)throw new Error('This mirror is of a classic pool, which has no recover batch.');
  const o=await epochOpen(dir,{...pool,epochLen:pool.epochLen}),{account,replica}=o;
  replica.preload(origin);
- const note=account.notes().filter(n=>n.epoch===origin&&!account.spendable(n)).sort((a,b)=>a.amount>b.amount?-1:1)[0];
- if(!note)throw new Error(`This wallet holds no note of epoch ${origin} that needs a recovery.`);
+ const stranded=account.notes().filter(n=>!account.spendable(n)),note=stranded.filter(n=>n.epoch===origin).sort((a,b)=>a.amount>b.amount?-1:1)[0];
+ if(!note)throw new Error(`This wallet holds no BTC note of epoch ${origin} that needs a recovery${stranded.length?`; the epochs that hold one: ${[...new Set(stranded.map(n=>n.epoch))].join(', ')}`:''}.`);
  const mine=await account.recover(note,o.self);
  await epochLand(dir,o,'recover',[{built:mine,proof:await proverOf(dir,'epoch-spend')(mine)}]);
  log('recovered a',note.amount,'sat note of epoch',origin);
@@ -202,5 +202,5 @@ if(command==='mirror')await mirror(args[0]!.replace(/\/+$/,''),args[1]!);
 else if(command==='withdraw')await withdraw(args[0]!,BigInt(args[1]!),args[2]!);
 else if(command==='recover')await recover(args[0]!,Number(args[1]));
 else if(command==='publish')await publish(args[0]!,args[1]!.replace(/\/+$/,''),Number(args[2]));
-else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> | publish <dir> <pool-url> <batch>');
+else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>');
 await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();

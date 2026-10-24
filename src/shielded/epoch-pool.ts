@@ -3,7 +3,7 @@ import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-cir
 import type {EpochBatchPage} from './epoch-sync.ts';
 import {poolApiOf,transferBody,type Groth16Proof,type PoolApi,type RollupPoolStatus} from './pool.ts';
 
-/** Plan 4b's epoch /spends body: slot.anchor where a classic slot has root, and exactly one of rCur (fast path) and origin (recovery). */
+/** The epoch pool's POST /spends body: slot.anchor where a classic slot has root, and exactly one of rCur (fast path) and origin (recovery). */
 export function epochTransferBody(id:string,built:EpochBuiltSpend,proof:Groth16Proof,extra:Parameters<typeof transferBody>[3]={}){
  const s=built.slot;
  if((s.rCur===undefined)===(s.origin===undefined))throw new Error('An epoch slot names exactly one of rCur and origin.');

@@ -7,6 +7,7 @@ import {test} from 'node:test';
 import {CSVMultisigTapscript,MultisigTapscript,SingleKey,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import type {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
+import {EPOCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {decodeDisclosure,verifyDisclosure,type Disclosure} from '../packages/protocol/src/rollup/disclosure.ts';
 import {EpochAccount,type EpochAccountSnapshot,type EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
@@ -24,7 +25,7 @@ import {epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
 import {checkSigningRequest,poolApiOf,signDeposit,waitForSpend,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
 import type {ScanPage} from '../src/shielded/sync.ts';
 import {epochHarness} from './fixtures/epoch.ts';
-import {bakedPool,checkpoint,emulatorKey,epochRecord,exitDelay,hash,listen,proof,ready,serverKey,token} from './fixtures/epoch-service.ts';
+import {bakedPool,checkpoint,emulatorKey,epochRecord,exitDelay,hash,listen,proof,ready,serverKey,token,until} from './fixtures/epoch-service.ts';
 
 const EPOCH_LEN=64,BAKED=60,{recovery,dummyInput}=epochHarness(hash),stub={prove:async()=>proof};
 const [aliceKeys,bobKeys]=['11','22'].map(b=>deriveRollupKeys2(b.repeat(32),'mutinynet')) as [ReturnType<typeof deriveRollupKeys2>,ReturnType<typeof deriveRollupKeys2>];
@@ -46,7 +47,8 @@ const verifyOnPool=async(api:PoolApi,d:Disclosure)=>{
  * One real epoch service of 64-batch epochs, driven over HTTP. Batches 0-59 are baked chain-only; Alice shields at 60 and 61 and pays Bob at 62;
  * Bob shields at 63 and pays Alice in the rotating batch 64; Alice renews two notes at 65. Batches 66-127 are one-slot recoveries of epoch -1
  * through the operator itself, the service closed. At 128 Alice recovers an un-renewed note riding the rotation, at 129 another from the
- * archive, and at 130 pays Bob again.
+ * archive, and at 130 pays Bob again. At 131 she settles a zero deposit; 132 and 133 are three more with the first held at the transport,
+ * so 133 carries two live slots.
  */
 let built:ReturnType<typeof buildWorld>|undefined;
 const world=()=>(built??=buildWorld());
@@ -117,8 +119,19 @@ async function buildWorld(){
  const archived=await settle(await alice.recover(late[0],aliceTo));
  const twice=await refusal(api('/spends',epochTransferBody(hex.encode(randomBytes(16)),again,proof)));
  const after=await pay(alice,aliceTo,bobTo,700n);
+ await epochCatchUp(alice,api);
+ const idle=await settle(await alice.spend({deposit:0n},aliceTo));
+ await epochCatchUp(alice,api);
+ const gate=net.hold(),ids:string[]=[],post=async(spend:EpochBuiltSpend)=>{const id=hex.encode(randomBytes(16));await api('/spends',epochTransferBody(id,spend,proof));ids.push(id);};
+ const trio=await Promise.all([0,1,2].map(()=>alice.spend({deposit:0n},aliceTo)));
+ try{
+  await post(trio[0]!);
+  await until('the first of three reaches the transport',()=>gate.reached,net);
+  await post(trio[1]!);await post(trio[2]!);
+ }finally{gate.release();}
+ const crowd=await Promise.all(ids.map(id=>waitForSpend(id,async()=>undefined,api,50,60_000)));
  await Promise.all([epochCatchUp(alice,api),epochCatchUp(bob,api)]);
- return {api,origin,status,alice,bob,early,stale,riding,renewal,renewed,snapshot,unrenewed,at128,held,rsBefore,ridden,archived,twice,after};
+ return {api,origin,status,alice,bob,early,stale,riding,renewal,renewed,snapshot,unrenewed,at128,held,rsBefore,ridden,archived,twice,after,idle,trio,crowd};
 }
 
 test('a wallet deposits, syncs and spends on the fast path across two rotations of the real epoch service',async()=>{
@@ -132,7 +145,21 @@ test('a wallet deposits, syncs and spends on the fast path across two rotations 
  assert.deepEqual(entries.filter(e=>e.rotated).map(e=>[e.batch,e.kind]),[[64,'spend'],[128,'recover']]);
  const fresh=EpochAccount.owning(hash,aliceKeys,{epochLen:EPOCH_LEN,bornAt:BAKED}),mine=new Set(w.alice.history.map(e=>e.batch));
  for(const e of entries.filter(e=>mine.has(e.batch)))assert.ok(await fresh.concerns(e),`the scan entry of batch ${e.batch} names Alice's view key`);
- assert.deepEqual([pool.batches,pool.epoch,BigInt(pool.root),BigInt(pool.prevNoteRoot!)],[131,2,w.alice.latestRoot(),w.alice.prevNoteRoot()]);
+ assert.deepEqual([pool.batches,pool.epoch,BigInt(pool.root),BigInt(pool.prevNoteRoot!)],[134,2,w.alice.latestRoot(),w.alice.prevNoteRoot()]);
+});
+
+test('a zero-deposit self-spend, the smoke driver\'s idle step, settles with no coin and leaves the wallet no note or entry',async()=>{
+ const w=await world(),[record]=(await w.api<EpochBatchPage>(`/batches?from=${w.idle.batch}&limit=1`)).batches;
+ assert.deepEqual([w.idle.batch,record!.kind,record!.slots.length,record!.slots[0]!.nullifiers,record!.slots[0]!.publics[3]],[131,'spend',EPOCH_SLOTS.spend,w.idle.slot.nullifiers,'0']);
+ assert.deepEqual(w.alice.history.filter(e=>e.batch>130),[]);
+});
+
+test('three zero-deposit spends, the first held at the transport, land as a lone batch and then one with two live slots',async()=>{
+ const w=await world(),[solo,pair]=(await w.api<EpochBatchPage>(`/batches?from=${w.crowd[0]!.batch}&limit=2`)).batches;
+ const [a,b,c]=w.trio.map(s=>String(s.slot.nullifiers[0])),live=(r?:RollupEpochRecord)=>r!.slots.map(s=>s.nullifiers[0]!).filter(n=>[a,b,c].includes(n)).sort();
+ assert.deepEqual(w.crowd.map(s=>s.batch),[132,133,133]);
+ assert.deepEqual([solo,pair].map(r=>[r!.kind,r!.slots.length]),[['spend',EPOCH_SLOTS.spend],['spend',EPOCH_SLOTS.spend]]);
+ assert.deepEqual([solo,pair].map(live),[[a],[b,c].sort()],'the rest of each is the pool\'s padding');
 });
 
 test('a v2 snapshot from epoch 1 and a cold restore from the birthday both reach the real pool\'s root and notes',async()=>{
@@ -173,6 +200,24 @@ test('the reveal link of a note received after a rotation verifies against the r
   assert.deepEqual([link.startsWith(`${w.origin()}/verify#`),disclosure.to,await verifyOnPool(w.api,disclosure)],[true,self,[true]],`batch ${entry.batch}`);
   const leaves={...disclosure,notes:disclosure.notes.map((n,i)=>({...n,index:entry.created[i]!.index}))};
   assert.deepEqual(await verifyOnPool(w.api,leaves),[false],'the per-epoch leaf index is no /batches locator');
+ }
+});
+
+/** A second real service, of Mutinynet's 128-batch epochs and 72 batches into its epoch 1: the shape that has an in-epoch checkpoint, at 64, to start from. */
+let sibling:ReturnType<typeof buildCheckpointPool>|undefined;
+const checkpointPool=()=>(sibling??=buildCheckpointPool());
+async function buildCheckpointPool(){
+ const {service}=await bakedPool({epochLen:128,batches:200,record:epochRecord(128)}),{server}=await listen(service);
+ return poolApiOf(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+}
+
+test('a fresh account starts from the real service\'s in-epoch checkpoint, born on it or past it, and matches the pool',async()=>{
+ const api=await checkpointPool(),pool=(await api<RollupPoolStatus>('/status')).pool!;
+ for(const bornAt of [192,200]){
+  const asked:string[]=[],logged=((path:string,...rest:[unknown?,(()=>void)?])=>{asked.push(path);return api(path,...rest);}) as PoolApi;
+  const account=await epochFreshAccount(hash,aliceKeys,bornAt,logged);
+  assert.deepEqual(asked,['/status','/checkpoints/1/64','/batches?from=192&limit=50','/status'],`born at ${bornAt}: no replay from the epoch before`);
+  assert.deepEqual([account.batchCount,account.epoch,account.latestRoot(),account.prevNoteRoot()],[pool.batches,pool.epoch,BigInt(pool.root),BigInt(pool.prevNoteRoot!)],`born at ${bornAt}`);
  }
 });
 

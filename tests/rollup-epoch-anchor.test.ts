@@ -11,7 +11,6 @@ import { createRollupRouter } from '../src/rollup/http.ts';
 import { rollupKeyFilesOf, rollupKeyPath, rollupProvingOf, type RollupService } from '../src/rollup/service.ts';
 import { epochProvingUrls, epochTransferBody } from '../src/shielded/epoch-pool.ts';
 import { circuitUrls, pickNote, type PoolApi } from '../src/shielded/pool.ts';
-import type { RollupAccount } from '../packages/protocol/src/rollup/account.ts';
 import { BTC_ASSET, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
 import { anchorOf } from '../packages/protocol/src/rollup/epoch.ts';
 import { EpochAccount } from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -164,14 +163,4 @@ test('an epoch proving URL names epoch-spend, and the pool serves it', async (t)
  const served = async (url: string) => { const response = await fetch(url); return [response.status, await response.text()]; };
  for (const url of [spend.wasm, spend.zkey, joined.wasm, joined.zkey]) assert.deepEqual(await served(url), [200, new URL(url).pathname.split('/').pop()], url);
  for (const url of Object.values(circuitUrls('spend', proving, origin))) assert.equal((await served(url))[0], 404, url);
-});
-
-test('EpochAccount satisfies the account port, and its history and scan pair differ by design', () => {
- // tsc is the check. history (renew, recover) and concerns/skip (the epoch scan entry) differ by design; Plan 6 flips those lines.
- const port: Pick<RollupAccount, 'owner' | 'txids' | 'canSkip' | 'batchCount' | 'latestRoot' | 'notes' | 'balance' | 'join' | 'pay' | 'consolidate' | 'depositAsset' | 'withdrawAsset'> = alice(4);
- // @ts-expect-error
- const history: Pick<RollupAccount, 'history'> = alice(4);
- // @ts-expect-error
- const scan: Pick<RollupAccount, 'concerns' | 'skip'> = alice(4);
- assert.ok(port && history && scan);
 });

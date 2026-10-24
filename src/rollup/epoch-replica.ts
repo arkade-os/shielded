@@ -16,7 +16,7 @@ import type {RollupProver} from './prover.ts';
 
 const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
 
-/** A replayed EpochState with its archive files loaded and checked, from a mirror directory 4b Task 6 filled. */
+/** An EpochState replayed from the batch records of a mirror directory, which `tools/rollup-fallback.ts mirror` fills; its archive files are only checked, in `preload`. */
 export async function openEpochReplica(o:{dir:string;hash:Hash;epochLen:number;leaves:RollupEpochLeaves}){
  const state=EpochState.genesis(o.hash,o.epochLen,false),records:RollupEpochRecord[]=[];
  let bound:bigint|undefined;

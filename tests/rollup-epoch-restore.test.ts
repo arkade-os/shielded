@@ -124,6 +124,14 @@ test('a cold wallet born in the current epoch starts at the (epoch, blocks) chec
  assert.deepEqual([replayed.notes(), replayed.prevNoteRoot()], [account.notes(), account.prevNoteRoot()]);
 });
 
+test('a birthday past a checkpoint starts from the one below it, as the classic floor does, and one before the first asks for none', async () => {
+ const pool = await longPool(), { asked, api } = logged(pool.api), early = logged(pool.api), status = (await pool.api<RollupPoolStatus>('/status')).pool!;
+ const account = await epochFreshAccount(hash, aliceKeys, 2 * LONG + 70, api), young = await epochFreshAccount(hash, aliceKeys, 2 * LONG + 63, early.api);
+ assert.deepEqual(asked, ['/status', '/checkpoints/2/64', '/batches?from=320&limit=50', '/batches?from=370&limit=50', '/status']);
+ assert.deepEqual([account.batchCount, account.epoch, account.latestRoot(), account.prevNoteRoot(), account.notes()], [3 * LONG, 2, pool.state.latestRoot(), BigInt(status.prevNoteRoot!), []], 'Alice\'s payment at 325 is the batch before this birthday');
+ assert.deepEqual([early.asked, young.batchCount, young.epoch], [['/status'], LONG, 1]);
+});
+
 test('a cold wallet with an older birthday replays from the previous epoch and learns prevNoteRoot at the rotation', async () => {
  const pool = epochPool(hash, 4), { asked, api } = logged(pool.api);
  for (let n = 0; n < 18; n++) pool.land('spend', [2, 9, 13].includes(n) ? [await pool.deposit(aliceTo, 100n * BigInt(n))] : []);

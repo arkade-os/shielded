@@ -29,13 +29,13 @@ export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,
 }
 
 /**
- * An account for keys that hold nothing before `bornAt`. Born in the pool's current epoch on a checkpoint, it starts there with
- * the pool's previous-epoch root; otherwise it replays from the start of the epoch before its birthday, whose rotation teaches it that root.
+ * An account for keys that hold nothing before `bornAt`. Born in the pool's current epoch at or past a checkpoint, it starts at the last one not
+ * after its birthday, with the pool's previous-epoch root; otherwise it replays from the start of the epoch before its birthday, whose rotation teaches it that root.
  */
 export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:PoolApi,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>):Promise<EpochAccount>{
- const pool=await epochPoolOf(api),{epochLen}=pool,epoch=Math.floor(bornAt/epochLen),blocks=bornAt-epoch*epochLen;
+ const pool=await epochPoolOf(api),{epochLen}=pool,epoch=Math.floor(bornAt/epochLen),blocks=Math.floor((bornAt-epoch*epochLen)/CHECKPOINT_EVERY)*CHECKPOINT_EVERY;
  // pool.epoch is the last accepted batch's: at an epoch's end the count alone names the next epoch, whose checkpoint 404s.
- if(epoch===pool.epoch&&blocks>0&&blocks%CHECKPOINT_EVERY===0&&pool.prevNoteRoot!==undefined)try{
+ if(epoch===pool.epoch&&blocks>0&&pool.prevNoteRoot!==undefined)try{
   const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
   const account=checkpoint.epoch===epoch&&checkpoint.blocks===blocks?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt}):undefined;
   if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched))return account;
