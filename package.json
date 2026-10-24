@@ -25,6 +25,7 @@
     "rollup:fixture:epoch-covenant": "node --import tsx tools/rollup-epoch-covenant-fixture.ts",
     "test:rollup:witness": "node --import tsx tools/rollup-circuit-witness-smoke.ts",
     "test:rollup:epoch-witness": "node --import tsx tools/rollup-epoch-circuit-witness-smoke.ts",
+    "test:rollup:epoch-prove": "node --max-old-space-size=16384 --import tsx tools/rollup-epoch-prove-smoke.ts",
     "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
     "fallback": "node --max-old-space-size=8192 --experimental-eventsource --import tsx tools/rollup-fallback.ts"
   },
