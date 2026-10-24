@@ -39,6 +39,7 @@ export function encodeEpochScan(entries: readonly { record: EpochScannedRecord; 
 
 export function decodeEpochScan(bytes: Uint8Array, from: number, epochLen: number): EpochScanBatch[] {
  if (!Number.isSafeInteger(epochLen) || epochLen < 1) throw new RangeError('epochLen must be a positive safe integer.');
+ if (!Number.isSafeInteger(from) || from < 0) throw new RangeError('from must be a non-negative safe integer.');
  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), out: EpochScanBatch[] = [];
  for (let at = 0, batch = from; at < bytes.length; batch++) {
   const flags = bytes[at + 40]!, kind = KINDS[flags & 3], rotated = (flags & EPOCH_SCAN_FLAG_ROTATED) !== 0;

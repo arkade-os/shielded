@@ -52,7 +52,10 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   next();
  });
  router.get('/status',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.status());});
- router.get('/storage',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.storage());});
+ router.get('/storage',(_req,res)=>{
+  res.setHeader('Cache-Control','no-store');
+  try{res.json(service()!.storage());}catch(error){res.status(503).json({error:(error as Error).message});}
+ });
  router.get('/proving/:file',(req,res)=>{
   const path=service()!.keyFile(req.params.file);
   if(!path){res.status(404).json({error:'Unknown proving file.'});return;}
@@ -69,17 +72,22 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   const from=Number(req.query.from??0),limit=Math.min(Number(req.query.limit??500),500);
   if(!Number.isInteger(from)||from<0||!Number.isInteger(limit)||limit<1){res.status(400).json({error:'Invalid batch range.'});return;}
   res.setHeader('Cache-Control','no-store');
-  res.json(service()!.scan(from,limit));
+  try{res.json(service()!.scan(from,limit));}
+  catch(error){if(!service()!.epochPool)throw error;res.status(500).json({error:(error as Error).message});}
  });
  router.get('/times',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.times());});
  router.get('/archives',(_req,res)=>{
-  const epochs=service()!.archiveEpochs();
   res.setHeader('Cache-Control','no-store');
-  if(!epochs){res.status(404).json({error:'A classic pool keeps no nullifier archives.'});return;}
-  res.json({epochs});
+  try{
+   const epochs=service()!.archiveEpochs();
+   if(!epochs){res.status(404).json({error:'A classic pool keeps no nullifier archives.'});return;}
+   res.json({epochs});
+  }catch(error){res.status(500).json({error:(error as Error).message});}
  });
  router.get('/archives/:name',(req,res)=>{
-  const path=service()!.archiveFile(req.params.name);
+  let path:string|undefined;
+  try{path=service()!.archiveFile(req.params.name);}
+  catch(error){res.status(500).setHeader('Cache-Control','no-store').json({error:(error as Error).message});return;}
   if(!path){res.status(404).setHeader('Cache-Control','no-store').json({error:'Unknown nullifier archive.'});return;}
   res.sendFile(basename(path),{root:dirname(path),maxAge:'365d',immutable:true},error=>{if(error&&!res.headersSent)res.status(404).setHeader('Cache-Control','no-store').json({error:'Nullifier archive unavailable.'});});
  });

@@ -128,7 +128,8 @@ test('a recover batch built in TypeScript is accepted by the real recover leaf',
 });
 
 test('admission refuses every recover submission the policy forbids',async t=>{
- const w=await world(2),op=await w.open(t),minted=deposit(op.state,1000n),spentNote=noteFrom(minted);
+ let verified=0;
+ const w=await world(2),op=await w.open(t,{verify:async()=>{verified++;return true;}}),minted=deposit(op.state,1000n),spentNote=noteFrom(minted);
  await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
  const moved=deposit(op.state,1000n,{inputs:[spentNote],deposit:0n}),note=noteFrom(moved),nextSpent=noteFrom(moved,1);
  await land(op,'spend',[spendOf(moved)]);
@@ -140,7 +141,9 @@ test('admission refuses every recover submission the policy forbids',async t=>{
   ['an anchor that opens another tree',reanchored(recoverSpend(op.state,0,note),anchorOf(hash,op.state.latestRoot(),op.state.latestRoot())),'stale-anchor'],
  ];
  assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[1,false,true]);
+ const checked=verified;
  for(const [label,spend,code] of unsound())await assert.rejects(op.submit({...spend,id:label}),rejection(code),`${label}, riding the rotation`);
+ assert.equal(verified,checked,'a riding refusal costs no proof check');
  await land(op,'spend',[fastSpend(op.state)]);
  assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[2,true,false]);
  for(const [label,spend,code] of unsound())await assert.rejects(op.submit({...spend,id:label}),rejection(code),label);
@@ -165,16 +168,16 @@ test('admission refuses every recover submission the policy forbids',async t=>{
  assert.deepEqual(op.pendingIds(),[good.id]);
 });
 
-test('a recovery admitted against an in-flight rotation that is undone during its proof check still meets the riding double-spend check',async t=>{
+const undoneDuringVerify=(spentAt:1|2)=>async(t:TestContext)=>{
  const w=await world(2),gate=()=>{let open=()=>{};return {shut:new Promise<void>(r=>{open=r;}),open:()=>open()};};
  let proving:ReturnType<typeof gate>|undefined,checking:ReturnType<typeof gate>|undefined;
  const prover={prove:async()=>{if(proving){await proving.shut;throw new Error('prover down');}return proof;}};
  const op=await w.open(t,{prover:{spend:prover,join:prover,recover:prover},verify:async()=>{await checking?.shut;return true;}});
  const minted=deposit(op.state,1000n),note=noteFrom(minted);
  await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
- await land(op,'spend',[spendOf(deposit(op.state,1000n,{inputs:[note],deposit:0n}))]);
- for(let n=0;n<2;n++)await land(op,'spend',[fastSpend(op.state)]);
- assert.deepEqual([op.state.epoch,op.state.rotatesNext(),op.state.prevNfSet.has(note.nullifier)],[1,true,true],'epoch 0 spent the note and rides the next batch');
+ // Batch 2 opens epoch 1, so a note spent at batch 1 is spent in its own epoch and one spent at batch 2 in the next.
+ for(let n=1;n<4;n++)await land(op,'spend',[n===spentAt?spendOf(deposit(op.state,1000n,{inputs:[note],deposit:0n})):fastSpend(op.state)]);
+ assert.deepEqual([op.state.epoch,op.state.rotatesNext(),op.state.prevNfSet.has(note.nullifier),op.state.nullifiers.has(note.nullifier)],[1,true,spentAt===1,spentAt===2],'the note is spent in its own epoch or the next, and the next batch rotates');
  await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
  proving=gate();
  const ticking=op.tick();
@@ -187,7 +190,9 @@ test('a recovery admitted against an in-flight rotation that is undone during it
  assert.deepEqual([op.state.archive.has(0),op.state.rotatesNext()],[false,true],'the rotation was undone while the recovery waited');
  checking.open();
  await assert.rejects(admitting,rejection('double-spend'));
-});
+};
+test('a recovery admitted against an in-flight rotation that is undone during its proof check still meets the riding double-spend check',undoneDuringVerify(1));
+test('the riding double-spend check after an undone rotation also covers a note the next epoch spent',undoneDuringVerify(2));
 
 test('admission refuses a fast-path slot apply would refuse, with a rejection rather than a crash',async t=>{
  const w=await world(2),op=await w.open(t),first=fastSpend(op.state);

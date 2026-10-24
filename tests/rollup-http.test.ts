@@ -11,7 +11,7 @@ import {createRollupRouter} from '../src/rollup/http.ts';
 import type {RollupService} from '../src/rollup/service.ts';
 
 async function serve(service:Partial<RollupService>|undefined){
- const app=express();app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined));
+ const app=express();app.set('env','test');app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined));
  const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/rollup`;
  return {base,close:()=>new Promise(resolve=>server.close(resolve))};
@@ -159,4 +159,22 @@ test('spends admitted at once are capped across all addresses, and the cap frees
   assert.deepEqual((await Promise.all(posts)).map(r=>r.status),Array(8).fill(202));
   assert.equal((await post(api.base+'/spends',{...spend,id:'e'.repeat(32)})).status,202);
  }finally{release();}
+});
+
+const boom=new Error('the volume is gone');
+for(const [path,status,service] of [
+ ['/storage',503,{storage:()=>{throw boom;}}],
+ ['/archives',500,{archiveEpochs:()=>{throw boom;}}],
+ ['/archives/epoch-0.nf',500,{archiveFile:()=>{throw boom;}}],
+ ['/scan',500,{epochPool:true,scan:()=>{throw boom;}}],
+] as const)test(`${path} answers a JSON error, uncached, when its service call throws`,async t=>{
+ const api=await serve({ready:()=>true,...service});t.after(api.close);
+ const answer=await fetch(api.base+path);
+ assert.deepEqual([answer.status,answer.headers.get('content-type')?.split(';')[0],answer.headers.get('cache-control'),await answer.json()],[status,'application/json','no-store',{error:boom.message}]);
+});
+
+test('a classic pool\'s /scan that throws is still answered by Express, not as JSON',async t=>{
+ const api=await serve({ready:()=>true,scan:()=>{throw boom;}});t.after(api.close);
+ const answer=await fetch(api.base+'/scan');
+ assert.deepEqual([answer.status,answer.headers.get('content-type')?.split(';')[0]],[500,'text/html']);
 });

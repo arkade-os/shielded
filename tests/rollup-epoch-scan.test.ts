@@ -56,6 +56,8 @@ test('a page whose rotation flags disagree with epochLen is refused',()=>{
 
 test('an epochLen that is not a positive safe integer is a caller error, not a malformed page',()=>{for(const bad of [0,-64,1.5,NaN,Infinity,2**53])assert.throws(()=>decodeEpochScan(new Uint8Array(),0,bad),RangeError,`epochLen ${bad}`);});
 
+test('a from that is not a non-negative safe integer is a caller error, not a malformed page',()=>{for(const bad of [-1,1.5,NaN,Infinity,2**53])assert.throws(()=>decodeEpochScan(new Uint8Array(),bad,EPOCH_LEN),RangeError,`from ${bad}`);});
+
 test('a reserved flag bit, kind 3 and a truncated entry are each refused',()=>{
  for(let bit=3;bit<8;bit++){const bad=pageOf('spend');bad[40]|=1<<bit;assert.throws(()=>decodeEpochScan(bad,5,EPOCH_LEN),/Malformed epoch scan page/,`reserved bit ${bit}`);}
  for(const [flags,batch] of [[3,5],[7,64]] as const){const bad=pageOf('spend',flags===7);bad[40]=flags;assert.throws(()=>decodeEpochScan(bad,batch,EPOCH_LEN),/Malformed epoch scan page/,`flags ${flags}`);}
