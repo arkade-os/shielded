@@ -35,14 +35,11 @@ export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,
 export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:PoolApi,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>):Promise<EpochAccount>{
  const pool=await epochPoolOf(api),{epochLen}=pool,epoch=Math.floor(bornAt/epochLen),blocks=bornAt-epoch*epochLen;
  // pool.epoch is the last accepted batch's: at an epoch's end the count alone names the next epoch, whose checkpoint 404s.
- if(epoch===pool.epoch&&blocks>0&&blocks%CHECKPOINT_EVERY===0&&pool.prevNoteRoot!==undefined){
-  let account:EpochAccount|undefined;
-  try{
-   const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
-   if(checkpoint.epoch===epoch&&checkpoint.blocks===blocks)account=EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt});
-  }catch{/* a 404 (a rotating batch in flight, or the epoch closed since) or a checkpoint that does not parse: the replay below is always right */}
+ if(epoch===pool.epoch&&blocks>0&&blocks%CHECKPOINT_EVERY===0&&pool.prevNoteRoot!==undefined)try{
+  const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
+  const account=checkpoint.epoch===epoch&&checkpoint.blocks===blocks?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt}):undefined;
   if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched))return account;
- }
+ }catch{/* a 404 (a rotating batch in flight, or the epoch closed since), a checkpoint that does not parse, or a pool that cannot confirm it now (a 429, an onBatch that threw): the replay below is always right */}
  const start=Math.max(epoch-1,0);
  return start?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint:{epoch:start,blocks:0,filled:Array<string>(NOTE_DEPTH-SUBTREE_DEPTH).fill('0')},bornAt}):EpochAccount.owning(hash,keys,{epochLen,bornAt});
 }

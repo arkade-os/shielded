@@ -6,7 +6,7 @@ import { epochBirthCheckpoint, epochFreshAccount, epochMatchesPool, loadEpochAcc
 import { epochCatchUp, epochIdle } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi, RollupPoolStatus } from '../src/shielded/pool.ts';
 import { RollupAccount } from '../packages/protocol/src/rollup/account.ts';
-import { NOTE_DEPTH, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
+import { NOTE_DEPTH, ROLLUP_DOMAIN, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
 import { EpochAccount, type EpochAccountSnapshot, type EpochOwnedNote } from '../packages/protocol/src/rollup/epoch-account.ts';
 import { rotatesAt } from '../packages/protocol/src/rollup/epoch-scan.ts';
 import { noteOf } from '../packages/protocol/src/rollup/notes.ts';
@@ -182,4 +182,32 @@ test('epochCatchUp scans a long gap, fetches only the batches that concern the w
  assert.deepEqual(account.snapshot().frozen.map(f => [f.epoch, f.paths.map(([index]) => index)]), [[0, [b!.index]], [1, [change!.index]]]);
  assert.ok(folds(account, b!) && folds(account, change!));
  assert.deepEqual([account.noteFinal(0), account.noteFinal(1)], [pool.state.archive.record(0)!.noteFinal, pool.state.prevNoteRoot]);
+});
+
+test('a checkpoint start that cannot be confirmed falls back to a replay start instead of rejecting', async () => {
+ const pool = await longPool(), bornAt = 5 * 64;
+ const down = (error: Error) => ((path: string, ...rest: [unknown?, (() => void)?]) => path.startsWith('/batches') ? Promise.reject(error) : pool.api(path, ...rest)) as PoolApi;
+ const hookFails = () => { throw new Error('the wallet\'s onBatch failed'); };
+ const starts = await Promise.all([
+  epochFreshAccount(hash, aliceKeys, bornAt, down(new Error('fetch failed'))),
+  epochFreshAccount(hash, aliceKeys, bornAt, down(Object.assign(new Error('Too many requests'), { status: 429 }))),
+  epochFreshAccount(hash, aliceKeys, bornAt, pool.api, hookFails),
+ ]);
+ for (const account of starts) assert.deepEqual([account.batchCount, account.epoch, account.prevNoteRoot()], [LONG, 1, undefined]);
+});
+
+test('a checkpoint at blocks 0 is the empty tree of an unrotated epoch, so it takes no prevNoteRoot', () => {
+ const start = (prevNoteRoot?: bigint) => EpochAccount.atCheckpoint(hash, aliceKeys, { epochLen: 4, checkpoint: { epoch: 2, blocks: 0, filled: Array<string>(NOTE_DEPTH - SUBTREE_DEPTH).fill('0') }, bornAt: 8, ...(prevNoteRoot === undefined ? {} : { prevNoteRoot }) });
+ assert.equal(start().prevNoteRoot(), undefined);
+ for (const seeded of [5n, 0n]) assert.throws(() => start(seeded), /no previous-epoch root to seed/, String(seeded));
+});
+
+test('rotatesNext is the account\'s own predicate: false right after an (epoch, 0) start, where the pool flag says true', async () => {
+ const pool = epochPool(hash, 4), account = alice(4), seen: boolean[] = [];
+ for (let n = 0; n < 6; n++) { pool.land(); await replay(account, pool.api); seen.push(account.rotatesNext); }
+ assert.deepEqual(seen, [false, false, false, true, false, false]);
+ const start = await epochFreshAccount(hash, aliceKeys, 9, pool.api);
+ assert.deepEqual([start.batchCount, rotatesAt(start.batchCount, 4), start.rotatesNext], [4, true, false]);
+ assert.throws(() => start.anchorPlan(), /root the previous epoch closed on/);
+ assert.equal(account.anchorPlan().rotatesNext, account.rotatesNext);
 });

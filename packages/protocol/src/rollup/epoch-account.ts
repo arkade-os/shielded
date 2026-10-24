@@ -68,8 +68,8 @@ export class EpochAccount {
  get batchCount(): number { return this.count; }
  get blockInEpoch(): number { return this.count - this.current * this.epochLen; }
  get canSkip(): boolean { return !this.replica; }
- /** Whether the next batch rotates this account. One started at (epoch, 0) already holds that epoch's empty tree, so the pool's rotating batch only appends. */
- private get rotating(): boolean { return Math.floor(this.count / this.epochLen) > this.current; }
+ /** Whether the next batch rotates this account. One started at (epoch, 0) already holds that epoch's empty tree, so the pool's rotating batch only appends: read this, never rotatesAt(batchCount), which says true there. */
+ get rotatesNext(): boolean { return Math.floor(this.count / this.epochLen) > this.current; }
  /** The current epoch's note root; before any batch, the empty tree's. */
  latestRoot(): bigint { return this.frontier.root(); }
  /** The root the previous epoch closed on; at epoch 0 the pool's genesis value, the empty tree's; undefined until a start supplies it or a rotation teaches it. */
@@ -98,7 +98,7 @@ export class EpochAccount {
   if (entry.batch !== this.count) throw new Error(`Scan entry ${entry.batch} does not follow batch ${this.count}.`);
   if (entry.rotated !== rotatesAt(this.count, this.epochLen) || entry.epoch !== Math.floor(this.count / this.epochLen)) throw new Error('That scan page does not follow this account.');
   if (entry.txid) this.txids.add(entry.txid);
-  if (this.rotating) this.rotate();
+  if (this.rotatesNext) this.rotate();
   this.frontier.appendRoot(entry.root);
   this.count++;
  }
@@ -106,7 +106,7 @@ export class EpochAccount {
  async apply(batch: RollupEpochRecord): Promise<EpochOwnedNote[]> {
   const { kind, slots } = batch;
   if (slots.length !== EPOCH_SLOTS[kind] || slots.some(slot => slot.nullifiers.length !== EPOCH_NULLIFIERS[kind])) throw new Error('A batch record has the wrong shape.');
-  const number = this.count, rotated = this.rotating, epoch = this.current + Number(rotated), base = (rotated ? 0 : this.blockInEpoch) * BLOCK;
+  const number = this.count, rotated = this.rotatesNext, epoch = this.current + Number(rotated), base = (rotated ? 0 : this.blockInEpoch) * BLOCK;
   const root = BigInt(batch.noteBlockRoot), leaves = slots.flatMap(slot => slot.commitments.map(BigInt)), nullifiers = slots.map(slot => slot.nullifiers.map(BigInt)), legs = slots.map(slot => slot.publics.map(BigInt));
   const bare = chainOnly(batch);
   if (!bare && blockRootOf(this.hash, leaves) !== root) throw new Error('The batch\'s commitments do not rebuild the block root the pool published.');
@@ -201,6 +201,7 @@ export class EpochAccount {
  static atCheckpoint(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, o: { epochLen: number; checkpoint: FrontierCheckpoint & { epoch: number }; prevNoteRoot?: bigint; bornAt: number }): EpochAccount {
   const { epoch, blocks } = o.checkpoint, batch = epoch * o.epochLen + blocks;
   if (o.bornAt < batch) throw new Error('A checkpoint past the birth batch would skip its notes.');
+  if (blocks === 0 && o.prevNoteRoot !== undefined) throw new Error('A checkpoint at blocks 0 is the empty tree of an epoch whose rotating batch has not landed, so it has no previous-epoch root to seed.');
   const account = EpochAccount.owning(hash, keys, { epochLen: o.epochLen, bornAt: o.bornAt });
   account.frontier = NoteFrontier.at(hash, o.checkpoint);
   account.count = batch; account.current = epoch; account.prev = o.prevNoteRoot;
@@ -208,7 +209,7 @@ export class EpochAccount {
  }
 
  anchorPlan(): EpochAnchorPlan {
-  const rotatesNext = this.rotating, rPrev = rotatesNext ? this.latestRoot() : this.prev;
+  const { rotatesNext } = this, rPrev = rotatesNext ? this.latestRoot() : this.prev;
   if (rPrev === undefined) throw new Error('This account has not learned the root the previous epoch closed on, so it cannot anchor a spend.');
   return { rPrev, rCur: { epoch: this.current, root: this.latestRoot() }, liveEpoch: this.current + Number(rotatesNext), rotatesNext };
  }
