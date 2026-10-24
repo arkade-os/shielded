@@ -147,6 +147,21 @@ test('spends, receives and merges land in history with their epoch', async () =>
  assert.equal(account.latestRoot(), pool.state.latestRoot());
 });
 
+test('a renewal lands in history as renew and a recovery as recover, while a join stays merge', async () => {
+ const pool = epochPool(hash, 2), account = alice(2), land = async (kind: 'spend' | 'join' | 'recover' = 'spend', ...spends: PoolSpend[]) => { pool.land(kind, spends); await replay(account, pool.api); };
+ await land('spend', await pool.deposit(aliceTo, 500n), await pool.deposit(aliceTo, 300n), await pool.deposit(aliceTo, 200n));
+ const [first, second, third] = account.notes();
+ await land('join', posted(await account.join([second!, third!], aliceTo)));
+ await land('spend', posted(await account.spend({ input: first! }, aliceTo)));
+ await land();
+ await land();
+ const joined = account.notes().find(n => n.epoch === 0)!;
+ await land('recover', posted(await account.recover(joined, aliceTo)));
+ assert.deepEqual(account.history.slice(3).map(e => [e.kind, e.batch, e.amounts, e.spent, e.created.map(n => [n.epoch, n.amount])]), [
+  ['merge', 1, [], [second!.nullifier, third!.nullifier], [[0, 500n]]], ['renew', 2, [], [first!.nullifier], [[1, 500n]]], ['recover', 5, [], [joined.nullifier], [[2, 500n]]],
+ ]);
+});
+
 test('a grouped payment is one history entry spanning its slots', async () => {
  const pool = epochPool(hash, 4), account = alice(4);
  pool.land('spend', [await pool.deposit(aliceTo, 600n), await pool.deposit(aliceTo, 300n)]);

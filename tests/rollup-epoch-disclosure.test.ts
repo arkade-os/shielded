@@ -41,6 +41,7 @@ const verifyOnPool = async (api: PoolApi, disclosure: Disclosure) => {
  return verifyDisclosure(hash, disclosure, index => batches.get(Math.floor(index / 32))?.slots[Math.floor((index % 32) / 2)]?.commitments[index % 2]);
 };
 const disclosureOf = (link: string | undefined) => decodeDisclosure(link!.split('#')[1]!);
+const listed = (found: IncomingNote[]) => found.map(n => [n.batch, n.index, n.amount, n.deposit]);
 
 /** 4-batch epochs. Alice is paid 500 and 300 at batch 0, and pays Bob 100 at batch 1, 600 as two legs at batch 5 and 30 at batch 8, which rotates; at batch 10 Bob recovers his epoch-0 note. */
 let built: ReturnType<typeof buildWorld> | undefined;
@@ -93,10 +94,9 @@ test('a reveal link for a send verifies, unchanged from the classic computation'
 
 test('a view key lists every note it received across three epochs, at the right batches', async () => {
  const { pool } = await world(), key = parseViewKey(viewKeyOf(bobTo.owner, bobKeys.viewSecret)), bob = await replay(fresh(bobKeys), pool.api);
- const listed = (found: IncomingNote[]) => found.map(n => [n.batch, n.index, n.amount]);
  assert.deepEqual(bob.notes().map(n => [n.epoch, n.index]), [[1, 32], [1, 34], [2, 0], [2, 64]], 'the account names its notes by epoch and leaf');
- assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records, key)), [[1, 32, 100n], [5, 160, 500n], [5, 162, 100n], [8, 256, 30n], [10, 320, 100n]]);
- assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records.slice(5), key, 5)), [[5, 160, 500n], [5, 162, 100n], [8, 256, 30n], [10, 320, 100n]], 'from a later page, by the same stream position');
+ assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records, key)), [[1, 32, 100n, false], [5, 160, 500n, false], [5, 162, 100n, false], [8, 256, 30n, false], [10, 320, 100n, false]]);
+ assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records.slice(5), key, 5)), [[5, 160, 500n, false], [5, 162, 100n, false], [8, 256, 30n, false], [10, 320, 100n, false]], 'from a later page, by the same stream position');
 });
 
 test('a full viewing key over an epoch pool sees the same notes and their spends', async () => {
@@ -123,7 +123,7 @@ test('a view key and address built on genesis-3 rules decode unchanged', async (
  assert.equal(ROLLUP_DOMAIN, 20261017000n);
  assert.deepEqual([view.owner, full.owner, aliceTo.owner], [address.owner, address.owner, address.owner], 'ak and nk still derive the owner the address carries');
  assert.deepEqual([aliceAddress, viewKeyOf(aliceTo.owner, aliceKeys.viewSecret), fullViewKeyOf(akOf(hash, aliceKeys.ask), aliceKeys.nk, aliceKeys.viewSecret)], [GENESIS3.address, GENESIS3.view, GENESIS3.full], 'and the same seed still mints the same strings');
- assert.deepEqual((await epochIncomingNotes(hash, pool.records, view)).map(n => [n.batch, n.index, n.amount]), [[0, 0, 500n], [0, 2, 300n], [1, 33, 200n], [5, 163, 100n], [8, 257, 70n]], 'and it lists what an epoch pool paid it');
+ assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records, view)), [[0, 0, 500n, true], [0, 2, 300n, true], [1, 33, 200n, false], [5, 163, 100n, false], [8, 257, 70n, false]], 'and it lists what an epoch pool paid it, its deposits as deposits');
 });
 
 test('a reveal link exists only for a payment, a receipt or a shield, and names only what the wallet remembers', () => {

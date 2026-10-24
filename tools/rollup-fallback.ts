@@ -34,6 +34,7 @@ const json=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
 const fromLe=(bytes:Uint8Array)=>bytes.reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n);
 const log=(...parts:unknown[])=>console.log(new Date().toISOString().slice(11,19),...parts);
+const warn=(...parts:unknown[])=>console.error(new Date().toISOString().slice(11,19),...parts);
 
 async function mirror(url:string,dir:string){
  // A replay or archive check can outlast the pool's keep-alive, leaving the pooled connection dead; a GET is safe to send once more.
@@ -58,21 +59,29 @@ async function mirror(url:string,dir:string){
   page.batches.forEach((batch,i)=>cacheBatch(dir,from+i,batch));
   from+=page.batches.length;if(from>=page.total||!page.batches.length)break;
  }
+ let refused=0;
  if(epochLen!==undefined){
   const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),{epochs}=await (await get('/archives')).json() as {epochs:unknown[]};
+  const folder=join(dir,'nullifiers'),count=batchesIn(dir).length,closed=count?Math.floor((count-1)/epochLen):0;
   let state:ReturnType<typeof replayEpochMirror>|undefined;
   for(const epoch of epochs){
    if(typeof epoch!=='number'||!Number.isSafeInteger(epoch)||epoch<0)throw new Error(`The pool lists an archive for epoch ${JSON.stringify(epoch)}.`);
-   if(existsSync(epochNfArchivePath(join(dir,'nullifiers'),epoch)))continue;
+   if(epoch>=closed){warn('skipped archive',epoch,'- the mirrored records have not closed that epoch');continue;}
+   if(existsSync(epochNfArchivePath(folder,epoch)))continue;
    const bytes=new Uint8Array(await (await get(`/archives/epoch-${epoch}.nf`)).arrayBuffer());
-   cacheEpochArchive(dir,state??=replayEpochMirror(dir,hash,epochLen),epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');
+   state??=replayEpochMirror(dir,hash,epochLen);
+   try{cacheEpochArchive(dir,state,epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');}
+   catch(error){refused++;warn('refused archive',`${epoch}:`,(error as Error).message);}
   }
+  for(let epoch=0;epoch<closed;epoch++)if(!existsSync(epochNfArchivePath(folder,epoch)))warn('no archive file for closed epoch',epoch);
  }
  log('mirrored',batchesIn(dir).length,'batches into',dir);
+ if(refused)throw new Error(`${refused} archive file(s) did not check against the mirrored records and were not written; mirror again.`);
 }
 
 async function withdraw(dir:string,sats:bigint,to:string){
  const pool=json<Pool>(join(dir,'pool.json')),network=pool.network,phrase=process.env.SHIELDED_PHRASE;
+ if(pool.epochLen!==undefined)throw new Error('This mirror is of an epoch pool; the classic withdraw cannot spend from it and would overwrite its spec.json.');
  if(!phrase)throw new Error('Set SHIELDED_PHRASE to the wallet\'s 24-word recovery phrase.');
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
  const keys=deriveRollupKeys2(parseMasterSecret(phrase),'mutinynet'),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);

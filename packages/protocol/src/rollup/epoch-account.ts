@@ -174,7 +174,8 @@ export class EpochAccount {
   if (spent.length) {
    const amounts = sum([...spent.map(n => ({ asset: n.asset, amount: n.amount })), ...created.map(n => ({ asset: n.asset, amount: -n.amount }))]);
    if (amounts.length) return { kind: 'send', ...base, amounts };
-   return batch.kind === 'join' ? { kind: 'merge', ...base, amounts: [] } : undefined;
+   const kind = batch.kind === 'join' ? 'merge' : batch.kind === 'recover' ? 'recover' : spent.length === 1 ? 'renew' : undefined;
+   return kind && { kind, ...base, amounts: [] };
   }
   return created.length ? { kind: 'receive', ...base, amounts: sum(created.map(n => ({ asset: n.asset, amount: n.amount }))) } : undefined;
  }

@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
-import {EmulatorPacket,Extension,Transaction,UnknownPacket} from '@arkade-os/sdk';
+import {ArkAddress,EmulatorPacket,Extension,Transaction,UnknownPacket} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
@@ -22,6 +22,8 @@ import {encodeEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
 import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {chainOnlyBatch,readBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
+import {rollupSpecOf} from '../src/rollup/service.ts';
+import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {cachedBatchNumbers,cacheBatch,cacheEpochArchive,catchUpCachedBatches,epochMirrorStart,mirrorStart,replayEpochMirror} from '../tools/rollup-cache.ts';
 import {bakedPool,epochRecord,listen,scratch} from './fixtures/epoch-service.ts';
 
@@ -179,20 +181,29 @@ test('an epoch mirror resumes where it stopped instead of re-fetching every batc
  const record=epochRecord(64),full=(n:number)=>{const r=record(n);return n===128?r:{...r,slots:r.slots.map((s,i)=>({...s,commitments:[String(n+1),String(i+1)] as [string,string]}))};};
  const {directory:pool,service}=await bakedPool({epochLen:64,batches:130,record:full}),request=await listen(service),froms:number[]=[],files:string[]=[],{batches,archiveFile}=service;
  service.batches=(from,limit)=>{froms.push(from);return batches(from,limit);};
+ // As a pool that rotates while the mirror runs lists it: the mirrored records leave epoch 2 open.
+ service.archiveEpochs=()=>[0,1,2];
  // Keep-alive ends while the CLI replays after epoch 0, as it does under load, so its next fetch meets a dead pooled socket.
  service.archiveFile=name=>{files.push(name);if(name==='epoch-0.nf')setTimeout(()=>request.server.closeIdleConnections(),300);return archiveFile(name);};
- const base=`http://127.0.0.1:${(request.server.address() as AddressInfo).port}`,mirror=scratch('rollup-epoch-mirror-'),served=join(pool,'operator','nullifiers','epoch-1.nf'),good=readFileSync(served);
+ const base=`http://127.0.0.1:${(request.server.address() as AddressInfo).port}`,mirror=scratch('rollup-epoch-mirror-'),served=join(pool,'operator','nullifiers','epoch-0.nf'),good=readFileSync(served);
  const fallback=()=>run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','mirror',base,mirror]);
  writeFileSync(served,good.map((b,i)=>i===20?b^1:b));
- await assert.rejects(fallback(),(error:{stderr:string})=>/does not rebuild the root epoch 1 archived/.test(error.stderr));
- assert.deepEqual([froms,files,readdirSync(join(mirror,'nullifiers'))],[[0,100],['epoch-0.nf','epoch-1.nf'],['epoch-0.nf']],'the tampered archive is refused before it is written');
+ await assert.rejects(fallback(),(error:{stderr:string})=>['refused archive 0: .*does not rebuild the root epoch 0 archived','skipped archive 2','no archive file for closed epoch 0'].every(line=>new RegExp(line).test(error.stderr)));
+ assert.deepEqual([froms,files,readdirSync(join(mirror,'nullifiers'))],[[0,100],['epoch-0.nf','epoch-1.nf'],['epoch-1.nf']],'the tampered archive is never written, and the one after it still is');
  writeFileSync(served,good);froms.length=0;files.length=0;
  await fallback();
- assert.deepEqual([froms,files],[[128],['epoch-1.nf']],'the second run starts at the chain-only batch and fetches only the archive it lacks');
+ assert.deepEqual([froms,files],[[128],['epoch-0.nf']],'the second run starts at the chain-only batch and fetches only the archive it lacks');
  assert.equal(cachedBatchNumbers(mirror).length,130);
  for(const name of ['epoch-0.nf','epoch-1.nf'])assert.deepEqual(readFileSync(join(mirror,'nullifiers',name)),readFileSync(join(pool,'operator','nullifiers',name)),name);
  assert.equal(readFileSync(join(mirror,'spec.json'),'utf8'),readFileSync(join(pool,'spec.json'),'utf8'),'the epoch spec, as the pool wrote its own');
  const mirrored=JSON.parse(readFileSync(join(mirror,'pool.json'),'utf8')),{network}=mirrored,leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(mirror,'spec.json'));
  assert.deepEqual([Object.keys(mirrored).sort(),mirrored.epochLen],[['epochLen','network','operator','script','token'],64]);
  assert.equal(hex.encode(rollupEpochPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay).tree.pkScript),mirrored.script,'the mirrored spec and keys rebuild the pool script');
+});
+
+test('withdraw on an epoch mirror never writes the classic spec over its own',async t=>{
+ const dir=directory(t),spec=JSON.stringify(rollupSpecOf('epoch','cc'.repeat(32)+'0000','aa'.repeat(32))),to=new ArkAddress(new Uint8Array(32).fill(1),new Uint8Array(32).fill(2),'tark').encode();
+ writeFileSync(join(dir,'pool.json'),JSON.stringify({token:'cc'.repeat(32)+'0000',operator:'aa'.repeat(32),script:'5120'+'00'.repeat(32),network:{},epochLen:4}));writeFileSync(join(dir,'spec.json'),spec);
+ await assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','withdraw',dir,'1000',to],{env:{...process.env,SHIELDED_PHRASE:recoveryPhraseOf('11'.repeat(32))}}));
+ assert.equal(readFileSync(join(dir,'spec.json'),'utf8'),spec);
 });
