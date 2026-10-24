@@ -5,7 +5,7 @@ import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
 import { epochTransferBody } from '../src/shielded/epoch-pool.ts';
 import type { PoolApi } from '../src/shielded/pool.ts';
 import { BTC_ASSET, NOTE_DEPTH, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
-import { EpochAccount, RENEWAL_FLOOR, RENEWAL_TAIL, type EpochOwnedNote, type RenewalPlan } from '../packages/protocol/src/rollup/epoch-account.ts';
+import { EpochAccount, RENEWAL_FLOOR, RENEWAL_TAIL, type RenewalPlan } from '../packages/protocol/src/rollup/epoch-account.ts';
 import type { EpochBuiltSpend } from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import { rollupRecipientOf, type RollupRecipient } from '../packages/protocol/src/rollup/wallet.ts';
 import { deriveRollupKeys2 } from '../packages/protocol/src/wallet-keys.ts';
@@ -28,7 +28,7 @@ const holding = (epochLen: number, live: number, at: number, notes: [epoch: numb
 const tenOf = (epoch: number) => Array.from({ length: 10 }, (_, i): [number, bigint] => [epoch, BigInt(100 + i)]);
 const amounts = (plan?: RenewalPlan) => plan?.due.map(note => note.amount);
 const targetsOf = (account: EpochAccount) => [...account['schedule'].targets.values()];
-const renewal = (account: EpochAccount, plan: RenewalPlan) => plan.kind === 'join' ? account.join(plan.due as [EpochOwnedNote, EpochOwnedNote], aliceTo) : account.spend({ input: plan.due[0]! }, aliceTo);
+const renewal = (account: EpochAccount, plan: RenewalPlan) => plan.kind === 'join' ? account.join(plan.due, aliceTo) : account.spend({ input: plan.due[0] }, aliceTo);
 
 test('a note is due in the epoch after the one that created it, and not before', async () => {
  const pool = epochPool(hash, 4), account = alice(4), seen: unknown[] = [];
@@ -133,7 +133,9 @@ test('a renewal spend is indistinguishable from an ordinary spend on the wire', 
  pool.land('spend', await Promise.all([500n, 300n, 200n].map(amount => pool.deposit(aliceTo, amount))));
  for (let n = 0; n < 3; n++) pool.land();
  await replay(account, pool.api);
- const joined = next(), pair = [await renewal(account, joined), await account.join(joined.due as [EpochOwnedNote, EpochOwnedNote], aliceTo, to)];
+ const joined = next();
+ assert.ok(joined.kind === 'join');
+ const pair = [await renewal(account, joined), await account.join(joined.due, aliceTo, to)];
  pool.land('join', [posted(pair[0]!)]);
  await replay(account, pool.api);
  const single = next(), one = [await renewal(account, single), await account.spend({ input: single.due[0]!, to }, aliceTo)];

@@ -25,7 +25,7 @@ export interface EpochAccountSnapshot {
 }
 
 /** A note must be renewed during the epoch after the one that created it, or it falls to recovery. */
-export interface RenewalPlan { due: EpochOwnedNote[]; kind: 'join' | 'spend'; deadlineBatch: number }
+export type RenewalPlan = { kind: 'join'; due: [EpochOwnedNote, EpochOwnedNote]; deadlineBatch: number } | { kind: 'spend'; due: [EpochOwnedNote]; deadlineBatch: number };
 export const RENEWAL_TAIL = 0.1; // never schedule in the last tenth of the epoch
 export const RENEWAL_FLOOR = 1 - RENEWAL_TAIL; // past this, renew at once rather than lose the note
 
@@ -263,9 +263,9 @@ export class EpochAccount {
   for (const n of due) if (!targets.has(n.nullifier)) targets.set(n.nullifier, from + Math.floor(draw() * (last - from)));
   if (due.some(n => o.inFlight?.has(n.nullifier))) return undefined;
   const ready = (n: EpochOwnedNote) => at >= targets.get(n.nullifier)!;
-  const [head, partner] = this.smallestFirst(due, ready);
+  const [head, partner] = this.smallestFirst(due, ready), deadlineBatch = (live + 1) * epochLen - 1;
   if (!ready(head!)) return undefined;
-  return { due: partner ? [head!, partner] : [head!], kind: partner ? 'join' : 'spend', deadlineBatch: (live + 1) * epochLen - 1 };
+  return partner ? { kind: 'join', due: [head!, partner], deadlineBatch } : { kind: 'spend', due: [head!], deadlineBatch };
  }
  /** Group members must be submitted in the returned order, the order the group id commits to. */
  async pay(recipient: RollupRecipient | ((firstNullifier: bigint) => RollupRecipient), amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: Exclude<EpochBatchKind, 'recover'>; spends: EpochBuiltSpend[] }> {
