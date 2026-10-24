@@ -184,6 +184,16 @@ test('epochCatchUp scans a long gap, fetches only the batches that concern the w
  assert.deepEqual([account.noteFinal(0), account.noteFinal(1)], [pool.state.archive.record(0)!.noteFinal, pool.state.prevNoteRoot]);
 });
 
+test('epochCatchUp sets aside a scan page that answers another from, and replays whole pages instead', async () => {
+ const pool = await longPool(), account = alice(LONG);
+ // A whole epoch on, so the page's rotation flags still match the batches asked for and only the from check can refuse it.
+ const { asked, api } = logged(((path: string, ...rest: [unknown?, (() => void)?]) => pool.api(path.startsWith('/scan') ? path.replace(/from=\d+/, `from=${fromOf(path) + LONG}`) : path, ...rest)) as PoolApi);
+ assert.equal(await epochCatchUp(account, api), 3 * LONG);
+ assert.deepEqual(asked.filter(p => p.startsWith('/scan')), ['/scan?from=50&limit=270'], 'asked once, and never trusted');
+ assert.ok(await epochMatchesPool(account, pool.api));
+ assert.deepEqual(account.notes().map(n => [n.epoch, n.amount]), [[0, 400n], [1, 700n], [2, 250n], [2, 600n]]);
+});
+
 test('a checkpoint start that cannot be confirmed falls back to a replay start instead of rejecting', async () => {
  const pool = await longPool(), bornAt = 5 * 64;
  const down = (error: Error) => ((path: string, ...rest: [unknown?, (() => void)?]) => path.startsWith('/batches') ? Promise.reject(error) : pool.api(path, ...rest)) as PoolApi;
