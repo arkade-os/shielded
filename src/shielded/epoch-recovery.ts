@@ -11,13 +11,14 @@ export const RECOVERY_LINE='Recovering an older note';
 
 /** Advisory only: a warning to show, never a gate on building the recovery. The pool keeps its previous epoch's set in memory, so an unlisted file is no refusal. */
 export async function archivesHeld(api:PoolApi,origin:number):Promise<'held'|'partial'|'unknown'>{
- const epochs=await api<{epochs?:unknown}>('/archives').then(r=>r.epochs,()=>undefined);
+ const epochs=await api<{epochs?:unknown}|null>('/archives').then(r=>r?.epochs,()=>undefined);
  if(!Array.isArray(epochs))return 'unknown';
  return [origin,origin+1].every(e=>epochs.includes(e))?'held':'partial';
 }
 
-/** claimSpends on an epoch pool: a bearer note still on the fast path is claimed in groups as before; one past it is recovered to `to` alone, as a recover batch is one slot and takes no group. */
+/** claimSpends on an epoch pool: a bearer note still on the fast path is claimed in groups as before; one past it is recovered to `to` alone, as a recover batch is one slot and takes no group, so past the window a multi-note claim is not all-or-nothing. */
 export async function claimRecovery(hash:Hash,link:{account:EpochAccount;self:RollupRecipient;notes:EpochOwnedNote[]},to:RollupRecipient):Promise<EpochBuiltSpend[]>{
+ if(!link.notes.length)return [];
  const plan=link.account.anchorPlan(),late=link.notes.filter(n=>needsRecovery(n,plan)),live=link.notes.filter(n=>!late.includes(n)),spends:EpochBuiltSpend[]=[];
  for(let i=0;i<live.length;i+=3){
   const run=live.slice(i,i+3),group=run.length>1?{id:groupIdOf(hash,run.map(n=>n.nullifier)),size:run.length}:undefined;

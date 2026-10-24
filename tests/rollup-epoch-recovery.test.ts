@@ -151,8 +151,27 @@ test('archivesHeld reports partial without blocking a recovery that then succeed
  const { pool, account, notes: [note] } = await stranded(9);
  const listing = (epochs: unknown) => ((path: string, ...rest: [unknown?, (() => void)?]) => path === '/archives' ? Promise.resolve({ epochs }) : pool.api(path, ...rest)) as PoolApi;
  const missing = (() => Promise.reject(Object.assign(new Error('Not found'), { status: 404 }))) as PoolApi;
- assert.deepEqual(await Promise.all([pool.api, listing([0]), listing([]), listing('0,1'), missing].map(api => archivesHeld(api, 0))), ['held', 'partial', 'partial', 'unknown', 'unknown']);
+ const bodyless = (() => Promise.resolve(null)) as PoolApi;
+ assert.deepEqual(await Promise.all([pool.api, listing([0]), listing([]), listing('0,1'), missing, bodyless].map(api => archivesHeld(api, 0))), ['held', 'partial', 'partial', 'unknown', 'unknown', 'unknown']);
  pool.land('recover', [sent(await account.recover(note!, aliceTo))]);
  await replay(account, pool.api);
  assert.deepEqual(account.notes().map(n => [n.epoch, n.amount]), [[0, 400n], [2, 900n]]);
+});
+
+test('a claim link with no notes left builds nothing, even for an account that cannot anchor', async () => {
+ const account = alice(4);
+ account['prev'] = undefined;
+ assert.throws(() => account.anchorPlan(), /root the previous epoch closed on/);
+ assert.deepEqual(await claimRecovery(hash, { account, self: aliceTo, notes: [] }, bobTo), []);
+});
+
+test('a recovered asset note publishes no asset and no boundary leg', async () => {
+ const pool = epochPool(hash, 4), account = alice(4);
+ pool.land('spend', [await pool.transfer({ ask: 0n, nk: 0n, self: aliceTo, request: { asset: 7n, deposit: 500n } })]);
+ while (pool.state.batchCount < 9) pool.land();
+ await replay(account, pool.api);
+ const [note] = account.notes(7n), built = await account.recover(note!, aliceTo);
+ assert.deepEqual([note!.asset, built.witness.input.asset], [7n, 7n]);
+ const record = pool.land('recover', [sent(built)]);
+ assert.deepEqual([built.witness.publicSignals.slice(3), record.slots[0]!.publics.slice(3)], [[0n, 0n, 0n, 0n], ['0', '0', '0', '0']]);
 });
