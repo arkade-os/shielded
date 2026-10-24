@@ -28,6 +28,8 @@ const epochSlotOf=(s:any):EpochSlot=>{
  return {anchor:decimal(s.anchor),...(s.origin!==undefined?{origin:s.origin as number}:{rCur:{epoch:s.rCur.epoch as number,root:decimal(s.rCur.root)}}),
   nullifiers:s.nullifiers.map(decimal),commitments:[decimal(s.commitments[0]),decimal(s.commitments[1])],ctDigest:decimal(s.ctDigest),groupId,groupSize:s.groupSize};
 };
+/** A system error's message names a path, so a route open to anyone logs the cause here and answers a fixed string. */
+const logged=(route:string,error:unknown)=>console.error(`[rollup] ${route}: ${(error as Error).message}`);
 
 /** The v2 wallet API: status, proving keys, published batches, spend submission and the deposit signing round. */
 const POSTS_PER_MINUTE=60;
@@ -54,7 +56,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
  router.get('/status',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.status());});
  router.get('/storage',(_req,res)=>{
   res.setHeader('Cache-Control','no-store');
-  try{res.json(service()!.storage());}catch(error){res.status(503).json({error:(error as Error).message});}
+  try{res.json(service()!.storage());}catch(error){logged('/storage',error);res.status(503).json({error:'Storage figures are unavailable.'});}
  });
  router.get('/proving/:file',(req,res)=>{
   const path=service()!.keyFile(req.params.file);
@@ -73,7 +75,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!Number.isInteger(from)||from<0||!Number.isInteger(limit)||limit<1){res.status(400).json({error:'Invalid batch range.'});return;}
   res.setHeader('Cache-Control','no-store');
   try{res.json(service()!.scan(from,limit));}
-  catch(error){if(!service()!.epochPool)throw error;res.status(500).json({error:(error as Error).message});}
+  catch(error){if(!service()!.epochPool)throw error;logged('/scan',error);res.status(500).json({error:(error as NodeJS.ErrnoException).syscall?'The batch records could not be read.':(error as Error).message});}
  });
  router.get('/times',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.times());});
  router.get('/archives',(_req,res)=>{
@@ -82,12 +84,12 @@ export function createRollupRouter(service:()=>RollupService|undefined){
    const epochs=service()!.archiveEpochs();
    if(!epochs){res.status(404).json({error:'A classic pool keeps no nullifier archives.'});return;}
    res.json({epochs});
-  }catch(error){res.status(500).json({error:(error as Error).message});}
+  }catch(error){logged('/archives',error);res.status(500).json({error:'The archive files could not be read.'});}
  });
  router.get('/archives/:name',(req,res)=>{
   let path:string|undefined;
   try{path=service()!.archiveFile(req.params.name);}
-  catch(error){res.status(500).setHeader('Cache-Control','no-store').json({error:(error as Error).message});return;}
+  catch(error){logged('/archives/:name',error);res.status(500).setHeader('Cache-Control','no-store').json({error:'The archive files could not be read.'});return;}
   if(!path){res.status(404).setHeader('Cache-Control','no-store').json({error:'Unknown nullifier archive.'});return;}
   res.sendFile(basename(path),{root:dirname(path),maxAge:'365d',immutable:true},error=>{if(error&&!res.headersSent)res.status(404).setHeader('Cache-Control','no-store').json({error:'Nullifier archive unavailable.'});});
  });

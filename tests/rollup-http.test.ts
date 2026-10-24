@@ -161,20 +161,31 @@ test('spends admitted at once are capped across all addresses, and the cap frees
  }finally{release();}
 });
 
-const boom=new Error('the volume is gone');
-for(const [path,status,service] of [
- ['/storage',503,{storage:()=>{throw boom;}}],
- ['/archives',500,{archiveEpochs:()=>{throw boom;}}],
- ['/archives/epoch-0.nf',500,{archiveFile:()=>{throw boom;}}],
- ['/scan',500,{epochPool:true,scan:()=>{throw boom;}}],
+const systemError=(syscall:string,path:string)=>Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`),{errno:-2,code:'ENOENT',syscall,path});
+const unreadable=systemError('scandir','/data/operator/nullifiers'),missing=systemError('open','/data/operator/batches/65.json');
+const refused=new Error('Batch 65\'s recorded block root is not the one the live note tree holds.');
+const raise=(error:Error)=>()=>{throw error;};
+for(const [path,status,error,shown,service] of [
+ ['/storage',503,unreadable,'Storage figures are unavailable.',{storage:raise(unreadable)}],
+ ['/archives',500,unreadable,'The archive files could not be read.',{archiveEpochs:raise(unreadable)}],
+ ['/archives/epoch-0.nf',500,unreadable,'The archive files could not be read.',{archiveFile:raise(unreadable)}],
+ ['/scan',500,refused,refused.message,{epochPool:true,scan:raise(refused)}],
 ] as const)test(`${path} answers a JSON error, uncached, when its service call throws`,async t=>{
- const api=await serve({ready:()=>true,...service});t.after(api.close);
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,...service});t.after(api.close);
  const answer=await fetch(api.base+path);
- assert.deepEqual([answer.status,answer.headers.get('content-type')?.split(';')[0],answer.headers.get('cache-control'),await answer.json()],[status,'application/json','no-store',{error:boom.message}]);
+ assert.deepEqual([answer.status,answer.headers.get('content-type')?.split(';')[0],answer.headers.get('cache-control'),await answer.json()],[status,'application/json','no-store',{error:shown}]);
+ assert.deepEqual(log.mock.calls.map(call=>String(call.arguments[0]).includes(error.message)),[true],'the real error is logged once');
+});
+
+test('an epoch /scan that cannot read a batch record answers a fixed error, not the path',async t=>{
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,epochPool:true,scan:raise(missing)});t.after(api.close);
+ const answer=await fetch(api.base+'/scan');
+ assert.deepEqual([answer.status,answer.headers.get('cache-control'),await answer.json()],[500,'no-store',{error:'The batch records could not be read.'}]);
+ assert.deepEqual(log.mock.calls.map(call=>String(call.arguments[0]).includes(missing.message)),[true],'the real error is logged once');
 });
 
 test('a classic pool\'s /scan that throws is still answered by Express, not as JSON',async t=>{
- const api=await serve({ready:()=>true,scan:()=>{throw boom;}});t.after(api.close);
+ const api=await serve({ready:()=>true,scan:raise(refused)});t.after(api.close);
  const answer=await fetch(api.base+'/scan');
  assert.deepEqual([answer.status,answer.headers.get('content-type')?.split(';')[0]],[500,'text/html']);
 });
