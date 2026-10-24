@@ -1,4 +1,4 @@
-import { buildRollupTransfer, randomField, type BuiltSpend, type SpendRequest } from './account.ts';
+import { buildRollupTransfer, randomField, type BuiltSpend, type OwnedNote, type SpendRequest } from './account.ts';
 import { clientWitness, inputNullifierOf, type ClientSpend, type ClientWitness } from './client.ts';
 import { BTC_ASSET, NOTE_DEPTH, ROLLUP_DOMAIN } from './constants.ts';
 import { anchorOf, type EpochAnchorRef, type EpochSlot } from './epoch.ts';
@@ -53,4 +53,10 @@ export async function epochTransfer(hash: Hash, o: { rPrev: bigint; rCur: EpochA
  }, { rPrev: o.rPrev, rCur: o.rCur.root, sel: inputs.map((_, k) => o.sel[k] ?? 0n) });
  const { root: anchor, ...rest } = witness.slot;
  return { witness, ciphertext, change, slot: { ...rest, anchor, rCur: o.rCur } };
+}
+
+/** A recovery is the ordinary epoch-spend proof with both roots its origin's final one: with the roots equal, sel cannot move the membership root. */
+export async function epochRecoverTransfer(hash: Hash, o: { origin: number; noteFinal: bigint; ask: bigint; nk: bigint; self: RollupRecipient; note: OwnedNote; path: bigint[] }, random = randomField): Promise<EpochBuiltSpend> {
+ const { slot: { rCur: _, ...slot }, ...built } = await epochTransfer(hash, { rPrev: o.noteFinal, rCur: { epoch: o.origin, root: o.noteFinal }, sel: [0n], ask: o.ask, nk: o.nk, self: o.self, request: { asset: o.note.asset, input: o.note }, paths: [o.path] }, random);
+ return { ...built, slot: { ...slot, origin: o.origin } };
 }

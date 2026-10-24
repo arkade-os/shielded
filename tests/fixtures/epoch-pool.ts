@@ -1,5 +1,6 @@
 import { base64, hex } from '@scure/base';
-import type { RollupEpochRecord } from '../../src/rollup/epoch-operator.ts';
+import type { RollupEpochRecord, RollupEpochSpend } from '../../src/rollup/epoch-operator.ts';
+import type { EpochSpendBody } from '../../src/shielded/epoch-pool.ts';
 import type { PoolApi } from '../../src/shielded/pool.ts';
 import type { ClientInput } from '../../packages/protocol/src/rollup/client.ts';
 import { CHECKPOINT_EVERY, EPOCH_SLOTS, ROLLUP_DOMAIN, type EpochBatchKind } from '../../packages/protocol/src/rollup/constants.ts';
@@ -12,9 +13,17 @@ import { noteOf, type Hash } from '../../packages/protocol/src/rollup/notes.ts';
 import type { RollupRecipient } from '../../packages/protocol/src/rollup/wallet.ts';
 import { epochHarness, foldPath } from './epoch.ts';
 
-export interface PoolSpend { slot: EpochSlot; publics: bigint[]; ciphertext?: Uint8Array }
+export interface PoolSpend { slot: EpochSlot; publics: readonly bigint[]; ciphertext?: Uint8Array }
 type Transfer = Omit<Parameters<typeof epochTransfer>[1], 'rPrev' | 'rCur' | 'sel'>;
 export const posted = (built: EpochBuiltSpend): PoolSpend => ({ slot: built.slot, publics: built.witness.publicSignals, ciphertext: built.ciphertext });
+/** What 4b's epoch POST /spends decoder hands the operator: the body names a recovery's origin on its slot alone, and the spend carries it twice, as kindOf requires. */
+export const fromBody = (body: EpochSpendBody): Omit<RollupEpochSpend, 'receivedAt'> => {
+ const s = body.slot as unknown as Record<string, any>;
+ if ('root' in s || (s.rCur === undefined) === (s.origin === undefined) || (s.origin !== undefined && !(Number.isSafeInteger(s.origin) && s.origin >= 0))) throw Object.assign(new Error('Malformed epoch slot.'), { status: 400 });
+ const slot: EpochSlot = { anchor: BigInt(s.anchor), ...(s.origin !== undefined ? { origin: s.origin as number } : { rCur: { epoch: s.rCur.epoch as number, root: BigInt(s.rCur.root) } }),
+  nullifiers: s.nullifiers.map(BigInt), commitments: [BigInt(s.commitments[0]), BigInt(s.commitments[1])], ctDigest: BigInt(s.ctDigest), groupId: BigInt(s.groupId), groupSize: s.groupSize };
+ return { id: body.id, slot, ...(slot.origin !== undefined ? { origin: slot.origin } : {}), publics: body.publics.map(BigInt) as unknown as RollupEpochSpend['publics'], proof: body.proof as RollupEpochSpend['proof'], ciphertext: hex.decode(body.ciphertext) };
+};
 /** The client circuit's membership line, which CI's stub proofs never check: each input's path folds to R_cur + sel*(R_prev - R_cur). */
 export const opens = (hash: Hash, owner: bigint, built: EpochBuiltSpend, notes: EpochOwnedNote[]) => {
  const { path, sel, rPrev, rCur } = built.witness.input as { path: bigint[] | bigint[][]; sel: bigint | bigint[]; rPrev: bigint; rCur: bigint };
@@ -86,6 +95,8 @@ export function epochPool(hash: Hash, epochLen: number, leaves = true) {
    return { from, total, data: base64.encode(encodeEpochScan(records.slice(from, to).map((record, i) => ({ record, root: BigInt(record.noteBlockRoot), rotated: rotations[from + i]! })))) };
   }
   if (url.pathname === '/times') return { every: CHECKPOINT_EVERY, at: records.filter((_, n) => n % CHECKPOINT_EVERY === 0).map(r => r.at ?? 0) };
+  // 4b Task 6's list: the operator writes each epoch's file as the epoch closes.
+  if (url.pathname === '/archives') return { epochs: Array.from({ length: state.epoch }, (_, e) => e) };
   if (at) {
    const [epoch, blocks] = [Number(at[1]), Number(at[2])];
    if (epoch === state.epoch && blocks > 0 && blocks % CHECKPOINT_EVERY === 0 && blocks <= state.batchCount - epoch * state.epochLen) return { epoch, ...checkpointOf(state.notes, blocks) };

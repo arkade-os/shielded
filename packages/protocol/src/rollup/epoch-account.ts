@@ -3,7 +3,7 @@ import type { RollupEpochRecord } from '../../../../src/rollup/epoch-operator.ts
 import { randomField, type RollupKeys, type SnapshotEntry, type SnapshotNote, type SpendRequest } from './account.ts';
 import { BTC_ASSET, EPOCH_NULLIFIERS, EPOCH_SLOTS, MAX_EPOCH_LEN, ROLLUP_DOMAIN, SUBTREE_DEPTH, type EpochBatchKind } from './constants.ts';
 import type { EpochAnchorRef } from './epoch.ts';
-import { epochTransfer, type EpochBuiltSpend } from './epoch-circuit.ts';
+import { epochRecoverTransfer, epochTransfer, type EpochBuiltSpend } from './epoch-circuit.ts';
 import { rotatesAt, type EpochScanBatch } from './epoch-scan.ts';
 import { NoteFrontier, type FrontierCheckpoint, type FrontierSnapshot } from './frontier.ts';
 import { akOf, groupIdOf, noteOf, nullifierOf, ownerOf, type Hash } from './notes.ts';
@@ -243,6 +243,14 @@ export class EpochAccount {
  join(inputs: [EpochOwnedNote, EpochOwnedNote], self: RollupRecipient, to?: SpendRequest['to']): Promise<EpochBuiltSpend> {
   return this.spend({ asset: inputs[0].asset, inputs, ...(to ? { to } : {}) }, self);
  }
+ /** A note off the fast path becomes a fresh note of the live epoch: one width-1 slot that names its origin and opens against that epoch's final root twice. */
+ async recover(note: EpochOwnedNote, self: RollupRecipient, random = randomField): Promise<EpochBuiltSpend> {
+  if (this.keys.ask === undefined) throw new Error('This wallet holds a full viewing key, not the spend authority.');
+  if (note.epoch >= this.liveEpoch - 1) throw new Error('That note is still on the fast path; spend it instead.');
+  const noteFinal = this.noteFinal(note.epoch), path = this.frozenPath(note);
+  if (noteFinal === undefined || !path) throw new Error('This wallet holds no frozen path for that note, so it cannot recover it.');
+  return epochRecoverTransfer(this.hash, { origin: note.epoch, noteFinal, ask: this.keys.ask, nk: this.keys.nk, self, note, path }, random);
+ }
  async consolidate(self: RollupRecipient, asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set(), above = CONSOLIDATE_ABOVE): Promise<{ inputs: [EpochOwnedNote, EpochOwnedNote]; built: EpochBuiltSpend } | undefined> {
   const notes = this.smallestFirst(this.usable(asset, inFlight));
   if (notes.length <= above) return undefined;
@@ -254,6 +262,7 @@ export class EpochAccount {
   * other due note when there is one. Each note's target is drawn the first time it is seen; `now` is not read, the schedule counts batches.
   */
  renewalDue(o: { now?: () => number; random?: () => number; inFlight?: ReadonlySet<bigint>; asset?: bigint } = {}): RenewalPlan | undefined {
+  // trap: `at`, not blockInEpoch, which reads epochLen at the rotating tick and would renew every due note at once.
   const { epochLen, liveEpoch: live } = this, at = this.count - live * epochLen, last = Math.floor(RENEWAL_FLOOR * epochLen);
   const due = this.notes(o.asset).filter(n => n.epoch === live - 1);
   if (!due.length) return undefined;
