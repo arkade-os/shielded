@@ -20,10 +20,10 @@ import {openRollupEpochOperator,type RollupEpochRecord} from '../src/rollup/epoc
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import type {RollupArchive,RollupRecord} from '../src/rollup/operator.ts';
 import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
-import {encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
+import {openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
-import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
+import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 import './rollup-genesis3-contract.test.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
@@ -34,8 +34,6 @@ const epochSpend=(w:{slot:unknown;publicSignals:bigint[]},origin?:number)=>({id:
 const batchesOf=(service:RollupService,from:number,limit:number)=>service.batches(from,limit).batches as unknown as RollupEpochRecord[];
 type ScanPage={from:number;total:number;data:string};
 type Stored={id:string;slot:{nullifiers:bigint[]}};
-/** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would. */
-const pendingOnDisk=(directory:string,...spends:Stored[])=>{const store=openSpendStore(join(directory,'spends'));for(const s of spends)store.save({id:s.id,status:'pending',nullifier:String(s.slot.nullifiers[0]),at:Date.now(),spend:encodeSpend(s as never)});};
 
 test('an epoch service opens an epoch pool, rotates, and lands a recover batch that reads included after a restart',async t=>{
  const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-service-');
@@ -114,17 +112,6 @@ test('an epoch service opens an epoch pool, rotates, and lands a recover batch t
  assert.deepEqual(reopened.spend((recover as Stored).id),{status:'included'},'restore reads the recovered set');
  await until('the sweep settles the record restore skipped',()=>reopened.spend('swept')?.status!=='pending',net);
  assert.deepEqual(reopened.spend('swept'),{status:'included'},'so does the sweep');
-});
-
-test('on restart an epoch pool keeps an included spend included and drops a waiting one by name, not by a decode error',async()=>{
- const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-restart-'),state=EpochState.genesis(hash,64);
- const first=await ready(net,directory,keys,'64'),landed:Stored=epochSpend(deposit(state,0n)),waiting:Stored=epochSpend(deposit(state,0n));
- await first.submit(landed as never);
- await until('a batch lands',()=>first.status().pool!.batches===1,net);
- first.close();
- pendingOnDisk(directory,landed,waiting);
- const service=await ready(net,directory,keys);
- assert.deepEqual([service.spend(landed.id),service.spend(waiting.id)],[{status:'included'},{status:'dropped',reason:'An epoch pool does not re-admit pending spends after a restart; build the spend again.'}]);
 });
 
 test('a classic service is byte-identical to today',async t=>{

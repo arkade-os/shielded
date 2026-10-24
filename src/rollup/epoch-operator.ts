@@ -36,11 +36,13 @@ const KINDS=['spend','join','recover'] as const;
 const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
-const slotOf=(s:Omit<EpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
+export const slotOf=(s:Omit<EpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
  nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
-const recordOf=(kind:EpochBatchKind,spends:readonly RollupEpochSpend[],noteBlockRoot:bigint):RollupEpochRecord=>({kind,slots:spends.map(({slot,publics,ciphertext})=>({anchor:String(slot.anchor),
- ...(slot.rCur?{rCur:{epoch:slot.rCur.epoch,root:String(slot.rCur.root)}}:{}),...(slot.origin!==undefined?{origin:slot.origin}:{}),nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])],
- ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize,publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})})),noteBlockRoot:String(noteBlockRoot)});
+/** A slot in the string form records, the spend store and /external share; slotOf reads it back. */
+export const recordSlotOf=(slot:EpochSlot)=>({anchor:String(slot.anchor),...(slot.rCur?{rCur:{epoch:slot.rCur.epoch,root:String(slot.rCur.root)}}:{}),...(slot.origin!==undefined?{origin:slot.origin}:{}),
+ nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])] as [string,string],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize});
+const recordOf=(kind:EpochBatchKind,spends:readonly RollupEpochSpend[],noteBlockRoot:bigint):RollupEpochRecord=>({kind,
+ slots:spends.map(({slot,publics,ciphertext})=>({...recordSlotOf(slot),publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})})),noteBlockRoot:String(noteBlockRoot)});
 
 const sameTx=(left:string,right:string)=>{const [a,b]=[left,right].map(encoded=>Transaction.fromPSBT(base64.decode(encoded)));return a.id===b.id&&hex.encode(a.unsignedTx)===hex.encode(b.unsignedTx);};
 const sameRequest=(actual:StockWireRequest,expected:StockWireRequest)=>
@@ -200,8 +202,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    const origin=spend.origin!,nf=nullifiers[0]!,riding=!state.archive.has(origin);
    // The rotating batch archives epoch-1 from live state: its final root is prevNoteRoot, its frozen sets prevNf and nullifiers.
    if(riding&&(state.prevNfSet.has(nf)||state.nullifiers.has(nf)))throw new RollupRejection('double-spend','The note was already spent in its own epoch or the next.');
-   if(!riding)preload(origin);
-   const noteFinal=riding?state.prevNoteRoot:state.archive.witness(origin,nf).archived.noteFinal;
+   const noteFinal=riding?state.prevNoteRoot:state.archive.record(origin)!.noteFinal;
    if(anchor!==anchorOf(o.hash,noteFinal,noteFinal))throw new RollupRejection('stale-anchor','The recovery does not open against the final note root of its origin epoch.');
   }else{
    const epoch=state.epoch+(state.rotatesNext()?1:0);
@@ -219,6 +220,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   pending[kind].push(admitted);
   try{
    if(!await verify(o.clientKey[kind],spend.publics,spend.proof))throw new Error('Invalid client proof.');
+   // After the proof, so an unproven recovery cannot pull frozen sets off disk; their witness is an archived origin's double-spend check.
+   if(kind==='recover'&&state.archive.has(spend.origin!)){preload(spend.origin!);state.archive.witness(spend.origin!,nullifiers[0]!);}
    proven.add(admitted);
    const unit=groupId===0n?[admitted]:pending.spend.filter(s=>s.slot.groupId===groupId);
    if(unit.length!==Math.max(groupSize,1))return;
@@ -358,6 +361,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
      :facts.nullifiers.map((nf,i)=>({anchor:'0',nullifiers:nf.map(String),commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:0,publics:facts.publics[i]!.map(String)})),noteBlockRoot:String(facts.noteBlockRoot),txid:tx.id,at:external.at};
     writeFileSync(bodyPath(archive.batches),JSON.stringify(record));
     state.applyFromChain(facts.kind,facts.nullifiers,facts.noteBlockRoot);
+    if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
     accepted=acceptedOf(state);

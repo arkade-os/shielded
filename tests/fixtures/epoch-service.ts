@@ -12,11 +12,12 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
 import {ROLLUP_STATE_PACKET,type SnarkProof} from '../../src/rollup/covenant.ts';
-import type {RollupEpochRecord} from '../../src/rollup/epoch-operator.ts';
+import type {RollupEpochRecord,RollupEpochSpend} from '../../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../../src/rollup/http.ts';
 import {DEFAULT_VM_BINARY} from '../../src/rollup/leaves.ts';
 import type {RollupTransport} from '../../src/rollup/operator.ts';
 import {openRollupService,rollupKeyFilesOf,type RollupPoolKind,type RollupService} from '../../src/rollup/service.ts';
+import {encodeEpochSpend,openSpendStore} from '../../src/rollup/spend-store.ts';
 import {offlineNativeFixture} from './native.ts';
 
 const poseidon=await buildPoseidon();
@@ -28,6 +29,8 @@ const [serverPub,emulatorPub]=['01','02'].map(b=>secp256k1.getPublicKey(hex.deco
 export const serverKey=hex.encode(serverPub!.subarray(1)),emulatorKey=hex.encode(emulatorPub!.subarray(1)),exitDelay={type:'seconds' as const,value:2048};
 export const checkpoint=CSVMultisigTapscript.encode({pubkeys:[serverPub!.subarray(1)],timelock:{type:'seconds',value:4096n}});
 export const proof:SnarkProof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
+/** The one proof the offline verifier refuses. */
+export const badProof:SnarkProof={...proof,pi_a:['0','2','1']};
 // What a genesis-3 wallet reads from /status; never edited to fit a new field, which belongs on an epoch pool only.
 export const STATUS_KEYS=['fundingAddress','fundingSats','message','minimumFundingSats','network','phase','pool','proving','version'];
 export const POOL_KEYS=['address','batches','head','maxReserves','operator','padding','pending','reserves','root','script','token'];
@@ -39,6 +42,11 @@ export const stamp=(n:number)=>({txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1
 // Epoch 0 is spends; the recoveries after it are one slot wide, which keeps the replay of a second epoch cheap.
 export const epochRecord=(epochLen:number)=>(n:number):RollupEpochRecord=>({kind:n<epochLen?'spend':'recover',
  slots:n<epochLen?Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',...slotOf(n,s)})):[{anchor:'0',origin:-1,...slotOf(n,0)}],noteBlockRoot:String(blockRoot(n)),...stamp(n)});
+/** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would. */
+export const pendingOnDisk=(directory:string,...spends:Omit<RollupEpochSpend,'receivedAt'>[])=>{
+ const store=openSpendStore(join(directory,'spends'));
+ for(const s of spends)store.save({id:s.id,status:'pending',nullifier:String(s.slot.nullifiers[0]),at:Date.now(),spend:encodeEpochSpend(s)});
+};
 
 // Shared-setup verifying keys from the committed fixtures; wasm and zkey are stand-ins.
 const vkeys=(()=>{
@@ -72,7 +80,7 @@ const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fro
 /** The Arkade Service, indexer and operator wallet in memory; every batch it is sent lands, since stub proofs cannot pass the covenant. */
 export function offline(){
  const txs=new Map<string,Transaction>(),landed:Transaction[]=[],sent:{payload:Uint8Array;script:string}[]=[],proved:string[]=[],logs:string[]=[];
- const coins:{txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[];isSpent:boolean;expiresAt:Date}[]=[];
+ const coins:{txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[];isSpent:boolean;arkTxId?:string;expiresAt:Date}[]=[];
  const head=(tx:Transaction)=>{
   for(const c of coins)c.isSpent||=c.txid===hex.encode(tx.getInput(0).txid!)&&c.vout===tx.getInput(0).index;
   txs.set(tx.id,tx);coins.push({txid:tx.id,vout:0,value:Number(tx.getOutput(0).amount),script:hex.encode(tx.getOutput(0).script!),assets:[{assetId:token,amount:1n}],isSpent:false,expiresAt:new Date(Date.now()+30*86400_000)});
@@ -84,6 +92,11 @@ export function offline(){
   submit:async request=>{
    if(gate){const {held,waiting}=gate;gate=undefined;held.reached=true;await waiting;}
    const tx=Transaction.fromPSBT(base64.decode(request.arkTx));landed.push(tx);head(tx);
+   // A batch spends each coin through its checkpoint, so this is what /external asks the indexer about.
+   for(const c of request.checkpoints.map(p=>Transaction.fromPSBT(base64.decode(p)))){
+    txs.set(c.id,c);const {txid,index}=c.getInput(0),coin=coins.find(v=>v.txid===hex.encode(txid!)&&v.vout===index);
+    if(coin){coin.isSpent=true;coin.arkTxId=tx.id;}
+   }
    return {txid:tx.id,checkpointTxids:request.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)).id),signedArkTx:request.arkTx,signedCheckpointTxs:request.checkpoints,weights:{ark:0,checkpoints:[]},network:'mutinynet',finality:'operator-preconfirmed'};
   },
   lookup:async()=>undefined,verify:()=>{},unspent:async()=>true,spentBy:async()=>undefined,
@@ -102,7 +115,7 @@ export function offline(){
   getVirtualTxs:async(ids:string[])=>({txs:ids.flatMap(id=>txs.has(id)?[base64.encode(txs.get(id)!.toPSBT())]:[])}),
  };
  const providers={wallet:async()=>wallet as never,info:async()=>({checkpointTapscript:hex.encode(checkpoint.script),forfeitPubkey:hex.encode(serverPub!)}),indexer:indexer as never,transport:transport as never,
-  prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));if(proveMs)await new Promise(r=>setTimeout(r,proveMs));return proof;}}),verify:async()=>true};
+  prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));if(proveMs)await new Promise(r=>setTimeout(r,proveMs));return proof;}}),verify:async(_key:unknown,_publics:unknown,p:SnarkProof)=>p.pi_a[0]!==badProof.pi_a[0]};
  const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:hex.encode(serverPub!),maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:hex.encode(emulatorPub!),version:'test'}};
  const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
  const open=(directory:string,keys:string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
@@ -122,7 +135,7 @@ export const until=async(what:string,done:()=>boolean,net:Offline)=>{for(let i=0
 export async function listen(service:RollupService){
  const app=express();app.use('/api/rollup',createRollupRouter(()=>service));
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));closers.push(()=>new Promise(r=>server.close(r)));
- return (path:string)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`);
+ return (path:string,init?:RequestInit)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`,init);
 }
 
 /**

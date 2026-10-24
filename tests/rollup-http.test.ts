@@ -47,7 +47,7 @@ test('proving keys are served from any key directory, including one under a dot-
 
 test('a spend is validated and handed to the operator with field elements as bigints',async(t)=>{
  const submitted:Omit<RollupSpend,'receivedAt'>[]=[];
- const api=await serve({ready:()=>true,submit:async s=>{submitted.push(s);},spend:()=>undefined,sign:()=>{throw new Error('This spend has no open signing round.');},batches:()=>({from:0,total:0,batches:[]})});t.after(api.close);
+ const api=await serve({ready:()=>true,submit:async s=>{submitted.push(s as Omit<RollupSpend,'receivedAt'>);},spend:()=>undefined,sign:()=>{throw new Error('This spend has no open signing round.');},batches:()=>({from:0,total:0,batches:[]})});t.after(api.close);
  assert.equal((await post(api.base+'/spends',{...spend,id:'short'})).status,400);
  assert.equal((await post(api.base+'/spends',{...spend,ciphertext:'00'})).status,400);
  for(const [groupId,groupSize] of [['0',2],['5',0],['5',4],['5','2']] as const)assert.equal((await post(api.base+'/spends',{...spend,slot:{...spend.slot,groupId,groupSize}})).status,400,`group ${groupId}/${groupSize}`);

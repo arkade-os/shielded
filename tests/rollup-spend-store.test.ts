@@ -4,10 +4,23 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import type {RollupSpend} from '../src/rollup/batcher.ts';
-import {decodeSpend,encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
+import type {RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {decodeEpochSpend,decodeSpend,encodeEpochSpend,encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 
 const spend:Omit<RollupSpend,'receivedAt'>={id:'ab'.repeat(16),slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:99n,groupSize:2},
  publics:[1n,2n,0n,0n,0n,0n,0n],proof:{pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']},ciphertext:Uint8Array.of(1,2,3),program:new Uint8Array(32).fill(4),asset:'cc'.repeat(34)};
+const {root:_,...bare}=spend.slot;
+const fastPath:Omit<RollupEpochSpend,'receivedAt'>={...spend,id:'cd'.repeat(16),slot:{...bare,anchor:7n,rCur:{epoch:3,root:8n}}};
+const recovery:Omit<RollupEpochSpend,'receivedAt'>={id:'ef'.repeat(16),slot:{...bare,anchor:7n,origin:2,groupId:0n,groupSize:0},origin:2,publics:spend.publics,proof:spend.proof,ciphertext:spend.ciphertext};
+
+test('a stored epoch spend decodes to the spend that was admitted, its origin on the spend and its slot alike',()=>{
+ const coin={txid:'dd'.repeat(32),vout:1,tapTree:'aa',leaf:'bb'};
+ for(const s of [fastPath,recovery]){
+  const stored=JSON.parse(JSON.stringify(encodeEpochSpend(s,coin)));
+  assert.deepEqual([stored.coin,'anchor' in stored.slot,'root' in stored.slot,'origin' in stored],[coin,true,false,false],s.id);
+  assert.deepEqual(decodeEpochSpend(stored),s,s.id);
+ }
+});
 
 test('a stored spend decodes to the spend that was admitted, and keeps the coin it named',()=>{
  const coin={txid:'dd'.repeat(32),vout:1,tapTree:'aa',leaf:'bb'};

@@ -1,10 +1,12 @@
 import {basename,dirname} from 'node:path';
 import express from 'express';
 import {hex} from '@scure/base';
-import {RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
+import type {EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
 import type {RollupSpend} from './batcher.ts';
 import type {SnarkProof} from './covenant.ts';
+import {recordSlotOf,type RollupEpochSpend} from './epoch-operator.ts';
 import type {RollupService} from './service.ts';
 
 const decimal=(v:unknown)=>{if(typeof v!=='string'||!/^(0|[1-9][0-9]{0,77})$/.test(v))throw new Error('Expected a decimal field element.');return BigInt(v);};
@@ -13,6 +15,18 @@ const proofOf=(p:any):SnarkProof=>{
  const ok=(list:unknown,n:number)=>Array.isArray(list)&&list.length===n&&list.every(x=>typeof x==='string'&&/^[0-9]{1,78}$/.test(x));
  if(!p||!ok(p.pi_a,3)||!ok(p.pi_c,3)||!Array.isArray(p.pi_b)||p.pi_b.length!==3||!p.pi_b.every((row:unknown)=>ok(row,2)))throw new Error('Malformed Groth16 proof.');
  return {pi_a:p.pi_a,pi_b:p.pi_b,pi_c:p.pi_c};
+};
+/** Both epoch write routes' slot: an anchor where a classic slot has its root, and exactly one of rCur (a fast-path spend) and origin (a recovery). */
+const epochSlotOf=(s:any):EpochSlot=>{
+ if(!s||typeof s!=='object'||!Array.isArray(s.nullifiers)||![1,2].includes(s.nullifiers.length)||!Array.isArray(s.commitments)||s.commitments.length!==2)throw new Error('Malformed epoch slot.');
+ if('root' in s)throw new Error('An epoch slot names its anchor, not a root.');
+ if((s.rCur===undefined)===(s.origin===undefined))throw new Error('An epoch slot names exactly one of rCur, for a fast-path spend, and origin, for a recovery.');
+ if(s.origin!==undefined&&(!Number.isSafeInteger(s.origin)||s.origin<0))throw new Error('A recovery names its origin epoch as a whole number.');
+ if(s.rCur!==undefined&&(typeof s.rCur!=='object'||!Number.isSafeInteger(s.rCur?.epoch)||s.rCur.epoch<0))throw new Error('A window leaf names a whole epoch and its root.');
+ const groupId=decimal(s.groupId);
+ if(!(groupId===0n&&s.groupSize===0)&&!(groupId!==0n&&(s.groupSize===2||s.groupSize===3)))throw new Error('A group has a nonzero id and two or three members; a lone spend has neither.');
+ return {anchor:decimal(s.anchor),...(s.origin!==undefined?{origin:s.origin as number}:{rCur:{epoch:s.rCur.epoch as number,root:decimal(s.rCur.root)}}),
+  nullifiers:s.nullifiers.map(decimal),commitments:[decimal(s.commitments[0]),decimal(s.commitments[1])],ctDigest:decimal(s.ctDigest),groupId,groupSize:s.groupSize};
 };
 
 /** The v2 wallet API: status, proving keys, published batches, spend submission and the deposit signing round. */
@@ -69,6 +83,38 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   res.setHeader('Cache-Control','no-store');
   if(!checkpoint){res.status(404).json({error:'There is no checkpoint at that epoch and batch count.'});return;}
   res.json(checkpoint);
+ });
+ // The epoch siblings run first and hand a classic pool's request on, so the genesis-3 parsers below stay as they are.
+ router.post('/external',async(req,res,next)=>{
+  if(!service()!.epochPool)return next();
+  try{
+   const b=req.body??{};
+   if(typeof b.txid!=='string'||!/^[0-9a-f]{64}$/.test(b.txid)||(b.slots!==undefined&&(!Array.isArray(b.slots)||b.slots.length>BATCH_SLOTS)))throw new Error("Expected a txid, and its batch record's slots unless it is followed chain-only.");
+   const slots=b.slots?.map((s:any)=>({...recordSlotOf(epochSlotOf(s)),...(s.ciphertext!==undefined?{ciphertext:hexOf(s.ciphertext,ROLLUP_RECORD_BYTES)}:{})}));
+   res.json(await service()!.external(b.txid,slots));
+  }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}
+ });
+ router.post('/spends',async(req,res,next)=>{
+  if(!service()!.epochPool)return next();
+  if(admitting>=ADMITTING_AT_ONCE){res.status(503).json({error:'The pool is busy checking other spends; try again in a moment.'});return;}
+  admitting++;
+  try{
+   const b=req.body??{};
+   if(typeof b.id!=='string'||!/^[0-9a-f]{16,64}$/.test(b.id))throw new Error('A spend id is 8 to 32 random bytes in hex.');
+   if(!Array.isArray(b.publics)||b.publics.length!==7)throw new Error('A spend carries its seven public inputs.');
+   const slot=epochSlotOf(b.slot);
+   if(b.asset!==undefined&&(typeof b.asset!=='string'||!/^[0-9a-f]{68}$/.test(b.asset)))throw new Error('An asset id is 68 lowercase hex characters.');
+   const coinRef=b.coin?{txid:hexOf(b.coin.txid,32),vout:Number.isInteger(b.coin.vout)&&b.coin.vout>=0?b.coin.vout:-1,tapTree:hexOf(b.coin.tapTree),leaf:hexOf(b.coin.leaf)}:undefined;
+   const coin=coinRef?await service()!.depositCoin(coinRef):undefined;
+   if(coin&&coin.assetId!==b.asset)throw new Error(coin.assetId?`The deposit coin holds asset ${coin.assetId}; deposit it as that asset.`:'The deposit coin holds no asset.');
+   // kindOf requires a recovery's origin on the spend and on its slot alike.
+   const spend:Omit<RollupEpochSpend,'receivedAt'>={id:b.id,slot,...(slot.origin!==undefined?{origin:slot.origin}:{}),
+    publics:b.publics.map(decimal) as unknown as RollupEpochSpend['publics'],proof:proofOf(b.proof),ciphertext:hex.decode(hexOf(b.ciphertext,ROLLUP_RECORD_BYTES)),
+    ...(b.program!==undefined?{program:hex.decode(hexOf(b.program,32))}:{}),...(b.asset?{asset:b.asset}:{}),...(coin?{coin}:{})};
+   await service()!.submit(spend,coinRef);
+   res.status(202).json({id:spend.id,status:'pending'});
+  }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}
+  finally{admitting--;}
  });
  router.post('/external',async(req,res)=>{
   try{

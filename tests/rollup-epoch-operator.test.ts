@@ -130,11 +130,13 @@ test('a recover batch built in TypeScript is accepted by the real recover leaf',
 test('admission refuses every recover submission the policy forbids',async t=>{
  const w=await world(2),op=await w.open(t),minted=deposit(op.state,1000n),spentNote=noteFrom(minted);
  await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
- const moved=deposit(op.state,1000n,{inputs:[spentNote],deposit:0n}),note=noteFrom(moved);
+ const moved=deposit(op.state,1000n,{inputs:[spentNote],deposit:0n}),note=noteFrom(moved),nextSpent=noteFrom(moved,1);
  await land(op,'spend',[spendOf(moved)]);
- for(let n=0;n<2;n++)await land(op,'spend',[fastSpend(op.state)]);
+ await land(op,'spend',[spendOf(deposit(op.state,0n,{inputs:[nextSpent]}))]);
+ await land(op,'spend',[fastSpend(op.state)]);
  const unsound=():[string,Spend,RejectionCode][]=>[
   ['a note its epoch already spent',recoverSpend(op.state,0,spentNote),'double-spend'],
+  ['a note the next epoch spent',recoverSpend(op.state,0,nextSpent),'double-spend'],
   ['an anchor that opens another tree',reanchored(recoverSpend(op.state,0,note),anchorOf(hash,op.state.latestRoot(),op.state.latestRoot())),'stale-anchor'],
  ];
  assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[1,false,true]);
@@ -278,6 +280,17 @@ test('a followed batch reproduces the state the transaction committed to, for al
  const {tx:joinTx}=landedTx(w,1);
  assert.deepEqual(readEpochBatchTx(joinTx,leaves),readBatchTx(joinTx,leaves),'the join row reads what the genesis-3 reader reads');
  assert.deepEqual(readEpochBatchTx(joinTx,leaves).nullifiers,recordAt(w,1).slots.map(s=>s.nullifiers.map(BigInt)));
+});
+
+test('following the batch that ends an epoch empties the padding queue at once',async t=>{
+ const w=await world(2),a=await w.open(t),drops:[string[],string][]=[];
+ const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-follower-')),onDrop:(ids,reason)=>drops.push([ids,reason])});
+ for(let n=0;n<2;n++)await land(a,'spend',[fastSpend(a.state)]);
+ await b.follow({...landedTx(w,0),at:1});
+ const pads=padsFor(b.state,'spend',3);b.addPadding(pads);
+ await b.follow({...landedTx(w,1),at:1});
+ assert.deepEqual([b.state.rotatesNext(),b.padding(),drops.flatMap(([ids])=>ids)],[true,0,pads.map(p=>p.id)]);
+ for(const [,reason] of drops)assert.match(reason,/rotation/);
 });
 
 test('readEpochBatchTx says so when it is handed genesis-3 leaves',()=>{

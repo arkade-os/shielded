@@ -26,13 +26,13 @@ import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
-import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord,type RollupEpochStatus} from './epoch-operator.ts';
+import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend,type RollupEpochStatus} from './epoch-operator.ts';
 import {loadRollupEpochLeaves,loadRollupLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupPoolCoin,type RollupRecord,type RollupTimings,type RollupTransport} from './operator.ts';
 import {createRollupProver,type CircuitArtifacts,type RollupProver,type verifyRollupProof} from './prover.ts';
 import {carriedReserves,flushRollupIntent,leftoverRenewal,renewalChunks,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
 import {listingsOf,MAX_RESERVES} from './listings.ts';
-import {decodeSpend,encodeSpend,openSpendStore,type CoinRef} from './spend-store.ts';
+import {decodeEpochSpend,decodeSpend,encodeEpochSpend,encodeSpend,openSpendStore,type CoinRef,type EncodedEpochSpend,type EncodedSpend} from './spend-store.ts';
 import {createRollupTransport} from './transport.ts';
 
 export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend','batch-join'].flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])] as const;
@@ -77,7 +77,11 @@ const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255
 const readJson=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 /** A recovery spends into the recovered set, which only an epoch pool keeps. */
 const landed=(state:RollupState|EpochState,nf:bigint)=>state.nullifiers.has(nf)||(state instanceof EpochState&&state.recovered.has(nf));
-const EPOCH_RESTART_DROP='An epoch pool does not re-admit pending spends after a restart; build the spend again.';
+type Submission=Omit<RollupSpend,'receivedAt'>|Omit<RollupEpochSpend,'receivedAt'>;
+type FollowedSlots<O extends RollupOperator|RollupEpochOperator>=Parameters<O['follow']>[0]['slots'];
+/** Each operator refuses the other's slot shape at admission, so a spend is admitted, and stored, only as the live pool's kind. */
+const admit=(operator:RollupOperator|RollupEpochOperator,spend:Submission)=>operator.state instanceof EpochState
+ ?(operator as RollupEpochOperator).submit(spend as Omit<RollupEpochSpend,'receivedAt'>):(operator as RollupOperator).submit(spend as Omit<RollupSpend,'receivedAt'>);
 
 type KeyManifest={circuits:Record<string,{files:Record<string,string>}>};
 /** Every served file must be in the manifest and match it, so a key set that lacks a circuit fails closed. */
@@ -208,10 +212,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(Date.now()-record.at>3600_000){store.remove(record.id);continue;}
    tracked.set(record.id,{status:record.status,nullifier:record.nullifier,at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})});
    if(record.status!=='pending'||!record.spend)continue;
-   // The spend store keeps only classic slot fields, so an epoch spend cannot be decoded back.
-   if(operator.state instanceof EpochState){settle(record.id,landed(operator.state,BigInt(record.nullifier))?{status:'included'}:{status:'dropped',reason:EPOCH_RESTART_DROP});continue;}
-   if(operator.state.nullifiers.has(BigInt(record.nullifier))){settle(record.id,{status:'included'});continue;}
-   try{const coin=record.spend.coin?await resolveCoin(record.spend.coin):undefined;await (operator as RollupOperator).submit({...decodeSpend(record.spend),...(coin?{coin}:{})});}
+   if(landed(operator.state,BigInt(record.nullifier))){settle(record.id,{status:'included'});continue;}
+   try{const {spend}=record,coin=spend.coin?await resolveCoin(spend.coin):undefined;await admit(operator,{...('anchor' in spend.slot?decodeEpochSpend(spend as EncodedEpochSpend):decodeSpend(spend as EncodedSpend)),...(coin?{coin}:{})});}
    catch(error){settle(record.id,{status:'dropped',reason:'It could not be re-admitted after the pool restarted: '+(error as Error).message});}
   }
  }
@@ -447,6 +449,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    }
   },
   ready:()=>!!live,
+  /** The write routes parse the epoch slot shape only for an epoch operator. */
+  get epochPool(){return live?.operator.state instanceof EpochState;},
   // The batch key is published too, so anyone can prove a batch, and the pool keeps moving, if this operator stops.
   keyFile:(name:string)=>manifest?rollupKeyPath(keys,name,poolKind):undefined,
   batches:(from:number,limit:number)=>{
@@ -493,8 +497,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   },
   /** Fills a deposit coin from the indexer; the client names the outpoint and the tree that locks it. */
   depositCoin:resolveCoin,
-  /** Follows a batch another prover got accepted; its transaction, checkpoints and reserve come from the indexer, never the caller. */
-  external:async(txid:string,slots:Parameters<RollupOperator['follow']>[0]['slots'])=>{
+  /** Follows a batch another prover got accepted; its transaction, checkpoints and reserve come from the indexer, never the caller. Without slots it is followed chain-only. */
+  external:async(txid:string,slots?:FollowedSlots<RollupOperator>|FollowedSlots<RollupEpochOperator>)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');
    const {operator,indexer}=live,txs=async(ids:string[])=>(await indexer.getVirtualTxs(ids)).txs.map(decodeStockIndexerTransaction);
    const tx=(await txs([txid])).find(t=>t.id===txid);if(!tx)throw new Error('The indexer does not know that transaction.');
@@ -505,15 +509,16 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    const second=checkpoints[1]?.getInput(0),moved=second&&Object.entries(archive.reserves).find(([,c])=>c.txid===hex.encode(second.txid!)&&c.vout===second.index)?.[0];
    const outs=(await indexer.getVtxos({outpoints:[{txid,vout:0},{txid,vout:1}]})).vtxos,created=outs.find(v=>v.vout===0)?.createdAt;
    const reserveAmount=moved?String(outs.find(v=>v.vout===1)?.assets?.find(a=>a.assetId===moved)?.amount??0):undefined;
-   return (operator as RollupOperator).follow({tx,checkpoints:checkpoints as Transaction[],slots,at:created instanceof Date?created.getTime():Date.now(),...(reserveAmount!==undefined?{reserveAmount}:{})});
+   const followed={tx,checkpoints:checkpoints as Transaction[],at:created instanceof Date?created.getTime():Date.now(),...(reserveAmount!==undefined?{reserveAmount}:{})};
+   return operator.state instanceof EpochState?(operator as RollupEpochOperator).follow({...followed,slots:slots as FollowedSlots<RollupEpochOperator>})
+    :(operator as RollupOperator).follow({...followed,slots:slots as FollowedSlots<RollupOperator>});
   },
-  /** The epoch operator refuses a classic slot at admission: it names no window leaf. */
-  submit:async(spend:Omit<RollupSpend,'receivedAt'>,coin?:CoinRef)=>{
+  submit:async(spend:Submission,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
-   await (live.operator.submit as (spend:object)=>Promise<void>)(spend);kick();
+   await admit(live.operator,spend);kick();
    const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),at:Date.now()};
-   tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:encodeSpend(spend,coin)});
+   tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:'anchor' in spend.slot?encodeEpochSpend(spend as Omit<RollupEpochSpend,'receivedAt'>,coin):encodeSpend(spend as Omit<RollupSpend,'receivedAt'>,coin)});
   },
   spend:(id:string):RollupSpendStatus|undefined=>{
    const s=sessions.get(id),t=tracked.get(id);
