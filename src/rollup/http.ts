@@ -111,7 +111,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!service()!.epochPool)return next();
   try{
    const b=req.body??{};
-   if(typeof b.txid!=='string'||!/^[0-9a-f]{64}$/.test(b.txid)||(b.slots!==undefined&&(!Array.isArray(b.slots)||b.slots.length>BATCH_SLOTS)))throw new Error("Expected a txid, and its batch record's slots unless it is followed chain-only.");
+   if(typeof b.txid!=='string'||!/^[0-9a-f]{64}$/.test(b.txid)||(b.slots!==undefined&&(!Array.isArray(b.slots)||!b.slots.length||b.slots.length>BATCH_SLOTS)))throw new Error("Expected a txid, and its batch record's slots unless it is followed chain-only.");
    const slots=b.slots?.map((s:any)=>({...recordSlotOf(epochSlotOf(s)),...(s.ciphertext!==undefined?{ciphertext:hexOf(s.ciphertext,ROLLUP_RECORD_BYTES)}:{})}));
    res.json(await service()!.external(b.txid,slots));
   }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}

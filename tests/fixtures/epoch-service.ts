@@ -40,6 +40,7 @@ export const blockRoot=(n:number)=>hash([77n,BigInt(n)]);
 export const slotOf=(n:number,s:number)=>({nullifiers:[String(hash([78n,BigInt(n),BigInt(s)]))],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[] as string[]});
 export const stamp=(n:number)=>({txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1000});
 // Epoch 0 is spends; the recoveries after it are one slot wide, which keeps the replay of a second epoch cheap.
+// applyFromChain never reads origin and no admission sees a baked record, so the -1 below is only a placeholder.
 export const epochRecord=(epochLen:number)=>(n:number):RollupEpochRecord=>({kind:n<epochLen?'spend':'recover',
  slots:n<epochLen?Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',...slotOf(n,s)})):[{anchor:'0',origin:-1,...slotOf(n,0)}],noteBlockRoot:String(blockRoot(n)),...stamp(n)});
 /** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would. */

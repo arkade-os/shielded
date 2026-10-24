@@ -138,6 +138,11 @@ test('/external with no slots follows the same batch chain-only',async()=>{
  assert.ok(batchesOf(chainOnly,126,3).every(r=>r.slots.every(s=>s.commitments.every(c=>c==='0'))),'with no record there is no opening to keep');
 });
 
+test('/external refuses an empty slots list, where only an omitted one follows chain-only',async()=>{
+ const echo=await listen({ready:()=>true,epochPool:true,external:async(_txid:string,parsed:unknown)=>parsed} as unknown as RollupService);
+ assert.deepEqual(await answer(post(echo,'/external',{txid:'ab'.repeat(32),slots:[]})),[400,{error:EXTERNAL}]);
+});
+
 test('/external on an epoch pool answers a named 400, never a raw TypeError message',async()=>{
  const {withSlots,records:[record],requests}=await thirdPartyPools(),txid=record!.txid,batches=withSlots.status().pool!.batches;
  const slots=record!.slots.map(({publics:_,...slot})=>slot),[slot]=slots;
