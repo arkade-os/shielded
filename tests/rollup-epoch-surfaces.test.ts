@@ -15,17 +15,11 @@ import type {RollupRecord} from '../src/rollup/operator.ts';
 import {rollupEpochPin} from '../src/rollup/service.ts';
 import {writeSnapshot} from '../src/rollup/snapshot.ts';
 import {epochHarness} from './fixtures/epoch.ts';
-import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,hash,keySet,listen,offline,POOL_KEYS,PROVING_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,until} from './fixtures/epoch-service.ts';
+import {bakedPool,blockRoot,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,hash,keySet,listen,offline,POOL_KEYS,PROVING_KEYS,proof,ready,scratch,serverKey,sha,slotOf,stamp,STATUS_KEYS,until} from './fixtures/epoch-service.ts';
 
 const {deposit}=epochHarness(hash);
 // Two blocks follow the 64-block checkpoint of epoch 1, and no global batch number equals its in-epoch one.
 const EPOCH_LEN=68,BATCHES=134;
-const blockRoot=(n:number)=>hash([77n,BigInt(n)]);
-const slotOf=(n:number,s:number)=>({nullifiers:[String(hash([78n,BigInt(n),BigInt(s)]))],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[] as string[]});
-const stamp=(n:number)=>({txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1000});
-// Epoch 0 is spends; the recoveries after it are one slot wide, which keeps the replay of a second epoch cheap.
-const epochRecord=(epochLen:number)=>(n:number):RollupEpochRecord=>({kind:n<epochLen?'spend':'recover',
- slots:n<epochLen?Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',...slotOf(n,s)})):[{anchor:'0',origin:-1,...slotOf(n,0)}],noteBlockRoot:String(blockRoot(n)),...stamp(n)});
 const classicRecord=(n:number):RollupRecord=>({kind:'spend',slots:Array.from({length:BATCH_SLOTS},(_,s)=>({root:'0',...slotOf(n,s)})),noteBlockRoot:String(blockRoot(n)),...stamp(n)});
 const fold=(level:bigint[]):bigint=>level.length===1?level[0]!:fold(Array.from({length:level.length/2},(_,i)=>hash([level[2*i]!,level[2*i+1]!])));
 const roots=(first:number,count=64)=>Array.from({length:count},(_,k)=>blockRoot(first+k));

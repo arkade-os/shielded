@@ -23,7 +23,7 @@ import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupP
 import {encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
-import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,exitDelay,hash,keySet,le32,listen,offline,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
+import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 import './rollup-genesis3-contract.test.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
@@ -196,11 +196,8 @@ test('epoch padding is proved against the root the next batch opens against',asy
  state.apply('join',joins.map(p=>p.slot));
 });
 
-const chainRecord=(n:number):RollupEpochRecord=>({kind:'spend',slots:Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',nullifiers:[String(hash([78n,BigInt(n),BigInt(s)]))],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[]})),
- noteBlockRoot:String(hash([77n,BigInt(n)])),txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1000});
-
 test('the stall across a rotation is measured and the pool resumes',async t=>{
- const {net,service}=await bakedPool({epochLen:64,batches:63,record:chainRecord}),pool=()=>service.status().pool!;
+ const {net,service}=await bakedPool({epochLen:64,batches:63,record:epochRecord(64)}),pool=()=>service.status().pool!;
  const spend=()=>{const p=pool(),view={epoch:p.epoch,latestRoot:()=>BigInt(p.root),nextAnchorRoot:()=>BigInt(rotatesAt(p.batches,64)?p.root:p.prevNoteRoot!)};return epochSpend(deposit(view as unknown as EpochState,0n));};
  // Two kinds at PADDING_TARGET, filled before the delay starts. A full batch of clients takes no pad, so all of them are stale at the rotation.
  await until('both padding queues are full',()=>pool().padding===4*BATCH_SLOTS,net);

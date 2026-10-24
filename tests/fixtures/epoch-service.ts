@@ -10,7 +10,9 @@ import {ArkAddress,asset,CSVMultisigTapscript,Transaction,UnknownPacket} from '@
 import {secp256k1} from '@noble/curves/secp256k1.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
+import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
 import {ROLLUP_STATE_PACKET,type SnarkProof} from '../../src/rollup/covenant.ts';
+import type {RollupEpochRecord} from '../../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../../src/rollup/http.ts';
 import {DEFAULT_VM_BINARY} from '../../src/rollup/leaves.ts';
 import type {RollupTransport} from '../../src/rollup/operator.ts';
@@ -31,6 +33,12 @@ export const STATUS_KEYS=['fundingAddress','fundingSats','message','minimumFundi
 export const POOL_KEYS=['address','batches','head','maxReserves','operator','padding','pending','reserves','root','script','token'];
 export const PROVING_KEYS=['batch','batchJoin','join','spend'];
 export const EPOCH_POOL_KEYS=['batchesInEpoch','epoch','epochLen','erCount','heapBytes','nullifiers','prevNoteRoot','rsCount'];
+export const blockRoot=(n:number)=>hash([77n,BigInt(n)]);
+export const slotOf=(n:number,s:number)=>({nullifiers:[String(hash([78n,BigInt(n),BigInt(s)]))],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[] as string[]});
+export const stamp=(n:number)=>({txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1000});
+// Epoch 0 is spends; the recoveries after it are one slot wide, which keeps the replay of a second epoch cheap.
+export const epochRecord=(epochLen:number)=>(n:number):RollupEpochRecord=>({kind:n<epochLen?'spend':'recover',
+ slots:n<epochLen?Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',...slotOf(n,s)})):[{anchor:'0',origin:-1,...slotOf(n,0)}],noteBlockRoot:String(blockRoot(n)),...stamp(n)});
 
 // Shared-setup verifying keys from the committed fixtures; wasm and zkey are stand-ins.
 const vkeys=(()=>{

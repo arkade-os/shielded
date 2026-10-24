@@ -206,6 +206,20 @@ test('the padding queue is empty immediately after the rotating batch is accepte
  for(const [,reason] of drops)assert.match(reason,/rotation/);
 });
 
+test('an epoch-ending batch whose proof fails is undone with the pads it took, and lands on the next tick',async t=>{
+ const w=await world(2);
+ let fail=false;
+ const stub={prove:async()=>{if(fail){fail=false;throw new Error('prover down');}return proof;}};
+ const op=await w.open(t,{prover:{spend:stub,join:stub,recover:stub}});
+ await land(op,'spend',[fastSpend(op.state)]);
+ await op.submit(fastSpend(op.state));op.addPadding([...padsFor(op.state,'spend',BATCH_SLOTS-1+4),...padsFor(op.state,'join',3)]);
+ fail=true;
+ await assert.rejects(op.tick(),/prover down/);
+ assert.deepEqual([op.state.rotatesNext(),op.padding('spend'),op.pending()],[false,BATCH_SLOTS-1,1],'the flush at apply time is lost, but not the pads the batch took');
+ const again=await op.tick();
+ assert.ok(again&&'txid' in again,JSON.stringify(again));
+});
+
 test('a receipt the operator cannot read leaves the accepted view at the last accepted batch',async t=>{
  const w=await world(2),op=await w.open(t,{transport:{...w.transport,submit:async(request,first)=>({...await w.transport.submit(request,first),signedArkTx:'not a psbt'})}});
  await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
