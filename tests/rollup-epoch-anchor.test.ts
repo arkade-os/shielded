@@ -146,7 +146,7 @@ test('an epoch proving URL names epoch-spend, and the pool serves it', async (t)
  for (const url of Object.values(circuitUrls('spend', proving, origin))) assert.equal((await served(url))[0], 404, url);
 });
 
-test('EpochAccount satisfies the surface src/shielded/wallet.ts reads off RollupAccount', () => {
+test('EpochAccount satisfies the account port, and its history and scan pair differ by design', () => {
  // tsc is the check. history (renew, recover) and concerns/skip (the epoch scan entry) differ by design; Plan 6 flips those lines.
  const port: Pick<RollupAccount, 'owner' | 'txids' | 'canSkip' | 'batchCount' | 'latestRoot' | 'notes' | 'balance' | 'join' | 'pay' | 'consolidate' | 'depositAsset' | 'withdrawAsset'> = alice(4);
  // @ts-expect-error

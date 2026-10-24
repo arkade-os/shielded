@@ -111,6 +111,12 @@ export function offline(){
   const address=new ArkAddress(hex.decode(serverKey),hex.decode(sent[0]!.script).subarray(2),'tark').encode(),txid=await wallet.wallet.send({recipients:[{address,amount:1000,extensions:[{payload}]}]});
   return {txid,vout:0,value:1000,sourceTxHex:hex.encode(txs.get(txid)!.toBytes(true,true))};
  };
+ /** A plain coin of a depositor's, indexed with no asset; two of equal script and value would share a txid. */
+ const fund=(script:Uint8Array,value:number)=>{
+  const tx=offlineNativeFixture([{script,amount:BigInt(value)}]);txs.set(tx.id,tx);
+  coins.push({txid:tx.id,vout:0,value,script:hex.encode(script),assets:[],isSpent:false,expiresAt:new Date(Date.now()+30*86400_000)});
+  return {txid:tx.id,vout:0};
+ };
  const indexer={
   getVtxos:async(q:{scripts?:string[];outpoints?:{txid:string;vout:number}[];spendableOnly?:boolean})=>({vtxos:coins.filter(c=>(!q.scripts||q.scripts.includes(c.script))&&(!q.outpoints||q.outpoints.some(p=>p.txid===c.txid&&p.vout===c.vout))&&!(q.spendableOnly&&c.isSpent))}),
   getVirtualTxs:async(ids:string[])=>({txs:ids.flatMap(id=>txs.has(id)?[base64.encode(txs.get(id)!.toPSBT())]:[])}),
@@ -121,7 +127,7 @@ export function offline(){
  const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
  const open=(directory:string,keys:string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
   endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers});
- return {transport,landed,sent,proved,logs,open,hold,newHead,delay:(ms:number)=>{proveMs=ms;}};
+ return {transport,landed,sent,proved,logs,open,hold,newHead,fund,delay:(ms:number)=>{proveMs=ms;}};
 }
 export type Offline=ReturnType<typeof offline>;
 
