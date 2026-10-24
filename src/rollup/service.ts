@@ -1,8 +1,8 @@
 import {execFile,type ChildProcess} from 'node:child_process';
 import {createHash,randomBytes} from 'node:crypto';
-import {copyFileSync,existsSync,mkdirSync,readFileSync,renameSync,rmSync,writeFileSync} from 'node:fs';
+import {copyFileSync,existsSync,mkdirSync,readdirSync,readFileSync,renameSync,rmSync,statfsSync,writeFileSync} from 'node:fs';
 import {freemem,totalmem} from 'node:os';
-import {join} from 'node:path';
+import {dirname,join} from 'node:path';
 import {ArkAddress,Extension,RestArkProvider,RestIndexerProvider,SingleKey,Transaction,VtxoScript} from '@arkade-os/sdk';
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
@@ -26,6 +26,7 @@ import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts
 import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
+import {epochNfArchivePath} from './epoch-archive-file.ts';
 import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend,type RollupEpochStatus} from './epoch-operator.ts';
 import {loadRollupEpochLeaves,loadRollupLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupPoolCoin,type RollupRecord,type RollupTimings,type RollupTransport} from './operator.ts';
@@ -38,6 +39,7 @@ import {createRollupTransport} from './transport.ts';
 export const ROLLUP_KEY_FILES=['manifest.json',...['spend','join','batch-spend','batch-join'].flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])] as const;
 const EPOCH_CIRCUITS=['epoch-spend','epoch-join','epoch-batch-spend','epoch-batch-join','epoch-batch-recover'];
 const EPOCH_KEY_FILES=['manifest.json',...EPOCH_CIRCUITS.flatMap(c=>[`${c}.wasm`,`${c}.zkey`,`${c}.vkey.json`])];
+const ARCHIVE_FILE=/^epoch-(0|[1-9][0-9]*)\.nf$/;
 export type RollupPoolKind='classic'|'epoch';
 export const EPOCH_LEN_FLOOR=64;
 export const rollupKeyFilesOf=(kind:RollupPoolKind):readonly string[]=>kind==='classic'?ROLLUP_KEY_FILES:EPOCH_KEY_FILES;
@@ -422,6 +424,15 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   if(existsSync(renewalPath))void exclusive(settleRenewal).catch(error=>note('renewal: '+(error as Error).message)).finally(start);else start();
  }
 
+ const archives=join(o.directory,'operator','nullifiers');
+ /** The closed epochs whose frozen nullifier files the pool holds, as of its last accepted batch; a classic pool keeps none. */
+ const archiveEpochs=()=>{
+  const operator=live?.operator;
+  if(!(operator?.state instanceof EpochState))return undefined;
+  const closed=(operator as RollupEpochOperator).status().acceptedEpoch;
+  return readdirSync(archives).map(name=>Number(ARCHIVE_FILE.exec(name)?.[1])).filter(epoch=>epoch<closed).sort((a,b)=>a-b);
+ };
+
  return {
   status:():RollupStatus=>{
    if(!live)return status;
@@ -453,6 +464,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   get epochPool(){return live?.operator.state instanceof EpochState;},
   // The batch key is published too, so anyone can prove a batch, and the pool keeps moving, if this operator stops.
   keyFile:(name:string)=>manifest?rollupKeyPath(keys,name,poolKind):undefined,
+  archiveEpochs,
+  /** Allowlisted like keyFile, and the path is rebuilt from a listed epoch's number, so no caller text reaches it. */
+  archiveFile:(name:string)=>{const epoch=Number(ARCHIVE_FILE.exec(name)?.[1]);return archiveEpochs()?.includes(epoch)?epochNfArchivePath(archives,epoch):undefined;},
+  /** The volume holding the pool's directory, so a launch can check there is room before it copies keys onto it. */
+  storage:()=>{const s=statfsSync(dirname(o.directory));return {freeBytes:s.bavail*s.bsize,totalBytes:s.blocks*s.bsize};},
   batches:(from:number,limit:number)=>{
    const total=live?.operator.status().archive.batches??0,to=Math.min(total,from+limit),list:RollupRecord[]=[];
    for(let n=from;n<to;n++)list.push(readJson<RollupRecord>(join(o.directory,'operator','batches',`${n}.json`)));

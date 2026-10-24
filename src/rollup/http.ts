@@ -52,6 +52,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   next();
  });
  router.get('/status',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.status());});
+ router.get('/storage',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.storage());});
  router.get('/proving/:file',(req,res)=>{
   const path=service()!.keyFile(req.params.file);
   if(!path){res.status(404).json({error:'Unknown proving file.'});return;}
@@ -71,6 +72,17 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   res.json(service()!.scan(from,limit));
  });
  router.get('/times',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.times());});
+ router.get('/archives',(_req,res)=>{
+  const epochs=service()!.archiveEpochs();
+  res.setHeader('Cache-Control','no-store');
+  if(!epochs){res.status(404).json({error:'A classic pool keeps no nullifier archives.'});return;}
+  res.json({epochs});
+ });
+ router.get('/archives/:name',(req,res)=>{
+  const path=service()!.archiveFile(req.params.name);
+  if(!path){res.status(404).setHeader('Cache-Control','no-store').json({error:'Unknown nullifier archive.'});return;}
+  res.sendFile(basename(path),{root:dirname(path),maxAge:'365d',immutable:true},error=>{if(error&&!res.headersSent)res.status(404).setHeader('Cache-Control','no-store').json({error:'Nullifier archive unavailable.'});});
+ });
  router.get('/checkpoints/:blocks',(req,res)=>{
   const checkpoint=/^[1-9][0-9]{0,9}$/.test(req.params.blocks)?service()!.checkpoint(Number(req.params.blocks)):undefined;
   res.setHeader('Cache-Control','no-store');

@@ -1,13 +1,18 @@
 import {randomUUID} from 'node:crypto';
-import {closeSync,existsSync,fsyncSync,linkSync,openSync,readdirSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
+import {closeSync,existsSync,fsyncSync,linkSync,mkdirSync,openSync,readdirSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 import type {Transaction} from '@arkade-os/sdk';
 import type {PublishedBatch,RollupAccount} from '../packages/protocol/src/rollup/account.ts';
+import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
+import type {Hash} from '../packages/protocol/src/rollup/notes.ts';
 import type {RollupLeaves} from '../src/rollup/covenant.ts';
+import {epochNfArchivePath,readEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
+import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {catchUpFromChain} from '../src/rollup/external.ts';
 
 const read=(dir:string,index:number)=>JSON.parse(readFileSync(join(dir,'batches',`${index}.json`),'utf8')) as PublishedBatch;
+const readEpoch=(dir:string,index:number)=>read(dir,index) as unknown as RollupEpochRecord;
 export function cachedBatchNumbers(dir:string):number[]{
  const numbers=readdirSync(join(dir,'batches')).filter(name=>/^(0|[1-9]\d*)\.json$/.test(name)).map(name=>Number(name.slice(0,-5))).sort((a,b)=>a-b);
  if(numbers.some((n,i)=>n!==i))throw new Error('The mirrored batch records have a gap.');
@@ -17,6 +22,30 @@ export function mirrorStart(dir:string):number{
  const numbers=cachedBatchNumbers(dir);
  // Chain-only records carry noteBlockRoot; the current API's full records omit it.
  return numbers.find(index=>read(dir,index).noteBlockRoot!==undefined)??numbers.length;
+}
+/** Every epoch record carries noteBlockRoot, so a chain-only one is marked by all-zero commitments, which no real note has. */
+export function epochMirrorStart(dir:string):number{
+ const numbers=cachedBatchNumbers(dir);
+ return numbers.find(index=>readEpoch(dir,index).slots.every(s=>s.commitments[0]==='0'&&s.commitments[1]==='0'))??numbers.length;
+}
+/** The mirrored records replayed from chain data alone: the only source of the archive roots the mirror checks against. */
+export function replayEpochMirror(dir:string,hash:Hash,epochLen:number):EpochState{
+ const state=EpochState.genesis(hash,epochLen,false);
+ for(const index of cachedBatchNumbers(dir)){const r=readEpoch(dir,index);state.applyFromChain(r.kind,r.slots.map(s=>s.nullifiers.map(BigInt)),BigInt(r.noteBlockRoot));}
+ return state;
+}
+/** Writes an epoch's nullifier archive only once it rebuilds the root `state` archived for that epoch, never a root the pool asserts. */
+export function cacheEpochArchive(dir:string,state:EpochState,epoch:number,bytes:Uint8Array,hash:Hash):void{
+ const folder=join(dir,'nullifiers');mkdirSync(folder,{recursive:true});
+ // Until epoch e's own ER leaf exists, its root is the previous leaf's nfNextFinal.
+ const root=state.archive.record(epoch)?.nfFinal??state.archive.record(epoch-1)?.nfNextFinal;
+ if(root===undefined)throw new Error(`The mirrored records have not closed epoch ${epoch}.`);
+ const path=epochNfArchivePath(folder,epoch),temporary=`${path}.${randomUUID()}.tmp`,descriptor=openSync(temporary,'wx');
+ try{
+  try{writeFileSync(descriptor,bytes);fsyncSync(descriptor);}finally{closeSync(descriptor);}
+  readEpochNfArchive(temporary,hash,{epoch,root});
+  renameSync(temporary,path);
+ }finally{if(existsSync(temporary))unlinkSync(temporary);}
 }
 export function cacheBatch(dir:string,index:number,record:PublishedBatch):void{
  const numbers=cachedBatchNumbers(dir),path=join(dir,'batches',`${index}.json`);

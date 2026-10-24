@@ -1,5 +1,5 @@
 // The liveness fallback (spec section 4): the pool's batch leaf checks proofs, not who submits, so anyone can move it.
-//   mirror  <pool-url> <dir>            save the pool's parameters, proving keys and batch records while the operator is up
+//   mirror  <pool-url> <dir>            save the pool's parameters, proving keys, batch records and (epoch pool) checked nullifier archives while the operator is up
 //   withdraw <dir> <sats> <tark1…>       prove and submit a batch paying out from the wallet in SHIELDED_PHRASE
 //   publish <dir> <pool-url> <batch>     hand a batch this tool landed to the operator, so it can follow it
 import {createHash} from 'node:crypto';
@@ -19,14 +19,15 @@ import {validateStockCheckpoint} from '../src/stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../src/stock/indexer.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {buildRollupBatchTx,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
+import {epochNfArchivePath} from '../src/rollup/epoch-archive-file.ts';
 import {indexerBatchWalker} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
-import {ROLLUP_KEY_FILES} from '../src/rollup/service.ts';
+import {rollupKeyFilesOf,rollupSpecOf} from '../src/rollup/service.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
-import {cacheBatch,cachedBatchNumbers as batchesIn,catchUpCachedBatches,mirrorStart} from './rollup-cache.ts';
+import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,catchUpCachedBatches,epochMirrorStart,mirrorStart,replayEpochMirror} from './rollup-cache.ts';
 
-interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo}
+interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo;epochLen?:number}
 const [command,...args]=process.argv.slice(2);
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const json=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
@@ -35,14 +36,16 @@ const fromLe=(bytes:Uint8Array)=>bytes.reduceRight((acc,byte)=>(acc<<8n)|BigInt(
 const log=(...parts:unknown[])=>console.log(new Date().toISOString().slice(11,19),...parts);
 
 async function mirror(url:string,dir:string){
- const get=async(path:string)=>{const r=await fetch(url+'/api/rollup'+path);if(!r.ok)throw new Error(`${path}: HTTP ${r.status}`);return r;};
- const status=await (await get('/status')).json();
+ // A replay or archive check can outlast the pool's keep-alive, leaving the pooled connection dead; a GET is safe to send once more.
+ const get=async(path:string)=>{const r=await fetch(url+'/api/rollup'+path).catch(()=>fetch(url+'/api/rollup'+path));if(!r.ok)throw new Error(`${path}: HTTP ${r.status}`);return r;};
+ const status=await (await get('/status')).json(),epochLen:number|undefined=status.pool.epochLen;
  mkdirSync(join(dir,'keys'),{recursive:true});mkdirSync(join(dir,'batches'),{recursive:true});
- writeFileSync(join(dir,'pool.json'),JSON.stringify({token:status.pool.token,operator:status.pool.operator,script:status.pool.script,network:status.network} satisfies Pool));
+ writeFileSync(join(dir,'pool.json'),JSON.stringify({token:status.pool.token,operator:status.pool.operator,script:status.pool.script,network:status.network,...(epochLen===undefined?{}:{epochLen})} satisfies Pool));
+ if(epochLen!==undefined)writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf('epoch',status.pool.token,status.pool.operator)));
  const manifest=await (await get('/proving/manifest.json')).json() as {circuits:Record<string,{files:Record<string,string>}>};
  writeFileSync(join(dir,'keys','manifest.json'),JSON.stringify(manifest));
  // The manifest comes from the pool, so its file names are untrusted: only the service's allowlisted key files are written.
- const known=new Set<string>(ROLLUP_KEY_FILES.filter(name=>name!=='manifest.json'));
+ const known=new Set<string>(rollupKeyFilesOf(epochLen===undefined?'classic':'epoch').filter(name=>name!=='manifest.json'));
  for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files)){
   if(!known.has(name))throw new Error(`The key manifest names an unexpected file: ${JSON.stringify(name)}.`);
   const path=join(dir,'keys',name);if(existsSync(path)&&sha(readFileSync(path))===digest)continue;
@@ -50,10 +53,20 @@ async function mirror(url:string,dir:string){
   if(sha(bytes)!==digest)throw new Error(`${name} does not match the key manifest.`);
   writeFileSync(path,bytes);log('key',name,bytes.length,'bytes');
  }
- for(let from=mirrorStart(dir);;){
+ for(let from=(epochLen===undefined?mirrorStart:epochMirrorStart)(dir);;){
   const page=await (await get(`/batches?from=${from}&limit=100`)).json() as {total:number;batches:PublishedBatch[]};
   page.batches.forEach((batch,i)=>cacheBatch(dir,from+i,batch));
   from+=page.batches.length;if(from>=page.total||!page.batches.length)break;
+ }
+ if(epochLen!==undefined){
+  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),{epochs}=await (await get('/archives')).json() as {epochs:unknown[]};
+  let state:ReturnType<typeof replayEpochMirror>|undefined;
+  for(const epoch of epochs){
+   if(typeof epoch!=='number'||!Number.isSafeInteger(epoch)||epoch<0)throw new Error(`The pool lists an archive for epoch ${JSON.stringify(epoch)}.`);
+   if(existsSync(epochNfArchivePath(join(dir,'nullifiers'),epoch)))continue;
+   const bytes=new Uint8Array(await (await get(`/archives/epoch-${epoch}.nf`)).arrayBuffer());
+   cacheEpochArchive(dir,state??=replayEpochMirror(dir,hash,epochLen),epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');
+  }
  }
  log('mirrored',batchesIn(dir).length,'batches into',dir);
 }

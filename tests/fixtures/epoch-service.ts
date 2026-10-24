@@ -135,7 +135,9 @@ export const until=async(what:string,done:()=>boolean,net:Offline)=>{for(let i=0
 export async function listen(service:RollupService){
  const app=express();app.use('/api/rollup',createRollupRouter(()=>service));
  const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));closers.push(()=>new Promise(r=>server.close(r)));
- return (path:string,init?:RequestInit)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`,init);
+ // Under a loaded suite an idle close can race the next request into a reset; tests that need a dead socket close one themselves.
+ server.keepAliveTimeout=0;
+ return Object.assign((path:string,init?:RequestInit)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`,init),{server});
 }
 
 /**
