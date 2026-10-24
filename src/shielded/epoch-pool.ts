@@ -1,5 +1,7 @@
+import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
-import {transferBody,type Groth16Proof,type RollupPoolStatus} from './pool.ts';
+import type {EpochBatchPage} from './epoch-sync.ts';
+import {poolApiOf,transferBody,type Groth16Proof,type PoolApi,type RollupPoolStatus} from './pool.ts';
 
 /** Plan 4b's epoch /spends body: slot.anchor where a classic slot has root, and exactly one of rCur (fast path) and origin (recovery). */
 export function epochTransferBody(id:string,built:EpochBuiltSpend,proof:Groth16Proof,extra:Parameters<typeof transferBody>[3]={}){
@@ -17,3 +19,12 @@ export function epochCircuitUrls(circuit:'spend'|'join',proving:NonNullable<Roll
  return {wasm:`${origin}/api/rollup/proving/${file}.wasm?v=${keys.wasm}`,zkey:`${origin}/api/rollup/proving/${file}.zkey?v=${keys.zkey}`};
 }
 export const epochProvingUrls=(built:EpochBuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>,origin='')=>epochCircuitUrls(built.slot.nullifiers.length===2?'join':'spend',proving,origin);
+
+/** syncAccount on an epoch pool: every batch, whole, from the account's own count. */
+export async function epochSyncAccount(account:EpochAccount,api:PoolApi=poolApiOf('')){
+ for(;;){
+  const page=await api<EpochBatchPage>(`/batches?from=${account.batchCount}&limit=50`);
+  for(const batch of page.batches)await account.apply(batch);
+  if(account.batchCount>=page.total||!page.batches.length)return;
+ }
+}
