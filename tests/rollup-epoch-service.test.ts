@@ -1,119 +1,41 @@
 import assert from 'node:assert/strict';
-import {createHash,randomBytes} from 'node:crypto';
-import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
-import type {AddressInfo} from 'node:net';
-import {tmpdir} from 'node:os';
-import {basename,join} from 'node:path';
+import {randomBytes} from 'node:crypto';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {after,test} from 'node:test';
-import express from 'express';
-import {ArkAddress,asset,CSVMultisigTapscript,scriptFromTapLeafScript,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
-import {secp256k1} from '@noble/curves/secp256k1.js';
+import {scriptFromTapLeafScript,VtxoScript} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
-import {buildPoseidon} from 'circomlibjs';
 import {buildRollupTransfer,randomField} from '../packages/protocol/src/rollup/account.ts';
-import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
+import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
-import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
+import {rollupEpochPoolTree,rollupPoolTree} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,type RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
-import {createRollupRouter} from '../src/rollup/http.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import type {RollupArchive,RollupTransport} from '../src/rollup/operator.ts';
-import {openRollupService,rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupPoolKind,type RollupService} from '../src/rollup/service.ts';
-import {encodeSpend,openSpendStore} from '../src/rollup/spend-store.ts';
+import type {RollupArchive,RollupRecord} from '../src/rollup/operator.ts';
+import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
+import {openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
-import {offlineNativeFixture} from './fixtures/native.ts';
+import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 import './rollup-genesis3-contract.test.ts';
 
-const poseidon=await buildPoseidon(),hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
 const {deposit,dummyInput,recovery}=epochHarness(hash);
-const sha=(data:string|Uint8Array)=>createHash('sha256').update(data).digest('hex');
-const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
-const token=asset.AssetId.create('cc'.repeat(32),0).toString();
-const [serverPub,emulatorPub]=['01','02'].map(b=>secp256k1.getPublicKey(hex.decode(b.repeat(32)),true));
-const serverKey=hex.encode(serverPub!.subarray(1)),emulatorKey=hex.encode(emulatorPub!.subarray(1)),exitDelay={type:'seconds' as const,value:2048};
-const checkpoint=CSVMultisigTapscript.encode({pubkeys:[serverPub!.subarray(1)],timelock:{type:'seconds',value:4096n}});
-const proof:SnarkProof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
-const POOL_KEYS=['address','batches','head','maxReserves','operator','padding','pending','reserves','root','script','token'];
-const STATUS_KEYS=['fundingAddress','fundingSats','message','minimumFundingSats','network','phase','pool','proving','version'];
 // rollupEpochPin with the inputs below, as of its introduction: once a genesis-4 pool is live, a move orphans its journal.
 const EPOCH_PIN_FINGERPRINT='93a57a93d9a0f81b50838b1cbbdc3d66acbfaab916adca6e07c45a92f221458e';
 
-// Shared-setup verifying keys from the committed fixtures, built as tests/rollup-service-keys.test.ts builds them; wasm and zkey are stand-ins.
-const vkeys=(()=>{
- const read=(file:string)=>JSON.parse(readFileSync(`tools/vm/testdata/${file}`,'utf8')) as Record<'clientKey'|'batchKey',{vk_delta_2:unknown;IC:unknown[]}>;
- const classic=read('rollup-covenant-snarkjs.json'),{clientKey,batchKey}=read('rollup-epoch-covenant-snarkjs.json');
- const wide={...batchKey,nPublic:11,IC:[...batchKey.IC,...Array(12-batchKey.IC.length).fill(batchKey.IC.at(-1))]};
- return {spend:classic.clientKey,join:classic.clientKey,'batch-spend':classic.batchKey,'batch-join':classic.batchKey,
-  'epoch-spend':clientKey,'epoch-join':{...clientKey,vk_delta_2:batchKey.vk_delta_2},'epoch-batch-spend':wide,'epoch-batch-join':wide,'epoch-batch-recover':batchKey} as Record<string,unknown>;
-})();
-// Removed once every test's own hooks have closed its services: Windows refuses to delete an open journal.
-const scratches:string[]=[];
-after(()=>{for(const dir of scratches)rmSync(dir,{recursive:true,force:true,maxRetries:10});});
-const scratch=(prefix:string)=>{const dir=mkdtempSync(join(tmpdir(),prefix));scratches.push(dir);return dir;};
-const keySet=(kind:RollupPoolKind)=>{
- const dir=scratch('rollup-service-keys-'),files:Record<string,string>={};
- for(const name of rollupKeyFilesOf(kind).filter(n=>n!=='manifest.json')){
-  const body=name.endsWith('.vkey.json')?JSON.stringify(vkeys[name.slice(0,-10)]):name;
-  writeFileSync(join(dir,name),body);files[name]=sha(body);
- }
- writeFileSync(join(dir,'manifest.json'),JSON.stringify({circuits:{all:{files}}}));
- return dir;
-};
-const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fromString(token),null,[asset.AssetInput.create(0,1n)],[asset.AssetOutput.create(0,1n)],[])]);
-
-/** The Arkade Service, indexer and operator wallet in memory; every batch it is sent lands, since stub proofs cannot pass the covenant. */
-function offline(){
- const txs=new Map<string,Transaction>(),landed:Transaction[]=[],sent:{payload:Uint8Array;script:string}[]=[],proved:string[]=[],logs:string[]=[];
- const coins:{txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[];isSpent:boolean;expiresAt:Date}[]=[];
- const head=(tx:Transaction)=>{
-  for(const c of coins)c.isSpent||=c.txid===hex.encode(tx.getInput(0).txid!)&&c.vout===tx.getInput(0).index;
-  txs.set(tx.id,tx);coins.push({txid:tx.id,vout:0,value:Number(tx.getOutput(0).amount),script:hex.encode(tx.getOutput(0).script!),assets:[{assetId:token,amount:1n}],isSpent:false,expiresAt:new Date(Date.now()+30*86400_000)});
- };
- const transport:RollupTransport={
-  submit:async request=>{
-   const tx=Transaction.fromPSBT(base64.decode(request.arkTx));landed.push(tx);head(tx);
-   return {txid:tx.id,checkpointTxids:request.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)).id),signedArkTx:request.arkTx,signedCheckpointTxs:request.checkpoints,weights:{ark:0,checkpoints:[]},network:'mutinynet',finality:'operator-preconfirmed'};
-  },
-  lookup:async()=>undefined,verify:()=>{},unspent:async()=>true,spentBy:async()=>undefined,
- };
- const wallet={address:'tark1operator',wallet:{getBalance:async()=>({available:5000}),assetManager:{issue:async()=>({assetId:token})},dispose:async()=>{},
-  send:async({recipients:[r]}:{recipients:{address:string;amount:number;extensions:{payload:Uint8Array}[]}[]})=>{
-   const script=ArkAddress.decode(r!.address).pkScript,payload=r!.extensions[0]!.payload,tx=offlineNativeFixture([{script,amount:BigInt(r!.amount)}],[tokenPacket,new UnknownPacket(ROLLUP_STATE_PACKET,payload)]);
-   sent.push({payload,script:hex.encode(script)});head(tx);return tx.id;
-  }}};
- const indexer={
-  getVtxos:async(q:{scripts?:string[];outpoints?:{txid:string;vout:number}[];spendableOnly?:boolean})=>({vtxos:coins.filter(c=>(!q.scripts||q.scripts.includes(c.script))&&(!q.outpoints||q.outpoints.some(p=>p.txid===c.txid&&p.vout===c.vout))&&!(q.spendableOnly&&c.isSpent))}),
-  getVirtualTxs:async(ids:string[])=>({txs:ids.flatMap(id=>txs.has(id)?[base64.encode(txs.get(id)!.toPSBT())]:[])}),
- };
- const providers={wallet:async()=>wallet as never,info:async()=>({checkpointTapscript:hex.encode(checkpoint.script),forfeitPubkey:hex.encode(serverPub!)}),indexer:indexer as never,transport:transport as never,
-  prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));return proof;}}),verify:async()=>true};
- const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:hex.encode(serverPub!),maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:hex.encode(emulatorPub!),version:'test'}};
- const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
- const open=(directory:string,keys:string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
-  endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers});
- return {transport,landed,sent,proved,logs,open};
-}
-type Offline=ReturnType<typeof offline>;
-/** One step of a service on `directory`, which must reach `ready`; closing twice is harmless, and a service left open never lets the file exit. */
-async function ready(net:Offline,directory:string,keys:string,epochLen?:string){
- if(epochLen)process.env.SHIELDED_ROLLUP_EPOCH_LEN=epochLen;
- try{const service=await net.open(directory,keys);after(()=>service.close());await service.step();assert.equal(service.status().phase,'ready',service.status().message);return service;}
- finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
-}
-const until=async(what:string,done:()=>boolean,net:Offline)=>{for(let i=0;i<600&&!done();i++)await new Promise(r=>setTimeout(r,100));assert.ok(done(),`${what}; log: ${net.logs.slice(-5).join(' | ')}`);};
 const epochSpend=(w:{slot:unknown;publicSignals:bigint[]},origin?:number)=>({id:hex.encode(randomBytes(16)),slot:w.slot,publics:w.publicSignals,proof,...(origin!==undefined?{origin}:{})}) as never;
 const batchesOf=(service:RollupService,from:number,limit:number)=>service.batches(from,limit).batches as unknown as RollupEpochRecord[];
+type ScanPage={from:number;total:number;data:string};
 type Stored={id:string;slot:{nullifiers:bigint[]}};
-/** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would. */
-const pendingOnDisk=(directory:string,...spends:Stored[])=>{const store=openSpendStore(join(directory,'spends'));for(const s of spends)store.save({id:s.id,status:'pending',nullifier:String(s.slot.nullifiers[0]),at:Date.now(),spend:encodeSpend(s as never)});};
 
-test('an epoch service opens an epoch pool, rotates, and lands a recover batch that reads included after a restart',async()=>{
+test('an epoch service opens an epoch pool, rotates, and lands a recover batch that reads included after a restart',async t=>{
  const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-service-');
  const first=await ready(net,directory,keys,'64'),saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8'));
  const leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(directory,'spec.json')),pool=rollupEpochPoolTree(hex.decode(serverKey),hex.decode(emulatorKey),leaves,exitDelay);
@@ -158,29 +80,41 @@ test('an epoch service opens an epoch pool, rotates, and lands a recover batch t
  assert.equal(service.status().pool!.root,String(mirror.latestRoot()));
  assert.notEqual(service.status().pool!.root,opened);
  assert.deepEqual(service.spend((recover as {id:string}).id),{status:'included',batch:65,txid:recoverTx.id});
- assert.deepEqual([service.checkpoint(64),service.scan(0,66)],[undefined,undefined],'past a rotation, a global checkpoint or scan would be wrong');
+ assert.equal(service.checkpoint(64),undefined,'past a rotation, a global checkpoint would be wrong');
+ const request=await listen(service);
+ await t.test('an epoch pool serves /scan, and its page decodes to the batches it served',async()=>{
+  const answer=await request('/api/rollup/scan?from=0'),page=await answer.json() as ScanPage;
+  assert.deepEqual([answer.status,answer.headers.get('cache-control'),page.from,page.total],[200,'no-store',0,66]);
+  const entries=decodeEpochScan(base64.decode(page.data),0,64),served=batchesOf(service,0,66);
+  assert.deepEqual(entries.map(e=>[e.batch,e.epoch,e.blockInEpoch,e.rotated]),served.map((_,n)=>[n,n<64?0:1,n%64,n===64]));
+  assert.deepEqual(entries.map(e=>[e.kind,e.txid,e.at,e.root]),served.map(r=>[r.kind,r.txid,r.at,BigInt(r.noteBlockRoot)]));
+  assert.deepEqual(entries.map(e=>e.slots.map(s=>s.nullifiers)),served.map(r=>r.slots.map(s=>s.nullifiers.map(nf=>nullifierHint(BigInt(nf))))));
+  assert.deepEqual(entries.slice(64).map(e=>[e.kind,e.slots.length]),[['spend',BATCH_SLOTS],['recover',1]]);
+  const tail=await (await request('/api/rollup/scan?from=64&limit=2')).json() as ScanPage;
+  assert.deepEqual([tail.from,tail.total,decodeEpochScan(base64.decode(tail.data),tail.from,64)],[64,66,entries.slice(64)]);
+ });
+ await t.test('a recorded block root that the live note tree does not hold is refused, not served',()=>{
+  const path=join(directory,'operator','batches','65.json'),original=readFileSync(path,'utf8'),record=JSON.parse(original) as RollupEpochRecord;
+  writeFileSync(path,JSON.stringify({...record,noteBlockRoot:String(BigInt(record.noteBlockRoot)+1n)}));
+  try{
+   assert.throws(()=>service.scan(64,2),/live note tree/);
+   assert.equal(service.scan(0,64).total,66,'a closed epoch has no live tree to differ from');
+  }finally{writeFileSync(path,original);}
+  assert.equal(service.scan(64,2).total,66);
+ });
+ const beforeRestart=service.scan(0,66);
  service.close();
  // Restore skips a record with no spend body, which leaves it to the sweep.
  pendingOnDisk(directory,recover);
  openSpendStore(join(directory,'spends')).save({id:'swept',status:'pending',nullifier:String((recover as Stored).slot.nullifiers[0]),at:Date.now()});
  const reopened=await ready(net,directory,keys);
+ assert.deepEqual(reopened.scan(0,66),beforeRestart,'a replayed state passes the live-tree check and serves the same page');
  assert.deepEqual(reopened.spend((recover as Stored).id),{status:'included'},'restore reads the recovered set');
  await until('the sweep settles the record restore skipped',()=>reopened.spend('swept')?.status!=='pending',net);
  assert.deepEqual(reopened.spend('swept'),{status:'included'},'so does the sweep');
 });
 
-test('on restart an epoch pool keeps an included spend included and drops a waiting one by name, not by a decode error',async()=>{
- const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-restart-'),state=EpochState.genesis(hash,64);
- const first=await ready(net,directory,keys,'64'),landed:Stored=epochSpend(deposit(state,0n)),waiting:Stored=epochSpend(deposit(state,0n));
- await first.submit(landed as never);
- await until('a batch lands',()=>first.status().pool!.batches===1,net);
- first.close();
- pendingOnDisk(directory,landed,waiting);
- const service=await ready(net,directory,keys);
- assert.deepEqual([service.spend(landed.id),service.spend(waiting.id)],[{status:'included'},{status:'dropped',reason:'An epoch pool does not re-admit pending spends after a restart; build the spend again.'}]);
-});
-
-test('a classic service is byte-identical to today',async()=>{
+test('a classic service is byte-identical to today',async t=>{
  const net=offline(),keys=keySet('classic'),directory=scratch('rollup-classic-service-');
  const service=await ready(net,directory,keys,undefined),status=service.status(),pool=status.pool!;
  assert.deepEqual([Object.keys(status).sort(),Object.keys(pool).sort()],[STATUS_KEYS,POOL_KEYS]);
@@ -199,8 +133,18 @@ test('a classic service is byte-identical to today',async()=>{
  await service.submit({id:hex.encode(randomBytes(16)),slot:built.witness.slot,publics:built.witness.publicSignals as never,proof,ciphertext:built.ciphertext});
  await until('a classic batch lands',()=>service.status().pool!.batches===1,net);
  assert.deepEqual(Object.keys(service.status().pool!).sort(),[...POOL_KEYS,'lastBatch'].sort());
+ assert.deepEqual(Object.keys(service.status().pool!.lastBatch!).sort(),['at','batch','proveMs','publishMs','waitedMs']);
  assert.notEqual(service.status().pool!.root,pool.root);
  assert.ok(net.proved.includes('batch-spend')&&net.proved.includes('spend'));
+ await t.test('a classic pool /scan is byte-identical to today',async()=>{
+  const record=service.batches(0,1).batches[0] as RollupRecord,commitments=record.slots.flatMap(s=>s.commitments.map(BigInt));
+  let level=Array.from({length:2**SUBTREE_DEPTH},(_,i)=>commitments[i]??0n);
+  while(level.length>1)level=Array.from({length:level.length/2},(_,i)=>hash([level[2*i]!,level[2*i+1]!]));
+  const page=await (await (await listen(service))('/api/rollup/scan?from=0')).json() as ScanPage;
+  assert.deepEqual(page,{from:0,total:1,data:base64.encode(encodeScan([{record,root:level[0]!}]))});
+  assert.deepEqual(decodeScan(base64.decode(page.data),0).map(b=>[b.kind,b.root,b.slots.length]),[['spend',level[0]!,BATCH_SLOTS]]);
+  assert.equal(base64.decode(page.data).length,453);
+ });
  service.close();
  // The journal reopens under the harness-pinned classic builder, and refuses the epoch one.
  const pinned={leaves,manifest:readFileSync(join(directory,'keys','manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey,emulatorKey};
@@ -209,20 +153,16 @@ test('a classic service is byte-identical to today',async()=>{
  await assert.rejects(openStockJournal(join(directory,'operator','journal'),rollupEpochPin({...pinned,leaves:{...leaves,batchRecover:leaves.batch}}),saved.archive,hooks).then(j=>j.close()),/changed/);
 });
 
-test('the epoch pool refuses /scan and /checkpoints rather than serving a wrong frontier',async t=>{
- const net=offline(),service=await ready(net,scratch('rollup-epoch-http-'),keySet('epoch'),'64');
- const app=express();app.use('/api/rollup',createRollupRouter(()=>service));
- const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));t.after(()=>new Promise(r=>server.close(r)));
- const request=(path:string)=>fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`);
- const scan=await request('/api/rollup/scan?from=0');
- assert.equal(scan.status,501);
- assert.match((await scan.json()).error,/Plan 4b/);
+test('the epoch pool serves an empty /scan, and still refuses /checkpoints rather than serving a wrong frontier',async()=>{
+ const net=offline(),service=await ready(net,scratch('rollup-epoch-http-'),keySet('epoch'),'64'),request=await listen(service);
+ assert.deepEqual(await (await request('/api/rollup/scan?from=0')).json(),{from:0,total:0,data:''});
  assert.equal((await request('/api/rollup/checkpoints/64')).status,404);
  assert.deepEqual(await (await request('/api/rollup/times')).json(),{every:CHECKPOINT_EVERY,at:[]});
  assert.deepEqual(await (await request('/api/rollup/batches')).json(),{from:0,total:0,batches:[]});
  const status=await (await request('/api/rollup/status')).json();
- assert.deepEqual([Object.keys(status).sort(),Object.keys(status.pool).sort()],[STATUS_KEYS,POOL_KEYS],'the same keys as a classic pool');
+ assert.deepEqual([Object.keys(status).sort(),Object.keys(status.pool).sort()],[STATUS_KEYS,[...POOL_KEYS,...EPOCH_POOL_KEYS].sort()],'a classic pool\'s keys, and the epoch fields beside them');
  assert.equal(status.pool.root,String(EpochState.genesis(hash,64).latestRoot()));
+ assert.deepEqual([status.pool.epoch,status.pool.batchesInEpoch,status.pool.prevNoteRoot,status.pool.erCount,status.pool.rsCount,status.pool.nullifiers],[0,0,status.pool.root,0,1,1],'the empty epoch 0, whose previous root is its own');
 });
 
 test('epoch padding is proved against the root the next batch opens against',async()=>{
@@ -243,6 +183,24 @@ test('epoch padding is proved against the root the next batch opens against',asy
  state.apply('join',joins.map(p=>p.slot));
 });
 
+test('the stall across a rotation is measured and the pool resumes',async t=>{
+ const {net,service}=await bakedPool({epochLen:64,batches:63,record:epochRecord(64)}),pool=()=>service.status().pool!;
+ const spend=()=>{const p=pool(),view={epoch:p.epoch,latestRoot:()=>BigInt(p.root),nextAnchorRoot:()=>BigInt(rotatesAt(p.batches,64)?p.root:p.prevNoteRoot!)};return epochSpend(deposit(view as unknown as EpochState,0n));};
+ // Two kinds at PADDING_TARGET, filled before the delay starts. A full batch of clients takes no pad, so all of them are stale at the rotation.
+ await until('both padding queues are full',()=>pool().padding===4*BATCH_SLOTS,net);
+ net.delay(100);
+ await Promise.all(Array.from({length:BATCH_SLOTS},()=>service.submit(spend())));
+ await until('the last batch of epoch 0 lands',()=>pool().batches===64,net);
+ const final=BigInt(pool().root);
+ await service.submit(spend());
+ await until('the first batch of epoch 1 lands',()=>pool().batches===65,net);
+ const [last,first]=batchesOf(service,63,2);
+ t.diagnostic(`rotation stall ${first!.at!-last!.at!} ms with 100 ms stub proofs`);
+ assert.equal(last!.slots.some(s=>s.ciphertext),false,'the last batch of the epoch took no padding');
+ assert.deepEqual([pool().epoch,pool().batchesInEpoch],[1,1]);
+ for(const s of first!.slots)assert.equal(s.anchor,String(anchorOf(hash,final,BigInt(s.rCur!.root))),'every slot opens against epoch 0\'s final root');
+});
+
 test('an epoch genesis writes version 2 and reads back as epoch; a classic one keeps its bytes',()=>{
  const head={txid:'55'.repeat(32),vout:0,value:1000,sourceTxHex:'abcd'},keys={serverKey:'66'.repeat(32),emulatorKey:'77'.repeat(32)};
  assert.equal(JSON.stringify(rollupGenesisOf({token,head,...keys})),
@@ -254,7 +212,7 @@ test('an epoch genesis writes version 2 and reads back as epoch; a classic one k
 
 test('each epoch proving name serves its own circuit',()=>{
  const files=Object.fromEntries(rollupKeyFilesOf('epoch').map(n=>[n,sha(n)])),pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
- assert.deepEqual(rollupProvingOf('epoch',files),{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join')});
+ assert.deepEqual(rollupProvingOf('epoch',files),{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join'),batchRecover:pair('epoch-batch-recover')});
 });
 
 test('the epoch journal pin is its own, and never the classic one',()=>{

@@ -39,6 +39,8 @@ test('the classic derivation (fixture world) keeps the genesis-3 programs hash, 
  assert.deepEqual([...ROLLUP_KEY_FILES],['manifest.json','spend.wasm','spend.zkey','spend.vkey.json','join.wasm','join.zkey','join.vkey.json',
   'batch-spend.wasm','batch-spend.zkey','batch-spend.vkey.json','batch-join.wasm','batch-join.zkey','batch-join.vkey.json']);
  assert.deepEqual(Object.keys(rollupProvingOf('classic',{})).sort(),['batch','batchJoin','join','spend']);
+ const files=Object.fromEntries(ROLLUP_KEY_FILES.map(name=>[name,name]));
+ assert.deepEqual(rollupProvingOf('classic',files),{spend:{wasm:'spend.wasm',zkey:'spend.zkey'},join:{wasm:'join.wasm',zkey:'join.zkey'},batch:{wasm:'batch-spend.wasm',zkey:'batch-spend.zkey'},batchJoin:{wasm:'batch-join.wasm',zkey:'batch-join.zkey'}});
  assert.equal(SNAPSHOT_VERSION,1);
 });
 

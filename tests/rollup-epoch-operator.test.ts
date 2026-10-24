@@ -7,11 +7,12 @@ import {test,type TestContext} from 'node:test';
 import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,scriptFromTapLeafScript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
+import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
+import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,slotOf,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {readBatchTx,readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import type {RollupTransport} from '../src/rollup/operator.ts';
@@ -81,12 +82,13 @@ async function world(epochLen:number){
   pin:{version:1 as const,network:'local-stock' as const,descriptorProfileId:sha('rollup-epoch-test'),programsHash:sha(leaves.batchRecover),artifactsHash:sha('stub'),checkpointHash:sha(checkpoint.script),genesisTxid:parent.id,serverKey:hex.encode(server),emulatorKey:hex.encode(emulator)},
   genesis:{version:1 as const,head:{txid:parent.id,vout:0,value:100_330,sourceTxHex:hex.encode(parent.toBytes())},reserves:{},batches:0},
   clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},verify:async()=>true};
- return {dir,landed,coin,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
+ return {dir,landed,coin,transport,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 type World=Awaited<ReturnType<typeof world>>;
 type Operator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
 const recordAt=(w:World,n:number)=>JSON.parse(readFileSync(join(w.dir,'batches',`${n}.json`),'utf8')) as RollupEpochRecord;
 const landedTx=(w:World,n:number)=>({tx:Transaction.fromPSBT(base64.decode(w.landed[n]!.arkTx)),checkpoints:w.landed[n]!.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)))});
+const acceptedOf=(s:EpochState)=>({acceptedRoot:s.latestRoot(),acceptedPrevNoteRoot:s.prevNoteRoot,acceptedEpoch:s.epoch,acceptedErCount:s.archive.count(),acceptedRsCount:s.recovered.count(),acceptedNullifiers:s.nullifiers.count()});
 
 /** Admits the clients, pads their batch with slots proved against the anchor it opens with, and lands it. */
 async function land(op:Operator,kind:'spend'|'join'|'recover',clients:Spend[]){
@@ -119,6 +121,20 @@ test('the operator builds a spend, a join and a recover batch, each through its 
  assert.deepEqual([op.state.epoch,op.state.recovered.has(note.nullifier),op.status().archive.head.value],[2,true,101_330]);
 });
 
+test('each batch is proved from its circuit input, which carries no field the circuit derives',async t=>{
+ const proved:{kind:string;input:Record<string,unknown>;expected:readonly bigint[]}[]=[];
+ const recording=(kind:string)=>({prove:async(input:Record<string,unknown>,expected:readonly bigint[])=>{proved.push({kind,input,expected});return proof;}});
+ const w=await world(2),op=await w.open(t,{prover:{spend:recording('spend'),join:recording('join'),recover:recording('recover')}});
+ await history(w,op);
+ assert.deepEqual(proved.map(p=>p.kind),[...KINDS]);
+ const mirror=EpochState.genesis(hash,2,false);
+ proved.forEach(({kind,input,expected},n)=>{
+  const record=recordAt(w,n),{witness,publicSignals}=mirror.apply(record.kind,record.slots.map(slotOf));
+  for(const field of EPOCH_DERIVED_FIELDS)assert.equal(field in input,false,`batch ${n} (${kind}) hands the prover ${field}`);
+  assert.deepEqual([input,expected],[epochBatchInput(witness),publicSignals],`batch ${n} (${kind}) proves exactly the circuit input of its statement`);
+ });
+});
+
 test('a recover batch built in TypeScript is accepted by the real recover leaf',async()=>{
  const accepted=await executeVmBinary(DEFAULT_VM_BINARY,wire(fixtureRecover(pool.batchRecover)));
  assert.equal(accepted.ok,true,accepted.error);
@@ -127,17 +143,22 @@ test('a recover batch built in TypeScript is accepted by the real recover leaf',
 });
 
 test('admission refuses every recover submission the policy forbids',async t=>{
- const w=await world(2),op=await w.open(t),minted=deposit(op.state,1000n),spentNote=noteFrom(minted);
+ let verified=0;
+ const w=await world(2),op=await w.open(t,{verify:async()=>{verified++;return true;}}),minted=deposit(op.state,1000n),spentNote=noteFrom(minted);
  await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
- const moved=deposit(op.state,1000n,{inputs:[spentNote],deposit:0n}),note=noteFrom(moved);
+ const moved=deposit(op.state,1000n,{inputs:[spentNote],deposit:0n}),note=noteFrom(moved),nextSpent=noteFrom(moved,1);
  await land(op,'spend',[spendOf(moved)]);
- for(let n=0;n<2;n++)await land(op,'spend',[fastSpend(op.state)]);
+ await land(op,'spend',[spendOf(deposit(op.state,0n,{inputs:[nextSpent]}))]);
+ await land(op,'spend',[fastSpend(op.state)]);
  const unsound=():[string,Spend,RejectionCode][]=>[
   ['a note its epoch already spent',recoverSpend(op.state,0,spentNote),'double-spend'],
+  ['a note the next epoch spent',recoverSpend(op.state,0,nextSpent),'double-spend'],
   ['an anchor that opens another tree',reanchored(recoverSpend(op.state,0,note),anchorOf(hash,op.state.latestRoot(),op.state.latestRoot())),'stale-anchor'],
  ];
  assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[1,false,true]);
+ const checked=verified;
  for(const [label,spend,code] of unsound())await assert.rejects(op.submit({...spend,id:label}),rejection(code),`${label}, riding the rotation`);
+ assert.equal(verified,checked,'a riding refusal costs no proof check');
  await land(op,'spend',[fastSpend(op.state)]);
  assert.deepEqual([op.state.epoch,op.state.archive.has(0),op.state.rotatesNext()],[2,true,false]);
  for(const [label,spend,code] of unsound())await assert.rejects(op.submit({...spend,id:label}),rejection(code),label);
@@ -162,6 +183,32 @@ test('admission refuses every recover submission the policy forbids',async t=>{
  assert.deepEqual(op.pendingIds(),[good.id]);
 });
 
+const undoneDuringVerify=(spentAt:1|2)=>async(t:TestContext)=>{
+ const w=await world(2),gate=()=>{let open=()=>{};return {shut:new Promise<void>(r=>{open=r;}),open:()=>open()};};
+ let proving:ReturnType<typeof gate>|undefined,checking:ReturnType<typeof gate>|undefined;
+ const prover={prove:async()=>{if(proving){await proving.shut;throw new Error('prover down');}return proof;}};
+ const op=await w.open(t,{prover:{spend:prover,join:prover,recover:prover},verify:async()=>{await checking?.shut;return true;}});
+ const minted=deposit(op.state,1000n),note=noteFrom(minted);
+ await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
+ // Batch 2 opens epoch 1, so a note spent at batch 1 is spent in its own epoch and one spent at batch 2 in the next.
+ for(let n=1;n<4;n++)await land(op,'spend',[n===spentAt?spendOf(deposit(op.state,1000n,{inputs:[note],deposit:0n})):fastSpend(op.state)]);
+ assert.deepEqual([op.state.epoch,op.state.rotatesNext(),op.state.prevNfSet.has(note.nullifier),op.state.nullifiers.has(note.nullifier)],[1,true,spentAt===1,spentAt===2],'the note is spent in its own epoch or the next, and the next batch rotates');
+ await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ proving=gate();
+ const ticking=op.tick();
+ for(let i=0;i<1000&&!op.state.archive.has(0);i++)await new Promise(r=>setImmediate(r));
+ assert.ok(op.state.archive.has(0),'the rotating batch is applied while its proof is held');
+ checking=gate();
+ const admitting=op.submit(recoverSpend(op.state,0,note));
+ proving.open();
+ await assert.rejects(ticking,/prover down/);
+ assert.deepEqual([op.state.archive.has(0),op.state.rotatesNext()],[false,true],'the rotation was undone while the recovery waited');
+ checking.open();
+ await assert.rejects(admitting,rejection('double-spend'));
+};
+test('a recovery admitted against an in-flight rotation that is undone during its proof check still meets the riding double-spend check',undoneDuringVerify(1));
+test('the riding double-spend check after an undone rotation also covers a note the next epoch spent',undoneDuringVerify(2));
+
 test('admission refuses a fast-path slot apply would refuse, with a rejection rather than a crash',async t=>{
  const w=await world(2),op=await w.open(t),first=fastSpend(op.state);
  await land(op,'spend',[first]);
@@ -179,6 +226,53 @@ test('admission refuses a fast-path slot apply would refuse, with a rejection ra
  assert.deepEqual(op.pendingIds(),[good.id]);
 });
 
+test('a pad whose rCur has no root is refused once, and the next tick still builds a batch',async t=>{
+ const w=await world(2),op=await w.open(t),good=fastSpend(op.state);
+ const bad:[string,unknown][]=[['no root',{epoch:0}],['a root outside the field',{epoch:0,root:ROLLUP_FIELD}],['a fractional epoch',{epoch:0.5,root:1n}]];
+ for(const [label,rCur] of bad){
+  const slot={...good.slot,rCur:rCur as never};
+  await assert.rejects(op.submit({...good,id:label,slot}),rejection('slot-shape'),label);
+  assert.throws(()=>op.addPadding([{...good,slot,receivedAt:Infinity}]),rejection('slot-shape'),label);
+ }
+ assert.deepEqual([op.padding(),op.pending()],[0,0]);
+ await land(op,'spend',[good]);
+});
+
+test('the padding queue is empty immediately after the rotating batch is accepted, not one tick later',async t=>{
+ const w=await world(2),drops:[string[],string][]=[],seen:[boolean,number][]=[];
+ let op!:Operator;
+ const probe={prove:async()=>{seen.push([op.state.rotatesNext(),op.padding()]);return proof;}};
+ op=await w.open(t,{prover:{spend:probe,join:probe,recover:probe},onDrop:(ids,reason)=>drops.push([ids,reason])});
+ op.addPadding([...padsFor(op.state,'spend',3),...padsFor(op.state,'join',3)]);
+ await land(op,'spend',[fastSpend(op.state)]);
+ assert.deepEqual([op.padding('spend'),op.padding('join'),drops],[3,3,[]],'a batch that ends no epoch leaves the queues be');
+ await land(op,'spend',[fastSpend(op.state)]);
+ assert.deepEqual(seen,[[false,6],[true,0]],'the queue was already empty while the epoch\'s last batch was being proved');
+ assert.deepEqual([op.padding('spend'),op.padding('join'),drops.flatMap(([ids])=>ids).length],[0,0,6]);
+ for(const [,reason] of drops)assert.match(reason,/rotation/);
+});
+
+test('an epoch-ending batch whose proof fails is undone with the pads it took, and lands on the next tick',async t=>{
+ const w=await world(2);
+ let fail=false;
+ const stub={prove:async()=>{if(fail){fail=false;throw new Error('prover down');}return proof;}};
+ const op=await w.open(t,{prover:{spend:stub,join:stub,recover:stub}});
+ await land(op,'spend',[fastSpend(op.state)]);
+ await op.submit(fastSpend(op.state));op.addPadding([...padsFor(op.state,'spend',BATCH_SLOTS-1+4),...padsFor(op.state,'join',3)]);
+ fail=true;
+ await assert.rejects(op.tick(),/prover down/);
+ assert.deepEqual([op.state.rotatesNext(),op.padding('spend'),op.pending()],[false,BATCH_SLOTS-1,1],'the flush at apply time is lost, but not the pads the batch took');
+ const again=await op.tick();
+ assert.ok(again&&'txid' in again,JSON.stringify(again));
+});
+
+test('a receipt the operator cannot read leaves the accepted view at the last accepted batch',async t=>{
+ const w=await world(2),op=await w.open(t,{transport:{...w.transport,submit:async(request,first)=>({...await w.transport.submit(request,first),signedArkTx:'not a psbt'})}});
+ await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ assert.deepEqual(Object.keys((await op.tick())!),['blocked']);
+ assert.deepEqual(op.status(),{...op.status(),...acceptedOf(EpochState.genesis(hash,2,false))});
+});
+
 test('a rotation drops every stale in-flight spend and pad with a reason, and the next batch lands',async t=>{
  const drops:[string[],string][]=[],w=await world(64),op=await w.open(t,{onDrop:(ids,reason)=>drops.push([ids,reason])});
  for(let n=0;n<63;n++)await land(op,'spend',[fastSpend(op.state)]);
@@ -187,7 +281,7 @@ test('a rotation drops every stale in-flight spend and pad with a reason, and th
  for(const s of clients)await op.submit(s);
  op.addPadding(spare);
  assert.ok('txid' in (await op.tick())!);
- assert.deepEqual([op.state.rotatesNext(),op.pendingIds(),op.padding()],[true,[clients.at(-1)!.id],BATCH_SLOTS-1]);
+ assert.deepEqual([op.state.rotatesNext(),op.pendingIds(),op.padding()],[true,[clients.at(-1)!.id],0]);
  const next=fastSpend(op.state);
  await op.submit(next);op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
  assert.equal((await op.tick() as {batch:number}).batch,64);
@@ -213,19 +307,34 @@ test('every batch is refused once the epoch archive is full',async t=>{
 test('a followed batch reproduces the state the transaction committed to, for all three kinds',async t=>{
  const w=await world(2),a=await w.open(t);
  await history(w,a);
+ assert.deepEqual(a.status(),{...a.status(),...acceptedOf(a.state)},'a batch the operator landed is accepted');
  const withRecords=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-follower-'))}),chainOnly=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-chain-'))});
- const recover=landedTx(w,4),record=recordAt(w,4);
+ const recover=landedTx(w,4),record=recordAt(w,4),mirror=EpochState.genesis(hash,2,false);
  for(let n=0;n<KINDS.length;n++){
   if(n===4)await assert.rejects(withRecords.follow({...recover,slots:record.slots.map(s=>({...s,origin:1})),at:1}),/not archived|anchor/,'a recover record naming another origin');
+  const landed=recordAt(w,n);
+  mirror.applyFromChain(landed.kind,landed.slots.map(s=>s.nullifiers.map(BigInt)),BigInt(landed.noteBlockRoot));
   for(const b of [withRecords,chainOnly]){
    assert.deepEqual(await b.follow({...landedTx(w,n),...(b===withRecords?{slots:recordAt(w,n).slots}:{}),at:1}),{batch:n,txid:landedTx(w,n).tx.id});
    assert.equal(headCommitment(b.status().archive.head.sourceTxHex),b.state.commitment(),`batch ${n} reaches the packet it carries`);
+   assert.deepEqual(b.status(),{...b.status(),...acceptedOf(mirror)},`batch ${n} is accepted, across the rotations at 2 and 4`);
   }
  }
  assert.deepEqual([withRecords.state.commitment(),chainOnly.state.commitment()],[a.state.commitment(),a.state.commitment()]);
  const {tx:joinTx}=landedTx(w,1);
  assert.deepEqual(readEpochBatchTx(joinTx,leaves),readBatchTx(joinTx,leaves),'the join row reads what the genesis-3 reader reads');
  assert.deepEqual(readEpochBatchTx(joinTx,leaves).nullifiers,recordAt(w,1).slots.map(s=>s.nullifiers.map(BigInt)));
+});
+
+test('following the batch that ends an epoch empties the padding queue at once',async t=>{
+ const w=await world(2),a=await w.open(t),drops:[string[],string][]=[];
+ const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-follower-')),onDrop:(ids,reason)=>drops.push([ids,reason])});
+ for(let n=0;n<2;n++)await land(a,'spend',[fastSpend(a.state)]);
+ await b.follow({...landedTx(w,0),at:1});
+ const pads=padsFor(b.state,'spend',3);b.addPadding(pads);
+ await b.follow({...landedTx(w,1),at:1});
+ assert.deepEqual([b.state.rotatesNext(),b.padding(),drops.flatMap(([ids])=>ids)],[true,0,pads.map(p=>p.id)]);
+ for(const [,reason] of drops)assert.match(reason,/rotation/);
 });
 
 test('readEpochBatchTx says so when it is handed genesis-3 leaves',()=>{
