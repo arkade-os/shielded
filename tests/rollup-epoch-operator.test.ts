@@ -165,6 +165,30 @@ test('admission refuses every recover submission the policy forbids',async t=>{
  assert.deepEqual(op.pendingIds(),[good.id]);
 });
 
+test('a recovery admitted against an in-flight rotation that is undone during its proof check still meets the riding double-spend check',async t=>{
+ const w=await world(2),gate=()=>{let open=()=>{};return {shut:new Promise<void>(r=>{open=r;}),open:()=>open()};};
+ let proving:ReturnType<typeof gate>|undefined,checking:ReturnType<typeof gate>|undefined;
+ const prover={prove:async()=>{if(proving){await proving.shut;throw new Error('prover down');}return proof;}};
+ const op=await w.open(t,{prover:{spend:prover,join:prover,recover:prover},verify:async()=>{await checking?.shut;return true;}});
+ const minted=deposit(op.state,1000n),note=noteFrom(minted);
+ await land(op,'spend',[spendOf(minted,{coin:w.coin(1)})]);
+ await land(op,'spend',[spendOf(deposit(op.state,1000n,{inputs:[note],deposit:0n}))]);
+ for(let n=0;n<2;n++)await land(op,'spend',[fastSpend(op.state)]);
+ assert.deepEqual([op.state.epoch,op.state.rotatesNext(),op.state.prevNfSet.has(note.nullifier)],[1,true,true],'epoch 0 spent the note and rides the next batch');
+ await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ proving=gate();
+ const ticking=op.tick();
+ for(let i=0;i<1000&&!op.state.archive.has(0);i++)await new Promise(r=>setImmediate(r));
+ assert.ok(op.state.archive.has(0),'the rotating batch is applied while its proof is held');
+ checking=gate();
+ const admitting=op.submit(recoverSpend(op.state,0,note));
+ proving.open();
+ await assert.rejects(ticking,/prover down/);
+ assert.deepEqual([op.state.archive.has(0),op.state.rotatesNext()],[false,true],'the rotation was undone while the recovery waited');
+ checking.open();
+ await assert.rejects(admitting,rejection('double-spend'));
+});
+
 test('admission refuses a fast-path slot apply would refuse, with a rejection rather than a crash',async t=>{
  const w=await world(2),op=await w.open(t),first=fastSpend(op.state);
  await land(op,'spend',[first]);

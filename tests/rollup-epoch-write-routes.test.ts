@@ -55,7 +55,8 @@ test('an epoch pool admits a fast-path spend posted with anchor and rCur',async(
 });
 
 test('an epoch pool admits a recovery posted with origin and no rCur',async()=>{
- const {net,service,request,r0}=await ridingPool(),body=wire(spendOf(r0,{epoch:0,root:r0},0));
+ const {net,service,request,r0}=await ridingPool(),body=wire(spendOf(r0,{epoch:0,root:r0},0)),{batches,erCount}=service.status().pool!;
+ assert.deepEqual([batches,erCount],[129,2],'the spend above landed rotating batch 128, so epoch 0 is archived rather than riding');
  assert.deepEqual(await answer(post(request,'/spends',body)),[202,{id:body.id,status:'pending'}]);
  await until('the recovery lands',()=>service.spend(body.id)?.status==='included',net);
  const [record]=batchesOf(service,service.spend(body.id)!.batch!,1);
@@ -101,7 +102,9 @@ const openThirdParty=async()=>{
  const fast=()=>lift(deposit(x.state,0n)),pair=()=>lift(deposit(x.state,0n,{inputs:[dummyInput(),dummyInput()]}));
  await land(spendOf(x.state.nextAnchorRoot(),{epoch:x.state.epoch,root:x.state.latestRoot()}),fast);
  await land(pair(),pair);
- await land(spendOf(x.state.prevNoteRoot,{epoch:0,root:x.state.prevNoteRoot},0));
+ // Admitted with rCur beside origin, as the harness's recovery() builds it; the record must name origin alone.
+ const both=spendOf(x.state.prevNoteRoot,{epoch:0,root:x.state.prevNoteRoot},0);
+ await land({...both,slot:{...both.slot,rCur:{epoch:0,root:x.state.prevNoteRoot}}});
  x.close();
  return {withSlots,chainOnly,views,records:views.map((_,i)=>JSON.parse(readFileSync(join(prover,'batches',`${126+i}.json`),'utf8')) as RollupEpochRecord),
   requests:{withSlots:await listen(withSlots),chainOnly:await listen(chainOnly)}};
@@ -118,6 +121,12 @@ test('/external follows a third-party epoch batch from its slots, for all three 
   assert.deepEqual(accepted(withSlots.status().pool!),views[i],record.kind);
   assert.deepEqual({...batchesOf(withSlots,126+i,1)[0],at:0},{...record,at:0},`the ${record.kind} record is the prover's`);
  }
+});
+
+test('a recover record the pool wrote round-trips through the /external parser',async()=>{
+ const {records:[,,recover]}=await thirdPartyPools(),slots=recover!.slots.map(({publics:_,...slot})=>slot);
+ const echo=await listen({ready:()=>true,epochPool:true,external:async(_txid:string,parsed:unknown)=>parsed} as unknown as RollupService);
+ assert.deepEqual(await answer(post(echo,'/external',{txid:recover!.txid,slots})),[200,slots]);
 });
 
 test('/external with no slots follows the same batch chain-only',async()=>{

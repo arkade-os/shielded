@@ -38,8 +38,8 @@ const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>Big
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
 export const slotOf=(s:Omit<EpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
  nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
-/** A slot in the string form records, the spend store and /external share; slotOf reads it back. */
-export const recordSlotOf=(slot:EpochSlot)=>({anchor:String(slot.anchor),...(slot.rCur?{rCur:{epoch:slot.rCur.epoch,root:String(slot.rCur.root)}}:{}),...(slot.origin!==undefined?{origin:slot.origin}:{}),
+/** A slot in the string form records, the spend store and /external share; slotOf reads it back. A recovery keeps origin alone, so /external takes back every record. */
+export const recordSlotOf=(slot:EpochSlot)=>({anchor:String(slot.anchor),...(slot.rCur&&slot.origin===undefined?{rCur:{epoch:slot.rCur.epoch,root:String(slot.rCur.root)}}:{}),...(slot.origin!==undefined?{origin:slot.origin}:{}),
  nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])] as [string,string],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize});
 const recordOf=(kind:EpochBatchKind,spends:readonly RollupEpochSpend[],noteBlockRoot:bigint):RollupEpochRecord=>({kind,
  slots:spends.map(({slot,publics,ciphertext})=>({...recordSlotOf(slot),publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})})),noteBlockRoot:String(noteBlockRoot)});
@@ -221,7 +221,10 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   try{
    if(!await verify(o.clientKey[kind],spend.publics,spend.proof))throw new Error('Invalid client proof.');
    // After the proof, so an unproven recovery cannot pull frozen sets off disk; their witness is an archived origin's double-spend check.
-   if(kind==='recover'&&state.archive.has(spend.origin!)){preload(spend.origin!);state.archive.witness(spend.origin!,nullifiers[0]!);}
+   // A rotation undone during verify leaves the origin riding again, so the live sets are checked rather than nothing.
+   if(kind==='recover'){const origin=spend.origin!,nf=nullifiers[0]!;
+    if(state.archive.has(origin)){preload(origin);state.archive.witness(origin,nf);}
+    else if(state.prevNfSet.has(nf)||state.nullifiers.has(nf))throw new RollupRejection('double-spend','The note was already spent in its own epoch or the next.');}
    proven.add(admitted);
    const unit=groupId===0n?[admitted]:pending.spend.filter(s=>s.slot.groupId===groupId);
    if(unit.length!==Math.max(groupSize,1))return;
