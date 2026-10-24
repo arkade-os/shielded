@@ -24,10 +24,16 @@ export interface EpochAccountSnapshot {
  prevNoteRoot?: string; frontier: FrontierSnapshot; frozen: FrozenEpoch[]; owned: SnapshotEpochNote[]; history: SnapshotEpochEntry[]; txids: string[];
 }
 
+/** A note must be renewed during the epoch after the one that created it, or it falls to recovery. */
+export interface RenewalPlan { due: EpochOwnedNote[]; kind: 'join' | 'spend'; deadlineBatch: number }
+export const RENEWAL_TAIL = 0.1; // never schedule in the last tenth of the epoch
+export const RENEWAL_FLOOR = 1 - RENEWAL_TAIL; // past this, renew at once rather than lose the note
+
 const BLOCK = 2 ** SUBTREE_DEPTH, CARRIER_SATS = 330n, CONSOLIDATE_ABOVE = 8;
 const noteOut = (n: EpochOwnedNote): SnapshotEpochNote => ({ amount: String(n.amount), asset: String(n.asset), rho: String(n.rho), index: n.index, nullifier: String(n.nullifier), epoch: n.epoch });
 const noteIn = (n: SnapshotEpochNote): EpochOwnedNote => ({ amount: BigInt(n.amount), asset: BigInt(n.asset), rho: BigInt(n.rho), index: n.index, nullifier: BigInt(n.nullifier), epoch: n.epoch });
 const byAmount = (a: EpochOwnedNote, b: EpochOwnedNote) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
+const uniform = () => crypto.getRandomValues(new Uint32Array(1))[0]! / 2 ** 32;
 // trap: every epoch record carries noteBlockRoot, so its presence (the classic test) would read every full batch as chain-only.
 const chainOnly = (record: RollupEpochRecord) => record.slots.every(s => s.commitments[0] === '0' && s.commitments[1] === '0');
 const blockRootOf = (hash: Hash, leaves: bigint[]) => {
@@ -49,6 +55,7 @@ export class EpochAccount {
  private count = 0;
  private current = 0;
  private ecdh?: Promise<Ecdh>;
+ private schedule = { epoch: -1, targets: new Map<bigint, number>() };
  private readonly bornAt: number;
  private readonly replica: boolean;
  constructor(private readonly hash: Hash, private readonly keys: RollupKeys, options: { epochLen: number; replica?: boolean; bornAt?: number }) {
@@ -70,6 +77,7 @@ export class EpochAccount {
  get canSkip(): boolean { return !this.replica; }
  /** Whether the next batch rotates this account. One started at (epoch, 0) already holds that epoch's empty tree, so the pool's rotating batch only appends: read this, never rotatesAt(batchCount), which says true there. */
  get rotatesNext(): boolean { return Math.floor(this.count / this.epochLen) > this.current; }
+ private get liveEpoch(): number { return this.current + Number(this.rotatesNext); }
  /** The current epoch's note root; before any batch, the empty tree's. */
  latestRoot(): bigint { return this.frontier.root(); }
  /** The root the previous epoch closed on; at epoch 0 the pool's genesis value, the empty tree's; undefined until a start supplies it or a rotation teaches it. */
@@ -211,7 +219,7 @@ export class EpochAccount {
  anchorPlan(): EpochAnchorPlan {
   const { rotatesNext } = this, rPrev = rotatesNext ? this.latestRoot() : this.prev;
   if (rPrev === undefined) throw new Error('This account has not learned the root the previous epoch closed on, so it cannot anchor a spend.');
-  return { rPrev, rCur: { epoch: this.current, root: this.latestRoot() }, liveEpoch: this.current + Number(rotatesNext), rotatesNext };
+  return { rPrev, rCur: { epoch: this.current, root: this.latestRoot() }, liveEpoch: this.liveEpoch, rotatesNext };
  }
  selFor(note: EpochOwnedNote, plan: EpochAnchorPlan): 0n | 1n { return note.epoch === plan.liveEpoch ? 0n : 1n; }
  /** False once the next batch archives the note's epoch, one batch before the note leaves the window. */
@@ -219,6 +227,10 @@ export class EpochAccount {
  private usable(asset: bigint, inFlight: ReadonlySet<bigint>): EpochOwnedNote[] {
   const plan = this.anchorPlan();
   return this.notes(asset).filter(n => !inFlight.has(n.nullifier) && this.spendable(n, plan));
+ }
+ /** consolidate's order, which renewal shares: smallest first, the notes `first` names ahead of the rest. Sorts in place. */
+ private smallestFirst(notes: EpochOwnedNote[], first: (note: EpochOwnedNote) => boolean = () => false): EpochOwnedNote[] {
+  return notes.sort((a, b) => Number(first(b)) - Number(first(a)) || byAmount(a, b));
  }
 
  async spend(request: EpochSpendRequest, self: RollupRecipient, random = randomField, group?: { id: bigint; size: number }): Promise<EpochBuiltSpend> {
@@ -232,10 +244,28 @@ export class EpochAccount {
   return this.spend({ asset: inputs[0].asset, inputs, ...(to ? { to } : {}) }, self);
  }
  async consolidate(self: RollupRecipient, asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set(), above = CONSOLIDATE_ABOVE): Promise<{ inputs: [EpochOwnedNote, EpochOwnedNote]; built: EpochBuiltSpend } | undefined> {
-  const notes = this.usable(asset, inFlight).sort(byAmount);
+  const notes = this.smallestFirst(this.usable(asset, inFlight));
   if (notes.length <= above) return undefined;
   const inputs: [EpochOwnedNote, EpochOwnedNote] = [notes[0]!, notes[1]!];
   return { inputs, built: await this.join(inputs, self) };
+ }
+ /**
+  * The renewal to submit now, if any. A note on its last fast-path epoch goes at a random batch of that epoch, joined with the smallest
+  * other due note when there is one. Each note's target is drawn the first time it is seen; `now` is not read, the schedule counts batches.
+  */
+ renewalDue(o: { now?: () => number; random?: () => number; inFlight?: ReadonlySet<bigint>; asset?: bigint } = {}): RenewalPlan | undefined {
+  const { epochLen, liveEpoch: live } = this, at = this.count - live * epochLen, last = Math.floor(RENEWAL_FLOOR * epochLen);
+  const due = this.notes(o.asset).filter(n => n.epoch === live - 1);
+  if (!due.length) return undefined;
+  if (this.schedule.epoch !== live) this.schedule = { epoch: live, targets: new Map() };
+  const { targets } = this.schedule, from = Math.min(at, last), draw = o.random ?? uniform;
+  // trap: a wallet opened late sees every due note at once; drawn over the whole window, most targets are already past and it renews in a burst.
+  for (const n of due) if (!targets.has(n.nullifier)) targets.set(n.nullifier, from + Math.floor(draw() * (last - from)));
+  if (due.some(n => o.inFlight?.has(n.nullifier))) return undefined;
+  const ready = (n: EpochOwnedNote) => at >= targets.get(n.nullifier)!;
+  const [head, partner] = this.smallestFirst(due, ready);
+  if (!ready(head!)) return undefined;
+  return { due: partner ? [head!, partner] : [head!], kind: partner ? 'join' : 'spend', deadlineBatch: (live + 1) * epochLen - 1 };
  }
  /** Group members must be submitted in the returned order, the order the group id commits to. */
  async pay(recipient: RollupRecipient | ((firstNullifier: bigint) => RollupRecipient), amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: Exclude<EpochBatchKind, 'recover'>; spends: EpochBuiltSpend[] }> {
