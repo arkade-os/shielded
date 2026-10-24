@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -129,6 +129,7 @@ test('the submitted body carries anchor and rCur and no root, and exactly one of
 
 test('an epoch proving URL names epoch-spend, and the pool serves it', async (t) => {
  const keys = mkdtempSync(join(tmpdir(), 'epoch-proving-')), files: Record<string, string> = {};
+ t.after(() => rmSync(keys, { recursive: true, force: true }));
  for (const name of rollupKeyFilesOf('epoch')) { writeFileSync(join(keys, name), name); files[name] = name.replace(/\W/g, ''); }
  const app = express();
  app.use('/api/rollup', createRollupRouter(() => ({ keyFile: (name: string) => rollupKeyPath(keys, name, 'epoch') }) as unknown as RollupService));

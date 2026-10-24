@@ -231,6 +231,8 @@ test('the fake pool answers in the shapes Plan 4b pins', async () => {
  assert.deepEqual([checkpoint.epoch, checkpoint.blocks, checkpoint.filled.length], [0, CHECKPOINT_EVERY, 27]);
  assert.equal(NoteFrontier.at(hash, checkpoint).root(), state.latestRoot());
  for (const path of ['/checkpoints/0/63', '/checkpoints/1/64', '/checkpoints/0/128', `/checkpoints/${CHECKPOINT_EVERY}`, '/nope']) await assert.rejects(api(path), { status: 404 }, path);
+ for (const path of ['/batches?from=-1', '/batches?from=1.5', '/scan?limit=0']) await assert.rejects(api(path), { status: 400 }, path);
+ assert.deepEqual([(await api<{ batches: unknown[] }>('/batches')).batches.length, (await api<{ batches: unknown[] }>('/batches?from=10&limit=500')).batches.length], [50, CHECKPOINT_EVERY - 10]);
  assert.deepEqual(await api('/times'), { every: CHECKPOINT_EVERY, at: [pool.records[0]!.at] });
 });
 

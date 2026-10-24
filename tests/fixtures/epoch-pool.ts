@@ -31,9 +31,9 @@ const recordOf = (kind: EpochBatchKind, spends: readonly PoolSpend[], noteBlockR
  })),
 });
 
-/** An in-process epoch pool: a leaf-keeping EpochState behind the wire shapes Plan 4b serves, with no service in between. */
-export function epochPool(hash: Hash, epochLen: number) {
- const state = EpochState.genesis(hash, epochLen, true), harness = epochHarness(hash);
+/** An in-process epoch pool: an EpochState behind the wire shapes Plan 4b serves, with no service in between; without `leaves` it keeps only what roots and checkpoints read. */
+export function epochPool(hash: Hash, epochLen: number, leaves = true) {
+ const state = EpochState.genesis(hash, epochLen, leaves), harness = epochHarness(hash);
  const records: RollupEpochRecord[] = [], rotations: boolean[] = [];
 
  const pad = (kind: EpochBatchKind = 'spend'): PoolSpend => {
@@ -62,23 +62,29 @@ export function epochPool(hash: Hash, epochLen: number) {
   return records.at(-1)!;
  };
 
+ // service.ts's key order; every batch is accepted the moment it lands, so live state is the accepted snapshot epochFieldsOf reads.
  const status = () => ({
-  version: 1, phase: 'ready', message: 'The rollup pool is open.',
+  version: 1, phase: 'ready', message: 'The rollup pool is open.', minimumFundingSats: 2000,
   pool: {
-   token: 'epoch-pool', operator: '', address: '', script: '', head: { txid: '00'.repeat(32), vout: 0, value: 0 }, pending: 0, padding: 0, reserves: {}, maxReserves: 0,
-   batches: records.length, root: String(state.latestRoot()), prevNoteRoot: String(state.prevNoteRoot),
-   epoch: state.epoch, epochLen: state.epochLen, batchesInEpoch: state.batchCount - state.epoch * state.epochLen,
-   erCount: state.archive.count(), rsCount: state.recovered.count(), nullifiers: state.nullifiers.count(), heapBytes: 0,
+   token: 'epoch-pool', operator: '', address: '', script: '', batches: records.length, root: String(state.latestRoot()), head: { txid: '00'.repeat(32), vout: 0, value: 0 }, pending: 0, padding: 0,
    ...(records.length ? { lastBatch: { batch: records.length - 1, at: records.at(-1)!.at!, waitedMs: 0, proveMs: 0, publishMs: 0, rotated: rotations.at(-1)! } } : {}),
+   reserves: {}, maxReserves: 0,
+   epoch: state.epoch, epochLen: state.epochLen, batchesInEpoch: records.length - state.epoch * state.epochLen, prevNoteRoot: String(state.prevNoteRoot),
+   erCount: state.archive.count(), rsCount: state.recovered.count(), nullifiers: state.nullifiers.count(), heapBytes: 0,
   },
  });
 
  const api = (async (path: string) => {
-  const url = new URL(path, 'http://pool'), param = (name: string, fallback: number) => Number(url.searchParams.get(name) ?? fallback);
-  const total = records.length, from = param('from', 0), to = Math.min(total, from + param('limit', 50)), at = /^\/checkpoints\/(\d+)\/(\d+)$/.exec(url.pathname);
+  const url = new URL(path, 'http://pool'), at = /^\/checkpoints\/(\d+)\/(\d+)$/.exec(url.pathname);
   if (url.pathname === '/status') return status();
-  if (url.pathname === '/batches') return { from, total, batches: records.slice(from, to) };
-  if (url.pathname === '/scan') return { from, total, data: base64.encode(encodeEpochScan(records.slice(from, to).map((record, i) => ({ record, root: BigInt(record.noteBlockRoot), rotated: rotations[from + i]! })))) };
+  if (url.pathname === '/batches' || url.pathname === '/scan') {
+   // http.ts's defaults, caps and 400.
+   const scan = url.pathname === '/scan', from = Number(url.searchParams.get('from') ?? 0), limit = Math.min(Number(url.searchParams.get('limit') ?? (scan ? 500 : 50)), scan ? 500 : 100);
+   if (!Number.isInteger(from) || from < 0 || !Number.isInteger(limit) || limit < 1) throw Object.assign(new Error('Invalid batch range.'), { status: 400 });
+   const total = records.length, to = Math.min(total, from + limit);
+   if (!scan) return { from, total, batches: records.slice(from, to) };
+   return { from, total, data: base64.encode(encodeEpochScan(records.slice(from, to).map((record, i) => ({ record, root: BigInt(record.noteBlockRoot), rotated: rotations[from + i]! })))) };
+  }
   if (url.pathname === '/times') return { every: CHECKPOINT_EVERY, at: records.filter((_, n) => n % CHECKPOINT_EVERY === 0).map(r => r.at ?? 0) };
   if (at) {
    const [epoch, blocks] = [Number(at[1]), Number(at[2])];

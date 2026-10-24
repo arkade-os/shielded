@@ -1,11 +1,11 @@
 import { hex } from '@scure/base';
 import type { RollupEpochRecord } from '../../../../src/rollup/epoch-operator.ts';
-import { randomField, type RollupKeys, type SpendRequest } from './account.ts';
+import { randomField, type RollupKeys, type SnapshotEntry, type SnapshotNote, type SpendRequest } from './account.ts';
 import { BTC_ASSET, EPOCH_NULLIFIERS, EPOCH_SLOTS, MAX_EPOCH_LEN, ROLLUP_DOMAIN, SUBTREE_DEPTH, type EpochBatchKind } from './constants.ts';
 import type { EpochAnchorRef } from './epoch.ts';
 import { epochTransfer, type EpochBuiltSpend } from './epoch-circuit.ts';
 import { rotatesAt, type EpochScanBatch } from './epoch-scan.ts';
-import { NoteFrontier } from './frontier.ts';
+import { NoteFrontier, type FrontierCheckpoint, type FrontierSnapshot } from './frontier.ts';
 import { akOf, groupIdOf, noteOf, nullifierOf, ownerOf, type Hash } from './notes.ts';
 import { nullifierHint } from './scan.ts';
 import { openRollupNotes, rollupViewTag, viewEcdh, type Ecdh, type RollupNote, type RollupRecipient } from './wallet.ts';
@@ -15,8 +15,18 @@ export interface EpochHistoryEntry { kind: 'shield' | 'receive' | 'send' | 'with
 /** The anchor the next batch will accept, and the selector each input needs. Mirrors the operator's admission check exactly. */
 export interface EpochAnchorPlan { rPrev: bigint; rCur: EpochAnchorRef; liveEpoch: number; rotatesNext: boolean }
 export interface EpochSpendRequest extends Omit<SpendRequest, 'input' | 'inputs'> { input?: EpochOwnedNote; inputs?: [EpochOwnedNote, EpochOwnedNote] }
+/** A closed epoch's final note root and the final paths of the notes still held in it, by leaf index. */
+export interface FrozenEpoch { epoch: number; noteFinal: string; paths: [number, string[]][] }
+export interface SnapshotEpochNote extends SnapshotNote { epoch: number }
+export interface SnapshotEpochEntry extends Omit<SnapshotEntry, 'kind' | 'created'> { kind: EpochHistoryEntry['kind']; epoch: number; created: SnapshotEpochNote[] }
+export interface EpochAccountSnapshot {
+ v: 2; owner: string; epochLen: number; bornAt: number; epoch: number; batch: number; blockInEpoch: number;
+ prevNoteRoot?: string; frontier: FrontierSnapshot; frozen: FrozenEpoch[]; owned: SnapshotEpochNote[]; history: SnapshotEpochEntry[]; txids: string[];
+}
 
 const BLOCK = 2 ** SUBTREE_DEPTH, CARRIER_SATS = 330n, CONSOLIDATE_ABOVE = 8;
+const noteOut = (n: EpochOwnedNote): SnapshotEpochNote => ({ amount: String(n.amount), asset: String(n.asset), rho: String(n.rho), index: n.index, nullifier: String(n.nullifier), epoch: n.epoch });
+const noteIn = (n: SnapshotEpochNote): EpochOwnedNote => ({ amount: BigInt(n.amount), asset: BigInt(n.asset), rho: BigInt(n.rho), index: n.index, nullifier: BigInt(n.nullifier), epoch: n.epoch });
 const byAmount = (a: EpochOwnedNote, b: EpochOwnedNote) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
 // trap: every epoch record carries noteBlockRoot, so its presence (the classic test) would read every full batch as chain-only.
 const chainOnly = (record: RollupEpochRecord) => record.slots.every(s => s.commitments[0] === '0' && s.commitments[1] === '0');
@@ -34,8 +44,7 @@ export class EpochAccount {
  readonly txids = new Set<string>();
  private readonly owned = new Map<bigint, EpochOwnedNote>();
  private frontier: NoteFrontier;
- /** The epoch before the current one, kept for its notes' paths: its tree never changes again. */
- private closed?: NoteFrontier;
+ private readonly frozen = new Map<number, { noteFinal: bigint; paths: Map<number, bigint[]> }>();
  private prev: bigint | undefined;
  private count = 0;
  private current = 0;
@@ -59,10 +68,16 @@ export class EpochAccount {
  get batchCount(): number { return this.count; }
  get blockInEpoch(): number { return this.count - this.current * this.epochLen; }
  get canSkip(): boolean { return !this.replica; }
+ /** Whether the next batch rotates this account. One started at (epoch, 0) already holds that epoch's empty tree, so the pool's rotating batch only appends. */
+ private get rotating(): boolean { return Math.floor(this.count / this.epochLen) > this.current; }
  /** The current epoch's note root; before any batch, the empty tree's. */
  latestRoot(): bigint { return this.frontier.root(); }
- /** The root the previous epoch closed on; at epoch 0 the pool's genesis value, the empty tree's. */
+ /** The root the previous epoch closed on; at epoch 0 the pool's genesis value, the empty tree's; undefined until a start supplies it or a rotation teaches it. */
  prevNoteRoot(): bigint | undefined { return this.prev; }
+ /** The path frozen when the note's epoch closed. That tree never changes again, so the path serves a sel=1 spend and a recovery alike. */
+ frozenPath(note: EpochOwnedNote): bigint[] | undefined { const path = this.frozen.get(note.epoch)?.paths.get(note.index); return path && [...path]; }
+ /** The root an epoch closed on, kept while the account holds a note of it; the previous epoch's is prevNoteRoot. */
+ noteFinal(epoch: number): bigint | undefined { return this.frozen.get(epoch)?.noteFinal ?? (epoch === this.current - 1 ? this.prev : undefined); }
 
  /** Whether a scanned batch may create or spend this wallet's notes, or spend a `watched` nullifier: only those are fetched whole. */
  async concerns(entry: EpochScanBatch, watched: Iterable<bigint> = []): Promise<boolean> {
@@ -81,10 +96,9 @@ export class EpochAccount {
  skip(entry: EpochScanBatch): void {
   if (this.replica) throw new Error('A replica needs every batch whole.');
   if (entry.batch !== this.count) throw new Error(`Scan entry ${entry.batch} does not follow batch ${this.count}.`);
-  const rotated = rotatesAt(this.count, this.epochLen);
-  if (entry.rotated !== rotated || entry.epoch !== Math.floor(this.count / this.epochLen)) throw new Error('That scan page does not follow this account.');
+  if (entry.rotated !== rotatesAt(this.count, this.epochLen) || entry.epoch !== Math.floor(this.count / this.epochLen)) throw new Error('That scan page does not follow this account.');
   if (entry.txid) this.txids.add(entry.txid);
-  if (rotated) this.rotate();
+  if (this.rotating) this.rotate();
   this.frontier.appendRoot(entry.root);
   this.count++;
  }
@@ -92,7 +106,7 @@ export class EpochAccount {
  async apply(batch: RollupEpochRecord): Promise<EpochOwnedNote[]> {
   const { kind, slots } = batch;
   if (slots.length !== EPOCH_SLOTS[kind] || slots.some(slot => slot.nullifiers.length !== EPOCH_NULLIFIERS[kind])) throw new Error('A batch record has the wrong shape.');
-  const number = this.count, rotated = rotatesAt(number, this.epochLen), epoch = this.current + Number(rotated), base = (rotated ? 0 : this.blockInEpoch) * BLOCK;
+  const number = this.count, rotated = this.rotating, epoch = this.current + Number(rotated), base = (rotated ? 0 : this.blockInEpoch) * BLOCK;
   const root = BigInt(batch.noteBlockRoot), leaves = slots.flatMap(slot => slot.commitments.map(BigInt)), nullifiers = slots.map(slot => slot.nullifiers.map(BigInt)), legs = slots.map(slot => slot.publics.map(BigInt));
   const bare = chainOnly(batch);
   if (!bare && blockRootOf(this.hash, leaves) !== root) throw new Error('The batch\'s commitments do not rebuild the block root the pool published.');
@@ -112,8 +126,8 @@ export class EpochAccount {
   if (rotated) this.rotate();
   if (bare) this.frontier.appendRoot(root);
   else this.frontier.append(leaves, created.flat().map(n => n.index - base));
-  // An earlier epoch's frontier is gone, and its index could name a different live note.
-  for (const note of spent.flat()) if (note.epoch === this.current) this.frontier.untrack(note.index);
+  // A note of an earlier epoch is held by its frozen path; its index may name a live leaf of this epoch too.
+  for (const note of spent.flat()) if (note.epoch === this.current) this.frontier.untrack(note.index); else this.thaw(note);
   for (const note of created.flat()) this.owned.set(note.nullifier, note);
   this.count++;
   for (let i = 0; i < slots.length;) {
@@ -126,11 +140,17 @@ export class EpochAccount {
   return created.flat();
  }
 
+ /** Before the rotating batch's block lands: the closing tree's root, and the final path of every note still held in it. */
  private rotate(): void {
+  const held = [...this.owned.values()].filter(n => n.epoch === this.current);
+  if (held.length) this.frozen.set(this.current, { noteFinal: this.frontier.root(), paths: new Map(held.map(n => [n.index, this.frontier.path(n.index)])) });
   this.prev = this.frontier.root();
-  this.closed = this.frontier;
   this.frontier = new NoteFrontier(this.hash);
   this.current++;
+ }
+ private thaw(note: EpochOwnedNote): void {
+  const frozen = this.frozen.get(note.epoch);
+  if (frozen?.paths.delete(note.index) && !frozen.paths.size) this.frozen.delete(note.epoch);
  }
 
  private entryOf(batch: RollupEpochRecord, number: number, epoch: number, legs: bigint[][], from: number, to: number, spent: EpochOwnedNote[], created: EpochOwnedNote[]): EpochHistoryEntry | undefined {
@@ -154,8 +174,41 @@ export class EpochAccount {
  notes(asset = BTC_ASSET): EpochOwnedNote[] { return [...this.owned.values()].filter(n => n.asset === asset).sort((a, b) => a.epoch - b.epoch || a.index - b.index); }
  balance(asset = BTC_ASSET): bigint { return this.notes(asset).reduce((sum, n) => sum + n.amount, 0n); }
 
+ snapshot(): EpochAccountSnapshot {
+  return {
+   v: 2, owner: String(this.owner), epochLen: this.epochLen, bornAt: this.bornAt, epoch: this.current, batch: this.count, blockInEpoch: this.blockInEpoch,
+   ...(this.prev === undefined ? {} : { prevNoteRoot: String(this.prev) }), frontier: this.frontier.snapshot(),
+   frozen: [...this.frozen].map(([epoch, { noteFinal, paths }]) => ({ epoch, noteFinal: String(noteFinal), paths: [...paths].map(([index, path]): [number, string[]] => [index, path.map(String)]) })),
+   owned: [...this.owned.values()].map(noteOut), txids: [...this.txids],
+   history: this.history.map(e => ({ kind: e.kind, batch: e.batch, epoch: e.epoch, ...(e.txid ? { txid: e.txid } : {}), ...(e.at !== undefined ? { at: e.at } : {}), amounts: e.amounts.map((a): [string, string] => [String(a.asset), String(a.amount)]), spent: e.spent.map(String), created: e.created.map(noteOut), ...(e.destination !== undefined ? { destination: String(e.destination) } : {}), slots: e.slots })),
+  };
+ }
+ /** `epochLen` is the pool's: a snapshot of another epoch length would rotate at the wrong batches. */
+ static fromSnapshot(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, s: EpochAccountSnapshot, epochLen: number): EpochAccount {
+  if (s.v !== 2) throw new Error(`Unknown epoch account snapshot version ${s.v}.`);
+  if (s.epochLen !== epochLen) throw new Error(`That snapshot is of ${s.epochLen}-batch epochs, and this pool's are ${epochLen}; sync from the pool instead.`);
+  const account = EpochAccount.owning(hash, keys, { epochLen, bornAt: s.bornAt });
+  if (String(account.owner) !== s.owner) throw new Error('That snapshot belongs to another key; sync from the pool instead.');
+  account.frontier = NoteFrontier.fromSnapshot(hash, s.frontier);
+  account.count = s.batch; account.current = s.epoch; account.prev = s.prevNoteRoot === undefined ? undefined : BigInt(s.prevNoteRoot);
+  for (const f of s.frozen) account.frozen.set(f.epoch, { noteFinal: BigInt(f.noteFinal), paths: new Map(f.paths.map(([index, path]) => [index, path.map(BigInt)])) });
+  for (const note of s.owned.map(noteIn)) account.owned.set(note.nullifier, note);
+  for (const txid of s.txids) account.txids.add(txid);
+  for (const e of s.history) account.history.push({ kind: e.kind, batch: e.batch, epoch: e.epoch, ...(e.txid ? { txid: e.txid } : {}), ...(e.at !== undefined ? { at: e.at } : {}), amounts: e.amounts.map(([asset, amount]) => ({ asset: BigInt(asset), amount: BigInt(amount) })), spent: e.spent.map(BigInt), created: e.created.map(noteIn), ...(e.destination !== undefined ? { destination: BigInt(e.destination) } : {}), slots: e.slots });
+  return account;
+ }
+ /** Starts with no notes on the current epoch's checkpoint; at `blocks` 0, on the empty tree of an epoch whose rotating batch has yet to land. */
+ static atCheckpoint(hash: Hash, keys: { ask: bigint; nk: bigint; viewSecret: Uint8Array }, o: { epochLen: number; checkpoint: FrontierCheckpoint & { epoch: number }; prevNoteRoot?: bigint; bornAt: number }): EpochAccount {
+  const { epoch, blocks } = o.checkpoint, batch = epoch * o.epochLen + blocks;
+  if (o.bornAt < batch) throw new Error('A checkpoint past the birth batch would skip its notes.');
+  const account = EpochAccount.owning(hash, keys, { epochLen: o.epochLen, bornAt: o.bornAt });
+  account.frontier = NoteFrontier.at(hash, o.checkpoint);
+  account.count = batch; account.current = epoch; account.prev = o.prevNoteRoot;
+  return account;
+ }
+
  anchorPlan(): EpochAnchorPlan {
-  const rotatesNext = rotatesAt(this.count, this.epochLen), rPrev = rotatesNext ? this.latestRoot() : this.prev;
+  const rotatesNext = this.rotating, rPrev = rotatesNext ? this.latestRoot() : this.prev;
   if (rPrev === undefined) throw new Error('This account has not learned the root the previous epoch closed on, so it cannot anchor a spend.');
   return { rPrev, rCur: { epoch: this.current, root: this.latestRoot() }, liveEpoch: this.current + Number(rotatesNext), rotatesNext };
  }
@@ -171,7 +224,7 @@ export class EpochAccount {
   if (this.keys.ask === undefined) throw new Error('This wallet holds a full viewing key, not the spend authority.');
   const plan = this.anchorPlan(), owned = request.inputs ?? (request.input ? [request.input] : []);
   if (!owned.every(n => this.spendable(n, plan))) throw new Error('That note is off the fast path; it needs a recovery.');
-  const paths = owned.map(n => (n.epoch === this.current ? this.frontier : this.closed)?.path(n.index));
+  const paths = owned.map(n => (n.epoch === this.current ? this.frontier.path(n.index) : this.frozenPath(n)));
   return epochTransfer(this.hash, { rPrev: plan.rPrev, rCur: plan.rCur, sel: owned.map(n => this.selFor(n, plan)), ask: this.keys.ask, nk: this.keys.nk, self, request, paths, ...(group ? { group } : {}) }, random);
  }
  join(inputs: [EpochOwnedNote, EpochOwnedNote], self: RollupRecipient, to?: SpendRequest['to']): Promise<EpochBuiltSpend> {
