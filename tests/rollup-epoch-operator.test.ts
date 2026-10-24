@@ -9,9 +9,10 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
+import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,slotOf,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {readBatchTx,readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import type {RollupTransport} from '../src/rollup/operator.ts';
@@ -118,6 +119,20 @@ test('the operator builds a spend, a join and a recover batch, each through its 
  });
  assert.equal(recordAt(w,4).slots.length,1);
  assert.deepEqual([op.state.epoch,op.state.recovered.has(note.nullifier),op.status().archive.head.value],[2,true,101_330]);
+});
+
+test('each batch is proved from its circuit input, which carries no field the circuit derives',async t=>{
+ const proved:{kind:string;input:Record<string,unknown>;expected:readonly bigint[]}[]=[];
+ const recording=(kind:string)=>({prove:async(input:Record<string,unknown>,expected:readonly bigint[])=>{proved.push({kind,input,expected});return proof;}});
+ const w=await world(2),op=await w.open(t,{prover:{spend:recording('spend'),join:recording('join'),recover:recording('recover')}});
+ await history(w,op);
+ assert.deepEqual(proved.map(p=>p.kind),[...KINDS]);
+ const mirror=EpochState.genesis(hash,2,false);
+ proved.forEach(({kind,input,expected},n)=>{
+  const record=recordAt(w,n),{witness,publicSignals}=mirror.apply(record.kind,record.slots.map(slotOf));
+  for(const field of EPOCH_DERIVED_FIELDS)assert.equal(field in input,false,`batch ${n} (${kind}) hands the prover ${field}`);
+  assert.deepEqual([input,expected],[epochBatchInput(witness),publicSignals],`batch ${n} (${kind}) proves exactly the circuit input of its statement`);
+ });
 });
 
 test('a recover batch built in TypeScript is accepted by the real recover leaf',async()=>{

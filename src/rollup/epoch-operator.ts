@@ -4,6 +4,7 @@ import {Transaction,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
+import {epochBatchInput} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
@@ -272,7 +273,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    if(selection.asset&&!reserveCoin)gate(()=>{throw new Error(`No reserve for asset ${selection.asset}.`);});
    const result=gate(()=>{if(kind==='recover')preload(selection.spends[0]!.origin!);return state.apply(kind,selection.spends.map(s=>s.slot));});applied=true;
    if(state.rotatesNext())flushPadding();
-   const proof=await o.prover[kind].prove(result.witness,result.publicSignals),proved=now();
+   const proof=await o.prover[kind].prove(epochBatchInput(result.witness),result.publicSignals),proved=now();
    const witness=rollupWitness(proof,selection.spends.map(s=>({proof:s.proof,publics:s.publics})));
    const reserve=reserveCoin?{...poolCoin(reserveCoin,pool.reserve),amount:BigInt(reserveCoin.amount)}:undefined;
    const built=gate(()=>buildRollupBatchTx({kind,head:poolCoin(archive.head,kind==='recover'?pool.batchRecover:kind==='join'?pool.batchJoin:pool.batch),...(reserve?{reserve}:{}),deposits:deposits.map(s=>s.coin!),legs:selection.legs,token:o.token,...(selection.asset?{asset:selection.asset}:{}),
