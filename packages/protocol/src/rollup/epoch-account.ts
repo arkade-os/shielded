@@ -229,6 +229,8 @@ export class EpochAccount {
   const plan = this.anchorPlan();
   return this.notes(asset).filter(n => !inFlight.has(n.nullifier) && this.spendable(n, plan));
  }
+ /** What a picker may choose from, where notes() also lists the notes that need a recovery; throws as spend does when the account cannot anchor yet. */
+ spendableNotes(asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set()): EpochOwnedNote[] { return this.usable(asset, inFlight); }
  /** consolidate's order, which renewal shares: smallest first, the notes `first` names ahead of the rest. Sorts in place. */
  private smallestFirst(notes: EpochOwnedNote[], first: (note: EpochOwnedNote) => boolean = () => false): EpochOwnedNote[] {
   return notes.sort((a, b) => Number(first(b)) - Number(first(a)) || byAmount(a, b));
@@ -276,6 +278,10 @@ export class EpochAccount {
   const [head, partner] = this.smallestFirst(due, ready), deadlineBatch = (live + 1) * epochLen - 1;
   if (!ready(head!)) return undefined;
   return partner ? { kind: 'join', due: [head!, partner], deadlineBatch } : { kind: 'spend', due: [head!], deadlineBatch };
+ }
+ /** Builds a renewalDue plan; a lone note names its asset, which a bare spend would take as BTC. */
+ renew(plan: RenewalPlan, self: RollupRecipient): Promise<EpochBuiltSpend> {
+  return plan.kind === 'join' ? this.join(plan.due, self) : this.spend({ asset: plan.due[0].asset, input: plan.due[0] }, self);
  }
  /** Group members must be submitted in the returned order, the order the group id commits to. */
  async pay(recipient: RollupRecipient | ((firstNullifier: bigint) => RollupRecipient), amount: bigint, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), asset = BTC_ASSET, prefer: { join?: boolean } = {}): Promise<{ kind: Exclude<EpochBatchKind, 'recover'>; spends: EpochBuiltSpend[] }> {

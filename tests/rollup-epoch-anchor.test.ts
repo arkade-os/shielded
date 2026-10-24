@@ -10,9 +10,9 @@ import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
 import { createRollupRouter } from '../src/rollup/http.ts';
 import { rollupKeyFilesOf, rollupKeyPath, rollupProvingOf, type RollupService } from '../src/rollup/service.ts';
 import { epochProvingUrls, epochTransferBody } from '../src/shielded/epoch-pool.ts';
-import { circuitUrls, type PoolApi } from '../src/shielded/pool.ts';
+import { circuitUrls, pickNote, type PoolApi } from '../src/shielded/pool.ts';
 import type { RollupAccount } from '../packages/protocol/src/rollup/account.ts';
-import { ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
+import { BTC_ASSET, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
 import { anchorOf } from '../packages/protocol/src/rollup/epoch.ts';
 import { EpochAccount } from '../packages/protocol/src/rollup/epoch-account.ts';
 import { epochPaddingTransfer, type EpochBuiltSpend } from '../packages/protocol/src/rollup/epoch-circuit.ts';
@@ -110,6 +110,26 @@ test('a note from an epoch below liveEpoch-1 is not spendable and pay() never pi
  const { spends } = await account.pay(bobTo, 500n, aliceTo);
  assert.deepEqual(spends.map(s => s.slot.nullifiers[0]), [fresh!.nullifier]);
  await assert.rejects(account.spend({ input: old!, ...pays(100n) }, aliceTo), /needs a recovery/);
+});
+
+test('spendableNotes leaves out a note that needs a recovery, so the smallest cover is one a spend accepts', async () => {
+ const pool = epochPool(hash, 2), account = alice(2), seven = (deposit: bigint) => pool.transfer({ ask: 0n, nk: 0n, self: aliceTo, request: { asset: 7n, deposit } });
+ pool.land('spend', [await pool.deposit(aliceTo, 600n), await seven(40n)]);
+ pool.land();
+ pool.land('spend', [await pool.deposit(aliceTo, 1000n), await seven(50n)]);
+ pool.land('spend', [await pool.deposit(aliceTo, 300n)]);
+ await replay(account, pool.api);
+ const [old, big, small] = account.notes();
+ assert.deepEqual([account.anchorPlan().rotatesNext, old!.epoch, big!.epoch, pickNote(account.notes(), 500n, new Set())], [true, 0, 1, old], 'unfiltered, the smallest cover is the note that needs a recovery');
+ assert.deepEqual(account.spendableNotes(), [big, small], 'in notes() order, not by amount');
+ assert.equal(pickNote(account.spendableNotes(), 500n, new Set()), big);
+ assert.deepEqual([account.spendableNotes(BTC_ASSET, new Set([big!.nullifier])), account.spendableNotes(7n).map(n => [n.epoch, n.amount])], [[small], [[1, 50n]]]);
+});
+
+test('spendableNotes throws as spend does while the account has not learned the previous epoch\'s root', () => {
+ const account = alice(4);
+ account['prev'] = undefined;
+ assert.throws(() => account.spendableNotes(), /root the previous epoch closed on/);
 });
 
 test('the submitted body carries anchor and rCur and no root, and exactly one of rCur and origin', async () => {

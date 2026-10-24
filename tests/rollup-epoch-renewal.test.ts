@@ -28,7 +28,7 @@ const holding = (epochLen: number, live: number, at: number, notes: [epoch: numb
 const tenOf = (epoch: number) => Array.from({ length: 10 }, (_, i): [number, bigint] => [epoch, BigInt(100 + i)]);
 const amounts = (plan?: RenewalPlan) => plan?.due.map(note => note.amount);
 const targetsOf = (account: EpochAccount) => [...account['schedule'].targets.values()];
-const renewal = (account: EpochAccount, plan: RenewalPlan) => plan.kind === 'join' ? account.join(plan.due, aliceTo) : account.spend({ input: plan.due[0] }, aliceTo);
+const renewal = (account: EpochAccount, plan: RenewalPlan) => account.renew(plan, aliceTo);
 
 test('a note is due in the epoch after the one that created it, and not before', async () => {
  const pool = epochPool(hash, 4), account = alice(4), seen: unknown[] = [];
@@ -58,6 +58,22 @@ test('two due notes are renewed as one join, and the note count falls', async ()
  }
  assert.deepEqual(plans, [['join', [100n, 200n]], ['spend', [300n]]]);
  assert.deepEqual([counts, account.balance(), account.notes().map(n => n.epoch)], [[3, 2, 2], 600n, [1, 1]]);
+});
+
+test('renew runs a join and a lone note in the plan\'s asset, which a bare spend of the note would refuse', async () => {
+ const pool = epochPool(hash, 4), account = alice(4), plans: unknown[] = [], next = () => account.renewalDue({ random: () => 0, asset: 7n });
+ pool.land('spend', await Promise.all([300n, 100n, 200n].map(deposit => pool.transfer({ ask: 0n, nk: 0n, self: aliceTo, request: { asset: 7n, deposit } }))));
+ for (let n = 0; n < 3; n++) pool.land();
+ await replay(account, pool.api);
+ for (let plan = next(); plan; plan = next()) {
+  const built = await account.renew(plan, aliceTo);
+  assert.ok(opens(hash, account.owner, built, plan.due));
+  plans.push([plan.kind, amounts(plan), built.witness.input.asset]);
+  pool.land(plan.kind, [posted(built)]);
+  await replay(account, pool.api);
+ }
+ assert.deepEqual(plans, [['join', [100n, 200n], 7n], ['spend', [300n], 7n]]);
+ assert.deepEqual(account.notes(7n).map(n => [n.epoch, n.amount]), [[1, 300n], [1, 300n]]);
 });
 
 test('with a seeded random, ten due notes get ten different targets, none in the last tenth', () => {
