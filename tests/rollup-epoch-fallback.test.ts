@@ -75,7 +75,7 @@ const mirrorOf=(records:RollupEpochRecord[]=world.records,archives:RollupNullifi
  return dir;
 };
 const open=(dir:string)=>openEpochReplica({dir,hash,epochLen:EPOCH_LEN,leaves});
-const bound=async(dir:string)=>{const replica=await open(dir);await replica.catchUpFromChain('',world.state.commitment(),async()=>undefined);return replica;};
+const bound=async(dir:string)=>{const replica=await open(dir);await replica.catchUpFromChain(undefined,world.state.commitment(),async()=>undefined);return replica;};
 const accountOf=async(keys:typeof aliceKeys,replica:EpochReplica)=>{const account=EpochAccount.owning(hash,keys,{epochLen:EPOCH_LEN,replica:true});for(const r of replica.records)await account.apply(r);return account;};
 /** The pool head as the indexer would show it, carrying the bound replica's commitment. */
 const headOf=(replica:EpochReplica)=>{
@@ -132,10 +132,24 @@ test('a forged record and the archive it implies are refused: the replay never r
 test('a stale replica catches up from the chain to the head\'s commitment and only then trusts an archive',async()=>{
  const chain=chainOf(world.records),replica=await open(mirrorOf(world.records.slice(0,9).map((r,i)=>({...r,txid:chain[i]!.id}))));
  assert.throws(()=>replica.preload(0),/not bound to the pool head/);
- assert.equal(await replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),async({txid})=>chain[chain.findIndex(tx=>tx.id===txid)+1]),2);
+ assert.equal(await replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),async({txid})=>chain[chain.findIndex(tx=>tx.id===txid)+1],2),2);
  assert.deepEqual(replica.records.slice(9).map(r=>[r.txid,r.kind,r.at]),[[chain[9]!.id,'recover',undefined],[chain[10]!.id,'spend',undefined]],'placeholders, which no pool stamps with at');
  assert.equal(replica.state.commitment(),world.state.commitment());
  replica.preload(0);
+});
+
+test('a chain walk the indexer never ends stops at its cap with a labelled error, leaving the replica unbound',async()=>{
+ const chain=chainOf(world.records),replica=await open(mirrorOf(world.records.slice(0,9).map((r,i)=>({...r,txid:chain[i]!.id}))));
+ const fresh=(n:number)=>chainOf([{kind:'spend',noteBlockRoot:'0',slots:Array.from({length:10},(_,i):RollupEpochRecord['slots'][number]=>{const nf=String(10*n+i+1);return {anchor:'0',nullifiers:[nf],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:0,publics:['1',nf,'0','0','0','0','0']};})}])[0]!;
+ let served=0;
+ await assert.rejects(replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),async()=>served++<50?fresh(served):undefined,3),/passed 3 batches without reaching the head; the indexer may be looping/);
+ assert.equal(served,3,'no fourth batch was fetched');
+ assert.throws(()=>replica.preload(0),/not bound to the pool head/);
+});
+
+test('a walk that has batches to apply refuses to start without a mirrored transaction',async()=>{
+ const replica=await open(mirrorOf(world.records.slice(0,9)));
+ await assert.rejects(replica.catchUpFromChain(undefined,world.state.commitment(),async()=>assert.fail('walked anyway')),/No mirrored batch to catch up from/);
 });
 
 test('fallback withdraw builds a ten-slot epoch batch whose covenant witness the VM accepts',async()=>{

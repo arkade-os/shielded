@@ -35,9 +35,11 @@ export async function openEpochReplica(o:{dir:string;hash:Hash;epochLen:number;l
    }
   },
   /** Applies the head's ancestry after `fromTxid` from chain until the replica holds `target`, and binds it there. */
-  async catchUpFromChain(fromTxid:string,target:bigint,next:(head:{txid:string;vout:number})=>Promise<Transaction|undefined>):Promise<number>{
-   let outpoint={txid:fromTxid,vout:0},applied=0;
+  async catchUpFromChain(fromTxid:string|undefined,target:bigint,next:(head:{txid:string;vout:number})=>Promise<Transaction|undefined>,maxBatches=o.epochLen*64):Promise<number>{
+   if(state.commitment()!==target&&!fromTxid)throw new Error('No mirrored batch to catch up from; mirror at least one batch while the operator is up.');
+   let outpoint={txid:fromTxid!,vout:0},applied=0;
    while(state.commitment()!==target){
+    if(applied>=maxBatches)throw new Error(`The chain walk passed ${maxBatches} batches without reaching the head; the indexer may be looping.`);
     const tx=await next(outpoint);
     if(!tx)throw new Error(`The chain stops at ${outpoint.txid}:${outpoint.vout} before the head's state; the mirrored records do not replay to it.`);
     const facts=readEpochBatchTx(tx,o.leaves);

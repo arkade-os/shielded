@@ -132,6 +132,7 @@ export class EpochAccount {
   if (batch.txid) this.txids.add(batch.txid);
   const spent = nullifiers.map(list => list.flatMap(nf => { const note = this.owned.get(nf); this.owned.delete(nf); return note ? [note] : []; }));
   if (rotated) this.rotate();
+  // Nothing between rotate() and the count++ below may throw, or the epoch advances while the batch count stays stale.
   if (bare) this.frontier.appendRoot(root);
   else this.frontier.append(leaves, created.flat().map(n => n.index - base));
   // A note of an earlier epoch is held by its frozen path; its index may name a live leaf of this epoch too.
@@ -223,13 +224,13 @@ export class EpochAccount {
   return { rPrev, rCur: { epoch: this.current, root: this.latestRoot() }, liveEpoch: this.liveEpoch, rotatesNext };
  }
  selFor(note: EpochOwnedNote, plan: EpochAnchorPlan): 0n | 1n { return note.epoch === plan.liveEpoch ? 0n : 1n; }
- /** False once the next batch archives the note's epoch, one batch before the note leaves the window. */
+ /** False once the next batch archives the note's epoch, one batch before the note leaves the window. Without a plan it throws until the first sync has taught the account the previous epoch's root: sync first. */
  spendable(note: EpochOwnedNote, plan = this.anchorPlan()): boolean { return note.epoch >= plan.liveEpoch - 1; }
  private usable(asset: bigint, inFlight: ReadonlySet<bigint>): EpochOwnedNote[] {
   const plan = this.anchorPlan();
   return this.notes(asset).filter(n => !inFlight.has(n.nullifier) && this.spendable(n, plan));
  }
- /** What a picker may choose from, where notes() also lists the notes that need a recovery; throws as spend does when the account cannot anchor yet. */
+ /** What a picker may choose from, where notes() also lists the notes that need a recovery; throws as spend does until the first sync has taught the account the previous epoch's root, so sync first. */
  spendableNotes(asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set()): EpochOwnedNote[] { return this.usable(asset, inFlight); }
  /** consolidate's order, which renewal shares: smallest first, the notes `first` names ahead of the rest. Sorts in place. */
  private smallestFirst(notes: EpochOwnedNote[], first: (note: EpochOwnedNote) => boolean = () => false): EpochOwnedNote[] {

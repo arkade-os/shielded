@@ -6,6 +6,7 @@
 import {createHash} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {parseArgs} from 'node:util';
 import {ArkAddress,Extension,RestArkProvider,RestIndexerProvider,type Transaction} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
@@ -32,7 +33,9 @@ import {createRollupTransport} from '../src/rollup/transport.ts';
 import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,catchUpCachedBatches,epochMirrorStart,mirrorStart,replayEpochMirror} from './rollup-cache.ts';
 
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo;epochLen?:number}
-const [command,...args]=process.argv.slice(2);
+const {positionals:[command,...args],values:flags}=parseArgs({allowPositionals:true,options:{'max-batches':{type:'string'}}});
+const maxBatches=flags['max-batches']===undefined?undefined:Number(flags['max-batches']);
+if(maxBatches!==undefined&&!(maxBatches>=1))throw new Error('--max-batches wants a number of batches, at least 1.');
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const json=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
@@ -151,8 +154,7 @@ async function epochOpen(dir:string,pool:EpochPool){
  const leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json')),tree=rollupEpochPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
  if(hex.encode(tree.tree.pkScript)!==pool.script)throw new Error('The rebuilt pool script is not the pool\'s.');
  const head=await poolHead(pool),replica=await openEpochReplica({dir,hash:w.hash,epochLen:pool.epochLen,leaves}),mirrored=replica.records.length;
- if(!mirrored&&replica.state.commitment()!==head.committed)throw new Error('No mirrored batch to catch up from; mirror at least one batch while the operator is up.');
- const caught=await replica.catchUpFromChain(replica.records.at(-1)?.txid??'',head.committed,indexerBatchWalker(head.indexer));
+ const caught=await replica.catchUpFromChain(replica.records.at(-1)?.txid,head.committed,indexerBatchWalker(head.indexer),maxBatches);
  replica.records.slice(mirrored).forEach((record,i)=>cacheBatch(dir,mirrored+i,record as unknown as PublishedBatch));
  if(caught)log('caught up',caught,'withheld batches from the chain');
  const account=EpochAccount.owning(w.hash,w.keys,{epochLen:pool.epochLen,replica:true});
@@ -202,5 +204,5 @@ if(command==='mirror')await mirror(args[0]!.replace(/\/+$/,''),args[1]!);
 else if(command==='withdraw')await withdraw(args[0]!,BigInt(args[1]!),args[2]!);
 else if(command==='recover')await recover(args[0]!,Number(args[1]));
 else if(command==='publish')await publish(args[0]!,args[1]!.replace(/\/+$/,''),Number(args[2]));
-else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>');
+else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>; epoch pools: --max-batches=<n> caps the chain walk');
 await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();

@@ -39,7 +39,7 @@ export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:Po
   const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
   const account=checkpoint.epoch===epoch&&checkpoint.blocks===blocks?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt}):undefined;
   if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched))return account;
- }catch{/* a 404 (a rotating batch in flight, or the epoch closed since), a checkpoint that does not parse, or a pool that cannot confirm it now (a 429, an onBatch that threw): the replay below is always right */}
+ }catch{/* the checkpoint start is only a shortcut, so any failure confirming it (a 404, a checkpoint that does not parse, a 429, an onBatch that threw) falls back instead of rejecting: the replay start below needs none of it and is always right */}
  const start=Math.max(epoch-1,0);
  return start?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint:{epoch:start,blocks:0,filled:Array<string>(NOTE_DEPTH-SUBTREE_DEPTH).fill('0')},bornAt}):EpochAccount.owning(hash,keys,{epochLen,bornAt});
 }
