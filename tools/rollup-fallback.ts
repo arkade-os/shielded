@@ -35,7 +35,7 @@ import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,catchUpCach
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo;epochLen?:number}
 const {positionals:[command,...args],values:flags}=parseArgs({allowPositionals:true,options:{'max-batches':{type:'string'}}});
 const maxBatches=flags['max-batches']===undefined?undefined:Number(flags['max-batches']);
-if(maxBatches!==undefined&&!(maxBatches>=1))throw new Error('--max-batches wants a number of batches, at least 1.');
+if(maxBatches!==undefined&&(!Number.isSafeInteger(maxBatches)||maxBatches<1))throw new Error('--max-batches wants a positive whole number of batches.');
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 const json=<T>(path:string)=>JSON.parse(readFileSync(path,'utf8')) as T;
 const le32=(v:bigint)=>Array.from({length:32},(_,i)=>Number((v>>BigInt(8*i))&255n));
