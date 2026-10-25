@@ -7,7 +7,7 @@ import {SCAN_AFTER,SCAN_FROM,SCAN_PAGE,type ScanPage} from './sync.ts';
 
 export interface EpochBatchPage {total:number;batches:RollupEpochRecord[]}
 export type EpochOnBatch=(cursor:number,batch:RollupEpochRecord,account:EpochAccount)=>Promise<void>|void;
-const running=new WeakMap<EpochAccount,Promise<number>>();
+const running=new WeakMap<EpochAccount,Promise<unknown>>();
 
 export async function epochIdle<T>(account:EpochAccount,use:()=>T|Promise<T>):Promise<T>{
  for(;;){
@@ -17,18 +17,25 @@ export async function epochIdle<T>(account:EpochAccount,use:()=>T|Promise<T>):Pr
  }
 }
 
+/** Runs `job` as the account's only sync: a call that finds one in flight waits for it to settle, then runs against what it applied. */
+export function epochExclusive<T>(account:EpochAccount,job:()=>Promise<T>):Promise<T>{
+ const inFlight=running.get(account);
+ if(inFlight)return inFlight.then(()=>epochExclusive(account,job),()=>epochExclusive(account,job));
+ const run=job();
+ running.set(account,run);
+ return run.finally(()=>{if(running.get(account)===run)running.delete(account);});
+}
+
 /** sync.ts's catchUp on an epoch pool, single-flight per account: a skipped scan entry still rotates the account on its own count. */
 export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void,watched?:()=>Iterable<bigint>):Promise<number>{
- const inFlight=running.get(account);
- if(inFlight)return inFlight.then(()=>epochCatchUp(account,api,onBatch,onPage,watched),()=>epochCatchUp(account,api,onBatch,onPage,watched));
- const run=(async()=>{
+ return epochExclusive(account,async()=>{
   let applied=0,total=0,scanning=false,whole=!account.canSkip;
   for(;;){
    scanning=!whole&&total-account.batchCount>(scanning?SCAN_AFTER:SCAN_FROM);
    if(scanning){
     let entries:EpochScanBatch[]=[],page:ScanPage|undefined;
     try{page=await api<ScanPage>(`/scan?from=${account.batchCount}&limit=${Math.min(SCAN_PAGE,total-SCAN_AFTER-account.batchCount)}`);if(page.from===account.batchCount)entries=decodeEpochScan(base64.decode(page.data),page.from,account.epochLen);}
-    catch{/* a page that does not parse: whole pages are always right */}
+    catch(error){if(page===undefined&&(error as {status?:number})?.status!==404)throw error;/* a 404 (an older pool) or a page that does not parse: whole pages are always right; any other failed fetch is the caller's to retry */}
     if(!entries.length){whole=true;continue;}
     total=page!.total;
     for(const entry of entries){
@@ -49,7 +56,5 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
    await onPage?.(account.batchCount);
    if(account.batchCount>=page.total)return applied;
   }
- })();
- running.set(account,run);
- return run.finally(()=>{if(running.get(account)===run)running.delete(account);});
+ });
 }

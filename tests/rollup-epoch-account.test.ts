@@ -268,6 +268,18 @@ test('a join of (epoch 0, index 0) and (epoch 1, index 0) is built and admitted'
  assert.deepEqual(account.notes().map(n => [n.epoch, n.amount]), [[1, 1100n]]);
 });
 
+test('a note of an earlier epoch whose frozen path is gone is refused by name, alone or in a join', async () => {
+ const pool = epochPool(hash, 2), account = alice(2);
+ pool.land('spend', [await pool.deposit(aliceTo, 500n)]);
+ pool.land();
+ pool.land('spend', [await pool.deposit(aliceTo, 600n)]);
+ await replay(account, pool.api);
+ const lost = EpochAccount.fromSnapshot(hash, aliceKeys, { ...account.snapshot(), frozen: [] }, 2), [old, live] = lost.notes();
+ assert.ok(opens(hash, account.owner, await account.spend({ input: old! }, aliceTo), [old!]), 'the intact account spends the same note');
+ await assert.rejects(lost.spend({ input: old! }, aliceTo), /That note has no frozen path/);
+ await assert.rejects(lost.join([live!, old!], aliceTo), /That note has no frozen path/);
+});
+
 test('pay, consolidate, depositAsset and withdrawAsset build spends the pool admits, across a rotation', async () => {
  const pool = epochPool(hash, 4), account = alice(4), program = new Uint8Array(32).fill(0xab);
  const land = async (spends: EpochBuiltSpend[]) => { pool.land(spends[0]!.slot.nullifiers.length === 2 ? 'join' : 'spend', spends.map(posted)); await replay(account, pool.api); };

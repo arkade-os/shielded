@@ -241,6 +241,7 @@ export class EpochAccount {
   const plan = this.anchorPlan(), owned = request.inputs ?? (request.input ? [request.input] : []);
   if (!owned.every(n => this.spendable(n, plan))) throw new Error('That note is off the fast path; it needs a recovery.');
   const paths = owned.map(n => (n.epoch === this.current ? this.frontier.path(n.index) : this.frozenPath(n)));
+  if (paths.some(path => !path)) throw new Error('That note has no frozen path; replay the epoch it came from.');
   return epochTransfer(this.hash, { rPrev: plan.rPrev, rCur: plan.rCur, sel: owned.map(n => this.selFor(n, plan)), ask: this.keys.ask, nk: this.keys.nk, self, request, paths, ...(group ? { group } : {}) }, random);
  }
  join(inputs: [EpochOwnedNote, EpochOwnedNote], self: RollupRecipient, to?: SpendRequest['to']): Promise<EpochBuiltSpend> {

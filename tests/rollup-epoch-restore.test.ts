@@ -202,6 +202,32 @@ test('epochCatchUp sets aside a scan page that answers another from, and replays
  assert.deepEqual(account.notes().map(n => [n.epoch, n.amount]), [[0, 400n], [1, 700n], [2, 250n], [2, 600n]]);
 });
 
+test('epochCatchUp surfaces a failed /scan to its caller instead of replaying whole pages, and a retry resumes', async () => {
+ const pool = await longPool();
+ for (const status of [429, 503, undefined]) {
+  const account = alice(LONG), failure = Object.assign(new Error('The pool did not answer.'), status === undefined ? {} : { status });
+  const { asked, api } = logged(((path: string, ...rest: [unknown?, (() => void)?]) => path.startsWith('/scan') ? Promise.reject(failure) : pool.api(path, ...rest)) as PoolApi);
+  await assert.rejects(epochCatchUp(account, api), failure);
+  assert.deepEqual(asked.filter(p => !p.startsWith('/scan')), ['/batches?from=0&limit=50'], `${status ?? 'no status'}: no whole-page replay`);
+  assert.ok(await epochMatchesPool(account, pool.api), `${status ?? 'no status'}: the retry finishes the sync`);
+ }
+});
+
+test('epochCatchUp replays whole pages when /scan is not served or its page does not decode', async () => {
+ const pool = await longPool(), page = await pool.api<{ data: string }>('/scan?from=50&limit=270');
+ const replies: [string, () => Promise<unknown>][] = [
+  ['404', () => Promise.reject(Object.assign(new Error('Not found'), { status: 404 }))],
+  ['truncated page', () => Promise.resolve({ ...page, data: page.data.slice(0, -4) })],
+  ['not base64', () => Promise.resolve({ ...page, data: '!!' })],
+ ];
+ for (const [label, reply] of replies) {
+  const account = alice(LONG), { asked, api } = logged(((path: string, ...rest: [unknown?, (() => void)?]) => path.startsWith('/scan') ? reply() : pool.api(path, ...rest)) as PoolApi);
+  assert.equal(await epochCatchUp(account, api), 3 * LONG, label);
+  assert.deepEqual(asked.filter(p => p.startsWith('/scan')), ['/scan?from=50&limit=270'], `${label}: asked once`);
+  assert.ok(await epochMatchesPool(account, pool.api), label);
+ }
+});
+
 test('a checkpoint start that cannot be confirmed falls back to a replay start instead of rejecting', async () => {
  const pool = await longPool(), bornAt = 5 * 64;
  const down = (error: Error) => ((path: string, ...rest: [unknown?, (() => void)?]) => path.startsWith('/batches') ? Promise.reject(error) : pool.api(path, ...rest)) as PoolApi;

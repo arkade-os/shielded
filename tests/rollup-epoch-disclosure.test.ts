@@ -5,7 +5,7 @@ import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
 import { revealLinkOf } from '../src/shielded/activity.ts';
 import { epochIncomingNotes, epochRevealLinkOf } from '../src/shielded/epoch-disclosure.ts';
 import { epochSyncAccount } from '../src/shielded/epoch-pool.ts';
-import type { EpochBatchPage } from '../src/shielded/epoch-sync.ts';
+import { epochCatchUp, type EpochBatchPage } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi } from '../src/shielded/pool.ts';
 import type { SentRecord } from '../src/shielded/repository.ts';
 import type { HistoryEntry } from '../packages/protocol/src/rollup/account.ts';
@@ -149,4 +149,13 @@ test('epochSyncAccount pages through /batches from the account\'s own count and 
  const overstated = fresh(aliceKeys);
  await epochSyncAccount(overstated, paged(5));
  assert.deepEqual([overstated.batchCount, asked.splice(0)], [11, [0, 3, 6, 9, 11]], 'a total beyond what the pool serves');
+});
+
+test('two syncs of one account that overlap apply each batch once, whichever two they are', async () => {
+ const { pool } = await world(), syncs = [epochSyncAccount, epochCatchUp];
+ for (const first of syncs) for (const second of syncs) {
+  const account = fresh(aliceKeys);
+  await Promise.all([first(account, pool.api), second(account, pool.api)]);
+  assert.deepEqual([account.batchCount, account.latestRoot()], [pool.records.length, pool.state.latestRoot()], `${first.name} then ${second.name}`);
+ }
 });
