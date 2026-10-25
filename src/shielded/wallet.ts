@@ -1,7 +1,7 @@
 import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type Identity,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
-import {EpochAccount,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupEpochRecord} from '../rollup/epoch-operator.ts';
 import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
@@ -12,9 +12,10 @@ import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipien
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2,parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
-import {bearerAccount,bearerKeysOf,bearerOf,claimSpends,linkOf,type LinkRecord} from './bearer.ts';
-import {epochFreshAccount} from './epoch-checkpoint.ts';
+import {bearerAccount,bearerKeysOf,bearerOf,linkOf,type LinkRecord} from './bearer.ts';
+import {epochFreshAccount,epochMatchesPool} from './epoch-checkpoint.ts';
 import {epochTransferBody} from './epoch-pool.ts';
+import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
 import {epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {PrivateLightningService} from './lightning-wallet.ts';
@@ -23,7 +24,7 @@ import {lightningRails} from './lightning.ts';
 import {sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
 import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
-import type {SentRecord,ShieldedNoteRepository} from './repository.ts';
+import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 import {WATCHDOG_MS,catchUpAfterEvent} from './sync.ts';
 
@@ -57,19 +58,36 @@ export interface LoadedAccount {account:EpochAccount;sent:Record<string,SentReco
 export type LinkState='unclaimed'|'claimed'|'taken-back';
 export interface ClaimLink extends LinkRecord {token:string;state:LinkState}
 const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
-/** Never throws: a cache that cannot be read is a full sync, reported once, not a wallet that will not open. */
-export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>}):Promise<LoadedAccount>{
- const fresh=async(error?:string):Promise<LoadedAccount>=>({account:o.api?await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched):EpochAccount.owning(hash,keys,{epochLen:o.epochLen,bornAt:o.bornAt}),sent:{},listings:[],links:[],resumed:false,...(error?{error}:{})});
+/**
+ * An unreadable cache or an unreachable pool still opens, reported once. Throws when the pool contradicts a saved epoch's root, or
+ * names no epoch length to open with. `links` receives the saved links before the pool check replays batches through the hooks.
+ */
+export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>}):Promise<LoadedAccount>{
+ const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,...(error?{error}:{})});
+ const unsynced=(cause:unknown)=>{if(!o.epochLen)throw cause;return EpochAccount.owning(hash,keys,{epochLen:o.epochLen,bornAt:o.bornAt});};
+ const fresh=async(error?:string):Promise<LoadedAccount>=>{
+  if(!o.api)return opened(unsynced(new Error('That pool is not an open epoch pool.')),error);
+  try{return opened(await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched),error);}
+  catch(cause){return opened(unsynced(cause),`Opened without the pool, so the wallet is empty until it syncs: ${reasonOf(cause)}`);}
+ };
  if(!o.repository)return fresh();
+ let stored:ShieldedSnapshot,account:EpochAccount,offline:string|undefined;
  try{
-  const stored=await o.repository.getAccount(o.token);
-  if(!stored)return await fresh();
-  if(stored.v!==2)return await fresh(`Ignoring a version ${String(stored.v)} shielded snapshot; syncing from the pool.`);
-  if(stored.token!==o.token)return await fresh('Ignoring a snapshot from another pool; syncing from the pool.');
+  const found=await o.repository.getAccount(o.token);
+  if(!found)return await fresh();
+  if(found.v!==2)return await fresh(`Ignoring a version ${String(found.v)} shielded snapshot; syncing from the pool.`);
+  if(found.token!==o.token)return await fresh('Ignoring a snapshot from another pool; syncing from the pool.');
   // An older client saves no `links`, and its cursor is past the mints; replaying finds them again.
-  if(stored.links===undefined&&stored.account.history.some(e=>e.kind==='send'))return await fresh();
-  return {account:EpochAccount.fromSnapshot(hash,keys,stored.account,o.epochLen),sent:{...stored.sent},listings:[...(stored.listings??[])],links:[...(stored.links??[])],resumed:true};
+  if(found.links===undefined&&found.account.history.some(e=>e.kind==='send'))return await fresh();
+  let epochLen=o.epochLen;
+  if(o.api)try{epochLen=(await o.api<RollupPoolStatus>('/status')).pool?.epochLen;}
+  catch(cause){epochLen=found.account.epochLen;offline=`Opened without the pool, so the saved notes are unchecked: ${reasonOf(cause)}`;}
+  account=EpochAccount.fromSnapshot(hash,keys,found.account,epochLen??0);stored=found;
  }catch(error){return fresh(reasonOf(error));}
+ for(const link of stored.links??[])o.links?.set(link.key,link);
+ // loadEpochAccount's check: a previous-epoch root the pool contradicts throws, where a quiet replay would hide the drift.
+ if(o.api&&!offline&&!await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched)){o.links?.clear();return fresh('The saved wallet does not match the pool; syncing from the pool.');}
+ return opened(account,offline,stored);
 }
 
 export const SHIELD_FLOOR_MS=25*3600_000,RETRY_MS=60_000,MERGE_WAIT_MS=10*60_000;
@@ -148,7 +166,7 @@ export class ShieldedWallet extends Wallet {
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
    wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;wallet.master=parseMasterSecret(config.secret);
    // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
-   const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,epochLen:config.pool.status.pool!.epochLen!,bornAt:config.bornAt??0,api:wallet.api,onBatch:(cursor,batch,account)=>wallet.watchLinks(cursor-1,batch,account),watched:()=>wallet.openLinkNullifiers()});
+   const loaded=await loadAccount(config.hash,wallet.derived.keys,{repository:config.shieldedRepository,token:wallet.token,epochLen:config.pool.status.pool!.epochLen,bornAt:config.bornAt??0,api:wallet.api,onBatch:(cursor,batch,account)=>wallet.watchLinks(cursor-1,batch,account),watched:()=>wallet.openLinkNullifiers(),links:wallet.linkRecords});
    wallet.account=loaded.account;wallet.sent=loaded.sent;wallet.resumed=loaded.resumed;wallet.repositoryError=loaded.error;
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    for(const txid of loaded.listings)wallet.listings.add(txid);
@@ -171,6 +189,12 @@ export class ShieldedWallet extends Wallet {
  }
  shieldedBalance(asset=BTC_ASSET):bigint{return this.account.balance(asset);}
  shieldedNotes(asset=BTC_ASSET):EpochOwnedNote[]{return this.account.notes(asset);}
+ /** Held notes that only a recovery reaches: in the balance, never spendable. None until the account can anchor. */
+ get recovering():EpochOwnedNote[]{
+  let plan:EpochAnchorPlan;
+  try{plan=this.account.anchorPlan();}catch{return [];}
+  return this.mergeableAssets().flatMap(asset=>this.account.notes(asset)).filter(n=>needsRecovery(n,plan));
+ }
  shieldedHistory():readonly EpochHistoryEntry[]{return this.account.history;}
  override async getTransactionHistory():Promise<ArkTransaction[]>{
   const sdk=await super.getTransactionHistory();
@@ -235,14 +259,37 @@ export class ShieldedWallet extends Wallet {
  /** The safety net behind the stream: refresh the pool, catch up, then start anything waiting. Never awaits a batch. */
  private async tick():Promise<void>{
   if(this.stopped)return;
-  try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;await this.sync();}
+  let atHead=false;
+  try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;await this.sync();atHead=true;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(this.operatorDown&&this.headExpiry===undefined)this.headExpiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;}
   void this.autoShield().catch(()=>{});
   void this.merge().catch(()=>{});
+  // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
+  if(atHead){void this.renewNotes().catch(()=>{});void this.recoverNotes().catch(()=>{});}
   this.changed();
   if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
  }
+ /** One renewal plan at a time, over every held asset; epochIdle keeps a replay from moving the window the targets are drawn in. */
+ private async renewNotes(){
+  const chosen=await this.notes.pick(async()=>{
+   for(const asset of this.mergeableAssets()){
+    const plan=await epochIdle(this.account,()=>this.account.renewalDue({inFlight:this.notes.inFlight,asset}));
+    if(plan)return {nullifiers:plan.due.map(n=>n.nullifier),built:await this.account.renew(plan,this.self)};
+   }
+   return undefined;
+  },chosen=>chosen?.nullifiers??[]);
+  if(chosen)this.upkeep(chosen.nullifiers,chosen.built);
+ }
+ private async recoverNotes(){
+  const chosen=await this.notes.pick(async()=>{
+   const note=this.recovering.find(n=>!this.notes.inFlight.has(n.nullifier));
+   return note&&{nullifiers:[note.nullifier],built:await this.account.recover(note,this.self)};
+  },chosen=>chosen?.nullifiers??[]);
+  if(chosen)this.upkeep(chosen.nullifiers,chosen.built);
+ }
+ /** Not announced: its notes show in flight, and a recovery shows as the one recovering line. */
+ private upkeep(nullifiers:bigint[],built:EpochBuiltSpend){this.hold(nullifiers,{settled:()=>this.submit([{built}],()=>{},MERGE_WAIT_MS)});this.changed();}
  async sync():Promise<number>{
   const applied=await epochCatchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save(),()=>this.openLinkNullifiers());
   if(applied)this.changed();
@@ -274,10 +321,10 @@ export class ShieldedWallet extends Wallet {
    step(0);this.assertOpen();
    if(amount<=0n)throw new Error('A claim link needs an amount above zero.');
    const bearer=(nullifier:bigint)=>{const keys=bearerKeysOf(bearerOf(this.master,nullifier));return rollupRecipientOf(this.hash,keys.ask,keys.nk,keys.viewSecret);};
-   const {spends}=await this.notes.pick(()=>this.account.pay(bearer,amount,this.self,this.notes.inFlight,asset?assetFieldOfId(asset):BTC_ASSET,{join:this.prover.joinReady?.()??false}),
-    chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
+   const legs=(inFlight:ReadonlySet<bigint>)=>this.account.pay(bearer,amount,this.self,inFlight,asset?assetFieldOfId(asset):BTC_ASSET,{join:this.prover.joinReady?.()??false});
+   const {spends}=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
    held.push(...spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
-   return this.submit(spends.map(built=>({built})),step);
+   return this.submit(spends.map(built=>({built})),step,undefined,async()=>(await legs(this.others(held))).spends.map(built=>({built})));
   });
   this.hold(held,handle);
   return this.announce(handle);
@@ -293,10 +340,14 @@ export class ShieldedWallet extends Wallet {
   const {decoded,mine}=this.mine(token);
   const handle=shieldedHandle({title:mine?'Taking back a link':'Claiming a link',steps:shieldedSteps.claim,railId:'shielded-claim'},async step=>{
    step(0);this.assertOpen();
-   const link=await bearerAccount(this.hash,decoded,this.api,this.mergeableAssets());
-   if(!link.notes.length)throw new Error('This link is empty or already claimed.');
-   const spends=await claimSpends(this.hash,link,this.self);this.assertOpen();
-   try{return await this.submit(spends.map(built=>({built})),step);}
+   const claim=async()=>{
+    const link=await bearerAccount(this.hash,decoded,this.api,this.mergeableAssets());
+    if(!link.notes.length)throw new Error('This link is empty or already claimed.');
+    const spends=await claimRecovery(this.hash,link,this.self);this.assertOpen();
+    return spends.map(built=>({built}));
+   };
+   const members=await claim();
+   try{return await this.submit(members,step,undefined,claim);}
    // A racing claim of the same notes carries the same group id, so the pool may refuse it as a full group instead.
    catch(error){throw rejected(error,'double-spend')||rejected(error,'group-invalid')?new Error('Someone claimed this link first, or an earlier claim of it is still pending.'):error;}
   });
@@ -376,7 +427,7 @@ export class ShieldedWallet extends Wallet {
   if(address.hrp!==pool.hrp||hex.encode(address.serverPubKey)!==hex.encode(pool.serverPubKey))throw new Error('The Lightning HTLC belongs to another Arkade server.');
   const destination=address.encode(),program=address.pkScript.subarray(2);
   const record=await this.prepareLightning({id,reference:paymentHash,kind:'fund',paymentHash,destination,amount:String(amount),...(expiresAt!==undefined?{expiresAt}:{})},store,async()=>{
-   const input=pickNote(this.account.notes(),amount,this.notes.inFlight) as EpochOwnedNote|undefined;
+   const input=pickNote(this.account.spendableNotes(),amount,this.notes.inFlight);
    if(!input)throw new Error('No single pool note covers the full Lightning payment.');
    return {built:await this.account.spend({input,withdraw:amount,program},this.self),extra:{program}};
   });
@@ -403,16 +454,26 @@ export class ShieldedWallet extends Wallet {
   return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS});
  }
  private deps():SubmitDeps{return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript};}
- private async submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs=30*60_000){
+ /** Every held note but `mine`, as an in-flight set: a rebuild can then choose only the notes its action already holds. */
+ private others(mine:readonly bigint[]){return new Set(this.mergeableAssets().flatMap(asset=>this.account.notes(asset)).map(n=>n.nullifier).filter(nf=>!mine.includes(nf)));}
+ private async submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs=30*60_000,rebuild?:()=>Promise<SubmitMember[]>){
   const unresolved=new Set<string>();
   const api:PoolApi=async<T,>(path:string,body?:unknown)=>{
-   if(path==='/spends'){this.assertOpen();unresolved.add((body as {id:string}).id);}
-   const result=await this.api<T>(path,body);
+   const id=path==='/spends'?(body as {id:string}).id:undefined;
+   if(id!==undefined){this.assertOpen();unresolved.add(id);}
+   // The pool refuses a stale anchor before admitting the spend, so it holds nothing.
+   const result=await this.api<T>(path,body).catch((error:unknown)=>{if(id!==undefined&&rejected(error,'stale-anchor'))unresolved.delete(id);throw error;});
    if(body===undefined&&path.startsWith('/spends/')&&(result as SpendStatus).status==='dropped')unresolved.delete(path.slice('/spends/'.length));
    return result;
   };
-  try{return await this.finish(await submitAll(members,{...this.deps(),api,step,first:1,deadlineMs}));}
-  catch(error){throw new ReservationFailure(error,unresolved.size===0);}
+  try{
+   for(;;)try{return await this.finish(await submitAll(members,{...this.deps(),api,step,first:1,deadlineMs}));}
+   catch(error){
+    // Nothing was admitted. Legs built across a sync hold two anchors, so all are rebuilt, once; re-signing one would loop.
+    if(!rebuild||unresolved.size||!rejected(error,'stale-anchor'))throw error;
+    const again=rebuild;rebuild=undefined;await this.sync();members=await again();
+   }
+  }catch(error){throw new ReservationFailure(error,unresolved.size===0);}
  }
  /** One place where a dropped spend becomes an error and a landed one triggers sync. */
  private async finish(final:SpendStatus){
@@ -420,7 +481,7 @@ export class ShieldedWallet extends Wallet {
   await this.sync();
   return {...(final.txid?{txid:final.txid}:{})};
  }
- private hold(nullifiers:readonly bigint[],handle:ShieldedPaymentHandle,onFail?:()=>void){
+ private hold(nullifiers:readonly bigint[],handle:{settled():Promise<unknown>},onFail?:()=>void){
   const release=()=>{this.notes.release(nullifiers);this.changed();};
   void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
@@ -466,8 +527,8 @@ export class ShieldedWallet extends Wallet {
    step(0);
    if(plan.kind==='asset'){
     const coin=await this.depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units},plan.coin.vout);
-    const [assetSlot,btcSlot]=await this.account.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),this.self);
-    return this.submit([{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}],step);
+    const legs=async()=>{const [assetSlot,btcSlot]=await this.account.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),this.self);return [{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}];};
+    return this.submit(await legs(),step,undefined,legs);
    }
    const single=plan.coins.length===1?plan.coins[0]!:undefined;
    let txid=single?.txid;
@@ -486,7 +547,8 @@ export class ShieldedWallet extends Wallet {
    }
    const coin=await this.depositCoin(txid!,plan.amount,undefined,single?.vout);
    const outpoint=`${coin.txid}:${coin.vout}`;this.used.add(outpoint);taken.push(outpoint);
-   return this.submit([{built:await this.account.spend({deposit:BigInt(plan.amount)},this.self),extra:{coin},coin}],step);
+   const deposit=async()=>[{built:await this.account.spend({deposit:BigInt(plan.amount)},this.self),extra:{coin},coin}];
+   return this.submit(await deposit(),step,undefined,deposit);
   });
   void handle.settled().catch(error=>{
    if(canRelease(error)){for(const outpoint of taken)this.used.delete(outpoint);for(const txid of sentTxids)this.usedTxids.delete(txid);}
@@ -521,11 +583,11 @@ export class ShieldedWallet extends Wallet {
   this.listings.add(txid);await this.persist();this.changed();
   return txid;
  }
- maxPrivatePayment(asset=BTC_ASSET){return topThree(this.account.notes(asset).filter(n=>!this.notes.inFlight.has(n.nullifier)));}
+ maxPrivatePayment(asset=BTC_ASSET){return topThree(this.account.spendableNotes(asset,this.notes.inFlight));}
  canWithdraw(amount:bigint,opts:{asset?:string;sats?:bigint}={}){
   try{
    const field=opts.asset?assetFieldOfId(opts.asset):BTC_ASSET;
-   return coversWithdrawal(this.account.notes(field),this.account.notes(BTC_ASSET),amount,this.notes.inFlight,!!opts.asset,opts.sats??BigInt(DUST));
+   return coversWithdrawal(this.account.spendableNotes(field),this.account.spendableNotes(BTC_ASSET),amount,this.notes.inFlight,!!opts.asset,opts.sats??BigInt(DUST));
   }catch{return false;}
  }
  async pay(to:string,amount:bigint,asset?:string):Promise<ShieldedPaymentHandle>{
@@ -533,12 +595,16 @@ export class ShieldedWallet extends Wallet {
   const handle=shieldedHandle({title:'Sending privately',steps:shieldedSteps.send,railId:'shielded'},async step=>{
    step(0);this.assertOpen();
    const recipient=parseRollupAddress(to),field=asset?assetFieldOfId(asset):BTC_ASSET;
-   const {spends}=await this.notes.pick(()=>this.account.pay(recipient,amount,this.self,this.notes.inFlight,field,{join:this.prover.joinReady?.()??false}),
-    chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
-   held.push(...spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
-   this.recordSent(spends.map(s=>{const note=sentNoteOf(this.hash,s);return [s.witness.slot.nullifiers[0]!,{to,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}] as [bigint,SentRecord];}));
-   await this.persist();
-   return this.submit(spends.map(built=>({built})),step);
+   const legs=(inFlight:ReadonlySet<bigint>)=>this.account.pay(recipient,amount,this.self,inFlight,field,{join:this.prover.joinReady?.()??false});
+   // A rebuilt leg pays with a new rho, so its sent record is written again.
+   const recorded=async({spends}:{spends:EpochBuiltSpend[]})=>{
+    this.recordSent(spends.map(s=>{const note=sentNoteOf(this.hash,s);return [s.witness.slot.nullifiers[0]!,{to,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}] as [bigint,SentRecord];}));
+    await this.persist();
+    return spends.map(built=>({built}));
+   };
+   const chosen=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
+   held.push(...chosen.spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
+   return this.submit(await recorded(chosen),step,undefined,async()=>recorded(await legs(this.others(held))));
   });
   this.hold(held,handle);
   return this.announce(handle);
@@ -549,20 +615,21 @@ export class ShieldedWallet extends Wallet {
   const handle=shieldedHandle({title:'Withdrawing',steps:shieldedSteps.withdraw,railId:'shielded-withdraw'},async step=>{
    step(0);this.assertOpen();
    const program=programOf(to);
-   const members=await this.notes.pick(async()=>{
+   const legs=async(inFlight:ReadonlySet<bigint>)=>{
     if(opts.asset){
-     const [payout,carrier]=await this.account.withdrawAsset(assetFieldOfId(opts.asset),amount,program,this.self,this.notes.inFlight,opts.sats??BigInt(DUST));
+     const [payout,carrier]=await this.account.withdrawAsset(assetFieldOfId(opts.asset),amount,program,this.self,inFlight,opts.sats??BigInt(DUST));
      return [{built:payout,extra:{program,asset:opts.asset}},{built:carrier,extra:{program}}] as SubmitMember[];
     }
     if(amount<BigInt(DUST))throw new Error(`Withdraw at least ${DUST} sats.`);
-    const input=pickNote(this.account.notes(),amount,this.notes.inFlight) as EpochOwnedNote|undefined;
+    const input=pickNote(this.account.spendableNotes(),amount,inFlight);
     if(!input)throw new Error('No single note covers this amount.');
     return [{built:await this.account.spend({input,withdraw:amount,program},this.self),extra:{program}}] as SubmitMember[];
-   },chosen=>chosen.flatMap(m=>m.built.witness.slot.nullifiers));
+   };
+   const members=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.flatMap(m=>m.built.witness.slot.nullifiers));
    held.push(...members.flatMap(m=>m.built.witness.slot.nullifiers));this.assertOpen();
    this.recordSent(members.map(m=>[m.built.witness.slot.nullifiers[0]!,{to}] as [bigint,SentRecord]));
    await this.persist();
-   return this.submit(members,step);
+   return this.submit(members,step,undefined,()=>legs(this.others(held)));
   });
   this.hold(held,handle);
   return handle;

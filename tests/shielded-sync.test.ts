@@ -3,10 +3,14 @@ import {test} from 'node:test';
 import {buildPoseidon} from 'circomlibjs';
 import type {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
+import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
+import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import type {PoolApi} from '../src/shielded/pool.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {catchUp,catchUpAfterEvent,idle,WATCHDOG_MS} from '../src/shielded/sync.ts';
 import {loadAccount} from '../src/shielded/wallet.ts';
+import {epochPool} from './fixtures/epoch-pool.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const aliceKeys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),bobKeys=deriveRollupKeys2('22'.repeat(32),'mutinynet'),epochLen=64;
@@ -63,6 +67,36 @@ test('a wallet with no repository at all still gets a fresh account',async()=>{
  assert.equal(loaded.resumed,false);
  assert.ok(loaded.account instanceof EpochAccount);
  assert.equal(loaded.error,undefined);
+});
+
+/** Alice's account caught up on a 4-batch pool that has rotated once, and a repository holding `account` as its snapshot. */
+const rotated=async()=>{
+ const pool=epochPool(hash,4),account=EpochAccount.owning(hash,aliceKeys,{epochLen:4});
+ for(let n=0;n<6;n++)pool.land('spend',n===1?[await pool.deposit(rollupRecipientOf(hash,aliceKeys.ask,aliceKeys.nk,aliceKeys.viewSecret),500n)]:[]);
+ await epochCatchUp(account,pool.api);
+ const saving=async(snapshot=account.snapshot())=>{const repository=new InMemoryShieldedNoteRepository();await repository.saveAccount('g2',{v:2,token:'g2',account:snapshot,sent:{'7':{to:'shrol21abc'}},listings:[]});return repository;};
+ return {pool,account,saving};
+};
+
+test('online, a snapshot the pool confirms resumes, and one whose root it refutes syncs from the pool',async()=>{
+ const {pool,account,saving}=await rotated(),asked:string[]=[],api=((path:string)=>{asked.push(path);return pool.api(path);}) as PoolApi;
+ const resumed=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',epochLen:4,bornAt:0,api});
+ assert.deepEqual([resumed.resumed,resumed.error,resumed.account.batchCount,resumed.sent['7']?.to,asked],[true,undefined,6,'shrol21abc',['/status','/batches?from=6&limit=50','/status']]);
+ const refuted=await loadAccount(hash,aliceKeys,{repository:await saving({...account.snapshot(),frontier:{...account.snapshot().frontier,top:'1'}}),token:'g2',epochLen:4,bornAt:0,api:pool.api});
+ assert.deepEqual([refuted.resumed,refuted.error,refuted.sent],[false,'The saved wallet does not match the pool; syncing from the pool.',{}]);
+});
+
+test('online, a snapshot whose previous-epoch root drifted fails loudly rather than resyncing',async()=>{
+ const {pool,account,saving}=await rotated();
+ const repository=await saving({...account.snapshot(),prevNoteRoot:String(account.prevNoteRoot()!+1n)});
+ await assert.rejects(loadAccount(hash,aliceKeys,{repository,token:'g2',epochLen:4,bornAt:0,api:pool.api}),/drifted across a rotation/);
+});
+
+test('offline, a snapshot opens unchecked on its own epoch length, and says so',async()=>{
+ const {saving}=await rotated(),down=(async()=>{throw new Error('The pool did not answer (network error).');}) as PoolApi;
+ const loaded=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',bornAt:0,api:down});
+ assert.deepEqual([loaded.resumed,loaded.account.batchCount,loaded.account.epochLen,loaded.sent['7']?.to],[true,6,4,'shrol21abc']);
+ assert.match(loaded.error!,/did not answer/);
 });
 
 const pageOf=(batches:{txid:string}[],from:number,limit:number)=>({total:batches.length,batches:batches.slice(from,from+limit)});

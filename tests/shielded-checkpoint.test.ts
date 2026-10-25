@@ -65,5 +65,5 @@ test('a new wallet without a snapshot starts from the checkpoint; one with a sna
  await repository.saveAccount('g2',{v:2,token:'g2',account:fresh.account.snapshot(),sent:{},listings:[]});
  asked.length=0;
  const resumed=await loadAccount(hash,keys,{repository,token:'g2',epochLen:256,bornAt:130,api});
- assert.deepEqual([resumed.resumed,resumed.account.batchCount,asked],[true,140,[]]);
+ assert.deepEqual([resumed.resumed,resumed.account.batchCount,asked],[true,140,['/status','/batches?from=140&limit=50','/status']],'checked against the pool, with no checkpoint and no replay');
 });

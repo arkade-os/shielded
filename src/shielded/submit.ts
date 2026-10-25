@@ -1,6 +1,6 @@
 import type {Identity} from '@arkade-os/sdk';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
-import {epochTransferBody} from './epoch-pool.ts';
+import {epochTransferBody,type EpochSpendBody} from './epoch-pool.ts';
 import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus} from './pool.ts';
 import type {ShieldedProver} from './wallet.ts';
 
@@ -15,7 +15,7 @@ export async function submitAll(members:SubmitMember[],o:SubmitDeps&{step:(n:num
  const proofs=[];for(const m of members)proofs.push(await o.prover.prove(m.built,m.built.witness.slot.nullifiers.length===2?'join':'spend'));
  o.step(o.first+1);
  const ids:string[]=[];
- for(const [i,m] of members.entries()){const id=randomSubmissionId();await o.api('/spends',epochTransferBody(id,m.built,proofs[i]!,m.extra));ids.push(id);}
+ for(const [i,m] of members.entries()){const id=randomSubmissionId(),body:EpochSpendBody=epochTransferBody(id,m.built,proofs[i]!,m.extra);await o.api('/spends',body);ids.push(id);}
  o.step(o.first+2);
  const finals=await Promise.all(ids.map((id,i)=>waitForSpend(id,async request=>{
   const coin=members[i]!.coin;if(!coin)throw new Error('The pool asked to sign a spend with no deposit coin.');

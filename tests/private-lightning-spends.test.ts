@@ -34,14 +34,15 @@ class Store implements LightningSpendStore {
  }
  async finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string}){const r=(await this.get(owner,pool,id))!;this.rows.set(id,{...r,...result});}
 }
-async function open(store:LightningSpendStore,repository=new InMemoryShieldedNoteRepository(),p=prover){
+/** `head` is the pool the fetcher serves, so a reopened wallet can meet the batch and root its snapshot saved. */
+async function open(store:LightningSpendStore,repository=new InMemoryShieldedNoteRepository(),p=prover,head={batches:0,root:genesis!.root}){
  return ShieldedWallet.create({identity:SingleKey.fromHex('11'.repeat(32)),walletMode:'static',settlementConfig:false,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
   arkProvider:{serverUrl:'https://mutinynet.arkade.sh',getInfo:async()=>info} as never,
   indexerProvider:{getVtxos:async()=>({vtxos:[]}),getVirtualTxs:async()=>({txs:[]}),subscribeForScripts:async()=>'sub',getSubscription:async function*(){},unsubscribeForScripts:async()=>{}} as never,
   onchainProvider:{getCoins:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never,
   pool:{origin:'',status},secret:'11'.repeat(32),hash,prover:p,shieldedRepository:repository,lightningSpendStore:store,
-  fetcher:(async(url:string)=>new Response(JSON.stringify(url.endsWith('/status')?status:{total:0,batches:[]}))) as unknown as typeof fetch});
+  fetcher:(async(url:string)=>new Response(JSON.stringify(url.endsWith('/status')?{...status,pool:{...status.pool!,...head}}:{total:head.batches,batches:[]}))) as unknown as typeof fetch});
 }
 async function fund(wallet:ShieldedWallet,amounts=[900n]){const deposits=await Promise.all(amounts.map(deposit=>wallet.account.spend({deposit},wallet.self)));await wallet.account.apply(epochPool(hash,EPOCH_LEN).land('spend',deposits.map(posted)));await wallet.save();}
 const missing=()=>Object.assign(new Error('Unknown spend after restart.'),{status:404});
@@ -79,8 +80,9 @@ test('a lost response and reload retain reservations and replay the same proof, 
   wallet.api=(async(path:string)=>{if(path.startsWith('/spends/'))throw missing();throw new Error('response lost');}) as PoolApi;
   await assert.rejects(wallet.fundLightning('lost',PAYMENT,destination,700n,store),/response lost/);
   saved=clone(store.rows.get('lost')!);assert.equal(wallet.inFlight.has(BigInt(saved.nullifiers[0]!)),true);
-  await wallet.dispose();wallet=await open(store,repository,p);
-  assert.equal(wallet.inFlight.has(BigInt(saved.nullifiers[0]!)),true);assert.equal(wallet.canWithdraw(700n),false);
+  const head={batches:1,root:String(wallet.account.latestRoot())};
+  await wallet.dispose();wallet=await open(store,repository,p,head);
+  assert.equal(wallet.resumed,true);assert.equal(wallet.inFlight.has(BigInt(saved.nullifiers[0]!)),true);assert.equal(wallet.canWithdraw(700n),false);
   wallet.api=includedApi(body=>assert.deepEqual(body,saved.body));
   assert.equal(await wallet.fundLightning('lost',PAYMENT,destination,700n,store),TXID);assert.equal(proofs,1);
   assert.deepEqual(store.rows.get('lost')!.body,saved.body);

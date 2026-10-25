@@ -24,8 +24,8 @@ const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de000
 const POOL_SCRIPT='5120e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e';
 const POOL_ADDRESS='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mcfz88xtqfr9pxprckm7tkha23m0d0tnqzpw0r8gqtwfz8ete';
 const EPOCH_LEN=128,{pool:genesis}=await epochPool(hash,EPOCH_LEN).api<RollupPoolStatus>('/status');
-const status=(batches:number):RollupPoolStatus=>({phase:'ready',message:'',proving:{spend:{wasm:'a',zkey:'b'},join:{wasm:'c',zkey:'d'},batch:{wasm:'e',zkey:'f'},batchJoin:{wasm:'g',zkey:'h'}},
- pool:{token:TOKEN,address:POOL_ADDRESS,script:POOL_SCRIPT,batches,root:genesis!.root,head:{txid:'ab'.repeat(32),vout:0,value:1000},pending:0,padding:0,reserves:{},epoch:0,epochLen:EPOCH_LEN,prevNoteRoot:genesis!.prevNoteRoot}});
+const status=(batches:number,root=genesis!.root):RollupPoolStatus=>({phase:'ready',message:'',proving:{spend:{wasm:'a',zkey:'b'},join:{wasm:'c',zkey:'d'},batch:{wasm:'e',zkey:'f'},batchJoin:{wasm:'g',zkey:'h'}},
+ pool:{token:TOKEN,address:POOL_ADDRESS,script:POOL_SCRIPT,batches,root,head:{txid:'ab'.repeat(32),vout:0,value:1000},pending:0,padding:0,reserves:{},epoch:0,epochLen:EPOCH_LEN,prevNoteRoot:genesis!.prevNoteRoot}});
 const chainOnlyRecord=(txid:string):RollupEpochRecord=>({kind:'spend',noteBlockRoot:'0',txid,slots:Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',nullifiers:[String(s+1)],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[]}))});
 
 const prover:ShieldedProver={prove:async()=>({pi_a:[],pi_b:[],pi_c:[]})};
@@ -35,16 +35,20 @@ const indexer={getVtxos:async()=>({vtxos:[],page:undefined}),getVirtualTxs:async
 const onchain={getCoins:async()=>[],getTransactions:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never;
 
 /** Counts what the pool was asked for, so a resumed wallet can be shown not to re-read the published batches. */
-function poolFetcher(batches:number){
+function poolFetcher(batches:number,root?:string){
  const paths:string[]=[];
  const fetcher=(async(url:string)=>{
   const path=String(url).replace('/api/rollup','');
   paths.push(path);
-  const body=path==='/status'?status(batches):path.startsWith('/batches')?{total:batches,batches:[]}:{};
+  const body=path==='/status'?status(batches,root):path.startsWith('/batches')?{total:batches,batches:[]}:{};
   return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});
  }) as unknown as typeof fetch;
  return {fetcher,paths};
 }
+const fetcherOf=(api:PoolApi)=>(async(url:string)=>{
+ try{return new Response(JSON.stringify(await api(String(url).replace('/api/rollup',''))),{status:200});}
+ catch(error){return new Response(JSON.stringify({error:(error as Error).message}),{status:(error as {status?:number}).status??404});}
+}) as unknown as typeof fetch;
 const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:indexer,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
@@ -136,7 +140,7 @@ test('a second open resumes from the repository and does not re-read the publish
  const stored=await repository.getAccount(TOKEN);
  assert.ok(stored,'the snapshot is keyed by the pool token');
  assert.equal(stored!.account.v,2);
- const {fetcher,paths}=poolFetcher(0);
+ const {fetcher,paths}=poolFetcher(1,String(first.account.latestRoot()));
  const second=await open({repository,fetcher});
  try{
   assert.equal(second.resumed,true);
@@ -399,10 +403,14 @@ test('note holds survive timeouts and unknown submission failures and isolate on
   const failed=shieldedHandle({title:'test',steps:['wait','done'],railId:'test'},step=>(wallet as any).submit([{built:fakeSpend()}],step));
   (wallet as any).hold([2n],failed,()=>{throw new Error('listener');});
   await assert.rejects(failed.settled(),/unknown POST/);await flush();assert.ok(wallet.inFlight.has(2n));
-  for(const outcome of ['proof','dropped']){
+  for(const outcome of ['proof','dropped','stale-anchor']){
    wallet.notes.inFlight.add(3n);
    wallet.prover={prove:async()=>{if(outcome==='proof')throw new Error('proof');return {pi_a:[],pi_b:[],pi_c:[]};}};
-   wallet.api=(async(path:string)=>path==='/spends'?{}:{status:'dropped',reason:'dropped'}) as never;
+   wallet.api=(async(path:string)=>{
+    if(path!=='/spends')return {status:'dropped',reason:'dropped'};
+    if(outcome==='stale-anchor')throw Object.assign(new Error('stale-anchor'),{status:400,code:'stale-anchor'});
+    return {};
+   }) as never;
    const safe=shieldedHandle({title:'test',steps:['wait','done'],railId:'test'},step=>(wallet as any).submit([{built:fakeSpend()}],step));
    (wallet as any).hold([3n],safe,()=>{throw new Error('listener');});
    await assert.rejects(safe.settled(),new RegExp(outcome));await flush();assert.equal(wallet.inFlight.has(3n),false);
@@ -746,7 +754,8 @@ for(const failure of ['none','fetch','apply'] as const)test(`sync checkpoints co
    assert.ok(wallet.account.txids.has('51')&&!wallet.account.txids.has('malformed'),'the live account is past the stored page, and the rejected record left nothing in it');
    assert.ok(!stored.txids.includes('malformed'));assert.ok(!stored.txids.includes('51'));
   }
-  const reopened=await open({repository});
+  const root=EpochAccount.fromSnapshot(hash,shieldedKeysOf(hash,'11'.repeat(32)).keys,stored,EPOCH_LEN).latestRoot();
+  const reopened=await open({repository,fetcher:poolFetcher(stored.batch,String(root)).fetcher});
   try{
    assert.equal(reopened.resumed,true);assert.deepEqual(reopened.account.snapshot(),stored);
    if(failure==='none')assert.deepEqual(reopened.account.snapshot(),wallet.account.snapshot());
@@ -798,7 +807,7 @@ test('a claim link goes to whoever claims it first, and its minter sees it claim
   }
   await (await bob.claimLink(link!.token)).settled();
   const [a,b,...pads]=pool.records.at(-1)!.slots;
-  assert.ok(a!.groupSize===2&&b!.groupSize===2&&a!.groupId===b!.groupId&&a!.groupId!=='0'&&pads.every(s=>s.groupId==='0'),'bob\'s claim landed as one group, and the rest of the batch is padding');
+  assert.ok(a!.groupSize===2&&b!.groupSize===2&&a!.groupId===b!.groupId&&a!.groupId!=='0'&&pads.every(s=>s.groupId==='0'&&!s.ciphertext),'bob\'s claim landed as one group, and the rest of the batch is padding');
   assert.equal(bob.shieldedBalance(),1050n);
   await alice.sync();
   assert.equal(alice.links()[0]!.state,'claimed');
@@ -819,8 +828,8 @@ test('a minter takes an asset link back, and the phrase alone rebuilds the link 
   assert.equal(handle.title,'Taking back a link');
   await handle.settled();
   assert.deepEqual([alice.links()[0]!.state,alice.shieldedBalance(assetFieldOfId(TOKEN))],['taken-back',40n]);
-  const resumed=await open({repository});
-  try{assert.deepEqual(resumed.links().map(l=>[l.key,l.state]),[[link!.key,'taken-back']],'a resumed wallet keeps its links');}finally{await resumed.dispose();}
+  const resumed=await open({repository,fetcher:fetcherOf(pool.api)});
+  try{assert.deepEqual([resumed.resumed,resumed.links().map(l=>[l.key,l.state])],[true,[[link!.key,'taken-back']]],'a resumed wallet keeps its links');}finally{await resumed.dispose();}
   const restored=await open();restored.api=pool.api;
   try{await restored.sync();assert.deepEqual(restored.links().map(l=>[l.key,l.state,l.token]),[[link!.key,'taken-back',link!.token]]);}finally{await restored.dispose();}
  }finally{await alice.dispose();}
@@ -836,6 +845,19 @@ test('saving keeps what another tab has already seen of a link',async()=>{
   await alice.save();
   assert.deepEqual([alice.links().map(l=>l.state),(await repository.getAccount(TOKEN))!.links!.map(l=>[l.open,l.tookBack])],[['taken-back'],[[[],true]]]);
  }finally{await alice.dispose();}
+});
+
+test('a link claimed while its minter was closed shows claimed once the reopened wallet is checked against the pool',async()=>{
+ const pool=sharedPool(),repository=new InMemoryShieldedNoteRepository(),alice=await open({repository}),bob=await open({secret:'22'.repeat(32)});
+ alice.api=pool.api;bob.api=pool.api;
+ try{
+  await pool.fund(alice,[{amount:500n}]);
+  await (await alice.mintLink(100n)).settled();
+  const [link]=alice.links();await alice.dispose();
+  await (await bob.claimLink(link!.token)).settled();
+  const reopened=await open({repository,fetcher:fetcherOf(pool.api)});
+  try{assert.deepEqual([reopened.resumed,reopened.links().map(l=>l.state)],[true,['claimed']]);}finally{await reopened.dispose();}
+ }finally{await alice.dispose();await bob.dispose();}
 });
 
 test('a snapshot an older client saved without links is replayed, so the link list comes back',async()=>{
