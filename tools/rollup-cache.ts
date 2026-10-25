@@ -5,6 +5,7 @@ import {isDeepStrictEqual} from 'node:util';
 import type {Transaction} from '@arkade-os/sdk';
 import type {PublishedBatch,RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
+import {chainOnly} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {Hash} from '../packages/protocol/src/rollup/notes.ts';
 import type {RollupLeaves} from '../src/rollup/covenant.ts';
 import {epochNfArchivePath,readEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
@@ -23,10 +24,11 @@ export function mirrorStart(dir:string):number{
  // Chain-only records carry noteBlockRoot; the current API's full records omit it.
  return numbers.find(index=>read(dir,index).noteBlockRoot!==undefined)??numbers.length;
 }
-/** Every epoch record carries noteBlockRoot, so a chain-only one is marked by all-zero commitments, which no real note has. */
+/** A chain-only epoch record the pool served is final; only a placeholder the mirror's own chain walk wrote, which no pool stamps with `at`, can still be filled in. */
+const placeholder=(r:RollupEpochRecord)=>r.at===undefined&&chainOnly(r);
 export function epochMirrorStart(dir:string):number{
  const numbers=cachedBatchNumbers(dir);
- return numbers.find(index=>readEpoch(dir,index).slots.every(s=>s.commitments[0]==='0'&&s.commitments[1]==='0'))??numbers.length;
+ return numbers.find(index=>placeholder(readEpoch(dir,index)))??numbers.length;
 }
 /** The mirrored records replayed from chain data alone: the only source of the archive roots the mirror checks against. */
 export function replayEpochMirror(dir:string,hash:Hash,epochLen:number):EpochState{
@@ -53,10 +55,14 @@ export function cacheBatch(dir:string,index:number,record:PublishedBatch):void{
  let oldBytes:string|undefined;
  if(existsSync(path)){
   oldBytes=readFileSync(path,'utf8');const old=JSON.parse(oldBytes) as PublishedBatch;
-  if(isDeepStrictEqual({...old,at:undefined},{...record,at:undefined}))return;
+  // Classic full records omit noteBlockRoot, so a classic chain-only record is one that has it.
+  const epoch='anchor' in (old.slots[0]??{}),bare=(r:PublishedBatch)=>epoch?chainOnly(r as unknown as RollupEpochRecord):r.noteBlockRoot!==undefined;
+  // The chain walk's placeholder gives way to the pool's own chain-only record, which differs from it only by `at`.
+  const adopt=epoch&&placeholder(old as unknown as RollupEpochRecord)&&!placeholder(record as unknown as RollupEpochRecord);
+  if(isDeepStrictEqual({...old,at:undefined},{...record,at:undefined})&&!adopt)return;
   const matches=!!old.txid&&old.txid===record.txid&&old.kind===record.kind&&isDeepStrictEqual(old.slots.map(s=>[s.nullifiers,s.publics]),record.slots.map(s=>[s.nullifiers,s.publics]));
-  if(matches&&old.noteBlockRoot===undefined&&record.noteBlockRoot!==undefined)return;
-  if(!matches||old.noteBlockRoot===undefined||record.noteBlockRoot!==undefined)throw new Error(`Cached batch ${index} conflicts with an existing record.`);
+  if(matches&&!bare(old)&&bare(record))return;
+  if(!matches||!(bare(old)&&!bare(record)||adopt))throw new Error(`Cached batch ${index} conflicts with an existing record.`);
  }
  const bytes=JSON.stringify(record),temporary=`${path}.${randomUUID()}.tmp`;
  let descriptor:number|undefined=openSync(temporary,'wx');
