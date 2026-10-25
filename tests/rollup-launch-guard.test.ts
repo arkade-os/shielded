@@ -3,7 +3,7 @@ import {existsSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {rollupPoolKindOf} from '../src/rollup/service.ts';
-import {keySet,offline,POOL_KEYS,ready,scratch} from './fixtures/epoch-service.ts';
+import {keySet,offline,POOL_KEYS,ready,scratch,sha} from './fixtures/epoch-service.ts';
 
 const CLASSIC_REFUSAL='This directory holds a classic pool; an epoch pool needs its own data directory.';
 
@@ -56,6 +56,10 @@ test('rollupPoolKindOf accepts a number and a decimal string alike, and refuses 
  for(const epochLen of [63,'63',2**20+1,String(2**20+1),128.5,'128.5',NaN,'x',''])assert.throws(()=>rollupPoolKindOf({epochLen}),/epoch length/,String(epochLen));
  assert.deepEqual(rollupPoolKindOf({genesis:{version:1},epochLen:128}),{kind:'classic'});
  assert.deepEqual(rollupPoolKindOf({genesis:{version:2,epochLen:64},epochLen:128}),{kind:'epoch',epochLen:64});
+});
+
+test('the genesis-4 manifest is byte for byte the one the live pool will journal as its artifacts hash',()=>{
+ assert.equal(sha(readFileSync('rollup-keys/genesis-4.json')),'f37b081817d2f616366ba1798394ddd0516bfe24e102399989127c81e1862cad');
 });
 
 test('the service reads no epoch length from the environment',async()=>{
