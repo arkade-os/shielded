@@ -6,13 +6,15 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {buildRollupTransfer,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
+import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {submitAll} from '../src/shielded/submit.ts';
 import {NoteReservation,coversWithdrawal,mergeAssetFields,needsRenewal,nextShieldPlan,programOf,shieldTitle,shieldedSteps,topThree} from '../src/shielded/wallet.ts';
 
-const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>({witness:{slot:{root:7n,nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize},publicSignals:[1n,0n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1),change:0n} as unknown as BuiltSpend);
-const prover={prove:async(_b:BuiltSpend,circuit:'spend'|'join')=>({pi_a:[circuit],pi_b:[],pi_c:[]})};
+const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>{const slot={nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize};
+ return {witness:{slot:{root:7n,...slot},publicSignals:[1n,0n,0n,0n,0n],input:{}},slot:{anchor:7n,rCur:{epoch:0,root:8n},...slot},ciphertext:Uint8Array.of(1),change:0n} as unknown as EpochBuiltSpend;};
+const prover={prove:async(_b:EpochBuiltSpend,circuit:'spend'|'join')=>({pi_a:[circuit],pi_b:[],pi_c:[]})};
 const identity={sign:async(tx:Transaction)=>tx} as never;
 const POOL_SCRIPT='51'.repeat(17);
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{const t=new Transaction({allowUnknownOutputs:true});for(const i of inputs)t.addInput({txid:i.txid,index:i.index,witnessUtxo:{script:i.script,amount:1000n}});t.addOutput({script:hex.decode('0014'+'11'.repeat(20)),amount:1000n});return t;};
@@ -20,8 +22,8 @@ const deps=(api:never)=>({api,prover,identity,poolScript:POOL_SCRIPT});
 
 test('a group is proved then submitted in the order its id commits to, and every member is awaited',async()=>{
  const submitted:string[]=[],steps:number[]=[];
- const api=(async(path:string,body?:{slot?:{nullifiers:string[]}})=>{
-  if(path==='/spends'){submitted.push(body!.slot!.nullifiers[0]!);return {};}
+ const api=(async(path:string,body?:{slot?:{anchor:string;nullifiers:string[]}})=>{
+  if(path==='/spends'){assert.deepEqual([body!.slot!.anchor,'root' in body!.slot!],['7',false]);submitted.push(body!.slot!.nullifiers[0]!);return {};}
   return {status:'included',batch:4,txid:'t'};
  }) as never;
  const members=[built([11n],99n,3),built([21n],99n,3),built([31n],99n,3)].map(b=>({built:b}));

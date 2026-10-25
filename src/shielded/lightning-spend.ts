@@ -1,9 +1,10 @@
 import {ArkAddress,type Identity} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {destinationFieldOf} from '../../packages/protocol/src/rollup/notes.ts';
-import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus,type transferBody} from './pool.ts';
+import type {epochTransferBody} from './epoch-pool.ts';
+import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus} from './pool.ts';
 
-export type LightningTransferBody=ReturnType<typeof transferBody>;
+export type LightningTransferBody=ReturnType<typeof epochTransferBody>;
 export interface LightningSpendRecord {
  v:1;id:string;owner:string;pool:string;reference:string;kind:'fund'|'shield';paymentHash?:string;destination?:string;amount:string;expiresAt?:number;
  nullifiers:string[];coin?:{txid:string;vout:number;value:number;tapTree:string;leaf:string};body:LightningTransferBody;

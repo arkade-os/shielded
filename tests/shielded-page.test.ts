@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {ActivityRegistry,makeHandle,ProviderUnavailableError,TxType,Wallet,type Activity,type ArkTransaction,type RouteQuote} from '@arkade-os/sdk';
-import {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
+import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
-import {catchUp,idle} from '../src/shielded/sync.ts';
+import {epochCatchUp,epochIdle} from '../src/shielded/epoch-sync.ts';
 import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from '../app/src/shielded-page.ts';
 import * as page from '../app/src/shielded-page.ts';
 
@@ -13,7 +13,7 @@ const storageOf=()=>{
  const rows=new Map<string,string>();
  return {get length(){return rows.size;},key:(i:number)=>[...rows.keys()][i]??null,getItem:(k:string)=>rows.get(k)??null,setItem:(k:string,v:string)=>{rows.set(k,v);},removeItem:(k:string)=>{rows.delete(k);}};
 };
-const snapshot={v:1,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
+const snapshot={v:2,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
 
 test('startup retries transient creation without repeating preparation and closes the one successful wallet',async()=>{
  let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');
@@ -148,18 +148,18 @@ for(const perPage of [false,true])test(`restore waits for pending creation, ${pe
  const store=storageOf(),repo=new InMemoryShieldedNoteRepository(),cache=pageCache(repo);
  store.setItem(SECRET,'old');store.setItem(SENT,JSON.stringify({'7':{to:'recipient'}}));
  const mutable={batchCount:0,apply:async()=>{applying.resolve();await release.promise;mutable.batchCount++;events.push('applied');}};
- const account=mutable as unknown as RollupAccount;
+ const account=mutable as unknown as EpochAccount;
  const wallet={account,repositoryError:undefined as string|undefined,recordSent:()=>{},dispose:async()=>{events.push('disposed');},save:async()=>{
   try{await cache.repository.saveAccount('pool',snapshot);}catch{wallet.repositoryError='cache closed';}events.push('save returned');
  }};
  const checkpoint=()=>wallet.save();
- const syncing=catchUp(account,async()=>({total:1,batches:[{}]}) as never,perPage?undefined:checkpoint,perPage?checkpoint:undefined);
+ const syncing=epochCatchUp(account,async()=>({total:1,batches:[{}]}) as never,perPage?undefined:checkpoint,perPage?checkpoint:undefined);
  await applying.promise;let restoring=false;
  const legacy=importLegacySent(wallet,store,()=>!restoring);
  const session=openPageWallet(async()=>undefined,async()=>{await created.promise;return wallet;});await flush();
  const clear=repo.clear.bind(repo);repo.clear=async()=>{events.push('clear');await clear();};
  const restored=restorePageWallet('33'.repeat(32),{cache,storage:store,reload:()=>{events.push('reload');},stop:async()=>{
-  restoring=true;const owned=await session.close();await legacy;if(owned)await idle(owned.account,()=>undefined);
+  restoring=true;const owned=await session.close();await legacy;if(owned)await epochIdle(owned.account,()=>undefined);
  }});
  await flush();assert.deepEqual(events,[]);created.resolve();await flush();assert.deepEqual(events,['disposed']);
  assert.equal(store.getItem(SECRET),'old');release.resolve();await syncing;await restored;
@@ -170,8 +170,8 @@ for(const perPage of [false,true])test(`restore waits for pending creation, ${pe
 test('legacy migration waits for catch-up and retains its log when saving fails or restore starts',async()=>{
  const applying=deferred(),release=deferred(),storage=storageOf(),events:string[]=[];
  const mutable={batchCount:0,apply:async()=>{applying.resolve();await release.promise;mutable.batchCount++;events.push('applied');}};
- const account=mutable as unknown as RollupAccount;
- const syncing=catchUp(account,async()=>({total:1,batches:[{}]}) as never);
+ const account=mutable as unknown as EpochAccount;
+ const syncing=epochCatchUp(account,async()=>({total:1,batches:[{}]}) as never);
  await applying.promise;storage.setItem(SENT,JSON.stringify({'7':{to:'recipient'}}));
  let restoring=false;
  const wallet={account,repositoryError:undefined as string|undefined,recordSent:()=>{events.push('recorded');},save:async()=>{events.push('saved');wallet.repositoryError='storage denied';}};

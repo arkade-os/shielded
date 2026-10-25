@@ -3,13 +3,14 @@ import type { RollupEpochRecord, RollupEpochSpend } from '../../src/rollup/epoch
 import type { EpochSpendBody } from '../../src/shielded/epoch-pool.ts';
 import type { PoolApi } from '../../src/shielded/pool.ts';
 import type { ClientInput } from '../../packages/protocol/src/rollup/client.ts';
-import { CHECKPOINT_EVERY, EPOCH_SLOTS, ROLLUP_DOMAIN, type EpochBatchKind } from '../../packages/protocol/src/rollup/constants.ts';
+import { BATCH_SLOTS, CHECKPOINT_EVERY, EPOCH_SLOTS, NOTE_DEPTH, ROLLUP_DOMAIN, SUBTREE_DEPTH, type EpochBatchKind } from '../../packages/protocol/src/rollup/constants.ts';
 import { EpochState, type EpochSlot } from '../../packages/protocol/src/rollup/epoch.ts';
 import type { EpochOwnedNote } from '../../packages/protocol/src/rollup/epoch-account.ts';
 import { epochTransfer, type EpochBuiltSpend } from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import { encodeEpochScan } from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import { checkpointOf } from '../../packages/protocol/src/rollup/frontier.ts';
 import { noteOf, type Hash } from '../../packages/protocol/src/rollup/notes.ts';
+import { DeepTree } from '../../packages/protocol/src/rollup/tree.ts';
 import type { RollupRecipient } from '../../packages/protocol/src/rollup/wallet.ts';
 import { epochHarness, foldPath } from './epoch.ts';
 
@@ -105,4 +106,25 @@ export function epochPool(hash: Hash, epochLen: number, leaves = true) {
  }) as PoolApi;
 
  return { state, records, harness, pad, transfer, deposit, recover, land, api };
+}
+
+/** One epoch of cheap spend records whose slot 0 holds two synthetic leaves: checkpoints, catch-up and the root agree, and no note is anyone's. */
+export function epochLeafPool(hash: Hash, epochLen: number, batches: number) {
+ if (batches > epochLen) throw new Error('One epoch only.');
+ const tree = new DeepTree(hash, NOTE_DEPTH), asked: string[] = [], records: RollupEpochRecord[] = [], prevNoteRoot = String(tree.root());
+ const empty = { anchor: '0', nullifiers: ['0'], commitments: ['0', '0'] as [string, string], ctDigest: '0', groupId: '0', groupSize: 0, publics: [] as string[] };
+ for (let b = 0; b < batches; b++) {
+  const leaves = [BigInt(b * 32 + 1), BigInt(b * 32 + 2)];
+  leaves.forEach((leaf, i) => tree.set(b * 32 + i, leaf));
+  records.push({ kind: 'spend', noteBlockRoot: String(tree.node(SUBTREE_DEPTH, b)), slots: [{ ...empty, nullifiers: [String(b + 1)], commitments: leaves.map(String) as [string, string] }, ...Array<typeof empty>(BATCH_SLOTS - 1).fill(empty)] });
+ }
+ const api = (async (path: string) => {
+  asked.push(path);
+  const page = /^\/batches\?from=(\d+)&limit=(\d+)$/.exec(path), at = /^\/checkpoints\/0\/(\d+)$/.exec(path), blocks = Number(at?.[1]);
+  if (path === '/status') return { phase: 'ready', message: '', pool: { batches, root: String(tree.root()), epoch: 0, epochLen, prevNoteRoot } };
+  if (page) return { total: batches, batches: records.slice(Number(page[1]), Number(page[1]) + Number(page[2])) };
+  if (at && blocks > 0 && blocks % CHECKPOINT_EVERY === 0 && blocks <= batches) return { epoch: 0, ...checkpointOf(tree, blocks) };
+  throw notFound();
+ }) as PoolApi;
+ return { tree, records, asked, api };
 }

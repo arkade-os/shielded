@@ -4,14 +4,14 @@ import {setImmediate} from 'node:timers/promises';
 import {after,test} from 'node:test';
 import * as snarkjs from 'snarkjs';
 import * as prover from '../app/src/shielded-prover.ts';
-import type {BuiltSpend} from '../packages/protocol/src/rollup/account.ts';
+import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupPoolStatus} from '../src/shielded/pool.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
 const wasm=readFileSync('tests/fixtures/rollup-toy/covenant-client.wasm'),zkey=readFileSync('tests/fixtures/rollup-toy/covenant-client.zkey');
 const input={pub:49n,nf0:11n,nf1:22n,deposit:33n,withdraw:44n,boundaryAsset:55n,destination:66n,w:7n};
-const built={witness:{input,slot:{nullifiers:[11n]}}} as unknown as BuiltSpend;
+const built={witness:{input,slot:{nullifiers:[11n]}},slot:{nullifiers:[11n]}} as unknown as EpochBuiltSpend;
 const status=(id:string)=>({proving:{spend:{wasm:id,zkey:id}}}) as RollupPoolStatus;
 after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();});
 

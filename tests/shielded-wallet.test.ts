@@ -4,24 +4,29 @@ import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,Ramps,Sin
 import {bech32,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
-import {RollupAccount,type BuiltSpend,type PublishedBatch,type PublishedSlot} from '../packages/protocol/src/rollup/account.ts';
-import {NOTE_DEPTH,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
-import {checkpointOf} from '../packages/protocol/src/rollup/frontier.ts';
+import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
+import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src/rollup/notes.ts';
-import {DeepTree} from '../packages/protocol/src/rollup/tree.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
-import {catchUp,WATCHDOG_MS} from '../src/shielded/sync.ts';
+import {WATCHDOG_MS} from '../src/shielded/sync.ts';
+import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
+import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
+import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
 const POOL_SCRIPT='5120e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e';
 const POOL_ADDRESS='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mcfz88xtqfr9pxprckm7tkha23m0d0tnqzpw0r8gqtwfz8ete';
+const EPOCH_LEN=128,{pool:genesis}=await epochPool(hash,EPOCH_LEN).api<RollupPoolStatus>('/status');
 const status=(batches:number):RollupPoolStatus=>({phase:'ready',message:'',proving:{spend:{wasm:'a',zkey:'b'},join:{wasm:'c',zkey:'d'},batch:{wasm:'e',zkey:'f'},batchJoin:{wasm:'g',zkey:'h'}},
- pool:{token:TOKEN,address:POOL_ADDRESS,script:POOL_SCRIPT,batches,root:'0',head:{txid:'ab'.repeat(32),vout:0,value:1000},pending:0,padding:0,reserves:{}}});
+ pool:{token:TOKEN,address:POOL_ADDRESS,script:POOL_SCRIPT,batches,root:genesis!.root,head:{txid:'ab'.repeat(32),vout:0,value:1000},pending:0,padding:0,reserves:{},epoch:0,epochLen:EPOCH_LEN,prevNoteRoot:genesis!.prevNoteRoot}});
+const chainOnlyRecord=(txid:string):RollupEpochRecord=>({kind:'spend',noteBlockRoot:'0',txid,slots:Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',nullifiers:[String(s+1)],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[]}))});
 
 const prover:ShieldedProver={prove:async()=>({pi_a:[],pi_b:[],pi_c:[]})};
 const ark={serverUrl:'https://mutinynet.arkade.sh',getInfo:async()=>info} as never;
@@ -52,7 +57,7 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
  try{
   assert.ok(wallet instanceof ShieldedWallet,'the patched `new this(` must construct the subclass');
   assert.ok(wallet instanceof Wallet,'and it is still a real SDK wallet');
-  assert.ok(wallet.account instanceof RollupAccount);
+  assert.ok(wallet.account instanceof EpochAccount);
   assert.match(wallet.shieldedAddress(),/^shrol21/);
   assert.match(wallet.viewKey(),/^shview2/);
   assert.match(wallet.fullViewingKey(),/^shfvk2/);
@@ -70,7 +75,7 @@ test('self-native withdrawal keeps its SDK receipt while external withdrawals in
   const address=await wallet.getAddress(),script=hex.encode(ArkAddress.decode(address).pkScript),nativeDestination=destinationFieldOf(programOf(address)),externalDestination=destinationFieldOf(new Uint8Array(32).fill(7)),manager=await wallet.getContractManager(),[contract]=await manager.getContracts({script});assert.ok(contract);
   t.mock.method(manager,'getContractsWithVtxos',async()=>[{contract,vtxos:[{txid,vout:0,value:1000,script,createdAt:new Date(2000),status:{isLeaf:false},isPreconfirmed:true,isSpent:false,isUnrolled:false,commitmentTxIds:[]}]}] as never);
   wallet.pool.status.pool!.reserves={[assetId]:'reserve'};wallet.account.txids.add(txid);
-  const base={kind:'withdraw' as const,batch:3,txid,at:1000,spent:[7n],created:[]};
+  const base={kind:'withdraw' as const,batch:3,epoch:0,txid,at:1000,spent:[7n],created:[]};
   wallet.account.history.push({...base,destination:nativeDestination,amounts:[{asset:0n,amount:1000n}],slots:[0]},
    {...base,destination:externalDestination,amounts:[{asset:0n,amount:2113n}],slots:[1]},
    {...base,destination:externalDestination,amounts:[{asset:field,amount:9n},{asset:0n,amount:330n}],slots:[2,3]});
@@ -127,10 +132,10 @@ test("two wallets on one repository keep each other's sent entries",async()=>{
 test('a second open resumes from the repository and does not re-read the published batches',async()=>{
  const repository=new InMemoryShieldedNoteRepository();
  const first=await open({repository,batches:3});
- try{await first.account.apply({kind:'spend',slots:[],txid:'01'.repeat(32)});await first.save();}finally{await first.dispose();}
+ try{await first.account.apply(chainOnlyRecord('01'.repeat(32)));await first.save();}finally{await first.dispose();}
  const stored=await repository.getAccount(TOKEN);
  assert.ok(stored,'the snapshot is keyed by the pool token');
- assert.equal(stored!.account.v,1);
+ assert.equal(stored!.account.v,2);
  const {fetcher,paths}=poolFetcher(0);
  const second=await open({repository,fetcher});
  try{
@@ -176,7 +181,7 @@ test('disposal stops the watchdog, so the process can exit',async()=>{
 const deferred=<T,>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
 const coin=(txid='aa'.repeat(32),value=500)=>({txid,vout:0,value});
-const fakeSpend=()=>({witness:{slot:{root:0n,nullifiers:[1n],commitments:[2n,3n],ctDigest:4n,groupId:0n,groupSize:0},publicSignals:[],input:{}},ciphertext:new Uint8Array(),change:0n} as unknown as BuiltSpend);
+const fakeSpend=()=>({witness:{slot:{root:0n,nullifiers:[1n],commitments:[2n,3n],ctDigest:4n,groupId:0n,groupSize:0},publicSignals:[],input:{}},slot:{anchor:0n,rCur:{epoch:0,root:0n},nullifiers:[1n],commitments:[2n,3n],ctDigest:4n,groupId:0n,groupSize:0},ciphertext:new Uint8Array(),change:0n} as unknown as EpochBuiltSpend);
 function readyDeposit(wallet:ShieldedWallet){
  (wallet as any).depositCoin=async(txid:string,value:number)=>({...coin(txid,value),tapTree:'aa',leaf:'bb'});
  wallet.account.spend=async()=>fakeSpend();
@@ -325,7 +330,7 @@ test('auto-shield catches up before planning a newly received pool payout',async
  const wallet=await open(),input=coin();let posts=0;readyDeposit(wallet);
  wallet.getSpendableVtxos=async()=>[input] as never;
  wallet.api=(async(path:string)=>{
-  if(path.startsWith('/batches'))return {total:1,batches:[{kind:'spend',slots:[],txid:input.txid}]};
+  if(path.startsWith('/batches'))return {total:1,batches:[chainOnlyRecord(input.txid)]};
   posts++;throw new Error('payout submitted');
  }) as never;
  try{
@@ -364,7 +369,7 @@ test('a listener attached after create receives the initial auto-shield handle',
  const fetcher=(async(url:string,init?:RequestInit)=>{
   const path=String(url).replace('/api/rollup','');
   if(init?.method==='POST'&&path==='/spends')posts++;
-  const body=path.startsWith('/batches')?{total:0,batches:[]}:path.startsWith('/spends/')?{status:'included',txid:'cc'.repeat(32)}:{};
+  const body=path==='/status'?status(0):path.startsWith('/batches')?{total:0,batches:[]}:path.startsWith('/spends/')?{status:'included',txid:'cc'.repeat(32)}:{};
   return new Response(JSON.stringify(body),{status:200});
  }) as typeof fetch;
  try{
@@ -567,10 +572,10 @@ test('Ramps refuses an exit input reserved by shielding while it awaits a change
  }finally{change.resolve(POOL_ADDRESS);proof.resolve();if(handle)await assert.rejects(handle.settled(),/proof cancelled/);await wallet.dispose();}
 });
 
-const publishSpend=({witness,ciphertext}:BuiltSpend):PublishedSlot=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:String(witness.slot.groupId),groupSize:witness.slot.groupSize,publics:witness.publicSignals.map(String),ciphertext:hex.encode(ciphertext)});
 async function fundPrivate(wallet:ShieldedWallet,notes:{amount:bigint;asset?:bigint}[]){
- const deposits=await Promise.all(notes.map(n=>wallet.account.spend({deposit:n.amount,asset:n.asset},wallet.self)));
- await wallet.account.apply({kind:'spend',slots:deposits.map(publishSpend),txid:'de'.repeat(32)});
+ const deposits=await Promise.all(notes.map(n=>wallet.account.spend({deposit:n.amount,asset:n.asset},wallet.self))),pool=epochPool(hash,EPOCH_LEN);
+ await wallet.account.apply(pool.land('spend',deposits.map(posted)));
+ return pool;
 }
 const recipient=shieldedKeysOf(hash,'22'.repeat(32));
 
@@ -606,17 +611,17 @@ test('pay and withdraw announce handles before a shortfall fails at the note sel
 });
 
 test('a joined payment holds both inputs against a queued payment and records one recipient output',async()=>{
- const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),proof=deferred<void>(),started=deferred<BuiltSpend>();
- let published:PublishedSlot|undefined;
+ const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),proof=deferred<void>(),started=deferred<EpochBuiltSpend>();
+ let published:RollupEpochRecord|undefined;
  wallet.prover={joinReady:()=>true,prove:async(built,circuit)=>{assert.equal(circuit,'join');started.resolve(built);await proof.promise;return {pi_a:[],pi_b:[],pi_c:[]};}};
  wallet.api=(async(path:string)=>{
   if(path==='/spends')return {};
   if(path.startsWith('/spends/'))return {status:'included',txid:'ef'.repeat(32)};
-  const slots=published?[published]:[];published=undefined;
-  return {total:2,batches:slots.length?[{kind:'join',slots,txid:'ef'.repeat(32)}]:[]};
+  const batches=published?[published]:[];published=undefined;
+  return {total:2,batches};
  }) as never;
  try{
-  await fundPrivate(wallet,[{amount:400n},{amount:500n}]);
+  const pool=await fundPrivate(wallet,[{amount:400n},{amount:500n}]);
   assert.equal(wallet.maxPrivatePayment(),900n);assert.equal(wallet.canWithdraw(400n),true);
   const first=await wallet.pay(recipient.address,800n),built=await started.promise;
   assert.equal(wallet.inFlight.size,2);assert.deepEqual(new Set(built.witness.slot.nullifiers),wallet.inFlight);
@@ -627,7 +632,7 @@ test('a joined payment holds both inputs against a queued payment and records on
   assert.deepEqual(Object.keys(stored.sent),[String(firstNf)]);assert.equal(wallet.sentOf(secondNf!),undefined);
   const sent=stored.sent[String(firstNf)]!;assert.equal(sent.to,recipient.address);assert.equal(sent.note!.amount,'800');
   assert.equal(noteOf(hash,ROLLUP_DOMAIN,BigInt(sent.note!.amount),BigInt(sent.note!.asset),recipient.self.owner,BigInt(sent.note!.rho)),built.witness.slot.commitments[0]);
-  published=publishSpend(built);proof.resolve();await first.settled();await flush();
+  published=pool.land('join',[posted(built)]);proof.resolve();await first.settled();await flush();
   assert.equal(wallet.inFlight.size,0);assert.equal(wallet.shieldedBalance(),100n);assert.equal(wallet.shieldedHistory().at(-1)!.slots.length,1);
   assert.equal(wallet.shieldedHistory().at(-1)!.spent.length,2);
  }finally{proof.resolve();await wallet.dispose();}
@@ -699,7 +704,7 @@ test('private persistence waits for catch-up and refuses a new snapshot after di
  for(const action of ['pay','withdraw'] as const)for(const closed of [false,true]){
   const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository}),resume=deferred<void>(),picked=deferred<void>();
   await fundPrivate(wallet,[{amount:500n}]);
-  const barrier=catchUp(wallet.account,(async()=>{await resume.promise;return {total:1,batches:[]};}) as never);
+  const barrier=epochCatchUp(wallet.account,(async()=>{await resume.promise;return {total:1,batches:[]};}) as never);
   const spend=wallet.account.spend.bind(wallet.account);let snapshots=0,posts=0;
   wallet.account.spend=async(...args)=>{const result=await spend(...args);picked.resolve();return result;};
   const snapshot=wallet.account.snapshot.bind(wallet.account);wallet.account.snapshot=()=>{snapshots++;return snapshot();};
@@ -717,12 +722,12 @@ test('private persistence waits for catch-up and refuses a new snapshot after di
 
 for(const failure of ['none','fetch','apply'] as const)test(`sync checkpoints complete pages with ${failure} failure`,async()=>{
  const repository=new InMemoryShieldedNoteRepository(),wallet=await open({repository});
- const batches:PublishedBatch[]=Array.from({length:123},(_,i)=>({kind:'spend',slots:[],txid:String(i+1)}));
- if(failure==='apply')batches[51]={kind:'spend',txid:'malformed',slots:[{root:'0',nullifiers:['not a field'],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:0}]};
+ const batches=Array.from({length:123},(_,i)=>chainOnlyRecord(String(i+1)));
+ if(failure==='apply'){batches[51]=chainOnlyRecord('malformed');batches[51].slots[0]!.nullifiers=['not a field'];}
  const save=repository.saveAccount.bind(repository),read=repository.getAccount.bind(repository),saved:number[]=[],requested:number[]=[];
  let reads=0,changed=0;
  repository.getAccount=async token=>{reads++;return read(token);};
- repository.saveAccount=async(token,snapshot)=>{saved.push(snapshot.account.blocks);await save(token,snapshot);};
+ repository.saveAccount=async(token,snapshot)=>{saved.push(snapshot.account.batch);await save(token,snapshot);};
  wallet.onShieldedChange(()=>{changed++;});
  (wallet as any).api=async(path:string)=>{
   const from=Number(/from=(\d+)/.exec(path)![1]);requested.push(from);
@@ -735,10 +740,10 @@ for(const failure of ['none','fetch','apply'] as const)test(`sync checkpoints co
   assert.equal(reads,saved.length,'one repository merge read per checkpoint');
   assert.equal(changed,failure==='none'?1:0);
   const stored=(await read(TOKEN))!.account;
-  assert.equal(stored.blocks,failure==='none'?123:50);
+  assert.equal(stored.batch,failure==='none'?123:50);
   assert.equal(wallet.batchCount(),failure==='none'?123:failure==='fetch'?50:51);
   if(failure==='apply'){
-   assert.ok(wallet.account.txids.has('malformed'),'the rejected real apply already mutated the live account');
+   assert.ok(wallet.account.txids.has('51')&&!wallet.account.txids.has('malformed'),'the live account is past the stored page, and the rejected record left nothing in it');
    assert.ok(!stored.txids.includes('malformed'));assert.ok(!stored.txids.includes('51'));
   }
   const reopened=await open({repository});
@@ -755,23 +760,20 @@ for(const failure of ['none','fetch','apply'] as const)test(`sync checkpoints co
 
 /** One pool several wallets share: posted spends join the next batch, which the first poll closes; a reused nullifier is refused as the operator would. */
 function sharedPool(){
- const batches:PublishedBatch[]=[];let queued:PublishedSlot[]=[];
- const txid=()=>batches.length.toString(16).padStart(64,'0');
- const api=(async(path:string,body?:{id:string;slot:Omit<PublishedSlot,'publics'|'ciphertext'>;publics:string[];ciphertext:string})=>{
+ const pool=epochPool(hash,EPOCH_LEN);let queued:PoolSpend[]=[];
+ const api=(async(path:string,body?:EpochSpendBody)=>{
   if(path==='/spends'){
-   const used=new Set([...batches.flatMap(b=>b.slots),...queued].flatMap(s=>s.nullifiers));
+   const used=new Set([...pool.records.flatMap(r=>r.slots.flatMap(s=>s.nullifiers)),...queued.flatMap(q=>q.slot.nullifiers.map(String))]);
    if(body!.slot.nullifiers.some(nf=>used.has(nf)))throw Object.assign(new Error('The note is already spent or pending.'),{status:400,code:'double-spend'});
-   queued.push({...body!.slot,publics:body!.publics,ciphertext:body!.ciphertext});return {id:body!.id,status:'pending'};
+   const {slot,publics,ciphertext}=fromBody(body!);queued.push({slot,publics,ciphertext});return {id:body!.id,status:'pending'};
   }
-  if(path.startsWith('/spends/')){if(queued.length){batches.push({kind:'spend',slots:queued,txid:txid()});queued=[];}return {status:'included',txid:batches.at(-1)!.txid};}
-  const page=/from=(\d+)&limit=(\d+)/.exec(path);
-  if(page)return {total:batches.length,batches:batches.slice(Number(page[1]),Number(page[1])+Number(page[2]))};
-  throw Object.assign(new Error('Not found'),{status:404});
+  if(path.startsWith('/spends/')){if(queued.length){pool.land(queued[0]!.slot.nullifiers.length===2?'join':'spend',queued);queued=[];}return {status:'included',txid:pool.records.at(-1)!.txid};}
+  return pool.api(path);
  }) as PoolApi;
- return {api,batches,
+ return {api,records:pool.records,
   async fund(wallet:ShieldedWallet,notes:{amount:bigint;asset?:bigint}[]){
    const deposits=await Promise.all(notes.map(n=>wallet.account.spend({deposit:n.amount,asset:n.asset},wallet.self)));
-   batches.push({kind:'spend',slots:deposits.map(publishSpend),txid:txid()});await wallet.sync();
+   pool.land('spend',deposits.map(posted));await wallet.sync();
   }};
 }
 const listed=(wallet:ShieldedWallet)=>{wallet.pool={...wallet.pool,status:{...status(0),pool:{...status(0).pool!,reserves:{[TOKEN]:'100'}}}};};
@@ -795,8 +797,8 @@ test('a claim link goes to whoever claims it first, and its minter sees it claim
    await assert.rejects((await carol.claimLink(link!.token)).settled(),/Someone claimed this link first/,code);
   }
   await (await bob.claimLink(link!.token)).settled();
-  const claim=pool.batches.at(-1)!.slots;
-  assert.ok(claim.length===2&&claim.every(s=>s.groupSize===2&&s.groupId===claim[0]!.groupId&&s.groupId!=='0'),'bob\'s claim landed as one group');
+  const [a,b,...pads]=pool.records.at(-1)!.slots;
+  assert.ok(a!.groupSize===2&&b!.groupSize===2&&a!.groupId===b!.groupId&&a!.groupId!=='0'&&pads.every(s=>s.groupId==='0'),'bob\'s claim landed as one group, and the rest of the batch is padding');
   assert.equal(bob.shieldedBalance(),1050n);
   await alice.sync();
   assert.equal(alice.links()[0]!.state,'claimed');
@@ -875,20 +877,15 @@ test('a mint the pool drops lists no link and frees its notes',async()=>{
 });
 
 test('a wallet started from a checkpoint watches for links in the batches it catches up while loading',async t=>{
- const tree=new DeepTree(hash,NOTE_DEPTH),paths:string[]=[],batches=Array.from({length:70},(_,b)=>{
-  const commitments=[b*32+1,b*32+2].map(String) as [string,string];commitments.forEach((c,i)=>tree.set(b*32+i,BigInt(c)));
-  return {kind:'spend',slots:[{root:'0',nullifiers:[String(b+1)],commitments,ctDigest:'0',groupId:'0',groupSize:0}]};
- });
+ const world=epochLeafPool(hash,EPOCH_LEN,70);
  const fetcher=(async(url:string)=>{
-  const path=String(url).replace('/api/rollup',''),page=/from=(\d+)&limit=(\d+)/.exec(path);paths.push(path);
-  const body=path==='/status'?{...status(70),pool:{...status(70).pool!,root:String(tree.root())}}:path==='/checkpoints/64'?checkpointOf(tree,64)
-   :page?{total:70,batches:batches.slice(Number(page[1]),Number(page[1])+Number(page[2]))}:{};
-  return new Response(JSON.stringify(body),{status:200});
+  try{return new Response(JSON.stringify(await world.api(String(url).replace('/api/rollup',''))),{status:200});}
+  catch{return new Response('{}',{status:404});}
  }) as unknown as typeof fetch;
  const watched:number[]=[],watch=(ShieldedWallet.prototype as any).watchLinks;
  t.mock.method(ShieldedWallet.prototype as any,'watchLinks',function(this:ShieldedWallet,number:number,...rest:unknown[]){watched.push(number);return watch.call(this,number,...rest);});
  const wallet=await open({fetcher,bornAt:66});
- try{assert.deepEqual([watched,paths.filter(p=>p.startsWith('/batches?from=0')),wallet.batchCount()],[[64,65,66,67,68,69],[],70]);}
+ try{assert.deepEqual([watched,world.asked.filter(p=>p.startsWith('/batches?from=0')),wallet.batchCount()],[[64,65,66,67,68,69],[],70]);}
  finally{await wallet.dispose();}
 });
 

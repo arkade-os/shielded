@@ -2,21 +2,30 @@ import {useEffect,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
 import {x25519} from '@noble/curves/ed25519.js';
-import {RollupAccount,type HistoryEntry,type PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
-import {decodeDisclosure,incomingNotes,parseFullViewKey,parseViewKey,verifyDisclosure,type Disclosure,type IncomingNote} from '../../packages/protocol/src/rollup/disclosure.ts';
+import {decodeDisclosure,parseFullViewKey,parseViewKey,verifyDisclosure,type Disclosure,type IncomingNote} from '../../packages/protocol/src/rollup/disclosure.ts';
+import {EpochAccount,type EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf} from '../../packages/protocol/src/rollup/wallet.ts';
-import {rollupApi,syncAccount} from './rollup-client.ts';
+import type {RollupEpochRecord} from '../../src/rollup/epoch-operator.ts';
+import {epochIncomingNotes} from '../../src/shielded/epoch-disclosure.ts';
+import {epochSyncAccount,poolApiOf,rollupApi,type PoolApi,type RollupPoolStatus} from './rollup-client.ts';
 
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 const unit=(asset:bigint)=>asset===0n?'sats':'asset units';
-const batchOf=async(n:number)=>(await rollupApi<{batches:PublishedBatch[]}>(`/batches?from=${n}&limit=1`)).batches[0];
+const batchOf=async(n:number)=>(await rollupApi<{batches:RollupEpochRecord[]}>(`/batches?from=${n}&limit=1`)).batches[0];
 const hashFn=async()=>{const poseidon=await buildPoseidon();return (v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));};
+/** The shfvk2 replay. The classic replica took every epoch record as chain-only and showed the same balance; this one checks each record's commitments. */
+export async function fullViewOf(hash:Hash,key:ReturnType<typeof parseFullViewKey>,api:PoolApi=poolApiOf('')){
+ const account=new EpochAccount(hash,key,{epochLen:(await api<RollupPoolStatus>('/status')).pool!.epochLen!});
+ await epochSyncAccount(account,api);
+ return account;
+}
 
-type Checked={disclosure:Disclosure;ok:boolean[];batches:Record<number,PublishedBatch|undefined>};
-type Watched={address:string;notes:IncomingNote[]}|{address:string;entries:HistoryEntry[]};
-const kinds={shield:'Shielded',receive:'Received',send:'Sent',withdraw:'Withdrew',merge:'Merged notes'} as const;
+type Checked={disclosure:Disclosure;ok:boolean[];batches:Record<number,RollupEpochRecord|undefined>};
+type Watched={address:string;notes:IncomingNote[]}|{address:string;entries:EpochHistoryEntry[]};
+const kinds={shield:'Shielded',receive:'Received',send:'Sent',withdraw:'Withdrew',merge:'Merged notes',renew:'Refreshed',recover:'Recovered'} as const;
 
 /** /verify#<disclosure> checks one revealed payment; /watch#<view key> lists every note a view key can see. */
 export default function Disclose(){
@@ -27,15 +36,14 @@ export default function Disclose(){
   try{
    const hash=await hashFn();
    if(watch&&value.trim().startsWith('shfvk')){
-    const key=parseFullViewKey(hash,value),account=new RollupAccount(hash,key,{frontier:true});
-    await syncAccount(account);
+    const key=parseFullViewKey(hash,value),account=await fullViewOf(hash,key);
     setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),entries:[...account.history]});
    }else if(watch){
-    const key=parseViewKey(value),all:PublishedBatch[]=[];
-    for(;;){const page=await rollupApi<{total:number;batches:PublishedBatch[]}>(`/batches?from=${all.length}&limit=100`);all.push(...page.batches);if(all.length>=page.total||!page.batches.length)break;}
-    setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),notes:await incomingNotes(hash,all,key)});
+    const key=parseViewKey(value),all:RollupEpochRecord[]=[];
+    for(;;){const page=await rollupApi<{total:number;batches:RollupEpochRecord[]}>(`/batches?from=${all.length}&limit=100`);all.push(...page.batches);if(all.length>=page.total||!page.batches.length)break;}
+    setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),notes:await epochIncomingNotes(hash,all,key)});
    }else{
-    const disclosure=decodeDisclosure(value.includes('#')?value.slice(value.indexOf('#')+1):value),batches:Record<number,PublishedBatch|undefined>={};
+    const disclosure=decodeDisclosure(value.includes('#')?value.slice(value.indexOf('#')+1):value),batches:Record<number,RollupEpochRecord|undefined>={};
     for(const n of new Set(disclosure.notes.map(note=>Math.floor(note.index/32))))batches[n]=await batchOf(n);
     const ok=await verifyDisclosure(hash,disclosure,index=>batches[Math.floor(index/32)]?.slots[Math.floor((index%32)/2)]?.commitments[index%2]);
     setChecked({disclosure,ok,batches});

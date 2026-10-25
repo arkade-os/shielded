@@ -48,7 +48,7 @@ test('the in-memory HD counter stays global when the wallet changes pools',async
 function spend(id:string,poolName=pool,nullifier='1',hash='03'.repeat(32)):LightningSpendRecord{
  const address=script.address('tark',server).encode();
  return {v:1,id,owner,pool:poolName,reference:hash,kind:'fund',paymentHash:hash,destination:address,amount:'1000',nullifiers:[nullifier],state:'prepared',
-  body:{id:crypto.randomUUID().replaceAll('-',''),slot:{root:'0',nullifiers:[nullifier],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:1},publics:['0',nullifier,'0','0','1000','0',String(destinationFieldOf(ArkAddress.decode(address).pkScript.subarray(2)))],proof:{pi_a:[],pi_b:[],pi_c:[]},ciphertext:'00',program:hex.encode(ArkAddress.decode(address).pkScript.subarray(2))}};
+  body:{id:crypto.randomUUID().replaceAll('-',''),slot:{anchor:'0',rCur:{epoch:0,root:'0'},nullifiers:[nullifier],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:1},publics:['0',nullifier,'0','0','1000','0',String(destinationFieldOf(ArkAddress.decode(address).pkScript.subarray(2)))],proof:{pi_a:[],pi_b:[],pi_c:[]},ciphertext:'00',program:hex.encode(ArkAddress.decode(address).pkScript.subarray(2))}};
 }
 
 for(const field of ['legacy','nf0','nf1','deposit','withdraw','asset','destination'] as const)test(`saved Lightning funding rejects inconsistent ${field} public signals without releasing its reservation`,()=>{

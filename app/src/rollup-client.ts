@@ -2,6 +2,7 @@ import {DUST,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.t
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 
 export * from '../../src/shielded/pool.ts';
+export * from '../../src/shielded/epoch-pool.ts';
 
 /** Why the pool will not take another listing: past its cap a listing is ignored, and its sats and unit are lost. */
 export const listingBlocked=(pool:RollupPoolStatus['pool'])=>

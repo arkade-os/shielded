@@ -1,9 +1,9 @@
-import type {AccountSnapshot} from '../../packages/protocol/src/rollup/account.ts';
+import type {EpochAccountSnapshot} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {LinkRecord} from './bearer.ts';
 
 export interface SentRecord {to:string;note?:{amount:string;asset:string;rho:string}}
 /** The wallet's cache for one pool. The operator's published batches stay the source of truth. */
-export interface ShieldedSnapshot {v:1;token:string;account:AccountSnapshot;sent:Record<string,SentRecord>;listings:string[];links?:LinkRecord[]}
+export interface ShieldedSnapshot {v:2;token:string;account:EpochAccountSnapshot;sent:Record<string,SentRecord>;listings:string[];links?:LinkRecord[]}
 export interface ShieldedNoteRepository extends AsyncDisposable {
  readonly version:1;
  getAccount(poolToken:string):Promise<ShieldedSnapshot|undefined>;
@@ -11,7 +11,7 @@ export interface ShieldedNoteRepository extends AsyncDisposable {
  clear():Promise<void>;
 }
 export const SHIELDED_DB='shielded-rollup',SHIELDED_STORE='accounts';
-const checked=(token:string,snapshot:ShieldedSnapshot|undefined)=>snapshot&&snapshot.v===1&&snapshot.token===token?snapshot:undefined;
+const checked=(token:string,snapshot:ShieldedSnapshot|undefined)=>snapshot&&snapshot.v===2&&snapshot.token===token?snapshot:undefined;
 // A garbled row is a miss the next save replaces; a rejected read must still reject, or save() would write unmerged.
 const parsed=(row:string)=>{try{return JSON.parse(row) as ShieldedSnapshot;}catch{return undefined;}};
 

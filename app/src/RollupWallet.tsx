@@ -12,10 +12,10 @@ import {LNURL_BASE} from '../../src/shielded/lightning.ts';
 import {IndexedDbLightningRepository} from '../../src/shielded/lightning-repository.ts';
 import {createLightningWallet,createPrivateLightning,lightningOwner} from '../../src/shielded/lightning-wallet.ts';
 import {createLnurlReceive} from '../../src/shielded/lnurl-receive.ts';
-import {idle} from '../../src/shielded/sync.ts';
+import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {birthCheckpoint} from '../../src/shielded/checkpoint.ts';
+import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
@@ -145,7 +145,7 @@ export default function RollupWallet(){
   if(busyRef.current)return;
   try{
    const at=restoreDate?Date.parse(restoreDate):NaN,token=poolRef.current?.pool?.token;
-   const born=Number.isFinite(at)&&token?{token,at,batches:await birthCheckpoint(poolApiOf(''),at)}:undefined;
+   const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(''),at)}:undefined;
    await restorePageWallet(restore,{cache:cacheRef.current!,storage:localStorage,reload:()=>location.reload(),...(born?{born}:{}),stop:async()=>{
     restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);
@@ -197,7 +197,7 @@ export default function RollupWallet(){
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
   const close=()=>{
    const closed=session.close();for(const off of unwatch.splice(0))off();sheetOwner.stop();
-   return closing??=(async()=>{const owned=await closed;await legacy;if(owned)await idle(owned.account,()=>undefined);sessions.current.delete(close);})();
+   return closing??=(async()=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);})();
   };
   sessions.current.add(close);
   void session.ready.then(created=>{
