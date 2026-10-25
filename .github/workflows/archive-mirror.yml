@@ -1,5 +1,5 @@
 name: Archive mirror
-# Schedules fire only from the default branch and GitHub pauses them after a quiet spell; workflow_dispatch always works.
+# Schedules fire only from the default branch and GitHub pauses them after a quiet spell; workflow_dispatch runs it by hand while the workflow is enabled.
 on:
   schedule:
     - cron: '17 * * * *'
@@ -36,7 +36,7 @@ jobs:
             return stdout;
           };
           const fail = error => {
-            console.log(`::error::${error.message}`);
+            console.log(`::error::${error.message.split(/[\r\n]/)[0]}${error.cause?.code ? ` (${error.cause.code})` : ''}`);
             process.exitCode = 1;
           };
 
