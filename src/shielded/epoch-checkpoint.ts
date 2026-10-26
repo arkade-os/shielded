@@ -9,7 +9,7 @@ import {epochCatchUp,type EpochOnBatch} from './epoch-sync.ts';
 export {birthCheckpoint as epochBirthCheckpoint} from './checkpoint.ts';
 type Keys={ask:bigint;nk:bigint;viewSecret:Uint8Array};
 
-const epochPoolOf=async(api:PoolApi)=>{
+export const epochPoolOf=async(api:PoolApi)=>{
  const pool=(await api<RollupPoolStatus>('/status')).pool;
  if(!pool?.epochLen)throw new Error('That pool is not an open epoch pool.');
  return {...pool,epochLen:pool.epochLen};

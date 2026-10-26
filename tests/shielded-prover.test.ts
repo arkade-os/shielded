@@ -61,6 +61,15 @@ test('definitive HTTP refusals are not retried or cached',async t=>{
  assert.deepEqual(await prover.loadProvingFile('/missing.wasm'),new Uint8Array(wasm));assert.equal(calls,2);
 });
 
+test('a 404 from a proving file tells a stale page to reload, and an outage does not',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
+ t.mock.method(globalThis,'fetch',async(url:unknown)=>new Response('no',{status:String(url).includes('stale')?404:503}));
+ await assert.rejects(prover.loadProvingFile('/api/rollup/proving/spend.wasm?stale'),/HTTP 404\..*reload/i);
+ const outage=outcome(prover.loadProvingFile('/outage-503.wasm'));await flush();
+ for(const delay of [1000,2000,4000,8000]){t.mock.timers.tick(delay);await flush();}
+ const {error}=await outage;assert.match(String(error),/HTTP 503/);assert.doesNotMatch(String(error),/reload/i);
+});
+
 test('network and server retries are bounded and an exhausted download can be fetched again',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
  let calls=0,healthy=false;t.mock.method(globalThis,'fetch',async()=>{calls++;if(healthy)return new Response(wasm);if(calls%2)throw new TypeError('Failed to fetch');return new Response('outage',{status:503});});

@@ -21,7 +21,7 @@ export function loadProvingFile(url:string,priority:RequestPriority='auto'):Prom
    catch(error){failure=error;}
    finally{clearTimeout(timer);}
    if(response&&!response.ok){
-    failure=new Error(`The proving file ${url} answered HTTP ${response.status}.`);
+    failure=new Error(`The proving file ${url} answered HTTP ${response.status}.${response.status===404?' This page may be out of date; reload it.':''}`);
     if(response.status!==429&&response.status<500)throw failure;
    }
    const header=response?.headers.get('Retry-After')?.trim();
