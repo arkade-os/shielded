@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import {existsSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {spawn} from 'node:child_process';
+import {copyFileSync,existsSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {test} from 'node:test';
+import {runInNewContext} from 'node:vm';
 import {rollupPoolKindOf} from '../src/rollup/service.ts';
 import {keySet,offline,POOL_KEYS,ready,scratch,sha} from './fixtures/epoch-service.ts';
 
@@ -68,4 +70,47 @@ test('the service reads no epoch length from the environment',async()=>{
   const net=offline(),directory=scratch('rollup-launch-env-'),service=await ready(net,directory,keySet('classic'));
   assert.deepEqual([service.epochPool,JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8')).version],[false,1]);
  }finally{delete process.env.SHIELDED_ROLLUP_EPOCH_LEN;}
+});
+
+/** Both kinds' keys in one bundle, so the kind the server picks is what decides the set it installs. */
+const bundledKeys=()=>{
+ const dir=scratch('rollup-launch-bundle-'),files:Record<string,string>={};
+ for(const from of [keySet('classic'),keySet('epoch')]){
+  for(const name of readdirSync(from).filter(n=>n!=='manifest.json'))copyFileSync(join(from,name),join(dir,name));
+  Object.assign(files,JSON.parse(readFileSync(join(from,'manifest.json'),'utf8')).circuits.all.files);
+ }
+ writeFileSync(join(dir,'manifest.json'),JSON.stringify({circuits:{all:{files}}}));
+ return dir;
+};
+
+/** src/server.ts on a fresh data directory with no network, stopped once a pool directory has installed its bundled keys. */
+async function runServer(){
+ const data=scratch('rollup-launch-data-'),unreachable='http://127.0.0.1:1';
+ const child=spawn(process.execPath,['--experimental-eventsource','--import','tsx','src/server.ts'],{stdio:['ignore','pipe','pipe'],
+  env:{...process.env,SHIELDED_DATA_DIR:data,SHIELDED_ROLLUP_KEYS:bundledKeys(),SHIELDED_ROLLUP_EPOCH_LEN:undefined,SHIELDED_INDEXER_URL:undefined,SHIELDED_ARK_URL:unreachable,SHIELDED_EMULATOR_URL:unreachable,HOST:'127.0.0.1',PORT:'0'}});
+ let output='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{output+=chunk;});
+ const closed=new Promise(resolve=>child.once('close',resolve));
+ try{
+  for(let waited=0;!readdirSync(data).some(name=>existsSync(join(data,name,'keys','manifest.json')));waited+=100){
+   assert.equal(child.exitCode,null,`the server exited early: ${output}`);
+   assert.ok(waited<120_000,`the server installed no keys: ${output}`);
+   await new Promise(resolve=>setTimeout(resolve,100));
+  }
+ }finally{child.kill();await closed;}
+ return data;
+}
+
+test('the deployed server opens an epoch pool on a fresh directory and creates no rollup2',{timeout:180_000},async()=>{
+ const data=await runServer(),keys=join(data,'rollup4','keys');
+ assert.deepEqual(readdirSync(data),['rollup4']);
+ assert.deepEqual([existsSync(join(keys,'epoch-spend.zkey')),existsSync(join(keys,'spend.zkey'))],[true,false],'the keys of an epoch pool, not a classic one');
+});
+
+test('an unset environment still yields epoch 128, and a set one overrides it',()=>{
+ const matches=[...readFileSync('src/server.ts','utf8').matchAll(/\bepochLen:([^,}]+)/g)],expression=matches[0]?.[1];
+ assert.ok(matches.length===1&&expression,'src/server.ts hands the service exactly one epoch length');
+ const given=(value?:string)=>runInNewContext(expression,{process:{env:{SHIELDED_ROLLUP_EPOCH_LEN:value}}});
+ assert.deepEqual(rollupPoolKindOf({epochLen:given()}),{kind:'epoch',epochLen:128});
+ assert.deepEqual(rollupPoolKindOf({epochLen:given('64')}),{kind:'epoch',epochLen:64});
+ for(const value of ['','x'])assert.notEqual(given(value),undefined,`'${value}' must not fall through to a classic pool`);
 });
