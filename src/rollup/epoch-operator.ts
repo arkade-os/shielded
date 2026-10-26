@@ -5,6 +5,7 @@ import {base64,hex} from '@scure/base';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochBatchInput} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
+import {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
@@ -21,9 +22,8 @@ import {headCommitment,writeSnapshot} from './snapshot.ts';
 
 /** A spend with `origin` set is a recovery of a note from that archived epoch. */
 export interface RollupEpochSpend extends Omit<RollupSpend,'slot'> {slot:EpochSlot;origin?:number}
-export interface EpochRecordSlot {anchor:string;rCur?:{epoch:number;root:string};origin?:number;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[];ciphertext?:string}
-/** One accepted batch as published; the block root is always kept, so a replay never needs an archived nullifier set. */
-export interface RollupEpochRecord {kind:EpochBatchKind;slots:EpochRecordSlot[];noteBlockRoot:string;txid?:string;at?:number}
+// Transitional re-export; the record types live in the protocol package.
+export {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot};
 interface RollupEpochPlan {version:1;request:StockWireRequest;record:RollupEpochRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
 export interface RollupEpochOperatorOptions extends Omit<RollupOperatorOptions,'leaves'|'clientKey'|'prover'|'signDeposits'> {
  epochLen:number;
@@ -37,11 +37,8 @@ const KINDS=['spend','join','recover'] as const;
 const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
-export const slotOf=(s:Omit<EpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
+export const slotOf=(s:Omit<RollupEpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
  nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
-/** A slot in the string form records, the spend store and /external share; slotOf reads it back. A recovery keeps origin alone, so /external takes back every record. */
-export const recordSlotOf=(slot:EpochSlot)=>({anchor:String(slot.anchor),...(slot.rCur&&slot.origin===undefined?{rCur:{epoch:slot.rCur.epoch,root:String(slot.rCur.root)}}:{}),...(slot.origin!==undefined?{origin:slot.origin}:{}),
- nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])] as [string,string],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize});
 const recordOf=(kind:EpochBatchKind,spends:readonly RollupEpochSpend[],noteBlockRoot:bigint):RollupEpochRecord=>({kind,
  slots:spends.map(({slot,publics,ciphertext})=>({...recordSlotOf(slot),publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})})),noteBlockRoot:String(noteBlockRoot)});
 
@@ -333,7 +330,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   padding:(kind?:EpochBatchKind)=>kind?padding[kind].length:queued(padding).length,
   status:()=>({...journal.status(),...accepted}),
   /** Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`. With `slots` a recovery needs its origin's archive file, and without them (chain-only) it needs none. */
-  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<EpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
+  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<RollupEpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
    try{
     const {tx,slots}=external,facts=readEpochBatchTx(tx,o.leaves),[head,second]=spentCoins(tx,external.checkpoints);

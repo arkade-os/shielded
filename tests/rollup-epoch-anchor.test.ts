@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
 import express from 'express';
-import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
+import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-record.ts';
 import { createRollupRouter } from '../src/rollup/http.ts';
 import { rollupKeyFilesOf, rollupKeyPath, rollupProvingOf, type RollupService } from '../src/rollup/service.ts';
 import { epochProvingUrls, epochTransferBody } from '../src/shielded/epoch-pool.ts';

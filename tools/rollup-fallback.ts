@@ -16,6 +16,7 @@ import {BATCH_SLOTS,EPOCH_SLOTS} from '../packages/protocol/src/rollup/constants
 import {buildRollupSpend,randomField,RollupAccount,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
 import {toCircuitInput} from '../packages/protocol/src/rollup/client.ts';
 import {chainOnly,EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {validateStockCheckpoint} from '../src/stock/checkpoint.ts';
@@ -23,7 +24,6 @@ import {decodeStockIndexerTransaction} from '../src/stock/indexer.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {epochNfArchivePath} from '../src/rollup/epoch-archive-file.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {buildEpochFallbackBatch,openEpochReplica,type EpochFallbackSpend} from '../src/rollup/epoch-replica.ts';
 import {indexerBatchWalker} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';

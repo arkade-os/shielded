@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
+import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-record.ts';
 import { epochBirthCheckpoint, epochFreshAccount, epochMatchesPool, loadEpochAccount } from '../src/shielded/epoch-checkpoint.ts';
 import { epochCatchUp, epochIdle } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi, RollupPoolStatus } from '../src/shielded/pool.ts';

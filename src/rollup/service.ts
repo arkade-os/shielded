@@ -12,6 +12,7 @@ import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH,type BatchKind}
 import {buildRollupTransfer,randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {EpochState} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {encodeEpochScan,rotatesAt} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import {checkpointOf} from '../../packages/protocol/src/rollup/frontier.ts';
 import {encodeScan} from '../../packages/protocol/src/rollup/scan.ts';
@@ -27,7 +28,7 @@ import type {StockWireRequest} from '../stock/transport.ts';
 import type {RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
 import {epochNfArchivePath} from './epoch-archive-file.ts';
-import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend,type RollupEpochStatus} from './epoch-operator.ts';
+import {openRollupEpochOperator,type RollupEpochOperator,type RollupEpochSpend,type RollupEpochStatus} from './epoch-operator.ts';
 import {loadRollupEpochLeaves,loadRollupLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {openRollupOperator,type RollupArchive,type RollupOperator,type RollupPoolCoin,type RollupRecord,type RollupTimings,type RollupTransport} from './operator.ts';
 import {createRollupProver,type CircuitArtifacts,type RollupProver,type verifyRollupProof} from './prover.ts';

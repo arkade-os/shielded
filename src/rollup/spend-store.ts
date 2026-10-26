@@ -1,9 +1,10 @@
 import {mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {hex} from '@scure/base';
+import {recordSlotOf} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import type {RollupSpend} from './batcher.ts';
 import type {SnarkProof} from './covenant.ts';
-import {recordSlotOf,slotOf,type RollupEpochSpend} from './epoch-operator.ts';
+import {slotOf,type RollupEpochSpend} from './epoch-operator.ts';
 
 /** The coin as the client named it; the store re-resolves it from the indexer rather than keeping transaction bytes. */
 export interface CoinRef {txid:string;vout:number;tapTree:string;leaf:string}

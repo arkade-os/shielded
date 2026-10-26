@@ -3,10 +3,11 @@ import express from 'express';
 import {hex} from '@scure/base';
 import {BATCH_SLOTS,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
 import type {EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
+import {recordSlotOf} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
 import type {RollupSpend} from './batcher.ts';
 import type {SnarkProof} from './covenant.ts';
-import {recordSlotOf,type RollupEpochSpend} from './epoch-operator.ts';
+import type {RollupEpochSpend} from './epoch-operator.ts';
 import type {RollupService} from './service.ts';
 
 const decimal=(v:unknown)=>{if(typeof v!=='string'||!/^(0|[1-9][0-9]{0,77})$/.test(v))throw new Error('Expected a decimal field element.');return BigInt(v);};

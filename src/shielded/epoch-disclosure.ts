@@ -1,8 +1,8 @@
 import type {PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
 import {encodeDisclosure,incomingNotes,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
-import type {RollupEpochRecord} from '../rollup/epoch-operator.ts';
 import type {SentRecord} from './repository.ts';
 
 /** revealLinkOf on an epoch pool. /verify reads an index as a place in the /batches stream, batch*32 + 2*slot + output, and a leaf index starts over at every rotation, so a received note is named by its batch and its place in that batch's block. */

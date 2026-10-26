@@ -6,10 +6,10 @@ import type {Transaction} from '@arkade-os/sdk';
 import type {PublishedBatch,RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {chainOnly} from '../packages/protocol/src/rollup/epoch-account.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import type {Hash} from '../packages/protocol/src/rollup/notes.ts';
 import type {RollupLeaves} from '../src/rollup/covenant.ts';
 import {epochNfArchivePath,readEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {catchUpFromChain} from '../src/rollup/external.ts';
 
 const read=(dir:string,index:number)=>JSON.parse(readFileSync(join(dir,'batches',`${index}.json`),'utf8')) as PublishedBatch;

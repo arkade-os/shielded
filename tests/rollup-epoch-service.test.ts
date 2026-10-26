@@ -10,13 +10,14 @@ import {buildRollupTransfer,randomField} from '../packages/protocol/src/rollup/a
 import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupEpochPoolTree,rollupPoolTree} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,type RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';
 import type {RollupArchive,RollupRecord} from '../src/rollup/operator.ts';
 import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';

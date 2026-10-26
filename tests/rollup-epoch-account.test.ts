@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { base64 } from '@scure/base';
 import { buildPoseidon } from 'circomlibjs';
-import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
+import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-record.ts';
 import type { PoolApi } from '../src/shielded/pool.ts';
 import type { SpendRequest } from '../packages/protocol/src/rollup/account.ts';
 import { BTC_ASSET, CHECKPOINT_EVERY, NOTE_DEPTH, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';

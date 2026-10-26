@@ -6,11 +6,11 @@ import {hex} from '@scure/base';
 import {randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochBatchInput,epochPaddingTransfer} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
+import {recordSlotOf,type RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {buildRollupBatchTx,rollupWitness,type RollupCoin,type RollupEpochLeaves,type rollupEpochPoolTree,type SnarkProof} from './covenant.ts';
 import {epochNfArchivePath,readEpochNfArchive} from './epoch-archive-file.ts';
-import {recordSlotOf,type RollupEpochRecord} from './epoch-operator.ts';
 import {readEpochBatchTx} from './external.ts';
 import type {RollupProver} from './prover.ts';
 

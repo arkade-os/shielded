@@ -1,6 +1,6 @@
 import {base64} from '@scure/base';
-import type {RollupEpochRecord} from '../rollup/epoch-operator.ts';
 import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,type EpochScanBatch} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import type {PoolApi} from './pool.ts';
 import {SCAN_AFTER,SCAN_FROM,SCAN_PAGE,type ScanPage} from './sync.ts';

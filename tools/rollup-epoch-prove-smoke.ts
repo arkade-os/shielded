@@ -16,10 +16,11 @@ import {BATCH_SLOTS,BTC_ASSET,ROLLUP_DOMAIN,SUBTREE_DEPTH,type EpochBatchKind} f
 import {inputNullifierOf,type ClientInput,type ClientSpend} from '../packages/protocol/src/rollup/client.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {EPOCH_DERIVED_FIELDS,epochClientInput,epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {akOf,outputRhoOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupEpochPoolTree,rollupProofItems,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,slotOf,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,slotOf,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import type {RollupTransport} from '../src/rollup/operator.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
