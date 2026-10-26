@@ -34,7 +34,8 @@ async function world(batches:number){
  rmSync(join(directory,'operator'),{recursive:true,force:true,maxRetries:10});mkdirSync(bodies,{recursive:true});
  for(let n=0;n<batches;n++)writeFileSync(join(bodies,`${n}.json`),JSON.stringify(record(n)));
  writeFileSync(join(directory,'genesis.json'),JSON.stringify({...saved,archive:{...saved.archive,head,batches}}));
- const service=await ready(net,directory,keys);
+ // The option is not the genesis's 68: a persisted epoch length must win, or a changed setting would reshape a live pool.
+ const service=await ready(net,directory,keys,'128');
  return {net,directory,service,request:await listen(service)};
 }
 let baked:ReturnType<typeof world>|undefined,fresh:ReturnType<typeof world>|undefined;
@@ -85,6 +86,11 @@ test('the epoch /checkpoints/:epoch/:blocks serves this body',async()=>{
  ]}]);
 });
 
+test('the epoch /times lists when every 64th batch landed',async()=>{
+ const {request}=await bakedWorld(),answer=await request('/api/rollup/times');
+ assert.deepEqual([answer.status,answer.headers.get('cache-control'),await answer.json()],[200,'no-store',{every:64,at:[1700000000000,1700000064000,1700000128000,1700000192000]}]);
+});
+
 test('the epoch /archives lists its closed epochs and serves their files',async()=>{
  const {request}=await bakedWorld(),file=async(name:string)=>{const answer=await request(`/api/rollup/archives/${name}`);return [answer.status,answer.headers.get('content-type'),answer.headers.get('cache-control'),sha(Buffer.from(await answer.arrayBuffer()))];};
  assert.deepEqual(await json(request,'/archives'),{epochs:[0,1]});
@@ -103,6 +109,12 @@ test('the epoch key allowlist serves the five epoch circuits and the manifest, a
  assert.deepEqual([await statuses(served),await statuses(refused)],[served.map(()=>200),refused.map(()=>404)]);
 });
 
+test('the epoch routes carry these cache headers',async()=>{
+ const {request}=await bakedWorld(),cache=async(path:string)=>(await request(`/api/rollup${path}`)).headers.get('cache-control');
+ for(const path of ['/status','/scan?from=0&limit=1','/batches?from=0&limit=1','/archives'])assert.equal(await cache(path),'no-store',path);
+ assert.equal(await cache('/proving/epoch-batch-recover.zkey'),'public, max-age=31536000, immutable','/proving');
+});
+
 // The stand-in batch keys are one key, so a swap of the two would leave the leaves alone; the spec text catches it.
 test('the epoch spec names each key file for its own circuit',async()=>{
  const {directory}=await bakedWorld();
@@ -119,19 +131,40 @@ test('the epoch journal pin is these hashes',async()=>{
  });
 });
 
-test('a batch the epoch operator wrote is served with these paths and this transaction',async()=>{
- const {net,service,request}=await freshWorld(),{deposit}=epochHarness(hash),mirror=EpochState.genesis(hash,EPOCH_LEN,false);
+async function land(){
+ const {net,service}=await freshWorld(),{deposit}=epochHarness(hash),mirror=EpochState.genesis(hash,EPOCH_LEN,false);
  const spends=Array.from({length:BATCH_SLOTS},(_,n)=>{
   const ciphertext=Uint8Array.from({length:ROLLUP_RECORD_BYTES},(_,i)=>(i+n)%251),built=deposit(mirror,0n,{ctDigest:ctDigestOf(ciphertext)});
   return {id:hex.encode(Uint8Array.from({length:16},()=>n+1)),slot:built.slot,publics:built.publicSignals,proof,ciphertext};
  });
  // Ten spends fill a batch, so none of the random padding proved in the background rides in it; the record's `at` is the wall clock and is left out.
  await Promise.all(spends.map(s=>service.submit(s as never)));
- await until('the batch lands',()=>service.status().pool!.batches===1,net);
+ await until('the batch is published',()=>service.status().pool!.lastBatch?.batch===0,net);
+ return spends;
+}
+let landed:ReturnType<typeof land>|undefined;
+const landedBatch=()=>landed??=land();
+
+test('a batch the epoch operator wrote is served with these paths and this transaction',async()=>{
+ const {request}=await freshWorld(),spends=await landedBatch();
  const [record]=(await json(request,'/batches?from=0&limit=1')).batches;
  assert.deepEqual(Object.keys(record).sort(),['at','kind','noteBlockRoot','slots','txid']);
  assert.deepEqual(pathsOf(record.slots[0]).sort(),['anchor','ciphertext','commitments','ctDigest','groupId','groupSize','nullifiers','publics','rCur.epoch','rCur.root']);
  assert.deepEqual([record.kind,record.slots.length,record.noteBlockRoot,record.txid],['spend',10,'10213525036281699254558372429565124490521660675928360058580130848528818887417','29d4be07aa39a125d6d43c0054d9135d8bfb8da380e63a68ed0e1ccdf2626aa7']);
  assert.deepEqual(record.slots,spends.map(({slot:s,publics,ciphertext})=>({anchor:String(s.anchor),rCur:{epoch:s.rCur!.epoch,root:String(s.rCur!.root)},nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),
   ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize,publics:publics.map(String),ciphertext:hex.encode(ciphertext)})));
+});
+
+test('the scan of a batch the operator wrote carries its ciphertext hints',async()=>{
+ const {request}=await freshWorld();await landedBatch();
+ const bytes=base64.decode((await json(request,'/scan?from=0')).data);
+ // Bytes 32 to 40 are the wall-clock time; from 73 on, each slot is its ephemeral key, its two view tags and a hint per nullifier.
+ assert.deepEqual([bytes.length,hex.encode(bytes.subarray(0,32)),bytes[40],hex.encode(bytes.subarray(41,73)),sha(bytes.subarray(73))],
+  [453,'29d4be07aa39a125d6d43c0054d9135d8bfb8da380e63a68ed0e1ccdf2626aa7',0,'f9da7106d91570108cea6f1be4bc9734665dc02be4955bbb9cd406d97aa69416','1c8604ccbc631342a87af93bd01fffb740476b97a4c0cf8ecd7648f409808b37']);
+});
+
+test('the status of a pool that wrote a batch carries lastBatch with these paths',async()=>{
+ const {request}=await freshWorld();await landedBatch();
+ const {lastBatch}=(await json(request,'/status')).pool;
+ assert.deepEqual([Object.keys(lastBatch).sort(),lastBatch.batch,lastBatch.rotated],[['at','batch','proveMs','publishMs','rotated','waitedMs'],0,false]);
 });
