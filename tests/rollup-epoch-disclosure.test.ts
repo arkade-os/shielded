@@ -97,6 +97,12 @@ test('a view key lists every note it received across three epochs, at the right 
  assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records.slice(5), key, 5)), [[5, 160, 500n, false], [5, 162, 100n, false], [8, 256, 30n, false], [10, 320, 100n, false]], 'from a later page, by the same stream position');
 });
 
+test('a view key leaves out a note sealed to it that commits to another owner', async () => {
+ const pool = epochPool(hash, EPOCH_LEN), key = parseViewKey(viewKeyOf(bobTo.owner, bobKeys.viewSecret));
+ pool.land('spend', [await pool.deposit({ ...bobTo, owner: aliceTo.owner }, 400n), await pool.deposit(bobTo, 300n)]);
+ assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records, key)), [[0, 2, 300n, true]]);
+});
+
 test('a full viewing key over an epoch pool sees the same notes and their spends', async () => {
  const { pool } = await world(), [alice, bob] = await Promise.all([aliceKeys, bobKeys].map(async keys => {
   const watcher = await watch(keys, pool.api), owner = await replay(fresh(keys), pool.api);

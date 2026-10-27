@@ -4,7 +4,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
-import {catchUpAfterEvent,epochCatchUp,WATCHDOG_MS} from '../src/shielded/epoch-sync.ts';
+import {catchUpAfterEvent,epochCatchUp,epochIdle,WATCHDOG_MS} from '../src/shielded/epoch-sync.ts';
 import type {PoolApi} from '../src/shielded/pool.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {loadAccount} from '../src/shielded/wallet.ts';
@@ -106,6 +106,58 @@ test('a pool still starting up, or one that fails during the check, opens the sn
   assert.deepEqual([loaded.resumed,loaded.offline,loaded.account.batchCount,loaded.sent['7']?.to],[true,true,6,'shrol21abc']);
   assert.match(loaded.error!,reason);
  }
+});
+
+test('epochCatchUp stops on an empty page even when the total claims more, so a lagging operator cannot spin',async()=>{
+ let pages=0;
+ const api=(async()=>{if(pages++)throw new Error('a second page was asked for');return {total:99,batches:[]};}) as PoolApi;
+ assert.equal(await epochCatchUp(EpochAccount.owning(hash,aliceKeys,{epochLen:4}),api),0);
+});
+
+const gate=()=>{let resolve!:()=>void;return {promise:new Promise<void>(r=>{resolve=r;}),resolve:()=>resolve()};};
+
+for(const rejects of [false,true])test(`epochIdle saves after a queued follower finishes behind a ${rejects?'rejected':'successful'} leader`,async()=>{
+ const leaderReady=gate(),followerReady=gate(),finishLeader=gate(),finishFollower=gate();
+ let partial=false,saved=false,calls=0;
+ const account={batchCount:0,apply:async()=>{
+  partial=true;followerReady.resolve();await finishFollower.promise;
+  (account as {batchCount:number}).batchCount++;partial=false;return [];
+ }} as unknown as EpochAccount;
+ const api=(async()=>{
+  if(calls++===0){leaderReady.resolve();await finishLeader.promise;if(rejects)throw new Error('leader failed');return {total:0,batches:[]};}
+  return {total:1,batches:[{txid:'follower'}]};
+ }) as PoolApi;
+ const leader=epochCatchUp(account,api),checkedLeader=rejects?assert.rejects(leader,/leader failed/):leader;
+ await leaderReady.promise;
+ const follower=epochCatchUp(account,api),snapshot=epochIdle(account,()=>{saved=true;assert.equal(partial,false);return account.batchCount;});
+ await Promise.resolve();assert.equal(saved,false,'the current run is still pending');
+ finishLeader.resolve();await followerReady.promise;
+ await new Promise(r=>setImmediate(r));
+ try{assert.equal(saved,false,'the follower is halfway through apply');}
+ finally{finishFollower.resolve();}
+ await checkedLeader;assert.equal(await follower,1);assert.equal(await snapshot,1);
+ let synchronous=false;const immediate=epochIdle(account,()=>{synchronous=true;return 9;});
+ assert.equal(synchronous,true,'the callback shares the final no-running check');assert.equal(await immediate,9);
+});
+
+for(const rejects of [false,true])test(`page checkpoints hold the flight through a ${rejects?'rejected':'successful'} leader and its queued follower`,async()=>{
+ const checkpoint=gate(),applying=gate(),finishApply=gate();
+ const pages:number[]=[],events:string[]=[];let calls=0,saved=false;
+ const mutable={batchCount:0,apply:async()=>{
+  if(mutable.batchCount===1){events.push('applying');applying.resolve();await finishApply.promise;}
+  mutable.batchCount++;
+ }};
+ const account=mutable as unknown as EpochAccount;
+ const api=(async()=>{calls++;return {total:calls,batches:[{txid:String(calls)}]};}) as PoolApi;
+ const onPage=async(cursor:number)=>{pages.push(cursor);if(cursor===1){await checkpoint.promise;if(rejects)throw new Error('checkpoint failed');}};
+ const leader=epochCatchUp(account,api,undefined,onPage),checkedLeader=rejects?assert.rejects(leader,/checkpoint failed/):leader;
+ const follower=epochCatchUp(account,api,undefined,onPage),snapshot=epochIdle(account,()=>{saved=true;return account.batchCount;});
+ try{
+  await new Promise(r=>setImmediate(r));assert.deepEqual(pages,[1]);assert.equal(calls,1);assert.equal(saved,false);
+  checkpoint.resolve();await applying.promise;await new Promise(r=>setImmediate(r));
+  assert.equal(saved,false);assert.deepEqual(events,['applying']);
+  finishApply.resolve();await checkedLeader;assert.equal(await follower,1);assert.equal(await snapshot,2);assert.deepEqual(pages,[1,2]);
+ }finally{checkpoint.resolve();finishApply.resolve();await Promise.allSettled([checkedLeader,follower,snapshot]);}
 });
 
 test('a pool event that finds no new batch looks again shortly, until one lands, the delays run out or the wallet stops',async()=>{

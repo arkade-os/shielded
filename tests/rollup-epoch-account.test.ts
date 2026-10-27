@@ -296,3 +296,22 @@ test('pay, consolidate, depositAsset and withdrawAsset build spends the pool adm
  assert.deepEqual([joined.kind, grouped.kind, grouped.spends.length, account.epoch], ['join', 'spend', 3, 1]);
  assert.deepEqual([account.balance(), account.balance(7n), account.balance(9n), account.notes().length], [110n, 10n, 25n, 2]);
 });
+
+test('a spend refuses a join\'s boundary leg, a withdrawal without its program, an overspend and a carrier under 330 sats', async () => {
+ const pool = epochPool(hash, 4), account = alice(4), program = new Uint8Array(32).fill(0xab);
+ pool.land('spend', [await pool.deposit(aliceTo, 100n), await pool.deposit(aliceTo, 500n), await pool.transfer({ ask: 0n, nk: 0n, self: aliceTo, request: { deposit: 40n, asset: 7n } })]);
+ await replay(account, pool.api);
+ const [a, b] = account.notes();
+ await assert.rejects(account.spend({ inputs: [a!, b!], withdraw: 100n, program }, aliceTo), /no deposit, withdrawal or group/);
+ await assert.rejects(account.spend({ input: a!, withdraw: 50n }, aliceTo), /payout program/);
+ await assert.rejects(account.spend({ input: a!, to: { recipient: bobTo, amount: 101n } }, aliceTo), /does not balance/);
+ await assert.rejects(account.withdrawAsset(7n, 30n, program, aliceTo, new Set(), 329n), /at least 330/);
+});
+
+test('consolidation joins the two smallest notes, and only when there are more than its threshold', async () => {
+ const pool = epochPool(hash, 4), account = alice(4);
+ pool.land('spend', await Promise.all(Array.from({ length: 9 }, (_, i) => pool.deposit(aliceTo, BigInt(100 * (i + 1))))));
+ await replay(account, pool.api);
+ assert.deepEqual((await account.consolidate(aliceTo))!.inputs.map(n => n.amount), [100n, 200n]);
+ assert.equal(await account.consolidate(aliceTo, BTC_ASSET, new Set(), 9), undefined, 'nine notes are not above nine');
+});

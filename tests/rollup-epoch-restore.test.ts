@@ -5,7 +5,7 @@ import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-re
 import { epochBirthCheckpoint, epochFreshAccount, epochMatchesPool, loadEpochAccount } from '../src/shielded/epoch-checkpoint.ts';
 import { epochCatchUp, epochIdle } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi, RollupPoolStatus } from '../src/shielded/pool.ts';
-import { NoteFrontier } from '../packages/protocol/src/rollup/frontier.ts';
+import { NoteFrontier, type FrontierCheckpoint } from '../packages/protocol/src/rollup/frontier.ts';
 import { NOTE_DEPTH, ROLLUP_DOMAIN, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
 import { EpochAccount, type EpochAccountSnapshot, type EpochOwnedNote } from '../packages/protocol/src/rollup/epoch-account.ts';
 import { rotatesAt } from '../packages/protocol/src/rollup/epoch-scan.ts';
@@ -13,7 +13,7 @@ import { noteOf } from '../packages/protocol/src/rollup/notes.ts';
 import { rollupRecipientOf, type RollupRecipient } from '../packages/protocol/src/rollup/wallet.ts';
 import { deriveRollupKeys2 } from '../packages/protocol/src/wallet-keys.ts';
 import { foldPath } from './fixtures/epoch.ts';
-import { epochPool, opens, posted } from './fixtures/epoch-pool.ts';
+import { epochLeafPool, epochPool, opens, posted } from './fixtures/epoch-pool.ts';
 
 const poseidon = await buildPoseidon();
 const hash = (values: bigint[]) => BigInt(poseidon.F.toObject(poseidon(values)));
@@ -173,6 +173,18 @@ test('matchesPool throws when the pool\'s prevNoteRoot contradicts the account\'
  assert.deepEqual([replayed.resumed, replayed.error], [false, 'The saved wallet does not match the pool; syncing from the pool.'], 'a wrong root alone is a plain resync');
 });
 
+test('a batch landing between the catch-up and the status read gets another try', async () => {
+ const pool = epochPool(hash, 4), account = alice(4);
+ pool.land();
+ let landing = true;
+ const { asked, api } = logged(((path: string, ...rest: [unknown?, (() => void)?]) => {
+  if (path === '/status' && landing) { landing = false; pool.land(); }
+  return pool.api(path, ...rest);
+ }) as PoolApi);
+ assert.equal(await epochMatchesPool(account, api), true);
+ assert.deepEqual([account.batchCount, account.latestRoot(), asked.filter(p => p === '/status').length], [2, pool.state.latestRoot(), 2]);
+});
+
 test('a v1 snapshot, another owner\'s, and another epochLen are each refused', async () => {
  const snapshot = alice(4).snapshot(), classic = { v: 1, owner: snapshot.owner, bornAt: 0, blocks: 0, frontier: new NoteFrontier(hash).snapshot(), owned: [], txids: [], history: [] } as unknown as EpochAccountSnapshot;
  assert.equal(EpochAccount.fromSnapshot(hash, aliceKeys, snapshot, 4).owner, alice(4).owner);
@@ -244,6 +256,15 @@ test('a checkpoint start that cannot be confirmed falls back to a replay start i
   epochFreshAccount(hash, aliceKeys, bornAt, pool.api, hookFails),
  ]);
  for (const account of starts) assert.deepEqual([account.batchCount, account.epoch, account.prevNoteRoot()], [LONG, 1, undefined]);
+});
+
+test('a checkpoint the pool\'s root refutes, or another than the one asked for, gives way to the replay start', async () => {
+ const { api } = epochLeafPool(hash, 256, 140);
+ const answering = (answer: (asked: FrontierCheckpoint) => FrontierCheckpoint | Promise<FrontierCheckpoint>) =>
+  ((path: string, ...rest: [unknown?, (() => void)?]) => path === '/checkpoints/0/128' ? api<FrontierCheckpoint>(path).then(answer) : api(path, ...rest)) as PoolApi;
+ assert.equal((await epochFreshAccount(hash, aliceKeys, 130, answering(c => c))).batchCount, 140);
+ const refuted = answering(c => ({ ...c, filled: c.filled.map(() => '7') })), earlier = answering(() => api<FrontierCheckpoint>('/checkpoints/0/64'));
+ for (const [label, served] of [['refuted', refuted], ['earlier', earlier]] as const) assert.equal((await epochFreshAccount(hash, aliceKeys, 130, served)).batchCount, 0, label);
 });
 
 test('a checkpoint at blocks 0 is the empty tree of an unrotated epoch, so it takes no prevNoteRoot', () => {

@@ -17,5 +17,4 @@ export function epochRevealLinkOf(origin:string,e:EpochHistoryEntry,o:{self:stri
  return notes.length?`${origin}/verify#${encodeDisclosure({v:1,to,notes})}`:undefined;
 }
 
-/** incomingNotes over epoch records: it reads a slot's ciphertext, commitments and publics and a batch's txid and at, which a record carries, and it already names a note by its place in the stream. */
 export const epochIncomingNotes=(hash:Hash,batches:readonly RollupEpochRecord[],key:Parameters<typeof incomingNotes>[2],first=0)=>incomingNotes(hash,batches,key,first);

@@ -126,6 +126,14 @@ test('a group must fill consecutive slots and commit to its members', () => {
  assert.throws(() => state.apply('spend', fill(state, [{ ...a, groupId: forgedId, groupSize: 2 }, { ...b, groupId: forgedId, groupSize: 2 }])), rejection('group-invalid'));
 });
 
+test('a group has two or three members under a nonzero id, and a slot past its size is refused', () => {
+ const state = EpochState.genesis(hash, 1024);
+ const [a, b, c] = [fastSlot(state), fastSlot(state), fastSlot(state)];
+ const groupId = groupIdOf(hash, [a.nullifiers[0], b.nullifiers[0]]);
+ assert.throws(() => state.apply('spend', fill(state, [a, b, c].map(slot => ({ ...slot, groupId, groupSize: 2 })))), rejection('group-invalid'));
+ for (const [id, size] of [[0n, 2], [groupId, 1]] as const) assert.throws(() => state.apply('spend', fill(state, [{ ...a, groupId: id, groupSize: size }])), rejection('group-invalid'), `id ${id}, size ${size}`);
+});
+
 test('a clone and an operator state apply a batch exactly as the leaf state does, and the clone shares nothing', () => {
  const state = EpochState.genesis(hash, 2), spliced = EpochState.genesis(hash, 2, false);
  for (const rotates of [false, false, true]) {
