@@ -1,7 +1,7 @@
 // The liveness fallback (spec section 4): the pool's batch leaf checks proofs, not who submits, so anyone can move it.
-//   mirror  <pool-url> <dir>            save the pool's parameters, proving keys, batch records and (epoch pool) checked nullifier archives while the operator is up
+//   mirror  <pool-url> <dir>            save the pool's parameters, proving keys, batch records and checked nullifier archives while the operator is up
 //   withdraw <dir> <sats> <tark1…>       prove and submit a batch paying out from the wallet in SHIELDED_PHRASE
-//   recover <dir> <origin>              (epoch pool) prove and submit a width-1 batch recovering the wallet's largest BTC note of that epoch
+//   recover <dir> <origin>              prove and submit a width-1 batch recovering the wallet's largest BTC note of that epoch
 //   publish <dir> <pool-url> <batch>     hand a batch this tool landed to the operator, so it can follow it
 import {createHash} from 'node:crypto';
 import {existsSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs';
@@ -31,7 +31,7 @@ import {createRollupTransport} from '../src/rollup/transport.ts';
 import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,epochMirrorStart,replayEpochMirror} from './rollup-cache.ts';
 
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo;epochLen?:number}
-const CLASSIC='This tool no longer handles a classic (genesis-3) pool or mirror; check out commit 4a1f329, the build before that half was removed, and run the fallback from there.';
+const CLASSIC='This tool no longer handles a classic (genesis-3) pool or mirror; check out commit a6aa085, a build that still has that half, and run the fallback from there.';
 const {positionals:[command,...args],values:flags}=parseArgs({allowPositionals:true,options:{'max-batches':{type:'string'}}});
 const maxBatches=flags['max-batches']===undefined?undefined:Number(flags['max-batches']);
 if(maxBatches!==undefined&&(!Number.isSafeInteger(maxBatches)||maxBatches<1))throw new Error('--max-batches wants a positive whole number of batches.');
@@ -172,5 +172,5 @@ if(command==='mirror')await mirror(args[0]!.replace(/\/+$/,''),args[1]!);
 else if(command==='withdraw')await withdraw(args[0]!,BigInt(args[1]!),args[2]!);
 else if(command==='recover')await recover(args[0]!,Number(args[1]));
 else if(command==='publish')await publish(args[0]!,args[1]!.replace(/\/+$/,''),Number(args[2]));
-else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>; epoch pools: --max-batches=<n> caps the chain walk');
+else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>; --max-batches=<n> caps the chain walk');
 await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();

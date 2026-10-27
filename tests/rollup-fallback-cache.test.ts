@@ -187,7 +187,7 @@ test('a classic pool or mirror is refused by every command, naming the commit to
  writeFileSync(join(dir,'pool.json'),JSON.stringify({...pool,network:{}}));
  const base=`http://127.0.0.1:${((await listen({status:()=>({pool,network:{}})} as unknown as RollupService)).server.address() as AddressInfo).port}`,{SHIELDED_PHRASE:_,...env}=process.env;
  await Promise.all([['withdraw',dir,'1000',to],['recover',dir,'0'],['publish',dir,base,'0'],['mirror',base,mirror]].map(args=>
-  assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts',...args],{env}),(error:{stderr:string})=>/check out commit 4a1f329/.test(error.stderr),args[0])));
+  assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts',...args],{env}),(error:{stderr:string})=>/check out commit a6aa085/.test(error.stderr),args[0])));
  assert.deepEqual(readdirSync(mirror),[],'a refused mirror writes nothing');
 });
 
