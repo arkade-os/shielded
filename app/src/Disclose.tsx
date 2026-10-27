@@ -7,7 +7,7 @@ import {EpochAccount,type EpochHistoryEntry,type EpochOwnedNote} from '../../pac
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import type {RollupEpochRecord} from '../../src/rollup/epoch-operator.ts';
-import {epochPoolOf} from '../../src/shielded/epoch-checkpoint.ts';
+import {epochMatchesPool,epochPoolOf} from '../../src/shielded/epoch-checkpoint.ts';
 import {epochIncomingNotes} from '../../src/shielded/epoch-disclosure.ts';
 import {epochSyncAccount,poolApiOf,rollupApi,type PoolApi,type RollupPoolStatus} from './rollup-client.ts';
 
@@ -17,10 +17,12 @@ const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'me
 const unit=(asset:bigint)=>asset===0n?'sats':'asset units';
 const totals=(items:{asset:bigint;amount:bigint}[])=>{const m=new Map<bigint,bigint>();for(const i of items)m.set(i.asset,(m.get(i.asset)??0n)+i.amount);return [...m].map(([asset,amount])=>`${sats(amount)} ${unit(asset)}`).join(' + ');};
 const hashFn=async()=>{const poseidon=await buildPoseidon();return (v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));};
-/** The shfvk2 replay. The classic replica took every epoch record as chain-only and showed the same balance; this one checks each record's commitments. */
+/** The shfvk2 replay. The classic replica took every epoch record as chain-only and showed the same balance; this one checks each record's commitments, and the pool's own root for a chain-only record, which has none. */
 export async function fullViewOf(hash:Hash,key:ReturnType<typeof parseFullViewKey>,api:PoolApi=poolApiOf('')){
  const account=new EpochAccount(hash,key,{epochLen:(await epochPoolOf(api)).epochLen});
  await epochSyncAccount(account,api);
+ const matches=await epochMatchesPool(account,api).catch((error:{code?:string})=>{if(error?.code==='root-drift')return false;throw error;});
+ if(!matches)throw new Error('The full view does not match the pool.');
  return account;
 }
 /** A note reads Unspent only while the account holds it. A payment to oneself across several notes leaves no history entry, so a spent note can have no batch to name. */

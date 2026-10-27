@@ -288,6 +288,19 @@ test('the /watch full viewing key replays with EpochAccount, which refuses a rec
  await assert.rejects(fullViewOf(hash,key,api),/do not rebuild the block root/);
 });
 
+test('the /watch full viewing key refuses a pool whose chain-only record carries a root its own status contradicts',async()=>{
+ const fake=epochPool(hash,4),keys=deriveRollupKeys2('11'.repeat(32),'mutinynet');
+ fake.land('spend',[await fake.deposit(rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret),700n)]);
+ for(let n=0;n<4;n++)fake.land('spend',[],true);
+ const key=parseFullViewKey(hash,fullViewKeyOf(akOf(hash,keys.ask),keys.nk,keys.viewSecret));
+ const forging=(batch:number)=>(async(path:string)=>{
+  const page=await fake.api<{from:number;batches:Record<string,any>[]}>(path);
+  return path.startsWith('/batches')?{...page,batches:page.batches.map((r,i)=>page.from+i===batch?{...r,noteBlockRoot:String(BigInt(r.noteBlockRoot)+1n)}:r)}:page;
+ }) as PoolApi;
+ assert.deepEqual([fake.state.epoch,(await fullViewOf(hash,key,fake.api)).notes().map(n=>[n.epoch,n.amount])],[1,[[0,700n]]],'an honest pool, chain-only records included');
+ for(const [batch,where] of [[4,'the live epoch'],[2,'a closed epoch']] as const)await assert.rejects(fullViewOf(hash,key,forging(batch)),/The full view does not match the pool\./,where);
+});
+
 let served:ReturnType<typeof serve>|undefined;
 const serve=async()=>{
  const request=await listen(await ready(offline(),scratch('rollup-wire-guard-'),keySet('epoch'),'64'));
