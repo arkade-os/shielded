@@ -199,6 +199,7 @@ export class ShieldedWallet extends Wallet {
   try{plan=this.account.anchorPlan();}catch{return [];}
   return this.mergeableAssets().flatMap(asset=>this.account.notes(asset)).filter(n=>needsRecovery(n,plan));
  }
+ get recoveryInFlight():EpochOwnedNote[]{return this.recovering.filter(n=>this.notes.inFlight.has(n.nullifier));}
  shieldedHistory():readonly EpochHistoryEntry[]{return this.account.history;}
  override async getTransactionHistory():Promise<ArkTransaction[]>{
   const sdk=await super.getTransactionHistory();

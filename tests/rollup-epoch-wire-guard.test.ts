@@ -189,8 +189,10 @@ test('a wallet holding a note two epochs old recovers it, and shows one line whi
  wallet.onAction(handle=>announced.push(handle));
  try{
   assert.deepEqual([old!.epoch,wallet.recovering,RECOVERY_LINE],[0,[old],'Recovering an older note']);
+  assert.deepEqual(wallet.recoveryInFlight,[],'it needs a recovery, and none is running yet');
   const open=hold();await tick(wallet);await until(()=>bodies.length===1,'the recovery posted');
   assert.deepEqual([wallet.recovering,wallet.inFlight.has(old!.nullifier)],[[old],true],'the line stays while the recovery is in flight');
+  assert.deepEqual(wallet.recoveryInFlight,[old],'now it is recovering');
   open();await until(()=>wallet.inFlight.size===0,'the recovery landed');
   const [fresh]=wallet.account.notes();
   assert.deepEqual([bodies[0]!.slot.origin,'rCur' in bodies[0]!.slot,fake.records.at(-1)!.kind],[0,false,'recover']);
