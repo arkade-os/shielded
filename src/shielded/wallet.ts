@@ -287,10 +287,9 @@ export class ShieldedWallet extends Wallet {
  /** One renewal plan at a time, over every held asset; epochIdle keeps a replay from moving the window the targets are drawn in. */
  private async renewNotes(){
   const chosen=await this.notes.pick(async()=>{
-   if(this.renewing)return undefined;
    for(const asset of this.mergeableAssets()){
     const plan=await epochIdle(this.account,()=>this.account.renewalDue({inFlight:this.notes.inFlight,asset}));
-    if(plan){const built=await this.account.renew(plan,this.self);this.renewing=true;return {nullifiers:plan.due.map(n=>n.nullifier),built};}
+    if(plan&&!this.renewing){const built=await this.account.renew(plan,this.self);this.renewing=true;return {nullifiers:plan.due.map(n=>n.nullifier),built};}
    }
    return undefined;
   },chosen=>chosen?.nullifiers??[]);
