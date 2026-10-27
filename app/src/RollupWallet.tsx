@@ -59,7 +59,7 @@ export default function RollupWallet(){
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
- const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(0);
+ const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[restoreDate,setRestoreDate]=useState('');
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -240,13 +240,13 @@ export default function RollupWallet(){
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
  useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!narrow||!panel)return;
-  const key=(e:KeyboardEvent)=>{
-   if(e.key==='Escape')return setSheetOpen(false);
-   if(e.key!=='Tab')return;
-   const items=Array.from(panel.querySelectorAll<HTMLElement>(':is(a[href],button,input,select,textarea,summary):not(:disabled)')).filter(el=>el.offsetParent),first=items[0],last=items[items.length-1];
-   if(first&&last&&(!panel.contains(document.activeElement)||document.activeElement===(e.shiftKey?first:last))){e.preventDefault();(e.shiftKey?last:first).focus();}
-  };
-  addEventListener('keydown',key);const root=document.documentElement,was=root.style.overflow,back=document.activeElement as HTMLElement|null;root.style.overflow='hidden';panel.querySelector<HTMLElement>('.stock-panel-head button')?.focus();return()=>{removeEventListener('keydown',key);root.style.overflow=was;back?.focus();};},[sheetOpen,narrow]);
+  // Everything behind the open sheet goes inert, for Tab and for a screen reader's cursor; the backdrop still closes it and the bar keeps reporting.
+  const behind:Element[]=[];let el:Element=panel;
+  while(el.parentElement&&!el.classList.contains('stock-page')){const up=el.parentElement;for(const other of Array.from(up.children))if(other!==el&&!other.matches('.stock-backdrop,.stock-soundbar,[inert]'))behind.push(other);el=up;}
+  for(const other of behind)other.setAttribute('inert','');
+  const key=(e:KeyboardEvent)=>{if(e.key==='Escape')setSheetOpen(false);};
+  addEventListener('keydown',key);const root=document.documentElement,was=root.style.overflow,back=document.activeElement as HTMLElement|null;root.style.overflow='hidden';panel.querySelector<HTMLElement>('.stock-panel-head button')?.focus();
+  return()=>{removeEventListener('keydown',key);root.style.overflow=was;for(const other of behind)other.removeAttribute('inert');back?.focus();};},[sheetOpen,narrow]);
  // A finished action leaves the bar after a moment; a failure stays until it is dismissed.
  useEffect(()=>{if(!sheet?.done)return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet]);
  const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
@@ -340,7 +340,7 @@ export default function RollupWallet(){
     {refreshError&&<p className="stock-blocked">{refreshError}</p>}
    </section>
    <section id="stock-panel" className={'stock-card stock-panel'+(docked&&sheetOpen?' is-open':'')} {...(docked?{role:'dialog','aria-modal':sheetOpen,'aria-label':tab==='receive'?'Receive':'Send',inert:!sheetOpen}:{})}>
-    {docked&&<div className="stock-panel-head" onTouchStart={e=>{dragFrom.current=e.touches[0]!.clientY;}} onTouchEnd={e=>{if(e.changedTouches[0]!.clientY-dragFrom.current>48)setSheetOpen(false);}}><span className="stock-grabber" aria-hidden="true"/><button type="button" className="stock-ghost stock-mini" onClick={()=>setSheetOpen(false)}>Close</button></div>}
+    {docked&&<div className="stock-panel-head" onTouchStart={e=>{dragFrom.current=e.touches[0]!.clientY;}} onTouchEnd={e=>{if(e.changedTouches[0]!.clientY-dragFrom.current>48)setSheetOpen(false);dragFrom.current=Infinity;}}><span className="stock-grabber" aria-hidden="true"/><button type="button" className="stock-ghost stock-mini" onClick={()=>setSheetOpen(false)}>Close</button></div>}
     <div className="stock-tabs" role="tablist">{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>{setTab(name);setTo('');}}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>
     {tab==='receive'?<div className="stock-receive">
      <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
@@ -404,7 +404,7 @@ export default function RollupWallet(){
    </div></section>}
    </div></div>
   </>}
-  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and derive your Arkade keys. Anyone who has them can spend your funds.</p><details className="stock-more"><summary>Pending Lightning swaps</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished: the phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and derive your Arkade keys. Anyone who has them can spend your funds. Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished: the phrase alone does not restore every outstanding swap.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
   <details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
    <p className="stock-muted">Keep this browser&apos;s data while Lightning swaps or payouts are pending. A fresh browser recovers a Lightning alias through Recover a Lightning address; direct swaps also need their stored recovery records.</p>
    {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}

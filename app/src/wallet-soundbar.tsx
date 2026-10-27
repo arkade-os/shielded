@@ -25,7 +25,7 @@ export function Soundbar({item,onDismiss}:{item?:SoundbarItem;onDismiss:()=>void
  useEffect(()=>{if(!steps)setOpen(false);},[steps]);
  const pct=steps&&!steps.done&&!steps.error?Math.round(100*(steps.current+1)/steps.steps.length):undefined;
  return <aside className={'stock-soundbar'+(item?` is-${item.state}`:' is-idle')+(open?' is-open':'')} aria-label="Wallet activity">
-  {steps&&<ol className="stock-steps" id="stock-soundbar-steps">{steps.steps.map((label,i)=><li key={label} className={steps.error&&i===steps.current?'error':i<steps.current||steps.done?'done':i===steps.current?'active':''}><i/>{label}</li>)}</ol>}
+  {steps&&<ol className="stock-steps" id="stock-soundbar-steps">{steps.steps.map((label,i)=><li key={i} className={steps.error&&i===steps.current?'error':i<steps.current||steps.done?'done':i===steps.current?'active':''}><i/>{label}</li>)}</ol>}
   <div className="stock-soundbar-bar">
    <span className="stock-eq" aria-hidden="true"><i/><i/><i/><i/><i/></span>
    <span className="stock-soundbar-text" role="status" aria-live="polite" aria-atomic="true">{item&&<><b>{item.title}</b><span>{item.line}</span></>}</span>

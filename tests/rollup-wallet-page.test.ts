@@ -7,6 +7,7 @@ import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,s
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
+import {shieldTitle} from '../src/shielded/wallet.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
@@ -139,7 +140,7 @@ test('the status sheet renders a step state the handle produced, title and all',
 });
 
 test('the soundbar shows a running action before the wallet\'s own upkeep, and nothing when idle',()=>{
- const sheet={title:'Shielding 3,000 sats',steps:['Prepare the deposit coin','Prove the deposit on this device'],current:1};
+ const sheet={title:shieldTitle({kind:'btc',coins:[],amount:3000}),steps:['Prepare the deposit coin','Prove the deposit on this device'],current:1};
  const idle={recovering:false,inFlight:false,syncing:false,recoveryLine:'Recovering notes.'};
  assert.equal(soundbarItem(idle),undefined);
  assert.deepEqual(soundbarItem({...idle,sheet,recovering:true,inFlight:true,syncing:true}),{title:'Shielding 3,000 sats',line:'Step 2 of 2: Prove the deposit on this device',state:'active',steps:sheet});
