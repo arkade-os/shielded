@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,payTarget,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
@@ -160,6 +160,9 @@ test('a scanned or pasted payment code becomes a destination, and a payment link
  assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.000000001'),{to:'bc1qexample'});
  assert.deepEqual(payTarget('SHROL21ABC'),{to:'shrol21abc'});
  assert.deepEqual(payTarget('Satoshi@example.com'),{to:'Satoshi@example.com'});
+ assert.throws(()=>payTarget('bitcoin:bc1qexample?amount=0.0001&req-pop=callback%3A'),/req-pop/);
+ assert.throws(()=>payTarget('BITCOIN:BC1QEXAMPLE?REQ-SOMETHING=1'),/req-something/);
+ assert.equal(invoiceQr(invoice),'LIGHTNING:'+invoice.toUpperCase());
 });
 
 test('a pool whose reserves are full refuses another listing instead of swallowing it',()=>{

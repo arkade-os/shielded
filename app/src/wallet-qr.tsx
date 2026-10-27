@@ -2,7 +2,7 @@ import {useEffect,useMemo,useRef,useState} from 'react';
 import encodeQR from 'qr';
 
 export function QrCode({value,label}:{value:string;label:string}){
- const {size,d}=useMemo(()=>{const rows=encodeQR(value,'raw',{border:2});return {size:rows.length,d:rows.flatMap((row,y)=>row.map((dark,x)=>dark?`M${x} ${y}h1v1h-1z`:'')).join('')};},[value]);
+ const {size,d}=useMemo(()=>{const rows=encodeQR(value,'raw',{border:4});return {size:rows.length,d:rows.flatMap((row,y)=>row.map((dark,x)=>dark?`M${x} ${y}h1v1h-1z`:'')).join('')};},[value]);
  return <svg className="stock-qr" viewBox={`0 0 ${size} ${size}`} role="img" aria-label={label} shapeRendering="crispEdges"><rect width={size} height={size} fill="#fff"/><path d={d} fill="#0b2338"/></svg>;
 }
 
@@ -22,12 +22,14 @@ export function Scanner({onResult,onClose}:{onResult:(text:string)=>void;onClose
   let live=true,stop=()=>{};
   // The decoder loads only when someone scans.
   void import('qr/dom.js').then(async({QRCanvas,frameLoop,rearCamera})=>{
-   const camera=await rearCamera(video.current!);
+   const player=video.current;
+   if(!live||!player)return;
+   const camera=await rearCamera(player);
    if(!live)return camera.stop();
    const canvas=new QRCanvas();let reading=false;
    const cancel=frameLoop(()=>{
     if(reading)return;reading=true;
-    void camera.readFrame(canvas).then(found=>{reading=false;if(live&&typeof found==='string'){live=false;stop();done.current(found);}},()=>{reading=false;});
+    void camera.readFrame(canvas,true).then(found=>{reading=false;if(live&&typeof found==='string'){live=false;stop();done.current(found);}},()=>{reading=false;});
    });
    stop=()=>{cancel();camera.stop();};
   }).catch((error:unknown)=>{if(live)setProblem(cameraProblem(error));});
