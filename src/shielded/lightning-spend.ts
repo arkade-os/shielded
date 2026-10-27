@@ -51,7 +51,11 @@ export async function submitLightningSpend(record:LightningSpendRecord,store:Lig
   if((error as {status?:number})?.status!==404)throw error;
   const beforeRequest=()=>{if(r.expiresAt!==undefined&&Date.now()/1000>=r.expiresAt)throw new Error('The Lightning funding deadline expired; the saved spend remains reserved until reconciled.');};
   try{beforeRequest();await o.api('/spends',JSON.parse(JSON.stringify(r.body)),beforeRequest);}
-  catch(postError){try{first=await o.api<SpendStatus>(`/spends/${r.body.id}`);}catch{throw postError;}}
+  catch(postError){
+   // Refused before admission, so this body can never land: dropping it frees the note for a fresh spend.
+   if((postError as {code?:unknown})?.code==='stale-anchor')first={status:'dropped',reason:(postError as Error).message};
+   else try{first=await o.api<SpendStatus>(`/spends/${r.body.id}`);}catch{throw postError;}
+  }
  }
  o.step?.(2);
  const final=await waitForSpend(r.body.id,async request=>{

@@ -209,7 +209,7 @@ export default function RollupWallet(){
    unwatch.push(created.onShieldedChange(()=>{if(current()){funds.update();setTick(t=>t+1);}}));
    unwatch.push(created.onAction(handle=>{if(current()){funds.update();quotes.clear();sheetOwner.watch(handle,handle.title);}}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
-   if(created.repositoryError)setPoolError(`Your saved notes could not be read, so the wallet is reading the pool again: ${created.repositoryError}`);
+   if(created.repositoryError)setPoolError(`Your saved notes: ${created.repositoryError}`);
    unwatch.push(created.swaps!.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
    lnurlRef.current=lnurl;
    void lnurl!.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
@@ -228,7 +228,7 @@ export default function RollupWallet(){
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
    if(data.history||data.lightningHistory)setRows(pageActivityHistory(data.history??[],data.lightningHistory??[]));
    setRefreshError(Object.values(errors).join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
-   if(wallet.repositoryError)setPoolError(`Your saved notes could not be read or saved: ${wallet.repositoryError}`);
+   if(wallet.repositoryError)setPoolError(`Your saved notes: ${wallet.repositoryError}`);
   });
   const close=async()=>{await refresh.close();sessions.current.delete(close);};
   refreshes.current.set(wallet,refresh);refreshRef.current=refresh;sessions.current.add(close);

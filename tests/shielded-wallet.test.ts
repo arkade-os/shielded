@@ -13,6 +13,7 @@ import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {WATCHDOG_MS} from '../src/shielded/sync.ts';
 import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
 import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
@@ -163,12 +164,45 @@ test('a snapshot from another seed is ignored, reported once, and the wallet syn
  }finally{await mine.dispose();}
 });
 
-test('a pool that will not answer leaves no live wallet behind',async()=>{
- const fetcher=(async()=>{throw new TypeError('fetch failed');}) as unknown as typeof fetch;
+test('a pool that stops answering after an online open leaves no live wallet behind',async()=>{
+ const fetcher=(async(url:string)=>{if(!String(url).endsWith('/status'))throw new TypeError('fetch failed');return new Response(JSON.stringify(status(0)),{status:200});}) as unknown as typeof fetch;
  const dispose=ShieldedWallet.prototype.dispose;let disposed=0;
  ShieldedWallet.prototype.dispose=function(){disposed++;return dispose.call(this);};
  try{await assert.rejects(open({fetcher}),/fetch failed|did not answer/);}finally{ShieldedWallet.prototype.dispose=dispose;}
  assert.equal(disposed,1);
+});
+
+test('a wallet created while its pool is unreachable opens with the reason, and the first tick that reaches the pool checks it and catches up',async()=>{
+ const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository(),asked:string[]=[];let down=true;
+ while(fake.state.batchCount<8)fake.land();
+ // Born at batch 8, it replays from epoch 1 and learns that epoch's final root only on crossing into epoch 2.
+ await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:(await epochFreshAccount(hash,keys,8,fake.api)).snapshot(),sent:{},listings:[],links:[]});
+ fake.land('spend',[await fake.deposit(self,700n)]);
+ const up=fetcherOf(fake.api),fetcher=(async(url:string)=>{if(down)throw new TypeError('fetch failed');asked.push(String(url).replace('/api/rollup',''));return up(url);}) as unknown as typeof fetch;
+ const wallet=await open({repository,fetcher});
+ try{
+  clearTimeout((wallet as any).timer);
+  assert.deepEqual([wallet.repositoryError,wallet.resumed,wallet.batchCount(),wallet.maxPrivatePayment()],['Opened without the pool, so the saved notes are unchecked: fetch failed',true,4,0n]);
+  down=false;await (wallet as any).tick();await wallet.notes.pick(async()=>undefined,()=>[]);
+  assert.deepEqual(asked.slice(0,4),['/status','/status','/batches?from=4&limit=50','/status'],'the tick, then the resume check');
+  assert.deepEqual([wallet.repositoryError,wallet.batchCount(),wallet.shieldedBalance(),wallet.maxPrivatePayment()],[undefined,9,700n,700n]);
+ }finally{await wallet.dispose();}
+});
+
+test('once the pool answers, an offline wallet whose saved previous-epoch root drifted reports it and is not adopted',async()=>{
+ const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository(),saved=EpochAccount.owning(hash,keys,{epochLen:4});let down=true;
+ fake.land('spend',[await fake.deposit(self,500n)]);
+ while(fake.state.batchCount<6)fake.land();
+ await epochCatchUp(saved,fake.api);
+ await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:{...saved.snapshot(),prevNoteRoot:String(saved.prevNoteRoot()!+1n)},sent:{},listings:[],links:[]});
+ const wallet=await open({repository,fetcher:fetcherOf((async(path:string)=>{if(down)throw new Error('The pool did not answer.');return fake.api(path);}) as PoolApi)});
+ try{
+  clearTimeout((wallet as any).timer);const unchecked=wallet.account;
+  assert.match(wallet.repositoryError!,/^Opened without the pool, so the saved notes are unchecked/);
+  down=false;await (wallet as any).tick();
+  assert.match(wallet.repositoryError!,/drifted across a rotation/);
+  assert.equal(wallet.account,unchecked);
+ }finally{await wallet.dispose();}
 });
 
 test('disposal stops the watchdog, so the process can exit',async()=>{

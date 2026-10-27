@@ -95,8 +95,19 @@ test('online, a snapshot whose previous-epoch root drifted fails loudly rather t
 test('offline, a snapshot opens unchecked on its own epoch length, and says so',async()=>{
  const {saving}=await rotated(),down=(async()=>{throw new Error('The pool did not answer (network error).');}) as PoolApi;
  const loaded=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',bornAt:0,api:down});
- assert.deepEqual([loaded.resumed,loaded.account.batchCount,loaded.account.epochLen,loaded.sent['7']?.to],[true,6,4,'shrol21abc']);
+ assert.deepEqual([loaded.resumed,loaded.offline,loaded.account.batchCount,loaded.account.epochLen,loaded.sent['7']?.to],[true,true,6,4,'shrol21abc']);
  assert.match(loaded.error!,/did not answer/);
+});
+
+test('a pool still starting up, or one that fails during the check, opens the snapshot unchecked rather than replaying or throwing',async()=>{
+ const {pool,saving}=await rotated();
+ const starting=(async(path:string)=>path==='/status'?{phase:'starting',message:'The pool is starting.'}:pool.api(path)) as PoolApi;
+ const failing=(async(path:string)=>{if(path.startsWith('/batches'))throw new Error('The pool did not answer (network error).');return pool.api(path);}) as PoolApi;
+ for(const [api,reason] of [[starting,/not an open epoch pool/],[failing,/did not answer/]] as const){
+  const loaded=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',epochLen:4,bornAt:0,api});
+  assert.deepEqual([loaded.resumed,loaded.offline,loaded.account.batchCount,loaded.sent['7']?.to],[true,true,6,'shrol21abc']);
+  assert.match(loaded.error!,reason);
+ }
 });
 
 const pageOf=(batches:{txid:string}[],from:number,limit:number)=>({total:batches.length,batches:batches.slice(from,from+limit)});

@@ -791,6 +791,20 @@ test('a rich ordinary wallet cannot fund an impossible pool payment or bypass th
  try{await assert.rejects(service.quote({to:'invoice'}),/No single unreserved pool note/);assert.equal(quoted,0);assert.equal(f.funded.length,0);}finally{await service[Symbol.asyncDispose]();}
 });
 
+test('a Lightning send offers the biggest spendable unreserved note, never one awaiting recovery, and nothing before the wallet can anchor',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();let anchored=true;
+ (f.wallet.inFlight as Set<bigint>).add(3n);
+ Object.assign(f.wallet,{shieldedNotes:()=>[{amount:9000n,nullifier:1n},{amount:700n,nullifier:2n},{amount:800n,nullifier:3n}],
+  account:{spendableNotes:(_asset:bigint,inFlight:ReadonlySet<bigint>)=>{if(!anchored)throw new Error('cannot anchor yet');return [{amount:700n,nullifier:2n},{amount:800n,nullifier:3n}].filter(n=>!inFlight.has(n.nullifier));}}});
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await service.quote({to:'invoice'});
+  const view=f.configs.find(c=>c.policy?.drive==='manual')!.wallet;
+  assert.equal((await view.getBalance()).available,700,'the 9000-sat note awaits recovery and the 800-sat one is reserved');
+  anchored=false;assert.equal((await view.getBalance()).available,0);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
 test('an individual Lightning receive below the pool minimum refuses locally and exact minimum remains receivable',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository();let quotes=0,accepts=0;
  const clientFactory=(config:SwapClientConfig)=>{const client=f.clientFactory(config),quote=client.quote,accept=client.accept;return {...client,

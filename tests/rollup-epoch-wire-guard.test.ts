@@ -12,7 +12,7 @@ import {fullViewKeyOf,parseFullViewKey} from '../packages/protocol/src/rollup/di
 import {anchorOf} from '../packages/protocol/src/rollup/epoch.ts';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import {akOf} from '../packages/protocol/src/rollup/notes.ts';
+import {akOf,assetFieldOfId} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import type {LightningSpendRecord,LightningSpendStore} from '../src/shielded/lightning-spend.ts';
@@ -184,10 +184,46 @@ test('a group whose legs straddle a rotation is rebuilt whole, not re-signed leg
  }finally{await wallet.dispose();}
 });
 
+test('a rebuilt asset payment keeps to the note it holds when the pool status names no reserve for its asset',async()=>{
+ const {fake,bodies,refused,fetcher}=walletPool(),{self}=shieldedKeysOf(hash,'11'.repeat(32)),field=assetFieldOfId(ASSET);
+ fake.land('spend',await Promise.all([100n,50n].map(deposit=>fake.transfer({ask:0n,nk:0n,self,request:{asset:field,deposit}}))));
+ while(fake.state.batchCount<3)fake.land();
+ const wallet=await openWallet(fetcher,memoryStore()),notes=wallet.account.notes(field),spend=wallet.account.spend.bind(wallet.account);
+ const held=notes.find(n=>n.amount===100n)!,other=notes.find(n=>n.amount===50n)!;
+ // Another action holds the smaller note, and a rotation lands right after the first build.
+ wallet.notes.inFlight.add(other.nullifier);delete wallet.pool.status.pool!.reserves;
+ let built=0;wallet.account.spend=async(...args)=>{const leg=await spend(...args);if(!built++)fake.land();return leg;};
+ try{
+  await (await wallet.pay(bobAddress(),50n,ASSET)).settled();
+  assert.deepEqual([refused.length,bodies.map(b=>b.slot.nullifiers)],[1,[[String(held.nullifier)],[String(held.nullifier)]]]);
+  assert.equal(wallet.inFlight.has(other.nullifier),true);
+ }finally{await wallet.dispose();}
+});
+
+test('a Lightning funding refused as stale after a rotation is dropped and frees its note, so the reopened wallet funds afresh',async()=>{
+ const {fake,bodies,refused,fetcher}=walletPool(),{self}=shieldedKeysOf(hash,'11'.repeat(32)),journal=memoryStore();
+ const fund=(id:string,w:ShieldedWallet)=>w.fundLightning(id,'33'.repeat(32),elsewhere,330n,journal);
+ fake.land('spend',[await fake.deposit(self,1000n)]);
+ let wallet=await openWallet(fetcher,journal);
+ try{
+  const api=wallet.api,[note]=wallet.account.notes();
+  wallet.api=(async(path:string)=>{if(path.startsWith('/spends/'))throw Object.assign(new Error('Unknown spend.'),{status:404});throw new Error('response lost');}) as PoolApi;
+  await assert.rejects(fund('ln-1',wallet),/response lost/);
+  wallet.api=api;
+  while(fake.state.batchCount<4)fake.land();
+  await assert.rejects(fund('ln-1',wallet),/prove it again/);
+  assert.deepEqual([refused.length,(await journal.get('','','ln-1'))!.state,wallet.inFlight.has(note!.nullifier)],[1,'dropped',false]);
+  await wallet.dispose();wallet=await openWallet(fetcher,journal);
+  assert.equal(wallet.inFlight.has(note!.nullifier),false);
+  await fund('ln-2',wallet);
+  assert.deepEqual([bodies.length,bodies[1]!.slot.nullifiers,bodies[1]!.slot.anchor!==bodies[0]!.slot.anchor],[2,[String(note!.nullifier)],true]);
+ }finally{await wallet.dispose();}
+});
+
 test('a first-run wallet whose pool is unreachable opens empty with an error, not a throw',async()=>{
  const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),down=(async()=>{throw new Error('The pool did not answer (network error).');}) as PoolApi;
  const loaded=await loadAccount(hash,keys,{token:TOKEN,epochLen:128,bornAt:7,api:down});
- assert.deepEqual([loaded.resumed,loaded.account.batchCount,loaded.account.epochLen,loaded.account.notes()],[false,0,128,[]]);
+ assert.deepEqual([loaded.resumed,loaded.offline,loaded.account.batchCount,loaded.account.epochLen,loaded.account.notes()],[false,true,0,128,[]]);
  assert.match(loaded.error!,/did not answer/);
  await assert.rejects(loadAccount(hash,keys,{token:TOKEN,bornAt:7,api:down}),/did not answer/,'with no cached epoch length, the error state rather than an invented one');
 });
