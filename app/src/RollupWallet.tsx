@@ -17,10 +17,11 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy} from './rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,payTarget,routeCopy} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
-import {CopyButton} from './components.tsx';
+import {CopyButton,Icon} from './components.tsx';
+import {QrCode,Scanner} from './wallet-qr.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
 
@@ -28,7 +29,15 @@ const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Time unknown';
-const Copyable=({value}:{value:string})=><div className="stock-copy"><code>{value}</code><CopyButton value={value}/></div>;
+const canShare=typeof navigator!=='undefined'&&typeof navigator.share==='function';
+/** A value to copy; with `qr` it can also show that payload as a QR code and hand the value to the system share sheet. */
+function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
+ const [shown,setShown]=useState(false);
+ return <><div className="stock-copy"><code>{value}</code><CopyButton value={value}/>
+  {qr!==undefined&&<button type="button" className="icon-button" aria-label={shown?'Hide the QR code':'Show a QR code'} aria-expanded={shown} onClick={()=>setShown(s=>!s)}><Icon name="qr" size={16}/></button>}
+  {qr!==undefined&&canShare&&<button type="button" className="icon-button" aria-label="Share" onClick={()=>void navigator.share(/^https?:/.test(value)?{url:value}:{text:value}).catch(()=>{})}><Icon name="share" size={16}/></button>}</div>
+  {shown&&qr!==undefined&&<QrCode value={qr} label={label??'QR code'}/>}</>;
+}
 const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 // The resolver's kinds, mapped onto the swatches the history list already has.
 const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','shielded-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
@@ -59,7 +68,7 @@ export default function RollupWallet(){
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
- const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity);
+ const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity),[scanning,setScanning]=useState(false);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[restoreDate,setRestoreDate]=useState('');
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -242,7 +251,7 @@ export default function RollupWallet(){
  useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!narrow||!panel)return;
   // Everything behind the open sheet goes inert, for Tab and for a screen reader's cursor; the backdrop still closes it and the bar keeps reporting.
   const behind:Element[]=[];let el:Element=panel;
-  while(el.parentElement&&!el.classList.contains('stock-page')){const up=el.parentElement;for(const other of Array.from(up.children))if(other!==el&&!other.matches('.stock-backdrop,.stock-soundbar,[inert]'))behind.push(other);el=up;}
+  while(el.parentElement&&!el.classList.contains('stock-page')){const up=el.parentElement;for(const other of Array.from(up.children))if(other!==el&&!other.matches('.stock-backdrop,.stock-soundbar,.stock-scan,[inert]'))behind.push(other);el=up;}
   for(const other of behind)other.setAttribute('inert','');
   const key=(e:KeyboardEvent)=>{if(e.key==='Escape')setSheetOpen(false);};
   addEventListener('keydown',key);const root=document.documentElement,was=root.style.overflow,back=document.activeElement as HTMLElement|null;root.style.overflow='hidden';panel.querySelector<HTMLElement>('.stock-panel-head button')?.focus();
@@ -311,6 +320,8 @@ export default function RollupWallet(){
   return quotes.send({...quoteContext,revision:funds.watch.update(currentCoins)},quote);
  },routeCopy(quote.railId).title);}else getQuote();};
 
+ const fill=(code:string)=>{const target=payTarget(code);setTo(target.to);if(target.amount!==undefined)setAmount(String(target.amount));};
+ const paste=async()=>{try{fill(await navigator.clipboard.readText());}catch{document.getElementById('stock-to')?.focus();}};
  const openPanel=(name:'receive'|'send')=>{if(name!==tab){setTab(name);setTo('');}setSheetOpen(true);};
  const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,syncing:!synced,recoveryLine:RECOVERY_LINE});
  const docked=narrow&&ready;
@@ -343,12 +354,12 @@ export default function RollupWallet(){
     {docked&&<div className="stock-panel-head" onTouchStart={e=>{dragFrom.current=e.touches[0]!.clientY;}} onTouchEnd={e=>{if(e.changedTouches[0]!.clientY-dragFrom.current>48)setSheetOpen(false);dragFrom.current=Infinity;}}><span className="stock-grabber" aria-hidden="true"/><button type="button" className="stock-ghost stock-mini" onClick={()=>setSheetOpen(false)}>Close</button></div>}
     <div className="stock-tabs" role="tablist">{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>{setTab(name);setTo('');}}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>
     {tab==='receive'?<div className="stock-receive">
-     <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address}/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
-     <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress}/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own while this page is open.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Test sats: the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a>, after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
+     <div className="stock-address"><small>SHIELDED ADDRESS</small>{address?<Copyable value={address} qr={address} label="QR code of your shielded address"/>:<code>Deriving…</code>}<p className="stock-muted">Share this to receive private payments inside the pool.</p></div>
+     <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{arkAddress?<Copyable value={arkAddress} qr={arkAddress} label="QR code of your Arkade address"/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own while this page is open.{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Test sats: the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a>, after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
      <div className="stock-address"><small>LIGHTNING</small>
-      {lnAddress?<Copyable value={lnAddress}/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
+      {lnAddress?<Copyable value={lnAddress} qr={lnAddress} label="QR code of your Lightning address"/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
       <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet||!lnAmount}>Create invoice</button></form>
-      {invoice&&<><Copyable value={invoice.bolt11}/><p className="stock-muted">{invoiceLine(invoice)}</p></>}
+      {invoice&&<><Copyable value={invoice.bolt11} qr={'lightning:'+invoice.bolt11.toUpperCase()} label="QR code of the invoice"/><p className="stock-muted">{invoiceLine(invoice)}</p></>}
       {lnError&&<p className="stock-blocked">{lnError}</p>}
       <details className="stock-more"><summary>How Lightning receive works</summary><p className="stock-muted">Your Lightning address pays one Arkade payout address at a time, which this wallet derives and replaces after a payment or once a day. Payouts of at least {DUST} sats move into the pool while this page is open; smaller payouts stay outside and are never combined automatically. Your Lightning address stays the same and accepts payments while closed. Its service sees each payout address it serves and can link them to the alias; payers before the next replacement share one address.</p></details></div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.</p><button className="stock-ghost stock-mini" disabled={busy} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
@@ -360,7 +371,8 @@ export default function RollupWallet(){
        :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}</div>)}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
-     <label>To<input value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
+     <div className="stock-to"><label>To<input id="stock-to" value={to} onChange={e=>setTo(e.target.value)} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
+      <button type="button" className="icon-button" aria-label="Scan a payment code" onClick={()=>setScanning(true)}><Icon name="scan"/></button><button type="button" className="icon-button" aria-label="Paste" onClick={()=>void paste()}><Icon name="paste"/></button></div>
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {arkAssetRecipient&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
      <p className="stock-muted">Private payments spend up to three of your notes: up to {sats(maxSend)} {unit} at once. Leave To empty to create a claim link instead.</p>
@@ -370,8 +382,7 @@ export default function RollupWallet(){
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
      <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))}>{busy?'Working…':quoting?'Getting quote…':quote?routeCopy(quote.railId).title:'Get quote'}</button>
      {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
-     {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)}/>
-      {typeof navigator.share==='function'&&<button type="button" className="stock-ghost stock-mini" onClick={()=>void navigator.share({url:claimUrl(location.origin,minted)}).catch(()=>{})}>Share</button>}
+     {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)} qr={claimUrl(location.origin,minted)} label="QR code of the claim link"/>
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
     </form>}
    </section></div>
@@ -421,5 +432,6 @@ export default function RollupWallet(){
  {docked&&<>{sheetOpen&&<div className="stock-backdrop" aria-hidden="true" onClick={()=>setSheetOpen(false)}/>}
   <nav className="stock-dock" aria-label="Wallet actions">{(['receive','send'] as const).map(name=><button key={name} type="button" aria-controls="stock-panel" aria-expanded={sheetOpen&&tab===name} className={sheetOpen&&tab===name?'selected':''} onClick={()=>openPanel(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav></>}
  {ready&&<Soundbar item={activity} onDismiss={()=>sheetOwner.clear()}/>}
+ {scanning&&<Scanner onResult={code=>{setScanning(false);fill(code);}} onClose={()=>setScanning(false)}/>}
  </div>;
 }

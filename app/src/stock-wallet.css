@@ -139,3 +139,14 @@
 .stock-recovery .stock-actions{grid-template-columns:1fr 1fr}
 }
 @keyframes stock-fade{from{opacity:0}}
+.stock-qr{display:block;width:min(100%,240px);height:auto;margin:2px auto 4px;box-shadow:0 0 0 1px var(--gilt)}
+.stock-to{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:8px}
+.stock-card .stock-to .icon-button{min-height:46px}
+.stock-scan{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:0;border:0;overflow:hidden;background:#05121d;color:var(--paper)}
+.stock-scan[open]{display:grid;place-items:center}
+.stock-scan::backdrop{background:#05121d}
+.stock-scan video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.stock-scan-frame{position:relative;width:min(70vw,300px);aspect-ratio:1;border:2px solid var(--or-light);box-shadow:0 0 0 100vmax rgba(5,18,29,.55)}
+.stock-scan p{position:absolute;left:20px;right:20px;bottom:calc(100px + env(safe-area-inset-bottom));margin:0;text-align:center;font-size:14px;line-height:1.45}
+.stock-scan button{position:absolute;left:50%;bottom:calc(30px + env(safe-area-inset-bottom));transform:translateX(-50%);min-width:150px;min-height:50px;border:0;cursor:pointer;background:var(--navy);color:var(--paper);font-size:16px;font-weight:600;box-shadow:inset 0 0 0 1px rgba(228,196,108,.6)}
+.stock-scan button:focus-visible{outline:2px solid var(--or-light);outline-offset:3px}
