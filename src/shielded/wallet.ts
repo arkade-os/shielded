@@ -157,6 +157,7 @@ export class ShieldedWallet extends Wallet {
  private timer?:ReturnType<typeof setTimeout>;
  private retryAt=0;
  private mergeRetryAt=0;
+ private renewing=false;
  private stopped=false;
  private offline=false;
  private bornAt=0;
@@ -286,13 +287,14 @@ export class ShieldedWallet extends Wallet {
  /** One renewal plan at a time, over every held asset; epochIdle keeps a replay from moving the window the targets are drawn in. */
  private async renewNotes(){
   const chosen=await this.notes.pick(async()=>{
+   if(this.renewing)return undefined;
    for(const asset of this.mergeableAssets()){
     const plan=await epochIdle(this.account,()=>this.account.renewalDue({inFlight:this.notes.inFlight,asset}));
-    if(plan)return {nullifiers:plan.due.map(n=>n.nullifier),built:await this.account.renew(plan,this.self)};
+    if(plan){const built=await this.account.renew(plan,this.self);this.renewing=true;return {nullifiers:plan.due.map(n=>n.nullifier),built};}
    }
    return undefined;
   },chosen=>chosen?.nullifiers??[]);
-  if(chosen)this.upkeep(chosen.nullifiers,chosen.built);
+  if(chosen){const done=()=>{this.renewing=false;};void this.upkeep(chosen.nullifiers,chosen.built).then(done,done);}
  }
  private async recoverNotes(){
   const chosen=await this.notes.pick(async()=>{
@@ -302,7 +304,7 @@ export class ShieldedWallet extends Wallet {
   if(chosen)this.upkeep(chosen.nullifiers,chosen.built);
  }
  /** Not announced: its notes show in flight, and a recovery shows as the one recovering line. */
- private upkeep(nullifiers:bigint[],built:EpochBuiltSpend){const run=this.submit([{built}],()=>{},MERGE_WAIT_MS);this.hold(nullifiers,{settled:()=>run});this.changed();}
+ private upkeep(nullifiers:bigint[],built:EpochBuiltSpend){const run=this.submit([{built}],()=>{},MERGE_WAIT_MS);this.hold(nullifiers,{settled:()=>run});this.changed();return run;}
  /** Offline, only tick()'s checked load() moves the account, so a first-run open never replays from batch 0. */
  async sync():Promise<number>{
   if(this.offline)return 0;

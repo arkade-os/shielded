@@ -151,6 +151,36 @@ test('a wallet holding a note in its last epoch renews it once, as a join, at a 
  }finally{await wallet.dispose();}
 });
 
+test('a payment holding one due note leaves the other due notes to renew',async t=>{
+ const {fake,bodies,fetcher,hold}=walletPool(),{self}=shieldedKeysOf(hash,'11'.repeat(32)),draw=globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+ t.mock.method(globalThis.crypto,'getRandomValues',((w:ArrayBufferView)=>w instanceof Uint32Array&&w.length===1?(w[0]=0,w):draw(w as never)) as never);
+ fake.land('spend',await Promise.all([100n,300n,700n].map(amount=>fake.deposit(self,amount))));
+ while(fake.state.batchCount<4)fake.land();
+ const wallet=await openWallet(fetcher,memoryStore()),[small,mid,large]=wallet.account.notes();
+ try{
+  const open=hold();await wallet.pay(bobAddress(),600n);await until(()=>bodies.length===1,'the payment posted');
+  await tick(wallet);await until(()=>bodies.length===2,'the renewal posted');open();
+  assert.deepEqual(bodies.map(b=>[...b.slot.nullifiers as string[]].sort()),[[large],[small,mid]].map(notes=>notes.map(n=>String(n!.nullifier)).sort()));
+  await until(()=>wallet.inFlight.size===0,'both landed');
+ }finally{await wallet.dispose();}
+});
+
+test('while one renewal is in flight no second plan starts, and the next follows once it lands',async t=>{
+ const {fake,bodies,fetcher,hold}=walletPool(),{self}=shieldedKeysOf(hash,'11'.repeat(32)),draw=globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+ t.mock.method(globalThis.crypto,'getRandomValues',((w:ArrayBufferView)=>w instanceof Uint32Array&&w.length===1?(w[0]=0,w):draw(w as never)) as never);
+ fake.land('spend',await Promise.all([100n,300n,700n].map(amount=>fake.deposit(self,amount))));
+ while(fake.state.batchCount<4)fake.land();
+ const wallet=await openWallet(fetcher,memoryStore()),[small,mid,large]=wallet.account.notes();
+ try{
+  const open=hold();await tick(wallet);await until(()=>bodies.length===1,'the first renewal posted');
+  await tick(wallet);await decided(wallet);
+  assert.deepEqual([bodies.length,wallet.inFlight],[1,new Set([small!.nullifier,mid!.nullifier])],'no second plan while the first is in flight');
+  open();await until(()=>wallet.inFlight.size===0,'the first renewal landed');
+  await tick(wallet);await until(()=>bodies.length===2,'the next renewal posted');
+  assert.deepEqual(bodies[1]!.slot.nullifiers,[String(large!.nullifier)]);
+ }finally{await wallet.dispose();}
+});
+
 test('a wallet holding a note two epochs old recovers it, and shows one line while it does',async()=>{
  const {fake,bodies,fetcher,hold}=walletPool(),{self}=shieldedKeysOf(hash,'11'.repeat(32)),announced:unknown[]=[];
  fake.land('spend',[await fake.deposit(self,500n)]);
