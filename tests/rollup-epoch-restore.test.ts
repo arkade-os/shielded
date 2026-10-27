@@ -132,6 +132,12 @@ test('a birthday past a checkpoint starts from the one below it, as the classic 
  assert.deepEqual([early.asked, young.batchCount, young.epoch], [['/status'], LONG, 1]);
 });
 
+test('epochBirthCheckpoint picks the same batch as the classic function did for the same /times answer', async () => {
+ const asked: string[] = [], api = (async (path: string) => { asked.push(path); return { every: 64, at: [0, 1_000, 90_000_000, 200_000_000] }; }) as never, day = 86_400_000;
+ assert.deepEqual([await epochBirthCheckpoint(api, 90_000_000 + day), await epochBirthCheckpoint(api, 90_000_000 + day - 1), await epochBirthCheckpoint(api, 0)], [128, 64, 0]);
+ assert.deepEqual(asked, ['/times', '/times', '/times'], 'the date never leaves the wallet');
+});
+
 test('a cold wallet with an older birthday replays from the previous epoch and learns prevNoteRoot at the rotation', async () => {
  const pool = epochPool(hash, 4), { asked, api } = logged(pool.api);
  for (let n = 0; n < 18; n++) pool.land('spend', [2, 9, 13].includes(n) ? [await pool.deposit(aliceTo, 100n * BigInt(n))] : []);

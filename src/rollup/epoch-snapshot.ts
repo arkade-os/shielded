@@ -1,4 +1,6 @@
-import {readFileSync} from 'node:fs';
+import {closeSync,fsyncSync,openSync,readFileSync,renameSync,writeFileSync} from 'node:fs';
+import {Extension,Transaction} from '@arkade-os/sdk';
+import {hex} from '@scure/base';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,NOTE_DEPTH,RECOVERED_DEPTH,ROLLUP_FIELD,SUBTREE_DEPTH,WINDOW_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {EpochArchive} from '../../packages/protocol/src/rollup/epoch-archive.ts';
 import type {EpochState} from '../../packages/protocol/src/rollup/epoch.ts';
@@ -6,6 +8,7 @@ import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
 import {DeepTree} from '../../packages/protocol/src/rollup/tree.ts';
 import {stockJournalFingerprint,type StockReleasePin} from '../stock/journal.ts';
+import {ROLLUP_STATE_PACKET} from './covenant.ts';
 import {getField,getLeaves,putField,putLeaves,sha256} from './epoch-archive-file.ts';
 
 export const EPOCH_SNAPSHOT_VERSION=1;
@@ -60,4 +63,19 @@ export function readEpochSnapshot(path:string,hash:Hash,pin:StockReleasePin,batc
  let bytes:Buffer;
  try{bytes=readFileSync(path);}catch{return undefined;}
  return decodeEpochSnapshot(bytes,hash,pin,batches);
+}
+
+/** Replaces the file whole: a crash leaves the previous snapshot or this one, never a mix. */
+export function writeSnapshot(path:string,bytes:Uint8Array):void {
+ const fd=openSync(path+'.tmp','w');
+ try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}
+ renameSync(path+'.tmp',path);
+}
+
+/** The state commitment in a pool head's state packet, or undefined when the transaction carries no readable one. */
+export function headCommitment(sourceTxHex:string):bigint|undefined {
+ try{
+  const packet=Extension.fromTx(Transaction.fromRaw(hex.decode(sourceTxHex),{allowUnknownOutputs:true})).getPacketByType(ROLLUP_STATE_PACKET)?.serialize();
+  return packet?.length===96?getField(Buffer.from(packet),0):undefined;
+ }catch{return undefined;}
 }

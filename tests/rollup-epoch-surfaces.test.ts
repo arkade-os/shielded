@@ -9,11 +9,10 @@ import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {NoteFrontier} from '../packages/protocol/src/rollup/frontier.ts';
-import {encodeEpochSnapshot} from '../src/rollup/epoch-snapshot.ts';
+import {encodeEpochSnapshot,writeSnapshot} from '../src/rollup/epoch-snapshot.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import type {RollupRecord} from '../src/rollup/operator.ts';
 import {rollupEpochPin} from '../src/rollup/service.ts';
-import {writeSnapshot} from '../src/rollup/snapshot.ts';
 import {epochHarness} from './fixtures/epoch.ts';
 import {bakedPool,blockRoot,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,hash,keySet,listen,offline,POOL_KEYS,PROVING_KEYS,proof,ready,scratch,serverKey,sha,slotOf,stamp,STATUS_KEYS,until} from './fixtures/epoch-service.ts';
 

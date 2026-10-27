@@ -1,14 +1,16 @@
+import {hex} from '@scure/base';
 import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {epochExclusive,type EpochBatchPage} from './epoch-sync.ts';
-import {poolApiOf,transferBody,type Groth16Proof,type PoolApi,type RollupPoolStatus} from './pool.ts';
+import {poolApiOf,type Groth16Proof,type PoolApi,type RollupPoolStatus} from './pool.ts';
 
 /** The epoch pool's POST /spends body: slot.anchor where a classic slot has root, and exactly one of rCur (fast path) and origin (recovery). */
-export function epochTransferBody(id:string,built:EpochBuiltSpend,proof:Groth16Proof,extra:Parameters<typeof transferBody>[3]={}){
+export function epochTransferBody(id:string,built:EpochBuiltSpend,proof:Groth16Proof,extra:{program?:Uint8Array;coin?:{txid:string;vout:number;tapTree:string;leaf:string};asset?:string}={}){
  const s=built.slot;
  if((s.rCur===undefined)===(s.origin===undefined))throw new Error('An epoch slot names exactly one of rCur and origin.');
- const {slot:_,...body}=transferBody(id,built,proof,extra);
- return {...body,slot:{anchor:String(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:String(s.rCur.root)}}:{origin:s.origin!}),
+ return {id,publics:built.witness.publicSignals.map(String),proof:{pi_a:proof.pi_a,pi_b:proof.pi_b,pi_c:proof.pi_c},ciphertext:hex.encode(built.ciphertext),
+  ...(extra.program?{program:hex.encode(extra.program)}:{}),...(extra.coin?{coin:extra.coin}:{}),...(extra.asset?{asset:extra.asset}:{}),
+  slot:{anchor:String(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:String(s.rCur.root)}}:{origin:s.origin!}),
   nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize}};
 }
 export type EpochSpendBody=ReturnType<typeof epochTransferBody>;

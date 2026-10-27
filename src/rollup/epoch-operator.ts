@@ -14,11 +14,10 @@ import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,typ
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSelection,type RollupSpend} from './batcher.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,type RollupCoin,type RollupEpochLeaves} from './covenant.ts';
 import {encodeEpochNfArchive,epochNfArchivePath,readEpochNfArchive} from './epoch-archive-file.ts';
-import {encodeEpochSnapshot,readEpochSnapshot} from './epoch-snapshot.ts';
+import {encodeEpochSnapshot,headCommitment,readEpochSnapshot,writeSnapshot} from './epoch-snapshot.ts';
 import {readEpochBatchTx,spentCoins} from './external.ts';
 import {ROLLUP_GROUP_WAIT_MS,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupOperatorOptions,type RollupPoolCoin,type RollupTick} from './operator.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
-import {headCommitment,writeSnapshot} from './snapshot.ts';
 
 /** A spend with `origin` set is a recovery of a note from that archived epoch. */
 export interface RollupEpochSpend extends Omit<RollupSpend,'slot'> {slot:EpochSlot;origin?:number}
