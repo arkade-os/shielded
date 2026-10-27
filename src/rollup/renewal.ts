@@ -1,10 +1,11 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {schnorr} from '@noble/curves/secp256k1.js';
-import {arkade,asset,Batch,EmulatorPacket,Extension,Intent,networks,RestArkProvider,RestEmulatorProvider,RestIndexerProvider,SettlementEventType,Transaction,UnknownPacket,withPrevTxs,type Identity,type VtxoScript} from '@arkade-os/sdk';
+import {arkade,asset,Batch,EmulatorPacket,Estimator,Extension,Intent,networks,RestArkProvider,RestEmulatorProvider,RestIndexerProvider,SettlementEventType,Transaction,UnknownPacket,withPrevTxs,type ArkadeBatchInput,type Identity,type IntentFeeConfig,type VtxoScript} from '@arkade-os/sdk';
 import {RawWitness} from '@scure/btc-signer';
-import {hex} from '@scure/base';
+import {base64,hex} from '@scure/base';
 import type {StockNetworkInfo} from '../stock/network.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
+import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
 import {ROLLUP_STATE_PACKET,type RollupLeaves} from './covenant.ts';
 import type {RollupArchive,RollupPoolCoin} from './operator.ts';
 
@@ -56,11 +57,39 @@ export function carriedReserves<T>(reserves:Readonly<Record<string,T>>,ids:reado
  return Object.fromEntries(ids.map(assetId=>{const coin=reserves[assetId];if(!coin)throw new Error(`Reserve ${assetId} is not in the archive.`);return [assetId,coin];}));
 }
 
+export interface RenewalFeeCoin {txid:string;vout:number;value:number;script:string;createdAt?:Date;expiresAt?:Date;isSwept?:boolean}
+/** What arkd charges for an intent, by its own CEL programs: on mutinynet 0.2% of every VTXO input younger than a day. */
+export function rollupRenewalFee(fees:IntentFeeConfig,inputs:readonly RenewalFeeCoin[],outputs:readonly {value:number;script:string}[]):number {
+ return new Estimator(fees).evaluate(inputs.map(c=>({amount:BigInt(c.value),type:c.isSwept?'recoverable':'vtxo',weight:0,birth:c.createdAt,expiry:c.expiresAt})),[],
+  outputs.map(o=>({amount:BigInt(o.value),script:o.script})),[]).satoshis;
+}
+/** The operator coins covering a renewal whose pool outputs repay its pool inputs exactly, smallest first; the surplus
+ *  returns to the operator, unless that output would be dust or be charged itself, in which case it tops the fee up. */
+export function fundRollupRenewalFee<T extends RenewalFeeCoin>(o:{fees:IntentFeeConfig;dust:number;pool:readonly RenewalFeeCoin[];outputs:readonly {value:number;script:string}[];coins:readonly T[]}):{coins:T[];fee:number;change:number} {
+ const order=[...o.coins].sort((a,b)=>a.value-b.value||a.txid.localeCompare(b.txid)||a.vout-b.vout);
+ const priced=(take:readonly T[],change:number)=>rollupRenewalFee(o.fees,[...o.pool,...take],[...o.outputs,...(change&&take[0]?[{value:change,script:take[0].script}]:[])]);
+ const held=(take:readonly T[])=>take.reduce((sum,c)=>sum+c.value,0);
+ for(let n=0;n<=order.length;n++){
+  const take=order.slice(0,n),fee=priced(take,0);
+  if(held(take)<fee)continue;
+  const spare=held(take)-fee,change=spare>=o.dust&&priced(take,spare)===fee?spare:0;
+  return {coins:take,fee:held(take)-change,change};
+ }
+ // A top-up under dust cannot be spent, so asking for less than that would not unblock the renewal.
+ throw new Error(`The operator wallet needs ${Math.max(o.dust,priced(order,0)-held(order))} sats to pay the renewal fee.`);
+}
+
+/** Whether a forfeit the batch handler built is for one of our fee coins: it puts the coin being forfeited at input 0. */
+export function isRollupFeeForfeit(fee:readonly {txid:string;vout:number}[],tx:Pick<Transaction,'getInput'>):boolean {
+ const input=tx.getInput(0);
+ return !!input?.txid&&fee.some(c=>c.txid===hex.encode(input.txid!)&&c.vout===input.index);
+}
+
 /**
  * Moves the head and the given reserves (all, by default), unchanged, into a fresh round; returns their new outpoints.
  * ponytail: one-shot; a crash after registration strands the intent until flushRollupIntent clears it.
  */
-export interface RollupRenewalProviders {ark?:RestArkProvider;emulator?:RestEmulatorProvider;indexer?:RestIndexerProvider}
+export interface RollupRenewalProviders {ark?:RestArkProvider;emulator?:RestEmulatorProvider;indexer?:RestIndexerProvider;wallet?():ReturnType<typeof openCustomerArkWallet>}
 export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive;reserves?:readonly string[];
  /** Called with the registered intent id before the round is joined; arkd re-queues that intent until it confirms or is cleared. */
  onIntent?(intentId:string):Promise<void>|void;providers?:RollupRenewalProviders}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
@@ -81,18 +110,29 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
  const groups=[asset.AssetGroup.create(id(o.token),null,[asset.AssetInput.create(1,1n)],[asset.AssetOutput.create(0,1n)],[]),
   ...reserves.map(([assetId,coin],i)=>asset.AssetGroup.create(id(assetId),null,[asset.AssetInput.create(i+2,BigInt(coin.amount))],[asset.AssetOutput.create(i+1,BigInt(coin.amount))],[]))];
  const ext=Extension.create([asset.Packet.create(groups),EmulatorPacket.create(points.map((_,i)=>({vin:i+1,script:o.leaves.renew,witness}))),new UnknownPacket(ROLLUP_STATE_PACKET,Extension.fromTx(parent).getPacketByType(ROLLUP_STATE_PACKET)!.serialize())]);
- const proof=Intent.create(message,coins,[...coins.map(c=>({script:o.pool.pkScript,amount:BigInt(c.value)})),ext.txOut()]);
- const signedProof=await emulator.submitIntent({proof:Buffer.from(proof.toPSBT()).toString('base64'),message});
+ const poolOut=coins.map(c=>({value:c.value,script:hex.encode(o.pool.pkScript)}));
+ const info=await ark.getInfo(),fees=info.fees.intentFee;
+ // The renew leaf tunnels each pool coin's value onto its own output, so the fee can only come from coins outside the pool.
+ const funded=rollupRenewalFee(fees,coins,poolOut)?await withArkWallet(()=>o.providers?.wallet?.()??openCustomerArkWallet(o.identity,o.network),async operator=>
+  fundRollupRenewalFee({fees,dust:Number(info.dust),pool:coins,outputs:poolOut,coins:operator.coins.map(c=>c.coin)})):{coins:[],fee:0,change:0};
+ const fee=await withPrevTxs(funded.coins,indexer),feePoints=fee.map(c=>`${c.txid}:${c.vout}`);
+ const proof=Intent.create(message,[...coins,...fee],[...coins.map(c=>({script:o.pool.pkScript,amount:BigInt(c.value)})),
+  ...(funded.change?[{script:hex.decode(funded.coins[0]!.script),amount:BigInt(funded.change)}]:[]),ext.txOut()]);
+ const emulated=await emulator.submitIntent({proof:Buffer.from(proof.toPSBT()).toString('base64'),message});
+ // The emulator signs the pool's inputs; the operator's own fee coins are signed after, so its signatures survive the round trip.
+ const signedProof=fee.length?base64.encode((await o.identity.sign(Transaction.fromPSBT(base64.decode(emulated)),fee.map((_,i)=>coins.length+1+i))).toPSBT()):emulated;
  const intentId=await ark.registerIntent({proof:signedProof,message});
  // Every failure past this point names the intent, which arkd re-queues until it is confirmed or cleared.
  try{
   await o.onIntent?.(intentId);
-  // Pool forfeits are signed by the emulator and arkd only, so the handler's own signer passes them through.
-  const passthrough=new Proxy(o.identity,{get:(target,prop)=>prop==='sign'?async(tx:Transaction)=>tx:typeof (target as never)[prop]==='function'?((target as never)[prop] as Function).bind(target):(target as never)[prop]});
-  const handler=arkade.createArkadeBatchHandler(intentId,coins.map(c=>({...c,arkadeScriptBytes:o.leaves.renew})),passthrough,signedProof,message,session,ark,emulator,networks.mutinynet);
+  // Pool forfeits are signed by the emulator and arkd, so the handler's signer passes those through and signs only the fee coins'.
+  const selective=new Proxy(o.identity,{get:(target,prop)=>prop==='sign'?async(tx:Transaction,indexes?:number[])=>isRollupFeeForfeit(fee,tx)?o.identity.sign(tx,indexes):tx:typeof (target as never)[prop]==='function'?((target as never)[prop] as Function).bind(target):(target as never)[prop]});
+  // A fee coin carries no arkade script; the handler reads the field on no path, but its input type still demands one.
+  const inputs=[...coins.map(c=>({...c,arkadeScriptBytes:o.leaves.renew})),...fee] as ArkadeBatchInput[];
+  const handler=arkade.createArkadeBatchHandler(intentId,inputs,selective,signedProof,message,session,ark,emulator,networks.mutinynet);
   const abortController=new AbortController();
   let commitment:string;
-  try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`)]),handler,{abortController});}
+  try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`),...feePoints]),handler,{abortController});}
   finally{abortController.abort();}
   return {commitment,...await renewedRollupPool(indexer,o.pool,o.token,{reserves:carried})};
  }catch(error){throw new Error(`Rollup renewal intent ${intentId} is registered and must be confirmed or cleared: ${(error as Error).message}`,{cause:error});}

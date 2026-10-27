@@ -391,7 +391,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     if(rollupRenewalDue(points,vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))for(const chunk of renewalChunks(archive.reserves,expiresAt))await exclusive(async()=>{
      const from=operator.status().archive.head;
      try{
-      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,reserves:chunk,
+      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,reserves:chunk,providers:{wallet:p.wallet},
        onIntent:intentId=>writeFileSync(renewalPath,JSON.stringify({intentId,head:{txid:from.txid,vout:from.vout},reserves:chunk}))});
       await operator.relocate({head:moved.head,reserves:{...operator.status().archive.reserves,...moved.reserves}});rmSync(renewalPath,{force:true});
       log(`renewed the head and ${chunk.length} reserve(s) into round ${moved.commitment}, head ${moved.head.txid}`);
