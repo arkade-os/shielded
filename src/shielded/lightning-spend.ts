@@ -52,7 +52,7 @@ export async function submitLightningSpend(record:LightningSpendRecord,store:Lig
   const beforeRequest=()=>{if(r.expiresAt!==undefined&&Date.now()/1000>=r.expiresAt)throw new Error('The Lightning funding deadline expired; the saved spend remains reserved until reconciled.');};
   try{beforeRequest();await o.api('/spends',JSON.parse(JSON.stringify(r.body)),beforeRequest);}
   catch(postError){
-   // stale-anchor follows the double-spend check over the anchor epoch's sets (epoch-operator.ts:201, :210), so no copy landed; window-tag's older epoch proves nothing.
+   // stale-anchor follows the double-spend check over the anchor epoch's sets (epoch-operator.ts:202, :211), so no copy landed; window-tag's older epoch proves nothing.
    if((postError as {code?:unknown})?.code==='stale-anchor')first={status:'dropped',reason:(postError as Error).message};
    else try{first=await o.api<SpendStatus>(`/spends/${r.body.id}`);}catch{throw postError;}
   }
