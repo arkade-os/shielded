@@ -239,7 +239,14 @@ export default function RollupWallet(){
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
- useEffect(()=>{if(!sheetOpen||!narrow)return;const key=(e:KeyboardEvent)=>{if(e.key==='Escape')setSheetOpen(false);};addEventListener('keydown',key);const root=document.documentElement,was=root.style.overflow,back=document.activeElement as HTMLElement|null;root.style.overflow='hidden';document.querySelector<HTMLElement>('#stock-panel .stock-panel-head button')?.focus();return()=>{removeEventListener('keydown',key);root.style.overflow=was;back?.focus();};},[sheetOpen,narrow]);
+ useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!narrow||!panel)return;
+  const key=(e:KeyboardEvent)=>{
+   if(e.key==='Escape')return setSheetOpen(false);
+   if(e.key!=='Tab')return;
+   const items=Array.from(panel.querySelectorAll<HTMLElement>(':is(a[href],button,input,select,textarea,summary):not(:disabled)')).filter(el=>el.offsetParent),first=items[0],last=items[items.length-1];
+   if(first&&last&&(!panel.contains(document.activeElement)||document.activeElement===(e.shiftKey?first:last))){e.preventDefault();(e.shiftKey?last:first).focus();}
+  };
+  addEventListener('keydown',key);const root=document.documentElement,was=root.style.overflow,back=document.activeElement as HTMLElement|null;root.style.overflow='hidden';panel.querySelector<HTMLElement>('.stock-panel-head button')?.focus();return()=>{removeEventListener('keydown',key);root.style.overflow=was;back?.focus();};},[sheetOpen,narrow]);
  // A finished action leaves the bar after a moment; a failure stays until it is dismissed.
  useEffect(()=>{if(!sheet?.done)return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet]);
  const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
