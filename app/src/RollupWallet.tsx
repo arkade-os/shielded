@@ -323,8 +323,9 @@ export default function RollupWallet(){
  const fill=(code:string)=>{
   let target:ReturnType<typeof payTarget>;try{target=payTarget(code);}catch(error){setCodeError(errorText(error));return;}
   setCodeError('');setTo(target.to);
-  // A link's amount is in sats, so it switches an asset send back to Bitcoin; a fixed-amount invoice keeps its own.
-  if(target.amount!==undefined&&!invoiceCarriesAmount(target.to)){setAssetId('');setAmount(String(target.amount));}
+  // A link's amount is in sats, so it switches an asset send back to Bitcoin; a fixed-amount invoice's own amount wins.
+  if(invoiceCarriesAmount(target.to))setAmount('');
+  else if(target.amount!==undefined){setAssetId('');setAmount(String(target.amount));}
  };
  const paste=async()=>{try{fill(await navigator.clipboard.readText());}catch{document.getElementById('stock-to')?.focus();}};
  const openPanel=(name:'receive'|'send')=>{if(name!==tab){setTab(name);setTo('');}setSheetOpen(true);};

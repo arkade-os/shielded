@@ -32,11 +32,13 @@ export function payTarget(raw:string):{to:string;amount?:number}{
  const text=raw.trim(),plain=(s:string)=>/^[A-Z0-9]+$/.test(s)?s.toLowerCase():s,unescape=(s:string)=>{try{return decodeURIComponent(s);}catch{return s;}};
  if(/^lightning:/i.test(text))return {to:plain(text.slice(10))};
  if(!/^bitcoin:/i.test(text))return {to:plain(text)};
- const [path='',query='']=text.slice(8).split('?'),legs=new Map(query.split('&').map(pair=>{const [key='',value='']=pair.split('=');return [key.toLowerCase(),unescape(value)];}));
+ const [path='',query='']=text.slice(8).split('?'),legs=new Map(query.split('&').map(pair=>{const at=pair.indexOf('=');return [(at<0?pair:pair.slice(0,at)).toLowerCase(),unescape(at<0?'':pair.slice(at+1))];}));
  const required=[...legs.keys()].filter(key=>key.startsWith('req-'));
  if(required.length)throw new Error(`This payment link requires ${required.join(', ')}, which this wallet does not support.`);
+ const to=legs.get('ark')||legs.get('lightning')||path;
+ if(!to)throw new Error('This payment link names no destination.');
  const btc=legs.get('amount'),[whole='0',fraction='']=btc?.split('.')??[];
- return {to:plain(legs.get('ark')||legs.get('lightning')||path),...(btc&&/^\d+(\.\d{1,8})?$/.test(btc)?{amount:Number(whole)*1e8+Number(fraction.padEnd(8,'0'))}:{})};
+ return {to:plain(to),...(btc&&/^\d+(\.\d{1,8})?$/.test(btc)?{amount:Number(whole)*1e8+Number(fraction.padEnd(8,'0'))}:{})};
 }
 
 export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private payment',detail:'The amount and both parties stay private.'}

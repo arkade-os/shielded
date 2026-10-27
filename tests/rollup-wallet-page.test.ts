@@ -163,6 +163,8 @@ test('a scanned or pasted payment code becomes a destination, and a payment link
  assert.throws(()=>payTarget('bitcoin:bc1qexample?amount=0.0001&req-pop=callback%3A'),/req-pop/);
  assert.throws(()=>payTarget('BITCOIN:BC1QEXAMPLE?REQ-SOMETHING=1'),/req-something/);
  assert.equal(invoiceQr(invoice),'LIGHTNING:'+invoice.toUpperCase());
+ assert.throws(()=>payTarget('bitcoin:?amount=0.001'),/no destination/);
+ assert.deepEqual(payTarget('bitcoin:?lightning=lnbc1x=y'),{to:'lnbc1x=y'});
 });
 
 test('a pool whose reserves are full refuses another listing instead of swallowing it',()=>{
