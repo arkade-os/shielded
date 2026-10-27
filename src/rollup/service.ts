@@ -49,7 +49,13 @@ const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TA
 const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
-const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
+const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000,NOTICE_AFTER_MS=30_000;
+// Batching retries every second but renewal only every RENEW_CHECK_MS, so one blip would read as a stall for most of that gap.
+export const RENEW_NOTICE_AFTER_MS=RENEW_CHECK_MS+NOTICE_AFTER_MS;
+export const rollupNotice=(reasons:readonly (readonly [{message:string;since:number}|undefined,number])[],now:number):string|undefined=>
+ reasons.find(([reason,after])=>reason&&now-reason.since>after)?.[0]?.message;
+type RollupStall={message:string;since:number}|undefined;
+export const rollupNoticeReasons=(blocked:RollupStall,stalled:RollupStall)=>[[blocked,NOTICE_AFTER_MS],[stalled,RENEW_NOTICE_AFTER_MS]] as const;
 
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export type RollupStatusBatch={batch:number;at:number;rotated?:boolean}&RollupTimings;
@@ -129,13 +135,13 @@ export function rollupProvingOf(kind:RollupPoolKind,files:Record<string,string>)
 }
 /** An epoch pool's own /status fields, all as of the last accepted batch except heapBytes, a live process gauge. */
 const epochFieldsOf=(epochLen:number,batches:number,a:RollupEpochStatus)=>({epoch:a.acceptedEpoch,epochLen,batchesInEpoch:batches-a.acceptedEpoch*epochLen,prevNoteRoot:String(a.acceptedPrevNoteRoot),erCount:a.acceptedErCount,rsCount:a.acceptedRsCount,nullifiers:a.acceptedNullifiers,heapBytes:process.memoryUsage().heapUsed});
-/** The persisted genesis decides; SHIELDED_ROLLUP_EPOCH_LEN only shapes a pool that has no genesis yet. */
-export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};epochLenEnv?:string}):{kind:RollupPoolKind;epochLen?:number} {
+/** The persisted genesis decides; the epoch length only shapes a pool that has no genesis yet. */
+export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};epochLen?:number|string}):{kind:RollupPoolKind;epochLen?:number} {
  const epoch=(epochLen:unknown)=>{
   if(typeof epochLen!=='number'||!Number.isSafeInteger(epochLen)||epochLen<EPOCH_LEN_FLOOR||epochLen>MAX_EPOCH_LEN)throw new Error(`The rollup epoch length must be a whole number of batches from ${EPOCH_LEN_FLOOR} to ${MAX_EPOCH_LEN}; got ${JSON.stringify(epochLen)}.`);
   return {kind:'epoch' as const,epochLen};
  };
- if(!o.genesis)return o.epochLenEnv===undefined?{kind:'classic'}:epoch(/^[1-9][0-9]*$/.test(o.epochLenEnv)?Number(o.epochLenEnv):o.epochLenEnv);
+ if(!o.genesis)return o.epochLen===undefined?{kind:'classic'}:epoch(typeof o.epochLen==='string'&&/^[1-9][0-9]*$/.test(o.epochLen)?Number(o.epochLen):o.epochLen);
  // Only a classic pool can lack the field (an epoch genesis always writes 2), and refusing it would block the live pool.
  if(o.genesis.version===1||o.genesis.version===undefined)return {kind:'classic'};
  if(o.genesis.version===2)return epoch(o.genesis.epochLen);
@@ -146,7 +152,7 @@ export function rollupPoolKindOf(o:{genesis?:{version?:number;epochLen?:number};
  * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
  * `bundled` already holds keys. Afterwards the volume's keys define the pool, whatever later images hold.
  */
-export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string;fetcher?:typeof fetch};renewBeforeMs?:number;log?:(message:string)=>void;providers?:RollupServiceProviders}){
+export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string;fetcher?:typeof fetch};renewBeforeMs?:number;epochLen?:number|string;log?:(message:string)=>void;providers?:RollupServiceProviders}){
  const log=o.log??((message:string)=>console.log('[rollup] '+message)),keys=join(o.directory,'keys'),p=o.providers??{};
  mkdirSync(o.directory,{recursive:true,mode:0o700});
  const secretsPath=join(o.directory,'secrets.json');
@@ -191,6 +197,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const checkpointTimes:number[]=[];
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
  let blocked:{message:string;since:number}|undefined;
+ let stalled:{message:string;since:number}|undefined;
+ const noticeOf=()=>{const notice=rollupNotice(rollupNoticeReasons(blocked,stalled),Date.now());return notice?{notice}:{};};
  // In memory only: after a restart it is absent until this process publishes a batch.
  let lastBatch:RollupStatusBatch|undefined;
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
@@ -231,7 +239,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  /** Issues the pool token and sends the head with the genesis state packet; a crash in between re-finds the head by its script. */
  async function firstGenesis(ark:Awaited<ReturnType<typeof openCustomerArkWallet>>,network:StockNetworkInfo,epochLen?:number):Promise<Genesis|undefined> {
   const wallet=ark.wallet,balance=await wallet.getBalance();
-  status={...status,phase:'funding',fundingAddress:ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool.`};
+  status={...status,phase:'funding',fundingAddress:ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool, and more to keep paying each renewal's fee.`};
   const tokenPath=join(o.directory,'genesis-token.json');
   if(!existsSync(tokenPath)){
    if(balance.available<MINIMUM_FUNDING_SATS)return undefined;
@@ -254,6 +262,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const raw=(await indexer.getVirtualTxs([head.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===head!.txid)!;
   if(!Extension.fromTx(raw).getPacketByType(ROLLUP_STATE_PACKET))throw new Error('The pool head carries no state packet.');
   const saved=rollupGenesisOf({token,head:{txid:head.txid,vout:head.vout,value:head.value,sourceTxHex:hex.encode(raw.toBytes(true,true))},serverKey:network.serverKey,emulatorKey:network.emulatorKey,...(epochLen===undefined?{}:{epochLen})});
+  if(o.epochLen!==undefined&&saved.version!==2)throw new Error('Refusing to write a classic genesis: the service was given an epoch length.');
   writeFileSync(join(o.directory,'genesis.json'),JSON.stringify(saved),{flag:'wx'});
   log(`genesis ${head.txid}:${head.vout} token ${token}`);
   return saved;
@@ -390,13 +399,14 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
     if(rollupRenewalDue(points,vtxos,o.renewBeforeMs??RENEW_BEFORE_MS,Date.now()))for(const chunk of renewalChunks(archive.reserves,expiresAt))await exclusive(async()=>{
      const from=operator.status().archive.head;
      try{
-      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,reserves:chunk,
+      const moved=await renewRollupPool({network:live!.network,identity,operatorSecret,pool:live!.pool.tree,renewLeaf:live!.pool.renew,leaves:live!.leaves,token:live!.genesis.token,archive:operator.status().archive,reserves:chunk,providers:{wallet:p.wallet},
        onIntent:intentId=>writeFileSync(renewalPath,JSON.stringify({intentId,head:{txid:from.txid,vout:from.vout},reserves:chunk}))});
       await operator.relocate({head:moved.head,reserves:{...operator.status().archive.reserves,...moved.reserves}});rmSync(renewalPath,{force:true});
       log(`renewed the head and ${chunk.length} reserve(s) into round ${moved.commitment}, head ${moved.head.txid}`);
      }catch(error){await settleRenewal().catch(e=>note('renewal: '+(e as Error).message));throw error;}
     });
-   }catch(error){note('renewal: '+(error as Error).message);}
+    stalled=undefined;
+   }catch(error){const message='renewal: '+(error as Error).message;note(message);stalled={message,since:stalled?.since??Date.now()};}
    later(renew,RENEW_CHECK_MS);
   };
   const turnedAway=new Set<string>();
@@ -438,7 +448,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,view=operator.status(),{archive}=view,{state}=operator;
    // EpochState has no rootAfter (its window holds hashes), so an epoch pool reports what its operator remembers as accepted.
-   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(state instanceof EpochState?(view as RollupEpochStatus).acceptedRoot:state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...noticeOf(),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(state instanceof EpochState?(view as RollupEpochStatus).acceptedRoot:state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
     reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES,
     ...(state instanceof EpochState?epochFieldsOf(state.epochLen,archive.batches,view as RollupEpochStatus):{})}};
   },
@@ -447,7 +457,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(live||stopped)return;
    try{
     const path=join(o.directory,'genesis.json'),known=existsSync(path)?readJson<Genesis>(path):undefined;
-    const {kind,epochLen}=rollupPoolKindOf({genesis:known,epochLenEnv:process.env.SHIELDED_ROLLUP_EPOCH_LEN});
+    const {kind,epochLen}=rollupPoolKindOf({genesis:known,epochLen:o.epochLen});
+    if(o.epochLen!==undefined&&kind==='classic')throw new Error('This directory holds a classic pool; an epoch pool needs its own data directory.');
     if(!ensureKeys(kind))return;
     const network=await preflightStockMutinynet({...o.endpoints,...(known?{expected:{serverKey:known.serverKey,emulatorKey:known.emulatorKey}}:{})});
     const saved=known??await genesis(network,epochLen);

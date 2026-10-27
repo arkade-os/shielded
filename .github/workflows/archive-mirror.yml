@@ -1,0 +1,99 @@
+name: Archive mirror
+# Schedules fire only from the default branch and GitHub pauses them after a quiet spell; workflow_dispatch runs it by hand while the workflow is enabled.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: archive-mirror
+env:
+  POOL_URL: https://shielded.mutinynet.arkade.sh
+  RELEASE_TAG: rollup-genesis-4-archives
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Copy the closed epoch archives into the release
+        run: |
+          node --input-type=module <<'JS'
+          import {spawnSync} from 'node:child_process';
+          import {createHash} from 'node:crypto';
+          import {mkdtempSync, writeFileSync} from 'node:fs';
+          import {tmpdir} from 'node:os';
+          import {join} from 'node:path';
+
+          const {POOL_URL, RELEASE_TAG} = process.env;
+          const get = path => fetch(`${POOL_URL}/api/rollup${path}`, {signal: AbortSignal.timeout(60_000)});
+          const gh = (...args) => {
+            const {status, stdout, stderr, error} = spawnSync('gh', args, {encoding: 'utf8'});
+            if (status !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')}: ${stderr?.trim() || error}`);
+            return stdout;
+          };
+          const fail = error => {
+            console.log(`::error::${error.message.split(/[\r\n]/)[0]}${error.cause?.code ? ` (${error.cause.code})` : ''}`);
+            process.exitCode = 1;
+          };
+
+          // The envelope only: each reader checks the file against its own ER root, so this host needs no trust.
+          const refusal = (bytes, epoch) => {
+            if (bytes.length < 46) return `${bytes.length} bytes is shorter than an empty archive`;
+            const body = 14 + 36 * bytes.readUInt32LE(10);
+            if (bytes.length !== body + 32) return `${bytes.length} bytes does not fit its leaf count`;
+            if (bytes.toString('latin1', 0, 4) !== 'SHNA' || bytes.readUInt16LE(4) !== 1) return 'not a version-1 nullifier archive';
+            if (bytes.readUInt32LE(6) !== epoch) return `labelled epoch ${bytes.readUInt32LE(6)}`;
+            if (!createHash('sha256').update(bytes.subarray(0, body)).digest().equals(bytes.subarray(body))) return 'checksum mismatch';
+          };
+
+          async function main() {
+            const listing = await get('/archives');
+            // Any other 404 (a proxy with no router, a pool without the route) is a fault, not a classic pool.
+            if (listing.status === 404 && /classic pool/.test(await listing.text())) {
+              console.log('A classic pool keeps no nullifier archives; nothing to mirror.');
+              return;
+            }
+            if (!listing.ok) throw new Error(`GET /archives answered ${listing.status}`);
+            const {epochs} = await listing.json();
+            if (!Array.isArray(epochs) || !epochs.every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('GET /archives did not list epoch numbers');
+            if (!epochs.length) {
+              console.log('No epoch has closed yet; nothing to mirror.');
+              return;
+            }
+
+            let assets;
+            try {
+              assets = JSON.parse(gh('release', 'view', RELEASE_TAG, '--json', 'assets')).assets;
+            } catch (error) {
+              if (!/release not found/.test(error.message)) throw error;
+              gh('release', 'create', RELEASE_TAG, '--latest=false', '--title', 'Rollup genesis-4 nullifier archives (Mutinynet, epoch pool)', '--notes', `Byte copies of the closed epochs' nullifier archives served at ${POOL_URL}/api/rollup/archives. Each reader checks a file against its own epoch root, so this host needs no trust.`);
+              assets = [];
+            }
+            // A failed upload can leave a half-open asset under the name; --clobber below replaces it.
+            const held = new Set(assets.filter(a => a.state === 'uploaded').map(a => a.name));
+            const missing = epochs.filter(n => !held.has(`epoch-${n}.nf`));
+            console.log(`${epochs.length} closed epoch(s) listed, ${missing.length} to mirror.`);
+
+            const dir = mkdtempSync(join(tmpdir(), 'archives-'));
+            for (const epoch of missing) {
+              const name = `epoch-${epoch}.nf`;
+              try {
+                const answer = await get(`/archives/${name}`);
+                if (!answer.ok) throw new Error(`GET /archives/${name} answered ${answer.status}`);
+                const bytes = Buffer.from(await answer.arrayBuffer());
+                const fault = refusal(bytes, epoch);
+                if (fault) throw new Error(`${name} refused: ${fault}`);
+                writeFileSync(join(dir, name), bytes);
+                gh('release', 'upload', RELEASE_TAG, join(dir, name), '--clobber');
+                console.log(`Uploaded ${name} (${bytes.length} bytes).`);
+              } catch (error) {
+                fail(error);
+              }
+            }
+          }
+          await main().catch(fail);
+          JS

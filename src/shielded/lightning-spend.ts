@@ -1,9 +1,10 @@
 import {ArkAddress,type Identity} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {destinationFieldOf} from '../../packages/protocol/src/rollup/notes.ts';
-import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus,type transferBody} from './pool.ts';
+import type {epochTransferBody} from './epoch-pool.ts';
+import {checkSigningRequest,signDeposit,waitForSpend,type PoolApi,type SpendStatus} from './pool.ts';
 
-export type LightningTransferBody=ReturnType<typeof transferBody>;
+export type LightningTransferBody=ReturnType<typeof epochTransferBody>;
 export interface LightningSpendRecord {
  v:1;id:string;owner:string;pool:string;reference:string;kind:'fund'|'shield';paymentHash?:string;destination?:string;amount:string;expiresAt?:number;
  nullifiers:string[];coin?:{txid:string;vout:number;value:number;tapTree:string;leaf:string};body:LightningTransferBody;
@@ -50,7 +51,11 @@ export async function submitLightningSpend(record:LightningSpendRecord,store:Lig
   if((error as {status?:number})?.status!==404)throw error;
   const beforeRequest=()=>{if(r.expiresAt!==undefined&&Date.now()/1000>=r.expiresAt)throw new Error('The Lightning funding deadline expired; the saved spend remains reserved until reconciled.');};
   try{beforeRequest();await o.api('/spends',JSON.parse(JSON.stringify(r.body)),beforeRequest);}
-  catch(postError){try{first=await o.api<SpendStatus>(`/spends/${r.body.id}`);}catch{throw postError;}}
+  catch(postError){
+   // stale-anchor follows the double-spend check over the anchor epoch's sets (epoch-operator.ts:202, :211), so no copy landed; window-tag's older epoch proves nothing.
+   if((postError as {code?:unknown})?.code==='stale-anchor')first={status:'dropped',reason:(postError as Error).message};
+   else try{first=await o.api<SpendStatus>(`/spends/${r.body.id}`);}catch{throw postError;}
+  }
  }
  o.step?.(2);
  const final=await waitForSpend(r.body.id,async request=>{

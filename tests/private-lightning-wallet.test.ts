@@ -48,7 +48,7 @@ test('the in-memory HD counter stays global when the wallet changes pools',async
 function spend(id:string,poolName=pool,nullifier='1',hash='03'.repeat(32)):LightningSpendRecord{
  const address=script.address('tark',server).encode();
  return {v:1,id,owner,pool:poolName,reference:hash,kind:'fund',paymentHash:hash,destination:address,amount:'1000',nullifiers:[nullifier],state:'prepared',
-  body:{id:crypto.randomUUID().replaceAll('-',''),slot:{root:'0',nullifiers:[nullifier],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:1},publics:['0',nullifier,'0','0','1000','0',String(destinationFieldOf(ArkAddress.decode(address).pkScript.subarray(2)))],proof:{pi_a:[],pi_b:[],pi_c:[]},ciphertext:'00',program:hex.encode(ArkAddress.decode(address).pkScript.subarray(2))}};
+  body:{id:crypto.randomUUID().replaceAll('-',''),slot:{anchor:'0',rCur:{epoch:0,root:'0'},nullifiers:[nullifier],commitments:['0','0'],ctDigest:'0',groupId:'0',groupSize:1},publics:['0',nullifier,'0','0','1000','0',String(destinationFieldOf(ArkAddress.decode(address).pkScript.subarray(2)))],proof:{pi_a:[],pi_b:[],pi_c:[]},ciphertext:'00',program:hex.encode(ArkAddress.decode(address).pkScript.subarray(2))}};
 }
 
 for(const field of ['legacy','nf0','nf1','deposit','withdraw','asset','destination'] as const)test(`saved Lightning funding rejects inconsistent ${field} public signals without releasing its reservation`,()=>{
@@ -789,6 +789,20 @@ test('a rich ordinary wallet cannot fund an impossible pool payment or bypass th
  f.wallet.canWithdraw=()=>false;
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:config=>{const c=f.clientFactory(config);const original=c.quote;c.quote=async input=>{quoted++;return original(input);};return c;},acquireSession:f.acquireSession,legacyRecovery:false});
  try{await assert.rejects(service.quote({to:'invoice'}),/No single unreserved pool note/);assert.equal(quoted,0);assert.equal(f.funded.length,0);}finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a Lightning send offers the biggest spendable unreserved note, never one awaiting recovery, and nothing before the wallet can anchor',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();let anchored=true;
+ (f.wallet.inFlight as Set<bigint>).add(3n);
+ Object.assign(f.wallet,{shieldedNotes:()=>[{amount:9000n,nullifier:1n},{amount:700n,nullifier:2n},{amount:800n,nullifier:3n}],
+  account:{spendableNotes:(_asset:bigint,inFlight:ReadonlySet<bigint>)=>{if(!anchored)throw new Error('cannot anchor yet');return [{amount:700n,nullifier:2n},{amount:800n,nullifier:3n}].filter(n=>!inFlight.has(n.nullifier));}}});
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await service.quote({to:'invoice'});
+  const view=f.configs.find(c=>c.policy?.drive==='manual')!.wallet;
+  assert.equal((await view.getBalance()).available,700,'the 9000-sat note awaits recovery and the 800-sat one is reserved');
+  anchored=false;assert.equal((await view.getBalance()).available,0);
+ }finally{await service[Symbol.asyncDispose]();}
 });
 
 test('an individual Lightning receive below the pool minimum refuses locally and exact minimum remains receivable',async()=>{

@@ -1,15 +1,22 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
-import {BATCH_SLOTS} from '../../packages/protocol/src/rollup/constants.ts';
+import {ARCHIVE_DEPTH,BATCH_SLOTS,EPOCH_NULLIFIER_DEPTH,EPOCH_SLOTS,RECOVERED_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {Gradient,Seal,spirograph,wave,type Tincture} from './guilloche.tsx';
 import {rollupApi,type RollupPoolStatus} from './rollup-client.ts';
 import './shielded-home.css';
 
-const confidential=['Who you pay, and who pays you','How much each private payment moves','Your balance, and which notes are yours','Which note a payment spends. A proof reveals only a one-time mark that stops the note being spent twice.'];
-const publicRecord=['Bitcoin entering the pool, with its amount and source','Bitcoin leaving the pool, with its amount and destination','When transactions happen','The total the pool holds'];
+const EPOCH_LEN=128; // The genesis 4 launch value; Dockerfile.dokploy bakes the same SHIELDED_ROLLUP_EPOCH_LEN.
+const confidential=['Who you pay, and who pays you','How much each private payment moves','Your balance, and which notes are yours','Which note a payment spends. A proof reveals only a one-time mark that stops the note being spent twice.','Which of your notes were refreshed, and when. A refresh is an ordinary private payment to yourself.'];
+const publicRecord=['Bitcoin entering the pool, with its amount and source','Bitcoin leaving the pool, with its amount and destination','When transactions happen','The total the pool holds','That an epoch rotated, and when.','That someone recovered an older note, and which epoch it came from — never whose it was, or how much it held.'];
 const steps=[
  {numeral:'I',name:'Deposit',tone:'azure',text:'Fund your wallet’s Arkade address, then shield an amount. It becomes a private note that only your keys can spend.'},
  {numeral:'II',name:'Pay privately',tone:'gules',text:'Send to another wallet’s shielded address. Your browser proves you own enough and that the books balance, without revealing which note is yours or how much moves.'},
  {numeral:'III',name:'Withdraw',tone:'vert',text:'Withdraw to your Arkade address and the Bitcoin leaves the pool. Like a deposit, this step is public.'},
+ {numeral:'IV',name:'Stay fresh',tone:'purpure',text:'The pool forgets in epochs, so a note is spent normally for two of them. Your wallet refreshes its own notes in the background, at a random moment, long before the deadline. You do nothing, and nobody can tell a refresh from a payment.'},
+] as const;
+const lanes=[
+ {name:'Sealed epochs',tone:'is-sealed',text:'Note tree and spent-note set frozen and published. A recovery proves against these.'},
+ {name:'Epoch c−1, live',tone:'is-live',text:'Still spendable directly. Your wallet refreshes these.'},
+ {name:'Epoch c, current',tone:'is-current',text:'Where new notes land.'},
 ] as const;
 const parties={you:'Your browser',op:'Pool operator',ark:'Arkade'} as const;
 type Party=keyof typeof parties;
@@ -30,20 +37,25 @@ const defs:[React.ReactNode,React.ReactNode,React.ReactNode][]=[
  ['asset',<>SHA-256<sub>248</sub>(AssetId)</>,'Any Arkade asset, as the circuit sees it.'],
  ['ctDigest',<>SHA-256<sub>248</sub>(sealed record)</>,'Binds the encrypted outputs, so no one can swap them.'],
  ['groupId',<>Poseidon(tag, nf<sub>0</sub>, nf<sub>1</sub>, nf<sub>2</sub>)</>,'Up to three notes pay as one, in consecutive slots.'],
- ['statement',<>Poseidon(domain, root, nf…, cm<sub>0</sub>, cm<sub>1</sub>, ctDigest, groupId, groupSize)</>,'One of seven public inputs. The other six are two nullifiers, deposit, withdraw, boundary asset and destination. Boundary values are zero for a private payment.'],
+ ['anchor',<>Poseidon(tag, R<sub>prev</sub>, R<sub>cur</sub>)</>,'What a spend commits to instead of one root. A private one-bit selector picks which of the two live epochs the note came from, so the batch — and the operator — cannot tell.'],
+ ['statement',<>Poseidon(domain, anchor, nf…, cm<sub>0</sub>, cm<sub>1</sub>, ctDigest, groupId, groupSize)</>,'One of seven public inputs. The other six are two nullifiers, deposit, withdraw, boundary asset and destination. Boundary values are zero for a private payment.'],
  [<>da<sub>i</sub></>,<>Poseidon(da<sub>i−1</sub>, nf<sub>i</sub>…, cm<sub>i,0</sub>, cm<sub>i,1</sub>, ctDigest<sub>i</sub>)</>,<>Chained over the {BATCH_SLOTS} slots from da<sub>0</sub>{' = 0'}. The last link is the DA root.</>],
  [<>statement<sub>batch</sub></>,<>SHA-256<sub>248</sub>(header || old || new || da<sub>{BATCH_SLOTS}</sub> || noteBlockRoot)</>,<>Binds the old and new state commitments to the DA root and appended note-block root. The batch proof’s final public input, after {BATCH_SLOTS} client statements.</>],
+ ['ER leaf',<>Poseidon(tag, e+1, noteFinal<sub>e</sub>, nfFinal<sub>e</sub>, nfFinal<sub>e+1</sub>)</>,'One leaf per sealed epoch: its final note root and the two spent-note sets a recovery is checked against.'],
+ ['RS',`indexed set, depth ${RECOVERED_DEPTH}`,'The recovered set. Never reset, so a note can be recovered once and only once.'],
 ];
 const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
- {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','10,819'],['Public inputs','7'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','8.1 MB, cached by hash']]},
- {title:'Batch',by:'op',rows:[['Slots',String(BATCH_SLOTS)],['Closes','On the first spend'],['Constraints','500,930 (spend)'],['Public inputs',String(BATCH_SLOTS+1)]]},
- {title:'State',rows:[['Note tree','depth 32, 4.29 billion'],['Per batch','one 32-leaf subtree'],['Nullifiers','indexed tree, depth 32'],['Root window','last 64 batches']]},
- {title:'On Arkade',by:'ark',rows:[['Transaction','Unmeasured for genesis 3'],['Weight','40,000 WU limit'],['Per payment','Depends on batch contents'],['State packet','96 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
+ {title:'Spend proof',by:'you',rows:[['Proof system','Groth16 on BN254'],['Constraints','11,079'],['Public inputs','7'],['Notes','1 in, 2 out'],['Deposit input','zero-value dummy'],['Proving key','8.2 MB, cached by hash']]},
+ {title:'Batch',by:'op',rows:[['Slots',String(BATCH_SLOTS)],['Closes','On the first spend'],['Constraints','554,059 (spend)'],['Public inputs',String(BATCH_SLOTS+1)]]},
+ {title:'State',rows:[['Note tree','depth 32, one per epoch'],['Per batch','one 32-leaf subtree'],['Root window','last 64 batches']]},
+ {title:'Epochs',rows:[['Epoch length',`${EPOCH_LEN} batches`],['Direct-spend window','the epoch a note was made in, and the next'],['Spent-note set',`per epoch, indexed, depth ${EPOCH_NULLIFIER_DEPTH}`],['Sealed epochs',`up to ${(2**ARCHIVE_DEPTH-1).toLocaleString('en-US')}`],['Recover batch',`${EPOCH_SLOTS.recover} slot, its own tapscript leaf`],['Anonymity floor','one whole epoch of notes once the pool has rotated, plus the current epoch so far']]}, // Leaf 0 of the archive holds the empty pseudo-epoch -1 (erLeafIndexOf), so one fewer real epoch than leaves.
+ {title:'On Arkade',by:'ark',rows:[['Transaction','Unmeasured for genesis 4'],['Weight','40,000 WU limit'],['Per payment','Depends on batch contents'],['State packet','96 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
 ];
 const trust:{title:string;by?:Party;text:string}[]=[
- {title:'A test network',text:'Mutinynet test coins only. The current genesis 3 proving keys use a development-only phase-2 setup over the shared Hermez powers of tau, without an independent ceremony or Bitcoin beacon. The README shows how to verify the artifacts.'},
+ {title:'A test network',text:'Mutinynet test coins only. The genesis 4 proving keys come from a small testnet ceremony over the shared Hermez powers of tau: one recorded contribution per circuit, sealed by Bitcoin block 972846. Anyone who kept a contribution’s randomness could forge proofs. The README shows how to verify the artifacts.'},
  {title:'Arkade checks the proofs',by:'ark',text:'The Arkade emulator verifies the proofs and arkd must co-sign; Bitcoin itself does not verify them. Both must stay honest and online. If they do not, there is no independent exit from the pool.'},
  {title:'The operator keeps order',by:'op',text:'The pool operator orders batches and can delay or refuse a spend, but cannot spend a note without its owner’s proof. If it refuses you or stops, anyone holding the published batch key can prove a batch without it, until the pool head expires. Deposits and withdrawals are public, amount and address.'},
+ {title:'The sealed epochs stay available',text:'Recovering an old note needs the sealed spent-note sets of the epoch it came from and the one after. The operator serves every one of them, and an hourly job mirrors a second copy to a GitHub release; the files check against the pool’s own on-chain commitment, so a wrong one is refused rather than believed. If every copy were lost, notes from that epoch could no longer be recovered — which is why there is more than one.'},
 ];
 const pt=(r:number,deg:number)=>[(r*Math.sin(deg*Math.PI/180)).toFixed(1),(-r*Math.cos(deg*Math.PI/180)).toFixed(1)].join(' ');
 const studPaths=Array.from({length:4},(_,k)=>wave(8.5,2.2,8,k*Math.PI/4,72));
@@ -149,9 +161,15 @@ function Plate(){
      <div className="sh-weight">
       <div className="sh-scale" aria-hidden="true"/>
       <div className="sh-marks" aria-hidden="true"><span>0</span><span style={{left:'25%'}}>10,000</span><span style={{left:'50%'}}>20,000</span><span style={{left:'75%'}}>30,000</span><span>40,000</span></div>
-      <p>The current genesis 3 transaction size and weight have not been measured here. The operator checks each batch against a <b>40,000 WU limit</b>; its size depends on the deposits, withdrawals and assets it carries.</p>
+      <p>The current genesis 4 transaction size and weight have not been measured here. The operator checks each batch against a <b>40,000 WU limit</b>; its size depends on the deposits, withdrawals and assets it carries.</p>
      </div>
     </div>
+   </figure>
+   <figure id="sh-fig-3" className="sh-fig">
+    <figcaption><h3><span>Fig. 3</span>Two live epochs, and everything before them sealed.</h3></figcaption>
+    <ol className="sh-lanes">{lanes.map(lane=><li key={lane.name} className={lane.tone}><h4>{lane.name}</h4><p>{lane.text}</p></li>)}</ol>
+    <div className="sh-lane-span"><h4>Recovered set</h4><p>Permanent. One entry per recovery, so a note can be recovered only once.</p></div>
+    <p className="sh-fig-note">Rotation is not a schedule. It happens at batch {EPOCH_LEN} and every {EPOCH_LEN} batches after, whoever builds it; an idle pool never rotates.</p>
    </figure>
    <div className="sh-ref">
     <div><h3>Definitions</h3><dl className="sh-defs">{defs.map(([term,value,note],i)=><React.Fragment key={i}><dt>{term}</dt><dd><code>= {value}</code><p>{note}</p></dd></React.Fragment>)}</dl></div>
@@ -201,11 +219,20 @@ export default function ShieldedHome(){
      <div className="sh-public"><h3>On the public record</h3><ul>{publicRecord.map((text,n)=>item(text,n+1))}</ul></div>
     </div>
     <p className="sh-aside">Privacy grows with company. The more people share the pool, the harder it is to link a deposit to a withdrawal, so avoid withdrawing the exact amount you have just deposited.</p>
+    <p className="sh-aside">Once the pool has rotated, a private payment hides among at least one whole epoch of notes, plus the current epoch so far. A recovery hides among one sealed epoch.</p>
    </section>
    <Ribbon/>
    <section id="how" className="sh-section" aria-labelledby="sh-how-title" data-reveal>
     <h2 id="sh-how-title">How it works</h2>
     <ol className="sh-steps">{steps.map(step=><li key={step.name}><Medallion numeral={step.numeral} tone={step.tone}/><h3>{step.name}</h3><p>{step.text}</p></li>)}</ol>
+   </section>
+   <Ribbon/>
+   <section id="epochs" className="sh-section sh-epochs" aria-labelledby="sh-epochs-title">
+    <h2 id="sh-epochs-title">Notes that never expire, in a pool that never fills.</h2>
+    <p>Every pool that hides who pays whom has to remember every note ever spent, forever, or it cannot stop one being spent twice. That memory only grows.</p>
+    <p>This pool keeps that memory in <b>epochs</b> of {EPOCH_LEN} batches. A note spends normally through the epoch it was made in and the one after — between one and two epochs, depending on when it was made. While your wallet is open it refreshes its notes inside that window, by itself, so you never meet the deadline.</p>
+    <p>Leave a wallet closed for longer and nothing is lost. The note takes a one-step <b>recovery</b> instead: your wallet proves the note against the sealed records of the epoch it came from, and it becomes a fresh note again. Your wallet does this for you the next time you open it, and tells you in one line while it works.</p>
+    <p>The cost of recovery is privacy, not money. A recovery is visible as a recovery, and it names the epoch the note came from. An ordinary spend never does.</p>
    </section>
    <Plate/>
    <section className="sh-section sh-keys" aria-labelledby="sh-keys-title">

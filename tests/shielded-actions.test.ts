@@ -4,15 +4,17 @@ import {setImmediate} from 'node:timers/promises';
 import {ArkAddress,Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
-import {buildRollupTransfer,RollupAccount,type BuiltSpend,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
+import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
+import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {submitAll} from '../src/shielded/submit.ts';
 import {NoteReservation,coversWithdrawal,mergeAssetFields,needsRenewal,nextShieldPlan,programOf,shieldTitle,shieldedSteps,topThree} from '../src/shielded/wallet.ts';
+import {epochPool} from './fixtures/epoch-pool.ts';
 
-const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>({witness:{slot:{root:7n,nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize},publicSignals:[1n,0n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1),change:0n} as unknown as BuiltSpend);
-const prover={prove:async(_b:BuiltSpend,circuit:'spend'|'join')=>({pi_a:[circuit],pi_b:[],pi_c:[]})};
+const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>{const slot={nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize};
+ return {witness:{slot:{root:7n,...slot},publicSignals:[1n,0n,0n,0n,0n],input:{}},slot:{anchor:7n,rCur:{epoch:0,root:8n},...slot},ciphertext:Uint8Array.of(1),change:0n} as unknown as EpochBuiltSpend;};
+const prover={prove:async(_b:EpochBuiltSpend,circuit:'spend'|'join')=>({pi_a:[circuit],pi_b:[],pi_c:[]})};
 const identity={sign:async(tx:Transaction)=>tx} as never;
 const POOL_SCRIPT='51'.repeat(17);
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{const t=new Transaction({allowUnknownOutputs:true});for(const i of inputs)t.addInput({txid:i.txid,index:i.index,witnessUtxo:{script:i.script,amount:1000n}});t.addOutput({script:hex.decode('0014'+'11'.repeat(20)),amount:1000n});return t;};
@@ -20,8 +22,8 @@ const deps=(api:never)=>({api,prover,identity,poolScript:POOL_SCRIPT});
 
 test('a group is proved then submitted in the order its id commits to, and every member is awaited',async()=>{
  const submitted:string[]=[],steps:number[]=[];
- const api=(async(path:string,body?:{slot?:{nullifiers:string[]}})=>{
-  if(path==='/spends'){submitted.push(body!.slot!.nullifiers[0]!);return {};}
+ const api=(async(path:string,body?:{slot?:{anchor:string;nullifiers:string[]}})=>{
+  if(path==='/spends'){assert.deepEqual([body!.slot!.anchor,'root' in body!.slot!],['7',false]);submitted.push(body!.slot!.nullifiers[0]!);return {};}
   return {status:'included',batch:4,txid:'t'};
  }) as never;
  const members=[built([11n],99n,3),built([21n],99n,3),built([31n],99n,3)].map(b=>({built:b}));
@@ -115,19 +117,15 @@ test('renewal is offered only for coins the pool would refuse as near expiry',()
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
 const keys=(byte:string)=>deriveRollupKeys2(byte.repeat(32),'mutinynet');
-const [aliceKeys,bobKeys,padKeys]=[keys('11'),keys('22'),keys('33')];
-const [aliceTo,bobTo,padTo]=[aliceKeys,bobKeys,padKeys].map(k=>rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));
-const publishedSlot=({witness,ciphertext}:BuiltSpend)=>({root:String(witness.slot.root),nullifiers:witness.slot.nullifiers.map(String),commitments:witness.slot.commitments.map(String) as [string,string],ctDigest:String(witness.slot.ctDigest),groupId:'0',groupSize:0,ciphertext:hex.encode(ciphertext),publics:witness.publicSignals.map(String)});
-async function fundedAccount(amounts:bigint[]):Promise<RollupAccount>{
- const account=RollupAccount.owning(hash,aliceKeys,{frontier:true});
- const deposits:BuiltSpend[]=[];
- for(const amount of amounts)deposits.push(await account.spend({deposit:amount},aliceTo));
- const padding=await Promise.all(Array.from({length:BATCH_SLOTS-deposits.length},()=>buildRollupTransfer(hash,{root:account.latestRoot(),ask:padKeys.ask,nk:padKeys.nk,self:padTo,request:{},width:1})));
- await account.apply({kind:'spend',slots:[...deposits,...padding].map(publishedSlot),txid:'ab'.repeat(32),at:1000} as PublishedBatch);
+const [aliceKeys,bobKeys]=[keys('11'),keys('22')];
+const [aliceTo,bobTo]=[aliceKeys,bobKeys].map(k=>rollupRecipientOf(hash,k.ask,k.nk,k.viewSecret));
+async function fundedAccount(amounts:bigint[]):Promise<EpochAccount>{
+ const pool=epochPool(hash,4),account=EpochAccount.owning(hash,aliceKeys,{epochLen:4});
+ await account.apply(pool.land('spend',await Promise.all(amounts.map(amount=>pool.deposit(aliceTo,amount)))));
  return account;
 }
 
-// Review Focus 2. `RollupAccount.pay` reads the unspent set and resolves asynchronously, so without the
+// Review Focus 2. `EpochAccount.pay` reads the unspent set and resolves asynchronously, so without the
 // reservation two concurrent actions choose the SAME note and the second spend is a certain double-spend.
 test('two concurrent picks never choose the same note, because the reservation holds what it picked',async()=>{
  const account=await fundedAccount([400n,500n,600n]);

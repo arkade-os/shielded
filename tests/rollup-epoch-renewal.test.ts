@@ -131,15 +131,15 @@ test('a renewed note survives the next rotation and the un-renewed one does not'
  assert.deepEqual([amounts(online.renewalDue({ random: () => 0 })), offline.renewalDue({ random: () => 0 })], [[500n], undefined], 'the survivor is due again; the lost note is a recovery');
 });
 
-test('renewalDue returns nothing while a renewal is in flight', () => {
- const account = holding(8, 1, 0, [[0, 100n], [0, 200n], [0, 300n], [1, 400n]]), random = () => 0, [, , third, fresh] = account.notes();
- const plan = account.renewalDue({ random })!, inFlight = new Set(plan.due.map(n => n.nullifier));
- assert.deepEqual([plan.kind, plan.due.length], ['join', 2]);
- assert.equal(account.renewalDue({ random, inFlight }), undefined, 'the plan\'s own notes');
- assert.equal(account.renewalDue({ random, inFlight: new Set([third!.nullifier]) }), undefined, 'any due note, not only the planned ones');
- assert.deepEqual(amounts(account.renewalDue({ random, inFlight: new Set([fresh!.nullifier]) })), [100n, 200n], 'a note that is not due does not block');
- inFlight.clear();
- assert.deepEqual(account.renewalDue({ random, inFlight })?.due, plan.due, 'released, the same plan is due again');
+test('renewalDue plans from the due notes nothing holds, skipping the held ones', () => {
+ const account = holding(8, 1, 0, [[0, 100n], [0, 300n], [0, 700n], [1, 400n]]), random = () => 0;
+ const plan = (...held: bigint[]) => account.renewalDue({ random, inFlight: new Set(account.notes().filter(n => held.includes(n.amount)).map(n => n.nullifier)) });
+ assert.deepEqual([plan()?.kind, amounts(plan())], ['join', [100n, 300n]]);
+ assert.deepEqual(amounts(plan(700n)), [100n, 300n], 'a payment holding the 700 leaves the other two to renew');
+ assert.deepEqual(amounts(plan(100n)), [300n, 700n], 'still a join, of the smallest free notes');
+ assert.deepEqual([plan(100n, 300n)?.kind, amounts(plan(100n, 300n))], ['spend', [700n]], 'the wallet, not renewalDue, keeps to one renewal at a time');
+ assert.equal(plan(100n, 300n, 700n), undefined, 'every due note held');
+ assert.deepEqual(amounts(plan(400n)), [100n, 300n], 'a note that is not due does not matter');
 });
 
 test('a renewal spend is indistinguishable from an ordinary spend on the wire', async () => {

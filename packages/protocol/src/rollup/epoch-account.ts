@@ -275,10 +275,10 @@ export class EpochAccount {
   const { targets } = this.schedule, from = Math.min(at, last), draw = o.random ?? uniform;
   // trap: a wallet opened late sees every due note at once; drawn over the whole window, most targets are already past and it renews in a burst.
   for (const n of due) if (!targets.has(n.nullifier)) targets.set(n.nullifier, from + Math.floor(draw() * (last - from)));
-  if (due.some(n => o.inFlight?.has(n.nullifier))) return undefined;
   const ready = (n: EpochOwnedNote) => at >= targets.get(n.nullifier)!;
-  const [head, partner] = this.smallestFirst(due, ready), deadlineBatch = (live + 1) * epochLen - 1;
-  if (!ready(head!)) return undefined;
+  // trap: skip held notes, never bail on one: payments, merges and Lightning hold them too. The wallet's `renewing` keeps one renewal at a time.
+  const [head, partner] = this.smallestFirst(due.filter(n => !o.inFlight?.has(n.nullifier)), ready), deadlineBatch = (live + 1) * epochLen - 1;
+  if (!head || !ready(head)) return undefined;
   return partner ? { kind: 'join', due: [head!, partner], deadlineBatch } : { kind: 'spend', due: [head!], deadlineBatch };
  }
  /** Builds a renewalDue plan; a lone note names its asset, which a bare spend would take as BTC. */

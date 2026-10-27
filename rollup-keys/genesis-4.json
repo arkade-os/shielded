@@ -1,0 +1,91 @@
+{
+ "version": 1,
+ "setup": {
+  "phase1": "powersOfTau28_hez_final_20.ptau",
+  "phase1Blake2b512": "89a66eb5590a1c94e3f1ee0e72acf49b1669e050bb5f93c73b066b564dca4e0c7556a52b323178269d64af325d8fdddb33da3a27c34409b821de82aa2bf1a27b",
+  "phase2": {
+   "beacon": {
+    "label": "Bitcoin block 972846",
+    "hash": "00000000000000000001fb15fe7a2402b800683dd3c0fa81061bd989f92afebe",
+    "iterationsExp": 10
+   }
+  }
+ },
+ "circuits": {
+  "epoch-spend": {
+   "r1cs": "39320faffecf66e43fe9edb8cab07f2a1dd6628ad3075d11fbecb167f50b8afa",
+   "files": {
+    "epoch-spend.zkey": "7665eb698e852f517c43c3949b9e94220a2fd117e2a247048999351cb7cc73b6",
+    "epoch-spend.vkey.json": "169545ce15b01932a3cd1396b710b0eb7cb587ca5f82443a2bad4aa9361455df",
+    "epoch-spend.wasm": "88e18fde5f060a87643458f4a26438d34e9543fe6cedf5fdcf14fa2fd14654a7"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 4, contribution 1",
+     "hash": "40c4ef626efd340c19cd502c63bf3c576616d760778bb093786b75ad8e467681fec9f830314e933dd685b883b0b34d95479c7973d99c2f93799fef75b909f835"
+    }
+   ],
+   "beacon": "43013393089cb0569c550c68dde645b973168a8dacbd6f8126c15106890a332084364c647a77170ffe4e6121a6c565b561bf66b2f2bcb74a221f83249af82146"
+  },
+  "epoch-join": {
+   "r1cs": "0af7c61fc31549d1f239f4e4b0f6966517f355fe94c01f1d6f05d5f1202905d7",
+   "files": {
+    "epoch-join.zkey": "32a07f1f7501be90b9dd46e21f4cdda5806d745e75c7d246b82071e93279a0f3",
+    "epoch-join.vkey.json": "cad7207554cf1b515d4852c4467ab27f95b332fbbb78d24a4643e0b175078805",
+    "epoch-join.wasm": "39dbd96b1d30623227abde8a2322137b6d3205053e946489c827eaad49e040c1"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 4, contribution 1",
+     "hash": "30685ec73a1905e6f0664f5bce3b3e30b7cb93ab64e756cd9610b857f5859d0d498d135c0f969adf449086a9e6735749117558bd806e2ef8343a51602d7f2c2d"
+    }
+   ],
+   "beacon": "4d7169254f50a076e5d6c292b27520dbdb2428856b3d4ee1a2ddb131bc496e9bab7dab320e1823e3409f4cb72d14653fef634386735cf5cc6f4bdc4b0d72d62d"
+  },
+  "epoch-batch-spend": {
+   "r1cs": "6557b120279a176121d4f28c20b70dc304af639476725d1bc430058b591c178f",
+   "files": {
+    "epoch-batch-spend.zkey": "91bf13c5eb969985d8073f5405e93987b85e98645b2b7451b678147653f7d4a6",
+    "epoch-batch-spend.vkey.json": "6a9d319b14f10a3ebe8dd48edb86d814181d9524d29502a8d8dd11267b127afe",
+    "epoch-batch-spend.wasm": "3d098cb3bdce6f6a6f642543ac2faef28ccd637941736affa26bdc2251076945"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 4, contribution 1",
+     "hash": "b2c927a283cc3ebd88ef4216989438887ad2c013ede01c36f06d0763f2535ecc27aa01d6c5ac9f2f430a7269ebecf7a51c0ad7b7a1096aa0579ca973f6c9a7bb"
+    }
+   ],
+   "beacon": "dac5c16c40d023c14fa08d82a6550f017e1b4c7cee817f59da844153a312577eee7aaba41b47a8ed59b77f4677a2999712f1e5f5752b5df4f4c0b230604a89b0"
+  },
+  "epoch-batch-join": {
+   "r1cs": "e11d7930f472993aae7a33148e8638f57bef5fa268c72c68a20d18dd5f59e01d",
+   "files": {
+    "epoch-batch-join.zkey": "e309e4773ab020fc74be44b0162842c34d170850f82b33766fe041fc89993401",
+    "epoch-batch-join.vkey.json": "1b665f9b9f45cdb5cd8c71fc52c198c2c41441f53382ce3b9ec0eebbb43eab10",
+    "epoch-batch-join.wasm": "fe8c4694503c1f6022d37298f7942f5145e3734fb21e8c112202b0896661e6b0"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 4, contribution 1",
+     "hash": "9da73f81f7a111ba273d6226c5ff1dd40a7eab7084757ac277c7b9045b75956a4addb9c11354c508e59e27a2f9f655d4a800109506d6bf1f1c9a673236004a94"
+    }
+   ],
+   "beacon": "8036f97b0f579d46492d581131119fe3b01ad3c93fef71441050e93160f2b495a75f57fdda241af6c395de664cc1575104d4a4d25bef34811ef8b09ced90400f"
+  },
+  "epoch-batch-recover": {
+   "r1cs": "27be97992efd042abc215e4586a815ec5681a6eebb6d33afd3c9480f0a8ccd3a",
+   "files": {
+    "epoch-batch-recover.zkey": "a38202c69f2ec9d25725ec167882f941491c7c0719f6ae99dba5182805f2d3ec",
+    "epoch-batch-recover.vkey.json": "2862a9ff34992a5d45758fa548d75eba19463c3fc39517b835e6768fae3405e8",
+    "epoch-batch-recover.wasm": "89fb04eb740353c6508e99189906baddc8e3c9380526c6e60df279f51b0923c1"
+   },
+   "contributions": [
+    {
+     "name": "Shielded genesis 4, contribution 1",
+     "hash": "11636ecc6ee212f60292de43a4cc459e6343a4cc435b34f5cf34c9d786ea9385e667a9ad52d24d08ac4aa92627020c33a3f3690a577ae37f083ba62d0f30cf36"
+    }
+   ],
+   "beacon": "7e197d91f3eea8b5ff6692603168e087730d6802bbb61e24481698374cf2dabfea1ca0c7ae79ab0c7dea20c163c796d210b35fe46c65fda64dfdf1c2d78175ff"
+  }
+ }
+}

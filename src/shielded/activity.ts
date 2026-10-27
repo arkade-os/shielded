@@ -1,16 +1,15 @@
 import {TxType,type Activity,type ActivityResolver,type ArkTransaction} from '@arkade-os/sdk';
-import {encodeDisclosure,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
-import type {HistoryEntry} from '../../packages/protocol/src/rollup/account.ts';
-import type {SentRecord} from './repository.ts';
+import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
+export {epochRevealLinkOf as revealLinkOf} from './epoch-disclosure.ts';
 export const SHIELDED_TAG='shielded';
 const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge',withdraw:'unshield'} as const;
 type SyntheticKind=keyof typeof SYNTHETIC;
 const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool',list:'Listed asset'} as const;
-export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):HistoryEntry|undefined}
+export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):EpochHistoryEntry|undefined}
 
-export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(field:bigint)=>string|undefined,nativeDestination?:bigint):ShieldedRowIndex{
- const index=new WeakMap<ArkTransaction,HistoryEntry>();
+export function shieldedRows(entries:()=>readonly EpochHistoryEntry[],assetIdOf:(field:bigint)=>string|undefined,nativeDestination?:bigint):ShieldedRowIndex{
+ const index=new WeakMap<ArkTransaction,EpochHistoryEntry>();
  return {
   rows(){
    // Only synthesize withdrawals known to be external; older snapshots may omit their destination.
@@ -27,7 +26,7 @@ export function shieldedRows(entries:()=>readonly HistoryEntry[],assetIdOf:(fiel
  };
 }
 
-export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly HistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:HistoryEntry)=>boolean}):ActivityResolver{
+export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly EpochHistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:EpochHistoryEntry)=>boolean}):ActivityResolver{
  return {
   id:SHIELDED_TAG,
   resolve(tx){
@@ -49,21 +48,9 @@ export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>r
  };
 }
 
-export function entryForActivity(item:Activity,o:{index:ShieldedRowIndex;entries:readonly HistoryEntry[]}):HistoryEntry|undefined{
+export function entryForActivity(item:Activity,o:{index:ShieldedRowIndex;entries:readonly EpochHistoryEntry[]}):EpochHistoryEntry|undefined{
  for(const tx of item.txs){const entry=o.index.entryOf(tx);if(entry)return entry;}
  const batch=item.intent?.metadata?.batch,kind=item.intent?.kind;
  if(typeof batch!=='number'||kind!=='shield')return undefined;
  return o.entries.find(e=>e.batch===batch&&e.kind==='shield');
-}
-
-export function revealLinkOf(origin:string,e:HistoryEntry,o:{self:string;sentOf:(nullifier:bigint)=>SentRecord|undefined}):string|undefined{
- if(e.kind==='withdraw'||e.kind==='merge')return undefined;
- let to=o.self,notes:DisclosedNote[];
- if(e.kind==='send'){
-  const parts=e.slots.map((slot,i)=>({sent:o.sentOf(e.spent[i]!),index:e.batch*32+2*slot})).filter(p=>p.sent?.note);
-  if(!parts.length)return undefined;
-  to=parts[0]!.sent!.to;
-  notes=parts.map(({sent,index})=>({index,amount:BigInt(sent!.note!.amount),asset:BigInt(sent!.note!.asset),rho:BigInt(sent!.note!.rho)}));
- }else notes=e.created.map(n=>({index:n.index,amount:n.amount,asset:n.asset,rho:n.rho}));
- return notes.length?`${origin}/verify#${encodeDisclosure({v:1,to,notes})}`:undefined;
 }

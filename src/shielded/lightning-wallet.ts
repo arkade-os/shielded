@@ -58,7 +58,7 @@ export async function artifactWallet(companion:Wallet,artifact:LightningArtifact
 }
 const terminal=new Set(['paid','claimed','refunded','lapsed','failed','cancelled','filled']);
 const artifactEnded=(artifact:LightningArtifact)=>artifact.state==='ended';
-const biggestNote=(wallet:ShieldedWallet)=>Number(wallet.shieldedNotes(BTC_ASSET).filter(n=>!wallet.inFlight.has(n.nullifier)).reduce((max,n)=>n.amount>max?n.amount:max,0n));
+const biggestNote=(wallet:ShieldedWallet)=>{try{return Number(wallet.account.spendableNotes(BTC_ASSET,wallet.inFlight).reduce((max,n)=>n.amount>max?n.amount:max,0n));}catch{return 0;}};
 export async function acquireLightningSession(name:string):Promise<()=>Promise<void>>{
  if(typeof navigator==='undefined'||!navigator.locks)throw new Error('Private Lightning requires browser locking to protect active payments');
  let release!:()=>void,done!:Promise<void>;

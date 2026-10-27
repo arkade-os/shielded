@@ -62,7 +62,7 @@ export function bornAtFor(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>
 }
 
 /** A spend takes one note, so it needs a single note that covers the amount. */
-export const pickNote=(notes:OwnedNote[],amount:bigint,inFlight:Set<bigint>)=>
+export const pickNote=<N extends OwnedNote>(notes:N[],amount:bigint,inFlight:ReadonlySet<bigint>):N|undefined=>
  notes.filter(n=>!inFlight.has(n.nullifier)&&n.amount>=amount).sort((a,b)=>a.amount<b.amount?-1:a.amount>b.amount?1:0)[0];
 
 /** One nullifier for a spend, two for a join; the pool reads the kind from that count. */

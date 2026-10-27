@@ -6,13 +6,14 @@ A private pool for Bitcoin and Arkade assets on Arkade. Inside the pool, value m
 
 - The pool is one Arkade VTXO, the head, which holds a supply-1 pool token and a commitment to the pool state. Each listed asset has one reserve VTXO beside it (at most eight).
 - A wallet owns notes in a depth-32 Poseidon tree. To spend, the browser proves a spend (one input note) or a join (two input notes), each with two outputs, with Groth16, and reveals only the spent notes' nullifiers.
+- The pool forgets in epochs of 128 batches (`SHIELDED_ROLLUP_EPOCH_LEN`, baked into `Dockerfile.dokploy`). Each epoch has its own note tree and spent-note set, and a note spends directly in the epoch it was made in and the one after; a wallet refreshes its notes inside that window. A note that falls out of it is recovered with a one-slot recover batch against the sealed spent-note sets of the epoch it came from and the one after, since it could have been spent directly in either; losing epoch e+1's file therefore also blocks recoveries of epoch e. The operator serves those sets at `/api/rollup/archives`, and `.github/workflows/archive-mirror.yml` mirrors each closed epoch's file to the `rollup-genesis-4-archives` release.
 - The operator collects up to ten spends, or ten joins, into a batch and proves the state update. A batch closes as soon as a spend is pending and no batch is in flight; spends that arrive meanwhile share the next. The head's covenant checks every client proof and the batch proof with the Arkade emulator's BN254 opcodes before the pool moves.
-- Deposits come from the depositor's Arkade coins, which they sign during a short round. Withdrawals pay an Arkade address and must be at least the 330-sat dust.
+- Deposits come from the depositor's Arkade coins, which they sign in a short signing step. Withdrawals pay an Arkade address and must be at least the 330-sat dust.
 - Each output note is sealed to its recipient's view key (X25519 and AES-GCM) and published with its batch. A wallet restores from its recovery secret by scanning the published batches.
 - A payment spends one note, two notes in one join, or up to three notes as one atomic group. A wallet holding more than eight notes of an asset merges its two smallest in the background.
 - One 24-word recovery phrase derives a spend key, a nullifier key and a view key. An address (`shrol2…`) carries the owner hash and the public view key. Two read-only keys can be shared: a view key (`shview2…`) shows the notes a wallet received, and a full viewing key (`shfvk2…`) also shows which of them were spent. Neither can spend or freeze a note.
 - Anyone can list an Arkade asset by sending one unit and 330 sats to the pool address; the operator turns it into that asset's reserve.
-- The operator moves the head and reserves into a fresh Arkade round 48 hours before they expire.
+- The operator renews the head and reserves in a fresh batch swap 48 hours before they expire.
 
 ## Lightning privacy and recovery
 
@@ -47,28 +48,31 @@ Requires Node 24 and Go 1.26.9.
 npm ci
 npm run vm:build
 npm run build
-node tools/fetch-rollup-keys.mjs rollup-keys/genesis-3.json https://github.com/arkade-os/shielded/releases/download/rollup-genesis-3-keys .deps/keys
+node tools/fetch-rollup-keys.mjs rollup-keys/genesis-4.json https://github.com/arkade-os/shielded/releases/download/rollup-genesis-4-keys .deps/keys
 SHIELDED_DATA_DIR=.deps/data SHIELDED_ROLLUP_KEYS=.deps/keys HOST=127.0.0.1 npm run server
 ```
 
-`fetch-rollup-keys.mjs` keeps each downloaded file only if it matches the manifest pinned in the repo. Without `SHIELDED_ROLLUP_KEYS` the server generates its own development keys instead: that needs the compiled circuits (`npm run circom && npm run rollup:compile`, then `SHIELDED_ROLLUP_CIRCUITS=circuits/rollup/build`), 6 GiB of memory and a 1.2 GB powers-of-tau download. Then fund the `fundingAddress` from `/api/rollup/status` with at least 2,000 sats to create the pool. The server listens on port 8792; `npm run app` serves the web app with hot reload and proxies `/api` to it.
+`fetch-rollup-keys.mjs` keeps each downloaded file only if it matches the manifest pinned in the repo. Without `SHIELDED_ROLLUP_KEYS` the server generates its own development keys instead: that needs the compiled circuits (`npm run circom && npm run rollup:compile:epoch`, then `SHIELDED_ROLLUP_CIRCUITS=circuits/rollup/build`), 6 GiB of memory and a 1.2 GB powers-of-tau download. Then fund the `fundingAddress` from `/api/rollup/status` with at least 2,000 sats to create the pool. The server listens on port 8792; `npm run app` serves the web app with hot reload and proxies `/api` to it.
+
+That same operator wallet keeps paying after genesis. arkd charges each renewal intent 0.2% of **every input** under a day old — the head, each reserve the intent carries, and the wallet's own float coins — and a batch re-creates the head each time, so a renewal of a 6,000-sat head costs 12 sats. A pool with reserves sends one intent per 8 reserves, and each of those intents pays for the head again. Fund the wallet above the 2,000-sat minimum, sized to the head and the reserve count you mean to run — the change returns as a fresh coin, which the next renewal carries along so arkd cannot sweep it. At most 8 of the wallet's coins ride in one intent, largest first, so coins anyone pays to the published address can neither crowd the float out nor grow the intent past arkd's weight limit. A wallet that cannot cover the fee stops the pool renewing, and says so in the `notice` on `/api/rollup/status`.
 
 ## Proving keys
 
 The proving keys come from a two-phase Groth16 setup.
 
 - **Phase 1** is the Hermez [Perpetual Powers of Tau](https://github.com/privacy-scaling-explorations/perpetualpowersoftau) transcript for 2^20 constraints, `powersOfTau28_hez_final_20.ptau`, pinned by its BLAKE2b-512 in `tools/rollup-setup.mjs`. It is shared with many other projects; nothing here re-runs it.
-- **Phase 2** for the current genesis 3 circuits is a development-only rehearsal setup, as recorded in `rollup-keys/genesis-3.json`. It has no independent ceremony or Bitcoin beacon. Anyone retaining the setup randomness could forge proofs, so these keys are for Mutinynet tests only. The contributions and Bitcoin beacon in the historical `genesis-2.json` belong to the previous circuits.
+- **Phase 2** for the genesis 4 epoch circuits is a small testnet ceremony. Its one contribution per circuit, and the public hash of Bitcoin block 972846 that seals them as a random beacon, are listed in `rollup-keys/genesis-4.json`. The keys are sound if at least one contributor discarded their randomness, and with a single contribution per circuit that is the word of whoever made it. The beacon only stops the last contributor from choosing the final key; it adds no secrecy. This is not a production ceremony, so the keys are for Mutinynet tests only.
+- **Genesis 3 and 2.** The genesis 3 keys (`rollup-keys/genesis-3.json`, release `rollup-genesis-3-keys`) were a development-only rehearsal setup with no ceremony or beacon. That release stays published as the rollback target and the historical record, and is never deleted. The contributions and Bitcoin beacon in the historical `genesis-2.json` belong to the genesis 2 circuits.
 
 To check the published keys, compile the circuits (the build is deterministic) and verify each key against its circuit and the phase-1 transcript:
 
 ```sh
-npm run circom && npm run rollup:compile
-node tools/fetch-rollup-keys.mjs rollup-keys/genesis-3.json https://github.com/arkade-os/shielded/releases/download/rollup-genesis-3-keys .deps/keys
-for c in spend join batch-spend batch-join; do npx snarkjs zkey verify circuits/rollup/build/$c.r1cs .deps/rollup-ceremony/powersOfTau28_hez_final_20.ptau .deps/keys/$c.zkey; done
+npm run circom && npm run rollup:compile:epoch
+node tools/fetch-rollup-keys.mjs rollup-keys/genesis-4.json https://github.com/arkade-os/shielded/releases/download/rollup-genesis-4-keys .deps/keys
+for c in epoch-spend epoch-join epoch-batch-spend epoch-batch-join epoch-batch-recover; do npx snarkjs zkey verify circuits/rollup/build/$c.r1cs .deps/rollup-ceremony/powersOfTau28_hez_final_20.ptau .deps/keys/$c.zkey; done
 ```
 
-Fetch the transcript first from `https://circom.info/powersOfTau28_hez_final_20.ptau` into `.deps/rollup-ceremony/`, and check that `b2sum` matches the `PTAU_BLAKE2B512` in `tools/rollup-setup.mjs`. Check the compiled R1CS hashes against `rollup-keys/genesis-3.json`; the download tool checks the key-file hashes. `snarkjs zkey verify` checks each key against its circuit and the phase-1 transcript. The current manifest records a development-only phase 2 with no beacon.
+Fetch the transcript first from `https://circom.info/powersOfTau28_hez_final_20.ptau` into `.deps/rollup-ceremony/`, and check that `b2sum` matches the `PTAU_BLAKE2B512` in `tools/rollup-setup.mjs`. Check the compiled R1CS hashes against `rollup-keys/genesis-4.json` (`npm run rollup:budget:epoch` pins the same hashes); the download tool checks the key-file hashes. `snarkjs zkey verify` checks each key against its circuit and the phase-1 transcript, and prints every contribution hash and the beacon it finds in the key; they should match the manifest.
 
 ## If the operator stops
 
@@ -80,7 +84,7 @@ SHIELDED_PHRASE="your 24 words" npm run fallback -- withdraw ./pool-mirror 5000 
 npm run fallback -- publish ./pool-mirror https://shielded.mutinynet.arkade.sh <batch>
 ```
 
-`withdraw` replays the mirrored batches, checks they reach the head the indexer shows, and proves your spend plus nine zero-value spends and the batch. It then submits the batch to the Arkade emulator. `publish` hands its record to the operator, which checks it against the chain before following. Without the operator nobody can renew the pool head, so the payout expires when the head does; `withdraw` prints that deadline, and the wallet shows it once the operator stops answering.
+`withdraw` replays the mirrored batches, checks they reach the head the indexer shows, and proves your spend plus nine zero-value spends and the batch. It then submits the batch to the Arkade emulator. `publish` hands its record to the operator, which checks it against the chain before following. Without the operator nobody can renew the pool head, so the payout expires when the head does; `withdraw` prints that deadline, and the wallet shows it once the operator stops answering. `withdraw` spends a note of the two live epochs; a note older than that is brought back first with `SHIELDED_PHRASE="your 24 words" npm run fallback -- recover ./pool-mirror <epoch>` (BTC notes only, the largest of that epoch per run), using the checked archive of that epoch that `mirror` saved.
 
 This path covers the pool operator stopping, not Arkade itself: the batch still needs the Arkade emulator and operator to accept it. If they are offline, the pool cannot move at all (see [SECURITY.md](SECURITY.md)).
 

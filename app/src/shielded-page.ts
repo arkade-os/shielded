@@ -2,7 +2,7 @@ import {isRetryableProviderError,TxType,type Activity,type PaymentHandle,type Ro
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
-import {idle} from '../../src/shielded/sync.ts';
+import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {watchHandle,type StepState} from '../../src/shielded/handle.ts';
@@ -109,7 +109,7 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
   return [BigInt(nullifier),record];
  });
  wallet.recordSent(entries);
- await idle(wallet.account,()=>wallet.save());
+ await epochIdle(wallet.account,()=>wallet.save());
  if(!wallet.repositoryError&&current()&&storage.getItem(SENT)===raw)storage.removeItem(SENT);
 }
 

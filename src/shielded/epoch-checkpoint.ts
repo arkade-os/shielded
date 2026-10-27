@@ -9,7 +9,7 @@ import {epochCatchUp,type EpochOnBatch} from './epoch-sync.ts';
 export {birthCheckpoint as epochBirthCheckpoint} from './checkpoint.ts';
 type Keys={ask:bigint;nk:bigint;viewSecret:Uint8Array};
 
-const epochPoolOf=async(api:PoolApi)=>{
+export const epochPoolOf=async(api:PoolApi)=>{
  const pool=(await api<RollupPoolStatus>('/status')).pool;
  if(!pool?.epochLen)throw new Error('That pool is not an open epoch pool.');
  return {...pool,epochLen:pool.epochLen};
@@ -22,7 +22,7 @@ export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,
   const pool=(await api<RollupPoolStatus>('/status')).pool;
   if(pool?.batches!==account.batchCount)continue;
   const prev=account.prevNoteRoot();
-  if(pool.prevNoteRoot!==undefined&&prev!==undefined&&BigInt(pool.prevNoteRoot)!==prev)throw new Error(`The pool says epoch ${account.epoch-1} closed on another root than this wallet holds; its saved state drifted across a rotation.`);
+  if(pool.prevNoteRoot!==undefined&&prev!==undefined&&BigInt(pool.prevNoteRoot)!==prev)throw Object.assign(new Error(`The pool says epoch ${account.epoch-1} closed on another root than this wallet holds; its saved state drifted across a rotation.`),{code:'root-drift'});
   return BigInt(pool.root)===account.latestRoot();
  }
  return false;

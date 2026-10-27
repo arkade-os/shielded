@@ -1,10 +1,11 @@
 import {ArkAddress,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,Transaction,VtxoScript,Wallet,type Identity} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
-import type {VirtualCoin} from '@arkade-os/sdk';
+import type {NormalizedExtendedVirtualCoin,VirtualCoin} from '@arkade-os/sdk';
 import type {StockNetworkInfo} from './network.ts';
 import {decodeStockIndexerTransaction} from './indexer.ts';
 
-export interface CustomerVtxo {funding:{txid:string;vout:number;value:number;sourceTxHex:string;tapTreeHex:string;leafHex:string};amount:number}
+/** `coin` is the checked VTXO behind `funding`, for callers that need its age, expiry or leaves too. */
+export interface CustomerVtxo {funding:{txid:string;vout:number;value:number;sourceTxHex:string;tapTreeHex:string;leafHex:string};amount:number;coin:NormalizedExtendedVirtualCoin}
 export function assertUniqueCustomerVtxos(coins:readonly Pick<VirtualCoin,'txid'|'vout'>[]):void {
  const seen=new Set<string>();
  for(const coin of coins){
@@ -39,7 +40,7 @@ export async function openCustomerArkWallet(identity:Identity,network:StockNetwo
   const tree=VtxoScript.decode(treeBytes);if(!customerVtxoSourceMatches(coin,source,tree,script))continue;
   const leafHex=walletIntentLeafScriptHex(coin.intentTapLeafScript);
   try{tree.findLeaf(leafHex);}catch{continue;}
-  coins.push({amount:coin.value,funding:{txid:coin.txid,vout:coin.vout,value:coin.value,sourceTxHex:hex.encode(source.toBytes(true,true)),tapTreeHex:hex.encode(treeBytes),leafHex}});
+  coins.push({amount:coin.value,coin,funding:{txid:coin.txid,vout:coin.vout,value:coin.value,sourceTxHex:hex.encode(source.toBytes(true,true)),tapTreeHex:hex.encode(treeBytes),leafHex}});
  }
  return {wallet,address,externalProgram:hex.encode(script.subarray(2)),coins};
 }

@@ -2,13 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
 import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
-import { revealLinkOf } from '../src/shielded/activity.ts';
 import { epochIncomingNotes, epochRevealLinkOf } from '../src/shielded/epoch-disclosure.ts';
 import { epochSyncAccount } from '../src/shielded/epoch-pool.ts';
 import { epochCatchUp, type EpochBatchPage } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi } from '../src/shielded/pool.ts';
 import type { SentRecord } from '../src/shielded/repository.ts';
-import type { HistoryEntry } from '../packages/protocol/src/rollup/account.ts';
 import { ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
 import { decodeDisclosure, fullViewKeyOf, parseFullViewKey, parseViewKey, sentNoteOf, verifyDisclosure, viewKeyOf, type Disclosure, type IncomingNote } from '../packages/protocol/src/rollup/disclosure.ts';
 import { EpochAccount, type EpochHistoryEntry } from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -85,8 +83,8 @@ test('a reveal link for a send verifies, unchanged from the classic computation'
  const o = { self: aliceAddress, sentOf: (nullifier: bigint) => sent.get(nullifier) };
  assert.deepEqual(sends.map(e => [e.batch, e.epoch, e.slots]), [[1, 0, [0]], [5, 1, [0, 1]], [8, 2, [0]]]);
  for (const entry of sends) {
-  const link = epochRevealLinkOf(ORIGIN, entry, o), disclosure = disclosureOf(link);
-  assert.equal(link, revealLinkOf(ORIGIN, entry as HistoryEntry, o), `batch ${entry.batch}`);
+  const disclosure = disclosureOf(epochRevealLinkOf(ORIGIN, entry, o));
+  assert.deepEqual(disclosure.notes.map(n => n.index), entry.slots.map(slot => entry.batch * 32 + 2 * slot), `batch ${entry.batch}: the classic send index`);
   assert.deepEqual([disclosure.to, await verifyOnPool(pool.api, disclosure)], [bobAddress, disclosure.notes.map(() => true)], `batch ${entry.batch}`);
  }
  assert.deepEqual(disclosureOf(epochRevealLinkOf(ORIGIN, sends[1]!, o)).notes.map(n => [n.index, n.amount]), [[160, 500n], [162, 100n]], 'each leg of a group is named by its own slot');

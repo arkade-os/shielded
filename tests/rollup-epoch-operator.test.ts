@@ -226,6 +226,17 @@ test('admission refuses a fast-path slot apply would refuse, with a rejection ra
  assert.deepEqual(op.pendingIds(),[good.id]);
 });
 
+test('admission checks a double-spend before the anchor, so stale-anchor never hides a landed copy',async t=>{
+ const w=await world(2),op=await w.open(t),first=fastSpend(op.state);
+ await land(op,'spend',[first]);
+ for(const where of ['its own epoch','the epoch after']){
+  await land(op,'spend',[fastSpend(op.state)]);
+  const twin={...first,slot:{...first.slot,nullifiers:fastSpend(op.state).slot.nullifiers}};
+  await assert.rejects(op.submit(twin),rejection('stale-anchor'),`${where}: the anchor has moved on`);
+  await assert.rejects(op.submit(first),rejection('double-spend'),`${where}: the spend landed`);
+ }
+});
+
 test('a pad whose rCur has no root is refused once, and the next tick still builds a batch',async t=>{
  const w=await world(2),op=await w.open(t),good=fastSpend(op.state);
  const bad:[string,unknown][]=[['no root',{epoch:0}],['a root outside the field',{epoch:0,root:ROLLUP_FIELD}],['a fractional epoch',{epoch:0.5,root:1n}]];
