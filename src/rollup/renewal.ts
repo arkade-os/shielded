@@ -6,7 +6,7 @@ import {base64,hex} from '@scure/base';
 import type {StockNetworkInfo} from '../stock/network.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
 import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
-import {ROLLUP_STATE_PACKET,type RollupLeaves} from './covenant.ts';
+import {ROLLUP_STATE_PACKET,type RollupEpochLeaves} from './covenant.ts';
 import type {RollupArchive,RollupPoolCoin} from './epoch-operator.ts';
 
 const scriptNum=(v:number)=>{const out:number[]=[];for(let x=v;x>0;x>>=8)out.push(x&255);if(out.length&&out.at(-1)!&0x80)out.push(0);return out;};
@@ -115,7 +115,7 @@ export function rollupFeeEmulator(emulator:RestEmulatorProvider,fee:readonly {tx
  * ponytail: one-shot; a crash after registration strands the intent until flushRollupIntent clears it.
  */
 export interface RollupRenewalProviders {ark?:RestArkProvider;emulator?:RestEmulatorProvider;indexer?:RestIndexerProvider;wallet?():ReturnType<typeof openCustomerArkWallet>}
-export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupLeaves;token:string;archive:RollupArchive;reserves?:readonly string[];
+export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Identity;operatorSecret:Uint8Array;pool:VtxoScript;renewLeaf:Uint8Array;leaves:RollupEpochLeaves;token:string;archive:RollupArchive;reserves?:readonly string[];
  /** Called with the registered intent id before the round is joined; arkd re-queues that intent until it confirms or is cleared. */
  onIntent?(intentId:string):Promise<void>|void;providers?:RollupRenewalProviders}):Promise<Pick<RollupArchive,'head'|'reserves'>&{commitment:string}> {
  const ark=o.providers?.ark??new RestArkProvider(o.network.arkUrl),emulator=o.providers?.emulator??new RestEmulatorProvider(o.network.emulatorUrl);

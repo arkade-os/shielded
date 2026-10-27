@@ -15,7 +15,7 @@ import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protoco
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
-import {readBatchTx,readEpochBatchTx} from '../src/rollup/external.ts';
+import {readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupSpecOf} from '../src/rollup/service.ts';
 import type {StockWireRequest} from '../src/stock/transport.ts';
@@ -333,7 +333,6 @@ test('a followed batch reproduces the state the transaction committed to, for al
  }
  assert.deepEqual([withRecords.state.commitment(),chainOnly.state.commitment()],[a.state.commitment(),a.state.commitment()]);
  const {tx:joinTx}=landedTx(w,1);
- assert.deepEqual(readEpochBatchTx(joinTx,leaves),readBatchTx(joinTx,leaves),'the join row reads what the genesis-3 reader reads');
  assert.deepEqual(readEpochBatchTx(joinTx,leaves).nullifiers,recordAt(w,1).slots.map(s=>s.nullifiers.map(BigInt)));
 });
 

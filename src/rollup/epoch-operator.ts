@@ -2,7 +2,7 @@ import {existsSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from
 import {join} from 'node:path';
 import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type BatchKind,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochBatchInput} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot} from '../../packages/protocol/src/rollup/epoch-record.ts';
@@ -12,7 +12,7 @@ import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup
 import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSelection,type RollupSpend} from './batcher.ts';
-import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,type RollupCoin,type RollupEpochLeaves,type RollupLeaves} from './covenant.ts';
+import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,type RollupCoin,type RollupEpochLeaves} from './covenant.ts';
 import {encodeEpochNfArchive,epochNfArchivePath,readEpochNfArchive} from './epoch-archive-file.ts';
 import {encodeEpochSnapshot,headCommitment,readEpochSnapshot,writeSnapshot} from './epoch-snapshot.ts';
 import {readEpochBatchTx,spentCoins} from './external.ts';
@@ -32,21 +32,22 @@ export interface RollupTransport {
  /** Unspent, exactly these facts, and expiring after now + floorMs: a batch's outputs inherit its earliest input expiry. */
  fresh?(coin:RollupDepositFacts,floorMs:number):Promise<boolean>;
 }
-export interface RollupOperatorOptions {
+export interface RollupEpochOperatorOptions {
  directory:string;
  pin:StockReleasePin;
  genesis:RollupArchive;
- leaves:RollupLeaves;
+ epochLen:number;
+ leaves:RollupEpochLeaves;
  token:string;
  serverKey:Uint8Array;
  emulatorKey:Uint8Array;
  exitDelay:{type:'seconds'|'blocks';value:number};
  checkpoint:CSVMultisigTapscript.Type;
- clientKey:Record<BatchKind,unknown>;
+ clientKey:Record<EpochBatchKind,unknown>;
  hash:Hash;
- prover:Record<BatchKind,RollupProver>;
+ prover:Record<EpochBatchKind,RollupProver>;
  transport:RollupTransport;
- signDeposits(request:StockWireRequest,spends:RollupSpend[]):Promise<StockWireRequest|undefined>;
+ signDeposits(request:StockWireRequest,spends:RollupEpochSpend[]):Promise<StockWireRequest|undefined>;
  depositFloorMs?:number;
  /** The network's dust limit; arkd refuses a batch whose BTC payout is below it. */
  dustSats?:number;
@@ -74,16 +75,7 @@ export const ROLLUP_GROUP_WAIT_MS=120_000;
 
 /** A spend with `origin` set is a recovery of a note from that archived epoch. */
 export interface RollupEpochSpend extends Omit<RollupSpend,'slot'> {slot:EpochSlot;origin?:number}
-// Transitional re-export; the record types live in the protocol package.
-export {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot};
 interface RollupEpochPlan {version:1;request:StockWireRequest;record:RollupEpochRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
-export interface RollupEpochOperatorOptions extends Omit<RollupOperatorOptions,'leaves'|'clientKey'|'prover'|'signDeposits'> {
- epochLen:number;
- leaves:RollupEpochLeaves;
- clientKey:Record<EpochBatchKind,unknown>;
- prover:Record<EpochBatchKind,RollupProver>;
- signDeposits(request:StockWireRequest,spends:RollupEpochSpend[]):Promise<StockWireRequest|undefined>;
-}
 
 const KINDS=['spend','join','recover'] as const;
 const SNAPSHOT_EVERY=32;

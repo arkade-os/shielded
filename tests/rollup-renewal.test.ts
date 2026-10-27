@@ -8,7 +8,7 @@ import {base64,hex} from '@scure/base';
 import {offlineNativeFixture} from './fixtures/native.ts';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import type {StockNetworkInfo} from '../src/stock/network.ts';
-import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
+import {rollupEpochPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
 import {RENEW_NOTICE_AFTER_MS,rollupNotice,rollupNoticeReasons} from '../src/rollup/service.ts';
 import {carriedReserves,flushRollupIntent,fundRollupRenewalFee,isRollupFeeForfeit,leftoverRenewal,MAX_CARRIED,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupFeeEmulator,rollupForfeitsForArkd,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalFee,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
@@ -117,8 +117,8 @@ test('an operator wallet that cannot cover the fee refuses the renewal before an
 test('a renewal hands out its intent id before the round, and names it when the round fails',async()=>{
  const token=asset.AssetId.create('cc'.repeat(32),0).toString();
  const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
- const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
- const pool=rollupPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
+ const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),batchRecover:Uint8Array.of(0x55),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
+ const pool=rollupEpochPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
  const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fromString(token),null,[asset.AssetInput.create(0,1n)],[asset.AssetOutput.create(0,1n)],[])]);
  const parent=offlineNativeFixture([{script:pool.tree.pkScript,amount:3000n}],[tokenPacket,new UnknownPacket(ROLLUP_STATE_PACKET,new Uint8Array(64))]);
  const head={txid:parent.id,vout:0,value:3000,sourceTxHex:hex.encode(parent.toBytes())};
@@ -139,8 +139,8 @@ test('a renewal hands out its intent id before the round, and names it when the 
 test('a renewal chunk carries the head and only the reserves it names, and chunks follow the expiries',async()=>{
  const id=(b:string)=>asset.AssetId.create(b.repeat(32),0).toString(),token=id('cc'),[x,y,z]=[id('d1'),id('d2'),id('d3')];
  const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
- const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
- const pool=rollupPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
+ const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),batchRecover:Uint8Array.of(0x55),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
+ const pool=rollupEpochPoolTree(server,emulator,leaves,{type:'seconds',value:2048});
  const holds=(assetId:string,vout:number,amount:bigint)=>asset.AssetGroup.create(asset.AssetId.fromString(assetId),null,[asset.AssetInput.create(0,amount)],[asset.AssetOutput.create(vout,amount)],[]);
  const parent=offlineNativeFixture([3000n,330n,330n,330n].map(amount=>({script:pool.tree.pkScript,amount})),[asset.Packet.create([holds(token,0,1n),holds(x,1,5n),holds(y,2,6n),holds(z,3,7n)]),new UnknownPacket(ROLLUP_STATE_PACKET,new Uint8Array(64))]);
  const coin=(vout:number,value:number)=>({txid:parent.id,vout,value,sourceTxHex:hex.encode(parent.toBytes())});
@@ -170,8 +170,8 @@ test('a renewal repays every pool coin unchanged, pays the fee from an operator 
  const id=(b:string)=>asset.AssetId.create(b.repeat(32),0).toString(),token=id('cc'),x=id('d1');
  const identity=SingleKey.fromHex('04'.repeat(32));
  const [server,emulator,operator]=await Promise.all([SingleKey.fromHex('01'.repeat(32)),SingleKey.fromHex('02'.repeat(32)),identity].map(k=>k.xOnlyPublicKey()));
- const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
- const pool=rollupPoolTree(server!,emulator!,leaves,{type:'seconds',value:2048});
+ const leaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x54),batchRecover:Uint8Array.of(0x55),reserve:Uint8Array.of(0x52),renew:Uint8Array.of(0x53)};
+ const pool=rollupEpochPoolTree(server!,emulator!,leaves,{type:'seconds',value:2048});
  const holds=(assetId:string,vout:number,amount:bigint)=>asset.AssetGroup.create(asset.AssetId.fromString(assetId),null,[asset.AssetInput.create(0,amount)],[asset.AssetOutput.create(vout,amount)],[]);
  const parent=offlineNativeFixture([3000n,330n].map(amount=>({script:pool.tree.pkScript,amount})),[asset.Packet.create([holds(token,0,1n),holds(x,1,5n)]),new UnknownPacket(ROLLUP_STATE_PACKET,new Uint8Array(64))]);
  const coin=(vout:number,value:number)=>({txid:parent.id,vout,value,sourceTxHex:hex.encode(parent.toBytes())});

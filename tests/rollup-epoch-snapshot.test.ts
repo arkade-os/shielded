@@ -54,6 +54,7 @@ test('a snapshot from another pin, another version, or a damaged body is ignored
  const cases:Record<string,[Buffer,StockReleasePin?]>={
   'another pin':[good,{...pin,genesisTxid:'ee'.repeat(32)}],'another version':[resealed(good,b=>{b.writeUInt16LE(EPOCH_SNAPSHOT_VERSION+1,4);})],'a flipped body byte':[flipped],truncated:[good.subarray(0,-1)],
   'an archive node off its children':[reencoded(r=>r.archive.tree.place(1,0,r.archive.tree.node(1,0)+1n))],
+  'a note frontier sibling off its parent':[reencoded(r=>r.notes.place(SUBTREE_DEPTH+1,0,r.notes.node(SUBTREE_DEPTH+1,0)+1n))],
   'an archive record off its tree leaf':[reencoded(r=>{const list=r.archive.list();r.archive.list=()=>list.map((a,i)=>i===1?{...a,nfFinal:a.nfFinal+1n}:a);})],
   // Poseidon reduces mod p, so the largest value plus p keeps the list sorted and the root unchanged.
   'a hot nullifier past the field':[reencoded(r=>{const scan=r.nullifiers.scanLeaves.bind(r.nullifiers);r.nullifiers.scanLeaves=visit=>scan((value,next)=>visit(next===0&&value>0n?value+ROLLUP_FIELD:value,next));})],

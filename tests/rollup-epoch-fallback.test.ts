@@ -21,6 +21,7 @@ import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {encodeEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
 import {buildEpochFallbackBatch,openEpochReplica,type EpochFallbackSpend,type EpochReplica} from '../src/rollup/epoch-replica.ts';
+import {indexerBatchWalker,type BatchIndexer} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupSpecOf,type RollupService} from '../src/rollup/service.ts';
 import {cacheBatch,cacheEpochArchive,replayEpochMirror} from '../tools/rollup-cache.ts';
@@ -131,8 +132,10 @@ test('a forged record and the archive it implies are refused: the replay never r
 
 test('a stale replica catches up from the chain to the head\'s commitment and only then trusts an archive',async()=>{
  const chain=chainOf(world.records),replica=await open(mirrorOf(world.records.slice(0,9).map((r,i)=>({...r,txid:chain[i]!.id}))));
+ const spender=new Map(chain.slice(0,-1).map((tx,i)=>[tx.id,chain[i+1]!] as const)),psbt=new Map(chain.map(tx=>[tx.id,base64.encode(tx.toPSBT())] as const));
+ const indexer:BatchIndexer={getVtxos:async({outpoints})=>{const next=spender.get(outpoints[0]!.txid);return {vtxos:[next?{isSpent:true,arkTxId:next.id}:{isSpent:false}]};},getVirtualTxs:async ids=>({txs:ids.map(id=>psbt.get(id)!)})};
  assert.throws(()=>replica.preload(0),/not bound to the pool head/);
- assert.equal(await replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),async({txid})=>chain[chain.findIndex(tx=>tx.id===txid)+1],2),2);
+ assert.equal(await replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),indexerBatchWalker(indexer),2),2);
  assert.deepEqual(replica.records.slice(9).map(r=>[r.txid,r.kind,r.at]),[[chain[9]!.id,'recover',undefined],[chain[10]!.id,'spend',undefined]],'placeholders, which no pool stamps with at');
  assert.equal(replica.state.commitment(),world.state.commitment());
  replica.preload(0);
