@@ -4,10 +4,9 @@ import {buildPoseidon} from 'circomlibjs';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
-import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {catchUpAfterEvent,epochCatchUp,WATCHDOG_MS} from '../src/shielded/epoch-sync.ts';
 import type {PoolApi} from '../src/shielded/pool.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
-import {catchUpAfterEvent,WATCHDOG_MS} from '../src/shielded/sync.ts';
 import {loadAccount} from '../src/shielded/wallet.ts';
 import {epochPool} from './fixtures/epoch-pool.ts';
 

@@ -4,7 +4,7 @@ import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-r
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import type {SentRecord} from './repository.ts';
 
-/** revealLinkOf on an epoch pool. /verify reads an index as a place in the /batches stream, batch*32 + 2*slot + output, and a leaf index starts over at every rotation, so a received note is named by its batch and its place in that batch's block. */
+/** /verify reads an index as a place in the /batches stream, batch*32 + 2*slot + output, and a leaf index starts over at every rotation, so a received note is named by its batch and its place in that batch's block. */
 export function epochRevealLinkOf(origin:string,e:EpochHistoryEntry,o:{self:string;sentOf:(nullifier:bigint)=>SentRecord|undefined}):string|undefined{
  if(e.kind!=='send'&&e.kind!=='receive'&&e.kind!=='shield')return undefined;
  let to=o.self,notes:DisclosedNote[];

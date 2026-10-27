@@ -12,7 +12,7 @@ import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-re
 import { createRollupRouter } from '../src/rollup/http.ts';
 import { EPOCH_KEY_FILES, rollupKeyPath, rollupProvingOf, type RollupService } from '../src/rollup/service.ts';
 import { epochProvingUrls, epochTransferBody } from '../src/shielded/epoch-pool.ts';
-import { circuitUrls, pickNote, type PoolApi } from '../src/shielded/pool.ts';
+import { pickNote, type PoolApi } from '../src/shielded/pool.ts';
 import { BTC_ASSET, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
 import { anchorOf } from '../packages/protocol/src/rollup/epoch.ts';
 import { EpochAccount } from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -193,5 +193,5 @@ test('an epoch proving URL names epoch-spend, and the pool serves it', async (t)
  assert.equal(joined.zkey, `${origin}/api/rollup/proving/epoch-join.zkey?v=epochjoinzkey`, 'a join proves with the join circuit');
  const served = async (url: string) => { const response = await fetch(url); return [response.status, await response.text()]; };
  for (const url of [spend.wasm, spend.zkey, joined.wasm, joined.zkey]) assert.deepEqual(await served(url), [200, new URL(url).pathname.split('/').pop()], url);
- for (const url of Object.values(circuitUrls('spend', proving, origin))) assert.equal((await served(url))[0], 404, url);
+ for (const file of ['spend.wasm', 'spend.zkey']) assert.equal((await served(`${origin}/api/rollup/proving/${file}`))[0], 404, file);
 });

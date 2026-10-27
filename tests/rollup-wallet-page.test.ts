@@ -3,8 +3,8 @@ import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
-import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
-import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
+import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,rollupApi,shieldPlan,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
+import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
 import {shieldTitle} from '../src/shielded/wallet.ts';
@@ -17,16 +17,6 @@ const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
  return t;
 };
 const psbt=(t:Transaction)=>base64.encode(t.toPSBT());
-
-test('a join body carries both nullifiers and proves with the join artifacts, which a spend never fetches',()=>{
- const spend={witness:{slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0},publicSignals:[1n,0n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1),change:0n} as unknown as BuiltSpend;
- const join={...spend,witness:{...spend.witness,slot:{...spend.witness.slot,nullifiers:[11n,21n]}}} as BuiltSpend;
- assert.deepEqual(transferBody('ab',join,{pi_a:[],pi_b:[],pi_c:[]}).slot.nullifiers,['11','21']);
- const proving={spend:{wasm:'s1',zkey:'s2'},join:{wasm:'j1',zkey:'j2'},batch:{wasm:'b1',zkey:'b2'},batchJoin:{wasm:'k1',zkey:'k2'}};
- assert.deepEqual(provingUrls(spend,proving),{wasm:'/api/rollup/proving/spend.wasm?v=s1',zkey:'/api/rollup/proving/spend.zkey?v=s2'});
- assert.deepEqual(provingUrls(join,proving),{wasm:'/api/rollup/proving/join.wasm?v=j1',zkey:'/api/rollup/proving/join.zkey?v=j2'});
- assert.deepEqual(provingUrls(join,proving,'http://pool.test'),{wasm:'http://pool.test/api/rollup/proving/join.wasm?v=j1',zkey:'http://pool.test/api/rollup/proving/join.zkey?v=j2'});
-});
 
 test('a wallet skips the history before its birth in one pool, and reads every batch of the next',()=>{
  const store=new Map<string,string>(),storage={getItem:(k:string)=>store.get(k)??null,setItem:(k:string,v:string)=>{store.set(k,v);},removeItem:(k:string)=>{store.delete(k);}};
@@ -43,18 +33,6 @@ test('a spend takes the smallest single note that covers it, skipping notes alre
  assert.equal(pickNote(notes,250n,new Set())?.amount,300n);
  assert.equal(pickNote(notes,250n,new Set([3n]))?.amount,500n);
  assert.equal(pickNote(notes,600n,new Set()),undefined);
-});
-
-test('a spend body carries decimal field elements, the hex record, and only the legs it has',()=>{
- const built={witness:{slot:{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0},publicSignals:[1n,2n,0n,0n,0n],input:{}},ciphertext:Uint8Array.of(1,2),change:0n} as unknown as BuiltSpend;
- const proof={pi_a:['1'],pi_b:[['2']],pi_c:['3']};
- assert.deepEqual(transferBody('ab',built,proof),{id:'ab',slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0'],proof,ciphertext:'0102'});
- const member={...built,witness:{...built.witness,slot:{...built.witness.slot,groupId:99n,groupSize:3}}} as BuiltSpend;
- assert.deepEqual([transferBody('ab',member,proof).slot.groupId,transferBody('ab',member,proof).slot.groupSize],['99',3]);
- const withLegs=transferBody('ab',built,proof,{program:new Uint8Array(32).fill(1),coin:{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'},asset:'ee'.repeat(34)});
- assert.equal(withLegs.program,'01'.repeat(32));
- assert.equal(withLegs.asset,'ee'.repeat(34));
- assert.deepEqual(withLegs.coin,{txid:'cd'.repeat(32),vout:2,tapTree:'aa',leaf:'bb'});
 });
 
 test('a depositor signs only a batch that spends the pool head first and its own coin at its input',()=>{

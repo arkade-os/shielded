@@ -5,7 +5,7 @@ import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import type {PoolApi,RollupPoolStatus} from './pool.ts';
 import {epochCatchUp,type EpochOnBatch} from './epoch-sync.ts';
 
-/** /times is indexed by global batch on an epoch pool too, so the classic answer stands. */
+/** The batch a restore starts at for a wallet made on or after `createdAt`, a day early; picked from every checkpoint's time so the pool never learns the date. /times is indexed by global batch on an epoch pool too. */
 export async function epochBirthCheckpoint(api:PoolApi,createdAt:number):Promise<number>{
  const {every,at}=await api<{every:number;at:number[]}>('/times');
  let k=0;at.forEach((time,i)=>{if(time<=createdAt-86_400_000)k=i;});

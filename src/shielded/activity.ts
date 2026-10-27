@@ -1,7 +1,6 @@
 import {TxType,type Activity,type ActivityResolver,type ArkTransaction} from '@arkade-os/sdk';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
-export {epochRevealLinkOf as revealLinkOf} from './epoch-disclosure.ts';
 export const SHIELDED_TAG='shielded';
 const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge',withdraw:'unshield'} as const;
 type SyntheticKind=keyof typeof SYNTHETIC;

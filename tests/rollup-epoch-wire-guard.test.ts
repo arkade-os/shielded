@@ -19,7 +19,7 @@ import type {LightningSpendRecord,LightningSpendStore} from '../src/shielded/lig
 import {epochTransferBody} from '../src/shielded/epoch-pool.ts';
 import {RECOVERY_LINE} from '../src/shielded/epoch-recovery.ts';
 import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
-import {poolApiOf,transferBody,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
+import {poolApiOf,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
 import {ShieldedWallet,loadAccount,shieldedKeysOf} from '../src/shielded/wallet.ts';
 import {epochPool,fromBody,type PoolSpend} from './fixtures/epoch-pool.ts';
 import {hash,keySet,listen,offline,proof,ready,scratch} from './fixtures/epoch-service.ts';
@@ -309,12 +309,13 @@ const serve=async()=>{
 };
 const service=()=>served??=serve();
 
-test('a classic transferBody body is refused by the epoch /spends parser',async()=>{
+test('a classic spend body, its slot naming a root and no anchor, is refused by the epoch /spends parser',async()=>{
  const {request,api}=await service(),keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),account=EpochAccount.owning(hash,keys,{epochLen:64});
  await epochCatchUp(account,api);
  const built=await account.spend({deposit:0n},rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret)),id=()=>randomBytes(16).toString('hex');
  const post=async(body:unknown)=>{const r=await request('/api/rollup/spends',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return [r.status,await r.json()];};
- assert.deepEqual(await post(transferBody(id(),built,proof)),[400,{error:'An epoch slot names its anchor, not a root.'}]);
+ const s=built.witness.slot,classic={id:id(),slot:{root:String(s.root),nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize},publics:built.witness.publicSignals.map(String),proof,ciphertext:hex.encode(built.ciphertext)};
+ assert.deepEqual(await post(classic),[400,{error:'An epoch slot names its anchor, not a root.'}]);
  const epoch=epochTransferBody(id(),built,proof);
  assert.deepEqual(await post(epoch),[202,{id:epoch.id,status:'pending'}],'the same spend in the epoch body is admitted');
 });

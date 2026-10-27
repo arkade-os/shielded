@@ -21,9 +21,8 @@ import {epochFreshAccount,epochMatchesPool,loadEpochAccount} from '../src/shield
 import {epochRevealLinkOf} from '../src/shielded/epoch-disclosure.ts';
 import {epochTransferBody} from '../src/shielded/epoch-pool.ts';
 import {archivesHeld,needsRecovery} from '../src/shielded/epoch-recovery.ts';
-import {epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
+import {epochCatchUp,type EpochBatchPage,type ScanPage} from '../src/shielded/epoch-sync.ts';
 import {checkSigningRequest,poolApiOf,signDeposit,waitForSpend,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
-import type {ScanPage} from '../src/shielded/sync.ts';
 import {epochHarness} from './fixtures/epoch.ts';
 import {bakedPool,checkpoint,emulatorKey,epochRecord,exitDelay,hash,listen,proof,ready,serverKey,token,until} from './fixtures/epoch-service.ts';
 

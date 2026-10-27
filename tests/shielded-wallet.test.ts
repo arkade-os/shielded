@@ -12,8 +12,7 @@ import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
-import {WATCHDOG_MS} from '../src/shielded/sync.ts';
-import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
 import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';

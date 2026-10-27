@@ -4,7 +4,6 @@ import {buildPoseidon} from 'circomlibjs';
 import {NOTE_DEPTH,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {NoteFrontier} from '../packages/protocol/src/rollup/frontier.ts';
 import {DeepTree} from '../packages/protocol/src/rollup/tree.ts';
-import {birthCheckpoint} from '../src/shielded/checkpoint.ts';
 
 const poseidon=await buildPoseidon();
 const hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
@@ -21,12 +20,4 @@ test('a frontier that takes some blocks by root alone keeps the root and tracked
   assert.equal(lean.root(),full.root(),`root after block ${block}`);
  }
  for(const index of tracked)assert.deepEqual(lean.path(index),full.path(index),`path of leaf ${index}`);
-});
-
-test('a restore date picks the last checkpoint at least a day before it, from the full list',async()=>{
- const asked:string[]=[],api=(async(path:string)=>{asked.push(path);return {every:64,at:[0,1_000,90_000_000,200_000_000]};}) as never,day=86_400_000;
- assert.equal(await birthCheckpoint(api,90_000_000+day),128);
- assert.equal(await birthCheckpoint(api,90_000_000+day-1),64);
- assert.equal(await birthCheckpoint(api,0),0);
- assert.deepEqual(asked,['/times','/times','/times'],'the date never leaves the wallet');
 });

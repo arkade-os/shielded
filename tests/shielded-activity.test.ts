@@ -8,7 +8,8 @@ import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circui
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
-import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,SHIELDED_TAG} from '../src/shielded/activity.ts';
+import {entryForActivity,shieldedActivityResolver,shieldedRows,SHIELDED_TAG} from '../src/shielded/activity.ts';
+import {epochRevealLinkOf} from '../src/shielded/epoch-disclosure.ts';
 import type {SentRecord} from '../src/shielded/repository.ts';
 import {epochPool,posted} from './fixtures/epoch-pool.ts';
 
@@ -132,22 +133,22 @@ test('an activity maps back to its entry by row identity, and a shield by its ba
 
 test('a reveal link opens the recipient note for a send and your own notes otherwise',()=>{
  const sentOf=(nullifier:bigint)=>nullifier===7n?{to:THEM,note:{amount:'500',asset:'0',rho:'9'}}:undefined;
- const link=revealLinkOf('https://example.test',entry({kind:'send'}),{self:SELF,sentOf})!;
+ const link=epochRevealLinkOf('https://example.test',entry({kind:'send'}),{self:SELF,sentOf})!;
  assert.match(link,/^https:\/\/example\.test\/verify#/);
  const disclosed=decodeDisclosure(link.split('#')[1]!);
  assert.equal(disclosed.to,THEM);
  assert.deepEqual(disclosed.notes,[{index:3*32+2*0,amount:500n,asset:0n,rho:9n}]);
- const grouped=revealLinkOf('https://example.test',entry({spent:[7n,8n],slots:[1,4]}),{self:SELF,sentOf:n=>n===8n?{to:THEM,note:{amount:'9',asset:'1234',rho:'10'}}:sentOf(n)})!;
+ const grouped=epochRevealLinkOf('https://example.test',entry({spent:[7n,8n],slots:[1,4]}),{self:SELF,sentOf:n=>n===8n?{to:THEM,note:{amount:'9',asset:'1234',rho:'10'}}:sentOf(n)})!;
  assert.deepEqual(decodeDisclosure(grouped.split('#')[1]!).notes,[{index:98,amount:500n,asset:0n,rho:9n},{index:104,amount:9n,asset:1234n,rho:10n}]);
- const joined=revealLinkOf('https://example.test',entry({spent:[7n,99n],slots:[4]}),{self:SELF,sentOf})!;
+ const joined=epochRevealLinkOf('https://example.test',entry({spent:[7n,99n],slots:[4]}),{self:SELF,sentOf})!;
  assert.deepEqual(decodeDisclosure(joined.split('#')[1]!).notes,[{index:104,amount:500n,asset:0n,rho:9n}]);
- const received=revealLinkOf('https://example.test',entry({kind:'receive',spent:[],created:[note(400n,9n,77)]}),{self:SELF,sentOf})!;
+ const received=epochRevealLinkOf('https://example.test',entry({kind:'receive',spent:[],created:[note(400n,9n,77)]}),{self:SELF,sentOf})!;
  assert.equal(decodeDisclosure(received.split('#')[1]!).to,SELF);
  assert.deepEqual(decodeDisclosure(received.split('#')[1]!).notes,[{index:3*32+77%32,amount:400n,asset:0n,rho:5n}],'leaf 77 is named by its batch and its place in that block');
- assert.equal(revealLinkOf('https://example.test',entry({kind:'withdraw'}),{self:SELF,sentOf}),undefined,'a withdrawal is already public');
- assert.equal(revealLinkOf('https://example.test',entry({kind:'merge',created:[]}),{self:SELF,sentOf}),undefined);
- assert.equal(revealLinkOf('https://example.test',entry({kind:'send',spent:[99n]}),{self:SELF,sentOf}),undefined,'no remembered note, no link');
- assert.ok(revealLinkOf('https://example.test',entry({kind:'shield',spent:[],created:[note(900n,12n,5)]}),{self:SELF,sentOf}),'a shield discloses the note it created');
+ assert.equal(epochRevealLinkOf('https://example.test',entry({kind:'withdraw'}),{self:SELF,sentOf}),undefined,'a withdrawal is already public');
+ assert.equal(epochRevealLinkOf('https://example.test',entry({kind:'merge',created:[]}),{self:SELF,sentOf}),undefined);
+ assert.equal(epochRevealLinkOf('https://example.test',entry({kind:'send',spent:[99n]}),{self:SELF,sentOf}),undefined,'no remembered note, no link');
+ assert.ok(epochRevealLinkOf('https://example.test',entry({kind:'shield',spent:[],created:[note(900n,12n,5)]}),{self:SELF,sentOf}),'a shield discloses the note it created');
 });
 
 test('a joined payment reveal excludes a failed payment recorded on its second input',async()=>{
@@ -166,7 +167,7 @@ test('a joined payment reveal excludes a failed payment recorded on its second i
  await account.apply(record);
  const payment=account.history.at(-1)!;
  assert.equal(payment.kind,'send');assert.equal(payment.spent.length,2);assert.equal(payment.slots.length,1);
- const link=revealLinkOf('https://example.test',payment,{self:SELF,sentOf:n=>sent.get(n)});
+ const link=epochRevealLinkOf('https://example.test',payment,{self:SELF,sentOf:n=>sent.get(n)});
  assert.ok(link);
  const disclosed=decodeDisclosure(link.split('#')[1]!);
  assert.equal(disclosed.to,rollupAddressOf(carol!));assert.equal(disclosed.notes.length,1);
