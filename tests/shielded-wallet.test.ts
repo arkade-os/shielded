@@ -183,26 +183,57 @@ test('a wallet created while its pool is unreachable opens with the reason, and 
  try{
   clearTimeout((wallet as any).timer);
   assert.deepEqual([wallet.repositoryError,wallet.resumed,wallet.batchCount(),wallet.maxPrivatePayment()],['Opened without the pool, so the saved notes are unchecked: fetch failed',true,4,0n]);
+  wallet.recordSent([[7n,{to:'shrol21offline'}]]);
   down=false;await (wallet as any).tick();await wallet.notes.pick(async()=>undefined,()=>[]);
   assert.deepEqual(asked.slice(0,4),['/status','/status','/batches?from=4&limit=50','/status'],'the tick, then the resume check');
-  assert.deepEqual([wallet.repositoryError,wallet.batchCount(),wallet.shieldedBalance(),wallet.maxPrivatePayment()],[undefined,9,700n,700n]);
+  assert.deepEqual([wallet.repositoryError,wallet.batchCount(),wallet.shieldedBalance(),wallet.maxPrivatePayment(),wallet.sentOf(7n)?.to],[undefined,9,700n,700n,'shrol21offline']);
  }finally{await wallet.dispose();}
 });
 
-test('once the pool answers, an offline wallet whose saved previous-epoch root drifted reports it and is not adopted',async()=>{
- const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository(),saved=EpochAccount.owning(hash,keys,{epochLen:4});let down=true;
+/** 500 sats at batch 6 of a 4-batch pool, opened from their snapshot while the pool 404s; `drift` corrupts the saved previous-epoch root. */
+const offlineWallet=async(drift=false,seen:(path:string)=>void=()=>{})=>{
+ const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository(),saved=EpochAccount.owning(hash,keys,{epochLen:4}),pool={down:true};
  fake.land('spend',[await fake.deposit(self,500n)]);
  while(fake.state.batchCount<6)fake.land();
  await epochCatchUp(saved,fake.api);
- await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:{...saved.snapshot(),prevNoteRoot:String(saved.prevNoteRoot()!+1n)},sent:{},listings:[],links:[]});
- const wallet=await open({repository,fetcher:fetcherOf((async(path:string)=>{if(down)throw new Error('The pool did not answer.');return fake.api(path);}) as PoolApi)});
+ await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:{...saved.snapshot(),...(drift?{prevNoteRoot:String(saved.prevNoteRoot()!+1n)}:{})},sent:{},listings:[],links:[]});
+ const wallet=await open({repository,fetcher:fetcherOf((async(path:string)=>{if(pool.down)throw new Error('The pool did not answer.');seen(path);return fake.api(path);}) as PoolApi)});
+ clearTimeout((wallet as any).timer);
+ return {wallet,pool};
+};
+
+test('once the pool answers, an offline wallet whose saved previous-epoch root drifted reports it and is not adopted',async()=>{
+ const {wallet,pool}=await offlineWallet(true);
  try{
-  clearTimeout((wallet as any).timer);const unchecked=wallet.account;
+  const unchecked=wallet.account;
   assert.match(wallet.repositoryError!,/^Opened without the pool, so the saved notes are unchecked/);
-  down=false;await (wallet as any).tick();
+  pool.down=false;await (wallet as any).tick();
   assert.match(wallet.repositoryError!,/drifted across a rotation/);
   assert.equal(wallet.account,unchecked);
+  await assert.rejects((await wallet.pay(shieldedKeysOf(hash,'22'.repeat(32)).address,100n)).settled(),/drifted across a rotation/);
+  assert.equal(wallet.inFlight.size,0);
  }finally{await wallet.dispose();}
+});
+
+test('until a tick checks it, an offline wallet builds no Lightning funding and no automatic shield deposit',async()=>{
+ const {wallet}=await offlineWallet(),rows:unknown[]=[],announced:string[]=[];
+ const journal={get:async()=>undefined,list:async()=>[],create:async(r:unknown)=>{rows.push(r);return r;},finish:async()=>{}} as never;
+ const p=ArkAddress.decode(POOL_ADDRESS),htlc=new ArkAddress(p.serverPubKey,new Uint8Array(32).fill(9),p.hrp).encode();
+ try{
+  await assert.rejects(wallet.fundLightning('ln-1','33'.repeat(32),htlc,330n,journal),/Opened without the pool/);
+  wallet.onAction(handle=>announced.push(handle.title));wallet.coins=async()=>[{txid:'aa'.repeat(32),vout:0,value:1000}];
+  await (wallet as any).tick();await new Promise(resolve=>setTimeout(resolve,20));
+  assert.deepEqual([rows,announced,wallet.inFlight.size],[[],[],0]);
+ }finally{await wallet.dispose();}
+});
+
+test('a wallet closed while its reconnect check runs sends nothing more once the check returns',async()=>{
+ const asked:string[]=[];let closing:Promise<void>|undefined;
+ const {wallet,pool}=await offlineWallet(false,path=>{asked.push(path);if(path.startsWith('/batches'))closing??=wallet.dispose();});
+ try{
+  pool.down=false;await (wallet as any).tick();
+  assert.deepEqual(asked,['/status','/status','/batches?from=6&limit=50','/status']);
+ }finally{await (closing??wallet.dispose());}
 });
 
 test('disposal stops the watchdog, so the process can exit',async()=>{

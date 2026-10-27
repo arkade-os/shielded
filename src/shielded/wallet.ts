@@ -130,7 +130,8 @@ export class ShieldedWallet extends Wallet {
  prover!:ShieldedProver;
  account!:EpochAccount;
  self!:RollupRecipient;
- readonly notes=new NoteReservation(()=>this.restoreLightningSpends());
+ // Unchecked notes may anchor on a stale or drifted root, so nothing is built from them until tick() checks the wallet.
+ readonly notes=new NoteReservation(async()=>{if(this.offline)throw new Error(this.repositoryError??'The pool has not checked this wallet yet.');await this.restoreLightningSpends();});
  repository?:ShieldedNoteRepository;
  /** Set by the page once the wallet exists (the client needs it); adds the Lightning rails, and is disposed first. */
  swaps?:PrivateLightningService;
@@ -243,12 +244,12 @@ export class ShieldedWallet extends Wallet {
   // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
   try{loaded=await loadAccount(this.hash,this.derived.keys,{repository:this.repository,token:this.token,epochLen:this.pool.status.pool?.epochLen??this.account?.epochLen,bornAt:this.bornAt,api:this.api,onBatch:(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),watched:()=>this.openLinkNullifiers(),links:this.linkRecords});}
   catch(error){this.repositoryError=reasonOf(error);throw error;}
-  this.account=loaded.account;this.sent=loaded.sent;this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;
+  this.account=loaded.account;this.sent={...loaded.sent,...this.sent};this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;
   for(const txid of loaded.listings)this.listings.add(txid);
   for(const link of loaded.links)this.linkRecords.set(link.key,link);
  }
  async start():Promise<void>{
-  await this.sync().catch((error:unknown)=>{if(!this.offline)throw error;});
+  await this.sync();
   const manager=await this.getContractManager();
   await manager.watchScript?.(this.poolScript,{label:'shielded pool'});
   this.unwatch.push(manager.onContractEvent(event=>{
@@ -272,7 +273,7 @@ export class ShieldedWallet extends Wallet {
  private async tick():Promise<void>{
   if(this.stopped)return;
   let atHead=false;
-  try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;if(this.offline)await this.load();await this.sync();atHead=!this.offline;}
+  try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;if(this.offline){await this.load();this.assertOpen();}await this.sync();atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(this.operatorDown&&this.headExpiry===undefined)this.headExpiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;}
   void this.autoShield().catch(()=>{});
@@ -302,7 +303,9 @@ export class ShieldedWallet extends Wallet {
  }
  /** Not announced: its notes show in flight, and a recovery shows as the one recovering line. */
  private upkeep(nullifiers:bigint[],built:EpochBuiltSpend){const run=this.submit([{built}],()=>{},MERGE_WAIT_MS);this.hold(nullifiers,{settled:()=>run});this.changed();}
+ /** Offline, only tick()'s checked load() moves the account, so a first-run open never replays from batch 0. */
  async sync():Promise<number>{
+  if(this.offline)return 0;
   const applied=await epochCatchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save(),()=>this.openLinkNullifiers());
   if(applied)this.changed();
   return applied;
@@ -569,7 +572,7 @@ export class ShieldedWallet extends Wallet {
   return this.announce(handle);
  }
  private async autoShield(){
-  if(this.stopped||Date.now()<this.retryAt)return;
+  if(this.stopped||this.offline||Date.now()<this.retryAt)return;
   await this.sync();
   if(this.stopped||Date.now()<this.retryAt)return;
   await this.shield();
