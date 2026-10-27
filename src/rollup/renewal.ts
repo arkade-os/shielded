@@ -63,9 +63,11 @@ export function rollupRenewalFee(fees:IntentFeeConfig,inputs:readonly RenewalFee
  return new Estimator(fees).evaluate(inputs.map(c=>({amount:BigInt(c.value),type:c.isSwept?'recoverable':'vtxo',weight:0,birth:c.createdAt,expiry:c.expiresAt})),[],
   outputs.map(o=>({amount:BigInt(o.value),script:o.script})),[]).satoshis;
 }
+/** The operator address is published, so anyone may pay it: enough carried inputs would push an intent past arkd's 40k WU. */
+export const MAX_CARRIED=8;
 export function fundRollupRenewalFee<T extends RenewalFeeCoin>(o:{fees:IntentFeeConfig;dust:number;pool:readonly RenewalFeeCoin[];outputs:readonly {value:number;script:string}[];coins:readonly T[]}):{coins:T[];fee:number;change:number} {
- // Every float rides along, not merely enough to pay: this wallet never settles itself, so a coin left behind is swept.
- const take=[...o.coins].sort((a,b)=>a.value-b.value||a.txid.localeCompare(b.txid)||a.vout-b.vout);
+ // Largest first and capped: the float always rides, gifts can neither crowd it out nor grow the intent without bound.
+ const take=[...o.coins].sort((a,b)=>b.value-a.value||a.txid.localeCompare(b.txid)||a.vout-b.vout).slice(0,MAX_CARRIED);
  const priced=(change:number)=>rollupRenewalFee(o.fees,[...o.pool,...take],[...o.outputs,...(change&&take[0]?[{value:change,script:take[0].script}]:[])]);
  const held=take.reduce((sum,c)=>sum+c.value,0),fee=priced(0);
  if(held>=fee){
@@ -76,10 +78,10 @@ export function fundRollupRenewalFee<T extends RenewalFeeCoin>(o:{fees:IntentFee
   if(spare>=o.dust)throw new Error(`The renewal would pay ${spare} sats over its ${fee}-sat fee.`);
   return {coins:take,fee:held,change:0};
  }
- // A deposit owes a young input's own fee as well, and one under dust could not be spent, so neither floor is dropped.
+ // A deposit owes a young input's own fee, and has to leave a float above dust behind, or the next renewal asks again.
  const deposited=(value:number)=>rollupRenewalFee(o.fees,[...o.pool,...take,{txid:'',vout:0,value,script:'',createdAt:new Date()}],o.outputs)-held;
  let needs=o.dust;
- for(let i=0;i<8&&deposited(needs)>needs;i++)needs=deposited(needs);
+ for(let i=0;i<8&&deposited(needs)+o.dust>needs;i++)needs=deposited(needs)+o.dust;
  throw new Error(`The operator wallet needs ${needs} sats to pay the renewal fee.`);
 }
 

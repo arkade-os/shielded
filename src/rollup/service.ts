@@ -50,8 +50,12 @@ const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000,NOTICE_AFTER_MS=30_000;
-export const rollupNotice=(reasons:readonly ({message:string;since:number}|undefined)[],now:number):string|undefined=>
- reasons.find(reason=>reason&&now-reason.since>NOTICE_AFTER_MS)?.message;
+// Batching retries every second but renewal only every RENEW_CHECK_MS, so one blip would read as a stall for most of that gap.
+export const RENEW_NOTICE_AFTER_MS=RENEW_CHECK_MS+NOTICE_AFTER_MS;
+export const rollupNotice=(reasons:readonly (readonly [{message:string;since:number}|undefined,number])[],now:number):string|undefined=>
+ reasons.find(([reason,after])=>reason&&now-reason.since>after)?.[0]?.message;
+type RollupStall={message:string;since:number}|undefined;
+export const rollupNoticeReasons=(blocked:RollupStall,stalled:RollupStall)=>[[blocked,NOTICE_AFTER_MS],[stalled,RENEW_NOTICE_AFTER_MS]] as const;
 
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export type RollupStatusBatch={batch:number;at:number;rotated?:boolean}&RollupTimings;
@@ -194,7 +198,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
  let blocked:{message:string;since:number}|undefined;
  let stalled:{message:string;since:number}|undefined;
- const noticeOf=()=>{const notice=rollupNotice([blocked,stalled],Date.now());return notice?{notice}:{};};
+ const noticeOf=()=>{const notice=rollupNotice(rollupNoticeReasons(blocked,stalled),Date.now());return notice?{notice}:{};};
  // In memory only: after a restart it is absent until this process publishes a batch.
  let lastBatch:RollupStatusBatch|undefined;
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
