@@ -10,7 +10,7 @@ export const EPOCH_DERIVED_FIELDS = ['anchor', 'rotate', 'rotNoteRoot', 'rotNfRo
 export const epochBatchInput = (witness: Record<string, unknown>) => Object.fromEntries(Object.entries(witness).filter(([key]) => !(EPOCH_DERIVED_FIELDS as readonly string[]).includes(key)));
 
 export interface EpochClientAnchor { rPrev: bigint; rCur: bigint; sel: bigint[] }
-// epoch-spend.circom and epoch-join.circom take the anchor's two roots and a selector per input where spend.circom takes root.
+// epoch-spend.circom and epoch-join.circom take the anchor's two roots and a selector per input.
 const reanchored = ({ input: { root, ...input }, ...witness }: ClientWitness, at: EpochClientAnchor): ClientWitness =>
  ({ ...witness, input: { ...input, rPrev: at.rPrev, rCur: at.rCur, sel: at.sel.length === 1 ? at.sel[0] : at.sel } });
 export const epochClientInput = (hash: Hash, spend: ClientSpend, at: EpochClientAnchor): ClientWitness => {
