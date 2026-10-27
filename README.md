@@ -37,7 +37,7 @@ The pool accepts deposits of at least 330 sats. Direct receive invoices enforce 
 | `packages/protocol/src/rollup/` | Notes, state tree, nullifiers, addresses and the wallet account |
 | `app/` | Home page and wallet (`/wallet`) |
 | `circuits/rollup/` | Spend, join and batch circuits |
-| `rollup-keys/` | The pinned manifest of each published proving-key set |
+| `rollup-keys/` | `genesis-4.json`, the pinned manifest of the published proving keys |
 | `tools/vm/` | Go bridge to the Arkade emulator, and the covenant builder (`-rollup-leaves`) |
 
 ## Run locally
@@ -62,7 +62,7 @@ The proving keys come from a two-phase Groth16 setup.
 
 - **Phase 1** is the Hermez [Perpetual Powers of Tau](https://github.com/privacy-scaling-explorations/perpetualpowersoftau) transcript for 2^20 constraints, `powersOfTau28_hez_final_20.ptau`, pinned by its BLAKE2b-512 in `tools/rollup-setup.mjs`. It is shared with many other projects; nothing here re-runs it.
 - **Phase 2** for the genesis 4 epoch circuits is a small testnet ceremony. Its one contribution per circuit, and the public hash of Bitcoin block 972846 that seals them as a random beacon, are listed in `rollup-keys/genesis-4.json`. The keys are sound if at least one contributor discarded their randomness, and with a single contribution per circuit that is the word of whoever made it. The beacon only stops the last contributor from choosing the final key; it adds no secrecy. This is not a production ceremony, so the keys are for Mutinynet tests only.
-- **Genesis 3 and 2.** The genesis 3 keys (`rollup-keys/genesis-3.json`, release `rollup-genesis-3-keys`) were a development-only rehearsal setup with no ceremony or beacon. That release stays published as the rollback target and the historical record, and is never deleted. The contributions and Bitcoin beacon in the historical `genesis-2.json` belong to the genesis 2 circuits.
+- **Genesis 3.** Its keys (release `rollup-genesis-3-keys`) were a development-only setup with a single automated contribution and no beacon, and the current build does not use them. That release stays published as the rollback target and the historical record, and is never deleted.
 
 To check the published keys, compile the circuits (the build is deterministic) and verify each key against its circuit and the phase-1 transcript:
 
@@ -93,10 +93,10 @@ This path covers the pool operator stopping, not Arkade itself: the batch still 
 ```sh
 npm test
 (cd tools/vm && go test ./...)
-npm run test:rollup:witness
+npm run test:rollup:epoch-witness
 ```
 
-`npm test` needs the VM binary from `npm run vm:build`; the witness test needs the compiled circuits.
+`npm test` needs the VM binary from `npm run vm:build`; the epoch witness test needs the compiled circuits (`npm run circom && npm run rollup:compile:epoch`).
 
 ## Deploy
 
