@@ -35,7 +35,7 @@ const leaves=await (async()=>{
  const dir=scratch('rollup-epoch-fallback-keys-');mkdirSync(join(dir,'keys'));
  const keys={'epoch-spend':classic.clientKey,'epoch-join':classic.clientKey,'epoch-batch-spend':classic.batchKey,'epoch-batch-join':classic.batchKey,'epoch-batch-recover':{...classic.batchKey,nPublic:2,IC:classic.batchKey.IC.slice(0,3)}};
  for(const [name,key] of Object.entries(keys))writeFileSync(join(dir,'keys',`${name}.vkey.json`),JSON.stringify(key));
- writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf('epoch',token,'aa'.repeat(32))));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(token,'aa'.repeat(32))));
  return loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json'));
 })();
 const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
@@ -182,7 +182,7 @@ test('fallback recover builds a one-slot batch through the batchRecover leaf',as
 test('publish posts an epoch record /external accepts, and a chain-only record without slots',async()=>{
  const dir=mirrorOf(),calls:unknown[][]=[];
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token,operator:'',script:'',network:{},epochLen:EPOCH_LEN}));
- const echo=await listen({ready:()=>true,epochPool:true,external:async(txid:string,slots:unknown)=>{calls.push([txid,slots]);return {txid};}} as unknown as RollupService);
+ const echo=await listen({ready:()=>true,external:async(txid:string,slots:unknown)=>{calls.push([txid,slots]);return {txid};}} as unknown as RollupService);
  const base=`http://127.0.0.1:${(echo.server.address() as AddressInfo).port}`;
  for(const batch of [5,10])assert.match((await run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','publish',dir,base,String(batch)])).stdout,/ 200 /);
  const [paid,bare]=[world.records[5]!,world.records[10]!];

@@ -4,15 +4,12 @@ import fs,{cpSync,existsSync,readFileSync} from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
 import {join} from 'node:path';
 import {mock,test} from 'node:test';
-import {x25519} from '@noble/curves/ed25519.js';
 import {hex} from '@scure/base';
-import {buildRollupTransfer,randomField} from '../packages/protocol/src/rollup/account.ts';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState,type EpochAnchorRef,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
-import {RollupState} from '../packages/protocol/src/rollup/state.ts';
-import {ctDigestOf,rollupRecipientOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
+import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {openRollupEpochOperator,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupEpochPin,type RollupService,type RollupStatus} from '../src/rollup/service.ts';
@@ -72,16 +69,6 @@ test('a body with both rCur and origin, with neither, or with slot.root is a nam
  for(const [label,slot,error] of refused)assert.deepEqual(await answer(post(request,'/spends',{...good,slot})),[400,{error}],label);
 });
 
-test('a classic pool still refuses an anchor body and still accepts a root body',async()=>{
- const service=await ready(offline(),scratch('rollup-classic-routes-'),keySet('classic')),request=await listen(service);
- const built=await buildRollupTransfer(hash,{root:RollupState.genesis(hash).latestRoot(),ask:randomField(),nk:randomField(),self:rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey()),request:{},width:1});
- const s=built.witness.slot,body={id:randomBytes(16).toString('hex'),slot:{root:String(s.root),nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize},
-  publics:built.witness.publicSignals.map(String),proof,ciphertext:hex.encode(built.ciphertext)},{root,...rest}=body.slot;
- assert.deepEqual(await answer(post(request,'/spends',{...body,slot:{...rest,anchor:root,rCur:{epoch:0,root}}})),[400,{error:'Expected a decimal field element.'}]);
- assert.deepEqual(await answer(post(request,'/external',{txid:'ab'.repeat(32)})),[400,{error:"Expected a txid and its batch record's slots."}],'a classic pool has no chain-only form');
- assert.deepEqual(await answer(post(request,'/spends',body)),[202,{id:body.id,status:'pending'}]);
-});
-
 /** A third-party prover and two followers at one baked state; the prover lands a spend, a join, and a recover batch riding the rotation at 128. */
 const openThirdParty=async()=>{
  const prover=scratch('rollup-epoch-prover-');let copy='';
@@ -126,7 +113,7 @@ test('/external follows a third-party epoch batch from its slots, for all three 
 
 test('a recover record the pool wrote round-trips through the /external parser',async()=>{
  const {records:[,,recover]}=await thirdPartyPools(),slots=recover!.slots.map(({publics:_,...slot})=>slot);
- const echo=await listen({ready:()=>true,epochPool:true,external:async(_txid:string,parsed:unknown)=>parsed} as unknown as RollupService);
+ const echo=await listen({ready:()=>true,external:async(_txid:string,parsed:unknown)=>parsed} as unknown as RollupService);
  assert.deepEqual(await answer(post(echo,'/external',{txid:recover!.txid,slots})),[200,slots]);
 });
 
@@ -140,7 +127,7 @@ test('/external with no slots follows the same batch chain-only',async()=>{
 });
 
 test('/external refuses an empty slots list, where only an omitted one follows chain-only',async()=>{
- const echo=await listen({ready:()=>true,epochPool:true,external:async(_txid:string,parsed:unknown)=>parsed} as unknown as RollupService);
+ const echo=await listen({ready:()=>true,external:async(_txid:string,parsed:unknown)=>parsed} as unknown as RollupService);
  assert.deepEqual(await answer(post(echo,'/external',{txid:'ab'.repeat(32),slots:[]})),[400,{error:EXTERNAL}]);
 });
 

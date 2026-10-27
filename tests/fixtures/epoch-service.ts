@@ -16,7 +16,7 @@ import {ROLLUP_STATE_PACKET,type SnarkProof} from '../../src/rollup/covenant.ts'
 import type {RollupEpochSpend,RollupTransport} from '../../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../../src/rollup/http.ts';
 import {DEFAULT_VM_BINARY} from '../../src/rollup/leaves.ts';
-import {openRollupService,rollupKeyFilesOf,type RollupPoolKind,type RollupService} from '../../src/rollup/service.ts';
+import {EPOCH_KEY_FILES,openRollupService,type RollupService} from '../../src/rollup/service.ts';
 import {encodeEpochSpend,openSpendStore} from '../../src/rollup/spend-store.ts';
 import {offlineNativeFixture} from './native.ts';
 
@@ -34,7 +34,6 @@ export const badProof:SnarkProof={...proof,pi_a:['0','2','1']};
 // What a genesis-3 wallet reads from /status; never edited to fit a new field, which belongs on an epoch pool only.
 export const STATUS_KEYS=['fundingAddress','fundingSats','message','minimumFundingSats','network','phase','pool','proving','version'];
 export const POOL_KEYS=['address','batches','head','maxReserves','operator','padding','pending','reserves','root','script','token'];
-export const PROVING_KEYS=['batch','batchJoin','join','spend'];
 export const EPOCH_POOL_KEYS=['batchesInEpoch','epoch','epochLen','erCount','heapBytes','nullifiers','prevNoteRoot','rsCount'];
 export const blockRoot=(n:number)=>hash([77n,BigInt(n)]);
 export const slotOf=(n:number,s:number)=>({nullifiers:[String(hash([78n,BigInt(n),BigInt(s)]))],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[] as string[]});
@@ -52,10 +51,9 @@ export const pendingOnDisk=(directory:string,...spends:Omit<RollupEpochSpend,'re
 // Shared-setup verifying keys from the committed fixtures; wasm and zkey are stand-ins.
 const vkeys=(()=>{
  const read=(file:string)=>JSON.parse(readFileSync(`tools/vm/testdata/${file}`,'utf8')) as Record<'clientKey'|'batchKey',{vk_delta_2:unknown;IC:unknown[]}>;
- const classic=read('rollup-covenant-snarkjs.json'),{clientKey,batchKey}=read('rollup-epoch-covenant-snarkjs.json');
+ const {clientKey,batchKey}=read('rollup-epoch-covenant-snarkjs.json');
  const wide={...batchKey,nPublic:11,IC:[...batchKey.IC,...Array(12-batchKey.IC.length).fill(batchKey.IC.at(-1))]};
- return {spend:classic.clientKey,join:classic.clientKey,'batch-spend':classic.batchKey,'batch-join':classic.batchKey,
-  'epoch-spend':clientKey,'epoch-join':{...clientKey,vk_delta_2:batchKey.vk_delta_2},'epoch-batch-spend':wide,'epoch-batch-join':wide,'epoch-batch-recover':batchKey} as Record<string,unknown>;
+ return {'epoch-spend':clientKey,'epoch-join':{...clientKey,vk_delta_2:batchKey.vk_delta_2},'epoch-batch-spend':wide,'epoch-batch-join':wide,'epoch-batch-recover':batchKey} as Record<string,unknown>;
 })();
 
 // Servers and services close before the scratch directories go: Windows refuses to delete an open journal.
@@ -67,9 +65,10 @@ after(async()=>{
  if(failed.length)throw failed[0];
 });
 export const scratch=(prefix:string)=>{const dir=mkdtempSync(join(tmpdir(),prefix));scratches.push(dir);return dir;};
-export const keySet=(kind:RollupPoolKind)=>{
+// The golden calls keySet('epoch') and is never edited, so the argument stays accepted.
+export const keySet=(_kind?:'epoch')=>{
  const dir=scratch('rollup-service-keys-'),files:Record<string,string>={};
- for(const name of rollupKeyFilesOf(kind).filter(n=>n!=='manifest.json')){
+ for(const name of EPOCH_KEY_FILES.filter(n=>n!=='manifest.json')){
   const body=name.endsWith('.vkey.json')?JSON.stringify(vkeys[name.slice(0,-10)]):name;
   writeFileSync(join(dir,name),body);files[name]=sha(body);
  }
@@ -125,8 +124,8 @@ export function offline(){
   prover:(a:{zkey:string})=>({prove:async()=>{proved.push(basename(a.zkey,'.zkey'));if(proveMs)await new Promise(r=>setTimeout(r,proveMs));return proof;}}),verify:async(_key:unknown,_publics:unknown,p:SnarkProof)=>p.pi_a[0]!==badProof.pi_a[0]};
  const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:hex.encode(serverPub!),maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:hex.encode(emulatorPub!),version:'test'}};
  const fetcher=(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch;
- const open=(directory:string,keys:string,epochLen?:number|string)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
-  endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers,...(epochLen===undefined?{}:{epochLen})});
+ const open=(directory:string,keys:string,epochLen:number|string=128)=>openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,log:m=>logs.push(m),
+  endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher},providers,epochLen});
  return {transport,landed,sent,proved,logs,open,hold,newHead,fund,delay:(ms:number)=>{proveMs=ms;}};
 }
 export type Offline=ReturnType<typeof offline>;
@@ -149,9 +148,9 @@ export async function listen(service:RollupService){
  * A pool that already ran `batches` batches, as a restart finds it: genesis from a first run, then chain-only records (as /external
  * writes them, so a replay needs no witnesses) and a head whose state packet holds `committed`; a packet of the wrong length reads as none.
  */
-export async function bakedPool(o:{epochLen?:number;batches:number;record(n:number):object;committed?:bigint;prepare?(p:{directory:string;saved:Record<string,any>}):Promise<void>|void}){
- const net=offline(),keys=keySet(o.epochLen===undefined?'classic':'epoch'),directory=scratch('rollup-baked-');
- (await ready(net,directory,keys,o.epochLen===undefined?undefined:String(o.epochLen))).close();
+export async function bakedPool(o:{epochLen:number;batches:number;record(n:number):object;committed?:bigint;prepare?(p:{directory:string;saved:Record<string,any>}):Promise<void>|void}){
+ const net=offline(),keys=keySet(),directory=scratch('rollup-baked-');
+ (await ready(net,directory,keys,String(o.epochLen))).close();
  const saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8')) as Record<string,any>;
  const head=await net.newHead(Uint8Array.from(o.committed===undefined?[...le32(0n),...le32(0n)]:[...le32(o.committed),...le32(0n),...le32(0n)]));
  const operator=join(directory,'operator'),batches=join(operator,'batches');

@@ -10,7 +10,7 @@ import { buildPoseidon } from 'circomlibjs';
 import express from 'express';
 import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-record.ts';
 import { createRollupRouter } from '../src/rollup/http.ts';
-import { rollupKeyFilesOf, rollupKeyPath, rollupProvingOf, type RollupService } from '../src/rollup/service.ts';
+import { EPOCH_KEY_FILES, rollupKeyPath, rollupProvingOf, type RollupService } from '../src/rollup/service.ts';
 import { epochProvingUrls, epochTransferBody } from '../src/shielded/epoch-pool.ts';
 import { circuitUrls, pickNote, type PoolApi } from '../src/shielded/pool.ts';
 import { BTC_ASSET, ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
@@ -180,13 +180,13 @@ test('an epoch spend body carries no field the classic body contributed and noth
 test('an epoch proving URL names epoch-spend, and the pool serves it', async (t) => {
  const keys = mkdtempSync(join(tmpdir(), 'epoch-proving-')), files: Record<string, string> = {};
  t.after(() => rmSync(keys, { recursive: true, force: true }));
- for (const name of rollupKeyFilesOf('epoch')) { writeFileSync(join(keys, name), name); files[name] = name.replace(/\W/g, ''); }
+ for (const name of EPOCH_KEY_FILES) { writeFileSync(join(keys, name), name); files[name] = name.replace(/\W/g, ''); }
  const app = express();
- app.use('/api/rollup', createRollupRouter(() => ({ keyFile: (name: string) => rollupKeyPath(keys, name, 'epoch') }) as unknown as RollupService));
+ app.use('/api/rollup', createRollupRouter(() => ({ keyFile: (name: string) => rollupKeyPath(keys, name) }) as unknown as RollupService));
  const server = app.listen(0, '127.0.0.1');
  await new Promise(resolve => server.once('listening', resolve));
  t.after(() => new Promise(resolve => server.close(resolve)));
- const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`, proving = rollupProvingOf('epoch', files);
+ const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`, proving = rollupProvingOf(files);
  const { account } = await funded(2, [500n, 0n, 600n]), [old, cur] = account.notes();
  const spend = epochProvingUrls(await account.spend({ input: cur!, ...pays(100n) }, aliceTo), proving, origin), joined = epochProvingUrls(await account.join([old!, cur!], aliceTo), proving, origin);
  assert.deepEqual(spend, { wasm: `${origin}/api/rollup/proving/epoch-spend.wasm?v=epochspendwasm`, zkey: `${origin}/api/rollup/proving/epoch-spend.zkey?v=epochspendzkey` });

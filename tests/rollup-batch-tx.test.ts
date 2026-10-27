@@ -11,7 +11,6 @@ import {BATCH_SLOTS,type BatchKind} from '../packages/protocol/src/rollup/consta
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupLeg,type SnarkProof} from '../src/rollup/covenant.ts';
 import {readBatchTx,readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves,type RollupLeavesSpec} from '../src/rollup/leaves.ts';
-import {rollupProgramsHash} from '../src/rollup/service.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 
@@ -53,7 +52,6 @@ test('the genesis-3 pool script is unchanged and the epoch pool is a different s
  assert.notDeepEqual(epoch.tree.pkScript,five.tree.pkScript);
  assert.equal(hex.encode(five.tree.pkScript),'5120cb04f7f13f283010b626cd17db70b4f02e165ffa318c8692759674b57fb27577');
  assert.equal(hex.encode(epoch.tree.pkScript),'51202a7b49273f971b6160f9430e044d2e3498531f5bfd97fa5cd5bb8f225e22d7ce');
- assert.equal(rollupProgramsHash(leaves),'6d6740d6f21c7255f7ebcd29b85eaae207f74c1e6b1ca0a541fa9c83813ff231');
  const depth=(script:Uint8Array)=>(epoch.tree.findLeaf(hex.encode(script))[0].merklePath??[]).length;
  assert.deepEqual([epoch.batch,epoch.batchJoin,epoch.batchRecover,epoch.reserve].map(depth),[2,2,3,3]);
 });

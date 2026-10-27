@@ -48,12 +48,12 @@ async function mirror(url:string,dir:string){
  if(epochLen===undefined)throw new Error(CLASSIC);
  mkdirSync(join(dir,'keys'),{recursive:true});mkdirSync(join(dir,'batches'),{recursive:true});
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token:status.pool.token,operator:status.pool.operator,script:status.pool.script,network:status.network,epochLen} satisfies Pool));
- writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf('epoch',status.pool.token,status.pool.operator)));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(status.pool.token,status.pool.operator)));
  const manifest=await (await get('/proving/manifest.json')).json() as {circuits:Record<string,{files:Record<string,string>}>};
  writeFileSync(join(dir,'keys','manifest.json'),JSON.stringify(manifest));
  // The manifest comes from the pool, so its file names are untrusted: only the service's allowlisted key files are written.
  for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files)){
-  const path=name==='manifest.json'?undefined:rollupKeyPath(join(dir,'keys'),name,'epoch');
+  const path=name==='manifest.json'?undefined:rollupKeyPath(join(dir,'keys'),name);
   if(!path)throw new Error(`The key manifest names an unexpected file: ${JSON.stringify(name)}.`);
   if(existsSync(path)&&sha(readFileSync(path))===digest)continue;
   const bytes=new Uint8Array(await (await get('/proving/'+name)).arrayBuffer());

@@ -35,7 +35,7 @@ const sha=(file:string)=>createHash('sha256').update(readFileSync(file)).digest(
 const median=(xs:number[])=>xs.length?[...xs].sort((a,b)=>a-b)[Math.floor(xs.length/2)]!:NaN;
 const pool=async()=>(await api<RollupPoolStatus>('/status')).pool!;
 
-verifyRollupKeys(keys,'epoch');
+verifyRollupKeys(keys);
 const status=await api<RollupPoolStatus>('/status'),epochLen=status.pool?.epochLen;
 if(status.phase!=='ready'||!epochLen||!status.proving)throw new Error(`${base} is not an open epoch pool (${status.phase}: ${status.message}).`);
 for(const c of ['spend','join'] as const)for(const ext of ['wasm','zkey'] as const)if(sha(join(keys,`epoch-${c}.${ext}`))!==status.proving[c][ext])throw new Error(`${keys} holds another epoch-${c}.${ext} than the pool serves.`);
