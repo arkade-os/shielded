@@ -6,6 +6,7 @@ import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmo
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
+import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
@@ -135,6 +136,18 @@ test('the status sheet renders a step state the handle produced, title and all',
  assert.equal(sheetLine(state),'Step 2 of 3: Prove the payment on this device');
  assert.equal(sheetLine({...state,current:2,done:true}),'Done');
  assert.equal(sheetLine({...state,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
+});
+
+test('the soundbar shows a running action before the wallet\'s own upkeep, and nothing when idle',()=>{
+ const sheet={title:'Shielding 3,000 sats',steps:['Prepare the deposit coin','Prove the deposit on this device'],current:1};
+ const idle={recovering:false,inFlight:false,syncing:false,recoveryLine:'Recovering notes.'};
+ assert.equal(soundbarItem(idle),undefined);
+ assert.deepEqual(soundbarItem({...idle,sheet,recovering:true,inFlight:true,syncing:true}),{title:'Shielding 3,000 sats',line:'Step 2 of 2: Prove the deposit on this device',state:'active',steps:sheet});
+ assert.equal(soundbarItem({...idle,sheet:{...sheet,done:true}})?.state,'done');
+ assert.deepEqual(soundbarItem({...idle,sheet:{...sheet,done:true,error:'The pool dropped this spend.'}}),{title:'Shielding 3,000 sats',line:'The pool dropped this spend. It tries again in a minute.',state:'failed',steps:{...sheet,done:true,error:'The pool dropped this spend.'}});
+ assert.deepEqual(soundbarItem({...idle,recovering:true,inFlight:true,syncing:true}),{title:'Recovering',line:'Recovering notes.',state:'active'});
+ assert.equal(soundbarItem({...idle,inFlight:true,syncing:true})?.title,'Notes in flight');
+ assert.equal(soundbarItem({...idle,syncing:true})?.title,'Syncing');
 });
 
 test('a pool whose reserves are full refuses another listing instead of swallowing it',()=>{
