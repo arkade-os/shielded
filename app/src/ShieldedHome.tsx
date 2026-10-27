@@ -5,6 +5,7 @@ import {rollupApi,type RollupPoolStatus} from './rollup-client.ts';
 import './shielded-home.css';
 
 const EPOCH_LEN=128; // The genesis 4 launch value; Dockerfile.dokploy bakes the same SHIELDED_ROLLUP_EPOCH_LEN.
+const WU={spend:35_368,join:36_652,recover:11_360},n=(v:number)=>v.toLocaleString('en-US');
 const confidential=['Who you pay, and who pays you','How much each private payment moves','Your balance, and which notes are yours','Which note a payment spends. A proof reveals only a one-time mark that stops the note being spent twice.','Which of your notes were refreshed, and when. A refresh is an ordinary private payment to yourself.'];
 const publicRecord=['Bitcoin entering the pool, with its amount and source','Bitcoin leaving the pool, with its amount and destination','When transactions happen','The total the pool holds','That an epoch rotated, and when.','That someone recovered an older note, and which epoch it came from — never whose it was, or how much it held.'];
 const steps=[
@@ -49,7 +50,7 @@ const spec:{title:string;by?:Party;rows:[string,string][]}[]=[
  {title:'Batch',by:'op',rows:[['Slots',String(BATCH_SLOTS)],['Closes','On the first spend'],['Constraints','554,059 (spend)'],['Public inputs',String(BATCH_SLOTS+1)]]},
  {title:'State',rows:[['Note tree','depth 32, one per epoch'],['Per batch','one 32-leaf subtree'],['Root window','last 64 batches']]},
  {title:'Epochs',rows:[['Epoch length',`${EPOCH_LEN} batches`],['Direct-spend window','the epoch a note was made in, and the next'],['Spent-note set',`per epoch, indexed, depth ${EPOCH_NULLIFIER_DEPTH}`],['Sealed epochs',`up to ${(2**ARCHIVE_DEPTH-1).toLocaleString('en-US')}`],['Recover batch',`${EPOCH_SLOTS.recover} slot, its own tapscript leaf`],['Anonymity floor','one whole epoch of notes once the pool has rotated, plus the current epoch so far']]}, // Leaf 0 of the archive holds the empty pseudo-epoch -1 (erLeafIndexOf), so one fewer real epoch than leaves.
- {title:'On Arkade',by:'ark',rows:[['Transaction','Unmeasured for genesis 4'],['Weight','40,000 WU limit'],['Per payment','Depends on batch contents'],['State packet','96 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
+ {title:'On Arkade',by:'ark',rows:[['Transaction',`${n(WU.spend/4)} vB, ${n(WU.spend)} WU`],['Weight','40,000 WU limit'],['Per payment',`about ${n(Math.round(WU.spend/BATCH_SLOTS/10)*10)} WU`],['State packet','96 bytes, type 0x87'],['Renewal','weekly, 48 h early'],['Listing an asset','1 unit + 330 sats']]},
 ];
 const trust:{title:string;by?:Party;text:string}[]=[
  {title:'A test network',text:'Mutinynet test coins only. The genesis 4 proving keys come from a small testnet ceremony over the shared Hermez powers of tau: one recorded contribution per circuit, sealed by Bitcoin block 972846. Anyone who kept a contribution’s randomness could forge proofs. The README shows how to verify the artifacts.'},
@@ -159,9 +160,9 @@ function Plate(){
      <p className="sh-dial-note">One <code>OP_ECPAIRING</code> checks all {BATCH_SLOTS+1} proofs. The batch leaf then matches deposits, withdrawals and asset legs to the real outputs before the Arkade emulator co-signs.</p>
      <div className="sh-side is-out"><h4>Outputs</h4><Wire n={txOut.length}/>{parts(txOut)}</div>
      <div className="sh-weight">
-      <div className="sh-scale" aria-hidden="true"/>
+      <div className="sh-scale" aria-hidden="true"><i style={{width:`${WU.spend/400}%`}}/></div>
       <div className="sh-marks" aria-hidden="true"><span>0</span><span style={{left:'25%'}}>10,000</span><span style={{left:'50%'}}>20,000</span><span style={{left:'75%'}}>30,000</span><span>40,000</span></div>
-      <p>The current genesis 4 transaction size and weight have not been measured here. The operator checks each batch against a <b>40,000 WU limit</b>; its size depends on the deposits, withdrawals and assets it carries.</p>
+      <p>Measured on Mutinynet, a full genesis 4 batch transaction weighs <b>{n(WU.spend)} WU</b> ({n(WU.spend/4)} vB), inside arkd’s <b>40,000 WU limit</b>: about {n(Math.round(WU.spend/BATCH_SLOTS/10)*10)} WU for each of its {BATCH_SLOTS} payments. A join batch weighs {n(WU.join)} WU, and a recovery batch, which carries one, {n(WU.recover)} WU.</p>
      </div>
     </div>
    </figure>
