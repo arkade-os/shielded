@@ -20,7 +20,8 @@ import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.t
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,type RollupSpend} from '../src/rollup/batcher.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import {openRollupOperator,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/operator.ts';
+import {ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupTransport} from '../src/rollup/epoch-operator.ts';
+import {openRollupOperator} from '../src/rollup/operator.ts';
 import {verifyRollupProof} from '../src/rollup/prover.ts';
 import {encodeSnapshot,headCommitment,readSnapshot} from '../src/rollup/snapshot.ts';
 

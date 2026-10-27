@@ -20,9 +20,8 @@ import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-reco
 import {akOf,outputRhoOf,ownerOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupEpochPoolTree,rollupProofItems,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,slotOf,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import type {RollupTransport} from '../src/rollup/operator.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
 import {rollupEpochPin,rollupSpecOf,verifyRollupKeys} from '../src/rollup/service.ts';
 import type {StockWireRequest} from '../src/stock/transport.ts';

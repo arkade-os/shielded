@@ -13,10 +13,9 @@ import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-reco
 import {RollupNullifiers} from '../packages/protocol/src/rollup/nullifiers.ts';
 import {rollupEpochPoolTree,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {encodeEpochNfArchive,epochNfArchivePath,readEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
-import {openRollupEpochOperator,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,ROLLUP_RESEND_GRACE_MS,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {decodeEpochSnapshot,encodeEpochSnapshot,EPOCH_SNAPSHOT_VERSION,headCommitment,writeSnapshot} from '../src/rollup/epoch-snapshot.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import {ROLLUP_RESEND_GRACE_MS,type RollupTransport} from '../src/rollup/operator.ts';
 import {rollupSpecOf} from '../src/rollup/service.ts';
 import type {StockReleasePin} from '../src/stock/journal.ts';
 import type {StockWireRequest} from '../src/stock/transport.ts';

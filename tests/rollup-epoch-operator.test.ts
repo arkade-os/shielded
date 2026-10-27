@@ -13,11 +13,10 @@ import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rol
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,slotOf,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
 import {readBatchTx,readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import type {RollupTransport} from '../src/rollup/operator.ts';
 import {rollupSpecOf} from '../src/rollup/service.ts';
 import type {StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';

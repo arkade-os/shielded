@@ -17,9 +17,9 @@ import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/roll
 import {RollupState} from '../packages/protocol/src/rollup/state.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupEpochPoolTree,rollupPoolTree} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,type RollupArchive} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import type {RollupArchive,RollupRecord} from '../src/rollup/operator.ts';
+import type {RollupRecord} from '../src/rollup/operator.ts';
 import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
 import {openSpendStore} from '../src/rollup/spend-store.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';

@@ -9,7 +9,7 @@ import {hex} from '@scure/base';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {rollupPoolTree} from '../src/rollup/covenant.ts';
 import {DEFAULT_VM_BINARY,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import type {RollupArchive} from '../src/rollup/operator.ts';
+import type {RollupArchive} from '../src/rollup/epoch-operator.ts';
 import {ROLLUP_KEY_FILES,rollupClassicPin,rollupProgramsHash,rollupProvingOf,rollupSpecOf} from '../src/rollup/service.ts';
 import {SNAPSHOT_VERSION} from '../src/rollup/snapshot.ts';
 import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt,type StockReleasePin} from '../src/stock/journal.ts';

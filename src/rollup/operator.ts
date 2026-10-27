@@ -1,76 +1,25 @@
 import {existsSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
+import {Transaction,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
-import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupState,type BatchSlot} from '../../packages/protocol/src/rollup/state.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
-import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
+import {openStockJournal} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSpend} from './batcher.ts';
-import {buildRollupBatchTx,rollupPoolTree,rollupWitness,type RollupCoin,type RollupLeaves} from './covenant.ts';
+import {buildRollupBatchTx,rollupPoolTree,rollupWitness,type RollupCoin} from './covenant.ts';
+import {ROLLUP_GROUP_WAIT_MS,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupOperatorOptions,type RollupPoolCoin,type RollupTick} from './epoch-operator.ts';
 import {readBatchTx,spentCoins} from './external.ts';
-import {verifyRollupProof,type RollupProver} from './prover.ts';
+import {verifyRollupProof} from './prover.ts';
 import {encodeSnapshot,headCommitment,readSnapshot,writeSnapshot} from './snapshot.ts';
 
-export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHex:string}
-export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
 interface RecordSlot {root:string;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[];ciphertext?:string}
 /** One accepted batch as published for data availability. */
 export interface RollupRecord {kind:BatchKind;slots:RecordSlot[];noteBlockRoot?:string;txid?:string;at?:number}
 interface RollupPlan {version:1;request:StockWireRequest;record:RollupRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
-/** What a deposit coin must still be when the batch is signed, as the client claims it. */
-export interface RollupDepositFacts {txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[]}
-export interface RollupTransport {
- submit(request:StockWireRequest,firstDeposit:number):Promise<StockNativeReceipt>;
- lookup(request:StockWireRequest):Promise<StockNativeReceipt|undefined>;
- verify(request:StockWireRequest,receipt:StockNativeReceipt):void;
- unspent(coin:{txid:string;vout:number}):Promise<boolean>;
- /** The transaction that spent a coin, when the network shows it spent. */
- spentBy?(coin:{txid:string;vout:number}):Promise<string|undefined>;
- /** Unspent, exactly these facts, and expiring after now + floorMs: a batch's outputs inherit its earliest input expiry. */
- fresh?(coin:RollupDepositFacts,floorMs:number):Promise<boolean>;
-}
-export interface RollupOperatorOptions {
- directory:string;
- pin:StockReleasePin;
- genesis:RollupArchive;
- leaves:RollupLeaves;
- token:string;
- serverKey:Uint8Array;
- emulatorKey:Uint8Array;
- exitDelay:{type:'seconds'|'blocks';value:number};
- checkpoint:CSVMultisigTapscript.Type;
- clientKey:Record<BatchKind,unknown>;
- hash:Hash;
- prover:Record<BatchKind,RollupProver>;
- transport:RollupTransport;
- signDeposits(request:StockWireRequest,spends:RollupSpend[]):Promise<StockWireRequest|undefined>;
- depositFloorMs?:number;
- /** The network's dust limit; arkd refuses a batch whose BTC payout is below it. */
- dustSats?:number;
- /** Told which admitted spends left without a batch, and why, so their owners can rebuild them. */
- onDrop?(ids:string[],reason:string):void;
- weightLimit?:number;
- now?:()=>number;
- /** The client-proof check; tests replace it to hold a verification open. */
- verify?:typeof verifyRollupProof;
- /** How long a batch that is not full waits for company after its oldest spend, per lane. */
- batchWaitMs?:number;
- joinWaitMs?:number;
- snapshotEvery?:number;
-}
-/** Where a batch's time went: waiting from its oldest spend, proving, then signing deposits and publishing. */
-export interface RollupTimings {waitedMs:number;proveMs:number;publishMs:number}
-export type RollupTick={txid:string;batch:number;timings?:RollupTimings}|{blocked:string}|undefined;
 
-/** How long an unresolved submission is left alone between exact re-sends, and before it may be abandoned. */
-export const ROLLUP_RESEND_GRACE_MS=120_000;
-/** A refusal this quick is the emulator's own answer, not a finalize that hung: its grace only covers indexer lag. */
-export const ROLLUP_QUICK_REFUSAL_MS=15_000;
-/** How long the first member of a group waits for the rest before the group is dropped. */
-export const ROLLUP_GROUP_WAIT_MS=120_000;
 const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const slotOf=(s:RecordSlot):BatchSlot=>({root:BigInt(s.root),nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});

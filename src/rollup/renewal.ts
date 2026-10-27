@@ -7,7 +7,7 @@ import type {StockNetworkInfo} from '../stock/network.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
 import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
 import {ROLLUP_STATE_PACKET,type RollupLeaves} from './covenant.ts';
-import type {RollupArchive,RollupPoolCoin} from './operator.ts';
+import type {RollupArchive,RollupPoolCoin} from './epoch-operator.ts';
 
 const scriptNum=(v:number)=>{const out:number[]=[];for(let x=v;x>0;x>>=8)out.push(x&255);if(out.length&&out.at(-1)!&0x80)out.push(0);return out;};
 
