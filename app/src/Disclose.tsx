@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
 import {x25519} from '@noble/curves/ed25519.js';
@@ -69,19 +69,22 @@ export function Results({checked,watched}:{checked?:Checked;watched?:Watched}){
 export default function Disclose(){
  const watch=location.pathname.startsWith('/watch'),[input,setInput]=useState(decodeURIComponent(location.hash.slice(1)));
  const [checked,setChecked]=useState<Checked>(),[watched,setWatched]=useState<Watched>(),[error,setError]=useState(''),[working,setWorking]=useState(false);
+ const latest=useRef(0);
  const run=async(value:string)=>{
-  setError('');setChecked(undefined);setWatched(undefined);if(!value.trim())return;setWorking(true);
+  const mine=++latest.current,live=()=>mine===latest.current;
+  setError('');setChecked(undefined);setWatched(undefined);if(!value.trim()){setWorking(false);return;}setWorking(true);
   try{
    const hash=await hashFn();
    if(watch&&value.trim().startsWith('shfvk')){
     const key=parseFullViewKey(hash,value),account=await fullViewOf(hash,key);
-    setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),entries:[...account.history],state:noteStateOf(account)});
+    if(live())setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),entries:[...account.history],state:noteStateOf(account)});
    }else if(watch){
     const key=parseViewKey(value),all:RollupEpochRecord[]=[];
     for(;;){const page=await rollupApi<{total:number;batches:RollupEpochRecord[]}>(`/batches?from=${all.length}&limit=100`);all.push(...page.batches);if(all.length>=page.total||!page.batches.length)break;}
-    setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),notes:await epochIncomingNotes(hash,all,key)});
-   }else setChecked(await checkDisclosure(hash,decodeDisclosure(value.includes('#')?value.slice(value.indexOf('#')+1):value)));
-  }catch(error){setError((error as Error).message);}finally{setWorking(false);}
+    const notes=await epochIncomingNotes(hash,all,key);
+    if(live())setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),notes});
+   }else{const result=await checkDisclosure(hash,decodeDisclosure(value.includes('#')?value.slice(value.indexOf('#')+1):value));if(live())setChecked(result);}
+  }catch(error){if(live())setError((error as Error).message);}finally{if(live())setWorking(false);}
  };
  useEffect(()=>{
   void run(input);
