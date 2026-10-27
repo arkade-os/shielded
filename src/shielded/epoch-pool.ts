@@ -22,7 +22,7 @@ export function epochCircuitUrls(circuit:'spend'|'join',proving:NonNullable<Roll
 }
 export const epochProvingUrls=(built:EpochBuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>,origin='')=>epochCircuitUrls(built.slot.nullifiers.length===2?'join':'spend',proving,origin);
 
-/** syncAccount on an epoch pool: every batch, whole, from the account's own count, as the account's only sync. */
+/** Every batch, whole, from the account's own count, as the account's only sync. */
 export function epochSyncAccount(account:EpochAccount,api:PoolApi=poolApiOf('')){
  return epochExclusive(account,async()=>{
   for(;;){

@@ -1,4 +1,3 @@
-import type {PublishedBatch} from '../../packages/protocol/src/rollup/account.ts';
 import {encodeDisclosure,incomingNotes,type DisclosedNote} from '../../packages/protocol/src/rollup/disclosure.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
@@ -19,4 +18,4 @@ export function epochRevealLinkOf(origin:string,e:EpochHistoryEntry,o:{self:stri
 }
 
 /** incomingNotes over epoch records: it reads a slot's ciphertext, commitments and publics and a batch's txid and at, which a record carries, and it already names a note by its place in the stream. */
-export const epochIncomingNotes=(hash:Hash,batches:readonly RollupEpochRecord[],key:Parameters<typeof incomingNotes>[2],first=0)=>incomingNotes(hash,batches as unknown as PublishedBatch[],key,first);
+export const epochIncomingNotes=(hash:Hash,batches:readonly RollupEpochRecord[],key:Parameters<typeof incomingNotes>[2],first=0)=>incomingNotes(hash,batches,key,first);

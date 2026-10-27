@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import {hex} from '@scure/base';
 import {EPOCH_NULLIFIERS,EPOCH_SLOTS,type EpochBatchKind} from '../packages/protocol/src/rollup/constants.ts';
 import {decodeEpochScan,encodeEpochScan,EPOCH_SCAN_FLAG_ROTATED,type EpochScanBatch,type EpochScannedRecord} from '../packages/protocol/src/rollup/epoch-scan.ts';
-import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
+import {nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {fromLe,recordHints,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 
 const EPOCH_LEN=64,KINDS:EpochBatchKind[]=['spend','join','recover'];
@@ -30,16 +30,6 @@ test('the entry sizes are 453, 493 and 111 bytes',()=>{
  const recover=recordOf('recover',3),page=encodeEpochScan([{record:recover,root:7n<<100n,rotated:true}]),view=new DataView(page.buffer);
  assert.deepEqual([...page.subarray(0,32)],[...hex.decode(recover.txid!)]);
  assert.deepEqual([view.getFloat64(32,true),fromLe(page.subarray(41,73)),view.getUint32(73+34,true)],[recover.at,7n<<100n,nullifierHint(BigInt(recover.slots[0]!.nullifiers[0]!))]);
-});
-
-test('a non-rotating spend or join entry is a classic entry, and a classic reader refuses the rest',()=>{
- for(const kind of ['spend','join'] as const){
-  const record={...recordOf(kind,2),kind},entry=encodeEpochScan([{record,root:9n,rotated:false}]);
-  assert.deepEqual(entry,encodeScan([{record,root:9n}]),`a ${kind} is the classic bytes`);
-  assert.deepEqual(decodeScan(entry,5).map(b=>[b.kind,b.root]),[[kind,9n]]);
-  assert.throws(()=>decodeScan(encodeEpochScan([{record,root:9n,rotated:true}]),5),/Malformed scan page/,`a rotating ${kind}`);
- }
- assert.throws(()=>decodeScan(pageOf('recover'),5),/Malformed scan page/,'a recover batch');
 });
 
 test('a page whose rotation flags disagree with epochLen is refused',()=>{
@@ -71,7 +61,6 @@ test('a reserved flag bit, kind 3 and a truncated entry are each refused',()=>{
 test('a recover batch reaches the wallet as one slot with one nullifier hint',()=>{
  const recover=recordOf('recover',4),[entry]=decodeEpochScan(encodeEpochScan([{record:recover,root:6n,rotated:false}]),65,EPOCH_LEN);
  assert.deepEqual([entry!.kind,entry!.slots.length,entry!.slots[0]!.nullifiers],['recover',1,[nullifierHint(BigInt(recover.slots[0]!.nullifiers[0]!))]]);
- assert.throws(()=>encodeScan([{record:recover as never,root:6n}]),/wrong shape/,'the classic encoder cannot express it');
  const [spend,join]=[recordOf('spend',1),recordOf('join',1)];
  for(const [label,record] of [['a recover of ten slots',{...spend,kind:'recover'}],['a spend of one slot',{...spend,slots:recover.slots}],['a join slot of one nullifier',{...join,slots:spend.slots}]] as const)
   assert.throws(()=>encodeEpochScan([{record,root:1n,rotated:false}]),/wrong shape/,label);

@@ -122,6 +122,8 @@ test('a group must fill consecutive slots and commit to its members', () => {
  assert.doesNotThrow(() => state.apply('spend', fill(state, [{ ...a, groupId, groupSize: 2 }, { ...b, groupId, groupSize: 2 }])));
  state.undoLast();
  assert.throws(() => state.apply('spend', fill(state, [{ ...a, groupId, groupSize: 2 }])), rejection('group-invalid'));
+ const forgedId = groupIdOf(hash, [1n, 2n]);
+ assert.throws(() => state.apply('spend', fill(state, [{ ...a, groupId: forgedId, groupSize: 2 }, { ...b, groupId: forgedId, groupSize: 2 }])), rejection('group-invalid'));
 });
 
 test('a clone and an operator state apply a batch exactly as the leaf state does, and the clone shares nothing', () => {

@@ -26,7 +26,7 @@ export async function epochPaddingTransfer(hash: Hash, o: { rPrev: bigint; rCur:
 
 export interface EpochBuiltSpend extends BuiltSpend { slot: EpochSlot }
 /**
- * The epoch builder for every client slot, padding included: one sel per note input, 0 for every dummy. Inputs are told apart by nullifier,
+ * The epoch builder for every client slot, padding included: one sel per note input, 0 for any dummy not named. Inputs are told apart by nullifier,
  * because a leaf index repeats in every epoch and the classic index check would refuse a join across two epochs.
  */
 export async function epochTransfer(hash: Hash, o: { rPrev: bigint; rCur: EpochAnchorRef; sel: (0n | 1n)[]; ask: bigint; nk: bigint; self: RollupRecipient; request: SpendRequest; paths?: (bigint[] | undefined)[]; width?: 1 | 2; group?: { id: bigint; size: number } }, random = randomField): Promise<EpochBuiltSpend> {

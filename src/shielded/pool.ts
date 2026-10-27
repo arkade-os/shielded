@@ -1,6 +1,6 @@
 import {Transaction,type Identity} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import type {BuiltSpend,OwnedNote,PublishedBatch,RollupAccount} from '../../packages/protocol/src/rollup/account.ts';
+import type {BuiltSpend,OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number}}
@@ -43,14 +43,6 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   }
   if(attempt>=4)throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
   await sleep(pauseMs);
- }
-}
-
-export async function syncAccount(account:RollupAccount,api:PoolApi=poolApiOf('')){
- for(;;){
-  const page=await api<{total:number;batches:PublishedBatch[]}>(`/batches?from=${account.batchCount}&limit=50`);
-  for(const batch of page.batches)await account.apply(batch);
-  if(account.batchCount>=page.total||!page.batches.length)return;
  }
 }
 

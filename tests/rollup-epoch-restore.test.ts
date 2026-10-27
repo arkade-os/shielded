@@ -5,7 +5,7 @@ import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-re
 import { epochBirthCheckpoint, epochFreshAccount, epochMatchesPool, loadEpochAccount } from '../src/shielded/epoch-checkpoint.ts';
 import { epochCatchUp, epochIdle } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi, RollupPoolStatus } from '../src/shielded/pool.ts';
-import { RollupAccount } from '../packages/protocol/src/rollup/account.ts';
+import { NoteFrontier } from '../packages/protocol/src/rollup/frontier.ts';
 import { NOTE_DEPTH, ROLLUP_DOMAIN, SUBTREE_DEPTH } from '../packages/protocol/src/rollup/constants.ts';
 import { EpochAccount, type EpochAccountSnapshot, type EpochOwnedNote } from '../packages/protocol/src/rollup/epoch-account.ts';
 import { rotatesAt } from '../packages/protocol/src/rollup/epoch-scan.ts';
@@ -174,7 +174,7 @@ test('matchesPool throws when the pool\'s prevNoteRoot contradicts the account\'
 });
 
 test('a v1 snapshot, another owner\'s, and another epochLen are each refused', async () => {
- const snapshot = alice(4).snapshot(), classic = RollupAccount.owning(hash, aliceKeys, { frontier: true }).snapshot() as unknown as EpochAccountSnapshot;
+ const snapshot = alice(4).snapshot(), classic = { v: 1, owner: snapshot.owner, bornAt: 0, blocks: 0, frontier: new NoteFrontier(hash).snapshot(), owned: [], txids: [], history: [] } as unknown as EpochAccountSnapshot;
  assert.equal(EpochAccount.fromSnapshot(hash, aliceKeys, snapshot, 4).owner, alice(4).owner);
  assert.throws(() => EpochAccount.fromSnapshot(hash, aliceKeys, classic, 4), /version 1/);
  assert.throws(() => EpochAccount.fromSnapshot(hash, bobKeys, snapshot, 4), /another key/);

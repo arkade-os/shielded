@@ -6,7 +6,6 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {CSVMultisigTapscript,MultisigTapscript,SingleKey,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import type {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {EPOCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {decodeDisclosure,verifyDisclosure,type Disclosure} from '../packages/protocol/src/rollup/disclosure.ts';
 import {EpochAccount,type EpochAccountSnapshot,type EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -220,16 +219,4 @@ test('a fresh account starts from the real service\'s in-epoch checkpoint, born 
   assert.deepEqual(asked,['/status','/checkpoints/1/64','/batches?from=192&limit=50','/status'],`born at ${bornAt}: no replay from the epoch before`);
   assert.deepEqual([account.batchCount,account.epoch,account.latestRoot(),account.prevNoteRoot()],[pool.batches,pool.epoch,BigInt(pool.root),BigInt(pool.prevNoteRoot!)],`born at ${bornAt}`);
  }
-});
-
-test('EpochAccount satisfies the account port wallet.ts reads, and history, concerns and skip stay outside it, each on its own',()=>{
- type AccountPort=Pick<RollupAccount,'owner'|'txids'|'canSkip'|'batchCount'|'latestRoot'|'notes'|'balance'|'join'|'pay'|'consolidate'|'depositAsset'|'withdrawAsset'>;
- const account=undefined as unknown as EpochAccount,port:AccountPort=account;
- // @ts-expect-error its kinds add renew and recover; Plan 6 widens wallet.ts to EpochHistoryEntry
- const history:Pick<RollupAccount,'history'>=account;
- // @ts-expect-error it takes an EpochScanBatch; Plan 6 widens the scan loop
- const concerns:Pick<RollupAccount,'concerns'>=account;
- // @ts-expect-error as concerns
- const skip:Pick<RollupAccount,'skip'>=account;
- assert.deepEqual([port,history,concerns,skip],Array(4).fill(undefined));
 });

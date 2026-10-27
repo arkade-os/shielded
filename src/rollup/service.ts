@@ -8,7 +8,7 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH,type BatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {randomField} from '../../packages/protocol/src/rollup/account.ts';
 import {EpochState} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
@@ -291,7 +291,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   run({spend:prover('epoch-spend'),join:prover('epoch-join')});
  }
 
- function run(clientProvers:Record<BatchKind,ReturnType<typeof createRollupProver>>){
+ function run(clientProvers:Record<'spend'|'join',ReturnType<typeof createRollupProver>>){
   const {operator}=live!;let paused=false,ticking:Promise<unknown>|undefined,lastError='',lock:Promise<unknown>=Promise.resolve();
   /** Renewal and listing move the head or reserves, so batches pause and they run one at a time. */
   const exclusive=(work:()=>Promise<void>)=>{const turn=lock.then(async()=>{paused=true;try{await ticking?.catch(()=>{});if(operator.status().pending)throw new Error('a submitted batch is unresolved; this waits.');await work();}finally{paused=false;}});lock=turn.catch(()=>{});return turn;};
@@ -325,7 +325,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   // An admitted spend can make a batch due at once; the next scheduled tick would only add up to a second.
   kick=()=>{if(running)again=true;else schedule(0);};
   /** Keeps a batch's worth of zero spends (one dummy input) or zero joins (two) proved and ready. */
-  const pad=async(kind:BatchKind)=>{
+  const pad=async(kind:'spend'|'join')=>{
    const recipient=rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey());
    while(!stopped){
     if(operator.padding(kind)>=PADDING_TARGET){await sleep(2000);continue;}
