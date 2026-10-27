@@ -49,7 +49,9 @@ const HEAD_SATS=1000,MINIMUM_FUNDING_SATS=2000,SIGN_TIMEOUT_MS=30_000,PADDING_TA
 const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
-const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000;
+const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000,NOTICE_AFTER_MS=30_000;
+export const rollupNotice=(reasons:readonly ({message:string;since:number}|undefined)[],now:number):string|undefined=>
+ reasons.find(reason=>reason&&now-reason.since>NOTICE_AFTER_MS)?.message;
 
 export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export type RollupStatusBatch={batch:number;at:number;rotated?:boolean}&RollupTimings;
@@ -191,6 +193,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const checkpointTimes:number[]=[];
  // Why batching is stuck, once it has been for a while, so wallets can say why a spend waits.
  let blocked:{message:string;since:number}|undefined;
+ let stalled:{message:string;since:number}|undefined;
+ const noticeOf=()=>{const notice=rollupNotice([blocked,stalled],Date.now());return notice?{notice}:{};};
  // In memory only: after a restart it is absent until this process publishes a batch.
  let lastBatch:RollupStatusBatch|undefined;
  const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
@@ -231,7 +235,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  /** Issues the pool token and sends the head with the genesis state packet; a crash in between re-finds the head by its script. */
  async function firstGenesis(ark:Awaited<ReturnType<typeof openCustomerArkWallet>>,network:StockNetworkInfo,epochLen?:number):Promise<Genesis|undefined> {
   const wallet=ark.wallet,balance=await wallet.getBalance();
-  status={...status,phase:'funding',fundingAddress:ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool.`};
+  status={...status,phase:'funding',fundingAddress:ark.address,fundingSats:balance.available,message:`Fund the operator wallet with at least ${MINIMUM_FUNDING_SATS} sats to create the pool, and more to keep paying each renewal's fee.`};
   const tokenPath=join(o.directory,'genesis-token.json');
   if(!existsSync(tokenPath)){
    if(balance.available<MINIMUM_FUNDING_SATS)return undefined;
@@ -397,7 +401,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
       log(`renewed the head and ${chunk.length} reserve(s) into round ${moved.commitment}, head ${moved.head.txid}`);
      }catch(error){await settleRenewal().catch(e=>note('renewal: '+(e as Error).message));throw error;}
     });
-   }catch(error){note('renewal: '+(error as Error).message);}
+    stalled=undefined;
+   }catch(error){const message='renewal: '+(error as Error).message;note(message);stalled={message,since:stalled?.since??Date.now()};}
    later(renew,RENEW_CHECK_MS);
   };
   const turnedAway=new Set<string>();
@@ -439,7 +444,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,view=operator.status(),{archive}=view,{state}=operator;
    // EpochState has no rootAfter (its window holds hashes), so an epoch pool reports what its operator remembers as accepted.
-   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...(blocked&&Date.now()-blocked.since>30_000?{notice:blocked.message}:{}),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(state instanceof EpochState?(view as RollupEpochStatus).acceptedRoot:state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
+   return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...noticeOf(),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(state instanceof EpochState?(view as RollupEpochStatus).acceptedRoot:state.rootAfter(archive.batches)),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
     reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES,
     ...(state instanceof EpochState?epochFieldsOf(state.epochLen,archive.batches,view as RollupEpochStatus):{})}};
   },

@@ -9,7 +9,8 @@ import {offlineNativeFixture} from './fixtures/native.ts';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
-import {carriedReserves,flushRollupIntent,fundRollupRenewalFee,isRollupFeeForfeit,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupForfeitsForArkd,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalFee,rollupRenewalSignature} from '../src/rollup/renewal.ts';
+import {rollupNotice} from '../src/rollup/service.ts';
+import {carriedReserves,flushRollupIntent,fundRollupRenewalFee,isRollupFeeForfeit,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupFeeEmulator,rollupForfeitsForArkd,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalFee,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
 /** What mutinynet's /v1/info advertises under .fees: 0.2% of every VTXO input younger than a day, and nothing else. */
 const FEES={offchainInput:"inputType == 'vtxo' && now() - birth < 86400.0 ? amount * 0.002 : 0.0",offchainOutput:'0.0',onchainInput:'0.0',onchainOutput:'0.0'};
@@ -66,19 +67,42 @@ test('the renewal fee is what arkd charges for the intent, and nothing once the 
 const fund=(coins:readonly ReturnType<typeof own>[],pool:readonly typeof head[]=[head])=>fundRollupRenewalFee({fees:FEES,dust:330,pool,outputs:repaid,coins});
 const [small,mid,big,tight,exact]=[own(400,1),own(1000,2),own(50_000,3),own(340,4),own(13,5)];
 
-test('the fee comes from the smallest operator coins that cover it, and the surplus goes back above dust',()=>{
- assert.deepEqual(fund([big,mid,small]),{coins:[small],fee:13,change:387},'the smallest covering coin alone, its own 0.2% included');
- assert.deepEqual(fund([big,mid]),{coins:[mid],fee:14,change:986});
- assert.deepEqual(fund([{...small,txid:'f1'.repeat(32)},small]),{coins:[small],fee:13,change:387},'equal values are broken by outpoint, so the same wallet always funds the same way');
- // ponytail: a coin whose surplus is dust is spent whole; picking a larger one instead would consolidate, which this does not try.
- assert.deepEqual(fund([tight]),{coins:[tight],fee:340,change:0},'a 327-sat surplus is below dust, so it tops the fee up instead');
+const twin={...small,txid:'f1'.repeat(32)};
+test('every float coin rides along, and the surplus comes back as one coin above dust',()=>{
+ assert.deepEqual(fund([mid,big,small]),{coins:[small,mid,big],fee:115,change:51_285},'all three in value order whatever the wallet\'s, each paying 0.2% of itself, consolidated into one change coin');
+ assert.deepEqual(fund([big,mid]),{coins:[mid,big],fee:114,change:50_886});
+ assert.deepEqual(fund([twin,small]),{coins:[small,twin],fee:14,change:786},'equal values are broken by outpoint, so the same wallet always funds the same way');
+ assert.deepEqual(fund([tight]),{coins:[tight],fee:340,change:0},'ponytail: a 327-sat surplus is below dust, so the coin is spent whole rather than rescued by pulling in a larger one');
  assert.deepEqual(fund([exact]),{coins:[exact],fee:13,change:0},'a coin worth exactly the fee leaves no output behind');
- assert.deepEqual(fund([mid],[{...head,createdAt:ago(25)}]),{coins:[],fee:0,change:0},'an old head owes nothing, so no coin of the operator\'s is touched');
 });
 
+// openCustomerArkWallet builds the wallet with settlementConfig:false, so a float no renewal carries is one arkd sweeps.
+const oldHead=[{...head,createdAt:ago(25)}],oldFloat=own(1000,8,25);
+test('a renewal that owes no fee still carries the operator float, so arkd never sweeps it',()=>{
+ assert.deepEqual(fund([oldFloat],oldHead),{coins:[oldFloat],fee:0,change:1000},'an old head and an old float renew together for nothing at all');
+ assert.deepEqual(fund([mid],oldHead),{coins:[mid],fee:2,change:998},'a float still inside the young window pays only its own 0.2% to be renewed');
+ assert.deepEqual(fund([],oldHead),{coins:[],fee:0,change:0},'and an empty wallet still renews the pool on its own');
+});
+
+// Without this rule the whole coin became the fee the moment the change output carried any price at all.
+const fat=own(50_000,6,25);
+test('a change output arkd charges for comes out of the change, never out of the whole coin',()=>{
+ const withOutput=(offchainOutput:string)=>fundRollupRenewalFee({fees:{...FEES,offchainOutput},dust:330,pool:[head],outputs:repaid,coins:[fat]});
+ const spare=fat.value-rollupRenewalFee({...FEES,offchainOutput:'1.0'},[head,fat],repaid);
+ assert.deepEqual([spare,withOutput('1.0').change,withOutput('1.0').fee],[49_987,49_986,14],'the one sat the change output costs comes off the change');
+ assert.deepEqual(withOutput('amount * 0.001'),{coins:[fat],fee:68,change:49_932},'a price on the amount settles where the change still covers the fee');
+ assert.deepEqual(withOutput('0.0'),{coins:[fat],fee:12,change:49_988},'and with arkd\'s own free outputs the change is the whole surplus');
+ assert.throws(()=>withOutput(`script == '${OWN}' ? 100000.0 : 0.0`),/^Error: The renewal would pay 49988 sats over its 12-sat fee\.$/,'a change output dearer than the surplus refuses, rather than handing arkd the coin');
+ assert.throws(()=>withOutput('amount > 44980.0 ? 10.0 : 5000.0'),/would pay 44988 sats over its 5012-sat fee/,'a price falling as the amount rises leaves a change arkd would re-price at 10012 against 5022 offered: refused here, not registered and refused there');
+});
+
+const deposit=own(502,7);
 test('an operator wallet that cannot cover the fee refuses the renewal before anything is registered',()=>{
  assert.throws(()=>fund([]),/^Error: The operator wallet needs 330 sats to pay the renewal fee\.$/,'a top-up under dust could not be spent, so asking for the 12 would not unblock it');
  assert.throws(()=>fund([own(12,6)]),/needs 330 sats/,'the coin owes 0.2% of itself too, so 12 does not cover 12');
+ const rich=[{...head,value:250_000}];
+ assert.throws(()=>fund([],rich),/needs 502 sats/,'asking 500 for a 500-sat fee is unpayable, since a fresh deposit is young and owes 0.2% of itself on arrival');
+ assert.deepEqual(fund([deposit],rich),{coins:[deposit],fee:502,change:0},'...which that very deposit then covers');
 });
 
 test('a renewal hands out its intent id before the round, and names it when the round fails',async()=>{
@@ -95,6 +119,7 @@ test('a renewal hands out its intent id before the round, and names it when the 
   ark:{getInfo:async()=>info,registerIntent:async()=>'intent-42',getEventStream:async function*(){throw new Error('the round was dropped');}},
   emulator:{submitIntent:async({proof}:{proof:string})=>proof},
   indexer:{getVtxos:async()=>({vtxos:[vtxo]}),getVirtualTxs:async()=>({txs:[]})},
+  wallet:async()=>({wallet:{dispose:async()=>{}},address:'',externalProgram:'',coins:[]}),
  };
  const network={network:'mutinynet',arkUrl:'https://ark.invalid',emulatorUrl:'https://emulator.invalid'} as unknown as StockNetworkInfo;
  await assert.rejects(renewRollupPool({network,identity:SingleKey.fromHex('04'.repeat(32)),operatorSecret:randomBytes(32),pool:pool.tree,renewLeaf:pool.renew,
@@ -117,6 +142,7 @@ test('a renewal chunk carries the head and only the reserves it names, and chunk
   ark:{getInfo:async()=>info,registerIntent:async()=>'intent-7',getEventStream:async function*(){throw new Error('the round was dropped');}},
   emulator:{submitIntent:async(o:{proof:string})=>(proof=o.proof)},
   indexer:{getVtxos:async({outpoints}:{outpoints:{txid:string;vout:number}[]})=>({vtxos:vtxos.filter(v=>outpoints.some(p=>p.vout===v.vout))}),getVirtualTxs:async()=>({txs:[]})},
+  wallet:async()=>({wallet:{dispose:async()=>{}},address:'',externalProgram:'',coins:[]}),
  };
  const network={network:'mutinynet',arkUrl:'https://ark.invalid',emulatorUrl:'https://emulator.invalid'} as unknown as StockNetworkInfo;
  await assert.rejects(renewRollupPool({network,identity:SingleKey.fromHex('04'.repeat(32)),operatorSecret:randomBytes(32),pool:pool.tree,renewLeaf:pool.renew,
@@ -169,11 +195,20 @@ test('a renewal repays every pool coin unchanged, pays the fee from an operator 
  const forfeit=(txid:string,index:number)=>{const f=new Transaction({allowUnknownInputs:true});f.addInput({txid:hex.decode(txid),index});return f;};
  assert.equal(isRollupFeeForfeit([fee],forfeit(source.id,0)),true);
  assert.deepEqual([isRollupFeeForfeit([fee],forfeit(parent.id,0)),isRollupFeeForfeit([fee],forfeit(source.id,1)),isRollupFeeForfeit([],forfeit(source.id,0))],[false,false,false],'a pool coin, another vout and a fee-free renewal all pass straight through');
- const psbt=(tx:Transaction)=>base64.encode(tx.toPSBT()),mine=psbt(forfeit(source.id,0));
- const sent=[psbt(forfeit(parent.id,0)),mine,psbt(forfeit(parent.id,1))];
- assert.deepEqual(rollupForfeitsForArkd([fee],sent,['head','reserve']),['head',mine,'reserve'],'measured live: 2 forfeits in, 1 back, and arkd refusing with INTERNAL_ERROR (0): missing forfeit transactions');
- assert.deepEqual(rollupForfeitsForArkd([],sent,['a','b','c']),['a','b','c'],'with no fee coin the emulator\'s answer is passed through whole');
- assert.deepEqual(rollupForfeitsForArkd([fee],sent,[]),sent,'an emulator that answers nothing cannot drop ours either');
+ const psbt=(tx:Transaction)=>base64.encode(tx.toPSBT());
+ const emulatorSigned=(txid:string,index:number)=>{const f=forfeit(txid,index);f.addOutput({script:hex.decode(OWN),amount:1n});return psbt(f);};
+ const mine=psbt(forfeit(source.id,0)),sent=[psbt(forfeit(parent.id,0)),mine,psbt(forfeit(parent.id,1))];
+ const back=[emulatorSigned(parent.id,1),emulatorSigned(parent.id,0)];
+ assert.deepEqual(rollupForfeitsForArkd([fee],sent,back),[back[1],mine,back[0]],'measured live: 2 forfeits in, 1 back, and arkd refusing with INTERNAL_ERROR (0): missing forfeit transactions');
+ assert.deepEqual(rollupForfeitsForArkd([],[sent[0]!,sent[2]!],back),[back[1],back[0]],'each answer is placed by the coin it forfeits, so the emulator\'s order does not matter');
+ assert.deepEqual(rollupForfeitsForArkd([fee],sent,[]),sent,'an emulator that answers nothing leaves ours whole and the rest for arkd to refuse');
+ assert.deepEqual(rollupForfeitsForArkd([fee],sent,[...back,emulatorSigned(source.id,0)]),[back[1],mine,back[0]],'an emulator that answers for our coin too does not displace the signature only we can make');
+ const asked:string[][]=[];
+ const faked={submitFinalization:async(_i:unknown,f:string[])=>{asked.push(f);return {signedForfeits:f.filter(x=>x!==mine).map(x=>emulatorSigned(...(x===sent[0]?[parent.id,0]:[parent.id,1]) as [string,number]))};}};
+ const spliced=await rollupFeeEmulator(faked as never,[fee]).submitFinalization({proof:'p',message:{} as never},sent,null,'commitment');
+ assert.deepEqual(spliced.signedForfeits,[emulatorSigned(parent.id,0),mine,emulatorSigned(parent.id,1)],'the wrapper hands arkd one forfeit per input, with ours still signed by the operator');
+ assert.deepEqual(asked,[sent],'the emulator still sees every forfeit, so nothing it validates is withheld');
+ assert.equal(rollupFeeEmulator(faked as never,[]),faked,'a fee-free renewal keeps the provider the old path used');
 });
 
 test('an interrupted chunk is adopted in the order its intent carried, and only an archive reserve can be carried',()=>{
@@ -207,6 +242,15 @@ test('an intent no round picks up is reported absent, without confirming anythin
   await new Promise(resolve=>signal.addEventListener('abort',resolve));
  }};
  assert.equal(await flushRollupIntent({arkUrl:'https://ark.invalid',intentId:'intent-42',topics:[],waitMs:50,ark:ark as never}),'absent');
+});
+
+test('the pool notice carries a stalled renewal as well as a stuck batch, once either has outlasted its grace',()=>{
+ const now=Date.now(),batch={message:'proving is stuck',since:now-60_000},renewal={message:'renewal: The operator wallet needs 330 sats to pay the renewal fee.',since:now-60_000};
+ assert.equal(rollupNotice([undefined,renewal],now),renewal.message,'a renewal that cannot pay is what the pool is waiting for');
+ assert.equal(rollupNotice([batch,renewal],now),batch.message,'a stuck batch still leads, since a spend waits on it first');
+ assert.equal(rollupNotice([{...batch,since:now},renewal],now),renewal.message,'a batch blip inside its grace does not mask a renewal that is already overdue');
+ assert.equal(rollupNotice([undefined,{...renewal,since:now}],now),undefined,'and one failed attempt alone says nothing yet');
+ assert.equal(rollupNotice([undefined,undefined],now),undefined);
 });
 
 test('a renewal left behind by a dead process is adopted, cleared or flushed according to the head',()=>{
