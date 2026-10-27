@@ -84,6 +84,12 @@ export function isRollupFeeForfeit(fee:readonly {txid:string;vout:number}[],tx:P
  const input=tx.getInput(0);
  return !!input?.txid&&fee.some(c=>c.txid===hex.encode(input.txid!)&&c.vout===input.index);
 }
+/** The forfeits arkd must see: the emulator answers only for the coins its packet names, so ours keep their own place. */
+export function rollupForfeitsForArkd(fee:readonly {txid:string;vout:number}[],sent:readonly string[],answered:readonly string[]):string[] {
+ const ours=sent.map(f=>isRollupFeeForfeit(fee,Transaction.fromPSBT(base64.decode(f))));
+ let next=0;
+ return sent.map((forfeit,i)=>ours[i]?forfeit:answered[next++]??forfeit);
+}
 
 /**
  * Moves the head and the given reserves (all, by default), unchanged, into a fresh round; returns their new outpoints.
@@ -129,7 +135,13 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
   const selective=new Proxy(o.identity,{get:(target,prop)=>prop==='sign'?async(tx:Transaction,indexes?:number[])=>isRollupFeeForfeit(fee,tx)?o.identity.sign(tx,indexes):tx:typeof (target as never)[prop]==='function'?((target as never)[prop] as Function).bind(target):(target as never)[prop]});
   // A fee coin carries no arkade script; the handler reads the field on no path, but its input type still demands one.
   const inputs=[...coins.map(c=>({...c,arkadeScriptBytes:o.leaves.renew})),...fee] as ArkadeBatchInput[];
-  const handler=arkade.createArkadeBatchHandler(intentId,inputs,selective,signedProof,message,session,ark,emulator,networks.mutinynet);
+  const forfeiting=fee.length?new Proxy(emulator,{get:(target,prop)=>prop==='submitFinalization'
+   ?async(intent:{proof:string;message:Intent.RegisterMessage},forfeits:string[],connectors:never,commitment:string)=>{
+     const answer=await emulator.submitFinalization(intent,forfeits,connectors,commitment);
+     return {...answer,signedForfeits:rollupForfeitsForArkd(fee,forfeits,answer.signedForfeits)};
+    }
+   :typeof (target as never)[prop]==='function'?((target as never)[prop] as Function).bind(target):(target as never)[prop]}):emulator;
+  const handler=arkade.createArkadeBatchHandler(intentId,inputs,selective,signedProof,message,session,ark,forfeiting,networks.mutinynet);
   const abortController=new AbortController();
   let commitment:string;
   try{commitment=await Batch.join(ark.getEventStream(abortController.signal,[cosigner,...points.map(p=>`${p.txid}:${p.vout}`),...feePoints]),handler,{abortController});}

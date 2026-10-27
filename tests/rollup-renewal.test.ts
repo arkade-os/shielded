@@ -9,7 +9,7 @@ import {offlineNativeFixture} from './fixtures/native.ts';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import type {StockNetworkInfo} from '../src/stock/network.ts';
 import {rollupPoolTree,ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
-import {carriedReserves,flushRollupIntent,fundRollupRenewalFee,isRollupFeeForfeit,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalFee,rollupRenewalSignature} from '../src/rollup/renewal.ts';
+import {carriedReserves,flushRollupIntent,fundRollupRenewalFee,isRollupFeeForfeit,leftoverRenewal,RENEWAL_CHUNK,renewalChunks,renewedRollupPoolCoins,renewRollupPool,rollupForfeitsForArkd,rollupPoolPoints,rollupRenewalDigest,rollupRenewalDue,rollupRenewalFee,rollupRenewalSignature} from '../src/rollup/renewal.ts';
 
 /** What mutinynet's /v1/info advertises under .fees: 0.2% of every VTXO input younger than a day, and nothing else. */
 const FEES={offchainInput:"inputType == 'vtxo' && now() - birth < 86400.0 ? amount * 0.002 : 0.0",offchainOutput:'0.0',onchainInput:'0.0',onchainOutput:'0.0'};
@@ -169,6 +169,11 @@ test('a renewal repays every pool coin unchanged, pays the fee from an operator 
  const forfeit=(txid:string,index:number)=>{const f=new Transaction({allowUnknownInputs:true});f.addInput({txid:hex.decode(txid),index});return f;};
  assert.equal(isRollupFeeForfeit([fee],forfeit(source.id,0)),true);
  assert.deepEqual([isRollupFeeForfeit([fee],forfeit(parent.id,0)),isRollupFeeForfeit([fee],forfeit(source.id,1)),isRollupFeeForfeit([],forfeit(source.id,0))],[false,false,false],'a pool coin, another vout and a fee-free renewal all pass straight through');
+ const psbt=(tx:Transaction)=>base64.encode(tx.toPSBT()),mine=psbt(forfeit(source.id,0));
+ const sent=[psbt(forfeit(parent.id,0)),mine,psbt(forfeit(parent.id,1))];
+ assert.deepEqual(rollupForfeitsForArkd([fee],sent,['head','reserve']),['head',mine,'reserve'],'measured live: 2 forfeits in, 1 back, and arkd refusing with INTERNAL_ERROR (0): missing forfeit transactions');
+ assert.deepEqual(rollupForfeitsForArkd([],sent,['a','b','c']),['a','b','c'],'with no fee coin the emulator\'s answer is passed through whole');
+ assert.deepEqual(rollupForfeitsForArkd([fee],sent,[]),sent,'an emulator that answers nothing cannot drop ours either');
 });
 
 test('an interrupted chunk is adopted in the order its intent carried, and only an archive reserve can be carried',()=>{
