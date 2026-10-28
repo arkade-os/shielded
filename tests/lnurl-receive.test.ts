@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {MnemonicIdentity,SingleKey,type CreateContractParams,type Wallet} from '@arkade-os/sdk';
-import {hex} from '@scure/base';
-import {CHECK_EVERY_MS,HD_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
+import {bech32m,hex} from '@scure/base';
+import {CHECK_EVERY_MS,HD_REFUSED,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
 
 const mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const hdIdentity=MnemonicIdentity.fromMnemonic(mnemonic,{isMainnet:false});
@@ -11,12 +11,14 @@ const branch=receiveBranch(hdIdentity.descriptor,{serverPubKey:hex.encode(server
 const at=(index:number)=>receiveDestination(branch,index);
 const domain='lnurl.example',baseUrl=`https://${domain}`,receiver={handle:'alice',username:'alice',lightningAddress:`alice@${domain}`,domain,status:'active',lnurl:'LNURL',nameless:false,sessionLnurl:null};
 const legacyKey=`lnurl-hd-v1:${JSON.stringify([baseUrl,domain])}`;
+const SHROL=bech32m.encode('shrol2',bech32m.toWords(new Uint8Array(64).fill(7)),false),shielded={type:'shielded',destination:SHROL};
+interface Bind {arkadeAddress:string;claimPublicKey:string;domain:string;methods?:{type:string;destination:string}[]}
 const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
 const isBind=(r:{url:string;init?:RequestInit})=>r.url.endsWith('/arkade')&&r.init?.method==='POST';
 
 function setup({aliases=[] as typeof receiver[],exitDelay=2048n}={}){
- const state=new Map<string,unknown>(),requests:{url:string;init?:RequestInit}[]=[],watched:CreateContractParams[]=[],registered:LnurlPayout[][]=[],funded=new Set<string>(),listeners=new Set<(event:{type:string})=>void>();
- let signed=0,saveFailure=false,clock=0,scans=0,bindReply:(body:Record<string,string>)=>Response|Promise<Response>=()=>json({ok:true});
+ const state=new Map<string,unknown>(),kept=new Map<string,unknown>(),requests:{url:string;init?:RequestInit}[]=[],watched:CreateContractParams[]=[],registered:LnurlPayout[][]=[],funded=new Set<string>(),listeners=new Set<(event:{type:string})=>void>();
+ let signed=0,saveFailure=false,clock=0,scans=0,reads=0,keeps=true,bindReply:(body:Bind)=>Response|Promise<Response>=()=>json({ok:true});
  const identity=SingleKey.fromHex('01'.repeat(32)),sign=identity.signMessage.bind(identity);
  identity.signMessage=async(...args)=>{signed++;return sign(...args);};
  const companion={identity:hdIdentity,network:{hrp:'tark'},getArkadeInfo:async()=>({network:'mutinynet',signerPubkey:hex.encode(server),unilateralExitDelay:exitDelay}),
@@ -27,15 +29,19 @@ function setup({aliases=[] as typeof receiver[],exitDelay=2048n}={}){
   saveReceiveState:async(_owner:string,pool:string,name:string,value:unknown)=>{if(saveFailure)throw new Error('save failed');state.set(key(pool,name),structuredClone(value));}};
  const fetch=async(url:string,init?:RequestInit)=>{
   requests.push({url,init});
-  if(url.endsWith('/lnurl/address'))return init?.method==='POST'?(aliases.push(receiver),json(receiver)):json(aliases);
-  if(url.endsWith('/arkade'))return bindReply(JSON.parse(String(init?.body)));
+  if(url.endsWith('/lnurl/address'))return init?.method==='POST'?(aliases.push(receiver),json(receiver)):json(aliases.map(row=>kept.has(row.handle)?{...row,paymentMethods:kept.get(row.handle)}:row));
+  if(url.endsWith('/arkade')){
+   const body=JSON.parse(String(init?.body)) as Bind,answer=await bindReply(body);
+   if(answer.ok&&keeps&&body.methods)kept.set(decodeURIComponent(url.split('/').at(-2)!),body.methods);
+   return answer;
+  }
   return json({error:'not found'},404);
  };
- const config={identity,companion,journal,owner:'owner',pool:'pool',baseUrl,fetch,now:()=>clock,onPayouts:async(rows:LnurlPayout[])=>{registered.push(rows);}};
- const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true}>}|undefined;
- const bound=()=>requests.filter(isBind).map(r=>JSON.parse(String(r.init?.body)) as Record<string,string>);
+ const config={identity,companion,journal,owner:'owner',pool:'pool',baseUrl,fetch,now:()=>clock,shieldedAddress:()=>{reads++;return SHROL;},onPayouts:async(rows:LnurlPayout[])=>{registered.push(rows);}};
+ const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true;methods?:true;methodsRefused?:true;withdraw?:true}>}|undefined;
+ const bound=()=>requests.filter(isBind).map(r=>JSON.parse(String(r.init?.body)) as Bind);
  return {service:createLnurlReceive(config),config,state,requests,watched,registered,funded,listeners,saved,bound,aliases,key,
-  signed:()=>signed,scans:()=>scans,tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
+  signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
 }
 const refusal=()=>json({error:'An HD receiver cannot be downgraded by a static registration',code:'invalid_rails'},400);
 
@@ -173,4 +179,83 @@ test('claim does not take over an alias another wallet already owns',async()=>{
  const f=setup({aliases:[receiver]});
  await assert.rejects(f.service.claim(),/Recover a Lightning address/);
  assert.equal(f.bound().length,0);assert.equal(await f.service.current(),undefined);
+});
+
+test('no shielded address reaches the LNURL server until private receive is switched on',async()=>{
+ const f=setup();await f.service.claim();f.tick(ROTATE_AFTER_MS);await f.service.check();
+ assert.deepEqual(f.bound().map(b=>b.methods),[undefined,undefined]);
+ assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
+ assert.deepEqual([f.reads(),await f.service.privateReceive()],[0,false]);
+});
+
+test('switching private receive on registers the shielded address on every bound alias',async()=>{
+ const bob={...receiver,handle:'bob',username:'bob',lightningAddress:`bob@${domain}`},f=setup({aliases:[receiver,bob]});
+ await f.service.recover();await f.service.setPrivateReceive(true);
+ assert.deepEqual(f.bound().map(b=>b.methods?.length),[undefined,undefined,1,1]);
+ assert.deepEqual(f.requests.filter(isBind).slice(-2).map(r=>r.url.split('/').at(-2)),['alice','bob']);
+ assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[shielded],[shielded]]);
+ assert.equal(await f.service.privateReceive(),true);
+});
+
+test('switching it off withdraws the method rather than merely stopping',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);await f.service.setPrivateReceive(false);
+ assert.deepEqual(f.bound().at(-1)!.methods,[]);assert.equal(await f.service.privateReceive(),false);
+ f.tick(ROTATE_AFTER_MS);await f.service.check();
+ assert.equal(f.bound().at(-1)!.methods,undefined);assert.equal(Object.values(f.saved()!.servers)[0]!.withdraw,undefined);
+});
+
+test('a switch-off that cannot reach the service is retried until the withdrawal lands',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
+ f.reply(()=>{throw new TypeError('connection closed');});
+ await assert.rejects(f.service.setPrivateReceive(false),/Request failed/);
+ f.reply(()=>json({ok:true}));await createLnurlReceive(f.config).check();
+ assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[],[]]);
+ await f.service.check();assert.equal(f.bound().at(-1)!.methods,undefined);
+});
+
+test('the flag survives a restart and each rotation re-registers the method',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
+ f.tick(ROTATE_AFTER_MS);const restart=createLnurlReceive(f.config);
+ assert.equal(await restart.privateReceive(),true);await restart.check();
+ assert.equal(f.bound().filter(b=>Array.isArray(b.methods)&&b.methods.length===1).length,2);
+ assert.equal(f.bound().at(-1)!.arkadeAddress,at(1).address);
+});
+
+test('a server that silently drops the method is reported, not treated as private',async()=>{
+ const f=setup();f.keep(false);await f.service.claim();
+ await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ assert.equal(await f.service.privateReceive(),false);
+ await assert.rejects(f.service.check(),{message:METHODS_REFUSED});
+ assert.deepEqual(f.bound().at(-1)!.methods,[shielded]);
+ f.keep(true);await f.service.check();assert.equal(await f.service.privateReceive(),true);
+});
+
+test('private receive is not reported live until a listing has echoed the method',async()=>{
+ const f=setup();await f.service.claim();f.reply(()=>{throw new TypeError('connection closed');});
+ await assert.rejects(f.service.setPrivateReceive(true),/Request failed/);assert.equal(await f.service.privateReceive(),false);
+ f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),true);
+});
+
+test('a 400 refusal of the method does not stall the identity bind or burn an index',async()=>{
+ const f=setup();await f.service.claim();f.reply(body=>body.methods?json({error:'method type is reserved'},400):json({ok:true}));
+ await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ assert.deepEqual(f.bound().slice(-2).map(b=>[b.methods,b.arkadeAddress]),[[[shielded],at(0).address],[undefined,at(0).address]]);
+ f.tick(ROTATE_AFTER_MS);await assert.rejects(f.service.check(),{message:METHODS_REFUSED});
+ assert.equal(f.bound().at(-1)!.arkadeAddress,at(1).address);assert.equal(f.saved()!.next,2);
+ assert.equal(Object.values(f.saved()!.servers)[0]!.refused,undefined);assert.equal(await f.service.privateReceive(),false);
+ f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),true);
+});
+
+test('an invalid_rails refusal still reports HD mode, not a method failure',async()=>{
+ const f=setup();await f.service.claim();f.reply(refusal);
+ await assert.rejects(f.service.setPrivateReceive(true),{message:HD_REFUSED});
+ assert.equal(f.bound().length,2);assert.equal(Object.values(f.saved()!.servers)[0]!.refused,true);assert.equal(await f.service.privateReceive(),false);
+ f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),true);
+});
+
+test('private receive needs an enabled alias and a shielded address, and fails without side effects',async()=>{
+ const f=setup();await assert.rejects(f.service.setPrivateReceive(true),/Lightning address/);
+ await f.service.setPrivateReceive(false);assert.deepEqual([f.requests.length,f.reads()],[0,0]);
+ await f.service.claim();await assert.rejects(createLnurlReceive({...f.config,shieldedAddress:undefined}).setPrivateReceive(true),/shielded address/);
+ assert.deepEqual([f.bound().length,await f.service.privateReceive()],[1,false]);
 });
