@@ -90,28 +90,19 @@ test('self-native withdrawal keeps its SDK receipt while external withdrawals in
  }finally{await wallet.dispose();}
 });
 
-test('a top-up withdraws what the Arkade balance lacks to the wallet itself, holds auto-shield off, then pays once',async()=>{
- const wallet=await open(),withdrawn:[string,bigint][]=[];
- let balance=900,during=-1,pays=0;
- wallet.arkadeSats=async()=>balance;
- (wallet as any).withdrawal=(to:string,amount:bigint)=>{withdrawn.push([to,amount]);return {settled:async()=>{balance+=Number(amount);return {railId:'shielded-withdraw'};}};};
- const pay=async()=>{pays++;during=(wallet as any).nativeOperations;return makeHandle('lightning',async emit=>{const result={railId:'lightning',txid:'cd'.repeat(32)};emit({status:'settled',result});return result;});};
+test('an exit from the pool withdraws the whole amount to the wallet itself, holds auto-shield off, then exits that payout alone',async t=>{
+ const wallet=await open(),withdrawn:[string,bigint][]=[],payout={...coin('cd'.repeat(32),1002),vout:1},older=coin('ee'.repeat(32),1002),exited:unknown[]=[];
+ let landed='',during=-1,named=true;
+ (wallet as any).withdrawal=(to:string,amount:bigint)=>{withdrawn.push([to,amount]);return {settled:async()=>{landed=payout.txid;return {railId:'shielded-withdraw',...(named?{txid:payout.txid}:{})};}};};
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async()=>(landed?[older,payout]:[older]) as never);
+ const exit=async(c:unknown)=>{exited.push(c);during=(wallet as any).nativeOperations;return makeHandle('onchain',async emit=>{const result={railId:'onchain',txid:'ef'.repeat(32)};emit({status:'settled',result});return result;});};
  try{
-  const result=await wallet.topUp(1003,'Paying 1,000 sats over Lightning',pay).settled();
-  assert.deepEqual(withdrawn,[[await wallet.getAddress(),330n]],'103 sats short still withdraws the dust');
-  assert.equal(result.txid,'cd'.repeat(32));
-  assert.deepEqual([pays,during,(wallet as any).nativeOperations],[1,1,0]);
-  await wallet.topUp(1003,'Paying again',pay).settled();
-  assert.equal(withdrawn.length,1,'a covered balance pays without another withdrawal');
- }finally{await wallet.dispose();}
-});
-
-test('a swap is funded only from recoverable-free coins carrying no assets',async t=>{
- const wallet=await open(),filters:unknown[]=[],plain=coin('aa'.repeat(32),700),carrier={...coin('bb'.repeat(32),330),assets:[{assetId:TOKEN,amount:1n}]};
- t.mock.method(Wallet.prototype,'getSpendableVtxos',async(filter:unknown)=>{filters.push(filter);return [plain,carrier] as never;});
- try{
-  assert.equal(await wallet.arkadeSats(),700);
-  assert.deepEqual(filters,[{genericallySpendableOnly:true,withRecoverable:false}]);
+  const result=await wallet.exitFromPool(1002,'Sending 1,000 sats on-chain',exit).settled();
+  assert.deepEqual(withdrawn,[[await wallet.getAddress(),1002n]],'the whole amount, even with an Arkade coin on hand');
+  assert.deepEqual([exited,result.txid,during,(wallet as any).nativeOperations],[[payout],'ef'.repeat(32),1,0]);
+  landed='';named=false;wallet.account.txids.add(payout.txid);exited.length=0;
+  await assert.rejects(wallet.exitFromPool(1002,'Again',async c=>{exited.push(c);throw new Error('batch swap failed');}).settled(),/after the pool paid 1,002 sats to your Arkade balance: batch swap failed/);
+  assert.deepEqual(exited,[payout],'an unnamed batch is found among the pool payouts');
  }finally{await wallet.dispose();}
 });
 
@@ -668,6 +659,14 @@ test('existing and new routers keep the original pool excluded after status lose
     assert.equal((await current.route({raw:elsewhere,amount:500})).railId,'shielded-withdraw');
    }
   }
+ }finally{await wallet.dispose();}
+});
+
+test('the router sends a Bitcoin address out of the pool when one note covers it',async()=>{
+ const wallet=await open(),raw=bech32.encode('tb',[0,...bech32.toWords(new Uint8Array(20).fill(1))]);
+ try{
+  await fundPrivate(wallet,[{amount:500n}]);
+  assert.equal((await wallet.router().route({raw,amount:500})).railId,'shielded-exit');
  }finally{await wallet.dispose();}
 });
 

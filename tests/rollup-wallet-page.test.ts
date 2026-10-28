@@ -163,6 +163,7 @@ test('the route preview names what each rail makes public, and never leaves a ra
  assert.equal(routeCopy('ark').title,'Arkade payment');
  assert.equal(routeCopy('ark-asset').title,'Arkade payment');
  assert.equal(routeCopy('onchain').title,'On-chain exit');
+ assert.match(routeCopy('shielded-exit').detail,/become public, linked to that address/);
  assert.match(routeCopy('lightning').detail,/public/);
  const shielded=routeCopy('lnurl-shielded');
  assert.equal(shielded.title,'Pay the Lightning address privately');

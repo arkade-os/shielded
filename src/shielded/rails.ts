@@ -1,4 +1,4 @@
-import {ArkAddress,arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {ArkAddress,Estimator,arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type FeeInfo,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {assetFieldOfId} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
@@ -75,4 +75,26 @@ export function shieldedWithdrawRail(wallet:ShieldedWallet):PaymentRail{
    return {railId:'shielded-withdraw',amount,fee:0,total:amount,...assetView(r),send:()=>wallet.withdraw(to,r.units,withdrawOpts(r))};
   },
  };
+}
+// The SDK exit refuses change below the dust, so the payout nets the exit exactly: the least gross = total + fee(gross).
+function freshPayoutFor(total:number,fees:FeeInfo):number{
+ const estimator=new Estimator(fees.intentFee??{}),fee=(gross:number)=>estimator.evalOffchainInput({amount:BigInt(gross),type:'vtxo',weight:0,birth:new Date()}).satoshis;
+ for(let gross=total,i=0;i<16;i++){const next=total+fee(gross);if(next===gross)return gross;gross=next;}
+ throw new Error('No payout covers this exit after the Arkade input fee.');
+}
+/** An on-chain exit spends Arkade coins, which auto-shield keeps near empty, so one pool note pays this wallet a coin that exits alone. */
+export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()=>Promise<FeeInfo>):PaymentRail{
+ const sats=(value:number)=>value.toLocaleString('en-US');
+ return {...rail,async quote(req,ctx){
+  const quote=await rail.quote(req,ctx);
+  if(req.selectedVtxos)return quote;
+  const gross=freshPayoutFor(quote.total,await feeInfo());
+  if(!wallet.canWithdraw(BigInt(gross))){
+   const have=(await wallet.getSpendableVtxos({withRecoverable:true,withUnrolled:false,genericallySpendableOnly:true})).reduce((sum,v)=>sum+v.value,0);
+   if(have<quote.total)throw new Error(`No single unreserved pool note covers the ${sats(gross)} sats this exit needs, and your Arkade balance holds only ${sats(have)} sats.`);
+   return quote;
+  }
+  return {...quote,railId:'shielded-exit',fee:gross-quote.amount,total:gross,
+   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async coin=>(await rail.quote({...req,selectedVtxos:[coin]},ctx)).send())};
+ }};
 }

@@ -18,7 +18,7 @@ function fakeWallet(o:{arkade:number;canWithdraw?:boolean}){
   restoreLightningSpends:async()=>{},
   arkadeSats:async()=>o.arkade,
   canWithdraw:(amount:bigint)=>{checked.push(amount);return o.canWithdraw??true;},
-  topUp:(need:number,title:string,pay:()=>Promise<unknown>)=>{topUps.push({need,title});return pay();},
+  exitFromPool:(need:number,title:string,pay:()=>Promise<unknown>)=>{topUps.push({need,title});return pay();},
  } as unknown as ShieldedWallet;
  return {wallet,topUps,checked};
 }

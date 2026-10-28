@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ArkAddress,PaymentRouter,SingleKey,arkAssetRail,arkRail,isValidArkAddress,type PaymentRequest} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,SingleKey,arkAssetRail,arkRail,isValidArkAddress,onchainRail,type PaymentRequest} from '@arkade-os/sdk';
 import {createLnurlClient,type PaymentOption} from '@arkade-os/lnurl-client';
 import {buildPoseidon} from 'circomlibjs';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {lightningRails,lnurlShieldedRail} from '../src/shielded/lightning.ts';
-import {SHIELDED_PRIORITY,shieldedRail,shieldedTargetOf,shieldedWithdrawRail} from '../src/shielded/rails.ts';
+import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedTargetOf,shieldedWithdrawRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
@@ -408,4 +408,34 @@ test('a failure of the shielded method hands over to Arkade, then Lightning, and
   await assert.rejects(route(routerOf()),message);
   assert.deepEqual(asked(),['registered:shielded'],'a blip or a rate limit is reported, not paid around');
  }
+});
+
+const BTC='tb1qmt3ue2senlg6ddgmr76hwsk0rdvdk4rgeaen7l';
+const YOUNG_FEE={intentFee:{offchainInput:"inputType == 'vtxo' && now() - birth < 86400.0 ? amount * 0.002 : 0.0"},txFeeRate:'0'};
+const exitWallet=(o:{covers:boolean;arkade?:number[]})=>{
+ const exits:{sats:number;title:string}[]=[],filters:unknown[]=[],payout={txid:'cd'.repeat(32),vout:1,value:20_041,createdAt:new Date(),isSwept:false};
+ const wallet={canWithdraw:()=>o.covers,getSpendableVtxos:async(filter:unknown)=>{filters.push(filter);return (o.arkade??[]).map(value=>({value}));},
+  exitFromPool:(sats:number,title:string,exit:(coin:unknown)=>Promise<unknown>)=>{exits.push({sats,title});return exit(payout);}} as unknown as ShieldedWallet;
+ return {wallet,exits,filters,payout};
+};
+
+test('an on-chain send one pool note covers leaves the pool as a coin that nets the exit exactly, and only that coin exits',async()=>{
+ const {wallet,exits,payout}=exitWallet({covers:true}),settled:unknown[]=[];
+ const ark={wallet:{getAddress:async()=>POOL,settle:async(params:unknown)=>{settled.push(params);return 'ef'.repeat(32);}}} as never;
+ const quote=await poolFundedExit(wallet,onchainRail({feeInfo:async()=>YOUNG_FEE}),async()=>YOUNG_FEE).quote(req(BTC,20_000),ark);
+ assert.deepEqual([quote.railId,quote.amount,quote.fee,quote.total],['shielded-exit',20_000,41,20_041]);
+ assert.equal((await (await quote.send()).settled()).txid,'ef'.repeat(32));
+ assert.deepEqual(exits,[{sats:20_041,title:'Sending 20,000 sats on-chain'}]);
+ assert.deepEqual(settled,[{inputs:[payout],outputs:[{address:BTC,amount:20_000n}]}],'no change output returns to the Arkade address');
+ const free={intentFee:{},txFeeRate:'0'},plain=await poolFundedExit(wallet,onchainRail({feeInfo:async()=>free}),async()=>free).quote(req(BTC,20_000),ark);
+ assert.deepEqual([plain.fee,plain.total],[0,20_000]);
+});
+
+test('an on-chain send no single pool note covers falls back to the Arkade balance, and is refused at quote when that cannot pay it',async()=>{
+ const base=onchainRail({feeInfo:async()=>YOUNG_FEE}),ark={wallet:{}} as never;
+ const rich=exitWallet({covers:false,arkade:[15_000,6_000]}),quote=await poolFundedExit(rich.wallet,base,async()=>YOUNG_FEE).quote(req(BTC,20_000),ark);
+ assert.deepEqual([quote.railId,quote.total,rich.exits],['onchain',20_000,[]]);
+ assert.deepEqual(rich.filters,[{withRecoverable:true,withUnrolled:false,genericallySpendableOnly:true}],'the coins the SDK exit itself would spend');
+ const poor=exitWallet({covers:false,arkade:[500]});
+ await assert.rejects(poolFundedExit(poor.wallet,base,async()=>YOUNG_FEE).quote(req(BTC,20_000),ark),/No single unreserved pool note covers the 20,041 sats this exit needs, and your Arkade balance holds only 500 sats/);
 });
