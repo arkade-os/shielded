@@ -345,3 +345,24 @@ test('an empty own address never matches an empty listed destination',async()=>{
  assert.equal(await empty.listedShielded(),'foreign');
  await assert.rejects(empty.setPrivateReceive(true),/shielded address/);
 });
+
+const FOREIGN=bech32m.encode('shrol2',bech32m.toWords(new Uint8Array(64).fill(9)),false);
+const listing=(...destinations:string[])=>destinations.map((destination,i)=>({...receiver,handle:`alias${i}`,username:`alias${i}`,lightningAddress:`alias${i}@${domain}`,paymentMethods:[{type:'shielded',destination}]}) as typeof receiver);
+
+test('two aliases that both list our address read as ours',async()=>{
+ const f=setup({aliases:listing(SHROL,SHROL)});await f.service.recover();
+ assert.equal(await f.service.listedShielded(),'own');
+});
+
+for(const [order,destinations] of [['first',[SHROL,FOREIGN]],['last',[FOREIGN,SHROL]]] as const)test(`a foreign address on one alias makes the listing foreign with ours ${order}`,async()=>{
+ const f=setup({aliases:listing(...destinations)});await f.service.recover();
+ assert.equal(await f.service.listedShielded(),'foreign');
+});
+
+test('listedShielded answers from the last listing and sends nothing',async()=>{
+ const f=setup({aliases:listing(SHROL,SHROL)});await f.service.recover();
+ const requests=f.requests.length,saved=JSON.stringify(f.saved());
+ f.relist('alias0',[{type:'shielded',destination:FOREIGN}]);
+ assert.equal(await f.service.listedShielded(),'own');
+ assert.deepEqual([f.requests.length,JSON.stringify(f.saved())],[requests,saved]);
+});
