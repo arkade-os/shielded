@@ -78,8 +78,8 @@ test('an epoch service opens an epoch pool, rotates, and lands a recover batch t
  assert.equal(service.status().pool!.root,String(mirror.latestRoot()));
  assert.notEqual(service.status().pool!.root,opened);
  assert.deepEqual(service.spend((recover as {id:string}).id),{status:'included',batch:65,txid:recoverTx.id});
- assert.equal(service.checkpoint(64),undefined,'past a rotation, a global checkpoint would be wrong');
  const request=await listen(service);
+ assert.equal((await request('/api/rollup/checkpoints/64')).status,404,'past a rotation, a global checkpoint would be wrong');
  await t.test('an epoch pool serves /scan, and its page decodes to the batches it served',async()=>{
   const answer=await request('/api/rollup/scan?from=0'),page=await answer.json() as ScanPage;
   assert.deepEqual([answer.status,answer.headers.get('cache-control'),page.from,page.total],[200,'no-store',0,66]);

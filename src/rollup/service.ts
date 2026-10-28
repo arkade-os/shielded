@@ -399,10 +399,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
 
  const archives=join(o.directory,'operator','nullifiers');
  /** The closed epochs whose frozen nullifier files the pool holds, as of its last accepted batch. */
- const archiveEpochs=()=>{
-  const operator=live?.operator;
-  if(!operator)return undefined;
-  const closed=operator.status().acceptedEpoch;
+ const archiveEpochs=():number[]=>{
+  if(!live)return [];
+  const closed=live.operator.status().acceptedEpoch;
   return readdirSync(archives).map(name=>Number(ARCHIVE_FILE.exec(name)?.[1])).filter(epoch=>epoch<closed).sort((a,b)=>a-b);
  };
 
@@ -436,7 +435,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   keyFile:(name:string)=>manifest?rollupKeyPath(keys,name):undefined,
   archiveEpochs,
   /** Allowlisted like keyFile, and the path is rebuilt from a listed epoch's number, so no caller text reaches it. */
-  archiveFile:(name:string)=>{const epoch=Number(ARCHIVE_FILE.exec(name)?.[1]);return archiveEpochs()?.includes(epoch)?epochNfArchivePath(archives,epoch):undefined;},
+  archiveFile:(name:string)=>{const epoch=Number(ARCHIVE_FILE.exec(name)?.[1]);return archiveEpochs().includes(epoch)?epochNfArchivePath(archives,epoch):undefined;},
   /** The volume holding the pool's directory, so a launch can check there is room before it copies keys onto it. */
   storage:()=>{const s=statfsSync(dirname(o.directory));return {freeBytes:s.bavail*s.bsize,totalBytes:s.blocks*s.bsize};},
   batches:(from:number,limit:number)=>{
@@ -463,8 +462,6 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    for(let n=checkpointTimes.length*CHECKPOINT_EVERY;n<total;n+=CHECKPOINT_EVERY)checkpointTimes.push(readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${n}.json`)).at??0);
    return {every:CHECKPOINT_EVERY,at:[...checkpointTimes]};
   },
-  // The note tree restarts at every rotation, so a global batch count would name another epoch's frontier.
-  checkpoint:(_blocks:number):ReturnType<typeof checkpointOf>|undefined=>undefined,
   /** The current epoch's frontier after a multiple of CHECKPOINT_EVERY of its accepted batches; a closed epoch's tree is gone, and `state` runs ahead of the journal while a batch is in flight. */
   checkpointAt:(epoch:number,blocks:number)=>{
    const operator=live?.operator;

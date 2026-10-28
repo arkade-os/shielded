@@ -308,6 +308,19 @@ test('a spend refuses a join\'s boundary leg, a withdrawal without its program, 
  await assert.rejects(account.withdrawAsset(7n, 30n, program, aliceTo, new Set(), 329n), /at least 330/);
 });
 
+test('a spend refuses each leg of the join boundary, the payout program and the balance rule on its own', async () => {
+ const pool = epochPool(hash, 4), account = alice(4), program = new Uint8Array(32).fill(0xab);
+ pool.land('spend', [await pool.deposit(aliceTo, 100n), await pool.deposit(aliceTo, 500n)]);
+ await replay(account, pool.api);
+ const [a, b] = account.notes();
+ await assert.rejects(account.spend({ inputs: [a!, b!], deposit: 5n }, aliceTo), /no deposit, withdrawal or group/);
+ await assert.rejects(account.spend({ inputs: [a!, b!] }, aliceTo, undefined, { id: 5n, size: 2 }), /no deposit, withdrawal or group/);
+ await assert.rejects(account.spend({ input: a!, program }, aliceTo), /payout program/);
+ await assert.rejects(account.spend({ input: a!, to: { recipient: bobTo, amount: -1n } }, aliceTo), /does not balance/);
+ await assert.rejects(account.spend({ input: a!, deposit: -1n }, aliceTo), /does not balance/);
+ await assert.rejects(account.spend({ input: a!, withdraw: -1n }, aliceTo), /does not balance/);
+});
+
 test('consolidation joins the two smallest notes, and only when there are more than its threshold', async () => {
  const pool = epochPool(hash, 4), account = alice(4);
  pool.land('spend', await Promise.all(Array.from({ length: 9 }, (_, i) => pool.deposit(aliceTo, BigInt(100 * (i + 1))))));

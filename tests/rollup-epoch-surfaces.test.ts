@@ -64,9 +64,8 @@ test('a closed epoch, a future epoch, a non-multiple of 64 and a block count pas
 });
 
 test('an epoch pool still 404s the one-segment form',async()=>{
- const {request,service}=await epochPool();
+ const {request}=await epochPool();
  for(const blocks of [64,128])assert.equal((await request(checkpointPath(String(blocks)))).status,404,String(blocks));
- assert.equal(service.checkpoint(64),undefined);
 });
 
 test('a batch that is applied but not yet accepted is not in the checkpoint',async()=>{

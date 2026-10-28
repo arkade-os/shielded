@@ -4,7 +4,7 @@ A private pool for Bitcoin and Arkade assets on Arkade. Inside the pool, value m
 
 ## How it works
 
-- The pool is one Arkade VTXO, the head, which holds a supply-1 pool token and a commitment to the pool state. Each listed asset has one reserve VTXO beside it (at most eight).
+- The pool is one Arkade VTXO, the head, which holds a supply-1 pool token and a commitment to the pool state. Each listed asset has one reserve VTXO beside it (at most 64).
 - A wallet owns notes in a depth-32 Poseidon tree. To spend, the browser proves a spend (one input note) or a join (two input notes), each with two outputs, with Groth16, and reveals only the spent notes' nullifiers.
 - The pool forgets in epochs of 128 batches (`SHIELDED_ROLLUP_EPOCH_LEN`, baked into `Dockerfile.dokploy`). Each epoch has its own note tree and spent-note set, and a note spends directly in the epoch it was made in and the one after; a wallet refreshes its notes inside that window. A note that falls out of it is recovered with a one-slot recover batch against the sealed spent-note sets of the epoch it came from and the one after, since it could have been spent directly in either; losing epoch e+1's file therefore also blocks recoveries of epoch e. The operator serves those sets at `/api/rollup/archives`, and `.github/workflows/archive-mirror.yml` mirrors each closed epoch's file to the `rollup-genesis-4-archives` release.
 - The operator collects up to ten spends, or ten joins, into a batch and proves the state update. A batch closes as soon as a spend is pending and no batch is in flight; spends that arrive meanwhile share the next. The head's covenant checks every client proof and the batch proof with the Arkade emulator's BN254 opcodes before the pool moves.
@@ -13,7 +13,7 @@ A private pool for Bitcoin and Arkade assets on Arkade. Inside the pool, value m
 - A payment spends one note, two notes in one join, or up to three notes as one atomic group. A wallet holding more than eight notes of an asset merges its two smallest in the background.
 - One 24-word recovery phrase derives a spend key, a nullifier key and a view key. An address (`shrol2…`) carries the owner hash and the public view key. Two read-only keys can be shared: a view key (`shview2…`) shows the notes a wallet received, and a full viewing key (`shfvk2…`) also shows which of them were spent. Neither can spend or freeze a note.
 - Anyone can list an Arkade asset by sending one unit and 330 sats to the pool address; the operator turns it into that asset's reserve.
-- The operator renews the head and reserves in a fresh batch swap 48 hours before they expire.
+- The operator renews the head and reserves in fresh batch swaps, eight reserves per swap, 48 hours before they expire.
 
 ## Lightning privacy and recovery
 
