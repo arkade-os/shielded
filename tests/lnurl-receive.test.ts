@@ -309,10 +309,28 @@ test('claim on a device whose journal lacks the flag adopts what the service adv
  await device.claim();assert.equal(await device.privateReceive(),true);
 });
 
-test('a shielded row with a malformed destination still counts as advertised',async()=>{
- const f=setup({aliases:[{...receiver,paymentMethods:[{type:'shielded'}]} as typeof receiver]});f.keep(false);
- await assert.rejects(f.service.recover(),{message:METHODS_REFUSED});
- assert.deepEqual([Object.values(f.saved()!.servers)[0]!.methods,await f.service.privateReceive()],[true,false]);
- await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
- assert.equal(Object.values(f.saved()!.servers)[0]!.withdraw,true);
+test('a listed shielded entry with our own address is adopted',async()=>{
+ const f=setup({aliases:[{...receiver,paymentMethods:[shielded]} as typeof receiver]});
+ await f.service.recover();
+ assert.deepEqual([await f.service.privateReceive(),f.bound().at(-1)!.methods],[true,[shielded]]);
+ assert.equal(await f.service.foreignShielded(),false);
+});
+
+test('a shielded entry naming a different destination is never adopted, no bind carries our address, and switching off still withdraws it',async()=>{
+ const other=bech32m.encode('shrol2',bech32m.toWords(new Uint8Array(64).fill(9)),false);
+ const f=setup({aliases:[{...receiver,paymentMethods:[{type:'shielded',destination:other}]} as typeof receiver]});
+ await f.service.recover();
+ assert.deepEqual(f.bound().map(b=>b.methods),[undefined]);assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
+ assert.deepEqual([await f.service.privateReceive(),await f.service.foreignShielded()],[false,true]);
+ await f.service.setPrivateReceive(false);
+ assert.deepEqual([f.bound().at(-1)!.methods,await f.service.foreignShielded(),(await f.service.current())?.paymentMethods],[[],false,[]]);
+});
+
+test('a shielded entry with a malformed or empty destination is never adopted, yet still counts as advertised',async()=>{
+ const odd=[{type:'shielded'},{type:'shielded',destination:''},{type:'shielded',destination:42}].map((method,i)=>({...receiver,handle:`odd${i}`,username:`odd${i}`,lightningAddress:`odd${i}@${domain}`,paymentMethods:[method]}) as typeof receiver);
+ const f=setup({aliases:odd});await f.service.recover();
+ assert.deepEqual(f.bound().map(b=>b.methods),[undefined,undefined,undefined]);
+ assert.deepEqual([await f.service.privateReceive(),await f.service.foreignShielded()],[false,true]);
+ f.keep(false);await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
+ assert.deepEqual([f.bound().slice(-3).map(b=>b.methods),Object.values(f.saved()!.servers)[0]!.withdraw],[[[],[],[]],true]);
 });

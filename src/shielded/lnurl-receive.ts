@@ -113,16 +113,20 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  };
  const advertised=()=>{if(!config.shieldedAddress)throw new Error('Private receive requires a shielded address');return config.shieldedAddress();};
  const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(!server.methodsRefused){server.methodsRefused=true;await save(state);}};
- const advertises=(server:ServerState)=>server.receivers.some(row=>row.status==='active'&&row.paymentMethods?.some(m=>m.type==='shielded'));
+ const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
  const refresh=(server:ServerState,listed:LnurlReceiver[])=>{for(const row of server.receivers){const methods=listed.find(l=>l.handle===row.handle)?.paymentMethods;if(methods)row.paymentMethods=methods;else delete row.paymentMethods;}};
- // The service is the source of truth for what is advertised, so a restored device adopts it unless the user just switched it off here.
- const takeAdvertised=(server:ServerState)=>{if(config.shieldedAddress&&!server.methods&&!server.withdraw&&advertises(server)){server.methods=true;server.methodsRefused=true;}};
+ // Only an entry naming our own address proves this seed registered it; a foreign or malformed one must never switch consent on.
+ const takeAdvertised=(server:ServerState)=>{
+  if(!config.shieldedAddress||server.methods||server.withdraw||!shieldedListed(server).length)return;
+  const own=config.shieldedAddress();
+  if(shieldedListed(server).some(m=>m.destination===own)){server.methods=true;server.methodsRefused=true;}
+ };
  const confirm=async(state:ReceiveState,server:ServerState)=>{
   const before=JSON.stringify(server.receivers);
   refresh(server,await registeredReceivers());
   if(JSON.stringify(server.receivers)!==before)await save(state);
   if(server.withdraw){
-   if(advertises(server))throw new Error(METHODS_NOT_WITHDRAWN);
+   if(shieldedListed(server).length)throw new Error(METHODS_NOT_WITHDRAWN);
    delete server.withdraw;await save(state);return;
   }
   const destination=advertised();
@@ -205,6 +209,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
   payouts:async()=>(await load()).payouts,
   privateReceive:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&!server.methodsRefused&&!server.withdraw;},
+  foreignShielded:async()=>{const server=(await load()).servers[serverKey];return Boolean(server&&shieldedListed(server).some(m=>m.destination!==config.shieldedAddress?.()));},
   // methodsRefused is raised with the switch and cleared only once a listing echoes the method, so a bind alone never reads as live.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];
@@ -214,7 +219,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     if(server.methods&&!server.methodsRefused)return;
     server.methods=true;server.methodsRefused=true;delete server.withdraw;
    }else{
-    if(!server.methods&&!server.withdraw&&!advertises(server))return;
+    if(!server.methods&&!server.withdraw&&!shieldedListed(server).length)return;
     delete server.methods;delete server.methodsRefused;server.withdraw=true;
    }
    await save(state);await settle(state,server);
