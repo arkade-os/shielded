@@ -36,10 +36,12 @@ const onchain={getCoins:async()=>[],getTransactions:async()=>[],getFeeRate:async
 
 /** Counts what the pool was asked for, so a resumed wallet can be shown not to re-read the published batches. */
 function poolFetcher(batches:number,root?:string){
- const paths:string[]=[];
+ const paths:string[]=[];let empty=0;
  const fetcher=(async(url:string)=>{
   const path=String(url).replace('/api/rollup','');
   paths.push(path);
+  empty=path.startsWith('/batches')&&Number(/from=(\d+)/.exec(path)?.[1])<batches?empty+1:0;
+  if(empty>3)throw new Error('the wallet kept asking for pages after an empty one');
   const body=path==='/status'?status(batches,root):path.startsWith('/batches')?{total:batches,batches:[]}:{};
   return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});
  }) as unknown as typeof fetch;
