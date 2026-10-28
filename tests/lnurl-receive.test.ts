@@ -242,15 +242,43 @@ test('the flag survives a restart and each rotation re-registers the method',asy
 test('a server that silently drops the method is reported, not treated as private',async()=>{
  const f=setup();f.keep(false);await f.service.claim();
  await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
- assert.equal(await f.service.privateReceive(),false);
- await assert.rejects(f.service.check(),{message:METHODS_REFUSED});
+ assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused()],[false,true]);
  assert.deepEqual(f.bound().at(-1)!.methods,[shielded]);
- f.keep(true);await f.service.check();assert.equal(await f.service.privateReceive(),true);
+});
+
+test('after a refusal the address is not sent again, on a check or a rotation',async()=>{
+ const f=setup();f.keep(false);await f.service.claim();
+ await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ const binds=f.bound().length,reads=f.reads(),requests=f.requests.length;
+ await f.service.check();f.tick(ROTATE_AFTER_MS);await f.service.check();
+ assert.deepEqual([f.bound().slice(binds).map(b=>b.methods),f.reads()],[[undefined,undefined],reads]);
+ assert.equal(f.bound().at(-1)!.arkadeAddress,at(1).address);
+ assert.equal(JSON.stringify(f.requests.slice(requests)).includes(SHROL),false);
+ assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused()],[false,true]);
+});
+
+test('a refusal survives a restart, and switching off clears it without a request',async()=>{
+ const f=setup();f.keep(false);await f.service.claim();
+ await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ const restart=createLnurlReceive(f.config);
+ assert.deepEqual([await restart.privateReceive(),await restart.privateReceiveRefused()],[false,true]);
+ const requests=f.requests.length;await restart.setPrivateReceive(false);
+ assert.deepEqual([await restart.privateReceiveRefused(),f.requests.length],[false,requests]);
+});
+
+test('switching on again after a refusal sends the address once more, and goes live on a service that keeps it',async()=>{
+ const f=setup();f.keep(false);await f.service.claim();
+ await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ const binds=f.bound().length;
+ await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ assert.deepEqual(f.bound().slice(binds).map(b=>b.methods),[[shielded]]);
+ f.keep(true);await f.service.setPrivateReceive(true);
+ assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused(),f.bound().at(-1)!.methods],[true,false,[shielded]]);
 });
 
 test('private receive is not reported live until a listing has echoed the method',async()=>{
  const f=setup();await f.service.claim();f.reply(()=>{throw new TypeError('connection closed');});
- await assert.rejects(f.service.setPrivateReceive(true),/Request failed/);assert.equal(await f.service.privateReceive(),false);
+ await assert.rejects(f.service.setPrivateReceive(true),/Request failed/);assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused()],[false,false]);
  f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),true);
 });
 
@@ -258,16 +286,17 @@ test('a 400 refusal of the method does not stall the identity bind or burn an in
  const f=setup();await f.service.claim();f.reply(body=>body.methods?json({error:'method type is reserved'},400):json({ok:true}));
  await assert.rejects(f.service.setPrivateReceive(true),{message:METHODS_REFUSED});
  assert.deepEqual(f.bound().slice(-2).map(b=>[b.methods,b.arkadeAddress]),[[[shielded],at(0).address],[undefined,at(0).address]]);
- f.tick(ROTATE_AFTER_MS);await assert.rejects(f.service.check(),{message:METHODS_REFUSED});
- assert.equal(f.bound().at(-1)!.arkadeAddress,at(1).address);assert.equal(f.saved()!.next,2);
- assert.equal(Object.values(f.saved()!.servers)[0]!.refused,undefined);assert.equal(await f.service.privateReceive(),false);
- f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),true);
+ f.tick(ROTATE_AFTER_MS);await f.service.check();
+ assert.deepEqual([f.bound().at(-1)!.arkadeAddress,f.bound().at(-1)!.methods,f.saved()!.next],[at(1).address,undefined,2]);
+ assert.equal(Object.values(f.saved()!.servers)[0]!.refused,undefined);assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused()],[false,true]);
+ f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),false);
+ await f.service.setPrivateReceive(true);assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused()],[true,false]);
 });
 
 test('an invalid_rails refusal still reports HD mode, not a method failure',async()=>{
  const f=setup();await f.service.claim();f.reply(refusal);
  await assert.rejects(f.service.setPrivateReceive(true),{message:HD_REFUSED});
- assert.equal(f.bound().length,2);assert.equal(Object.values(f.saved()!.servers)[0]!.refused,true);assert.equal(await f.service.privateReceive(),false);
+ assert.equal(f.bound().length,2);assert.equal(Object.values(f.saved()!.servers)[0]!.refused,true);assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused()],[false,false]);
  f.reply(()=>json({ok:true}));await f.service.check();assert.equal(await f.service.privateReceive(),true);
 });
 

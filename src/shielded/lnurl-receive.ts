@@ -26,7 +26,7 @@ export interface LnurlReceiveConfig {
 // Each idle rotation leaves one unused index, so daily keeps a year of idle rotations inside RECOVERY_GAP.
 export const ROTATE_AFTER_MS=24*60*60_000,CHECK_EVERY_MS=10*60_000,RECOVERY_GAP=400;
 export const HD_REFUSED='This Lightning address is still in HD receive mode, and its service cannot switch it to a private static address until the service is updated. Earlier payouts stay watched; the wallet retries automatically.';
-export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. Private receive is not live until the service is updated; the wallet retries automatically.';
+export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. The wallet has stopped sending it; switch private receive on again once the service is updated.';
 export const METHODS_NOT_WITHDRAWN='The service for this Lightning address still lists the private receive address after it was withdrawn, so payers may still be offered it. The wallet keeps asking the service to remove it and retries automatically.';
 const SCAN_BATCH=50,STATE_POOL='lnurl-receive',STATE_KEY='state-v1';
 const TESTNET_BIP32={public:0x043587cf,private:0x04358394};
@@ -112,7 +112,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(!response.ok)throw new LnurlError(typeof reply?.error==='string'?reply.error:response.statusText,{httpStatus:response.status,code:typeof reply?.code==='string'?reply.code:undefined});
  };
  const advertised=()=>{const address=config.shieldedAddress?.();if(!address)throw new Error('Private receive requires a shielded address');return address;};
- const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(!server.methodsRefused){server.methodsRefused=true;await save(state);}};
+ const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;server.methodsRefused=true;await save(state);}};
  const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
  const refresh=(server:ServerState,listed:LnurlReceiver[])=>{for(const row of server.receivers){const methods=listed.find(l=>l.handle===row.handle)?.paymentMethods;if(methods)row.paymentMethods=methods;else delete row.paymentMethods;}};
  const confirm=async(state:ReceiveState,server:ServerState)=>{
@@ -207,7 +207,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    const server=(await load()).servers[serverKey],listed=server?shieldedListed(server):[],own=listed.length?config.shieldedAddress?.():undefined;
    return !listed.length?null:own&&listed.every(m=>m.destination===own)?'own':'foreign';
   },
-  // methodsRefused is raised with the switch and cleared only once a listing echoes the method, so a bind alone never reads as live.
+  privateReceiveRefused:async()=>{const server=(await load()).servers[serverKey];return server?.methodsRefused===true&&!server.methods;},
+  // methodsRefused with methods: unverified until a listing echoes it, so a bind alone never reads as live. Without methods: the service refused and consent was dropped, so nothing is sent until the next switch.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];
    if(!server){if(on)throw new Error('Enable a Lightning address before turning on private receive');return;}
@@ -216,7 +217,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     if(server.methods&&!server.methodsRefused)return;
     server.methods=true;server.methodsRefused=true;delete server.withdraw;
    }else{
-    if(!server.methods&&!server.withdraw&&!shieldedListed(server).length)return;
+    if(!server.methods&&!server.withdraw&&!shieldedListed(server).length){if(server.methodsRefused){delete server.methodsRefused;await save(state);}return;}
     delete server.methods;delete server.methodsRefused;server.withdraw=true;
    }
    await save(state);await settle(state,server);
