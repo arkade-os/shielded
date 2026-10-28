@@ -463,8 +463,6 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    for(let n=checkpointTimes.length*CHECKPOINT_EVERY;n<total;n+=CHECKPOINT_EVERY)checkpointTimes.push(readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${n}.json`)).at??0);
    return {every:CHECKPOINT_EVERY,at:[...checkpointTimes]};
   },
-  // The note tree restarts at every rotation, so a global batch count would name another epoch's frontier.
-  checkpoint:(_blocks:number):ReturnType<typeof checkpointOf>|undefined=>undefined,
   /** The current epoch's frontier after a multiple of CHECKPOINT_EVERY of its accepted batches; a closed epoch's tree is gone, and `state` runs ahead of the journal while a batch is in flight. */
   checkpointAt:(epoch:number,blocks:number)=>{
    const operator=live?.operator;

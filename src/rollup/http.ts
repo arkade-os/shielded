@@ -90,12 +90,6 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!path){res.status(404).setHeader('Cache-Control','no-store').json({error:'Unknown nullifier archive.'});return;}
   res.sendFile(basename(path),{root:dirname(path),maxAge:'365d',immutable:true},error=>{if(error&&!res.headersSent)res.status(404).setHeader('Cache-Control','no-store').json({error:'Nullifier archive unavailable.'});});
  });
- router.get('/checkpoints/:blocks',(req,res)=>{
-  const checkpoint=/^[1-9][0-9]{0,9}$/.test(req.params.blocks)?service()!.checkpoint(Number(req.params.blocks)):undefined;
-  res.setHeader('Cache-Control','no-store');
-  if(!checkpoint){res.status(404).json({error:'There is no checkpoint at that batch.'});return;}
-  res.json(checkpoint);
- });
  router.get('/checkpoints/:epoch/:blocks',(req,res)=>{
   const whole=/^(0|[1-9][0-9]{0,9})$/,{epoch,blocks}=req.params;
   const checkpoint=whole.test(epoch)&&whole.test(blocks)?service()!.checkpointAt(Number(epoch),Number(blocks)):undefined;
