@@ -468,6 +468,37 @@ test('a refusal that leaves the address listed on one alias withdraws it at the 
  assert.equal(JSON.stringify(f.requests.slice(requests)).includes(SHROL),false);
 });
 
+const flaky=(f:ReturnType<typeof setup>,down:()=>boolean)=>createLnurlReceive({...f.config,fetch:(url:string,init?:RequestInit)=>down()&&url.endsWith('/lnurl/address')&&!init?.method?Promise.reject(new TypeError('network down')):f.config.fetch(url,init)});
+const rejectMethods=(f:ReturnType<typeof setup>)=>f.reply(body=>body.methods?.length?json({error:'method type is reserved'},400):json({ok:true}));
+
+test('a 400 refusal after an unconfirmed switch-on withdraws what the earlier bind left listed',async()=>{
+ const f=setup();await f.service.claim();let down=true;const svc=flaky(f,()=>down);
+ await assert.rejects(svc.setPrivateReceive(true));
+ down=false;rejectMethods(f);
+ await assert.rejects(svc.check(),{message:METHODS_REFUSED});
+ const refused=await svc.privateReceiveState();
+ assert.deepEqual([refused.refused,refused.withdrawing,refused.listed],[true,true,'own']);
+ const reads=f.reads();await svc.check();
+ const done=await svc.privateReceiveState();
+ assert.deepEqual([f.bound().at(-1)!.methods,done.withdrawing,done.listed,f.reads()],[[],false,null,reads]);
+});
+
+test('a 400 refusal whose listing cannot be read still owes the withdrawal',async()=>{
+ const f=setup();await f.service.claim();let down=true;const svc=flaky(f,()=>down);rejectMethods(f);
+ await assert.rejects(svc.setPrivateReceive(true),{message:METHODS_REFUSED});
+ assert.equal((await svc.privateReceiveState()).withdrawing,true);
+ down=false;await svc.check();
+ assert.deepEqual([f.bound().at(-1)!.methods,(await svc.privateReceiveState()).withdrawing],[[],false]);
+});
+
+test('a service that rejects even methods: [] still gets the identity bind, and the withdrawal stays owed',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
+ f.reply(body=>body.methods?json({error:'methods are not supported'},400):json({ok:true}));
+ const before=f.bound().length;
+ await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
+ assert.deepEqual([f.bound().slice(before).map(b=>b.methods),(await f.service.privateReceiveState()).withdrawing],[[[],undefined],true]);
+});
+
 const listings=(f:{requests:{url:string;init?:RequestInit}[]})=>f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&(r.init?.method??'GET')==='GET').length;
 
 test('claim and recover each read the listing once',async()=>{

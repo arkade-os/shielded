@@ -173,8 +173,9 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     try{await postBind(receiver.handle,methods?{...body,methods}:body);}
     catch(error){
      // A refused method rejects the whole bind, so the identity is resent alone to keep the address live.
-     if(!advertise||!(error instanceof LnurlError)||error.httpStatus!==400||error.code==='invalid_rails')throw error;
-     refusal=error;advertise=undefined;await postBind(receiver.handle,body);
+     if(!methods||!(error instanceof LnurlError)||error.httpStatus!==400||error.code==='invalid_rails')throw error;
+     if(advertise){refusal=error;advertise=undefined;}
+     await postBind(receiver.handle,body);
     }
    }
   }
@@ -184,7 +185,11 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    throw new Error(HD_REFUSED,{cause:error});
   }
   if(server.boundAt===undefined||server.refused||server.migrated){server.boundAt??=now();delete server.refused;delete server.migrated;await save(state);}
-  if(refusal){await refuseMethods(state,server);throw new Error(METHODS_REFUSED,{cause:refusal});}
+  if(refusal){
+   // A listing that cannot be read may still hold the method from an earlier bind, so the withdrawal is owed.
+   await relist(state,server).catch(()=>{server.withdraw=true;});
+   await refuseMethods(state,server);throw new Error(METHODS_REFUSED,{cause:refusal});
+  }
  };
  const settle=async(state:ReceiveState,server:ServerState)=>{
   if(!server.receivers.some(row=>row.status==='active'))return;
