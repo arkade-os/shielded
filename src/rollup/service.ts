@@ -399,10 +399,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
 
  const archives=join(o.directory,'operator','nullifiers');
  /** The closed epochs whose frozen nullifier files the pool holds, as of its last accepted batch. */
- const archiveEpochs=()=>{
-  const operator=live?.operator;
-  if(!operator)return undefined;
-  const closed=operator.status().acceptedEpoch;
+ const archiveEpochs=():number[]=>{
+  if(!live)return [];
+  const closed=live.operator.status().acceptedEpoch;
   return readdirSync(archives).map(name=>Number(ARCHIVE_FILE.exec(name)?.[1])).filter(epoch=>epoch<closed).sort((a,b)=>a-b);
  };
 
@@ -436,7 +435,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   keyFile:(name:string)=>manifest?rollupKeyPath(keys,name):undefined,
   archiveEpochs,
   /** Allowlisted like keyFile, and the path is rebuilt from a listed epoch's number, so no caller text reaches it. */
-  archiveFile:(name:string)=>{const epoch=Number(ARCHIVE_FILE.exec(name)?.[1]);return archiveEpochs()?.includes(epoch)?epochNfArchivePath(archives,epoch):undefined;},
+  archiveFile:(name:string)=>{const epoch=Number(ARCHIVE_FILE.exec(name)?.[1]);return archiveEpochs().includes(epoch)?epochNfArchivePath(archives,epoch):undefined;},
   /** The volume holding the pool's directory, so a launch can check there is room before it copies keys onto it. */
   storage:()=>{const s=statfsSync(dirname(o.directory));return {freeBytes:s.bavail*s.bsize,totalBytes:s.blocks*s.bsize};},
   batches:(from:number,limit:number)=>{
