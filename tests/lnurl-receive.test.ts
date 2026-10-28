@@ -38,7 +38,7 @@ function setup({aliases=[] as typeof receiver[],exitDelay=2048n}={}){
   return json({error:'not found'},404);
  };
  const config={identity,companion,journal,owner:'owner',pool:'pool',baseUrl,fetch,now:()=>clock,shieldedAddress:()=>{reads++;return SHROL;},onPayouts:async(rows:LnurlPayout[])=>{registered.push(rows);}};
- const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true;methods?:true;methodsRefused?:true;withdraw?:true}>}|undefined;
+ const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true;methods?:true;methodsPending?:true;methodsRefused?:true;withdraw?:true}>}|undefined;
  const bound=()=>requests.filter(isBind).map(r=>JSON.parse(String(r.init?.body)) as Bind);
  return {service:createLnurlReceive(config),config,state,requests,watched,registered,funded,listeners,saved,bound,aliases,key,
   signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},relist:(handle:string,methods:unknown[])=>{kept.set(handle,methods);},forge:(change:(entry:Record<string,unknown>)=>void)=>{const stored=structuredClone(state.get(key('lnurl-receive','state-v1'))) as {servers:Record<string,Record<string,unknown>>};Object.values(stored.servers).forEach(change);state.set(key('lnurl-receive','state-v1'),stored);},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
@@ -333,7 +333,7 @@ test('switching off after a restore withdraws a method the service still lists, 
 
 test('claim on a device whose journal lacks the flag does not adopt what the service lists either',async()=>{
  const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
- f.forge(entry=>{delete entry.methods;delete entry.methodsRefused;});
+ f.forge(entry=>{delete entry.methods;delete entry.methodsPending;});
  const device=createLnurlReceive(f.config),binds=f.bound().length,reads=f.reads();
  await device.claim();
  assert.deepEqual([f.bound().slice(binds).map(b=>b.methods),f.reads(),(await device.privateReceiveState()).on],[[undefined],reads,false]);

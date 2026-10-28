@@ -16,7 +16,8 @@ export interface LnurlReceiveJournal {
 }
 interface Destination extends LnurlPayout {index:number;claimPublicKey:string;params?:{pubKey:string;serverPubKey:string;csvTimelock:string}}
 // withdraw: a methods:[] bind is owed to the service and stays owed until a listing shows the method gone.
-interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true;methods?:true;methodsRefused?:true;withdraw?:true}
+// methodsPending: switched on, not live until a listing echoes the address. methodsRefused: the service did not keep it, so consent was dropped.
+interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true;methods?:true;methodsPending?:true;methodsRefused?:true;withdraw?:true}
 interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<string,ServerState>}
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
 export interface LnurlReceiveConfig {
@@ -113,7 +114,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(!response.ok)throw new LnurlError(typeof reply?.error==='string'?reply.error:response.statusText,{httpStatus:response.status,code:typeof reply?.code==='string'?reply.code:undefined});
  };
  const advertised=()=>{const address=config.shieldedAddress?.();if(!address)throw new Error('Private receive requires a shielded address');return address;};
- const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;server.methodsRefused=true;await save(state);}};
+ const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;delete server.methodsPending;server.methodsRefused=true;await save(state);}};
  const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
  const refresh=(server:ServerState,listed:LnurlReceiver[])=>{for(const row of server.receivers){const methods=listed.find(l=>l.handle===row.handle)?.paymentMethods;if(methods)row.paymentMethods=methods;else delete row.paymentMethods;}};
  const relist=async(state:ReceiveState,server:ServerState)=>{
@@ -129,7 +130,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   }
   const destination=advertised();
   if(server.receivers.filter(row=>row.status==='active').every(row=>row.paymentMethods?.some(m=>m.type==='shielded'&&m.destination===destination))){
-   if(server.methodsRefused){delete server.methodsRefused;await save(state);}
+   if(server.methodsPending){delete server.methodsPending;await save(state);}
    return;
   }
   await refuseMethods(state,server);throw new Error(METHODS_REFUSED);
@@ -212,24 +213,23 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   privateReceiveState:async():Promise<PrivateReceiveState>=>{
    const server=(await load()).servers[serverKey],listed=server?shieldedListed(server):[],own=listed.length?config.shieldedAddress?.():undefined;
    return {
-    on:server?.methods===true&&!server.methodsRefused&&!server.withdraw,
-    pending:server?.methods===true&&server.methodsRefused===true,
+    on:server?.methods===true&&!server.methodsPending&&!server.withdraw,
+    pending:server?.methods===true&&server.methodsPending===true,
     refused:server?.methodsRefused===true&&!server.methods,
     withdrawing:server?.withdraw===true,
     listed:!listed.length?null:own&&listed.every(m=>m.destination===own)?'own':'foreign',
    };
   },
-  // methodsRefused with methods: unverified until a listing echoes it, so a bind alone never reads as live. Without methods: the service refused and consent was dropped, so nothing is sent until the next switch.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];
    if(!server){if(on)throw new Error('Enable a Lightning address before turning on private receive');return;}
    if(on){
     advertised();
-    if(server.methods&&!server.methodsRefused)return;
-    server.methods=true;server.methodsRefused=true;delete server.withdraw;
+    if(server.methods&&!server.methodsPending)return;
+    server.methods=true;server.methodsPending=true;delete server.methodsRefused;delete server.withdraw;
    }else{
     if(!server.methods&&!server.withdraw&&!shieldedListed(server).length){if(server.methodsRefused){delete server.methodsRefused;await save(state);}return;}
-    delete server.methods;delete server.methodsRefused;server.withdraw=true;
+    delete server.methods;delete server.methodsPending;delete server.methodsRefused;server.withdraw=true;
    }
    await save(state);await settle(state,server);
   }),
