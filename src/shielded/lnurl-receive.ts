@@ -115,10 +115,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;server.methodsRefused=true;await save(state);}};
  const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
  const refresh=(server:ServerState,listed:LnurlReceiver[])=>{for(const row of server.receivers){const methods=listed.find(l=>l.handle===row.handle)?.paymentMethods;if(methods)row.paymentMethods=methods;else delete row.paymentMethods;}};
- const confirm=async(state:ReceiveState,server:ServerState)=>{
+ const relist=async(state:ReceiveState,server:ServerState)=>{
   const before=JSON.stringify(server.receivers);
   refresh(server,await registeredReceivers());
   if(JSON.stringify(server.receivers)!==before)await save(state);
+ };
+ const confirm=async(state:ReceiveState,server:ServerState)=>{
+  await relist(state,server);
   if(server.withdraw){
    if(shieldedListed(server).length)throw new Error(METHODS_NOT_WITHDRAWN);
    delete server.withdraw;await save(state);return;
@@ -191,7 +194,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const current=state.payouts.find(row=>row.script===server.current);
   if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server);
   await bind(state,server);
-  if(server.methods||server.withdraw)await confirm(state,server);
+  // Off, the listing is still read so another device's registration shows here; the read sends no methods and no address.
+  if(server.methods||server.withdraw)await confirm(state,server);else await relist(state,server);
  };
  const check=()=>serial(async()=>{
   const state=await load(),server=state.servers[serverKey];if(!server)return;
@@ -208,6 +212,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    return !listed.length?null:own&&listed.every(m=>m.destination===own)?'own':'foreign';
   },
   privateReceiveRefused:async()=>{const server=(await load()).servers[serverKey];return server?.methodsRefused===true&&!server.methods;},
+  privateReceivePending:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&server.methodsRefused===true;},
   // methodsRefused with methods: unverified until a listing echoes it, so a bind alone never reads as live. Without methods: the service refused and consent was dropped, so nothing is sent until the next switch.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];

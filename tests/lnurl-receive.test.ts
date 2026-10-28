@@ -395,3 +395,61 @@ test('listedShielded answers from the last listing and sends nothing',async()=>{
  assert.equal(await f.service.listedShielded(),'own');
  assert.deepEqual([f.requests.length,JSON.stringify(f.saved())],[requests,saved]);
 });
+
+const state3=async(service:ReturnType<typeof setup>['service'])=>[await service.privateReceivePending(),await service.privateReceive(),await service.privateReceiveRefused()];
+
+test('a switch-on that cannot reach the service reads as pending, neither live nor refused',async()=>{
+ const f=setup();await f.service.claim();f.reply(()=>{throw new TypeError('connection closed');});
+ await assert.rejects(f.service.setPrivateReceive(true),/Request failed/);
+ assert.deepEqual(await state3(f.service),[true,false,false]);
+});
+
+test('a switch-on whose bind lands but whose confirming read fails reads as pending, and goes live at the next check',async()=>{
+ const f=setup();await f.service.claim();let down=true;
+ const svc=createLnurlReceive({...f.config,fetch:(url:string,init?:RequestInit)=>down&&url.endsWith('/lnurl/address')&&!init?.method?Promise.reject(new TypeError('network down')):f.config.fetch(url,init)});
+ await assert.rejects(svc.setPrivateReceive(true));
+ assert.deepEqual([await state3(svc),f.bound().at(-1)!.methods],[[true,false,false],[shielded]]);
+ down=false;await svc.check();
+ assert.deepEqual(await state3(svc),[false,true,false]);
+});
+
+test('switching off from pending withdraws with [] on every alias and never reads the address',async()=>{
+ const bob={...receiver,handle:'bob',username:'bob',lightningAddress:`bob@${domain}`},f=setup({aliases:[receiver,bob]});
+ await f.service.recover();f.reply(()=>{throw new TypeError('connection closed');});
+ await assert.rejects(f.service.setPrivateReceive(true),/Request failed/);
+ assert.equal(await f.service.privateReceivePending(),true);
+ f.reply(()=>json({ok:true}));const binds=f.bound().length,reads=f.reads();
+ await f.service.setPrivateReceive(false);
+ assert.deepEqual([f.bound().slice(binds).map(b=>b.methods),f.reads()],[[[],[]],reads]);
+ assert.deepEqual([await state3(f.service),Object.values(f.saved()!.servers)[0]!.withdraw],[[false,false,false],undefined]);
+});
+
+test('live and refused both read pending false',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
+ assert.deepEqual(await state3(f.service),[false,true,false]);
+ const g=setup();g.keep(false);await g.service.claim();await assert.rejects(g.service.setPrivateReceive(true),{message:METHODS_REFUSED});
+ assert.deepEqual(await state3(g.service),[false,false,true]);
+});
+
+test('an off device learns at its next check what another device listed, and sends nothing new',async()=>{
+ const f=setup();await f.service.claim();
+ const requests=f.requests.length,reads=f.reads();
+ f.relist('alice',[shielded]);await f.service.check();
+ assert.deepEqual([f.requests.slice(requests).map(r=>r.init?.method??'GET'),f.reads()],[['POST','GET'],reads]);
+ assert.equal(await f.service.listedShielded(),'own');
+ f.relist('alice',[{type:'shielded',destination:FOREIGN}]);await f.service.check();
+ assert.equal(await f.service.listedShielded(),'foreign');
+ const sent=f.requests.slice(requests);
+ assert.deepEqual([sent.filter(isBind).map(r=>'methods' in JSON.parse(String(r.init?.body))),JSON.stringify(sent).includes(SHROL),await f.service.privateReceive()],[[false,false],false,false]);
+});
+
+test('switching off from the refused state while a listing remains still withdraws it',async()=>{
+ const bob={...receiver,handle:'bob',username:'bob',lightningAddress:`bob@${domain}`},f=setup({aliases:[receiver,bob]});
+ await f.service.recover();await f.service.setPrivateReceive(true);
+ f.relist('bob',[]);f.keep(false);
+ await assert.rejects(f.service.check(),{message:METHODS_REFUSED});
+ assert.deepEqual([await f.service.privateReceive(),await f.service.privateReceiveRefused(),await f.service.listedShielded()],[false,true,'own']);
+ f.keep(true);await f.service.setPrivateReceive(false);
+ assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[],[]]);
+ assert.deepEqual([await f.service.privateReceiveRefused(),await f.service.listedShielded()],[false,null]);
+});
