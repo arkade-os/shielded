@@ -6,21 +6,18 @@ import {test} from 'node:test';
 import {base64} from '@scure/base';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {NoteFrontier} from '../packages/protocol/src/rollup/frontier.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
-import {encodeEpochSnapshot} from '../src/rollup/epoch-snapshot.ts';
+import {encodeEpochSnapshot,writeSnapshot} from '../src/rollup/epoch-snapshot.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import type {RollupRecord} from '../src/rollup/operator.ts';
 import {rollupEpochPin} from '../src/rollup/service.ts';
-import {writeSnapshot} from '../src/rollup/snapshot.ts';
 import {epochHarness} from './fixtures/epoch.ts';
-import {bakedPool,blockRoot,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,hash,keySet,listen,offline,POOL_KEYS,PROVING_KEYS,proof,ready,scratch,serverKey,sha,slotOf,stamp,STATUS_KEYS,until} from './fixtures/epoch-service.ts';
+import {bakedPool,blockRoot,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,hash,listen,POOL_KEYS,proof,serverKey,sha,until} from './fixtures/epoch-service.ts';
 
 const {deposit}=epochHarness(hash);
 // Two blocks follow the 64-block checkpoint of epoch 1, and no global batch number equals its in-epoch one.
 const EPOCH_LEN=68,BATCHES=134;
-const classicRecord=(n:number):RollupRecord=>({kind:'spend',slots:Array.from({length:BATCH_SLOTS},(_,s)=>({root:'0',...slotOf(n,s)})),noteBlockRoot:String(blockRoot(n)),...stamp(n)});
 const fold=(level:bigint[]):bigint=>level.length===1?level[0]!:fold(Array.from({length:level.length/2},(_,i)=>hash([level[2*i]!,level[2*i+1]!])));
 const roots=(first:number,count=64)=>Array.from({length:count},(_,k)=>blockRoot(first+k));
 /** The checkpoint at 64 blocks from the block roots alone: only the node over all 64 is not zero. */
@@ -66,16 +63,6 @@ test('a closed epoch, a future epoch, a non-multiple of 64 and a block count pas
  }
 });
 
-test('a classic pool answers /checkpoints/:blocks exactly as today and 404s the two-segment form',async()=>{
- const {service}=await bakedPool({batches:64,record:classicRecord}),request=await listen(service);
- const answer=await request(checkpointPath('64')),body=await answer.json();
- assert.deepEqual([answer.status,Object.keys(body)],[200,['blocks','filled']]);
- assert.deepEqual(body,{blocks:64,filled:filledAt64(roots(0))});
- for(const path of ['0','63','128'])assert.equal((await request(checkpointPath(path))).status,404,path);
- for(const path of ['0/64','1/64','0/0'])assert.equal((await request(checkpointPath(path))).status,404,path);
- assert.equal(service.checkpointAt(0,64),undefined);
-});
-
 test('an epoch pool still 404s the one-segment form',async()=>{
  const {request,service}=await epochPool();
  for(const blocks of [64,128])assert.equal((await request(checkpointPath(String(blocks)))).status,404,String(blocks));
@@ -117,10 +104,6 @@ test('an epoch pool reopened from a mid-epoch snapshot serves its scan and its c
  assert.deepEqual(service.checkpointAt(0,64),{epoch:0,blocks:64,filled:filledAt64(roots(0))});
 });
 
-const openClassic=async()=>{const service=await ready(offline(),scratch('rollup-classic-status-'),keySet('classic'));return {service,request:await listen(service)};};
-let classic:ReturnType<typeof openClassic>|undefined;
-const classicPool=()=>classic??=openClassic();
-
 test('an epoch /status carries epoch, epochLen, batchesInEpoch, erCount, rsCount and nullifiers',async()=>{
  const {request}=await epochPool(),{pool}=await statusOf(request),recoveries=BATCHES-EPOCH_LEN;
  // The sentinel leaf counts in both sets, and epoch 1 holds recoveries only.
@@ -130,17 +113,11 @@ test('an epoch /status carries epoch, epochLen, batchesInEpoch, erCount, rsCount
  assert.equal(typeof pool.heapBytes,'number');
 });
 
-test('a classic /status key set is unchanged',async()=>{
- const {request}=await classicPool(),status=await statusOf(request);
- assert.deepEqual([Object.keys(status).sort(),Object.keys(status.pool).sort(),Object.keys(status.proving).sort()],[STATUS_KEYS,POOL_KEYS,PROVING_KEYS]);
-});
-
-test('an epoch /status advertises batchRecover; a classic one does not',async()=>{
+test('an epoch /status advertises batchRecover',async()=>{
  const pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)}),{request}=await epochPool(),{proving}=await statusOf(request);
  assert.deepEqual(proving,{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join'),batchRecover:pair('epoch-batch-recover')});
  const key=await request('/api/rollup/proving/epoch-batch-recover.zkey');
  assert.deepEqual([key.status,sha(await key.text())],[200,pair('epoch-batch-recover').zkey],'the advertised hash is the served file\'s');
- assert.equal('batchRecover' in (await statusOf((await classicPool()).request)).proving,false);
 });
 
 test('status.root never moves ahead of status.batches',async()=>{

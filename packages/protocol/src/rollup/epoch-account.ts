@@ -1,9 +1,9 @@
 import { hex } from '@scure/base';
-import type { RollupEpochRecord } from '../../../../src/rollup/epoch-operator.ts';
 import { randomField, type RollupKeys, type SnapshotEntry, type SnapshotNote, type SpendRequest } from './account.ts';
 import { BTC_ASSET, EPOCH_NULLIFIERS, EPOCH_SLOTS, MAX_EPOCH_LEN, ROLLUP_DOMAIN, SUBTREE_DEPTH, type EpochBatchKind } from './constants.ts';
 import type { EpochAnchorRef } from './epoch.ts';
 import { epochRecoverTransfer, epochTransfer, type EpochBuiltSpend } from './epoch-circuit.ts';
+import type { RollupEpochRecord } from './epoch-record.ts';
 import { rotatesAt, type EpochScanBatch } from './epoch-scan.ts';
 import { NoteFrontier, type FrontierCheckpoint, type FrontierSnapshot } from './frontier.ts';
 import { akOf, groupIdOf, noteOf, nullifierOf, ownerOf, type Hash } from './notes.ts';

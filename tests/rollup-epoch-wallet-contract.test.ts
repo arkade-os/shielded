@@ -6,24 +6,23 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import {CSVMultisigTapscript,MultisigTapscript,SingleKey,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import type {RollupAccount} from '../packages/protocol/src/rollup/account.ts';
 import {EPOCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {decodeDisclosure,verifyDisclosure,type Disclosure} from '../packages/protocol/src/rollup/disclosure.ts';
 import {EpochAccount,type EpochAccountSnapshot,type EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
-import {openRollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupEpochPin,type RollupService} from '../src/rollup/service.ts';
 import {epochFreshAccount,epochMatchesPool,loadEpochAccount} from '../src/shielded/epoch-checkpoint.ts';
 import {epochRevealLinkOf} from '../src/shielded/epoch-disclosure.ts';
 import {epochTransferBody} from '../src/shielded/epoch-pool.ts';
 import {archivesHeld,needsRecovery} from '../src/shielded/epoch-recovery.ts';
-import {epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
+import {epochCatchUp,type EpochBatchPage,type ScanPage} from '../src/shielded/epoch-sync.ts';
 import {checkSigningRequest,poolApiOf,signDeposit,waitForSpend,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
-import type {ScanPage} from '../src/shielded/sync.ts';
 import {epochHarness} from './fixtures/epoch.ts';
 import {bakedPool,checkpoint,emulatorKey,epochRecord,exitDelay,hash,listen,proof,ready,serverKey,token,until} from './fixtures/epoch-service.ts';
 
@@ -219,16 +218,4 @@ test('a fresh account starts from the real service\'s in-epoch checkpoint, born 
   assert.deepEqual(asked,['/status','/checkpoints/1/64','/batches?from=192&limit=50','/status'],`born at ${bornAt}: no replay from the epoch before`);
   assert.deepEqual([account.batchCount,account.epoch,account.latestRoot(),account.prevNoteRoot()],[pool.batches,pool.epoch,BigInt(pool.root),BigInt(pool.prevNoteRoot!)],`born at ${bornAt}`);
  }
-});
-
-test('EpochAccount satisfies the account port wallet.ts reads, and history, concerns and skip stay outside it, each on its own',()=>{
- type AccountPort=Pick<RollupAccount,'owner'|'txids'|'canSkip'|'batchCount'|'latestRoot'|'notes'|'balance'|'join'|'pay'|'consolidate'|'depositAsset'|'withdrawAsset'>;
- const account=undefined as unknown as EpochAccount,port:AccountPort=account;
- // @ts-expect-error its kinds add renew and recover; Plan 6 widens wallet.ts to EpochHistoryEntry
- const history:Pick<RollupAccount,'history'>=account;
- // @ts-expect-error it takes an EpochScanBatch; Plan 6 widens the scan loop
- const concerns:Pick<RollupAccount,'concerns'>=account;
- // @ts-expect-error as concerns
- const skip:Pick<RollupAccount,'skip'>=account;
- assert.deepEqual([port,history,concerns,skip],Array(4).fill(undefined));
 });

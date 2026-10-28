@@ -1,5 +1,6 @@
 import { base64, hex } from '@scure/base';
-import type { RollupEpochRecord, RollupEpochSpend } from '../../src/rollup/epoch-operator.ts';
+import type { RollupEpochRecord } from '../../packages/protocol/src/rollup/epoch-record.ts';
+import type { RollupEpochSpend } from '../../src/rollup/epoch-operator.ts';
 import type { EpochSpendBody } from '../../src/shielded/epoch-pool.ts';
 import type { PoolApi } from '../../src/shielded/pool.ts';
 import type { ClientInput } from '../../packages/protocol/src/rollup/client.ts';

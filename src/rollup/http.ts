@@ -3,10 +3,10 @@ import express from 'express';
 import {hex} from '@scure/base';
 import {BATCH_SLOTS,RollupRejection} from '../../packages/protocol/src/rollup/constants.ts';
 import type {EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
+import {recordSlotOf} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
-import type {RollupSpend} from './batcher.ts';
 import type {SnarkProof} from './covenant.ts';
-import {recordSlotOf,type RollupEpochSpend} from './epoch-operator.ts';
+import type {RollupEpochSpend} from './epoch-operator.ts';
 import type {RollupService} from './service.ts';
 
 const decimal=(v:unknown)=>{if(typeof v!=='string'||!/^(0|[1-9][0-9]{0,77})$/.test(v))throw new Error('Expected a decimal field element.');return BigInt(v);};
@@ -75,16 +75,13 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!Number.isInteger(from)||from<0||!Number.isInteger(limit)||limit<1){res.status(400).json({error:'Invalid batch range.'});return;}
   res.setHeader('Cache-Control','no-store');
   try{res.json(service()!.scan(from,limit));}
-  catch(error){if(!service()!.epochPool)throw error;logged('/scan',error);res.status(500).json({error:(error as NodeJS.ErrnoException).syscall?'The batch records could not be read.':(error as Error).message});}
+  catch(error){logged('/scan',error);res.status(500).json({error:(error as NodeJS.ErrnoException).syscall?'The batch records could not be read.':(error as Error).message});}
  });
  router.get('/times',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.times());});
  router.get('/archives',(_req,res)=>{
   res.setHeader('Cache-Control','no-store');
-  try{
-   const epochs=service()!.archiveEpochs();
-   if(!epochs){res.status(404).json({error:'A classic pool keeps no nullifier archives.'});return;}
-   res.json({epochs});
-  }catch(error){logged('/archives',error);res.status(500).json({error:'The archive files could not be read.'});}
+  try{res.json({epochs:service()!.archiveEpochs()});}
+  catch(error){logged('/archives',error);res.status(500).json({error:'The archive files could not be read.'});}
  });
  router.get('/archives/:name',(req,res)=>{
   let path:string|undefined;
@@ -106,9 +103,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
   if(!checkpoint){res.status(404).json({error:'There is no checkpoint at that epoch and batch count.'});return;}
   res.json(checkpoint);
  });
- // The epoch siblings run first and hand a classic pool's request on, so the genesis-3 parsers below stay as they are.
- router.post('/external',async(req,res,next)=>{
-  if(!service()!.epochPool)return next();
+ router.post('/external',async(req,res)=>{
   try{
    const b=req.body??{};
    if(typeof b.txid!=='string'||!/^[0-9a-f]{64}$/.test(b.txid)||(b.slots!==undefined&&(!Array.isArray(b.slots)||!b.slots.length||b.slots.length>BATCH_SLOTS)))throw new Error("Expected a txid, and its batch record's slots unless it is followed chain-only.");
@@ -116,8 +111,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
    res.json(await service()!.external(b.txid,slots));
   }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}
  });
- router.post('/spends',async(req,res,next)=>{
-  if(!service()!.epochPool)return next();
+ router.post('/spends',async(req,res)=>{
   if(admitting>=ADMITTING_AT_ONCE){res.status(503).json({error:'The pool is busy checking other spends; try again in a moment.'});return;}
   admitting++;
   try{
@@ -132,39 +126,6 @@ export function createRollupRouter(service:()=>RollupService|undefined){
    // kindOf requires a recovery's origin on the spend and on its slot alike.
    const spend:Omit<RollupEpochSpend,'receivedAt'>={id:b.id,slot,...(slot.origin!==undefined?{origin:slot.origin}:{}),
     publics:b.publics.map(decimal) as unknown as RollupEpochSpend['publics'],proof:proofOf(b.proof),ciphertext:hex.decode(hexOf(b.ciphertext,ROLLUP_RECORD_BYTES)),
-    ...(b.program!==undefined?{program:hex.decode(hexOf(b.program,32))}:{}),...(b.asset?{asset:b.asset}:{}),...(coin?{coin}:{})};
-   await service()!.submit(spend,coinRef);
-   res.status(202).json({id:spend.id,status:'pending'});
-  }catch(error){res.status(400).json({error:(error as Error).message,...(error instanceof RollupRejection?{code:error.code}:{})});}
-  finally{admitting--;}
- });
- router.post('/external',async(req,res)=>{
-  try{
-   const b=req.body??{};
-   if(typeof b.txid!=='string'||!/^[0-9a-f]{64}$/.test(b.txid)||!Array.isArray(b.slots)||b.slots.length>11)throw new Error("Expected a txid and its batch record's slots.");
-   const slots=b.slots.map((s:any)=>{
-    if(!Array.isArray(s?.nullifiers)||![1,2].includes(s.nullifiers.length)||!Array.isArray(s.commitments)||s.commitments.length!==2||![0,2,3].includes(s.groupSize))throw new Error('Malformed batch slot.');
-    return {root:String(decimal(s.root)),nullifiers:s.nullifiers.map((nf:unknown)=>String(decimal(nf))),commitments:[String(decimal(s.commitments[0])),String(decimal(s.commitments[1]))] as [string,string],ctDigest:String(decimal(s.ctDigest)),groupId:String(decimal(s.groupId)),groupSize:s.groupSize as number,...(s.ciphertext!==undefined?{ciphertext:hexOf(s.ciphertext,ROLLUP_RECORD_BYTES)}:{})};
-   });
-   res.json(await service()!.external(b.txid,slots));
-  }catch(error){res.status(400).json({error:(error as Error).message});}
- });
- router.post('/spends',async(req,res)=>{
-  if(admitting>=ADMITTING_AT_ONCE){res.status(503).json({error:'The pool is busy checking other spends; try again in a moment.'});return;}
-  admitting++;
-  try{
-   const b=req.body??{},s=b.slot??{};
-   if(typeof b.id!=='string'||!/^[0-9a-f]{16,64}$/.test(b.id))throw new Error('A spend id is 8 to 32 random bytes in hex.');
-   if(!Array.isArray(s.nullifiers)||!Array.isArray(s.commitments)||s.commitments.length!==2||!Array.isArray(b.publics)||b.publics.length!==7)throw new Error('Malformed spend slot.');
-   const groupId=decimal(s.groupId);
-   if(!(groupId===0n&&s.groupSize===0)&&!(groupId!==0n&&(s.groupSize===2||s.groupSize===3)))throw new Error('A group has a nonzero id and two or three members; a lone spend has neither.');
-   if(b.asset!==undefined&&(typeof b.asset!=='string'||!/^[0-9a-f]{68}$/.test(b.asset)))throw new Error('An asset id is 68 lowercase hex characters.');
-   const coinRef=b.coin?{txid:hexOf(b.coin.txid,32),vout:Number.isInteger(b.coin.vout)&&b.coin.vout>=0?b.coin.vout:-1,tapTree:hexOf(b.coin.tapTree),leaf:hexOf(b.coin.leaf)}:undefined;
-   const coin=coinRef?await service()!.depositCoin(coinRef):undefined;
-   if(coin&&coin.assetId!==b.asset)throw new Error(coin.assetId?`The deposit coin holds asset ${coin.assetId}; deposit it as that asset.`:'The deposit coin holds no asset.');
-   const spend:Omit<RollupSpend,'receivedAt'>={id:b.id,
-    slot:{root:decimal(s.root),nullifiers:s.nullifiers.map(decimal),commitments:[decimal(s.commitments[0]),decimal(s.commitments[1])],ctDigest:decimal(s.ctDigest),groupId,groupSize:s.groupSize},
-    publics:b.publics.map(decimal) as unknown as RollupSpend['publics'],proof:proofOf(b.proof),ciphertext:hex.decode(hexOf(b.ciphertext,ROLLUP_RECORD_BYTES)),
     ...(b.program!==undefined?{program:hex.decode(hexOf(b.program,32))}:{}),...(b.asset?{asset:b.asset}:{}),...(coin?{coin}:{})};
    await service()!.submit(spend,coinRef);
    res.status(202).json({id:spend.id,status:'pending'});

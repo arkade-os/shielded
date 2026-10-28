@@ -3,20 +3,21 @@ import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
 import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
-import type {RollupEpochRecord} from '../rollup/epoch-operator.ts';
 import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {fullViewKeyOf,sentNoteOf,viewKeyOf} from '../../packages/protocol/src/rollup/disclosure.ts';
+import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {akOf,assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress,rollupAddressOf,rollupRecipientOf,type RollupRecipient} from '../../packages/protocol/src/rollup/wallet.ts';
 import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2,parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
-import {entryForActivity,revealLinkOf,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
+import {entryForActivity,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
 import {bearerAccount,bearerKeysOf,bearerOf,linkOf,type LinkRecord} from './bearer.ts';
 import {epochFreshAccount,epochMatchesPool} from './epoch-checkpoint.ts';
+import {epochRevealLinkOf} from './epoch-disclosure.ts';
 import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
-import {epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
+import {WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
@@ -26,7 +27,6 @@ import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type P
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {WATCHDOG_MS,catchUpAfterEvent} from './sync.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
@@ -207,7 +207,7 @@ export class ShieldedWallet extends Wallet {
  }
  private origin(){return typeof location==='undefined'?this.pool.origin:location.origin;}
  revealLink(payment:EpochHistoryEntry):string|undefined{
-  return revealLinkOf(this.origin(),payment,{self:this.shieldedAddress(),sentOf:n=>this.sentOf(n)});
+  return epochRevealLinkOf(this.origin(),payment,{self:this.shieldedAddress(),sentOf:n=>this.sentOf(n)});
  }
  revealLinkOfActivity(item:Activity):string|undefined{
   const entry=entryForActivity(item,{index:this.rows,entries:this.account.history});

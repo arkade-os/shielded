@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import express from 'express';
 import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
-import type {RollupSpend} from '../src/rollup/batcher.ts';
+import type {RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../src/rollup/http.ts';
 import type {RollupService} from '../src/rollup/service.ts';
 
@@ -18,7 +18,7 @@ async function serve(service:Partial<RollupService>|undefined){
 }
 const post=(url:string,body:unknown,origin?:string)=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...(origin?{origin}:{})},body:JSON.stringify(body)});
 const proof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']};
-const spend={id:'ab'.repeat(16),slot:{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0','0','0'],proof,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
+const spend={id:'ab'.repeat(16),slot:{anchor:'7',rCur:{epoch:0,root:'8'},nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0','0','0'],proof,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
 
 test('the rollup API is closed until the service exists, and refuses cross-origin writes',async(t)=>{
  const closed=await serve(undefined);t.after(closed.close);
@@ -46,8 +46,8 @@ test('proving keys are served from any key directory, including one under a dot-
 });
 
 test('a spend is validated and handed to the operator with field elements as bigints',async(t)=>{
- const submitted:Omit<RollupSpend,'receivedAt'>[]=[];
- const api=await serve({ready:()=>true,submit:async s=>{submitted.push(s as Omit<RollupSpend,'receivedAt'>);},spend:()=>undefined,sign:()=>{throw new Error('This spend has no open signing round.');},batches:()=>({from:0,total:0,batches:[]})});t.after(api.close);
+ const submitted:Omit<RollupEpochSpend,'receivedAt'>[]=[];
+ const api=await serve({ready:()=>true,submit:async s=>{submitted.push(s);},spend:()=>undefined,sign:()=>{throw new Error('This spend has no open signing round.');},batches:()=>({from:0,total:0,batches:[]})});t.after(api.close);
  assert.equal((await post(api.base+'/spends',{...spend,id:'short'})).status,400);
  assert.equal((await post(api.base+'/spends',{...spend,ciphertext:'00'})).status,400);
  for(const [groupId,groupSize] of [['0',2],['5',0],['5',4],['5','2']] as const)assert.equal((await post(api.base+'/spends',{...spend,slot:{...spend.slot,groupId,groupSize}})).status,400,`group ${groupId}/${groupSize}`);
@@ -60,7 +60,7 @@ test('a spend is validated and handed to the operator with field elements as big
  submitted.length=0;
  const accepted=await post(api.base+'/spends',{...spend,program:'cd'.repeat(32)});
  assert.equal(accepted.status,202);
- assert.deepEqual(submitted[0]!.slot,{root:7n,nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0});
+ assert.deepEqual(submitted[0]!.slot,{anchor:7n,rCur:{epoch:0,root:8n},nullifiers:[11n],commitments:[12n,13n],ctDigest:14n,groupId:0n,groupSize:0});
  assert.deepEqual(submitted[0]!.publics,[1n,2n,0n,0n,0n,0n,0n]);
  assert.equal(submitted[0]!.program!.length,32);
  assert.equal((await fetch(api.base+'/spends/'+spend.id)).status,404);
@@ -71,14 +71,14 @@ test('a spend is validated and handed to the operator with field elements as big
 test('a batch record from another prover is checked for shape and handed to the operator to verify against the chain',async(t)=>{
  const calls:unknown[]=[];
  const api=await serve({ready:()=>true,external:async(txid:string,slots:unknown)=>{calls.push([txid,slots]);return {batch:4,txid};}});t.after(api.close);
- const slot={root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
+ const slot={anchor:'7',rCur:{epoch:0,root:'8'},nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)},{ciphertext:_,...bare}=slot;
  assert.equal((await post(api.base+'/external',{txid:'zz',slots:[slot]})).status,400);
  assert.equal((await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[{...slot,nullifiers:['11','12','13']}]})).status,400,'a slot spends one note or two');
  assert.equal((await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[{...slot,ciphertext:'00'}]})).status,400,'a note record has its fixed size');
  const accepted=await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[slot,{...slot,ciphertext:undefined}]});
  assert.deepEqual(await accepted.json(),{batch:4,txid:'ab'.repeat(32)});
  assert.equal((await post(api.base+'/external',{txid:'ab'.repeat(32),slots:[{...slot,nullifiers:['11','12']}]})).status,200,'a join slot spends two');
- assert.deepEqual(calls,[['ab'.repeat(32),[slot,{root:'7',nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0}]],['ab'.repeat(32),[{...slot,nullifiers:['11','12']}]]]);
+ assert.deepEqual(calls,[['ab'.repeat(32),[slot,bare]],['ab'.repeat(32),[{...slot,nullifiers:['11','12']}]]]);
 });
 
 test('each address gets a budget of submissions per minute; reads and deposit signatures are not counted',async(t)=>{
@@ -135,7 +135,7 @@ test('a scan is asked for a global batch range of at most 500, and a malformed r
  assert.deepEqual(asked,[[64,500],[3,7]]);
 });
 
-test('a classic pool\'s scan is answered 200, uncached, with the service\'s scan verbatim',async(t)=>{
+test('a scan is answered 200, uncached, with the service\'s scan verbatim',async(t)=>{
  const asked:[number,number][]=[];const scan={from:2,total:3,data:'AAEC'};
  const api=await serve({ready:()=>true,scan:(from:number,limit:number)=>{asked.push([from,limit]);return scan;}});t.after(api.close);
  const answered=await fetch(api.base+'/scan?from=2');
@@ -169,7 +169,7 @@ for(const [path,status,error,shown,service] of [
  ['/storage',503,unreadable,'Storage figures are unavailable.',{storage:raise(unreadable)}],
  ['/archives',500,unreadable,'The archive files could not be read.',{archiveEpochs:raise(unreadable)}],
  ['/archives/epoch-0.nf',500,unreadable,'The archive files could not be read.',{archiveFile:raise(unreadable)}],
- ['/scan',500,refused,refused.message,{epochPool:true,scan:raise(refused)}],
+ ['/scan',500,refused,refused.message,{scan:raise(refused)}],
 ] as const)test(`${path} answers a JSON error, uncached, when its service call throws`,async t=>{
  const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,...service});t.after(api.close);
  const answer=await fetch(api.base+path);
@@ -178,14 +178,8 @@ for(const [path,status,error,shown,service] of [
 });
 
 test('an epoch /scan that cannot read a batch record answers a fixed error, not the path',async t=>{
- const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,epochPool:true,scan:raise(missing)});t.after(api.close);
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,scan:raise(missing)});t.after(api.close);
  const answer=await fetch(api.base+'/scan');
  assert.deepEqual([answer.status,answer.headers.get('cache-control'),await answer.json()],[500,'no-store',{error:'The batch records could not be read.'}]);
  assert.deepEqual(log.mock.calls.map(call=>String(call.arguments[0]).includes(missing.message)),[true],'the real error is logged once');
-});
-
-test('a classic pool\'s /scan that throws is still answered by Express, not as JSON',async t=>{
- const api=await serve({ready:()=>true,scan:raise(refused)});t.after(api.close);
- const answer=await fetch(api.base+'/scan');
- assert.deepEqual([answer.status,answer.headers.get('content-type')?.split(';')[0]],[500,'text/html']);
 });

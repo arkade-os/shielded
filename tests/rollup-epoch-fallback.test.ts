@@ -14,13 +14,14 @@ import {ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {EPOCH_DERIVED_FIELDS} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import type {RollupNullifiers} from '../packages/protocol/src/rollup/nullifiers.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {encodeEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {buildEpochFallbackBatch,openEpochReplica,type EpochFallbackSpend,type EpochReplica} from '../src/rollup/epoch-replica.ts';
+import {indexerBatchWalker,type BatchIndexer} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupSpecOf,type RollupService} from '../src/rollup/service.ts';
 import {cacheBatch,cacheEpochArchive,replayEpochMirror} from '../tools/rollup-cache.ts';
@@ -35,7 +36,7 @@ const leaves=await (async()=>{
  const dir=scratch('rollup-epoch-fallback-keys-');mkdirSync(join(dir,'keys'));
  const keys={'epoch-spend':classic.clientKey,'epoch-join':classic.clientKey,'epoch-batch-spend':classic.batchKey,'epoch-batch-join':classic.batchKey,'epoch-batch-recover':{...classic.batchKey,nPublic:2,IC:classic.batchKey.IC.slice(0,3)}};
  for(const [name,key] of Object.entries(keys))writeFileSync(join(dir,'keys',`${name}.vkey.json`),JSON.stringify(key));
- writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf('epoch',token,'aa'.repeat(32))));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(token,'aa'.repeat(32))));
  return loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json'));
 })();
 const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
@@ -131,8 +132,10 @@ test('a forged record and the archive it implies are refused: the replay never r
 
 test('a stale replica catches up from the chain to the head\'s commitment and only then trusts an archive',async()=>{
  const chain=chainOf(world.records),replica=await open(mirrorOf(world.records.slice(0,9).map((r,i)=>({...r,txid:chain[i]!.id}))));
+ const spender=new Map(chain.slice(0,-1).map((tx,i)=>[tx.id,chain[i+1]!] as const)),psbt=new Map(chain.map(tx=>[tx.id,base64.encode(tx.toPSBT())] as const));
+ const indexer:BatchIndexer={getVtxos:async({outpoints})=>{const next=spender.get(outpoints[0]!.txid);return {vtxos:[next?{isSpent:true,arkTxId:next.id}:{isSpent:false}]};},getVirtualTxs:async ids=>({txs:ids.map(id=>psbt.get(id)!)})};
  assert.throws(()=>replica.preload(0),/not bound to the pool head/);
- assert.equal(await replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),async({txid})=>chain[chain.findIndex(tx=>tx.id===txid)+1],2),2);
+ assert.equal(await replica.catchUpFromChain(chain[8]!.id,world.state.commitment(),indexerBatchWalker(indexer),2),2);
  assert.deepEqual(replica.records.slice(9).map(r=>[r.txid,r.kind,r.at]),[[chain[9]!.id,'recover',undefined],[chain[10]!.id,'spend',undefined]],'placeholders, which no pool stamps with at');
  assert.equal(replica.state.commitment(),world.state.commitment());
  replica.preload(0);
@@ -182,7 +185,7 @@ test('fallback recover builds a one-slot batch through the batchRecover leaf',as
 test('publish posts an epoch record /external accepts, and a chain-only record without slots',async()=>{
  const dir=mirrorOf(),calls:unknown[][]=[];
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token,operator:'',script:'',network:{},epochLen:EPOCH_LEN}));
- const echo=await listen({ready:()=>true,epochPool:true,external:async(txid:string,slots:unknown)=>{calls.push([txid,slots]);return {txid};}} as unknown as RollupService);
+ const echo=await listen({ready:()=>true,external:async(txid:string,slots:unknown)=>{calls.push([txid,slots]);return {txid};}} as unknown as RollupService);
  const base=`http://127.0.0.1:${(echo.server.address() as AddressInfo).port}`;
  for(const batch of [5,10])assert.match((await run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','publish',dir,base,String(batch)])).stdout,/ 200 /);
  const [paid,bare]=[world.records[5]!,world.records[10]!];

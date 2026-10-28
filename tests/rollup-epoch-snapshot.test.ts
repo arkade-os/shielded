@@ -9,15 +9,14 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS,EPOCH_NULLIFIER_DEPTH,ROLLUP_FIELD,SUBTREE_DEPTH,WINDOW_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {RollupNullifiers} from '../packages/protocol/src/rollup/nullifiers.ts';
 import {rollupEpochPoolTree,ROLLUP_STATE_PACKET,type SnarkProof} from '../src/rollup/covenant.ts';
 import {encodeEpochNfArchive,epochNfArchivePath,readEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
-import {openRollupEpochOperator,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
-import {decodeEpochSnapshot,encodeEpochSnapshot,EPOCH_SNAPSHOT_VERSION} from '../src/rollup/epoch-snapshot.ts';
+import {openRollupEpochOperator,ROLLUP_RESEND_GRACE_MS,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
+import {decodeEpochSnapshot,encodeEpochSnapshot,EPOCH_SNAPSHOT_VERSION,headCommitment,writeSnapshot} from '../src/rollup/epoch-snapshot.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import {ROLLUP_RESEND_GRACE_MS,type RollupTransport} from '../src/rollup/operator.ts';
 import {rollupSpecOf} from '../src/rollup/service.ts';
-import {headCommitment,writeSnapshot} from '../src/rollup/snapshot.ts';
 import type {StockReleasePin} from '../src/stock/journal.ts';
 import type {StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
@@ -55,6 +54,7 @@ test('a snapshot from another pin, another version, or a damaged body is ignored
  const cases:Record<string,[Buffer,StockReleasePin?]>={
   'another pin':[good,{...pin,genesisTxid:'ee'.repeat(32)}],'another version':[resealed(good,b=>{b.writeUInt16LE(EPOCH_SNAPSHOT_VERSION+1,4);})],'a flipped body byte':[flipped],truncated:[good.subarray(0,-1)],
   'an archive node off its children':[reencoded(r=>r.archive.tree.place(1,0,r.archive.tree.node(1,0)+1n))],
+  'a note frontier sibling off its parent':[reencoded(r=>r.notes.place(SUBTREE_DEPTH+1,0,r.notes.node(SUBTREE_DEPTH+1,0)+1n))],
   'an archive record off its tree leaf':[reencoded(r=>{const list=r.archive.list();r.archive.list=()=>list.map((a,i)=>i===1?{...a,nfFinal:a.nfFinal+1n}:a);})],
   // Poseidon reduces mod p, so the largest value plus p keeps the list sorted and the root unchanged.
   'a hot nullifier past the field':[reencoded(r=>{const scan=r.nullifiers.scanLeaves.bind(r.nullifiers);r.nullifiers.scanLeaves=visit=>scan((value,next)=>visit(next===0&&value>0n?value+ROLLUP_FIELD:value,next));})],
@@ -85,6 +85,13 @@ test('a nullifier archive file is refused unless it rebuilds the archived root',
  for(const [name,[bytes,cause]] of Object.entries(bad))assert.throws(()=>readEpochNfArchive(file(name,bytes),hash,expect),(error:Error)=>/does not rebuild the root epoch 1 archived: /.test(error.message)&&cause.test(error.message),name);
 });
 
+test('headCommitment read through getField equals the value the local reader returned',()=>{
+ // The genesis head an epoch service sends at epochLen 68 with the golden's seeded keys, read at a07514a by snapshot.ts's own reader.
+ const head='030000000111111111111111111111111111111111111111111111111111111111111111110000000000fdffffff03e80300000000000022512010764da6b0b0883bf2d959d930bafd63bac7e888cf7c805efb1f0c063d44afbe0000000000000000986a4c9541524b002e0101cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0000010100000101010000018760555a5515bf395b63f164f16864a06b71de73229c5cf68bcd294dd33403a677160000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000451024e7300000000';
+ assert.equal(headCommitment(head),10162283245877059043268415004295269673536308003806287646051552287663917980245n);
+ assert.equal(headCommitment('00'),undefined,'a transaction that does not parse carries no commitment');
+});
+
 const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-epoch-covenant-snarkjs.json','utf8')) as {clientKey:{vk_delta_2:unknown;IC:unknown[]};batchKey:{vk_delta_2:unknown;IC:unknown[]}};
 const token=asset.AssetId.create('cc'.repeat(32),0).toString();
 // Built as tests/rollup-epoch-operator.test.ts builds them; every batch here is stub-proved.
@@ -94,7 +101,7 @@ const leaves=await (async()=>{
  const keys={'epoch-spend':clientKey,'epoch-join':{...clientKey,vk_delta_2:batchKey.vk_delta_2},'epoch-batch-spend':wide,'epoch-batch-join':wide,'epoch-batch-recover':batchKey};
  mkdirSync(join(dir,'keys'));
  for(const [name,key] of Object.entries(keys))writeFileSync(join(dir,'keys',`${name}.vkey.json`),JSON.stringify(key));
- writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf('epoch',token,'aa'.repeat(32))));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(token,'aa'.repeat(32))));
  try{return await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json'));}finally{rmSync(dir,{recursive:true,force:true});}
 })();
 const [server,emulator]=await Promise.all(['01','02'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));

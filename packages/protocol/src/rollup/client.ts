@@ -15,7 +15,7 @@ export interface ClientWitness { input: Record<string, unknown>; slot: BatchSlot
 
 export const inputNullifierOf = (hash: Hash, domain: bigint, input: Pick<ClientInput, 'amount' | 'nk' | 'rho'>) => nullifierOf(hash, domain, input.nk, input.rho, input.amount === 0n);
 
-// One input proves with circuits/rollup/spend.circom, two with join.circom; an amount-0 input is a dummy.
+// One input proves with epoch-spend.circom, two with epoch-join.circom, once epochClientInput swaps root for rPrev, rCur and sel; an amount-0 input is a dummy.
 export function clientWitness(hash: Hash, spend: ClientSpend): ClientWitness {
  const m = spend.inputs.length;
  if (m !== 1 && m !== 2) throw new Error('A spend has one input and a join has two.');

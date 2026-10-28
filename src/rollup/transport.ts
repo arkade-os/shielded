@@ -1,7 +1,7 @@
 import {RestEmulatorProvider,RestIndexerProvider} from '@arkade-os/sdk';
 import {assertStockWeightBudget,type StockNetworkInfo} from '../stock/network.ts';
 import {createStockMutinynetTransport,stockSignedWeights,verifyStockCustomerSignatures,verifyStockResponse} from '../stock/transport.ts';
-import type {RollupDepositFacts,RollupTransport} from './operator.ts';
+import type {RollupDepositFacts,RollupTransport} from './epoch-operator.ts';
 
 const holdings=(assets:readonly {assetId:string;amount:bigint}[])=>assets.map(a=>`${a.assetId}:${a.amount}`).sort().join(',');
 

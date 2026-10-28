@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
-import type { RollupEpochRecord } from '../src/rollup/epoch-operator.ts';
+import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-record.ts';
 import { epochIncomingNotes, epochRevealLinkOf } from '../src/shielded/epoch-disclosure.ts';
 import { epochSyncAccount } from '../src/shielded/epoch-pool.ts';
 import { epochCatchUp, type EpochBatchPage } from '../src/shielded/epoch-sync.ts';
@@ -95,6 +95,12 @@ test('a view key lists every note it received across three epochs, at the right 
  assert.deepEqual(bob.notes().map(n => [n.epoch, n.index]), [[1, 32], [1, 34], [2, 0], [2, 64]], 'the account names its notes by epoch and leaf');
  assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records, key)), [[1, 32, 100n, false], [5, 160, 500n, false], [5, 162, 100n, false], [8, 256, 30n, false], [10, 320, 100n, false]]);
  assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records.slice(5), key, 5)), [[5, 160, 500n, false], [5, 162, 100n, false], [8, 256, 30n, false], [10, 320, 100n, false]], 'from a later page, by the same stream position');
+});
+
+test('a view key leaves out a note sealed to it that commits to another owner', async () => {
+ const pool = epochPool(hash, EPOCH_LEN), key = parseViewKey(viewKeyOf(bobTo.owner, bobKeys.viewSecret));
+ pool.land('spend', [await pool.deposit({ ...bobTo, owner: aliceTo.owner }, 400n), await pool.deposit(bobTo, 300n)]);
+ assert.deepEqual(listed(await epochIncomingNotes(hash, pool.records, key)), [[0, 2, 300n, true]]);
 });
 
 test('a full viewing key over an epoch pool sees the same notes and their spends', async () => {

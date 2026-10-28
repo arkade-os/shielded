@@ -10,14 +10,14 @@ import {buildPoseidon} from 'circomlibjs';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,slotOf,type RollupEpochRecord,type RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
-import {readBatchTx,readEpochBatchTx} from '../src/rollup/external.ts';
+import {openRollupEpochOperator,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
+import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
+import {readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import type {RollupTransport} from '../src/rollup/operator.ts';
 import {rollupSpecOf} from '../src/rollup/service.ts';
-import {headCommitment} from '../src/rollup/snapshot.ts';
 import type {StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
@@ -35,7 +35,7 @@ const leaves=await (async()=>{
  const keys={'epoch-spend':clientKey,'epoch-join':{...clientKey,vk_delta_2:batchKey.vk_delta_2},'epoch-batch-spend':wide,'epoch-batch-join':wide,'epoch-batch-recover':batchKey};
  mkdirSync(join(dir,'keys'));
  for(const [name,key] of Object.entries(keys))writeFileSync(join(dir,'keys',`${name}.vkey.json`),JSON.stringify(key));
- writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf('epoch',token,'aa'.repeat(32))));
+ writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(token,'aa'.repeat(32))));
  try{return await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json'));}finally{rmSync(dir,{recursive:true,force:true});}
 })();
 const [server,emulator,user]=await Promise.all(['01','02','03'].map(b=>SingleKey.fromHex(b.repeat(32)).xOnlyPublicKey()));
@@ -333,7 +333,6 @@ test('a followed batch reproduces the state the transaction committed to, for al
  }
  assert.deepEqual([withRecords.state.commitment(),chainOnly.state.commitment()],[a.state.commitment(),a.state.commitment()]);
  const {tx:joinTx}=landedTx(w,1);
- assert.deepEqual(readEpochBatchTx(joinTx,leaves),readBatchTx(joinTx,leaves),'the join row reads what the genesis-3 reader reads');
  assert.deepEqual(readEpochBatchTx(joinTx,leaves).nullifiers,recordAt(w,1).slots.map(s=>s.nullifiers.map(BigInt)));
 });
 

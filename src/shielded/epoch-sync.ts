@@ -1,10 +1,11 @@
 import {base64} from '@scure/base';
-import type {RollupEpochRecord} from '../rollup/epoch-operator.ts';
 import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,type EpochScanBatch} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import type {PoolApi} from './pool.ts';
-import {SCAN_AFTER,SCAN_FROM,SCAN_PAGE,type ScanPage} from './sync.ts';
 
+export const WATCHDOG_MS=60_000,EVENT_RETRY_MS=[0,1000,2000,4000,8000],SCAN_FROM=256,SCAN_AFTER=64,SCAN_PAGE=500;
+export interface ScanPage {from:number;total:number;data:string}
 export interface EpochBatchPage {total:number;batches:RollupEpochRecord[]}
 export type EpochOnBatch=(cursor:number,batch:RollupEpochRecord,account:EpochAccount)=>Promise<void>|void;
 const running=new WeakMap<EpochAccount,Promise<unknown>>();
@@ -26,7 +27,7 @@ export function epochExclusive<T>(account:EpochAccount,job:()=>Promise<T>):Promi
  return run.finally(()=>{if(running.get(account)===run)running.delete(account);});
 }
 
-/** sync.ts's catchUp on an epoch pool, single-flight per account: a skipped scan entry still rotates the account on its own count. */
+/** Single-flight per account: a skipped scan entry still rotates the account on its own count. */
 export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void,watched?:()=>Iterable<bigint>):Promise<number>{
  return epochExclusive(account,async()=>{
   let applied=0,total=0,scanning=false,whole=!account.canSkip;
@@ -57,4 +58,14 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
    if(account.batchCount>=page.total)return applied;
   }
  });
+}
+
+/** The head moves as soon as arkd takes a batch, a moment before the pool records it, so a catch-up that finds nothing looks again. */
+export async function catchUpAfterEvent(run:()=>Promise<number>,stopped:()=>boolean,delays:readonly number[]=EVENT_RETRY_MS):Promise<number>{
+ for(const ms of delays){
+  if(ms)await new Promise(resolve=>setTimeout(resolve,ms));
+  if(stopped())return 0;
+  try{const applied=await run();if(applied)return applied;}catch{/* the next delay looks again */}
+ }
+ return 0;
 }

@@ -1,6 +1,6 @@
 import {Transaction,type Identity} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import type {BuiltSpend,OwnedNote,PublishedBatch,RollupAccount} from '../../packages/protocol/src/rollup/account.ts';
+import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number}}
@@ -46,14 +46,6 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
  }
 }
 
-export async function syncAccount(account:RollupAccount,api:PoolApi=poolApiOf('')){
- for(;;){
-  const page=await api<{total:number;batches:PublishedBatch[]}>(`/batches?from=${account.batchCount}&limit=50`);
-  for(const batch of page.batches)await account.apply(batch);
-  if(account.batchCount>=page.total||!page.batches.length)return;
- }
-}
-
 /** First batch a wallet opens: a fresh ('new') wallet skips older ones; kept per pool, as a new genesis restarts the count. */
 export function bornAtFor(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>,key:string,pool:{token:string;batches:number}):number {
  const mine=`${key}:${pool.token}`;
@@ -64,21 +56,6 @@ export function bornAtFor(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>
 /** A spend takes one note, so it needs a single note that covers the amount. */
 export const pickNote=<N extends OwnedNote>(notes:N[],amount:bigint,inFlight:ReadonlySet<bigint>):N|undefined=>
  notes.filter(n=>!inFlight.has(n.nullifier)&&n.amount>=amount).sort((a,b)=>a.amount<b.amount?-1:a.amount>b.amount?1:0)[0];
-
-/** One nullifier for a spend, two for a join; the pool reads the kind from that count. */
-export function transferBody(id:string,built:BuiltSpend,proof:Groth16Proof,extra:{program?:Uint8Array;coin?:{txid:string;vout:number;tapTree:string;leaf:string};asset?:string}={}){
- const s=built.witness.slot;
- return {id,slot:{root:String(s.root),nullifiers:s.nullifiers.map(String),commitments:s.commitments.map(String),ctDigest:String(s.ctDigest),groupId:String(s.groupId),groupSize:s.groupSize},
-  publics:built.witness.publicSignals.map(String),proof:{pi_a:proof.pi_a,pi_b:proof.pi_b,pi_c:proof.pi_c},ciphertext:hex.encode(built.ciphertext),
-  ...(extra.program?{program:hex.encode(extra.program)}:{}),...(extra.coin?{coin:extra.coin}:{}),...(extra.asset?{asset:extra.asset}:{})};
-}
-
-export function circuitUrls(circuit:'spend'|'join',proving:NonNullable<RollupPoolStatus['proving']>,origin=''){
- const keys=proving[circuit];
- return {wasm:`${origin}/api/rollup/proving/${circuit}.wasm?v=${keys.wasm}`,zkey:`${origin}/api/rollup/proving/${circuit}.zkey?v=${keys.zkey}`};
-}
-/** A two-nullifier slot proves with the join circuit, so a wallet that never merges never downloads it. */
-export const provingUrls=(built:BuiltSpend,proving:NonNullable<RollupPoolStatus['proving']>,origin='')=>circuitUrls(built.witness.slot.nullifiers.length===2?'join':'spend',proving,origin);
 
 /** Batch inputs spend checkpoint outputs, so the pool head is checkpoint 0's input and our coin is our checkpoint's. */
 export function checkSigningRequest(request:SpendStatus,coin:{txid:string;vout:number},poolScript:string){

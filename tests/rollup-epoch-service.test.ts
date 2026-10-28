@@ -6,25 +6,23 @@ import {after,test} from 'node:test';
 import {scriptFromTapLeafScript,VtxoScript} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
-import {buildRollupTransfer,randomField} from '../packages/protocol/src/rollup/account.ts';
-import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN,SUBTREE_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
+import {randomField} from '../packages/protocol/src/rollup/account.ts';
+import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
-import {decodeScan,encodeScan,nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
-import {RollupState} from '../packages/protocol/src/rollup/state.ts';
+import {nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
-import {rollupEpochPoolTree,rollupPoolTree} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,type RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
-import {DEFAULT_VM_BINARY,loadRollupEpochLeaves,loadRollupLeaves} from '../src/rollup/leaves.ts';
-import type {RollupArchive,RollupRecord} from '../src/rollup/operator.ts';
-import {rollupClassicPin,rollupEpochPin,rollupGenesisOf,rollupKeyFilesOf,rollupPoolKindOf,rollupProgramsHash,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
+import {rollupEpochPoolTree} from '../src/rollup/covenant.ts';
+import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
+import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
+import {EPOCH_KEY_FILES,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
 import {openSpendStore} from '../src/rollup/spend-store.ts';
-import {openStockJournal,stockJournalFingerprint,type StockJournalHooks,type StockJournalReceipt} from '../src/stock/journal.ts';
+import {stockJournalFingerprint} from '../src/stock/journal.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
 import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
-import './rollup-genesis3-contract.test.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
 // rollupEpochPin with the inputs below, as of its introduction: once a genesis-4 pool is live, a move orphans its journal.
@@ -114,45 +112,6 @@ test('an epoch service opens an epoch pool, rotates, and lands a recover batch t
  assert.deepEqual(reopened.spend('swept'),{status:'included'},'so does the sweep');
 });
 
-test('a classic service is byte-identical to today',async t=>{
- const net=offline(),keys=keySet('classic'),directory=scratch('rollup-classic-service-');
- const service=await ready(net,directory,keys,undefined),status=service.status(),pool=status.pool!;
- assert.deepEqual([Object.keys(status).sort(),Object.keys(pool).sort()],[STATUS_KEYS,POOL_KEYS]);
- assert.deepEqual(status.proving,rollupProvingOf('classic',JSON.parse(readFileSync(join(keys,'manifest.json'),'utf8')).circuits.all.files));
- assert.equal(readFileSync(join(directory,'spec.json'),'utf8'),`{"clientKey":"keys/spend.vkey.json","batchKey":"keys/batch-spend.vkey.json","clientJoinKey":"keys/join.vkey.json","batchJoinKey":"keys/batch-join.vkey.json","slots":10,"token":"${token}","operator":"${pool.operator}"}`);
- const leaves=await loadRollupLeaves(DEFAULT_VM_BINARY,join(directory,'spec.json'));
- assert.equal(pool.script,hex.encode(rollupPoolTree(hex.decode(serverKey),hex.decode(emulatorKey),leaves,exitDelay).tree.pkScript));
- assert.deepEqual([...net.sent[0]!.payload],[...le32(RollupState.genesis(hash).commitment()),...le32(0n)]);
- const saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8'));
- assert.deepEqual([Object.keys(saved),Object.keys(saved.archive),Object.keys(saved.archive.head),saved.version,saved.archive.version],
-  [['version','token','txid','serverKey','emulatorKey','archive'],['version','head','reserves','batches'],['txid','vout','value','sourceTxHex'],1,1]);
- assert.deepEqual(rollupPoolKindOf({genesis:saved,epochLen:'128'}),{kind:'classic'});
- // A batch through the classic padding path.
- const recipient=rollupRecipientOf(hash,randomField(),randomField(),x25519.utils.randomSecretKey());
- const built=await buildRollupTransfer(hash,{root:RollupState.genesis(hash).latestRoot(),ask:randomField(),nk:randomField(),self:recipient,request:{},width:1});
- await service.submit({id:hex.encode(randomBytes(16)),slot:built.witness.slot,publics:built.witness.publicSignals as never,proof,ciphertext:built.ciphertext});
- await until('a classic batch lands',()=>service.status().pool!.batches===1,net);
- assert.deepEqual(Object.keys(service.status().pool!).sort(),[...POOL_KEYS,'lastBatch'].sort());
- assert.deepEqual(Object.keys(service.status().pool!.lastBatch!).sort(),['at','batch','proveMs','publishMs','waitedMs']);
- assert.notEqual(service.status().pool!.root,pool.root);
- assert.ok(net.proved.includes('batch-spend')&&net.proved.includes('spend'));
- await t.test('a classic pool /scan is byte-identical to today',async()=>{
-  const record=service.batches(0,1).batches[0] as RollupRecord,commitments=record.slots.flatMap(s=>s.commitments.map(BigInt));
-  let level=Array.from({length:2**SUBTREE_DEPTH},(_,i)=>commitments[i]??0n);
-  while(level.length>1)level=Array.from({length:level.length/2},(_,i)=>hash([level[2*i]!,level[2*i+1]!]));
-  const page=await (await (await listen(service))('/api/rollup/scan?from=0')).json() as ScanPage;
-  assert.deepEqual(page,{from:0,total:1,data:base64.encode(encodeScan([{record,root:level[0]!}]))});
-  assert.deepEqual(decodeScan(base64.decode(page.data),0).map(b=>[b.kind,b.root,b.slots.length]),[['spend',level[0]!,BATCH_SLOTS]]);
-  assert.equal(base64.decode(page.data).length,453);
- });
- service.close();
- // The journal reopens under the harness-pinned classic builder, and refuses the epoch one.
- const pinned={leaves,manifest:readFileSync(join(directory,'keys','manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey,emulatorKey};
- const hooks:StockJournalHooks<RollupArchive,unknown,StockJournalReceipt>={validateArchive:()=>{},validatePlan:()=>{},verifyReceipt:()=>{},transmit:async()=>{throw new Error('unused');},lookup:async()=>undefined,apply:a=>a};
- (await openStockJournal(join(directory,'operator','journal'),rollupClassicPin(pinned),saved.archive,hooks)).close();
- await assert.rejects(openStockJournal(join(directory,'operator','journal'),rollupEpochPin({...pinned,leaves:{...leaves,batchRecover:leaves.batch}}),saved.archive,hooks).then(j=>j.close()),/changed/);
-});
-
 test('the epoch pool serves an empty /scan, and still refuses /checkpoints rather than serving a wrong frontier',async()=>{
  const net=offline(),service=await ready(net,scratch('rollup-epoch-http-'),keySet('epoch'),'64'),request=await listen(service);
  assert.deepEqual(await (await request('/api/rollup/scan?from=0')).json(),{from:0,total:0,data:''});
@@ -201,25 +160,20 @@ test('the stall across a rotation is measured and the pool resumes',async t=>{
  for(const s of first!.slots)assert.equal(s.anchor,String(anchorOf(hash,final,BigInt(s.rCur!.root))),'every slot opens against epoch 0\'s final root');
 });
 
-test('an epoch genesis writes version 2 and reads back as epoch; a classic one keeps its bytes',()=>{
+test('an epoch genesis writes version 2 and reads back as epoch',()=>{
  const head={txid:'55'.repeat(32),vout:0,value:1000,sourceTxHex:'abcd'},keys={serverKey:'66'.repeat(32),emulatorKey:'77'.repeat(32)};
- assert.equal(JSON.stringify(rollupGenesisOf({token,head,...keys})),
-  `{"version":1,"token":"${token}","txid":"${'55'.repeat(32)}","serverKey":"${'66'.repeat(32)}","emulatorKey":"${'77'.repeat(32)}","archive":{"version":1,"head":{"txid":"${'55'.repeat(32)}","vout":0,"value":1000,"sourceTxHex":"abcd"},"reserves":{},"batches":0}}`);
- const epoch=JSON.parse(JSON.stringify(rollupGenesisOf({token,head,...keys,epochLen:128})));
- assert.deepEqual([epoch.version,epoch.epochLen],[2,128]);
- assert.deepEqual(rollupPoolKindOf({genesis:epoch}),{kind:'epoch',epochLen:128});
+ const written=JSON.stringify(rollupGenesisOf({token,head,...keys,epochLen:128}));
+ assert.equal(written,`{"version":2,"token":"${token}","txid":"${'55'.repeat(32)}","serverKey":"${'66'.repeat(32)}","emulatorKey":"${'77'.repeat(32)}","archive":{"version":1,"head":{"txid":"${'55'.repeat(32)}","vout":0,"value":1000,"sourceTxHex":"abcd"},"reserves":{},"batches":0},"epochLen":128}`);
+ assert.equal(rollupEpochLenOf({genesis:JSON.parse(written),epochLen:64}),128,'the persisted length, not the option');
 });
 
 test('each epoch proving name serves its own circuit',()=>{
- const files=Object.fromEntries(rollupKeyFilesOf('epoch').map(n=>[n,sha(n)])),pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
- assert.deepEqual(rollupProvingOf('epoch',files),{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join'),batchRecover:pair('epoch-batch-recover')});
+ const files=Object.fromEntries(EPOCH_KEY_FILES.map(n=>[n,sha(n)])),pair=(c:string)=>({wasm:sha(`${c}.wasm`),zkey:sha(`${c}.zkey`)});
+ assert.deepEqual(rollupProvingOf(files),{spend:pair('epoch-spend'),join:pair('epoch-join'),batch:pair('epoch-batch-spend'),batchJoin:pair('epoch-batch-join'),batchRecover:pair('epoch-batch-recover')});
 });
 
-test('the epoch journal pin is its own, and never the classic one',()=>{
+test('the epoch journal pin keeps its fingerprint',()=>{
  const leaves={batch:Uint8Array.of(1),batchJoin:Uint8Array.of(2),reserve:Uint8Array.of(3),renew:Uint8Array.of(4),batchRecover:Uint8Array.of(5)};
  const inputs={leaves,manifest:Buffer.from('manifest'),checkpoint:Uint8Array.of(0x51),genesisTxid:'55'.repeat(32),serverKey:'66'.repeat(32),emulatorKey:'77'.repeat(32)};
- const pin=rollupEpochPin(inputs);
- assert.equal(stockJournalFingerprint(pin),EPOCH_PIN_FINGERPRINT);
- assert.notEqual(stockJournalFingerprint(pin),stockJournalFingerprint(rollupClassicPin(inputs)));
- assert.notEqual(pin.programsHash,rollupProgramsHash(leaves));
+ assert.equal(stockJournalFingerprint(rollupEpochPin(inputs)),EPOCH_PIN_FINGERPRINT);
 });

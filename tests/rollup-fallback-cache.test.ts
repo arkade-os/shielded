@@ -7,48 +7,26 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import {promisify} from 'node:util';
-import {ArkAddress,EmulatorPacket,Extension,Transaction,UnknownPacket} from '@arkade-os/sdk';
+import {ArkAddress} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
-import {RawWitness} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
-import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
-import {RollupAccount,type PublishedBatch} from '../packages/protocol/src/rollup/account.ts';
+import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
-import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import type {RollupNullifiers} from '../packages/protocol/src/rollup/nullifiers.ts';
-import {RollupState} from '../packages/protocol/src/rollup/state.ts';
-import {ROLLUP_STATE_PACKET,rollupEpochPoolTree,rollupWitness,type RollupLeaves,type SnarkProof} from '../src/rollup/covenant.ts';
+import {rollupEpochPoolTree} from '../src/rollup/covenant.ts';
 import {encodeEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
-import {chainOnlyBatch,readBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import {rollupSpecOf} from '../src/rollup/service.ts';
+import {rollupSpecOf,type RollupService} from '../src/rollup/service.ts';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
-import {cachedBatchNumbers,cacheBatch,cacheEpochArchive,catchUpCachedBatches,epochMirrorStart,mirrorStart,replayEpochMirror} from '../tools/rollup-cache.ts';
+import {cachedBatchNumbers,cacheBatch,cacheEpochArchive,epochMirrorStart,replayEpochMirror} from '../tools/rollup-cache.ts';
 import {bakedPool,epochRecord,listen,scratch} from './fixtures/epoch-service.ts';
 
 const poseidon=await buildPoseidon(),hash=(values:bigint[])=>BigInt(poseidon.F.toObject(poseidon(values)));
-const leaves:RollupLeaves={batch:Uint8Array.of(0x51),batchJoin:Uint8Array.of(0x52),reserve:Uint8Array.of(0x53),renew:Uint8Array.of(0x54)};
-const proof:SnarkProof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
-const le32=(value:bigint)=>Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
-const account=()=>RollupAccount.owning(hash,{ask:1n,nk:2n,viewSecret:new Uint8Array(32).fill(3)});
-const read=(dir:string,index:number)=>JSON.parse(readFileSync(join(dir,'batches',`${index}.json`),'utf8')) as PublishedBatch;
+const read=(dir:string,index:number)=>JSON.parse(readFileSync(join(dir,'batches',`${index}.json`),'utf8')) as RollupEpochRecord;
 function directory(t:{after(fn:()=>void):void}){
  const dir=mkdtempSync(join(tmpdir(),'rollup-fallback-cache-'));mkdirSync(join(dir,'batches'));t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;
 }
-function chain(){
- const state=RollupState.genesis(hash),records:PublishedBatch[]=[],txs:Transaction[]=[],commitments:bigint[]=[];
- for(let n=0;n<5;n++){
-  const slots=Array.from({length:BATCH_SLOTS},(_,i)=>({root:state.latestRoot(),nullifiers:[BigInt(n*BATCH_SLOTS+i+1)],commitments:[BigInt(n*64+i*2+1),BigInt(n*64+i*2+2)] as [bigint,bigint],ctDigest:0n,groupId:0n,groupSize:0}));
-  const publics=slots.map(slot=>[statementOf(hash,{domain:ROLLUP_DOMAIN,...slot}),slot.nullifiers[0]!,0n,0n,0n,0n,0n]),result=state.apply('spend',slots);
-  const ext=Extension.create([EmulatorPacket.create([{vin:0,script:leaves.batch,witness:RawWitness.encode(rollupWitness(proof,publics.map(publics=>({proof,publics}))))}]),new UnknownPacket(ROLLUP_STATE_PACKET,Uint8Array.from([...le32(state.commitment()),...le32(result.daRoot),...le32(result.blockRoot)]))]);
-  const tx=new Transaction({allowUnknownOutputs:true});tx.addInput({txid:txs.at(-1)?.id??'ab'.repeat(32),index:0});tx.addOutput({script:Uint8Array.of(0x51,0x20,...new Uint8Array(32).fill(7)),amount:1000n});tx.addOutput(ext.txOut());
-  records.push({kind:'spend',txid:tx.id,at:n,slots:slots.map((slot,i)=>({root:String(slot.root),nullifiers:slot.nullifiers.map(String),commitments:slot.commitments.map(String) as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:publics[i]!.map(String)}))});
-  txs.push(tx);commitments.push(state.commitment());
- }
- return {records,txs,commitments};
-}
-const fixture=chain();
 /** Five epoch records at epochLen 2: batches 2 and 4 rotate, closing epochs 0 and 1, whose frozen sets come back too. */
 function epochChain(){
  const state=EpochState.genesis(hash,2,false),records:RollupEpochRecord[]=[],frozen:RollupNullifiers[]=[];
@@ -61,73 +39,56 @@ function epochChain(){
  return {records,frozen:frozen as [RollupNullifiers,RollupNullifiers]};
 }
 const epochFixture=epochChain();
-const cacheEpoch=(dir:string,records:RollupEpochRecord[],from=0)=>records.forEach((record,i)=>cacheBatch(dir,from+i,record as unknown as PublishedBatch));
+const stamped=epochFixture.records.map((r,i)=>({...r,txid:String(i+1).padStart(64,'0')}));
+const bare=(r:RollupEpochRecord)=>({...r,slots:r.slots.map(s=>({...s,commitments:['0','0'] as [string,string]}))});
+const walkedOf=(r:RollupEpochRecord)=>{const {at:_,...walked}=bare(r);return walked;};
+const cacheEpoch=(dir:string,records:RollupEpochRecord[],from=0)=>records.forEach((record,i)=>cacheBatch(dir,from+i,record));
 const run=promisify(execFile);
 
-test('stale mirror catch-up persists every recovered batch at its actual index and restarts without gaps',async t=>{
- const dir=directory(t),replica=account();cacheBatch(dir,0,fixture.records[0]!);await replica.apply(fixture.records[0]!);
- const next=new Map(fixture.txs.slice(0,-1).map((tx,i)=>[tx.id,fixture.txs[i+1]!]));
- assert.equal(await catchUpCachedBatches(dir,replica,leaves,fixture.txs[0]!.id,fixture.commitments[3]!,async head=>next.get(head.txid)),3);
- assert.deepEqual(cachedBatchNumbers(dir),[0,1,2,3]);assert.equal(replica.batchCount,4);
- for(let i=1;i<4;i++){assert.equal(read(dir,i).txid,fixture.txs[i]!.id);assert.equal(read(dir,i).noteBlockRoot,String(readBatchTx(fixture.txs[i]!,leaves).noteBlockRoot));}
- cacheBatch(dir,replica.batchCount,fixture.records[4]!);assert.deepEqual(read(dir,0),fixture.records[0]);
- const restarted=account();for(const i of cachedBatchNumbers(dir))await restarted.apply(read(dir,i));
- assert.equal(restarted.batchCount,5);assert.equal(restarted.state.commitment(),fixture.commitments[4]);
-});
-
-test('mirror refetches chain-only placeholders and preserves existing full records',t=>{
- const dir=directory(t);cacheBatch(dir,0,fixture.records[0]!);
- cacheBatch(dir,1,{...chainOnlyBatch(readBatchTx(fixture.txs[1]!,leaves)),txid:fixture.txs[1]!.id});
- cacheBatch(dir,2,fixture.records[2]!);assert.equal(mirrorStart(dir),1);
- const full=readFileSync(join(dir,'batches','0.json'),'utf8');cacheBatch(dir,0,{...chainOnlyBatch(readBatchTx(fixture.txs[0]!,leaves)),txid:fixture.txs[0]!.id});
- assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),full);
- cacheBatch(dir,1,fixture.records[1]!);assert.equal(read(dir,1).noteBlockRoot,undefined);assert.equal(mirrorStart(dir),3);
- cacheBatch(dir,2,fixture.records[2]!);cacheBatch(dir,3,fixture.records[3]!);assert.equal(mirrorStart(dir),4);
-});
-
 test('conflicting indexes and placeholder public inputs cannot overwrite cached records',t=>{
- const dir=directory(t);cacheBatch(dir,0,fixture.records[0]!);
- const original=readFileSync(join(dir,'batches','0.json'),'utf8');assert.throws(()=>cacheBatch(dir,0,fixture.records[1]!),/conflict/i);
- assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),original);assert.throws(()=>cacheBatch(dir,2,fixture.records[2]!),/gap/i);
- const placeholder={...chainOnlyBatch(readBatchTx(fixture.txs[1]!,leaves)),txid:fixture.txs[1]!.id};cacheBatch(dir,1,placeholder);
- const tampered=structuredClone(fixture.records[1]!);tampered.slots[0]!.publics![1]='999';assert.throws(()=>cacheBatch(dir,1,tampered),/conflict/i);assert.deepEqual(read(dir,1),placeholder);
+ const dir=directory(t);cacheBatch(dir,0,stamped[0]!);
+ const original=readFileSync(join(dir,'batches','0.json'),'utf8');assert.throws(()=>cacheBatch(dir,0,stamped[1]!),/conflict/i);
+ assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),original);assert.throws(()=>cacheBatch(dir,2,stamped[2]!),/gap/i);
+ const placeholder=walkedOf(stamped[1]!);cacheBatch(dir,1,placeholder);
+ const tampered=structuredClone(stamped[1]!);tampered.slots[0]!.publics=['999'];assert.throws(()=>cacheBatch(dir,1,tampered),/conflict/i);assert.deepEqual(read(dir,1),placeholder);
 });
 
 test('mirror preserves an existing full record when only the publication timestamp differs',t=>{
- const dir=directory(t);cacheBatch(dir,0,fixture.records[0]!);const original=readFileSync(join(dir,'batches','0.json'),'utf8');
- cacheBatch(dir,0,{...fixture.records[0]!,at:999});assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),original);
+ const dir=directory(t);cacheBatch(dir,0,stamped[0]!);const original=readFileSync(join(dir,'batches','0.json'),'utf8');
+ cacheBatch(dir,0,{...stamped[0]!,at:999});assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),original);
  for(const field of ['commitments','ciphertext'] as const){
-  const altered=structuredClone(fixture.records[0]!);if(field==='commitments')altered.slots[0]!.commitments[0]='999';else altered.slots[0]!.ciphertext='01';
+  const altered=structuredClone(stamped[0]!);if(field==='commitments')altered.slots[0]!.commitments[0]='999';else altered.slots[0]!.ciphertext='01';
   assert.throws(()=>cacheBatch(dir,0,altered),/conflict/i);assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),original);
  }
 });
 
-test('a failed chain walk preserves the existing mirror and cannot publish a partial catch-up',async t=>{
- const dir=directory(t),replica=account();cacheBatch(dir,0,fixture.records[0]!);await replica.apply(fixture.records[0]!);
- await assert.rejects(catchUpCachedBatches(dir,replica,leaves,fixture.txs[0]!.id,fixture.commitments[3]!,async head=>head.txid===fixture.txs[0]!.id?fixture.txs[1]:undefined),/chain stops/i);
- assert.deepEqual(cachedBatchNumbers(dir),[0]);assert.deepEqual(read(dir,0),fixture.records[0]);
+test('cacheBatch fills in only a placeholder its own chain walk wrote, never a chain-only record the pool served',t=>{
+ const dir=directory(t),served=bare(stamped[0]!),walked=walkedOf(stamped[1]!);
+ cacheBatch(dir,0,served);cacheBatch(dir,1,walked);const kept=readFileSync(join(dir,'batches','0.json'),'utf8');
+ cacheBatch(dir,0,{...served,at:999});assert.equal(readFileSync(join(dir,'batches','0.json'),'utf8'),kept,'the pool\'s stamp is final');
+ cacheBatch(dir,1,{...walked,at:999});assert.equal(read(dir,1).at,999,'the walk\'s placeholder takes the pool\'s stamp');
 });
 
 test('a sparse cache is rejected before mirror resume or another append',t=>{
- const dir=directory(t);cacheBatch(dir,0,fixture.records[0]!);writeFileSync(join(dir,'batches','2.json'),JSON.stringify(fixture.records[2]));
- assert.throws(()=>mirrorStart(dir),/gap/i);assert.throws(()=>cacheBatch(dir,3,fixture.records[3]!),/gap/i);
+ const dir=directory(t);cacheBatch(dir,0,stamped[0]!);writeFileSync(join(dir,'batches','2.json'),JSON.stringify(stamped[2]));
+ assert.throws(()=>epochMirrorStart(dir),/gap/i);assert.throws(()=>cacheBatch(dir,3,stamped[3]!),/gap/i);
 });
 
 test('backup and temporary filenames do not count as mirrored batches',t=>{
- const dir=directory(t);cacheBatch(dir,0,fixture.records[0]!);
+ const dir=directory(t);cacheBatch(dir,0,stamped[0]!);
  for(const name of ['1','1.json.tmp','01.json'])writeFileSync(join(dir,'batches',name),'backup');
- assert.deepEqual(cachedBatchNumbers(dir),[0]);assert.equal(mirrorStart(dir),1);
+ assert.deepEqual(cachedBatchNumbers(dir),[0]);assert.equal(epochMirrorStart(dir),1);
 });
 
 for(const upgrade of [false,true])test(`an interrupted ${upgrade?'upgrade preserves the old record':'append publishes no record'} and removes its temporary file`,t=>{
  const dir=directory(t),path=join(dir,'batches','0.json'),originalWrite=fs.writeFileSync;
- if(upgrade)cacheBatch(dir,0,{...chainOnlyBatch(readBatchTx(fixture.txs[0]!,leaves)),txid:fixture.txs[0]!.id});
+ if(upgrade)cacheBatch(dir,0,walkedOf(stamped[0]!));
  const old=upgrade?readFileSync(path,'utf8'):undefined;
  t.mock.method(fs,'writeFileSync',(file:fs.PathOrFileDescriptor,data:string|NodeJS.ArrayBufferView,options?:fs.WriteFileOptions)=>{
   originalWrite(file,String(data).slice(0,20),options);throw new Error('interrupted cache write');
  });
  syncBuiltinESMExports();
- try{assert.throws(()=>cacheBatch(dir,0,fixture.records[0]!),/interrupted cache write/);}
+ try{assert.throws(()=>cacheBatch(dir,0,stamped[0]!),/interrupted cache write/);}
  finally{t.mock.restoreAll();syncBuiltinESMExports();}
  if(upgrade)assert.equal(readFileSync(path,'utf8'),old);else assert.equal(existsSync(path),false);
  assert.deepEqual(readdirSync(join(dir,'batches')),upgrade?['0.json']:[]);
@@ -136,24 +97,24 @@ for(const upgrade of [false,true])test(`an interrupted ${upgrade?'upgrade preser
 test('an append cannot replace a competing record published during its temporary write',t=>{
  const dir=directory(t),path=join(dir,'batches','0.json'),originalWrite=fs.writeFileSync;
  t.mock.method(fs,'writeFileSync',(file:fs.PathOrFileDescriptor,data:string|NodeJS.ArrayBufferView,options?:fs.WriteFileOptions)=>{
-  originalWrite(file,data,options);originalWrite(path,JSON.stringify(fixture.records[1]!),{flag:'wx'});
+  originalWrite(file,data,options);originalWrite(path,JSON.stringify(stamped[1]!),{flag:'wx'});
  });
  syncBuiltinESMExports();
- try{assert.throws(()=>cacheBatch(dir,0,fixture.records[0]!),(error:NodeJS.ErrnoException)=>error.code==='EEXIST');}
+ try{assert.throws(()=>cacheBatch(dir,0,stamped[0]!),(error:NodeJS.ErrnoException)=>error.code==='EEXIST');}
  finally{t.mock.restoreAll();syncBuiltinESMExports();}
- assert.deepEqual(read(dir,0),fixture.records[1]);assert.deepEqual(readdirSync(join(dir,'batches')),['0.json']);
+ assert.deepEqual(read(dir,0),stamped[1]);assert.deepEqual(readdirSync(join(dir,'batches')),['0.json']);
 });
 
 test('an upgrade refuses a competing full record published during its temporary write',t=>{
  const dir=directory(t),path=join(dir,'batches','0.json'),originalWrite=fs.writeFileSync;
- cacheBatch(dir,0,{...chainOnlyBatch(readBatchTx(fixture.txs[0]!,leaves)),txid:fixture.txs[0]!.id});
+ cacheBatch(dir,0,walkedOf(stamped[0]!));
  t.mock.method(fs,'writeFileSync',(file:fs.PathOrFileDescriptor,data:string|NodeJS.ArrayBufferView,options?:fs.WriteFileOptions)=>{
-  originalWrite(file,data,options);originalWrite(path,JSON.stringify(fixture.records[1]!));
+  originalWrite(file,data,options);originalWrite(path,JSON.stringify(stamped[1]!));
  });
  syncBuiltinESMExports();
- try{assert.throws(()=>cacheBatch(dir,0,fixture.records[0]!),/conflict/i);}
+ try{assert.throws(()=>cacheBatch(dir,0,stamped[0]!),/conflict/i);}
  finally{t.mock.restoreAll();syncBuiltinESMExports();}
- assert.deepEqual(read(dir,0),fixture.records[1]);assert.deepEqual(readdirSync(join(dir,'batches')),['0.json']);
+ assert.deepEqual(read(dir,0),stamped[1]);assert.deepEqual(readdirSync(join(dir,'batches')),['0.json']);
 });
 
 test('a mirror refuses a truncated, a bit-flipped and a wrong-epoch archive before writing it',t=>{
@@ -174,7 +135,7 @@ test('a mirror refuses a truncated, a bit-flipped and a wrong-epoch archive befo
 test('an epoch mirror resumes where it stopped instead of re-fetching every batch',async t=>{
  const dir=directory(t),blank=(r:RollupEpochRecord)=>({...r,slots:r.slots.map(s=>({...s,commitments:['0','0'] as [string,string]}))});
  cacheEpoch(dir,epochFixture.records.slice(0,3));
- assert.deepEqual([mirrorStart(dir),epochMirrorStart(dir)],[0,3],'every epoch record carries noteBlockRoot');
+ assert.equal(epochMirrorStart(dir),3,'full records are never fetched again');
  cacheEpoch(dir,[blank(epochFixture.records[3]!),epochFixture.records[4]!],3);
  assert.equal(epochMirrorStart(dir),5,'a chain-only record the pool served is final');
  // The real CLI against a pool whose batch 128 was followed chain-only.
@@ -202,7 +163,7 @@ test('an epoch mirror resumes where it stopped instead of re-fetching every batc
 });
 
 test('a mirror fetches again only the placeholders its own chain walk wrote, never a chain-only record the pool served',t=>{
- const dir=directory(t),stamped=epochFixture.records.map((r,i)=>({...r,txid:String(i+1).padStart(64,'0')})),bare=(r:RollupEpochRecord)=>({...r,slots:r.slots.map(s=>({...s,commitments:['0','0'] as [string,string]}))});
+ const dir=directory(t);
  const {at:_,...walked}=bare(stamped[3]!);
  cacheEpoch(dir,[stamped[0]!,bare(stamped[1]!),stamped[2]!,walked,stamped[4]!]);
  assert.equal(epochMirrorStart(dir),3,'the walk\'s placeholder at 3, not the pool\'s own chain-only batch 1');
@@ -213,9 +174,30 @@ test('a mirror fetches again only the placeholders its own chain walk wrote, nev
  assert.deepEqual([read(upgraded,3),epochMirrorStart(upgraded)],[stamped[3],4],'a full record replaces it, and no chain-only record ever replaces a full one');
 });
 
-test('withdraw on an epoch mirror never writes the classic spec over its own',async t=>{
- const dir=directory(t),spec=JSON.stringify(rollupSpecOf('epoch','cc'.repeat(32)+'0000','aa'.repeat(32))),to=new ArkAddress(new Uint8Array(32).fill(1),new Uint8Array(32).fill(2),'tark').encode();
+test('withdraw never rewrites the mirror\'s spec',async t=>{
+ const dir=directory(t),spec=JSON.stringify(rollupSpecOf('cc'.repeat(32)+'0000','aa'.repeat(32))),to=new ArkAddress(new Uint8Array(32).fill(1),new Uint8Array(32).fill(2),'tark').encode();
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token:'cc'.repeat(32)+'0000',operator:'aa'.repeat(32),script:'5120'+'00'.repeat(32),network:{},epochLen:4}));writeFileSync(join(dir,'spec.json'),spec);
  await assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','withdraw',dir,'1000',to],{env:{...process.env,SHIELDED_PHRASE:recoveryPhraseOf('11'.repeat(32))}}));
  assert.equal(readFileSync(join(dir,'spec.json'),'utf8'),spec);
+});
+
+test('a classic pool or mirror is refused by every command, naming the commit to check out',async t=>{
+ const dir=directory(t),mirror=scratch('rollup-classic-mirror-'),pool={token:'cc'.repeat(32)+'0000',operator:'aa'.repeat(32),script:'5120'+'00'.repeat(32)};
+ const to=new ArkAddress(new Uint8Array(32).fill(1),new Uint8Array(32).fill(2),'tark').encode();
+ writeFileSync(join(dir,'pool.json'),JSON.stringify({...pool,network:{}}));
+ const base=`http://127.0.0.1:${((await listen({status:()=>({pool,network:{}})} as unknown as RollupService)).server.address() as AddressInfo).port}`,{SHIELDED_PHRASE:_,...env}=process.env;
+ await Promise.all([['withdraw',dir,'1000',to],['recover',dir,'0'],['publish',dir,base,'0'],['mirror',base,mirror]].map(args=>
+  assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts',...args],{env}),(error:{stderr:string})=>/check out commit a6aa085/.test(error.stderr),args[0])));
+ assert.deepEqual(readdirSync(mirror),[],'a refused mirror writes nothing');
+});
+
+test('a mirror refuses a key manifest that names a file outside the epoch key set, writing none of it',async t=>{
+ const keys=scratch('rollup-hostile-keys-'),mirror=scratch('rollup-hostile-mirror-'),pool={token:'cc'.repeat(32)+'0000',operator:'aa'.repeat(32),script:'5120'+'00'.repeat(32),epochLen:64};
+ const served={status:()=>({pool,network:{}}),keyFile:(name:string)=>name==='manifest.json'?join(keys,name):undefined} as unknown as RollupService;
+ const base=`http://127.0.0.1:${((await listen(served)).server.address() as AddressInfo).port}`;
+ for(const name of ['../evil.zkey','manifest.json','spend.zkey']){
+  writeFileSync(join(keys,'manifest.json'),JSON.stringify({circuits:{hostile:{files:{[name]:'00'}}}}));
+  await assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','mirror',base,mirror]),(error:{stderr:string})=>/names an unexpected file/.test(error.stderr),name);
+ }
+ assert.deepEqual([readdirSync(mirror).sort(),readdirSync(join(mirror,'keys'))],[['batches','keys','pool.json','spec.json'],['manifest.json']]);
 });

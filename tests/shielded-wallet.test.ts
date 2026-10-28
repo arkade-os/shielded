@@ -7,15 +7,14 @@ import info from './fixtures/ark-info.json' with {type:'json'};
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
-import {WATCHDOG_MS} from '../src/shielded/sync.ts';
-import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
 import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
@@ -37,10 +36,12 @@ const onchain={getCoins:async()=>[],getTransactions:async()=>[],getFeeRate:async
 
 /** Counts what the pool was asked for, so a resumed wallet can be shown not to re-read the published batches. */
 function poolFetcher(batches:number,root?:string){
- const paths:string[]=[];
+ const paths:string[]=[];let empty=0;
  const fetcher=(async(url:string)=>{
   const path=String(url).replace('/api/rollup','');
   paths.push(path);
+  empty=path.startsWith('/batches')&&Number(/from=(\d+)/.exec(path)?.[1])<batches?empty+1:0;
+  if(empty>3)throw new Error('the wallet kept asking for pages after an empty one');
   const body=path==='/status'?status(batches,root):path.startsWith('/batches')?{total:batches,batches:[]}:{};
   return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});
  }) as unknown as typeof fetch;

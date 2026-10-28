@@ -1,47 +1,88 @@
 import {existsSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {Transaction,VtxoScript} from '@arkade-os/sdk';
+import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochBatchInput} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
-import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf} from '../../packages/protocol/src/rollup/notes.ts';
+import {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot} from '../../packages/protocol/src/rollup/epoch-record.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
 import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
-import {openStockJournal} from '../stock/journal.ts';
+import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSelection,type RollupSpend} from './batcher.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,type RollupCoin,type RollupEpochLeaves} from './covenant.ts';
 import {encodeEpochNfArchive,epochNfArchivePath,readEpochNfArchive} from './epoch-archive-file.ts';
-import {encodeEpochSnapshot,readEpochSnapshot} from './epoch-snapshot.ts';
+import {encodeEpochSnapshot,headCommitment,readEpochSnapshot,writeSnapshot} from './epoch-snapshot.ts';
 import {readEpochBatchTx,spentCoins} from './external.ts';
-import {ROLLUP_GROUP_WAIT_MS,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,type RollupArchive,type RollupDepositFacts,type RollupOperatorOptions,type RollupPoolCoin,type RollupTick} from './operator.ts';
 import {verifyRollupProof,type RollupProver} from './prover.ts';
-import {headCommitment,writeSnapshot} from './snapshot.ts';
+
+export interface RollupPoolCoin {txid:string;vout:number;value:number;sourceTxHex:string}
+export interface RollupArchive {version:1;head:RollupPoolCoin;reserves:Record<string,RollupPoolCoin&{amount:string}>;batches:number}
+/** What a deposit coin must still be when the batch is signed, as the client claims it. */
+export interface RollupDepositFacts {txid:string;vout:number;value:number;script:string;assets:{assetId:string;amount:bigint}[]}
+export interface RollupTransport {
+ submit(request:StockWireRequest,firstDeposit:number):Promise<StockNativeReceipt>;
+ lookup(request:StockWireRequest):Promise<StockNativeReceipt|undefined>;
+ verify(request:StockWireRequest,receipt:StockNativeReceipt):void;
+ unspent(coin:{txid:string;vout:number}):Promise<boolean>;
+ /** The transaction that spent a coin, when the network shows it spent. */
+ spentBy?(coin:{txid:string;vout:number}):Promise<string|undefined>;
+ /** Unspent, exactly these facts, and expiring after now + floorMs: a batch's outputs inherit its earliest input expiry. */
+ fresh?(coin:RollupDepositFacts,floorMs:number):Promise<boolean>;
+}
+export interface RollupEpochOperatorOptions {
+ directory:string;
+ pin:StockReleasePin;
+ genesis:RollupArchive;
+ epochLen:number;
+ leaves:RollupEpochLeaves;
+ token:string;
+ serverKey:Uint8Array;
+ emulatorKey:Uint8Array;
+ exitDelay:{type:'seconds'|'blocks';value:number};
+ checkpoint:CSVMultisigTapscript.Type;
+ clientKey:Record<EpochBatchKind,unknown>;
+ hash:Hash;
+ prover:Record<EpochBatchKind,RollupProver>;
+ transport:RollupTransport;
+ signDeposits(request:StockWireRequest,spends:RollupEpochSpend[]):Promise<StockWireRequest|undefined>;
+ depositFloorMs?:number;
+ /** The network's dust limit; arkd refuses a batch whose BTC payout is below it. */
+ dustSats?:number;
+ /** Told which admitted spends left without a batch, and why, so their owners can rebuild them. */
+ onDrop?(ids:string[],reason:string):void;
+ weightLimit?:number;
+ now?:()=>number;
+ /** The client-proof check; tests replace it to hold a verification open. */
+ verify?:typeof verifyRollupProof;
+ /** How long a batch that is not full waits for company after its oldest spend, per lane. */
+ batchWaitMs?:number;
+ joinWaitMs?:number;
+ snapshotEvery?:number;
+}
+/** Where a batch's time went: waiting from its oldest spend, proving, then signing deposits and publishing. */
+export interface RollupTimings {waitedMs:number;proveMs:number;publishMs:number}
+export type RollupTick={txid:string;batch:number;timings?:RollupTimings}|{blocked:string}|undefined;
+
+/** How long an unresolved submission is left alone between exact re-sends, and before it may be abandoned. */
+export const ROLLUP_RESEND_GRACE_MS=120_000;
+/** A refusal this quick is the emulator's own answer, not a finalize that hung: its grace only covers indexer lag. */
+export const ROLLUP_QUICK_REFUSAL_MS=15_000;
+/** How long the first member of a group waits for the rest before the group is dropped. */
+export const ROLLUP_GROUP_WAIT_MS=120_000;
 
 /** A spend with `origin` set is a recovery of a note from that archived epoch. */
 export interface RollupEpochSpend extends Omit<RollupSpend,'slot'> {slot:EpochSlot;origin?:number}
-export interface EpochRecordSlot {anchor:string;rCur?:{epoch:number;root:string};origin?:number;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number;publics:string[];ciphertext?:string}
-/** One accepted batch as published; the block root is always kept, so a replay never needs an archived nullifier set. */
-export interface RollupEpochRecord {kind:EpochBatchKind;slots:EpochRecordSlot[];noteBlockRoot:string;txid?:string;at?:number}
 interface RollupEpochPlan {version:1;request:StockWireRequest;record:RollupEpochRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
-export interface RollupEpochOperatorOptions extends Omit<RollupOperatorOptions,'leaves'|'clientKey'|'prover'|'signDeposits'> {
- epochLen:number;
- leaves:RollupEpochLeaves;
- clientKey:Record<EpochBatchKind,unknown>;
- prover:Record<EpochBatchKind,RollupProver>;
- signDeposits(request:StockWireRequest,spends:RollupEpochSpend[]):Promise<StockWireRequest|undefined>;
-}
 
 const KINDS=['spend','join','recover'] as const;
 const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
-export const slotOf=(s:Omit<EpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
+export const slotOf=(s:Omit<RollupEpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
  nullifiers:s.nullifiers.map(BigInt),commitments:[BigInt(s.commitments[0]),BigInt(s.commitments[1])],ctDigest:BigInt(s.ctDigest),groupId:BigInt(s.groupId),groupSize:s.groupSize});
-/** A slot in the string form records, the spend store and /external share; slotOf reads it back. A recovery keeps origin alone, so /external takes back every record. */
-export const recordSlotOf=(slot:EpochSlot)=>({anchor:String(slot.anchor),...(slot.rCur&&slot.origin===undefined?{rCur:{epoch:slot.rCur.epoch,root:String(slot.rCur.root)}}:{}),...(slot.origin!==undefined?{origin:slot.origin}:{}),
- nullifiers:slot.nullifiers.map(String),commitments:[String(slot.commitments[0]),String(slot.commitments[1])] as [string,string],ctDigest:String(slot.ctDigest),groupId:String(slot.groupId),groupSize:slot.groupSize});
 const recordOf=(kind:EpochBatchKind,spends:readonly RollupEpochSpend[],noteBlockRoot:bigint):RollupEpochRecord=>({kind,
  slots:spends.map(({slot,publics,ciphertext})=>({...recordSlotOf(slot),publics:publics.map(String),...(ciphertext?{ciphertext:hex.encode(ciphertext)}:{})})),noteBlockRoot:String(noteBlockRoot)});
 
@@ -333,7 +374,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   padding:(kind?:EpochBatchKind)=>kind?padding[kind].length:queued(padding).length,
   status:()=>({...journal.status(),...accepted}),
   /** Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`. With `slots` a recovery needs its origin's archive file, and without them (chain-only) it needs none. */
-  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<EpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
+  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<RollupEpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
    try{
     const {tx,slots}=external,facts=readEpochBatchTx(tx,o.leaves),[head,second]=spentCoins(tx,external.checkpoints);

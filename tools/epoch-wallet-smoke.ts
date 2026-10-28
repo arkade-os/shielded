@@ -12,9 +12,9 @@ import {buildPoseidon} from 'circomlibjs';
 import {decodeDisclosure,verifyDisclosure} from '../packages/protocol/src/rollup/disclosure.ts';
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2,deriveWalletKeyMaterial,parseMasterSecret,recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
-import type {RollupEpochRecord} from '../src/rollup/epoch-operator.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
 import {verifyRollupKeys} from '../src/rollup/service.ts';
 import {epochFreshAccount,epochMatchesPool,loadEpochAccount} from '../src/shielded/epoch-checkpoint.ts';
@@ -35,7 +35,7 @@ const sha=(file:string)=>createHash('sha256').update(readFileSync(file)).digest(
 const median=(xs:number[])=>xs.length?[...xs].sort((a,b)=>a-b)[Math.floor(xs.length/2)]!:NaN;
 const pool=async()=>(await api<RollupPoolStatus>('/status')).pool!;
 
-verifyRollupKeys(keys,'epoch');
+verifyRollupKeys(keys);
 const status=await api<RollupPoolStatus>('/status'),epochLen=status.pool?.epochLen;
 if(status.phase!=='ready'||!epochLen||!status.proving)throw new Error(`${base} is not an open epoch pool (${status.phase}: ${status.message}).`);
 for(const c of ['spend','join'] as const)for(const ext of ['wasm','zkey'] as const)if(sha(join(keys,`epoch-${c}.${ext}`))!==status.proving[c][ext])throw new Error(`${keys} holds another epoch-${c}.${ext} than the pool serves.`);

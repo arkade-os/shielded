@@ -52,11 +52,7 @@ jobs:
 
           async function main() {
             const listing = await get('/archives');
-            // Any other 404 (a proxy with no router, a pool without the route) is a fault, not a classic pool.
-            if (listing.status === 404 && /classic pool/.test(await listing.text())) {
-              console.log('A classic pool keeps no nullifier archives; nothing to mirror.');
-              return;
-            }
+            // A 404 (a proxy with no router, a pool without the route) is a fault.
             if (!listing.ok) throw new Error(`GET /archives answered ${listing.status}`);
             const {epochs} = await listing.json();
             if (!Array.isArray(epochs) || !epochs.every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('GET /archives did not list epoch numbers');
