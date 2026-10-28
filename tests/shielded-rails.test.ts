@@ -282,15 +282,28 @@ test('it sends paymentOption=registered:shielded and nothing else on the callbac
  assert.deepEqual([...callback!.searchParams],[['amount','1000000'],['paymentOption','registered:shielded']]);
 });
 
-test('it refuses a destination that is not a parseable shielded address, without paying',async()=>{
+test('it refuses a destination that is not a parseable shielded address, or that asks for a memo, without paying',async()=>{
  paid.length=0;
- const wallet=fake(),c=ctx(wallet);
- for(const paymentDestination of [POOL,ELSEWHERE,'nonsense','',`${SHROL}x`,undefined]){
+ const wallet=fake(),c=ctx(wallet),NO_ADDRESS=/callback returned no shielded address/,NO_MEMO=/callback requires a memo/;
+ const answers:Record<string,[object,RegExp]>={
+  'an Arkade address':[{paymentDestination:ELSEWHERE},NO_ADDRESS],
+  'the pool address':[{paymentDestination:POOL},NO_ADDRESS],
+  'a bitcoin URI with no shielded parameter':[{paymentDestination:`bitcoin:${POOL}`},NO_ADDRESS],
+  'nonsense':[{paymentDestination:'nonsense'},NO_ADDRESS],
+  'an empty destination':[{paymentDestination:''},NO_ADDRESS],
+  'trailing characters':[{paymentDestination:`${SHROL}x`},NO_ADDRESS],
+  'no destination':[{},NO_ADDRESS],
+  'a memo to attach':[{paymentDestination:SHROL,paymentDestinationTag:'order-17'},NO_MEMO],
+  'an empty memo':[{paymentDestination:SHROL,paymentDestinationTag:''},NO_MEMO],
+ };
+ for(const [label,[fields,message]] of Object.entries(answers)){
   const service=lnurlService([SHIELDED_OPTION]);
-  service.answer=()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',...(paymentDestination===undefined?{}:{paymentDestination})});
-  await assert.rejects(shieldedRailOf(wallet,service).quote(req(ALICE,1000),c),/callback returned no shielded address/,String(paymentDestination));
+  service.answer=()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',...fields});
+  const outcome=await shieldedRailOf(wallet,service).quote(req(ALICE,1000),c).catch((error:Error)=>error);
+  if(!(outcome instanceof Error))await outcome.send();
+  assert.deepEqual(paid,[],`${label}: nothing may reach wallet.pay`);
+  assert.match(String(outcome),message,label);
  }
- assert.deepEqual(paid,[]);
 });
 
 test('it refuses an answer for a different paymentOption than the one requested',async()=>{
@@ -372,10 +385,11 @@ test('a failure of the shielded method hands over to Arkade, then Lightning, and
  assert.equal((await route(router)).railId,'lnurl-shielded');
  assert.deepEqual(asked(),['registered:shielded']);
 
- const refusals=[()=>lnurlJson({status:'ERROR',reason:'The shielded method is disabled'}),()=>lnurlJson({error:'Not found'},404),()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',paymentDestination:'nonsense'})];
+ const refusals=[()=>lnurlJson({status:'ERROR',reason:'The shielded method is disabled'}),()=>lnurlJson({error:'Not found'},404),()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',paymentDestination:'nonsense'}),
+  ()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',paymentDestination:SHROL,paymentDestinationTag:'order-17'})];
  for(const reply of refusals){
   shielded(reply);
-  assert.equal((await route(router)).railId,'lnurl-arkade');
+  assert.equal((await route(router)).railId,'lnurl-arkade',String(reply));
   assert.deepEqual(asked(),['registered:shielded','arkade']);
  }
  service.options=[SHIELDED_OPTION,LIGHTNING_OPTION];

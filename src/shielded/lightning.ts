@@ -43,6 +43,7 @@ export function lnurlShieldedRail(wallet:ShieldedWallet,client:LnurlClient):Paym
    if(!option)throw new LnurlError(`${id}: this address advertises no shielded method`);
    const answer=await client.requestInvoice(pr,{amountSat:req.amount,paymentOption:option.id});
    if(answer.kind!=='destination'||answer.paymentOption!==option.id)throw new LnurlError(`${id}: the callback did not answer ${option.id} with a destination`);
+   if(answer.paymentDestinationTag!==undefined)throw new LnurlError(`${id}: the callback requires a memo, which a private payment cannot carry`);
    const to=shieldedTargetOf(answer.paymentDestination??'');
    if(!to)throw new LnurlError(`${id}: the callback returned no shielded address to pay`);
    return {...await inner.quote({...req,raw:to},ctx),railId:id};
