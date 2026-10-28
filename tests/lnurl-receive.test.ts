@@ -454,6 +454,20 @@ test('switching off from the refused state while a listing remains still withdra
  assert.deepEqual([(await f.service.privateReceiveState()).refused,(await f.service.privateReceiveState()).listed],[false,null]);
 });
 
+test('a refusal that leaves the address listed on one alias withdraws it at the next check',async()=>{
+ const bob={...receiver,handle:'bob',username:'bob',lightningAddress:`bob@${domain}`},f=setup({aliases:[receiver,bob]});
+ await f.service.recover();await f.service.setPrivateReceive(true);
+ f.relist('bob',[]);f.keep(false);
+ await assert.rejects(f.service.check(),{message:METHODS_REFUSED});
+ const refused=await f.service.privateReceiveState();
+ assert.deepEqual([refused.refused,refused.withdrawing,refused.listed],[true,true,'own']);
+ f.keep(true);const reads=f.reads(),requests=f.requests.length;await f.service.check();
+ assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[],[]]);
+ const done=await f.service.privateReceiveState();
+ assert.deepEqual([done.refused,done.withdrawing,done.listed,f.reads()],[true,false,null,reads]);
+ assert.equal(JSON.stringify(f.requests.slice(requests)).includes(SHROL),false);
+});
+
 const listings=(f:{requests:{url:string;init?:RequestInit}[]})=>f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&(r.init?.method??'GET')==='GET').length;
 
 test('claim and recover each read the listing once',async()=>{

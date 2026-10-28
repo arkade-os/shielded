@@ -16,7 +16,7 @@ export interface LnurlReceiveJournal {
 }
 interface Destination extends LnurlPayout {index:number;claimPublicKey:string;params?:{pubKey:string;serverPubKey:string;csvTimelock:string}}
 // withdraw: a methods:[] bind is owed to the service and stays owed until a listing shows the method gone.
-// methodsPending: switched on, not live until a listing echoes the address. methodsRefused: the service did not keep it, so consent was dropped.
+// methodsPending: switched on, not live until a listing echoes the address. methodsRefused: the service did not keep it, so consent was dropped and whatever stays listed is withdrawn.
 interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true;methods?:true;methodsPending?:true;methodsRefused?:true;withdraw?:true}
 interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<string,ServerState>}
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
@@ -114,7 +114,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(!response.ok)throw new LnurlError(typeof reply?.error==='string'?reply.error:response.statusText,{httpStatus:response.status,code:typeof reply?.code==='string'?reply.code:undefined});
  };
  const advertised=()=>{const address=config.shieldedAddress?.();if(!address)throw new Error('Private receive requires a shielded address');return address;};
- const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;delete server.methodsPending;server.methodsRefused=true;await save(state);}};
+ const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;delete server.methodsPending;server.methodsRefused=true;if(shieldedListed(server).length)server.withdraw=true;await save(state);}};
  const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
  const refresh=(server:ServerState,listed:LnurlReceiver[])=>{for(const row of server.receivers){const methods=listed.find(l=>l.handle===row.handle)?.paymentMethods;if(methods)row.paymentMethods=methods;else delete row.paymentMethods;}};
  const relist=async(state:ReceiveState,server:ServerState)=>{
