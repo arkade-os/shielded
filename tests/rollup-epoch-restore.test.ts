@@ -156,7 +156,7 @@ test('a cold wallet with an older birthday replays from the previous epoch and l
  assert.deepEqual(closed.notes().map(n => n.amount), [250n, 600n]);
 });
 
-test('matchesPool throws when the pool\'s prevNoteRoot contradicts the account\'s', async () => {
+test('epochMatchesPool throws when the pool\'s prevNoteRoot contradicts the account\'s', async () => {
  const pool = epochPool(hash, 4), account = alice(4);
  for (let n = 0; n < 6; n++) pool.land('spend', n === 1 ? [await pool.deposit(aliceTo, 500n)] : []);
  const serving = (prevNoteRoot?: string) => (async (path: string) => {
