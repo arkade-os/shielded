@@ -60,6 +60,7 @@ const invoiceLine=(i:Invoice)=>i.outcome==='accepted'||i.outcome==='open'?`Waiti
 const LINK_STATE={unclaimed:'Unclaimed',claimed:'Claimed','taken-back':'Taken back'} as const;
 type ClaimView={notes:{asset:bigint;amount:bigint}[];mine:boolean}|{error:string};
 const NOT_PRIVATE:PrivateReceiveState={on:false,pending:false,refused:false,withdrawing:false,listed:null};
+const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].includes(errorText(error));
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState('');
@@ -135,9 +136,8 @@ export default function RollupWallet(){
  };
 
  const lnFail=(error:unknown)=>{
-  const text=errorText(error);
   // A method failure shows from the service's saved state; the tick makes the effect below read it.
-  if(text===METHODS_REFUSED||text===METHODS_NOT_WITHDRAWN)setTick(t=>t+1);else setLnError(text);
+  if(methodsFailure(error))setTick(t=>t+1);else setLnError(errorText(error));
  };
  const lightning=async(action:()=>Promise<void>)=>{
   if(!wallet?.swaps)return;
@@ -149,16 +149,24 @@ export default function RollupWallet(){
   const r=await wallet!.swaps!.receive({via:'lightning',amount:BigInt(lnAmount)});
   if(mounted.current)setInvoice({id:r.id,bolt11:r.artifact.bolt11,outcome:r.outcome,pays:r.give.amount,fee:r.fee.amount});
  });
- const claimAddress=()=>lightning(async()=>{
+ // claim and recover reject with a method error only after their bind has landed, so the address exists and is shown.
+ const bound=async(action:()=>Promise<void>)=>{
+  try{await action();}
+  catch(error){
+   if(methodsFailure(error)){const owned=await lnurlRef.current?.current();if(owned&&mounted.current)setLnAddress(owned.lightningAddress??owned.lnurl);}
+   throw error;
+  }
+ };
+ const claimAddress=()=>lightning(()=>bound(async()=>{
   if(!lnurlRef.current)throw new Error('The wallet is still loading.');
   const r=await lnurlRef.current.claim();
   if(mounted.current)setLnAddress(r.lightningAddress??r.lnurl);
- });
- const recoverAddress=()=>lightning(async()=>{
+ }));
+ const recoverAddress=()=>lightning(()=>bound(async()=>{
   if(!lnurlRef.current)throw new Error('The wallet is still loading.');
   const receivers=await lnurlRef.current.recover(),receiver=receivers[0];
   if(mounted.current){setLnAddress(receiver?.lightningAddress??receiver?.lnurl??'');if(!receiver)setLnError('No Lightning address was found for this recovery phrase.');}
- });
+ }));
  const setPrivate=(on:boolean)=>lightning(async()=>{
   if(!lnurlRef.current)throw new Error('The wallet is still loading.');
   await lnurlRef.current.setPrivateReceive(on);
@@ -388,11 +396,14 @@ export default function RollupWallet(){
       {lnAddress&&<>
        <label className="stock-check"><input type="checkbox" checked={isOn||isPending} aria-disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>{if(!lnBusy)void setPrivate(e.target.checked);}}/>Private receive</label>
        <p id="stock-private-hint" className="stock-muted">Lists your shielded address on this Lightning address so payers can pay you inside the pool. Anyone who looks the Lightning address up can then see that you use the pool.</p>
+       <div role="status">
+        {privateNotice==='foreign'&&<p className="stock-blocked">Your Lightning address lists a shielded address that is not this wallet&apos;s. A payer who uses it pays that address, not yours. Turn off asks the service to remove every shielded address listed there, this wallet&apos;s included.</p>}
+        {privateNotice==='confirming'&&<p className="stock-blocked">Private receive is on, but the service has not confirmed that it lists your shielded address yet. This wallet asks again while this page is open.</p>}
+        {privateNotice==='own'&&<p className="stock-blocked">Your Lightning address lists your shielded address, but private receive is off on this device. Keep it on, or turn it off to remove it from the service.</p>}
+       </div>
        {privateNotice==='pending'&&<p className="stock-blocked" role="alert">Not withdrawn yet: the service still lists a shielded address on your Lightning address, so payers may still be offered it. This wallet asks the service to remove it again while this page is open.</p>}
-       {privateNotice==='foreign'&&<><p className="stock-blocked" role="status">Your Lightning address lists a shielded address that is not this wallet&apos;s. A payer who uses it pays that address, not yours. Turn off asks the service to remove every shielded address listed there, this wallet&apos;s included.</p><div className="stock-actions">{turnOff()}</div></>}
-       {privateNotice==='confirming'&&<p className="stock-blocked" role="status">Private receive is on, but the service has not confirmed that it lists your shielded address yet. This wallet asks again while this page is open.</p>}
-       {privateNotice==='refused'&&<><p className="stock-blocked" role="alert">This Lightning address service does not support private receive yet, so your shielded address is not listed, and this wallet has stopped sending it. Switch private receive on to try again.</p><div className="stock-actions">{turnOff('Dismiss')}</div></>}
-       {privateNotice==='own'&&<><p className="stock-blocked" role="status">Your Lightning address lists your shielded address, but private receive is off on this device. Keep it on, or turn it off to remove it from the service.</p><div className="stock-actions"><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void setPrivate(true)}>Keep it on</button>{turnOff()}</div></>}
+       {privateNotice==='refused'&&<p className="stock-blocked" role="alert">This Lightning address service does not support private receive yet, so your shielded address is not listed, and this wallet has stopped sending it. Switch private receive on to try again.</p>}
+       {(privateNotice==='foreign'||privateNotice==='own'||privateNotice==='refused')&&<div className="stock-actions">{privateNotice==='own'&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void setPrivate(true)}>Keep it on</button>}{turnOff(privateNotice==='refused'?'Dismiss':'Turn off')}</div>}
        <details className="stock-more"><summary>How private receive works</summary><p className="stock-muted">Payments to your shielded address stay private inside the pool. Turning this on lists that address on your Lightning address: anyone who looks it up learns that you use the pool and gets your shielded address, the same one every payer gets, and it never changes. The Lightning address service learns it too. Turning it off asks the service to remove it; if the service keeps it, this wallet says so and asks again while this page is open. The choice is saved on this device only: another device with your recovery phrase decides for itself, and one that has it on lists the address again.</p></details></>}
       <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet||!lnAmount}>Create invoice</button></form>
       {invoice&&<><Copyable value={invoice.bolt11} qr={invoiceQr(invoice.bolt11)} label="QR code of the invoice"/><p className="stock-muted">{invoiceLine(invoice)}</p></>}

@@ -155,3 +155,4 @@
 .stock-card .stock-check input:focus-visible{outline:2px solid var(--or);outline-offset:2px}
 .stock-card .stock-check input[aria-disabled=true]{opacity:.45}
 @media(pointer:coarse){.stock-card label.stock-check{min-height:44px}}
+.stock-address>[role=status]:empty{position:absolute}
