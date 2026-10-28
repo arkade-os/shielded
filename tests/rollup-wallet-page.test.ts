@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,rollupApi,shieldPlan,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
 import {shieldTitle} from '../src/shielded/wallet.ts';
+import type {PrivateReceiveState} from '../src/shielded/lnurl-receive.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
@@ -166,6 +167,18 @@ test('the route preview names what each rail makes public, and never leaves a ra
  const shielded=routeCopy('lnurl-shielded');
  assert.equal(shielded.title,'Pay the Lightning address privately');
  for(const claim of [/private inside the pool/i,/shielded address its owner registered/,/address service sees the amount you request/,/also learns that you pay from the pool/])assert.match(shielded.detail,claim);
+});
+
+test('the private-receive box follows the user\'s choice, and one notice follows what the service lists',()=>{
+ const none:PrivateReceiveState={on:false,pending:false,refused:false,withdrawing:false,listed:null};
+ const table:[string,Partial<PrivateReceiveState>,boolean,string[]][]=[
+  ['off',{},false,['','own','foreign']],
+  ['on, not yet confirmed',{pending:true},true,['confirming','confirming','foreign']],
+  ['live',{on:true},true,['','','foreign']],
+  ['refused',{refused:true},false,['refused','own','foreign']],
+  ['withdrawing',{withdrawing:true},false,['','pending','pending']],
+ ];
+ for(const [name,state,checked,notices] of table)([null,'own','foreign'] as const).forEach((listed,i)=>assert.deepEqual(privateReceiveView({...none,...state,listed}),{checked,notice:notices[i]},`${name}, listed ${listed}`));
 });
 
 test('the claim card reads a link\'s token and holdings without the network',()=>{

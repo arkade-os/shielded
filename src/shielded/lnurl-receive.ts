@@ -1,5 +1,5 @@
 import {DefaultVtxo,deriveDescriptorLeafCompressedPubKey,networkFromArkadeInfo,parseHDDescriptor,timelockToSequence,type Identity,type Wallet} from '@arkade-os/sdk';
-import {LnurlError,LnurlTransportError,createLnurlClient,type FetchImpl} from '@arkade-os/lnurl-client';
+import {LnurlError,createLnurlClient,type FetchImpl} from '@arkade-os/lnurl-client';
 import {deriveSessionTokenForIdentity} from '@arkade-os/lnurl-client/arkade';
 import {HDKey} from '@scure/bip32';
 import {hex} from '@scure/base';
@@ -107,12 +107,6 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   return {handle:row.handle,domain,lightningAddress:row.lightningAddress??undefined,lnurl:row.lnurl,status:row.status,...(paymentMethods?{paymentMethods}:{})};
  };
  const registeredReceivers=async()=>(await client.listAddresses(await token())).filter(row=>row.domain.toLowerCase()===domain).map(fromAddress);
- // The pinned client's registerArkadeIdentity whitelists its body, so a bind that carries methods is posted directly.
- const postBind=async(handle:string,body:object)=>{
-  const response=await guardedFetch(`${baseUrl}/lnurl/address/${encodeURIComponent(handle)}/arkade`,{method:'POST',headers:{'content-type':'application/json',Authorization:`Bearer ${await token()}`},body:JSON.stringify(body)}).catch(cause=>{throw new LnurlTransportError('Request failed',{cause});});
-  const reply=await response.json().catch(cause=>{if(response.ok)throw new LnurlTransportError('Request failed',{cause});}) as {error?:unknown;code?:unknown}|undefined;
-  if(!response.ok)throw new LnurlError(typeof reply?.error==='string'?reply.error:response.statusText,{httpStatus:response.status,code:typeof reply?.code==='string'?reply.code:undefined});
- };
  const advertised=()=>{const address=config.shieldedAddress?.();if(!address)throw new Error('Private receive requires a shielded address');return address;};
  const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(server.methods||!server.methodsRefused){delete server.methods;delete server.methodsPending;server.methodsRefused=true;if(shieldedListed(server).length)server.withdraw=true;await save(state);}};
  const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
@@ -165,17 +159,17 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const bind=async(state:ReceiveState,server:ServerState)=>{
   const row=state.payouts.find(p=>p.script===server.current);
   if(!row)throw new Error('The bound Lightning receive address is missing from local state');
-  const body={arkadeAddress:row.address,claimPublicKey:row.claimPublicKey,domain};
+  const send=async(handle:string,methods?:PaymentMethod[])=>client.registerArkadeIdentity({token:await token(),handle,arkadeAddress:row.address,claimPublicKey:row.claimPublicKey,domain,methods});
   let advertise=server.methods&&!server.withdraw?[{type:'shielded',destination:advertised()}]:undefined,refusal:LnurlError|undefined;
   try{
    for(const receiver of server.receivers)if(receiver.status==='active'){
     const methods=server.withdraw?[]:advertise;
-    try{await postBind(receiver.handle,methods?{...body,methods}:body);}
+    try{await send(receiver.handle,methods);}
     catch(error){
      // A refused method rejects the whole bind, so the identity is resent alone to keep the address live.
      if(!methods||!(error instanceof LnurlError)||error.httpStatus!==400||error.code==='invalid_rails')throw error;
      if(advertise){refusal=error;advertise=undefined;}
-     await postBind(receiver.handle,body);
+     await send(receiver.handle);
     }
    }
   }

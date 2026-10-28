@@ -1,4 +1,5 @@
 import {DUST,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
+import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 
 export * from '../../src/shielded/pool.ts';
@@ -53,6 +54,11 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
 /** Why a token cannot be a claim link, read before any network call; '' when it can be. */
 export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};
 export const claimUrl=(origin:string,token:string)=>`${origin}/claim#${token}`;
+/** The box shows the user's choice; the notice shows what the service lists, one at a time, most pressing first. */
+export const privateReceiveView=({on,pending,refused,withdrawing,listed}:PrivateReceiveState):{checked:boolean;notice:'pending'|'foreign'|'confirming'|'own'|'refused'|''}=>({
+ checked:on||pending,
+ notice:withdrawing&&listed!==null?'pending':listed==='foreign'?'foreign':pending?'confirming':listed==='own'&&!on?'own':refused?'refused':'',
+});
 export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],assetIdOf:(field:bigint)=>string|undefined){
  const totals=new Map<bigint,bigint>();
  for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
