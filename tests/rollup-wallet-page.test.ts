@@ -165,7 +165,7 @@ test('the route preview names what each rail makes public, and never leaves a ra
  assert.match(routeCopy('lightning').detail,/public/);
  const shielded=routeCopy('lnurl-shielded');
  assert.equal(shielded.title,'Pay the Lightning address privately');
- for(const claim of [/private inside the pool/i,/shielded address its owner registered/,/address service sees the amount you request/])assert.match(shielded.detail,claim);
+ for(const claim of [/private inside the pool/i,/shielded address its owner registered/,/address service sees the amount you request/,/also learns that you pay from the pool/])assert.match(shielded.detail,claim);
 });
 
 test('the claim card reads a link\'s token and holdings without the network',()=>{
