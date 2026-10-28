@@ -7,7 +7,7 @@ export * from '../../src/shielded/epoch-pool.ts';
 /** Why the pool will not take another listing: past its cap a listing is ignored, and its sats and unit are lost. */
 export const listingBlocked=(pool:RollupPoolStatus['pool'])=>
  pool?.maxReserves!==undefined&&Object.keys(pool.reserves??{}).length>=pool.maxReserves
-  ?`The pool already lists ${pool.maxReserves} assets, the most one renewal batch swap can carry. Listing another would lose the ${DUST} sats and the unit it sends.`:undefined;
+  ?`The pool already lists ${pool.maxReserves} assets, the most it accepts. Listing another would lose the ${DUST} sats and the unit it sends.`:undefined;
 
 /** One line for the mobile status sheet: the step in progress, or how the action ended. */
 export const sheetLine=(a:{steps:readonly string[];current:number;done?:boolean;error?:string})=>a.error??(a.done?'Done':`Step ${a.current+1} of ${a.steps.length}: ${a.steps[a.current]}`);
