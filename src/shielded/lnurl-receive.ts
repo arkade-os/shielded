@@ -14,7 +14,7 @@ export interface LnurlReceiveJournal {
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
 }
 interface Destination extends LnurlPayout {index:number;claimPublicKey:string;params?:{pubKey:string;serverPubKey:string;csvTimelock:string}}
-// withdraw: a methods:[] bind is owed to the service and stays owed until one lands.
+// withdraw: a methods:[] bind is owed to the service and stays owed until a listing shows the method gone.
 interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true;methods?:true;methodsRefused?:true;withdraw?:true}
 interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<string,ServerState>}
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
@@ -27,6 +27,7 @@ export interface LnurlReceiveConfig {
 export const ROTATE_AFTER_MS=24*60*60_000,CHECK_EVERY_MS=10*60_000,RECOVERY_GAP=400;
 export const HD_REFUSED='This Lightning address is still in HD receive mode, and its service cannot switch it to a private static address until the service is updated. Earlier payouts stay watched; the wallet retries automatically.';
 export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. Private receive is not live until the service is updated; the wallet retries automatically.';
+export const METHODS_NOT_WITHDRAWN='The service for this Lightning address still lists the private receive address after it was withdrawn, so payers may still be offered it. The wallet keeps asking the service to remove it and retries automatically.';
 const SCAN_BATCH=50,STATE_POOL='lnurl-receive',STATE_KEY='state-v1';
 const TESTNET_BIP32={public:0x043587cf,private:0x04358394};
 const indexOf=(index:number)=>{if(!Number.isSafeInteger(index)||index<0||index>=0x80000000)throw new Error('Invalid Lightning receive index');return index;};
@@ -113,8 +114,14 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const advertised=()=>{if(!config.shieldedAddress)throw new Error('Private receive requires a shielded address');return config.shieldedAddress();};
  const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(!server.methodsRefused){server.methodsRefused=true;await save(state);}};
  const confirm=async(state:ReceiveState,server:ServerState)=>{
-  const destination=advertised(),listed=await registeredReceivers();
-  if(server.receivers.filter(row=>row.status==='active').every(row=>listed.find(l=>l.handle===row.handle)?.paymentMethods?.some(m=>m.type==='shielded'&&m.destination===destination))){
+  const listed=await registeredReceivers(),active=server.receivers.filter(row=>row.status==='active');
+  const listing=(row:LnurlReceiver)=>listed.find(l=>l.handle===row.handle)?.paymentMethods;
+  if(server.withdraw){
+   if(active.some(row=>listing(row)?.some(m=>m.type==='shielded')))throw new Error(METHODS_NOT_WITHDRAWN);
+   delete server.withdraw;await save(state);return;
+  }
+  const destination=advertised();
+  if(active.every(row=>listing(row)?.some(m=>m.type==='shielded'&&m.destination===destination))){
    if(server.methodsRefused){delete server.methodsRefused;await save(state);}
    return;
   }
@@ -168,7 +175,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(!server.refused){server.refused=true;await save(state);}
    throw new Error(HD_REFUSED,{cause:error});
   }
-  if(server.boundAt===undefined||server.refused||server.migrated||server.withdraw){server.boundAt??=now();delete server.refused;delete server.migrated;delete server.withdraw;await save(state);}
+  if(server.boundAt===undefined||server.refused||server.migrated){server.boundAt??=now();delete server.refused;delete server.migrated;await save(state);}
   if(refusal){await refuseMethods(state,server);throw new Error(METHODS_REFUSED,{cause:refusal});}
  };
  const settle=async(state:ReceiveState,server:ServerState)=>{
@@ -181,7 +188,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const current=state.payouts.find(row=>row.script===server.current);
   if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server);
   await bind(state,server);
-  if(server.methods)await confirm(state,server);
+  if(server.methods||server.withdraw)await confirm(state,server);
  };
  const check=()=>serial(async()=>{
   const state=await load(),server=state.servers[serverKey];if(!server)return;
@@ -192,7 +199,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   enabled:async()=>Boolean((await load()).servers[serverKey]),
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
   payouts:async()=>(await load()).payouts,
-  privateReceive:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&!server.methodsRefused;},
+  privateReceive:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&!server.methodsRefused&&!server.withdraw;},
   // methodsRefused is raised with the switch and cleared only once a listing echoes the method, so a bind alone never reads as live.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];

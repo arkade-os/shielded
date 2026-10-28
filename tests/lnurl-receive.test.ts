@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {MnemonicIdentity,SingleKey,type CreateContractParams,type Wallet} from '@arkade-os/sdk';
 import {bech32m,hex} from '@scure/base';
-import {CHECK_EVERY_MS,HD_REFUSED,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
+import {CHECK_EVERY_MS,HD_REFUSED,METHODS_NOT_WITHDRAWN,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
 
 const mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const hdIdentity=MnemonicIdentity.fromMnemonic(mnemonic,{isMainnet:false});
@@ -200,8 +200,25 @@ test('switching private receive on registers the shielded address on every bound
 test('switching it off withdraws the method rather than merely stopping',async()=>{
  const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);await f.service.setPrivateReceive(false);
  assert.deepEqual(f.bound().at(-1)!.methods,[]);assert.equal(await f.service.privateReceive(),false);
+ assert.deepEqual(f.requests.slice(-2).map(r=>`${r.init?.method??'GET'} ${new URL(r.url).pathname}`),['POST /lnurl/address/alice/arkade','GET /lnurl/address']);
+ assert.equal(Object.values(f.saved()!.servers)[0]!.withdraw,undefined);
  f.tick(ROTATE_AFTER_MS);await f.service.check();
- assert.equal(f.bound().at(-1)!.methods,undefined);assert.equal(Object.values(f.saved()!.servers)[0]!.withdraw,undefined);
+ assert.equal(f.bound().at(-1)!.methods,undefined);
+});
+
+test('a server that keeps the method after a withdrawal is reported, and the withdrawal stays pending',async()=>{
+ const f=setup(),server=()=>Object.values(f.saved()!.servers)[0]!;
+ await f.service.claim();await f.service.setPrivateReceive(true);f.keep(false);
+ await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
+ assert.deepEqual([server().withdraw,await f.service.privateReceive()],[true,false]);
+ await assert.rejects(f.service.check(),{message:METHODS_NOT_WITHDRAWN});
+ assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[],[]]);
+ f.keep(true);await f.service.check();
+ assert.deepEqual([server().withdraw,await f.service.privateReceive()],[undefined,false]);
+ await f.service.check();assert.equal(f.bound().at(-1)!.methods,undefined);
+ const key=f.key('lnurl-receive','state-v1'),forged=structuredClone(f.state.get(key)) as {servers:Record<string,object>};
+ Object.values(forged.servers).forEach(entry=>Object.assign(entry,{methods:true,withdraw:true}));f.state.set(key,forged);
+ assert.equal(await f.service.privateReceive(),false);
 });
 
 test('a switch-off that cannot reach the service is retried until the withdrawal lands',async()=>{
