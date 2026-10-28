@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shortValue} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,rollupApi,shieldPlan,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
@@ -180,6 +180,13 @@ test('the private-receive box follows the user\'s choice, and one notice follows
   ['withdrawing',{withdrawing:true},false,['','pending','pending']],
  ];
  for(const [name,state,checked,notices] of table)([null,'own','foreign'] as const).forEach((listed,i)=>assert.deepEqual(privateReceiveView({...none,...state,listed}),{checked,notice:notices[i]},`${name}, listed ${listed}`));
+});
+
+test('a long value shows its start and end, and a short one shows whole',()=>{
+ const address='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf85w7uvgv97lw5jy95gz0xt75dsuwl424vj7efx3kzpx0g72kmh8ccllyxes';
+ assert.equal(shortValue(address),'tark1qqcpq7yq3e8hhsx…kmh8ccllyxes');
+ for(const whole of ['swift-badger@lnurl.mutinynet.arkade.sh','x'.repeat(48)])assert.equal(shortValue(whole),whole);
+ assert.equal(shortValue('x'.repeat(49)),`${'x'.repeat(20)}…${'x'.repeat(12)}`);
 });
 
 test('the claim card reads a link\'s token and holdings without the network',()=>{
