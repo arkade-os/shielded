@@ -174,7 +174,7 @@ test('a mirror fetches again only the placeholders its own chain walk wrote, nev
  assert.deepEqual([read(upgraded,3),epochMirrorStart(upgraded)],[stamped[3],4],'a full record replaces it, and no chain-only record ever replaces a full one');
 });
 
-test('withdraw on an epoch mirror never writes the classic spec over its own',async t=>{
+test('withdraw never rewrites the mirror\'s spec',async t=>{
  const dir=directory(t),spec=JSON.stringify(rollupSpecOf('cc'.repeat(32)+'0000','aa'.repeat(32))),to=new ArkAddress(new Uint8Array(32).fill(1),new Uint8Array(32).fill(2),'tark').encode();
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token:'cc'.repeat(32)+'0000',operator:'aa'.repeat(32),script:'5120'+'00'.repeat(32),network:{},epochLen:4}));writeFileSync(join(dir,'spec.json'),spec);
  await assert.rejects(run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','withdraw',dir,'1000',to],{env:{...process.env,SHIELDED_PHRASE:recoveryPhraseOf('11'.repeat(32))}}));

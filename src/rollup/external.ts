@@ -38,7 +38,7 @@ export interface BatchIndexer {
  getVtxos(opts:{outpoints:{txid:string;vout:number}[]}):Promise<{vtxos:{isSpent?:boolean;arkTxId?:string}[]}>;
  getVirtualTxs(ids:string[]):Promise<{txs:string[]}>;
 }
-/** A `nextBatchTx` for `catchUpFromChain` backed by a live indexer: a head's `arkTxId` names the batch that spent it. */
+/** A `next` for `catchUpFromChain` backed by a live indexer: a head's `arkTxId` names the batch that spent it. */
 export function indexerBatchWalker(indexer:BatchIndexer):(head:{txid:string;vout:number})=>Promise<Transaction|undefined>{
  return async head=>{
   const [v]=(await indexer.getVtxos({outpoints:[head]})).vtxos;

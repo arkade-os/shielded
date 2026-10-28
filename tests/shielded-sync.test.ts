@@ -112,6 +112,7 @@ test('epochCatchUp stops on an empty page even when the total claims more, so a 
  let pages=0;
  const api=(async()=>{if(pages++)throw new Error('a second page was asked for');return {total:99,batches:[]};}) as PoolApi;
  assert.equal(await epochCatchUp(EpochAccount.owning(hash,aliceKeys,{epochLen:4}),api),0);
+ assert.equal(pages,1);
 });
 
 const gate=()=>{let resolve!:()=>void;return {promise:new Promise<void>(r=>{resolve=r;}),resolve:()=>resolve()};};

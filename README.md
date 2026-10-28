@@ -62,7 +62,7 @@ The proving keys come from a two-phase Groth16 setup.
 
 - **Phase 1** is the Hermez [Perpetual Powers of Tau](https://github.com/privacy-scaling-explorations/perpetualpowersoftau) transcript for 2^20 constraints, `powersOfTau28_hez_final_20.ptau`, pinned by its BLAKE2b-512 in `tools/rollup-setup.mjs`. It is shared with many other projects; nothing here re-runs it.
 - **Phase 2** for the genesis 4 epoch circuits is a small testnet ceremony. Its one contribution per circuit, and the public hash of Bitcoin block 972846 that seals them as a random beacon, are listed in `rollup-keys/genesis-4.json`. The keys are sound if at least one contributor discarded their randomness, and with a single contribution per circuit that is the word of whoever made it. The beacon only stops the last contributor from choosing the final key; it adds no secrecy. This is not a production ceremony, so the keys are for Mutinynet tests only.
-- **Genesis 3.** Its keys (release `rollup-genesis-3-keys`) were a development-only setup with a single automated contribution and no beacon, and the current build does not use them. That release stays published as the rollback target and the historical record, and is never deleted.
+- **Genesis 3.** Its keys (release `rollup-genesis-3-keys`) were a development-only setup with a single automated contribution and no beacon, and the current build does not use them. That release stays published as the record of that setup, and is never deleted.
 
 To check the published keys, compile the circuits (the build is deterministic) and verify each key against its circuit and the phase-1 transcript:
 

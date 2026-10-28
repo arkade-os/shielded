@@ -86,7 +86,7 @@ test('a nullifier archive file is refused unless it rebuilds the archived root',
 });
 
 test('headCommitment read through getField equals the value the local reader returned',()=>{
- // The genesis head an epoch service sends at epochLen 68 with the golden's seeded keys, read at 52b77b0 by snapshot.ts's own reader.
+ // The genesis head an epoch service sends at epochLen 68 with the golden's seeded keys, read at a07514a by snapshot.ts's own reader.
  const head='030000000111111111111111111111111111111111111111111111111111111111111111110000000000fdffffff03e80300000000000022512010764da6b0b0883bf2d959d930bafd63bac7e888cf7c805efb1f0c063d44afbe0000000000000000986a4c9541524b002e0101cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0000010100000101010000018760555a5515bf395b63f164f16864a06b71de73229c5cf68bcd294dd33403a677160000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000451024e7300000000';
  assert.equal(headCommitment(head),10162283245877059043268415004295269673536308003806287646051552287663917980245n);
  assert.equal(headCommitment('00'),undefined,'a transaction that does not parse carries no commitment');

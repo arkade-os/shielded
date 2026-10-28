@@ -31,7 +31,7 @@ import {createRollupTransport} from '../src/rollup/transport.ts';
 import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,epochMirrorStart,replayEpochMirror} from './rollup-cache.ts';
 
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo;epochLen?:number}
-const CLASSIC='This tool no longer handles a classic (genesis-3) pool or mirror; check out commit a6aa085, a build that still has that half, and run the fallback from there.';
+const CLASSIC='This tool no longer handles a classic (genesis-3) pool or mirror; check out commit a6aa085, a build that still handles classic pools, and run the fallback from there.';
 const {positionals:[command,...args],values:flags}=parseArgs({allowPositionals:true,options:{'max-batches':{type:'string'}}});
 const maxBatches=flags['max-batches']===undefined?undefined:Number(flags['max-batches']);
 if(maxBatches!==undefined&&(!Number.isSafeInteger(maxBatches)||maxBatches<1))throw new Error('--max-batches wants a positive whole number of batches.');

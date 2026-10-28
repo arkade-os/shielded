@@ -102,7 +102,7 @@ test('every dummy input carries sel 0', async () => {
 });
 
 test('a padding spend and join built through epochTransfer match the previous builder field for field', async (t) => {
- // Digests of the previous padding builder's output, taken at 52b77b0: randomField counts up from 1000n, every getRandomValues byte is 7.
+ // Digests of the previous padding builder's output, taken at a07514a: randomField counts up from 1000n, every getRandomValues byte is 7.
  t.mock.method(globalThis.crypto, 'getRandomValues', (bytes: Uint8Array) => bytes.fill(7));
  const seeded = () => { let n = 1000n; return () => ++n; }, at = { rPrev: 11n, rCur: { epoch: 3, root: 12n }, self: aliceTo };
  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value, (_, v) => v === undefined ? 'undefined' : typeof v === 'bigint' ? `${v}n` : v instanceof Uint8Array ? hex.encode(v)
