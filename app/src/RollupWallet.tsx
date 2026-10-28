@@ -326,6 +326,7 @@ export default function RollupWallet(){
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
  const expiring=coins.filter(c=>!wallet?.isPoolPayout(c)&&!c.assets?.length&&c.expiresAt!==undefined&&c.expiresAt-Date.now()<=SHIELD_FLOOR_MS).reduce((sum,c)=>sum+c.value,0);
  const ready=pool?.phase==='ready',unit=assetId?'units':'sats';
+ const settled=ready||!!startupError||!!poolError||(!!pool&&pool.phase!=='ready');
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
  const needsRecovery=new Set(wallet?.recovering.map(note=>note.nullifier)),recovering=new Set(wallet?.recoveryInFlight.map(note=>note.nullifier));
  const inFlight=!!wallet&&[...wallet.shieldedNotes(),...reserves.flatMap(id=>wallet.shieldedNotes(assetFieldOfId(id)))].some(note=>wallet.inFlight.has(note.nullifier)&&!recovering.has(note.nullifier));
@@ -462,8 +463,8 @@ export default function RollupWallet(){
    </div></section>}
    </div></div>
   </>}
-  {!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and derive your Arkade keys. Anyone who has them can spend your funds. Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished: the phrase alone does not restore every outstanding swap.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
-  <details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
+  {settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and derive your Arkade keys. Anyone who has them can spend your funds. Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished: the phrase alone does not restore every outstanding swap.</p>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+  {settled&&<details className="stock-card stock-advanced"><summary>Recovery phrase and restore</summary>
    <p className="stock-muted">Keep this browser&apos;s data while Lightning swaps or payouts are pending. A fresh browser recovers a Lightning alias through Recover a Lightning address; direct swaps also need their stored recovery records.</p>
    {backedUp&&secret&&(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>)}
    {wallet&&<div className="stock-address"><small>VIEW KEY · READ ONLY</small>{showView?<><Copyable value={wallet.viewKey()}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${wallet.viewKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</div>}
@@ -474,7 +475,7 @@ export default function RollupWallet(){
    <button disabled={busy||!restore.trim()} onClick={()=>void restoreWallet()}>Restore wallet</button>
    {restoreError&&<p className="stock-blocked">{restoreError}</p>}
    {restoreError&&restoring.current&&<button type="button" className="stock-ghost stock-mini" onClick={()=>location.reload()}>Reload wallet</button>}
-  </details>
+  </details>}
  </main>
  {docked&&<>{sheetOpen&&<div className="stock-backdrop" aria-hidden="true" onClick={()=>setSheetOpen(false)}/>}
   <nav className="stock-dock" aria-label="Wallet actions">{(['receive','send'] as const).map(name=><button key={name} type="button" aria-controls="stock-panel" aria-expanded={sheetOpen&&tab===name} className={sheetOpen&&tab===name?'selected':''} onClick={()=>openPanel(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav></>}
