@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,isInvoice,listingBlocked,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,routeCopy,sheetLine} from '../app/src/rollup-client.ts';
 import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,provingUrls,rollupApi,shieldPlan,transferBody,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {BuiltSpend,OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
@@ -149,6 +149,22 @@ test('the soundbar shows a running action before the wallet\'s own upkeep, and n
  assert.deepEqual(soundbarItem({...idle,recovering:true,inFlight:true,syncing:true}),{title:'Recovering',line:'Recovering notes.',state:'active'});
  assert.equal(soundbarItem({...idle,inFlight:true,syncing:true})?.title,'Notes in flight');
  assert.equal(soundbarItem({...idle,syncing:true})?.title,'Syncing');
+});
+
+test('a scanned or pasted payment code becomes a destination, and a payment link\'s amount comes with it',()=>{
+ const invoice='lnbc10u1pjexample';
+ assert.deepEqual(payTarget(' lightning:'+invoice.toUpperCase()+'\n'),{to:invoice});
+ assert.deepEqual(payTarget('LIGHTNING:'+invoice),{to:invoice});
+ assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.00001&ark=tark1abc&lightning='+invoice),{to:'tark1abc',amount:1000});
+ assert.deepEqual(payTarget('BITCOIN:BC1QEXAMPLE?AMOUNT=1.5&LIGHTNING='+invoice.toUpperCase()),{to:invoice,amount:150_000_000});
+ assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.000000001'),{to:'bc1qexample'});
+ assert.deepEqual(payTarget('SHROL21ABC'),{to:'shrol21abc'});
+ assert.deepEqual(payTarget('Satoshi@example.com'),{to:'Satoshi@example.com'});
+ assert.throws(()=>payTarget('bitcoin:bc1qexample?amount=0.0001&req-pop=callback%3A'),/req-pop/);
+ assert.throws(()=>payTarget('BITCOIN:BC1QEXAMPLE?REQ-SOMETHING=1'),/req-something/);
+ assert.equal(invoiceQr(invoice),'LIGHTNING:'+invoice.toUpperCase());
+ assert.throws(()=>payTarget('bitcoin:?amount=0.001'),/no destination/);
+ assert.deepEqual(payTarget('bitcoin:?lightning=lnbc1x=y'),{to:'lnbc1x=y'});
 });
 
 test('a pool whose reserves are full refuses another listing instead of swallowing it',()=>{
