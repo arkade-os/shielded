@@ -5,7 +5,7 @@ import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
 import {DUST} from './pool.ts';
 import type {ShieldedWallet} from './wallet.ts';
 
-export const SHIELDED_PRIORITY=['shielded','shielded-withdraw','ark','ark-asset','lnurl-arkade','lightning','lnurl-lightning','onchain'];
+export const SHIELDED_PRIORITY=['shielded','shielded-withdraw','lnurl-shielded','ark','ark-asset','lnurl-arkade','lightning','lnurl-lightning','onchain'];
 export function shieldedTargetOf(raw:string):string|undefined{
  try{
   let target=raw.trim();

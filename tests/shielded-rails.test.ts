@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {ArkAddress,PaymentRouter,SingleKey,arkAssetRail,arkRail,isValidArkAddress,type PaymentRequest} from '@arkade-os/sdk';
+import {createLnurlClient,type PaymentOption} from '@arkade-os/lnurl-client';
 import {buildPoseidon} from 'circomlibjs';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
+import {lightningRails,lnurlShieldedRail} from '../src/shielded/lightning.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedTargetOf,shieldedWithdrawRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
 
@@ -17,10 +19,12 @@ const ELSEWHERE=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),d
 const ASSET='ee'.repeat(34);
 
 const paid:{to:string;amount:bigint;asset?:string}[]=[],exited:{to:string;amount:bigint;opts:unknown}[]=[];
-const fake=(o:{canWithdraw?:boolean|(()=>never)}={})=>({
+const fake=(o:{canWithdraw?:boolean|(()=>never);max?:bigint|(()=>bigint);restore?:()=>Promise<void>}={})=>({
  pool:{status:{pool:{address:POOL}}},
  poolAddress:POOL,
  canWithdraw:typeof o.canWithdraw==='function'?o.canWithdraw:()=>o.canWithdraw??true,
+ restoreLightningSpends:o.restore??(async()=>{}),
+ maxPrivatePayment:typeof o.max==='function'?o.max:()=>o.max??1_000_000n,
  pay:async(to:string,amount:bigint,asset?:string)=>{paid.push({to,amount,...(asset?{asset}:{})});return {id:'h',status:'pending'};},
  withdraw:async(to:string,amount:bigint,opts:unknown)=>{exited.push({to,amount,opts});return {id:'h',status:'pending'};},
 } as unknown as ShieldedWallet);
@@ -210,5 +214,184 @@ test('explicit invalid URI carriers are rejected unless a valid request amount o
   const encoded={raw:`bitcoin:?${target}&amount=0.000005`,assets};
   assert.equal(await rail.available!(encoded,c),true);
   assert.equal((await rail.quote(encoded,c)).amount,rail.id==='shielded'?0:500);
+ }
+});
+
+const lnurlJson=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});
+const INVOICE='lntbs210n1p4dpvmxpp58d4nqkxz5htt4ctfhyvfqnx0947fyp4uvdyg3g9j6xhahn2dytrqdqqcqzzsxqyz5vqsp5nxkcjl99y7h0uyp34xwgw6cldflucq8r7ssk06vylsjld60lfzps9qxpqysgqrf3yfzavh34pu5t8ee9perqp35z6534k6q3m5v5xckdrm4l869yrxrm4pxslwvqtzql96m69hq7sxwptw5fry9u8h3twyrdenungqxcqafud53';
+const ALICE='alice@lnurl.example';
+const SHIELDED_OPTION:PaymentOption={id:'registered:shielded',type:'shielded',verifiable:false};
+const ARKADE_OPTION:PaymentOption={id:'arkade',type:'arkade'},LIGHTNING_OPTION:PaymentOption={id:'lightning',type:'lightning'};
+const ANSWERS:Record<string,unknown>={
+ 'registered:shielded':{status:'OK',paymentOption:'registered:shielded',paymentDestination:SHROL},
+ arkade:{status:'OK',paymentOption:'arkade',paymentDestination:ELSEWHERE},
+ lightning:{pr:INVOICE,routes:[]},
+};
+function lnurlService(options?:PaymentOption[]){
+ const service={
+  options,urls:[] as string[],
+  answer:(option:string|null):Response|Promise<Response>=>lnurlJson(ANSWERS[option!]),
+  fetchImpl:async(input:string|URL):Promise<Response>=>{
+   const url=new URL(String(input));service.urls.push(url.href);
+   return url.pathname.endsWith('/alice')
+    ?lnurlJson({tag:'payRequest',callback:'https://lnurl.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',...(service.options?{paymentOptions:service.options}:{})})
+    :service.answer(url.searchParams.get('paymentOption'));
+  },
+ };
+ return service;
+}
+type LnurlService=ReturnType<typeof lnurlService>;
+const shieldedRailOf=(wallet:ShieldedWallet,service:LnurlService)=>lnurlShieldedRail(wallet,createLnurlClient({fetchImpl:service.fetchImpl}));
+const callbacks=(service:LnurlService)=>service.urls.filter(u=>u.startsWith('https://lnurl.example/cb')).map(u=>new URL(u));
+
+test('the lnurl-shielded rail is available only when the address advertises a shielded method',async()=>{
+ const wallet=fake(),c=ctx(wallet);
+ const ask=(options?:PaymentOption[],amount=1000)=>shieldedRailOf(wallet,lnurlService(options)).available!(req(ALICE,amount),c);
+ assert.equal(await ask([ARKADE_OPTION,LIGHTNING_OPTION,SHIELDED_OPTION]),true);
+ assert.equal(await ask([ARKADE_OPTION,LIGHTNING_OPTION]),false,'arkade and lightning only');
+ assert.equal(await ask(undefined),false,'no paymentOptions at all');
+ assert.equal(await ask([{...SHIELDED_OPTION,available:false}]),false);
+ assert.equal(await ask([{...SHIELDED_OPTION,type:'arkade'}]),false,'the type decides, not the id');
+ assert.equal(await ask([{...SHIELDED_OPTION,minSendable:5_000_000}]),false,'below the option\'s own minimum');
+ assert.equal(await ask([{...SHIELDED_OPTION,maxSendable:500_000}]),false,'above the option\'s own maximum');
+ assert.equal(await ask([SHIELDED_OPTION],100_001),false,'above the payRequest maximum when the option names none');
+ assert.equal(await ask([{...SHIELDED_OPTION,maxSendable:200_000_000}],150_000),true,'the option\'s own bounds win over the payRequest\'s');
+ const service=lnurlService([SHIELDED_OPTION]),rail=shieldedRailOf(wallet,service);
+ for(const raw of [ALICE,'LNURL1DP68GURN8GHJ7'])assert.equal(rail.match(req(raw),c),true,raw);
+ for(const raw of [SHROL,POOL,'lnbc2500u1x','not an address',''])assert.equal(rail.match(req(raw),c),false,raw);
+ assert.deepEqual(service.urls,[],'classification is format-only');
+});
+
+test('it pays the advertised destination through the shielded rail, reporting its own railId',async()=>{
+ paid.length=0;
+ const wallet=fake(),rail=shieldedRailOf(wallet,lnurlService([SHIELDED_OPTION]));
+ assert.equal(rail.id,'lnurl-shielded');
+ const quote=await rail.quote(req(ALICE,1000),ctx(wallet));
+ assert.deepEqual([quote.railId,quote.amount,quote.fee,quote.total],['lnurl-shielded',1000,0,1000]);
+ assert.deepEqual(paid,[],'a quote pays nothing');
+ await quote.send();
+ assert.deepEqual(paid,[{to:SHROL,amount:1000n}]);
+});
+
+test('it sends paymentOption=registered:shielded and nothing else on the callback',async()=>{
+ const wallet=fake(),service=lnurlService([SHIELDED_OPTION]);
+ await shieldedRailOf(wallet,service).quote(req(ALICE,1000),ctx(wallet));
+ const [callback,...more]=callbacks(service);
+ assert.equal(more.length,0);
+ assert.match(callback!.href,/paymentOption=registered%3Ashielded/);
+ assert.deepEqual([...callback!.searchParams],[['amount','1000000'],['paymentOption','registered:shielded']]);
+});
+
+test('it refuses a destination that is not a parseable shielded address, without paying',async()=>{
+ paid.length=0;
+ const wallet=fake(),c=ctx(wallet);
+ for(const paymentDestination of [POOL,ELSEWHERE,'nonsense','',`${SHROL}x`,undefined]){
+  const service=lnurlService([SHIELDED_OPTION]);
+  service.answer=()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',...(paymentDestination===undefined?{}:{paymentDestination})});
+  await assert.rejects(shieldedRailOf(wallet,service).quote(req(ALICE,1000),c),/callback returned no shielded address/,String(paymentDestination));
+ }
+ assert.deepEqual(paid,[]);
+});
+
+test('it refuses an answer for a different paymentOption than the one requested',async()=>{
+ const wallet=fake(),c=ctx(wallet);
+ const answers:[number,unknown][]=[
+  [1000,{status:'OK',paymentOption:'arkade',paymentDestination:SHROL}],
+  [1000,{status:'OK',paymentOption:'registered:other',paymentDestination:SHROL}],
+  [21,{pr:INVOICE,paymentOption:'registered:shielded'}],
+ ];
+ for(const [amount,answer] of answers){
+  const service=lnurlService([SHIELDED_OPTION]);
+  service.answer=()=>lnurlJson(answer);
+  await assert.rejects(shieldedRailOf(wallet,service).quote(req(ALICE,amount),c),/did not answer registered:shielded with a destination/,JSON.stringify(answer).slice(0,60));
+ }
+});
+
+test('the router ranks lnurl-shielded above lnurl-arkade and the Lightning rails',()=>{
+ const at=(id:string)=>SHIELDED_PRIORITY.indexOf(id);
+ assert.ok(at('lnurl-shielded')>at('shielded-withdraw'),'listed, and after the bare-address rails');
+ for(const lower of ['ark','ark-asset','lnurl-arkade','lightning','lnurl-lightning','onchain'])assert.ok(at('lnurl-shielded')<at(lower),lower);
+});
+
+test('available answers false, and never throws, when the address or the wallet fails',async()=>{
+ const wallet=fake(),c=ctx(wallet),broken=fake({restore:async()=>{throw new Error('journal unreadable');}});
+ const failures=[async()=>{throw new TypeError('network down');},async()=>lnurlJson({error:'Bad gateway'},502),async()=>lnurlJson({status:'ERROR',reason:'Unknown LN address'}),async()=>lnurlJson({tag:'withdrawRequest'}),async()=>new Response('<html>')];
+ for(const fetchImpl of failures)assert.equal(await lnurlShieldedRail(wallet,createLnurlClient({fetchImpl})).available!(req(ALICE,1000),c),false);
+ assert.equal(await shieldedRailOf(broken,lnurlService([SHIELDED_OPTION])).available!(req(ALICE,1000),ctx(broken)),false);
+});
+
+test('it is unavailable for assets, chosen coins and any amount that is not whole sats, and asks the service nothing',async()=>{
+ const wallet=fake(),c=ctx(wallet),service=lnurlService([SHIELDED_OPTION]),rail=shieldedRailOf(wallet,service);
+ const cases:Record<string,PaymentRequest>={
+  'an asset request':{raw:ALICE,amount:1000,assets:[{assetId:ASSET,amount:9n}]},
+  'a fractional amount':req(ALICE,1.5),
+  'a sub-sat amount':req(ALICE,0.5),
+  'no amount':req(ALICE),
+  'a zero amount':req(ALICE,0),
+  'a negative amount':req(ALICE,-1000),
+  'an unsafe amount':req(ALICE,Number.MAX_SAFE_INTEGER+1),
+  'chosen coins':{...req(ALICE,1000),selectedVtxos:[]} as never,
+ };
+ for(const [label,request] of Object.entries(cases)){
+  assert.equal(await rail.available!(request,c),false,label);
+  await assert.rejects(rail.quote(request,c),/whole number of sats/,label);
+ }
+ assert.deepEqual(service.urls,[]);
+});
+
+test('it is unavailable when the wallet cannot pay the amount privately, and available at exactly the limit',async()=>{
+ const order:string[]=[],service=lnurlService([SHIELDED_OPTION]);
+ const ask=(max:bigint)=>{
+  const wallet=fake({max:()=>{order.push('max');return max;},restore:async()=>{order.push('restore');}});
+  return shieldedRailOf(wallet,service).available!(req(ALICE,1000),ctx(wallet));
+ };
+ assert.equal(await ask(1000n),true,'exactly the limit');
+ assert.deepEqual(order,['restore','max'],'recorded Lightning spends are restored before the limit is read');
+ const asked=service.urls.length;
+ assert.equal(await ask(999n),false);
+ assert.equal(await ask(0n),false,'nothing spendable');
+ assert.equal(service.urls.length,asked,'a payment the wallet cannot make is not asked about');
+});
+
+test('a failure of the shielded method hands over to Arkade, then Lightning, and a transient one does not',async t=>{
+ const swaps={resolve:async()=>({eligible:1}) as never,markets:async()=>[],accept:async()=>{throw new Error('not accepted here');},onUpdate:()=>()=>{},
+  quote:async()=>({id:'q',expiresAt:Math.floor(Date.now()/1000)+600,market:{kind:'card',key:'k'},take:{amount:21n},fee:{amount:1n},give:{amount:22n}}) as never};
+ const service=lnurlService([SHIELDED_OPTION,ARKADE_OPTION,LIGHTNING_OPTION]);
+ t.mock.method(globalThis,'fetch',service.fetchImpl);
+ const wallet=fake(),routerOf=()=>{
+  const router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never);
+  for(const rail of lightningRails(wallet,swaps))router.use(rail);
+  return router;
+ };
+ const shielded=(reply:()=>Response)=>{service.answer=option=>option==='registered:shielded'?reply():lnurlJson(ANSWERS[option!]);};
+ const route=(router:PaymentRouter,amount=1000)=>{service.urls.length=0;return router.route(req(ALICE,amount));};
+ const asked=()=>callbacks(service).map(u=>u.searchParams.get('paymentOption'));
+
+ const router=routerOf();
+ assert.deepEqual((await router.options(req(ALICE,1000))).map(o=>o.railId),['lnurl-shielded','lnurl-arkade','lnurl-lightning']);
+ assert.equal((await route(router)).railId,'lnurl-shielded');
+ assert.deepEqual(asked(),['registered:shielded']);
+
+ const refusals=[()=>lnurlJson({status:'ERROR',reason:'The shielded method is disabled'}),()=>lnurlJson({error:'Not found'},404),()=>lnurlJson({status:'OK',paymentOption:'registered:shielded',paymentDestination:'nonsense'})];
+ for(const reply of refusals){
+  shielded(reply);
+  assert.equal((await route(router)).railId,'lnurl-arkade');
+  assert.deepEqual(asked(),['registered:shielded','arkade']);
+ }
+ service.options=[SHIELDED_OPTION,LIGHTNING_OPTION];
+ shielded(refusals[0]!);
+ assert.equal((await route(routerOf(),21)).railId,'lnurl-lightning','with no Arkade option, Lightning is next');
+ assert.deepEqual(asked(),['registered:shielded','lightning']);
+
+ service.options=[SHIELDED_OPTION,ARKADE_OPTION,LIGHTNING_OPTION];
+ const transient:[()=>Response,RegExp][]=[
+  [()=>{throw new TypeError('network down');},/Request failed/],
+  [()=>lnurlJson({error:'Too many requests'},429),/Too many requests/],
+  [()=>lnurlJson({error:'Bad gateway'},502),/Bad gateway/],
+ ];
+ for(const [reply,message] of transient){
+  shielded(reply);
+  await assert.rejects(route(routerOf()),message);
+  assert.deepEqual(asked(),['registered:shielded'],'a blip or a rate limit is reported, not paid around');
  }
 });
