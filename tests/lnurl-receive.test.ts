@@ -41,7 +41,7 @@ function setup({aliases=[] as typeof receiver[],exitDelay=2048n}={}){
  const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true;methods?:true;methodsRefused?:true;withdraw?:true}>}|undefined;
  const bound=()=>requests.filter(isBind).map(r=>JSON.parse(String(r.init?.body)) as Bind);
  return {service:createLnurlReceive(config),config,state,requests,watched,registered,funded,listeners,saved,bound,aliases,key,
-  signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
+  signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},forge:(change:(entry:Record<string,unknown>)=>void)=>{const stored=structuredClone(state.get(key('lnurl-receive','state-v1'))) as {servers:Record<string,Record<string,unknown>>};Object.values(stored.servers).forEach(change);state.set(key('lnurl-receive','state-v1'),stored);},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
 }
 const refusal=()=>json({error:'An HD receiver cannot be downgraded by a static registration',code:'invalid_rails'},400);
 
@@ -194,7 +194,7 @@ test('switching private receive on registers the shielded address on every bound
  assert.deepEqual(f.bound().map(b=>b.methods?.length),[undefined,undefined,1,1]);
  assert.deepEqual(f.requests.filter(isBind).slice(-2).map(r=>r.url.split('/').at(-2)),['alice','bob']);
  assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[shielded],[shielded]]);
- assert.equal(await f.service.privateReceive(),true);
+ assert.deepEqual([await f.service.privateReceive(),(await f.service.current())?.paymentMethods],[true,[shielded]]);
 });
 
 test('switching it off withdraws the method rather than merely stopping',async()=>{
@@ -213,12 +213,13 @@ test('a server that keeps the method after a withdrawal is reported, and the wit
  assert.deepEqual([server().withdraw,await f.service.privateReceive()],[true,false]);
  await assert.rejects(f.service.check(),{message:METHODS_NOT_WITHDRAWN});
  assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[],[]]);
+ await assert.rejects(f.service.recover(),{message:METHODS_NOT_WITHDRAWN});assert.equal(server().methods,undefined);
  f.keep(true);await f.service.check();
  assert.deepEqual([server().withdraw,await f.service.privateReceive()],[undefined,false]);
  await f.service.check();assert.equal(f.bound().at(-1)!.methods,undefined);
- const key=f.key('lnurl-receive','state-v1'),forged=structuredClone(f.state.get(key)) as {servers:Record<string,object>};
- Object.values(forged.servers).forEach(entry=>Object.assign(entry,{methods:true,withdraw:true}));f.state.set(key,forged);
+ f.forge(entry=>Object.assign(entry,{methods:true,withdraw:true}));
  assert.equal(await f.service.privateReceive(),false);
+ await f.service.check();assert.deepEqual(f.bound().at(-1)!.methods,[]);
 });
 
 test('a switch-off that cannot reach the service is retried until the withdrawal lands',async()=>{
@@ -275,4 +276,43 @@ test('private receive needs an enabled alias and a shielded address, and fails w
  await f.service.setPrivateReceive(false);assert.deepEqual([f.requests.length,f.reads()],[0,0]);
  await f.service.claim();await assert.rejects(createLnurlReceive({...f.config,shieldedAddress:undefined}).setPrivateReceive(true),/shielded address/);
  assert.deepEqual([f.bound().length,await f.service.privateReceive()],[1,false]);
+});
+
+test('a restored device adopts the shielded method the service already advertises, and can withdraw it',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);f.state.clear();
+ const restored=createLnurlReceive(f.config);
+ assert.equal(await restored.privateReceive(),false);
+ await restored.recover();
+ assert.deepEqual([await restored.privateReceive(),f.bound().at(-1)!.methods],[true,[shielded]]);
+ await restored.check();assert.equal(await restored.privateReceive(),true);
+ f.forge(entry=>{for(const row of entry.receivers as {paymentMethods?:unknown}[])delete row.paymentMethods;});
+ await restored.check();assert.deepEqual((await restored.current())?.paymentMethods,[shielded]);
+ await restored.setPrivateReceive(false);
+ assert.deepEqual([f.bound().at(-1)!.methods,await restored.privateReceive(),(await restored.current())?.paymentMethods],[[],false,[]]);
+});
+
+test('switching off after a restore withdraws a method the service still lists, even when no flag survived',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);f.state.clear();
+ const restored=createLnurlReceive({...f.config,shieldedAddress:undefined});
+ await restored.recover();
+ assert.deepEqual([await restored.privateReceive(),(await restored.current())?.paymentMethods],[false,[shielded]]);
+ await restored.setPrivateReceive(false);
+ assert.deepEqual(f.requests.slice(-2).map(r=>`${r.init?.method??'GET'} ${new URL(r.url).pathname}`),['POST /lnurl/address/alice/arkade','GET /lnurl/address']);
+ assert.deepEqual([f.bound().at(-1)!.methods,(await restored.current())?.paymentMethods],[[],[]]);
+});
+
+test('claim on a device whose journal lacks the flag adopts what the service advertises',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
+ f.forge(entry=>{delete entry.methods;delete entry.methodsRefused;});
+ const device=createLnurlReceive(f.config);
+ assert.equal(await device.privateReceive(),false);
+ await device.claim();assert.equal(await device.privateReceive(),true);
+});
+
+test('a shielded row with a malformed destination still counts as advertised',async()=>{
+ const f=setup({aliases:[{...receiver,paymentMethods:[{type:'shielded'}]} as typeof receiver]});f.keep(false);
+ await assert.rejects(f.service.recover(),{message:METHODS_REFUSED});
+ assert.deepEqual([Object.values(f.saved()!.servers)[0]!.methods,await f.service.privateReceive()],[true,false]);
+ await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
+ assert.equal(Object.values(f.saved()!.servers)[0]!.withdraw,true);
 });
