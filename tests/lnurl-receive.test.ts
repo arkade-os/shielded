@@ -41,7 +41,7 @@ function setup({aliases=[] as typeof receiver[],exitDelay=2048n}={}){
  const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true;methods?:true;methodsRefused?:true;withdraw?:true}>}|undefined;
  const bound=()=>requests.filter(isBind).map(r=>JSON.parse(String(r.init?.body)) as Bind);
  return {service:createLnurlReceive(config),config,state,requests,watched,registered,funded,listeners,saved,bound,aliases,key,
-  signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},forge:(change:(entry:Record<string,unknown>)=>void)=>{const stored=structuredClone(state.get(key('lnurl-receive','state-v1'))) as {servers:Record<string,Record<string,unknown>>};Object.values(stored.servers).forEach(change);state.set(key('lnurl-receive','state-v1'),stored);},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
+  signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},relist:(handle:string,methods:unknown[])=>{kept.set(handle,methods);},forge:(change:(entry:Record<string,unknown>)=>void)=>{const stored=structuredClone(state.get(key('lnurl-receive','state-v1'))) as {servers:Record<string,Record<string,unknown>>};Object.values(stored.servers).forEach(change);state.set(key('lnurl-receive','state-v1'),stored);},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
 }
 const refusal=()=>json({error:'An HD receiver cannot be downgraded by a static registration',code:'invalid_rails'},400);
 
@@ -278,59 +278,70 @@ test('private receive needs an enabled alias and a shielded address, and fails w
  assert.deepEqual([f.bound().length,await f.service.privateReceive()],[1,false]);
 });
 
-test('a restored device adopts the shielded method the service already advertises, and can withdraw it',async()=>{
+test('a restored device does not adopt the shielded method its listing shows, and opting in again is explicit',async()=>{
  const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);f.state.clear();
- const restored=createLnurlReceive(f.config);
- assert.equal(await restored.privateReceive(),false);
- await restored.recover();
- assert.deepEqual([await restored.privateReceive(),f.bound().at(-1)!.methods],[true,[shielded]]);
- await restored.check();assert.equal(await restored.privateReceive(),true);
+ const restored=createLnurlReceive(f.config),binds=f.bound().length,reads=f.reads();
+ await restored.recover();await restored.check();
+ assert.deepEqual([f.bound().slice(binds).map(b=>b.methods),f.reads(),await restored.privateReceive()],[[undefined,undefined],reads,false]);
+ assert.equal(await restored.listedShielded(),'own');
+ await restored.setPrivateReceive(true);
+ assert.deepEqual([f.bound().at(-1)!.methods,await restored.privateReceive()],[[shielded],true]);
  f.forge(entry=>{for(const row of entry.receivers as {paymentMethods?:unknown}[])delete row.paymentMethods;});
  await restored.check();assert.deepEqual((await restored.current())?.paymentMethods,[shielded]);
  await restored.setPrivateReceive(false);
- assert.deepEqual([f.bound().at(-1)!.methods,await restored.privateReceive(),(await restored.current())?.paymentMethods],[[],false,[]]);
+ assert.deepEqual([f.bound().at(-1)!.methods,await restored.privateReceive(),await restored.listedShielded()],[[],false,null]);
 });
 
 test('switching off after a restore withdraws a method the service still lists, even when no flag survived',async()=>{
  const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);f.state.clear();
- const restored=createLnurlReceive({...f.config,shieldedAddress:undefined});
+ const restored=createLnurlReceive(f.config);
  await restored.recover();
  assert.deepEqual([await restored.privateReceive(),(await restored.current())?.paymentMethods],[false,[shielded]]);
- await restored.setPrivateReceive(false);
+ const reads=f.reads();await restored.setPrivateReceive(false);
  assert.deepEqual(f.requests.slice(-2).map(r=>`${r.init?.method??'GET'} ${new URL(r.url).pathname}`),['POST /lnurl/address/alice/arkade','GET /lnurl/address']);
- assert.deepEqual([f.bound().at(-1)!.methods,(await restored.current())?.paymentMethods],[[],[]]);
+ assert.deepEqual([f.bound().at(-1)!.methods,(await restored.current())?.paymentMethods,f.reads()],[[],[],reads]);
 });
 
-test('claim on a device whose journal lacks the flag adopts what the service advertises',async()=>{
+test('claim on a device whose journal lacks the flag does not adopt what the service lists either',async()=>{
  const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);
  f.forge(entry=>{delete entry.methods;delete entry.methodsRefused;});
- const device=createLnurlReceive(f.config);
- assert.equal(await device.privateReceive(),false);
- await device.claim();assert.equal(await device.privateReceive(),true);
+ const device=createLnurlReceive(f.config),binds=f.bound().length,reads=f.reads();
+ await device.claim();
+ assert.deepEqual([f.bound().slice(binds).map(b=>b.methods),f.reads(),await device.privateReceive()],[[undefined],reads,false]);
+ assert.equal(await device.listedShielded(),'own');
 });
 
-test('a listed shielded entry with our own address is adopted',async()=>{
- const f=setup({aliases:[{...receiver,paymentMethods:[shielded]} as typeof receiver]});
- await f.service.recover();
- assert.deepEqual([await f.service.privateReceive(),f.bound().at(-1)!.methods],[true,[shielded]]);
- assert.equal(await f.service.foreignShielded(),false);
+test('a listing that names several candidates, ours among them, is never adopted and our address is never sent',async()=>{
+ const candidate=(fill:number)=>bech32m.encode('shrol2',bech32m.toWords(new Uint8Array(64).fill(fill)),false);
+ const probes=[candidate(9),SHROL,candidate(11)].map((destination,i)=>({...receiver,handle:`probe${i}`,username:`probe${i}`,lightningAddress:`probe${i}@${domain}`,paymentMethods:[{type:'shielded',destination}]}) as typeof receiver);
+ const f=setup({aliases:probes});await f.service.recover();await f.service.check();
+ assert.deepEqual([f.bound().length,f.bound().every(b=>b.methods===undefined),f.reads()],[6,true,0]);
+ assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
+ assert.deepEqual([await f.service.privateReceive(),await f.service.listedShielded()],[false,'foreign']);
+ const reads=f.reads();await f.service.setPrivateReceive(false);
+ assert.deepEqual([f.bound().slice(-3).map(b=>b.methods),f.reads(),await f.service.listedShielded()],[[[],[],[]],reads,null]);
 });
 
-test('a shielded entry naming a different destination is never adopted, no bind carries our address, and switching off still withdraws it',async()=>{
- const other=bech32m.encode('shrol2',bech32m.toWords(new Uint8Array(64).fill(9)),false);
- const f=setup({aliases:[{...receiver,paymentMethods:[{type:'shielded',destination:other}]} as typeof receiver]});
- await f.service.recover();
- assert.deepEqual(f.bound().map(b=>b.methods),[undefined]);assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
- assert.deepEqual([await f.service.privateReceive(),await f.service.foreignShielded()],[false,true]);
- await f.service.setPrivateReceive(false);
- assert.deepEqual([f.bound().at(-1)!.methods,await f.service.foreignShielded(),(await f.service.current())?.paymentMethods],[[],false,[]]);
+test('after a verified switch-off, the service listing our address again does not turn private receive back on',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);await f.service.setPrivateReceive(false);
+ assert.deepEqual([await f.service.privateReceive(),await f.service.listedShielded()],[false,null]);
+ f.relist('alice',[shielded]);const binds=f.bound().length,reads=f.reads();
+ await f.service.recover();await f.service.check();
+ assert.deepEqual([f.bound().slice(binds).map(b=>b.methods),f.reads(),await f.service.privateReceive()],[[undefined,undefined],reads,false]);
+ assert.equal(await f.service.listedShielded(),'own');
 });
 
-test('a shielded entry with a malformed or empty destination is never adopted, yet still counts as advertised',async()=>{
- const odd=[{type:'shielded'},{type:'shielded',destination:''},{type:'shielded',destination:42}].map((method,i)=>({...receiver,handle:`odd${i}`,username:`odd${i}`,lightningAddress:`odd${i}@${domain}`,paymentMethods:[method]}) as typeof receiver);
- const f=setup({aliases:odd});await f.service.recover();
- assert.deepEqual(f.bound().map(b=>b.methods),[undefined,undefined,undefined]);
- assert.deepEqual([await f.service.privateReceive(),await f.service.foreignShielded()],[false,true]);
+for(const [shape,method] of [['no destination',{type:'shielded'}],['an empty destination',{type:'shielded',destination:''}],['a numeric destination',{type:'shielded',destination:42}]] as const)test(`a shielded entry with ${shape} counts as foreign and keeps a withdrawal pending`,async()=>{
+ const f=setup({aliases:[{...receiver,paymentMethods:[method]} as typeof receiver]});await f.service.recover();
+ assert.deepEqual([f.bound().map(b=>b.methods),await f.service.privateReceive(),await f.service.listedShielded()],[[undefined],false,'foreign']);
  f.keep(false);await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
- assert.deepEqual([f.bound().slice(-3).map(b=>b.methods),Object.values(f.saved()!.servers)[0]!.withdraw],[[[],[],[]],true]);
+ assert.deepEqual([f.bound().at(-1)!.methods,Object.values(f.saved()!.servers)[0]!.withdraw,await f.service.listedShielded()],[[],true,'foreign']);
+});
+
+test('an empty own address never matches an empty listed destination',async()=>{
+ const f=setup({aliases:[{...receiver,paymentMethods:[{type:'shielded'}]} as typeof receiver]});
+ const empty=createLnurlReceive({...f.config,shieldedAddress:()=>''});
+ await empty.recover();
+ assert.equal(await empty.listedShielded(),'foreign');
+ await assert.rejects(empty.setPrivateReceive(true),/shielded address/);
 });

@@ -111,16 +111,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const reply=await response.json().catch(cause=>{if(response.ok)throw new LnurlTransportError('Request failed',{cause});}) as {error?:unknown;code?:unknown}|undefined;
   if(!response.ok)throw new LnurlError(typeof reply?.error==='string'?reply.error:response.statusText,{httpStatus:response.status,code:typeof reply?.code==='string'?reply.code:undefined});
  };
- const advertised=()=>{if(!config.shieldedAddress)throw new Error('Private receive requires a shielded address');return config.shieldedAddress();};
+ const advertised=()=>{const address=config.shieldedAddress?.();if(!address)throw new Error('Private receive requires a shielded address');return address;};
  const refuseMethods=async(state:ReceiveState,server:ServerState)=>{if(!server.methodsRefused){server.methodsRefused=true;await save(state);}};
  const shieldedListed=(server:ServerState)=>server.receivers.filter(row=>row.status==='active').flatMap(row=>row.paymentMethods??[]).filter(m=>m.type==='shielded');
  const refresh=(server:ServerState,listed:LnurlReceiver[])=>{for(const row of server.receivers){const methods=listed.find(l=>l.handle===row.handle)?.paymentMethods;if(methods)row.paymentMethods=methods;else delete row.paymentMethods;}};
- // Only an entry naming our own address proves this seed registered it; a foreign or malformed one must never switch consent on.
- const takeAdvertised=(server:ServerState)=>{
-  if(!config.shieldedAddress||server.methods||server.withdraw||!shieldedListed(server).length)return;
-  const own=config.shieldedAddress();
-  if(shieldedListed(server).some(m=>m.destination===own)){server.methods=true;server.methodsRefused=true;}
- };
  const confirm=async(state:ReceiveState,server:ServerState)=>{
   const before=JSON.stringify(server.receivers);
   refresh(server,await registeredReceivers());
@@ -209,7 +203,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
   payouts:async()=>(await load()).payouts,
   privateReceive:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&!server.methodsRefused&&!server.withdraw;},
-  foreignShielded:async()=>{const server=(await load()).servers[serverKey];return Boolean(server&&shieldedListed(server).some(m=>m.destination!==config.shieldedAddress?.()));},
+  listedShielded:async():Promise<'own'|'foreign'|null>=>{
+   const server=(await load()).servers[serverKey],listed=server?shieldedListed(server):[],own=listed.length?config.shieldedAddress?.():undefined;
+   return !listed.length?null:own&&listed.every(m=>m.destination===own)?'own':'foreign';
+  },
   // methodsRefused is raised with the switch and cleared only once a listing echoes the method, so a bind alone never reads as live.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];
@@ -233,13 +230,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(automatic&&!existing&&owned.length)throw new Error('A Lightning address already exists. Use Recover a Lightning address to enable it here explicitly.');
    const registered=existing??fromAddress(await client.registerAddress({token:await token(),domain,...(options.username?{username:options.username}:{}),...(options.claimCode?{claimCode:options.claimCode}:{})}));
    if(!existing){server.pending=registered.handle;await save(state);}
-   server.receivers=[registered,...server.receivers.filter(row=>row.handle!==registered.handle)];delete server.pending;refresh(server,owned);takeAdvertised(server);await save(state);
+   server.receivers=[registered,...server.receivers.filter(row=>row.handle!==registered.handle)];delete server.pending;refresh(server,owned);await save(state);
    await settle(state,server);return registered;
   }),
   // Fresh device or restored seed: every /2/7 child up to the last one that ever held a coin is watched again.
   recover:()=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey]??={receivers:[]};await save(state);
-   server.receivers=(await registeredReceivers()).filter(row=>row.status==='active');delete server.pending;takeAdvertised(server);
+   server.receivers=(await registeredReceivers()).filter(row=>row.status==='active');delete server.pending;
    if(!watched){await watch(state.payouts);watched=true;}
    const branch=await currentBranch();await adopt(state,branch,0,await scan(branch,0,RECOVERY_GAP));
    await settle(state,server);return server.receivers;
