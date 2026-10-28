@@ -9,6 +9,7 @@ interface ReceiveBranch {descriptor:string;serverPubKey:string;hrp:'ark'|'tark';
 export interface LnurlPayout {id:string;descriptor:string;address:string;script:string}
 export interface PaymentMethod {type:string;destination:string}
 export interface LnurlReceiver {handle:string;domain:string;lightningAddress:string|undefined;lnurl:string;status:string;paymentMethods?:PaymentMethod[]}
+export interface PrivateReceiveState {on:boolean;pending:boolean;refused:boolean;withdrawing:boolean;listed:'own'|'foreign'|null}
 export interface LnurlReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
@@ -208,13 +209,16 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   enabled:async()=>Boolean((await load()).servers[serverKey]),
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
   payouts:async()=>(await load()).payouts,
-  privateReceive:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&!server.methodsRefused&&!server.withdraw;},
-  listedShielded:async():Promise<'own'|'foreign'|null>=>{
+  privateReceiveState:async():Promise<PrivateReceiveState>=>{
    const server=(await load()).servers[serverKey],listed=server?shieldedListed(server):[],own=listed.length?config.shieldedAddress?.():undefined;
-   return !listed.length?null:own&&listed.every(m=>m.destination===own)?'own':'foreign';
+   return {
+    on:server?.methods===true&&!server.methodsRefused&&!server.withdraw,
+    pending:server?.methods===true&&server.methodsRefused===true,
+    refused:server?.methodsRefused===true&&!server.methods,
+    withdrawing:server?.withdraw===true,
+    listed:!listed.length?null:own&&listed.every(m=>m.destination===own)?'own':'foreign',
+   };
   },
-  privateReceiveRefused:async()=>{const server=(await load()).servers[serverKey];return server?.methodsRefused===true&&!server.methods;},
-  privateReceivePending:async()=>{const server=(await load()).servers[serverKey];return server?.methods===true&&server.methodsRefused===true;},
   // methodsRefused with methods: unverified until a listing echoes it, so a bind alone never reads as live. Without methods: the service refused and consent was dropped, so nothing is sent until the next switch.
   setPrivateReceive:(on:boolean)=>serial(async()=>{
    const state=await load(),server=state.servers[serverKey];

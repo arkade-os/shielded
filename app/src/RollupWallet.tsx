@@ -11,7 +11,7 @@ import type {StepState} from '../../src/shielded/handle.ts';
 import {LNURL_BASE} from '../../src/shielded/lightning.ts';
 import {IndexedDbLightningRepository} from '../../src/shielded/lightning-repository.ts';
 import {createLightningWallet,createPrivateLightning,lightningOwner} from '../../src/shielded/lightning-wallet.ts';
-import {METHODS_NOT_WITHDRAWN,METHODS_REFUSED,createLnurlReceive} from '../../src/shielded/lnurl-receive.ts';
+import {METHODS_NOT_WITHDRAWN,METHODS_REFUSED,createLnurlReceive,type PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {RECOVERY_LINE} from '../../src/shielded/epoch-recovery.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
@@ -59,6 +59,7 @@ const invoiceLine=(i:Invoice)=>i.outcome==='accepted'||i.outcome==='open'?`Waiti
  :INVOICE[i.outcome]??`The swap ${i.outcome==='needs_recovery'?'needs recovery':'failed'}${i.failure?`: ${i.failure}`:'.'}`;
 const LINK_STATE={unclaimed:'Unclaimed',claimed:'Claimed','taken-back':'Taken back'} as const;
 type ClaimView={notes:{asset:bigint;amount:bigint}[];mine:boolean}|{error:string};
+const NOT_PRIVATE:PrivateReceiveState={on:false,pending:false,refused:false,withdrawing:false,listed:null};
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState('');
@@ -71,7 +72,7 @@ export default function RollupWallet(){
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[restoreDate,setRestoreDate]=useState('');
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
- const [privateOn,setPrivateOn]=useState(false),[privatePending,setPrivatePending]=useState(false),[listedAs,setListedAs]=useState<'own'|'foreign'|null>(null),[privateRefused,setPrivateRefused]=useState(false),[notWithdrawn,setNotWithdrawn]=useState(false);
+ const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
  const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined);
  const [,setQuoteRevision]=useState(0);
@@ -135,8 +136,8 @@ export default function RollupWallet(){
 
  const lnFail=(error:unknown)=>{
   const text=errorText(error);
-  // A refusal shows from the service's saved marker; the tick makes the effect below read it.
-  if(text===METHODS_REFUSED)setTick(t=>t+1);else if(text===METHODS_NOT_WITHDRAWN)setNotWithdrawn(true);else setLnError(text);
+  // A method failure shows from the service's saved state; the tick makes the effect below read it.
+  if(text===METHODS_REFUSED||text===METHODS_NOT_WITHDRAWN)setTick(t=>t+1);else setLnError(text);
  };
  const lightning=async(action:()=>Promise<void>)=>{
   if(!wallet?.swaps)return;
@@ -160,7 +161,6 @@ export default function RollupWallet(){
  });
  const setPrivate=(on:boolean)=>lightning(async()=>{
   if(!lnurlRef.current)throw new Error('The wallet is still loading.');
-  setNotWithdrawn(false);
   await lnurlRef.current.setPrivateReceive(on);
  });
 
@@ -261,10 +261,7 @@ export default function RollupWallet(){
  useEffect(()=>{
   const service=lnurlRef.current;if(!wallet||!lnAddress||lnBusy||!service)return;
   let stop=false;
-  void Promise.all([service.privateReceive(),service.listedShielded(),service.privateReceiveRefused(),service.privateReceivePending()]).then(([on,kind,refused,pending])=>{
-   if(stop)return;
-   setPrivateOn(on);setListedAs(kind);setPrivateRefused(refused);setPrivatePending(pending);setNotWithdrawn(w=>w&&!on&&!!kind);
-  },error=>{if(!stop)setLnError(errorText(error));});
+  void service.privateReceiveState().then(next=>{if(!stop)setPrivateState(next);},error=>{if(!stop)setLnError(errorText(error));});
   return()=>{stop=true;};
  },[wallet,tick,lnAddress,lnBusy]);
 
@@ -352,7 +349,8 @@ export default function RollupWallet(){
  const openPanel=(name:'receive'|'send')=>{if(name!==tab){setTab(name);setTo('');}setSheetOpen(true);};
  const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,syncing:!synced,recoveryLine:RECOVERY_LINE});
  const docked=narrow&&ready;
- const privateNotice=notWithdrawn?'pending':listedAs==='foreign'?'foreign':privatePending?'confirming':listedAs==='own'&&!privateOn?'own':privateRefused?'refused':'';
+ const {on:isOn,pending:isPending,refused:isRefused,withdrawing,listed:listedAs}=privateState;
+ const privateNotice=withdrawing&&listedAs!==null?'pending':listedAs==='foreign'?'foreign':isPending?'confirming':listedAs==='own'&&!isOn?'own':isRefused?'refused':'';
  const turnOff=(label='Turn off')=><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void setPrivate(false)}>{label}</button>;
 
  return <div className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')}><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>Wallet</span></a><a className="stock-home" href="/">Home</a></header>
@@ -388,7 +386,7 @@ export default function RollupWallet(){
      <div className="stock-address"><small>LIGHTNING</small>
       {lnAddress?<Copyable value={lnAddress} qr={lnAddress} label="QR code of your Lightning address"/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
       {lnAddress&&<>
-       <label className="stock-check"><input type="checkbox" checked={privateOn||privatePending} aria-disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>{if(!lnBusy)void setPrivate(e.target.checked);}}/>Private receive</label>
+       <label className="stock-check"><input type="checkbox" checked={isOn||isPending} aria-disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>{if(!lnBusy)void setPrivate(e.target.checked);}}/>Private receive</label>
        <p id="stock-private-hint" className="stock-muted">Lists your shielded address on this Lightning address so payers can pay you inside the pool. Anyone who looks the Lightning address up can then see that you use the pool.</p>
        {privateNotice==='pending'&&<p className="stock-blocked" role="alert">Not withdrawn yet: the service still lists a shielded address on your Lightning address, so payers may still be offered it. This wallet asks the service to remove it again while this page is open.</p>}
        {privateNotice==='foreign'&&<><p className="stock-blocked" role="status">Your Lightning address lists a shielded address that is not this wallet&apos;s. A payer who uses it pays that address, not yours. Turn off asks the service to remove every shielded address listed there, this wallet&apos;s included.</p><div className="stock-actions">{turnOff()}</div></>}
