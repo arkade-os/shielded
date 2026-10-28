@@ -267,6 +267,15 @@ test('a checkpoint the pool\'s root refutes, or another than the one asked for, 
  for (const [label, served] of [['refuted', refuted], ['earlier', earlier]] as const) assert.equal((await epochFreshAccount(hash, aliceKeys, 130, served)).batchCount, 0, label);
 });
 
+test('a genuine checkpoint of an earlier epoch at the asked block count gives way to the replay start', async () => {
+ const pool = await longPool(), earlier = new NoteFrontier(hash), bornAt = 5 * 64;
+ for (const record of pool.records.slice(LONG, LONG + 64)) earlier.appendRoot(BigInt(record.noteBlockRoot));
+ const served = { epoch: 1, blocks: 64, filled: earlier.snapshot().filled };
+ const api = ((path: string, ...rest: [unknown?, (() => void)?]) => path === '/checkpoints/2/64' ? Promise.resolve(served) : pool.api(path, ...rest)) as PoolApi;
+ const control = await epochFreshAccount(hash, aliceKeys, bornAt, pool.api), start = await epochFreshAccount(hash, aliceKeys, bornAt, api);
+ assert.deepEqual([control.batchCount, start.batchCount, start.epoch, start.prevNoteRoot()], [3 * LONG, LONG, 1, undefined]);
+});
+
 test('a checkpoint at blocks 0 is the empty tree of an unrotated epoch, so it takes no prevNoteRoot', () => {
  const start = (prevNoteRoot?: bigint) => EpochAccount.atCheckpoint(hash, aliceKeys, { epochLen: 4, checkpoint: { epoch: 2, blocks: 0, filled: Array<string>(NOTE_DEPTH - SUBTREE_DEPTH).fill('0') }, bornAt: 8, ...(prevNoteRoot === undefined ? {} : { prevNoteRoot }) });
  assert.equal(start().prevNoteRoot(), undefined);
