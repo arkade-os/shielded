@@ -156,3 +156,5 @@
 .stock-card .stock-check input[aria-disabled=true]{opacity:.45}
 @media(pointer:coarse){.stock-card label.stock-check{min-height:44px}}
 .stock-address>[role=status]:empty{position:absolute}
+.stock-copy .stock-code{flex:1;min-width:0;padding:0;border:0;background:none;box-shadow:none;color:inherit;text-align:left;cursor:pointer}
+.stock-copy .stock-code:focus-visible{outline:2px solid var(--or);outline-offset:2px}

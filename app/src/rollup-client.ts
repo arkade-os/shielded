@@ -60,6 +60,8 @@ export const privateReceiveView=({on,pending,refused,withdrawing,listed}:Private
  checked:on||pending,
  notice:withdrawing&&listed!==null?'pending':listed==='foreign'?'foreign':pending?'confirming':listed==='own'&&!on?'own':refused?'refused':'',
 });
+/** A long value as its first 20 and last 12 characters; copy, QR and share always take the whole value. */
+export const shortValue=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
 export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],assetIdOf:(field:bigint)=>string|undefined){
  const totals=new Map<bigint,bigint>();
  for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
