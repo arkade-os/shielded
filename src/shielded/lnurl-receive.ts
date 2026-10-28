@@ -194,13 +194,15 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const current=state.payouts.find(row=>row.script===server.current);
   if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server);
   await bind(state,server);
-  // Off, the listing is still read so another device's registration shows here; the read sends no methods and no address.
-  if(server.methods||server.withdraw)await confirm(state,server);else await relist(state,server);
+  if(server.methods||server.withdraw)await confirm(state,server);
  };
  const check=()=>serial(async()=>{
   const state=await load(),server=state.servers[serverKey];if(!server)return;
   if(!watched){await watch(state.payouts);watched=true;}
+  const off=!server.methods&&!server.withdraw;
   await settle(state,server);
+  // Off, the listing is still read so another device's registration shows here; the read sends no methods and no address.
+  if(off&&server.receivers.some(row=>row.status==='active'))await relist(state,server);
  });
  return {
   enabled:async()=>Boolean((await load()).servers[serverKey]),

@@ -453,3 +453,34 @@ test('switching off from the refused state while a listing remains still withdra
  assert.deepEqual(f.bound().slice(-2).map(b=>b.methods),[[],[]]);
  assert.deepEqual([await f.service.privateReceiveRefused(),await f.service.listedShielded()],[false,null]);
 });
+
+const listings=(f:{requests:{url:string;init?:RequestInit}[]})=>f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&(r.init?.method??'GET')==='GET').length;
+
+test('claim and recover each read the listing once',async()=>{
+ const f=setup(),g=setup({aliases:[receiver]});
+ await f.service.claim();await g.service.recover();
+ assert.deepEqual([listings(f),listings(g)],[1,1]);
+});
+
+test('a claim whose bind landed resolves even when a later listing read would fail',async()=>{
+ const f=setup();let gets=0;
+ const svc=createLnurlReceive({...f.config,fetch:(url:string,init?:RequestInit)=>url.endsWith('/lnurl/address')&&!init?.method&&++gets>1?Promise.reject(new TypeError('network down')):f.config.fetch(url,init)});
+ assert.equal((await svc.claim()).lightningAddress,receiver.lightningAddress);
+ assert.deepEqual([f.bound().length,(await svc.current())?.handle],[1,'alice']);
+});
+
+test('a check in the off state reads the listing once, and not at all without an active alias',async()=>{
+ const f=setup();await f.service.claim();
+ const before=listings(f);await f.service.check();
+ assert.equal(listings(f)-before,1);
+ f.forge(entry=>{for(const row of entry.receivers as {status:string}[])row.status='inactive';});
+ const idle=listings(f);await f.service.check();
+ assert.equal(listings(f),idle);
+});
+
+test('a check that settles a pending withdrawal reads the listing once',async()=>{
+ const f=setup();await f.service.claim();await f.service.setPrivateReceive(true);f.keep(false);
+ await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
+ f.keep(true);const before=listings(f);await f.service.check();
+ assert.deepEqual([listings(f)-before,Object.values(f.saved()!.servers)[0]!.withdraw],[1,undefined]);
+});
