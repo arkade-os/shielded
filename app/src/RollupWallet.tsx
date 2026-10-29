@@ -69,7 +69,7 @@ export default function RollupWallet(){
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'receive'|'send'>('receive'),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
- const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[restoreDate,setRestoreDate]=useState('');
+ const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[restoreDate,setRestoreDate]=useState(''),[restoreStarted,setRestoreStarted]=useState(false);
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState('');
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -172,6 +172,7 @@ export default function RollupWallet(){
 
  const restoreWallet=async()=>{
   if(busyRef.current)return;
+  setRestoreStarted(true);
   try{
    const at=restoreDate?Date.parse(restoreDate):NaN,token=poolRef.current?.pool?.token;
    const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(''),at)}:undefined;
@@ -180,7 +181,7 @@ export default function RollupWallet(){
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
    }});
   }catch(error){if(mounted.current)setRestoreError(errorText(error));}
-  finally{if(mounted.current){busyRef.current=false;setBusy(false);}}
+  finally{if(mounted.current){busyRef.current=false;setBusy(false);setRestoreStarted(false);}}
  };
 
  useEffect(()=>{
@@ -320,7 +321,7 @@ export default function RollupWallet(){
  };
  const links=wallet?.links()??[],mintedLink=links.find(l=>l.token===minted),claimProblem=claim?claimTokenError(claim):'';
 
- const reserves=Object.keys(pool?.pool?.reserves??{}),address=restoring.current?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),funding=restoring.current?'':arkAddress||(early?.secret===secret?early.ark??'':''),listingFull=listingBlocked(pool?.pool);
+ const reserves=Object.keys(pool?.pool?.reserves??{}),address=restoring.current||restoreStarted?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),funding=restoring.current||restoreStarted?'':arkAddress||(early?.secret===secret?early.ark??'':''),listingFull=listingBlocked(pool?.pool);
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
  const assetUnits=(id:string)=>wallet?.shieldedBalance(assetFieldOfId(id))??0n;
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
