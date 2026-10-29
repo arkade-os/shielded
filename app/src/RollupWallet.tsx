@@ -45,7 +45,7 @@ const WHERE:Record<string,string>={
  unshield:'Out of the pool to an Arkade address; the amount is public.',
  'shielded-send':'Inside the pool; amount and parties stay private.',
  'shielded-receive':'Inside the pool; amount and sender stay private.',
- 'lightning-receive':'The Lightning payout is public until it enters the pool.',
+ 'lightning-receive':'The payout is public until it enters the pool.',
  'claim-link':'Inside the pool: into a claim link. Whoever claims it gets the amount, privately.',
  merge:'Inside the pool: your own notes, merged into one. Nothing left the wallet.',
  list:'To the pool, listing this asset so anyone can shield it.',
