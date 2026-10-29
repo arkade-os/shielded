@@ -38,8 +38,8 @@ function units(pending:readonly RollupSpend[]):RollupSpend[][] {
  return out;
 }
 
-/** The next batch, or undefined while it should keep waiting. `padding` fills empty slots with operator zero spends. */
-export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padding:(count:number)=>RollupSpend[],maxCoins=BATCH_SLOTS,waitMs=BATCH_WAIT_MS):RollupSelection|undefined {
+/** The next batch once it is full or `waitMs` after the last one, else undefined. `padding` fills empty slots with operator zero spends. */
+export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padding:(count:number)=>RollupSpend[],maxCoins=BATCH_SLOTS,waitMs=BATCH_WAIT_MS,lastBatchAt=-Infinity):RollupSelection|undefined {
  if(!pending.length)return undefined;
  const chosen:RollupSpend[]=[];
  let asset:string|undefined,coins=0;
@@ -51,8 +51,7 @@ export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padd
   chosen.push(...unit);asset=nextAsset;coins=nextCoins;
  }
  if(!chosen.length)return undefined;
- const oldest=Math.min(...pending.map(s=>s.receivedAt));
- if(chosen.length<BATCH_SLOTS&&now-oldest<waitMs)return undefined;
+ if(chosen.length<BATCH_SLOTS&&now-lastBatchAt<waitMs)return undefined;
  const spends=[...chosen,...padding(BATCH_SLOTS-chosen.length)];
  return {spends,...(asset?{asset}:{}),legs:spends.map(legOf)};
 }

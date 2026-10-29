@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
-import {JOIN_BATCH_WAIT_MS,RESERVE_DEPOSIT_INPUTS,selectRollupBatch,type RollupSpend} from '../src/rollup/batcher.ts';
+import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,RESERVE_DEPOSIT_INPUTS,selectRollupBatch,type RollupSpend} from '../src/rollup/batcher.ts';
 
 let next=0;
 function spend(extra:{at?:number;group?:[bigint,number];asset?:string;deposit?:bigint;coin?:boolean}={}):RollupSpend {
@@ -13,19 +13,26 @@ function spend(extra:{at?:number;group?:[bigint,number];asset?:string;deposit?:b
 const pad=(count:number)=>Array.from({length:count},()=>spend({at:Infinity}));
 const ids=(s:RollupSpend[])=>s.map(x=>x.id);
 
-test('a batch closes at 10 spends, or after 10 s padded with zero spends',()=>{
- const few=[spend(),spend()];
- assert.equal(selectRollupBatch(few,9_999,pad),undefined);
- const closed=selectRollupBatch(few,10_000,pad)!;
+test('a batch closes at 10 spends, or 10 s after the last batch, padded with zero spends',()=>{
+ const few=[spend({at:5_000}),spend({at:9_000})];
+ assert.equal(selectRollupBatch(few,9_999,pad,BATCH_SLOTS,BATCH_WAIT_MS,0),undefined);
+ const closed=selectRollupBatch(few,10_000,pad,BATCH_SLOTS,BATCH_WAIT_MS,0)!;
  assert.equal(closed.spends.length,BATCH_SLOTS);
  assert.deepEqual(ids(closed.spends.slice(0,2)),ids(few));
  const full=Array.from({length:BATCH_SLOTS+1},()=>spend());
- assert.deepEqual(ids(selectRollupBatch(full,0,pad)!.spends),ids(full.slice(0,BATCH_SLOTS)));
+ assert.deepEqual(ids(selectRollupBatch(full,1,pad,BATCH_SLOTS,BATCH_WAIT_MS,0)!.spends),ids(full.slice(0,BATCH_SLOTS)));
 });
 
-test('a join batch waits its own, longer window',()=>{
- assert.equal(selectRollupBatch([spend()],JOIN_BATCH_WAIT_MS-1,pad,BATCH_SLOTS,JOIN_BATCH_WAIT_MS),undefined);
- assert.equal(selectRollupBatch([spend()],JOIN_BATCH_WAIT_MS,pad,BATCH_SLOTS,JOIN_BATCH_WAIT_MS)!.spends.length,BATCH_SLOTS);
+test('an idle pool batches its first request at once, and the next one 10 s after that batch',()=>{
+ const first=spend({at:3_600_000}),second=spend({at:3_600_001});
+ assert.equal(selectRollupBatch([first],3_600_000,pad)!.spends[0]!.id,first.id);
+ assert.equal(selectRollupBatch([second],3_600_001,pad,BATCH_SLOTS,BATCH_WAIT_MS,3_600_000),undefined);
+ assert.equal(selectRollupBatch([second],3_600_000+BATCH_WAIT_MS,pad,BATCH_SLOTS,BATCH_WAIT_MS,3_600_000)!.spends[0]!.id,second.id);
+});
+
+test('a join batch waits its own, longer window after the last join',()=>{
+ assert.equal(selectRollupBatch([spend()],JOIN_BATCH_WAIT_MS-1,pad,BATCH_SLOTS,JOIN_BATCH_WAIT_MS,0),undefined);
+ assert.equal(selectRollupBatch([spend()],JOIN_BATCH_WAIT_MS,pad,BATCH_SLOTS,JOIN_BATCH_WAIT_MS,0)!.spends.length,BATCH_SLOTS);
 });
 
 test('a group goes in whole and consecutive, or waits',()=>{

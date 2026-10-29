@@ -121,6 +121,24 @@ test('the operator builds a spend, a join and a recover batch, each through its 
  assert.deepEqual([op.state.epoch,op.state.recovered.has(note.nullifier),op.status().archive.head.value],[2,true,101_330]);
 });
 
+test('a quiet pool batches the first spend at once, and the next one batchWaitMs after that batch',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),op=await w.open(t,{batchWaitMs:10_000,now:()=>clock});
+ await land(op,'spend',[fastSpend(op.state)]);
+ clock+=1_000;await op.submit(fastSpend(op.state));op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ assert.equal(await op.tick(),undefined);
+ clock+=8_999;assert.equal(await op.tick(),undefined);
+ clock+=1;const tick=await op.tick();
+ assert.ok(tick&&'txid' in tick,JSON.stringify(tick));
+});
+
+test('each kind keeps its own clock, so a spend batch never delays a join',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),op=await w.open(t,{batchWaitMs:10_000,joinWaitMs:60_000,now:()=>clock});
+ await land(op,'spend',[fastSpend(op.state)]);
+ clock+=1_000;await land(op,'join',[joinSpend(op.state)]);
+});
+
 test('each batch is proved from its circuit input, which carries no field the circuit derives',async t=>{
  const proved:{kind:string;input:Record<string,unknown>;expected:readonly bigint[]}[]=[];
  const recording=(kind:string)=>({prove:async(input:Record<string,unknown>,expected:readonly bigint[])=>{proved.push({kind,input,expected});return proof;}});

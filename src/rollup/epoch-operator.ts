@@ -194,6 +194,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  let inflight:RollupEpochSpend[]=[],inflightPadding:RollupEpochSpend[]=[],inflightKind:EpochBatchKind='spend',busy=false,coinCap:number|undefined;
  // An index into KINDS: after a batch of one kind the next kind leads, so none can starve.
  let lead=0;
+ const lastBatchAt:Record<EpochBatchKind,number>={spend:-Infinity,join:-Infinity,recover:-Infinity};
  const queued=(q:Record<EpochBatchKind,RollupEpochSpend[]>)=>[...q.spend,...q.join,...q.recover];
  const proven=new WeakSet<RollupEpochSpend>(),checked=new WeakSet<RollupEpochSpend>();
  const selectable=(s:RollupEpochSpend)=>proven.has(s)&&checked.has(s);
@@ -215,8 +216,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const depositFacts=(s:RollupEpochSpend):RollupDepositFacts=>({txid:s.coin!.txid,vout:s.coin!.vout,value:s.coin!.value,
   script:hex.encode(VtxoScript.decode(s.coin!.tapTree).pkScript),assets:s.coin!.assetAmount?[{assetId:s.asset!,amount:s.coin!.assetAmount}]:[]});
  // selectRollupBatch reads only a slot's groupId and groupSize, which both slot shapes carry.
- const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number)=>
-  selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
+ const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number,lastAt:number)=>
+  selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs,lastAt) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
 
  /** The only gate: a spend the batch, the builder or the network would reject must never reserve a nullifier. */
  const submit=async(spend:Omit<RollupEpochSpend,'receivedAt'>)=>{
@@ -300,8 +301,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   const pad=(count:number)=>{if(padding[kind].length<count)throw new Error('padding');taken=padding[kind].splice(0,count);return taken;};
   const ready=pending[kind].filter(selectable);
   // A recover batch is one slot wide: it takes no padding and waits for no company.
-  const selection=kind==='recover'?select(ready.slice(0,1),()=>[],undefined,0)
-   :select(ready,pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS);
+  const selection=kind==='recover'?select(ready.slice(0,1),()=>[],undefined,0,lastBatchAt.recover)
+   :select(ready,pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS,lastBatchAt[kind]);
   if(!selection)return undefined;
   const taker=await o.transport.spentBy?.(journal.status().archive.head);
   if(taker){padding[kind].unshift(...taken);return {blocked:`The pool head was spent by ${taker}, a batch this operator did not build. Post that batch's record to /api/rollup/external to continue.`};}
@@ -343,7 +344,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    const plan:RollupEpochPlan={version:1,request,record:recordOf(kind,selection.spends,result.blockRoot),firstDeposit,...(reserve?{asset:selection.asset!,reserveAmount:String(reserve.amount+nx)}:{})};
    submitted=true;
    const outcome=await journal.submit('batch-'+archive.batches,plan);
-   inflight=[];inflightPadding=[];if(kind==='spend')coinCap=undefined;
+   inflight=[];inflightPadding=[];if(kind==='spend')coinCap=undefined;lastBatchAt[kind]=now();
    return {txid:outcome.receipt.txid,batch:archive.batches,timings:{waitedMs:started-oldest,proveMs:proved-started,publishMs:now()-proved}};
   }catch(error){
    if(submitted&&journal.status().pending)return {blocked:String((error as Error).message)};
@@ -436,7 +437,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
       return {blocked:'A submitted batch was abandoned; its plan is kept in case it lands.'};
      }
      inflight=[];inflightPadding=[];sent=undefined;
-     if(r.receipt)return {txid:r.receipt.txid,batch};
+     if(r.receipt){lastBatchAt[inflightKind]=now();return {txid:r.receipt.txid,batch};}
     }
     const adopted=await adopt();if(adopted)return adopted;
     let short:EpochBatchKind|undefined;
