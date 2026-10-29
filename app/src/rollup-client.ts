@@ -47,7 +47,7 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
  :railId==='shielded-exit'?{title:'Withdraw on-chain',detail:'Leaves the pool to a fresh key used only for this exit, then a batch swap sends it on-chain; the amount and the destination become public, but not linked to your deposit address.'}
  :railId==='onchain'?{title:'On-chain exit',detail:'From your unshielded Arkade funds, to the Bitcoin chain.'}
  :railId==='ark'||railId==='ark-asset'?{title:'Arkade payment',detail:'From your unshielded Arkade funds; the amount is public.'}
- :railId==='lightning'||railId==='lnurl-lightning'?{title:'Pay over Lightning',detail:'Through a swap, from your Arkade balance; whatever it lacks first leaves the pool, publicly.'}
+ :railId==='lightning'||railId==='lnurl-lightning'?{title:'Pay over Lightning',detail:'One pool note pays a swap, which pays the invoice; the amount becomes public.'}
  :railId==='lnurl-shielded'?{title:'Pay the Lightning address privately',detail:'Private inside the pool, to the shielded address its owner registered; the address service sees the amount you request, and also learns that you pay from the pool.'}
  :railId==='lnurl-arkade'?{title:'Pay the Lightning address on Arkade',detail:'Straight from the pool to the Arkade address its owner gave; the amount and destination become public.'}
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};

@@ -167,7 +167,9 @@ test('the route preview names what each rail makes public, and never leaves a ra
  assert.equal(exit.title,'Withdraw on-chain');
  for(const claim of [/fresh key used only for this exit/,/amount and the destination become public/,/not linked to your deposit address/])assert.match(exit.detail,claim);
  assert.doesNotMatch(exit.detail,/your own Arkade address|linked to that address/,'the old disclosure must not outlive the fix');
- assert.match(routeCopy('lightning').detail,/public/);
+ assert.match(routeCopy('lightning').detail,/One pool note pays a swap.*public/);
+ assert.doesNotMatch(routeCopy('lightning').detail,/Arkade balance|whatever it lacks/,'the old top-up route must not outlive the fix');
+ assert.deepEqual(routeCopy('lnurl-lightning'),routeCopy('lightning'));
  const shielded=routeCopy('lnurl-shielded');
  assert.equal(shielded.title,'Pay the Lightning address privately');
  for(const claim of [/private inside the pool/i,/shielded address its owner registered/,/address service sees the amount you request/,/also learns that you pay from the pool/])assert.match(shielded.detail,claim);
