@@ -1,5 +1,4 @@
 import {useEffect,useRef,useState} from 'react';
-// @ts-ignore circomlibjs has no browser declarations.
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {bytesToHex} from '@noble/hashes/utils.js';
