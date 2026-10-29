@@ -12,7 +12,7 @@ import {createLightningWallet,createPrivateLightning,lightningOwner} from '../..
 import {METHODS_NOT_WITHDRAWN,METHODS_REFUSED,createLnurlReceive,type PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {RECOVERY_LINE} from '../../src/shielded/epoch-recovery.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
-import {SHIELD_FLOOR_MS,ShieldedWallet} from '../../src/shielded/wallet.ts';
+import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,shortValue} from './rollup-client.ts';
@@ -63,7 +63,7 @@ export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState('');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
- const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
+ const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string}>(),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
@@ -177,7 +177,7 @@ export default function RollupWallet(){
    const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(''),at)}:undefined;
    await restorePageWallet(restore,{cache:cacheRef.current!,storage:localStorage,reload:()=>location.reload(),...(born?{born}:{}),stop:async()=>{
     restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
-    await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);
+    await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
    }});
   }catch(error){if(mounted.current)setRestoreError(errorText(error));}
   finally{if(mounted.current){busyRef.current=false;setBusy(false);}}
@@ -197,6 +197,7 @@ export default function RollupWallet(){
   });
   const session=openPageWallet(async()=>{
    const {buildPoseidon}=await import('circomlibjs'),poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+   if(mounted.current&&!restoring.current)setEarly({secret,address:shieldedKeysOf(hash,secret).address});
    return hash;
   },async hash=>{
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
@@ -318,7 +319,7 @@ export default function RollupWallet(){
  };
  const links=wallet?.links()??[],mintedLink=links.find(l=>l.token===minted),claimProblem=claim?claimTokenError(claim):'';
 
- const reserves=Object.keys(pool?.pool?.reserves??{}),address=wallet?.shieldedAddress()??'',listingFull=listingBlocked(pool?.pool);
+ const reserves=Object.keys(pool?.pool?.reserves??{}),address=restoring.current?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),listingFull=listingBlocked(pool?.pool);
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
  const assetUnits=(id:string)=>wallet?.shieldedBalance(assetFieldOfId(id))??0n;
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
