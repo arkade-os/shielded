@@ -413,11 +413,11 @@ test('a failure of the shielded method hands over to Arkade, then Lightning, and
 const BTC='tb1qmt3ue2senlg6ddgmr76hwsk0rdvdk4rgeaen7l';
 const YOUNG_FEE={intentFee:{offchainInput:"inputType == 'vtxo' && now() - birth < 86400.0 ? amount * 0.002 : 0.0"},txFeeRate:'0'};
 const exitWallet=(o:{covers:boolean;arkade?:number[];privately?:boolean})=>{
- const exits:{sats:number;title:string}[]=[],filters:unknown[]=[],settled:unknown[]=[],payout={txid:'cd'.repeat(32),vout:1,value:20_041,createdAt:new Date(),isSwept:false};
+ const exits:{sats:number;title:string;to:string}[]=[],filters:unknown[]=[],settled:unknown[]=[],payout={txid:'cd'.repeat(32),vout:1,value:20_041,createdAt:new Date(),isSwept:false};
  const view={getAddress:async()=>ELSEWHERE,settle:async(params:unknown)=>{settled.push(params);return 'ef'.repeat(32);}};
  const wallet={canWithdraw:()=>o.covers,canExitPrivately:()=>o.privately??true,
   getSpendableVtxos:async(filter:unknown)=>{filters.push(filter);return (o.arkade??[]).map(value=>({value}));},
-  exitFromPool:(sats:number,title:string,exit:(coin:unknown,view:unknown)=>Promise<unknown>)=>{exits.push({sats,title});return exit(payout,view);}} as unknown as ShieldedWallet;
+  exitFromPool:(sats:number,title:string,exit:(coin:unknown,view:unknown)=>Promise<unknown>,to:string)=>{exits.push({sats,title,to});return exit(payout,view);}} as unknown as ShieldedWallet;
  return {wallet,exits,filters,payout,view,settled};
 };
 
@@ -427,7 +427,7 @@ test('an on-chain send one pool note covers leaves the pool as a coin that nets 
  const quote=await poolFundedExit(wallet,onchainRail({feeInfo:async()=>YOUNG_FEE}),async()=>YOUNG_FEE).quote(req(BTC,20_000),ark);
  assert.deepEqual([quote.railId,quote.amount,quote.fee,quote.total],['shielded-exit',20_000,41,20_041]);
  assert.equal((await (await quote.send()).settled()).txid,'ef'.repeat(32));
- assert.deepEqual(exits,[{sats:20_041,title:'Sending 20,000 sats on-chain'}]);
+ assert.deepEqual(exits,[{sats:20_041,title:'Sending 20,000 sats on-chain',to:BTC}],'the exit is told the address the batch swap pays');
  assert.deepEqual(settled,[{inputs:[payout],outputs:[{address:BTC,amount:20_000n}]}],'no change output returns to the Arkade address');
  assert.deepEqual(funding,[],'the offboard settles through the payout key, never the funding wallet');
  const free={intentFee:{},txFeeRate:'0'},plain=await poolFundedExit(wallet,onchainRail({feeInfo:async()=>free}),async()=>free).quote(req(BTC,20_000),ark);

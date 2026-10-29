@@ -1,7 +1,7 @@
 import type {EpochAccountSnapshot} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {LinkRecord} from './bearer.ts';
 
-export interface SentRecord {to:string;note?:{amount:string;asset:string;rho:string}}
+export interface SentRecord {to:string;note?:{amount:string;asset:string;rho:string};onchainTxid?:string}
 /** The wallet's cache for one pool. The operator's published batches stay the source of truth. */
 export interface ShieldedSnapshot {v:2;token:string;account:EpochAccountSnapshot;sent:Record<string,SentRecord>;listings:string[];links?:LinkRecord[]}
 export interface ShieldedNoteRepository extends AsyncDisposable {
