@@ -319,7 +319,7 @@ export default function RollupWallet(){
  };
  const links=wallet?.links()??[],mintedLink=links.find(l=>l.token===minted),claimProblem=claim?claimTokenError(claim):'';
 
- const reserves=Object.keys(pool?.pool?.reserves??{}),address=wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),listingFull=listingBlocked(pool?.pool);
+ const reserves=Object.keys(pool?.pool?.reserves??{}),address=restoring.current?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),listingFull=listingBlocked(pool?.pool);
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
  const assetUnits=(id:string)=>wallet?.shieldedBalance(assetFieldOfId(id))??0n;
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
