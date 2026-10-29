@@ -111,7 +111,7 @@ function exitPayouts(hrp='tark',serverPubKey=ArkAddress.decode(POOL_ADDRESS).ser
  return {swaps:swaps as unknown as ShieldedWallet['swaps'],log,views,address,pay(){paid=true;}};
 }
 const exitHandle=()=>makeHandle('onchain',async emit=>{const result={railId:'onchain',txid:'ef'.repeat(32)};emit({status:'settled',result});return result;});
-const DEST='tb1qvfnn7k2a4xnr2vnjeadnknmjmvkppk3qp2rnkt';
+const DEST={to:'tb1qvfnn7k2a4xnr2vnjeadnknmjmvkppk3qp2rnkt',sats:1000};
 
 test('an exit from the pool pays a fresh single-use key, holds auto-shield off, then exits that payout alone',async()=>{
  const wallet=await open(),withdrawn:[string,bigint][]=[],records:unknown[]=[],exited:unknown[][]=[],p=exitPayouts();
@@ -121,7 +121,7 @@ test('an exit from the pool pays a fresh single-use key, holds auto-shield off, 
  const exit=async(c:unknown,view:unknown)=>{exited.push([c,view]);during=(wallet as any).nativeOperations;return exitHandle();};
  try{
   const result=await wallet.exitFromPool(1002,'Sending 1,000 sats on-chain',exit,DEST).settled();
-  assert.deepEqual(records,[{to:DEST,onchainTxid:'ef'.repeat(32)}],'the withdrawal records where the exit went and its on-chain transaction');
+  assert.deepEqual(records,[{to:DEST.to,onchainSats:1000,onchainTxid:'ef'.repeat(32)}],'the withdrawal records where the exit went, what arrived and its on-chain transaction');
   assert.deepEqual(withdrawn,[[p.address(0),1002n]],'the whole amount, to the fresh key and not to the funding address');
   assert.notEqual(p.address(0),await wallet.getAddress(),'the address deposits arrive at is never the payout');
   assert.deepEqual(p.log,['reserve 0','withdraw','release 0 true'],'the key is reserved before the withdrawal is submitted');
@@ -149,9 +149,32 @@ test('an exit that fails after the payout keeps it registered for recovery and s
   await assert.rejects(wallet.exitFromPool(1002,'Again',async()=>{throw new Error('batch swap failed');},DEST).settled(),
    /after the pool paid 1,002 sats to a fresh single-use key: batch swap failed[\s\S]*shield back into the pool/);
   assert.deepEqual(p.log,['reserve 0','release 0 false'],'the unspent payout is handed back for auto-shielding');
-  assert.deepEqual(records,[{to:DEST}],'a failed exit records no on-chain transaction');
+  assert.deepEqual(records,[{to:DEST.to,onchainSats:1000}],'a failed exit records no on-chain transaction');
   assert.equal((wallet as any).nativeOperations,0);
  }finally{await wallet.dispose();}
+});
+
+test('a settled exit resolves and cleans up even when saving its transaction hangs',async()=>{
+ const wallet=await open(),p=exitPayouts();
+ wallet.swaps=p.swaps;
+ (wallet as any).withdrawal=()=>{p.pay();return {settled:async()=>({railId:'shielded-withdraw'})};};
+ (wallet as any).persist=()=>new Promise(()=>{});
+ try{
+  const outcome=await Promise.race([wallet.exitFromPool(1002,'Sending',async()=>exitHandle(),DEST).settled(),new Promise(r=>setTimeout(()=>r('hung'),2000))]);
+  assert.deepEqual(outcome,{railId:'shielded-exit',txid:'ef'.repeat(32)});
+  assert.deepEqual([p.log,(wallet as any).nativeOperations],[['reserve 0','release 0 true'],0]);
+ }finally{await wallet.dispose();}
+});
+
+test('a tab that saved before an exit settled keeps the settled transaction when it saves again',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),a=await open({repository}),b=await open({repository});
+ try{
+  a.recordSent([[7n,{to:DEST.to,onchainSats:1000}]]);await a.save();await b.save();
+  a.sentOf(7n)!.onchainTxid='ef'.repeat(32);await a.save();await b.save();
+  const c=await open({repository});
+  try{assert.deepEqual([b.sentOf(7n),c.sentOf(7n)].map(r=>r?.onchainTxid),['ef'.repeat(32),'ef'.repeat(32)]);}
+  finally{await c.dispose();}
+ }finally{await a.dispose();await b.dispose();}
 });
 
 test('an exit refuses rather than fall back to the funding address when no fresh key is available',async()=>{

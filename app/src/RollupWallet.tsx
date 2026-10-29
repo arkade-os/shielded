@@ -452,7 +452,9 @@ export default function RollupWallet(){
        <dt>Where</dt><dd>{whereOf(kind,received)}</dd>
        {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
        {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={newest.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
-       {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><code>{shortValue(String(item.intent.metadata.to))}</code></dd><dt>Bitcoin transaction</dt><dd><TxLink txid={item.intent.metadata.onchainTxid} path="commitment-tx"/></dd></>}
+       {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
+        {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
+        <dt>Bitcoin transaction</dt><dd><TxLink txid={item.intent.metadata.onchainTxid} path="commitment-tx"/></dd></>}
        <dt>Status</dt><dd>{status}</dd>
        {kind==='lightning-receive'&&item.intent?.outcome!=='shielded'&&wallet?.swaps&&typeof item.intent?.metadata?.outpoint==='string'&&<LightningRecoveryQuote service={wallet.swaps} outpoint={item.intent.metadata.outpoint} disabled={busy||restoring.current}/>}
        {revealFor(item)}

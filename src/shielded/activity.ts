@@ -25,7 +25,7 @@ export function shieldedRows(entries:()=>readonly EpochHistoryEntry[],assetIdOf:
  };
 }
 
-export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly EpochHistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:EpochHistoryEntry)=>boolean;exitOf?:(entry:EpochHistoryEntry)=>{to:string;txid:string}|undefined}):ActivityResolver{
+export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly EpochHistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:EpochHistoryEntry)=>boolean;exitOf?:(entry:EpochHistoryEntry)=>{to:string;txid:string;sats?:number}|undefined}):ActivityResolver{
  return {
   id:SHIELDED_TAG,
   resolve(tx){
@@ -33,7 +33,7 @@ export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>r
    if(entry){
     const exit=entry.kind==='withdraw'?o.exitOf?.(entry):undefined;
     const kind=exit?'onchain-exit':entry.kind==='send'&&o.isLink?.(entry)?'claim-link':SYNTHETIC[entry.kind as SyntheticKind];
-    return [{groupId:`${SHIELDED_TAG}:${entry.batch}:${entry.slots.join('-')}`,label:LABELS[kind],kind,metadata:{batch:entry.batch,notes:entry.created.length,spent:entry.spent.length,...(exit?{to:exit.to,onchainTxid:exit.txid}:{})}}];
+    return [{groupId:`${SHIELDED_TAG}:${entry.batch}:${entry.slots.join('-')}`,label:LABELS[kind],kind,metadata:{batch:entry.batch,notes:entry.created.length,spent:entry.spent.length,...(exit?{to:exit.to,onchainTxid:exit.txid,...(exit.sats===undefined?{}:{onchainSats:exit.sats})}:{})}}];
    }
    const txid=tx.key.arkTxid||tx.key.commitmentTxid;
    if(!txid)return undefined;

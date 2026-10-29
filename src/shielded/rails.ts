@@ -96,6 +96,6 @@ export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()
   }
   if(!wallet.canExitPrivately())throw new Error('A private on-chain exit needs the recoverable companion wallet, which is not open. Reload and try again.');
   return {...quote,railId:'shielded-exit',fee:gross-quote.amount,total:gross,
-   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async(coin,payout)=>(await rail.quote({...req,selectedVtxos:[coin]},{...ctx,wallet:payout})).send(),btcTarget(req.raw)??req.raw)};
+   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async(coin,payout)=>(await rail.quote({...req,selectedVtxos:[coin]},{...ctx,wallet:payout})).send(),{to:btcTarget(req.raw)??req.raw,sats:quote.amount})};
  }};
 }

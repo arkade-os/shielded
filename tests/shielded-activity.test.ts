@@ -80,9 +80,9 @@ test('an asset payment carries its units in assets, not in sats',()=>{
 
 test('a withdrawal that paid an on-chain exit shows as sent on-chain, with where it went',()=>{
  const entries=[entry({kind:'withdraw',destination:2n,spent:[7n],slots:[0]}),entry({kind:'withdraw',destination:3n,spent:[8n],slots:[1]})],index=indexOf(entries,1n);
- const resolver=shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>false,isListing:()=>false,exitOf:e=>e.spent[0]===7n?{to:'tb1qdest',txid:'ef'.repeat(32)}:undefined});
- assert.deepEqual(index.rows().map(r=>{const i=resolver.resolve(r)![0]!;return [i.kind,i.label,i.metadata?.to,i.metadata?.onchainTxid];}),
-  [['onchain-exit','Sent on-chain','tb1qdest','ef'.repeat(32)],['unshield','Withdrawn from the pool',undefined,undefined]]);
+ const resolver=shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>false,isListing:()=>false,exitOf:e=>e.spent[0]===7n?{to:'tb1qdest',txid:'ef'.repeat(32),sats:990}:undefined});
+ assert.deepEqual(index.rows().map(r=>{const i=resolver.resolve(r)![0]!;return [i.kind,i.label,i.metadata?.to,i.metadata?.onchainTxid,i.metadata?.onchainSats];}),
+  [['onchain-exit','Sent on-chain','tb1qdest','ef'.repeat(32),990],['unshield','Withdrawn from the pool',undefined,undefined,undefined]]);
 });
 
 test('each synthetic row resolves to its own entry even when a batch holds three of them',async()=>{
