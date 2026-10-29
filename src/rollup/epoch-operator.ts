@@ -57,7 +57,7 @@ export interface RollupEpochOperatorOptions {
  now?:()=>number;
  /** The client-proof check; tests replace it to hold a verification open. */
  verify?:typeof verifyRollupProof;
- /** How long a batch that is not full waits for company after its oldest spend, per lane. */
+ /** How long after the last batch of its kind a batch that is not full waits, per lane. */
  batchWaitMs?:number;
  joinWaitMs?:number;
  snapshotEvery?:number;
@@ -117,6 +117,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const headOf=(plan:RollupEpochPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
  const keptPath=(plan:RollupEpochPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
  let sent:{at:number;failed:boolean;tries:number;graceMs:number}|undefined;
+ const lastBatchAt:Record<EpochBatchKind,number>={spend:-Infinity,join:-Infinity,recover:-Infinity};
  const journal=await openStockJournal<RollupArchive,RollupEpochPlan,StockNativeReceipt>(join(o.directory,'journal'),o.pin,o.genesis,{
   validateArchive:archive=>{if(archive.version!==1||Transaction.fromRaw(hex.decode(archive.head.sourceTxHex),{allowUnknownOutputs:true}).id!==archive.head.txid)throw new Error('Invalid rollup archive head.');},
   validatePlan:(plan,archive)=>{const head=headOf(plan);if(plan.version!==1||head.txid!==archive.head.txid||head.vout!==archive.head.vout)throw new Error('Rollup plan spends a different head.');},
@@ -136,6 +137,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   },
   apply:(archive,plan,receipt)=>{
    writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));
+   lastBatchAt[plan.record.kind]=now();
    if(state.batchCount===archive.batches)applyRecord(state,plan.record);
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
    const reserves=plan.asset?{...archive.reserves,[plan.asset]:{...coin(1),amount:plan.reserveAmount!}}:archive.reserves;
@@ -194,7 +196,6 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  let inflight:RollupEpochSpend[]=[],inflightPadding:RollupEpochSpend[]=[],inflightKind:EpochBatchKind='spend',busy=false,coinCap:number|undefined;
  // An index into KINDS: after a batch of one kind the next kind leads, so none can starve.
  let lead=0;
- const lastBatchAt:Record<EpochBatchKind,number>={spend:-Infinity,join:-Infinity,recover:-Infinity};
  const queued=(q:Record<EpochBatchKind,RollupEpochSpend[]>)=>[...q.spend,...q.join,...q.recover];
  const proven=new WeakSet<RollupEpochSpend>(),checked=new WeakSet<RollupEpochSpend>();
  const selectable=(s:RollupEpochSpend)=>proven.has(s)&&checked.has(s);
@@ -344,7 +345,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    const plan:RollupEpochPlan={version:1,request,record:recordOf(kind,selection.spends,result.blockRoot),firstDeposit,...(reserve?{asset:selection.asset!,reserveAmount:String(reserve.amount+nx)}:{})};
    submitted=true;
    const outcome=await journal.submit('batch-'+archive.batches,plan);
-   inflight=[];inflightPadding=[];if(kind==='spend')coinCap=undefined;lastBatchAt[kind]=now();
+   inflight=[];inflightPadding=[];if(kind==='spend')coinCap=undefined;
    return {txid:outcome.receipt.txid,batch:archive.batches,timings:{waitedMs:started-oldest,proveMs:proved-started,publishMs:now()-proved}};
   }catch(error){
    if(submitted&&journal.status().pending)return {blocked:String((error as Error).message)};
@@ -411,7 +412,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
-    accepted=acceptedOf(state);
+    lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
     return {batch:archive.batches-1,txid:tx.id};
    }finally{busy=false;}
@@ -437,7 +438,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
       return {blocked:'A submitted batch was abandoned; its plan is kept in case it lands.'};
      }
      inflight=[];inflightPadding=[];sent=undefined;
-     if(r.receipt){lastBatchAt[inflightKind]=now();return {txid:r.receipt.txid,batch};}
+     if(r.receipt)return {txid:r.receipt.txid,batch};
     }
     const adopted=await adopt();if(adopted)return adopted;
     let short:EpochBatchKind|undefined;

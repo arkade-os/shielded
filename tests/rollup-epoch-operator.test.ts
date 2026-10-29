@@ -139,6 +139,28 @@ test('each kind keeps its own clock, so a spend batch never delays a join',async
  clock+=1_000;await land(op,'join',[joinSpend(op.state)]);
 });
 
+test('a partial join waits joinWaitMs after the last join',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),op=await w.open(t,{joinWaitMs:60_000,now:()=>clock});
+ await land(op,'join',[joinSpend(op.state)]);
+ clock+=1_000;await op.submit(joinSpend(op.state));op.addPadding(padsFor(op.state,'join',BATCH_SLOTS-1));
+ assert.equal(await op.tick(),undefined);
+ clock+=59_000;const tick=await op.tick();
+ assert.ok(tick&&'txid' in tick,JSON.stringify(tick));
+});
+
+test('a followed batch starts its kind\'s clock, as one this operator lands does',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),a=await w.open(t);
+ await land(a,'spend',[fastSpend(a.state)]);
+ const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-follower-')),batchWaitMs:10_000,now:()=>clock});
+ await b.follow({...landedTx(w,0),slots:recordAt(w,0).slots,at:1});
+ clock+=1_000;await b.submit(fastSpend(b.state));b.addPadding(padsFor(b.state,'spend',BATCH_SLOTS-1));
+ assert.equal(await b.tick(),undefined);
+ clock+=9_000;const tick=await b.tick();
+ assert.ok(tick&&'txid' in tick,JSON.stringify(tick));
+});
+
 test('each batch is proved from its circuit input, which carries no field the circuit derives',async t=>{
  const proved:{kind:string;input:Record<string,unknown>;expected:readonly bigint[]}[]=[];
  const recording=(kind:string)=>({prove:async(input:Record<string,unknown>,expected:readonly bigint[])=>{proved.push({kind,input,expected});return proof;}});
