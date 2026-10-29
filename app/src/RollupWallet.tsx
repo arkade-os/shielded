@@ -177,7 +177,7 @@ export default function RollupWallet(){
    const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(''),at)}:undefined;
    await restorePageWallet(restore,{cache:cacheRef.current!,storage:localStorage,reload:()=>location.reload(),...(born?{born}:{}),stop:async()=>{
     restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
-    await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);
+    await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
    }});
   }catch(error){if(mounted.current)setRestoreError(errorText(error));}
   finally{if(mounted.current){busyRef.current=false;setBusy(false);}}
@@ -197,7 +197,7 @@ export default function RollupWallet(){
   });
   const session=openPageWallet(async()=>{
    const {buildPoseidon}=await import('circomlibjs'),poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
-   if(mounted.current)setEarly({secret,address:shieldedKeysOf(hash,secret).address});
+   if(mounted.current&&!restoring.current)setEarly({secret,address:shieldedKeysOf(hash,secret).address});
    return hash;
   },async hash=>{
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
