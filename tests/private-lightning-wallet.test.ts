@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {indexedDB} from 'fake-indexeddb';
-import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,DefaultVtxo,InMemoryContractRepository,MnemonicIdentity,P2A,SingleKey,Transaction,UnilateralExit,VtxoScript,getNetwork,provisionClaimSecret,provisionRefundKey,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
+import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,DefaultVtxo,InMemoryContractRepository,MnemonicIdentity,P2A,SingleKey,Transaction,UnilateralExit,VtxoScript,deriveDescriptorLeafPubKey,getNetwork,onchainRail,provisionClaimSecret,provisionRefundKey,resolveDescriptorSigner,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
 import {Script} from '@scure/btc-signer';
 import {sha256} from '@noble/hashes/sha2.js';
 import {ripemd160} from '@noble/hashes/legacy.js';
@@ -964,4 +964,121 @@ test('real SDK refund and claim provisioning use fresh recoverable child keys an
  const signed=await recovered.identity.sign(tx,[0]);assert.equal(signed.getInput(0).tapScriptSig!.length,1);assert.deepEqual(signed.getInput(0).tapScriptSig![0]![0].pubKey,claim.pubkey);
  await assert.rejects(recovered.signerForDescriptor('tr('+'33'.repeat(32)+')'),/artifact/);
  assert.equal(timelockToSequence(script.options.csvTimelock),4194306);
+});
+
+const BTC='tb1qmt3ue2senlg6ddgmr76hwsk0rdvdk4rgeaen7l';
+const YOUNG_FEE={intentFee:{offchainInput:"inputType == 'vtxo' && now() - birth < 86400.0 ? amount * 0.002 : 0.0"},txFeeRate:'0'};
+const payoutCoin=(script:string,value=20_041)=>({txid:'ab'.repeat(32),vout:0,value,script,createdAt:new Date(),status:{isLeaf:false},isSpent:false,isSwept:false,isUnrolled:false,isPreconfirmed:false,commitmentTxIds:['cd'.repeat(32)]});
+const exitService=(f:ReturnType<typeof serviceFixture>,journal:LightningRepository,onError?:(error:Error)=>void)=>
+ createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,...(onError?{onError}:{})});
+
+test('an exit payout reserves a fresh HD key, persists it before the pool is asked, and holds it from the payout scan',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
+ const service=await exitService(f,journal);
+ try{
+  const first=await service.exitPayout();
+  const [saved,...rest]=await journal.artifacts(ownerKey,pool);
+  assert.deepEqual([rest.length,saved?.kind,saved?.address],[0,'exit',first.address]);
+  assert.deepEqual(await journal.payouts(ownerKey,pool),[{id:saved!.id,descriptor:saved!.descriptor!,address:saved!.address!,script:saved!.script!}],'durable before any withdrawal is submitted');
+  assert.notEqual(first.address,await f.wallet.getAddress(),'never the static funding address deposits arrive at');
+  const coin=payoutCoin(saved!.script!);f.base.getVtxos=async()=>[coin] as never;
+  for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:coin.script});
+  await flushTasks();
+  assert.equal(f.shielded.length,0,'a reserved payout is never shielded while its exit runs');
+  assert.equal((await first.coin(coin.value))?.txid,coin.txid);
+  assert.equal(await first.coin(coin.value+1),undefined,'only a coin of the withdrawn size counts as the payout');
+  await first.release({spent:false});await flushTasks();
+  assert.equal(f.shielded.length,1,'released unspent, it shields back into the pool like a stranded Lightning payout');
+  assert.equal(f.shielded[0]![0].script,coin.script);
+  const second=await service.exitPayout();
+  assert.notEqual(second.address,first.address,'no two exits share a payout key');
+  assert.deepEqual((await journal.artifacts(ownerKey,pool)).map(a=>a.index),[0,1]);
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a spent exit payout is left alone, while a reload shields an unreleased one back into the pool',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
+ const service=await exitService(f,journal);
+ const payout=await service.exitPayout(),saved=(await journal.artifacts(ownerKey,pool))[0]!;
+ await payout.release({spent:true});
+ assert.equal(f.shielded.length,0,'a payout the exit spent is never shielded back');
+ const stranded=await service.exitPayout(),second=(await journal.artifacts(ownerKey,pool))[1]!;
+ assert.notEqual(stranded.address,payout.address);
+ const coin=payoutCoin(second.script!);f.base.getVtxos=async()=>[coin] as never;
+ await service[Symbol.asyncDispose]();
+ assert.equal(f.shielded.length,0,'disposal alone shields nothing');
+ const restored=await exitService(f,journal);
+ try{
+  await flushTasks();
+  assert.equal(f.shielded.length,1,'startup re-registers the saved payout and shields it back');
+  assert.equal(f.shielded[0]![0].script,coin.script);
+ }finally{await restored[Symbol.asyncDispose]();}
+});
+
+test('the real onchain rail offboards an exit payout through the payout key the SDK resolves and signs with',async()=>{
+ const journal=new InMemoryLightningRepository(),base=companion();
+ const artifact=await materializeLightningArtifact(base,await journal.allocateArtifact(owner,pool,'exit'));
+ const leaf=deriveDescriptorLeafPubKey(artifact.descriptor!);
+ const payoutScript=new DefaultVtxo.Script({pubKey:leaf,serverPubKey:server,csvTimelock:sequenceToTimelock(Number(artifact.csvTimelock))});
+ assert.equal(hex.encode(payoutScript.pkScript),artifact.script,'the watched script is the one this descriptor keys');
+ // What Wallet.signerForDescriptor delegates to, so InputSignerRouter routes the payout input here.
+ assert.deepEqual(await (await resolveDescriptorSigner(artifact.descriptor!,root)).xOnlyPublicKey(),leaf);
+ const settled:any[]=[],signer=lightningSigner(base,artifact.descriptor!);
+ const signing=Object.assign(companion(),{settle:async(params:any)=>{
+  settled.push(params);
+  const input=params.inputs[0],tx=new Transaction({allowUnknownOutputs:true});
+  tx.addInput({txid:input.txid,index:input.vout,witnessUtxo:{script:payoutScript.pkScript,amount:BigInt(input.value)},tapLeafScript:[payoutScript.forfeit()]});
+  tx.addOutput({script:payoutScript.pkScript,amount:params.outputs[0].amount});
+  const signed=await signer.sign(tx,[0]);
+  assert.deepEqual(signed.getInput(0).tapScriptSig![0]![0].pubKey,leaf,'the payout input carries the payout key signature');
+  return 'ef'.repeat(32);
+ }});
+ const view=await artifactWallet(signing,artifact,async()=>{throw new Error('an exit offboards its payout; it never sends it');},()=>20_041);
+ const coin=payoutCoin(artifact.script!);
+ const quote=await onchainRail({feeInfo:async()=>YOUNG_FEE}).quote({raw:BTC,amount:20_000,selectedVtxos:[coin] as never},{wallet:view,prefs:{priority:['onchain']}} as never);
+ assert.deepEqual([quote.amount,quote.fee,quote.total],[20_000,41,20_041],'the fresh key leaves the exit arithmetic alone');
+ assert.equal((await (await quote.send()).settled()).txid,'ef'.repeat(32));
+ assert.deepEqual(settled,[{inputs:[coin],outputs:[{address:BTC,amount:20_000n}]}],'only the payout coin, with no change output');
+ await assert.rejects(view.send({address:BTC,amount:20_000} as never),/never sends it/);
+});
+
+test('a tab opened mid-exit skips the payout from the moment it is published, then shields it once released',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),errors:Error[]=[];
+ const mine=await exitService(f,journal);
+ try{
+  const payout=await mine.exitPayout(),saved=(await journal.artifacts(ownerKey,pool))[0]!;
+  const coin=payoutCoin(saved.script!);f.base.getVtxos=async()=>[coin] as never;
+  // The other tab opens after the payout is published but before this exit has seen the coin.
+  const other=await exitService(f,journal,error=>errors.push(error));
+  try{
+   await flushTasks();
+   assert.equal(f.shielded.length,0,'the script reservation holds before coin() takes the outpoint lock');
+   assert.equal((await payout.coin(coin.value))?.txid,coin.txid);
+   for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:coin.script});
+   await flushTasks();
+   assert.equal(f.shielded.length,0,'and still holds once the exit owns the coin');
+   assert.deepEqual(errors,[],'the other tab skips quietly rather than failing the exit after the pool paid');
+  }finally{await other[Symbol.asyncDispose]();}
+  await payout.release({spent:false});await flushTasks();
+  assert.equal(f.shielded.length,1,'once the exit releases it unspent, the payout shields back into the pool');
+  assert.equal(f.shielded[0]![0].script,coin.script);
+ }finally{await mine[Symbol.asyncDispose]();}
+});
+
+test('a completed exit leaves no payout row in history, while a stranded payout still shows one',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
+ const service=await exitService(f,journal);
+ const rowsOf=async()=>(await service.getActivityHistory()).filter(row=>row.intent?.kind==='lightning-receive');
+ try{
+  const done=await service.exitPayout(),spent=(await journal.artifacts(ownerKey,pool))[0]!;
+  f.contracts.find(c=>c.script===spent.script)!.vtxos=[{...payoutCoin(spent.script!),isSpent:true,spentBy:'ef'.repeat(32)}];
+  await done.release({spent:true});
+  assert.deepEqual(await rowsOf(),[],'the offboard already spent it, and the SDK history carries that spend');
+  const stranded=await service.exitPayout(),unspent=(await journal.artifacts(ownerKey,pool))[1]!;
+  f.contracts.find(c=>c.script===unspent.script)!.vtxos=[payoutCoin(unspent.script!)];
+  await stranded.release({spent:false});
+  const rows=await rowsOf();
+  assert.equal(rows.length,1,'a payout still sitting on its key stays visible for recovery');
+  assert.deepEqual([rows[0]!.intent?.label,rows[0]!.amount],['On-chain exit payout',20_041]);
+ }finally{await service[Symbol.asyncDispose]();}
 });

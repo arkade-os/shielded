@@ -412,23 +412,33 @@ test('a failure of the shielded method hands over to Arkade, then Lightning, and
 
 const BTC='tb1qmt3ue2senlg6ddgmr76hwsk0rdvdk4rgeaen7l';
 const YOUNG_FEE={intentFee:{offchainInput:"inputType == 'vtxo' && now() - birth < 86400.0 ? amount * 0.002 : 0.0"},txFeeRate:'0'};
-const exitWallet=(o:{covers:boolean;arkade?:number[]})=>{
- const exits:{sats:number;title:string}[]=[],filters:unknown[]=[],payout={txid:'cd'.repeat(32),vout:1,value:20_041,createdAt:new Date(),isSwept:false};
- const wallet={canWithdraw:()=>o.covers,getSpendableVtxos:async(filter:unknown)=>{filters.push(filter);return (o.arkade??[]).map(value=>({value}));},
-  exitFromPool:(sats:number,title:string,exit:(coin:unknown)=>Promise<unknown>)=>{exits.push({sats,title});return exit(payout);}} as unknown as ShieldedWallet;
- return {wallet,exits,filters,payout};
+const exitWallet=(o:{covers:boolean;arkade?:number[];privately?:boolean})=>{
+ const exits:{sats:number;title:string}[]=[],filters:unknown[]=[],settled:unknown[]=[],payout={txid:'cd'.repeat(32),vout:1,value:20_041,createdAt:new Date(),isSwept:false};
+ const view={getAddress:async()=>ELSEWHERE,settle:async(params:unknown)=>{settled.push(params);return 'ef'.repeat(32);}};
+ const wallet={canWithdraw:()=>o.covers,canExitPrivately:()=>o.privately??true,
+  getSpendableVtxos:async(filter:unknown)=>{filters.push(filter);return (o.arkade??[]).map(value=>({value}));},
+  exitFromPool:(sats:number,title:string,exit:(coin:unknown,view:unknown)=>Promise<unknown>)=>{exits.push({sats,title});return exit(payout,view);}} as unknown as ShieldedWallet;
+ return {wallet,exits,filters,payout,view,settled};
 };
 
 test('an on-chain send one pool note covers leaves the pool as a coin that nets the exit exactly, and only that coin exits',async()=>{
- const {wallet,exits,payout}=exitWallet({covers:true}),settled:unknown[]=[];
- const ark={wallet:{getAddress:async()=>POOL,settle:async(params:unknown)=>{settled.push(params);return 'ef'.repeat(32);}}} as never;
+ const {wallet,exits,payout,settled}=exitWallet({covers:true}),funding:unknown[]=[];
+ const ark={wallet:{getAddress:async()=>POOL,settle:async(params:unknown)=>{funding.push(params);return 'ab'.repeat(32);}}} as never;
  const quote=await poolFundedExit(wallet,onchainRail({feeInfo:async()=>YOUNG_FEE}),async()=>YOUNG_FEE).quote(req(BTC,20_000),ark);
  assert.deepEqual([quote.railId,quote.amount,quote.fee,quote.total],['shielded-exit',20_000,41,20_041]);
  assert.equal((await (await quote.send()).settled()).txid,'ef'.repeat(32));
  assert.deepEqual(exits,[{sats:20_041,title:'Sending 20,000 sats on-chain'}]);
  assert.deepEqual(settled,[{inputs:[payout],outputs:[{address:BTC,amount:20_000n}]}],'no change output returns to the Arkade address');
+ assert.deepEqual(funding,[],'the offboard settles through the payout key, never the funding wallet');
  const free={intentFee:{},txFeeRate:'0'},plain=await poolFundedExit(wallet,onchainRail({feeInfo:async()=>free}),async()=>free).quote(req(BTC,20_000),ark);
  assert.deepEqual([plain.fee,plain.total],[0,20_000]);
+});
+
+test('a pool-funded exit is refused at quote time when no fresh payout key is available',async()=>{
+ const {wallet,exits}=exitWallet({covers:true,privately:false}),ark={wallet:{getAddress:async()=>POOL}} as never;
+ await assert.rejects(poolFundedExit(wallet,onchainRail({feeInfo:async()=>YOUNG_FEE}),async()=>YOUNG_FEE).quote(req(BTC,20_000),ark),
+  /needs the recoverable companion wallet/);
+ assert.deepEqual(exits,[],'the pool is never asked to pay the funding address instead');
 });
 
 test('an on-chain send no single pool note covers falls back to the Arkade balance, and is refused at quote when that cannot pay it',async()=>{

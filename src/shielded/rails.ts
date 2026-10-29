@@ -82,7 +82,7 @@ function freshPayoutFor(total:number,fees:FeeInfo):number{
  for(let gross=total,i=0;i<16;i++){const next=total+fee(gross);if(next===gross)return gross;gross=next;}
  throw new Error('No payout covers this exit after the Arkade input fee.');
 }
-/** An on-chain exit spends Arkade coins, which auto-shield keeps near empty, so one pool note pays this wallet a coin that exits alone. */
+/** An on-chain exit spends Arkade coins, which auto-shield keeps near empty, so one pool note pays a fresh single-use key a coin that exits alone. */
 export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()=>Promise<FeeInfo>):PaymentRail{
  const sats=(value:number)=>value.toLocaleString('en-US');
  return {...rail,async quote(req,ctx){
@@ -94,7 +94,8 @@ export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()
    if(have<quote.total)throw new Error(`No single unreserved pool note covers the ${sats(gross)} sats this exit needs, and your Arkade balance holds only ${sats(have)} sats.`);
    return quote;
   }
+  if(!wallet.canExitPrivately())throw new Error('A private on-chain exit needs the recoverable companion wallet, which is not open. Reload and try again.');
   return {...quote,railId:'shielded-exit',fee:gross-quote.amount,total:gross,
-   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async coin=>(await rail.quote({...req,selectedVtxos:[coin]},ctx)).send())};
+   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async(coin,payout)=>(await rail.quote({...req,selectedVtxos:[coin]},{...ctx,wallet:payout})).send())};
  }};
 }

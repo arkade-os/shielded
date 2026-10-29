@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
 import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
@@ -19,7 +19,7 @@ import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
 import {WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
-import type {PrivateLightningService} from './lightning-wallet.ts';
+import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
 import {sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
@@ -102,7 +102,7 @@ export const shieldedSteps={
  send:['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],
  withdraw:['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],
  merge:['Pick two notes','Prove the merge on this device','Submit to the pool','Wait for the next batch','Included'],
- exit:['Withdraw the sats from the pool','Wait for them on your Arkade balance','Send them to the Bitcoin chain','Wait for the batch swap','Done'],
+ exit:['Withdraw the sats from the pool','Wait for them on a fresh single-use key','Send them to the Bitcoin chain','Wait for the batch swap','Done'],
  link:['Pick notes','Prove the link on this device','Submit to the pool','Wait for the next batch','Ready to share'],
  claim:['Read the link','Prove the claim on this device','Submit to the pool','Wait for the next batch','Received'],
 } as const;
@@ -655,27 +655,33 @@ export class ShieldedWallet extends Wallet {
   this.hold(held,handle);
   return handle;
  }
- /** Withdraws `amount` sats to this wallet's own address, then hands that payout alone to `exit`. */
- exitFromPool(amount:number,title:string,exit:(coin:NormalizedExtendedVirtualCoin)=>Promise<PaymentHandle>):ShieldedPaymentHandle{
+ /** Whether a pool-funded exit can pay a fresh single-use key; without the companion there is no private payout, and no fallback. */
+ canExitPrivately():boolean{return typeof this.swaps?.exitPayout==='function';}
+ /** Withdraws `amount` to a fresh never-reused key, saved and watched before the withdrawal, so an interrupted exit still finds the payout. */
+ exitFromPool(amount:number,title:string,exit:(coin:NormalizedExtendedVirtualCoin,payout:IWallet)=>Promise<PaymentHandle>):ShieldedPaymentHandle{
   return this.announce(shieldedHandle({title,steps:shieldedSteps.exit,railId:'shielded-exit'},async step=>{
    this.assertOpen();
+   const reserve=this.swaps?.exitPayout;
+   if(!reserve)throw new Error('A private on-chain exit needs the recoverable companion wallet, which is not open. Reload and try again.');
    // Holds auto-shield and renewal off, which would otherwise spend the coin this exit is counting on.
    this.nativeOperations++;
+   let payout:ExitPayout|undefined,spent=false;
    try{
     step(0);
-    const {txid}=await this.withdrawal(await this.getAddress(),BigInt(amount)).settled();
+    payout=await reserve();
+    const key=ArkAddress.decode(payout.address),pool=ArkAddress.decode(this.ownPoolAddress);
+    if(key.hrp!==pool.hrp||hex.encode(key.serverPubKey)!==hex.encode(pool.serverPubKey))throw new Error('The exit payout key belongs to another Arkade server.');
+    await this.withdrawal(payout.address,BigInt(amount)).settled();
     step(1);
-    // A restarted pool reports an included spend without its txid; by then sync knows the batch.
-    const landed=(v:NormalizedExtendedVirtualCoin)=>v.value===amount&&!v.assets?.length&&(txid?v.txid===txid:this.isPoolPayout(v));
     let coin:NormalizedExtendedVirtualCoin|undefined;
-    for(let i=0;!(coin=(await this.getSpendableVtxos()).find(landed));i++){
-     if(i>=60)throw new Error('The withdrawn sats did not reach your Arkade balance.');
+    for(let i=0;!(coin=await payout.coin(amount));i++){
+     if(i>=60)throw new Error(`The pool paid ${sats(amount)} sats to a fresh single-use key that has not arrived yet. It stays saved, and shields back into the pool on its own.`);
      this.assertOpen();await new Promise(r=>setTimeout(r,1000));
     }
     step(2);
-    try{const paid=await exit(coin);step(3);const result=await paid.settled();return result.txid?{txid:result.txid}:{};}
-    catch(error){throw new Error(`The exit failed after the pool paid ${sats(amount)} sats to your Arkade balance: ${reasonOf(error)}`,{cause:error});}
-   }finally{this.nativeOperations--;}
+    try{const paid=await exit(coin,payout.wallet);step(3);const result=await paid.settled();spent=true;return result.txid?{txid:result.txid}:{};}
+    catch(error){throw new Error(`The exit failed after the pool paid ${sats(amount)} sats to a fresh single-use key: ${reasonOf(error)}. Those sats stay saved under that key and shield back into the pool on their own.`,{cause:error});}
+   }finally{this.nativeOperations--;await payout?.release({spent}).catch(()=>{});}
   }));
  }
  /** The pool refuses coins near expiry; a batch swap renews them, after which auto-shield picks them up. */
