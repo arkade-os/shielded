@@ -57,7 +57,7 @@ export interface RollupEpochOperatorOptions {
  now?:()=>number;
  /** The client-proof check; tests replace it to hold a verification open. */
  verify?:typeof verifyRollupProof;
- /** How long a batch that is not full waits for company after its oldest spend, per lane. */
+ /** How long after the last batch of its kind a batch that is not full waits, per lane. */
  batchWaitMs?:number;
  joinWaitMs?:number;
  snapshotEvery?:number;
@@ -117,6 +117,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const headOf=(plan:RollupEpochPlan)=>{const input=Transaction.fromPSBT(base64.decode(plan.request.checkpoints[0]!)).getInput(0);return {txid:hex.encode(input.txid!),vout:input.index!};};
  const keptPath=(plan:RollupEpochPlan)=>join(kept,`${Transaction.fromPSBT(base64.decode(plan.request.arkTx)).id}.json`);
  let sent:{at:number;failed:boolean;tries:number;graceMs:number}|undefined;
+ const lastBatchAt:Record<EpochBatchKind,number>={spend:-Infinity,join:-Infinity,recover:-Infinity};
  const journal=await openStockJournal<RollupArchive,RollupEpochPlan,StockNativeReceipt>(join(o.directory,'journal'),o.pin,o.genesis,{
   validateArchive:archive=>{if(archive.version!==1||Transaction.fromRaw(hex.decode(archive.head.sourceTxHex),{allowUnknownOutputs:true}).id!==archive.head.txid)throw new Error('Invalid rollup archive head.');},
   validatePlan:(plan,archive)=>{const head=headOf(plan);if(plan.version!==1||head.txid!==archive.head.txid||head.vout!==archive.head.vout)throw new Error('Rollup plan spends a different head.');},
@@ -136,6 +137,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   },
   apply:(archive,plan,receipt)=>{
    writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));
+   lastBatchAt[plan.record.kind]=now();
    if(state.batchCount===archive.batches)applyRecord(state,plan.record);
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
    const reserves=plan.asset?{...archive.reserves,[plan.asset]:{...coin(1),amount:plan.reserveAmount!}}:archive.reserves;
@@ -215,8 +217,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const depositFacts=(s:RollupEpochSpend):RollupDepositFacts=>({txid:s.coin!.txid,vout:s.coin!.vout,value:s.coin!.value,
   script:hex.encode(VtxoScript.decode(s.coin!.tapTree).pkScript),assets:s.coin!.assetAmount?[{assetId:s.asset!,amount:s.coin!.assetAmount}]:[]});
  // selectRollupBatch reads only a slot's groupId and groupSize, which both slot shapes carry.
- const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number)=>
-  selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
+ const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number,lastAt:number)=>
+  selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs,lastAt) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
 
  /** The only gate: a spend the batch, the builder or the network would reject must never reserve a nullifier. */
  const submit=async(spend:Omit<RollupEpochSpend,'receivedAt'>)=>{
@@ -300,8 +302,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   const pad=(count:number)=>{if(padding[kind].length<count)throw new Error('padding');taken=padding[kind].splice(0,count);return taken;};
   const ready=pending[kind].filter(selectable);
   // A recover batch is one slot wide: it takes no padding and waits for no company.
-  const selection=kind==='recover'?select(ready.slice(0,1),()=>[],undefined,0)
-   :select(ready,pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS);
+  const selection=kind==='recover'?select(ready.slice(0,1),()=>[],undefined,0,lastBatchAt.recover)
+   :select(ready,pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS,lastBatchAt[kind]);
   if(!selection)return undefined;
   const taker=await o.transport.spentBy?.(journal.status().archive.head);
   if(taker){padding[kind].unshift(...taken);return {blocked:`The pool head was spent by ${taker}, a batch this operator did not build. Post that batch's record to /api/rollup/external to continue.`};}
@@ -410,7 +412,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
-    accepted=acceptedOf(state);
+    lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
     return {batch:archive.batches-1,txid:tx.id};
    }finally{busy=false;}
