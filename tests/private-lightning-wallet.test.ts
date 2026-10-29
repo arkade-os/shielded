@@ -1042,20 +1042,43 @@ test('the real onchain rail offboards an exit payout through the payout key the 
  await assert.rejects(view.send({address:BTC,amount:20_000} as never),/never sends it/);
 });
 
-test('another tab refuses to shield an exit payout while the exit holding it runs',async()=>{
+test('a tab opened mid-exit skips the payout from the moment it is published, then shields it once released',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),errors:Error[]=[];
  const mine=await exitService(f,journal);
  try{
   const payout=await mine.exitPayout(),saved=(await journal.artifacts(ownerKey,pool))[0]!;
   const coin=payoutCoin(saved.script!);f.base.getVtxos=async()=>[coin] as never;
-  assert.equal((await payout.coin(coin.value))?.txid,coin.txid);
+  // The other tab opens after the payout is published but before this exit has seen the coin.
   const other=await exitService(f,journal,error=>errors.push(error));
   try{
    await flushTasks();
-   assert.equal(f.shielded.length,0,'the other tab never races the running exit for its payout');
-   assert.match(errors.map(e=>e.message).join('|'),/another tab/);
+   assert.equal(f.shielded.length,0,'the script reservation holds before coin() takes the outpoint lock');
+   assert.equal((await payout.coin(coin.value))?.txid,coin.txid);
+   for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:coin.script});
+   await flushTasks();
+   assert.equal(f.shielded.length,0,'and still holds once the exit owns the coin');
+   assert.deepEqual(errors,[],'the other tab skips quietly rather than failing the exit after the pool paid');
   }finally{await other[Symbol.asyncDispose]();}
   await payout.release({spent:false});await flushTasks();
-  assert.equal(f.shielded.length,1,'once the exit releases it, the payout shields back into the pool');
+  assert.equal(f.shielded.length,1,'once the exit releases it unspent, the payout shields back into the pool');
+  assert.equal(f.shielded[0]![0].script,coin.script);
  }finally{await mine[Symbol.asyncDispose]();}
+});
+
+test('a completed exit leaves no payout row in history, while a stranded payout still shows one',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
+ const service=await exitService(f,journal);
+ const rowsOf=async()=>(await service.getActivityHistory()).filter(row=>row.intent?.kind==='lightning-receive');
+ try{
+  const done=await service.exitPayout(),spent=(await journal.artifacts(ownerKey,pool))[0]!;
+  f.contracts.find(c=>c.script===spent.script)!.vtxos=[{...payoutCoin(spent.script!),isSpent:true,spentBy:'ef'.repeat(32)}];
+  await done.release({spent:true});
+  assert.deepEqual(await rowsOf(),[],'the offboard already spent it, and the SDK history carries that spend');
+  const stranded=await service.exitPayout(),unspent=(await journal.artifacts(ownerKey,pool))[1]!;
+  f.contracts.find(c=>c.script===unspent.script)!.vtxos=[payoutCoin(unspent.script!)];
+  await stranded.release({spent:false});
+  const rows=await rowsOf();
+  assert.equal(rows.length,1,'a payout still sitting on its key stays visible for recovery');
+  assert.deepEqual([rows[0]!.intent?.label,rows[0]!.amount],['On-chain exit payout',20_041]);
+ }finally{await service[Symbol.asyncDispose]();}
 });
