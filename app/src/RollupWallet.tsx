@@ -1,6 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
 // @ts-ignore circomlibjs has no browser declarations.
-import {buildPoseidon} from 'circomlibjs';
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {bytesToHex} from '@noble/hashes/utils.js';
@@ -198,7 +197,7 @@ export default function RollupWallet(){
    }
   });
   const session=openPageWallet(async()=>{
-   const poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+   const {buildPoseidon}=await import('circomlibjs'),poseidon=await buildPoseidon(),hash:Hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
    return hash;
   },async hash=>{
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;

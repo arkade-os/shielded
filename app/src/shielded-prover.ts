@@ -1,4 +1,3 @@
-import * as snarkjs from 'snarkjs';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {epochCircuitUrls,epochProvingUrls} from '../../src/shielded/epoch-pool.ts';
@@ -42,6 +41,7 @@ export function loadProvingFile(url:string,priority:RequestPriority='auto'):Prom
 /** Prefetch and proving share immutable file bytes and any download already in progress. */
 export function prefetchProvingKeys(status:RollupPoolStatus,circuit:'spend'|'join'='spend'){
  if(!status.proving)return;
+ void import('snarkjs').catch(()=>{});
  for(const url of Object.values(epochCircuitUrls(circuit,status.proving)))void loadProvingFile(url,'low').catch(()=>{});
 }
 
@@ -54,7 +54,7 @@ export function browserProver(status:()=>RollupPoolStatus):ShieldedProver{
    const next=queue.then(async()=>{
     const urls=epochProvingUrls(built,status().proving!);
     const [wasm,zkey]=await Promise.all([loadProvingFile(urls.wasm),loadProvingFile(urls.zkey)]);
-    const {proof}=await snarkjs.groth16.fullProve(toCircuitInput(built.witness.input),wasm,zkey);
+    const {groth16}=await import('snarkjs'),{proof}=await groth16.fullProve(toCircuitInput(built.witness.input),wasm,zkey);
     if(built.witness.slot.nullifiers.length===2)localStorage.setItem(JOIN_READY,'1');
     return proof;
    });
