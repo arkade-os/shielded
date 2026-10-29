@@ -30,7 +30,9 @@ import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;fetcher?:typeof fetch;onArkAddress?:(address:string)=>void};
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;fetcher?:typeof fetch;
+ /** Called once with the Arkade address, synchronously and before the pool sync; a throw aborts create. */
+ onArkAddress?:(address:string)=>void};
 
 export function shieldedKeysOf(hash:Hash,secret:string){
  const keys=deriveRollupKeys2(secret,MUTINYNET_KEY_NETWORK),self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
