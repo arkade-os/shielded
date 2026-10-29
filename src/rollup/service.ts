@@ -23,7 +23,7 @@ import type {StockReleasePin} from '../stock/journal.ts';
 import {isStorageLocked} from '../storage.ts';
 import {preflightStockMutinynet,type StockNetworkInfo} from '../stock/network.ts';
 import type {StockWireRequest} from '../stock/transport.ts';
-import type {RollupSpend} from './batcher.ts';
+import {BATCH_WAIT_MS,type RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves} from './covenant.ts';
 import {epochNfArchivePath} from './epoch-archive-file.ts';
 import {openRollupEpochOperator,type RollupArchive,type RollupEpochOperator,type RollupEpochSpend,type RollupEpochStatus,type RollupPoolCoin,type RollupTimings,type RollupTransport} from './epoch-operator.ts';
@@ -282,7 +282,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    genesis:saved.archive,leaves,token:saved.token,serverKey:hex.decode(network.serverKey),emulatorKey:hex.decode(network.emulatorKey),exitDelay:network.exitDelay,checkpoint,
    // A recover slot carries the spend client proof, as the recover leaf does.
    clientKey:{spend:spendKey,join:readJson(join(keys,'epoch-join.vkey.json')),recover:spendKey},hash,
-   prover:{spend:prover('epoch-batch-spend'),join:prover('epoch-batch-join'),recover:prover('epoch-batch-recover')},transport,signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,batchWaitMs:0,joinWaitMs:0,
+   prover:{spend:prover('epoch-batch-spend'),join:prover('epoch-batch-join'),recover:prover('epoch-batch-recover')},transport,signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,batchWaitMs:BATCH_WAIT_MS,joinWaitMs:BATCH_WAIT_MS,
    onDrop,verify});
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
