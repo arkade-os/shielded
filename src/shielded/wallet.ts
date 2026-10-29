@@ -102,7 +102,7 @@ export const shieldedSteps={
  send:['Pick notes','Prove the payment on this device','Submit to the pool','Wait for the next batch','Included'],
  withdraw:['Pick notes','Prove the withdrawal on this device','Submit to the pool','Wait for the next batch','Included'],
  merge:['Pick two notes','Prove the merge on this device','Submit to the pool','Wait for the next batch','Included'],
- exit:['Withdraw the sats from the pool','Wait for them on your Arkade balance','Send them to the Bitcoin chain','Wait for the batch swap','Done'],
+ exit:['Withdraw the sats from the pool','Wait for them on a fresh single-use key','Send them to the Bitcoin chain','Wait for the batch swap','Done'],
  link:['Pick notes','Prove the link on this device','Submit to the pool','Wait for the next batch','Ready to share'],
  claim:['Read the link','Prove the claim on this device','Submit to the pool','Wait for the next batch','Received'],
 } as const;
