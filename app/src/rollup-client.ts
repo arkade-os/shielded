@@ -44,7 +44,7 @@ export function payTarget(raw:string):{to:string;amount?:number}{
 
 export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private payment',detail:'The amount and both parties stay private.'}
  :railId==='shielded-withdraw'?{title:'Withdraw from the pool',detail:'The amount and the destination become public.'}
- :railId==='shielded-exit'?{title:'Withdraw on-chain',detail:'Leaves the pool to your own Arkade address, then a batch swap sends it on-chain; the amount and the destination become public, linked to that address.'}
+ :railId==='shielded-exit'?{title:'Withdraw on-chain',detail:'Leaves the pool to a fresh key used only for this exit, then a batch swap sends it on-chain; the amount and the destination become public, but not linked to your deposit address.'}
  :railId==='onchain'?{title:'On-chain exit',detail:'From your unshielded Arkade funds, to the Bitcoin chain.'}
  :railId==='ark'||railId==='ark-asset'?{title:'Arkade payment',detail:'From your unshielded Arkade funds; the amount is public.'}
  :railId==='lightning'||railId==='lnurl-lightning'?{title:'Pay over Lightning',detail:'Through a swap, from your Arkade balance; whatever it lacks first leaves the pool, publicly.'}

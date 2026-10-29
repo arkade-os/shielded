@@ -97,19 +97,71 @@ test('self-native withdrawal keeps its SDK receipt while external withdrawals in
  }finally{await wallet.dispose();}
 });
 
-test('an exit from the pool withdraws the whole amount to the wallet itself, holds auto-shield off, then exits that payout alone',async t=>{
- const wallet=await open(),withdrawn:[string,bigint][]=[],payout={...coin('cd'.repeat(32),1002),vout:1},older=coin('ee'.repeat(32),1002),exited:unknown[]=[];
- let landed='',during=-1,named=true;
- (wallet as any).withdrawal=(to:string,amount:bigint)=>{withdrawn.push([to,amount]);return {settled:async()=>{landed=payout.txid;return {railId:'shielded-withdraw',...(named?{txid:payout.txid}:{})};}};};
- t.mock.method(Wallet.prototype,'getSpendableVtxos',async()=>(landed?[older,payout]:[older]) as never);
- const exit=async(c:unknown)=>{exited.push(c);during=(wallet as any).nativeOperations;return makeHandle('onchain',async emit=>{const result={railId:'onchain',txid:'ef'.repeat(32)};emit({status:'settled',result});return result;});};
+/** Stands in for the companion's fresh-key payouts: a new address per exit, and the coin only once the pool has paid. */
+function exitPayouts(hrp='tark',serverPubKey=ArkAddress.decode(POOL_ADDRESS).serverPubKey){
+ const log:string[]=[],views:unknown[]=[];let next=0,paid=false;
+ const address=(n:number)=>new ArkAddress(serverPubKey,new Uint8Array(32).fill(n+1),hrp).encode();
+ const exitPayout=async()=>{
+  const n=next++,view={view:n};views.push(view);log.push(`reserve ${n}`);
+  return {address:address(n),wallet:view as never,
+   coin:async(value:number)=>paid?{...coin('cd'.repeat(32),value),vout:1} as never:undefined,
+   release:async({spent}:{spent:boolean})=>{log.push(`release ${n} ${spent}`);}};
+ };
+ const swaps={exitPayout,markets:async()=>[],resolve:async()=>({eligible:1}),accept:async()=>{throw new Error('not accepted here');},onUpdate:()=>()=>{},[Symbol.asyncDispose]:async()=>{}};
+ return {swaps:swaps as unknown as ShieldedWallet['swaps'],log,views,address,pay(){paid=true;}};
+}
+const exitHandle=()=>makeHandle('onchain',async emit=>{const result={railId:'onchain',txid:'ef'.repeat(32)};emit({status:'settled',result});return result;});
+
+test('an exit from the pool pays a fresh single-use key, holds auto-shield off, then exits that payout alone',async()=>{
+ const wallet=await open(),withdrawn:[string,bigint][]=[],exited:unknown[][]=[],p=exitPayouts();
+ let during=-1;
+ wallet.swaps=p.swaps;
+ (wallet as any).withdrawal=(to:string,amount:bigint)=>{withdrawn.push([to,amount]);p.log.push('withdraw');p.pay();return {settled:async()=>({railId:'shielded-withdraw',txid:'cd'.repeat(32)})};};
+ const exit=async(c:unknown,view:unknown)=>{exited.push([c,view]);during=(wallet as any).nativeOperations;return exitHandle();};
  try{
   const result=await wallet.exitFromPool(1002,'Sending 1,000 sats on-chain',exit).settled();
-  assert.deepEqual(withdrawn,[[await wallet.getAddress(),1002n]],'the whole amount, even with an Arkade coin on hand');
-  assert.deepEqual([exited,result.txid,during,(wallet as any).nativeOperations],[[payout],'ef'.repeat(32),1,0]);
-  landed='';named=false;wallet.account.txids.add(payout.txid);exited.length=0;
-  await assert.rejects(wallet.exitFromPool(1002,'Again',async c=>{exited.push(c);throw new Error('batch swap failed');}).settled(),/after the pool paid 1,002 sats to your Arkade balance: batch swap failed/);
-  assert.deepEqual(exited,[payout],'an unnamed batch is found among the pool payouts');
+  assert.deepEqual(withdrawn,[[p.address(0),1002n]],'the whole amount, to the fresh key and not to the funding address');
+  assert.notEqual(p.address(0),await wallet.getAddress(),'the address deposits arrive at is never the payout');
+  assert.deepEqual(p.log,['reserve 0','withdraw','release 0 true'],'the key is reserved before the withdrawal is submitted');
+  assert.deepEqual([exited[0]![0],result.txid,during,(wallet as any).nativeOperations],[{...coin('cd'.repeat(32),1002),vout:1},'ef'.repeat(32),1,0]);
+  assert.equal(exited[0]![1],p.views[0],'the payout signs with its own descriptor wallet, not the funding identity');
+ }finally{await wallet.dispose();}
+});
+
+test('a second exit takes another fresh key, so no two exits share a payout address',async()=>{
+ const wallet=await open(),withdrawn:string[]=[],p=exitPayouts();
+ wallet.swaps=p.swaps;
+ (wallet as any).withdrawal=(to:string)=>{withdrawn.push(to);p.pay();return {settled:async()=>({railId:'shielded-withdraw'})};};
+ try{
+  for(const i of [0,1])assert.equal((await wallet.exitFromPool(1002,`Exit ${i}`,async()=>exitHandle()).settled()).txid,'ef'.repeat(32));
+  assert.deepEqual(withdrawn,[p.address(0),p.address(1)]);
+  assert.equal(new Set([...withdrawn,await wallet.getAddress()]).size,3,'both payouts and the funding address are distinct');
+ }finally{await wallet.dispose();}
+});
+
+test('an exit that fails after the payout keeps it registered for recovery and says so',async()=>{
+ const wallet=await open(),p=exitPayouts();
+ wallet.swaps=p.swaps;
+ (wallet as any).withdrawal=()=>{p.pay();return {settled:async()=>({railId:'shielded-withdraw'})};};
+ try{
+  await assert.rejects(wallet.exitFromPool(1002,'Again',async()=>{throw new Error('batch swap failed');}).settled(),
+   /after the pool paid 1,002 sats to a fresh single-use key: batch swap failed[\s\S]*shield back into the pool/);
+  assert.deepEqual(p.log,['reserve 0','release 0 false'],'the unspent payout is handed back for auto-shielding');
+  assert.equal((wallet as any).nativeOperations,0);
+ }finally{await wallet.dispose();}
+});
+
+test('an exit refuses rather than fall back to the funding address when no fresh key is available',async()=>{
+ const wallet=await open(),withdrawn:string[]=[];
+ (wallet as any).withdrawal=(to:string)=>{withdrawn.push(to);return {settled:async()=>({railId:'shielded-withdraw'})};};
+ try{
+  assert.equal(wallet.canExitPrivately(),false);
+  await assert.rejects(wallet.exitFromPool(1002,'No companion',async()=>exitHandle()).settled(),/needs the recoverable companion wallet/);
+  const foreign=exitPayouts('ark');wallet.swaps=foreign.swaps;
+  assert.equal(wallet.canExitPrivately(),true);
+  await assert.rejects(wallet.exitFromPool(1002,'Foreign key',async()=>exitHandle()).settled(),/belongs to another Arkade server/);
+  assert.deepEqual(withdrawn,[],'nothing leaves the pool on either refusal');
+  assert.deepEqual(foreign.log,['reserve 0','release 0 false']);
  }finally{await wallet.dispose();}
 });
 
@@ -669,10 +721,12 @@ test('existing and new routers keep the original pool excluded after status lose
  }finally{await wallet.dispose();}
 });
 
-test('the router sends a Bitcoin address out of the pool when one note covers it',async()=>{
+test('the router sends a Bitcoin address out of the pool when one note covers it, and refuses without a fresh key',async()=>{
  const wallet=await open(),raw=bech32.encode('tb',[0,...bech32.toWords(new Uint8Array(20).fill(1))]);
  try{
   await fundPrivate(wallet,[{amount:500n}]);
+  await assert.rejects(wallet.router().route({raw,amount:500}),/needs the recoverable companion wallet/,'no companion, no exit: never the funding address');
+  wallet.swaps=exitPayouts().swaps;
   assert.equal((await wallet.router().route({raw,amount:500})).railId,'shielded-exit');
  }finally{await wallet.dispose();}
 });
