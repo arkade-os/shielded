@@ -177,6 +177,19 @@ test('a tab that saved before an exit settled keeps the settled transaction when
  }finally{await a.dispose();await b.dispose();}
 });
 
+test('a tab whose spend of the same note lost takes the settled exit whole, destination included',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),a=await open({repository}),b=await open({repository});
+ const settled={to:DEST.to,onchainSats:1000,onchainTxid:'ef'.repeat(32)};
+ try{
+  a.recordSent([[7n,{to:DEST.to,onchainSats:1000}]]);await a.save();
+  b.recordSent([[7n,{to:'tb1qq0ser',onchainSats:500}]]);await b.save();
+  a.sentOf(7n)!.onchainTxid=settled.onchainTxid;await a.save();await b.save();
+  const c=await open({repository});
+  try{assert.deepEqual([b.sentOf(7n),c.sentOf(7n)],[settled,settled]);}
+  finally{await c.dispose();}
+ }finally{await a.dispose();await b.dispose();}
+});
+
 test('an exit refuses rather than fall back to the funding address when no fresh key is available',async()=>{
  const wallet=await open(),withdrawn:string[]=[];
  (wallet as any).withdrawal=(to:string)=>{withdrawn.push(to);return {settled:async()=>({railId:'shielded-withdraw'})};};
