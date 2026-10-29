@@ -51,11 +51,11 @@ const fetcherOf=(api:PoolApi)=>(async(url:string)=>{
  try{return new Response(JSON.stringify(await api(String(url).replace('/api/rollup',''))),{status:200});}
  catch(error){return new Response(JSON.stringify({error:(error as Error).message}),{status:(error as {status?:number}).status??404});}
 }) as unknown as typeof fetch;
-const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number}={})=>
+const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:indexer,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
   pool:{origin:'',status:status(o.batches??0)},secret:o.secret??'11'.repeat(32),hash,prover,
-  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{})});
+  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{})});
 
 // The spec's written-first test: the inherited factory must produce the subclass against the patched SDK.
 test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',async()=>{
@@ -73,6 +73,13 @@ test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',as
   assert.equal(wallet.repositoryError,undefined);
   assert.ok((await wallet.getAddress()).startsWith('tark1'));
  }finally{await wallet.dispose();}
+});
+
+test('ShieldedWallet.create announces its Arkade address once, before it reads the pool',async()=>{
+ const {fetcher,paths}=poolFetcher(0),announced:{address:string;reads:number}[]=[];
+ const wallet=await open({fetcher,onArkAddress:address=>announced.push({address,reads:paths.length})});
+ try{assert.deepEqual(announced,[{address:await wallet.getAddress(),reads:0}]);}
+ finally{await wallet.dispose();}
 });
 
 test('self-native withdrawal keeps its SDK receipt while external withdrawals in the same batch remain visible',async t=>{
