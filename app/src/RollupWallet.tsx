@@ -222,7 +222,8 @@ export default function RollupWallet(){
     lnurl=createLnurlReceive({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()});
     return created;
    }catch(error){
-    try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();if(!companion)await pairing.then(c=>c.dispose(),()=>{});}
+    if(!companion)void pairing.then(c=>c.dispose()).catch(()=>{});
+    try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;
    }
