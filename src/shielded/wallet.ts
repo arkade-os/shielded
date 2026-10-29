@@ -179,7 +179,8 @@ export class ShieldedWallet extends Wallet {
    await wallet.load();
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())));
-   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0]))}));
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),
+    exitOf:e=>{const sent=wallet.sentOf(e.spent[0]!);return sent?.onchainTxid?{to:sent.to,txid:sent.onchainTxid,...(sent.onchainSats===undefined?{}:{sats:sent.onchainSats})}:undefined;}}));
    await wallet.start();
    return wallet;
   }catch(error){await wallet.dispose().catch(()=>{});throw error;}
@@ -236,6 +237,8 @@ export class ShieldedWallet extends Wallet {
    const stored=found?.account.owner===account.owner?found:undefined;
    // ponytail: read-merge-write keeps other tabs' entries but is not atomic; merge inside saveAccount's transaction if tabs ever race.
    this.sent={...stored?.sent,...this.sent};for(const txid of stored?.listings??[])this.listings.add(txid);
+   // A settled exit is taken whole: this tab's record for the same note may be a losing spend to another destination.
+   for(const [key,record] of Object.entries(stored?.sent??{}))if(record.onchainTxid&&!this.sent[key]!.onchainTxid)this.sent[key]=record;
    // Spends are final, so what either tab has seen spent or taken back holds for both.
    for(const link of stored?.links??[]){const mine=this.linkRecords.get(link.key);if(!mine){this.linkRecords.set(link.key,link);continue;}mine.open=mine.open.filter(nf=>link.open.includes(nf));if(link.tookBack)mine.tookBack=true;}
    await this.repository.saveAccount(token,{v:2,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()]});
@@ -631,7 +634,7 @@ export class ShieldedWallet extends Wallet {
   return this.announce(handle);
  }
  async withdraw(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):Promise<ShieldedPaymentHandle>{return this.announce(this.withdrawal(to,amount,opts));}
- private withdrawal(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):ShieldedPaymentHandle{
+ private withdrawal(to:string,amount:bigint,opts:{asset?:string;sats?:bigint;record?:SentRecord}={}):ShieldedPaymentHandle{
   const held:bigint[]=[];
   const handle=shieldedHandle({title:'Withdrawing',steps:shieldedSteps.withdraw,railId:'shielded-withdraw'},async step=>{
    step(0);this.assertOpen();
@@ -648,7 +651,7 @@ export class ShieldedWallet extends Wallet {
    };
    const members=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.flatMap(m=>m.built.witness.slot.nullifiers));
    held.push(...members.flatMap(m=>m.built.witness.slot.nullifiers));this.assertOpen();
-   this.recordSent(members.map(m=>[m.built.witness.slot.nullifiers[0]!,{to}] as [bigint,SentRecord]));
+   this.recordSent(members.map(m=>[m.built.witness.slot.nullifiers[0]!,opts.record??{to}] as [bigint,SentRecord]));
    await this.persist();
    return this.submit(members,step,undefined,()=>legs(this.others(held,opts.asset?[assetFieldOfId(opts.asset),BTC_ASSET]:[BTC_ASSET])));
   });
@@ -658,7 +661,7 @@ export class ShieldedWallet extends Wallet {
  /** Whether a pool-funded exit can pay a fresh single-use key; without the companion there is no private payout, and no fallback. */
  canExitPrivately():boolean{return typeof this.swaps?.exitPayout==='function';}
  /** Withdraws `amount` to a fresh never-reused key, saved and watched before the withdrawal, so an interrupted exit still finds the payout. */
- exitFromPool(amount:number,title:string,exit:(coin:NormalizedExtendedVirtualCoin,payout:IWallet)=>Promise<PaymentHandle>):ShieldedPaymentHandle{
+ exitFromPool(amount:number,title:string,exit:(coin:NormalizedExtendedVirtualCoin,payout:IWallet)=>Promise<PaymentHandle>,dest:{to:string;sats:number}):ShieldedPaymentHandle{
   return this.announce(shieldedHandle({title,steps:shieldedSteps.exit,railId:'shielded-exit'},async step=>{
    this.assertOpen();
    const reserve=this.swaps?.exitPayout;
@@ -671,7 +674,8 @@ export class ShieldedWallet extends Wallet {
     payout=await reserve();
     const key=ArkAddress.decode(payout.address),pool=ArkAddress.decode(this.ownPoolAddress);
     if(key.hrp!==pool.hrp||hex.encode(key.serverPubKey)!==hex.encode(pool.serverPubKey))throw new Error('The exit payout key belongs to another Arkade server.');
-    await this.withdrawal(payout.address,BigInt(amount)).settled();
+    const record:SentRecord={to:dest.to,onchainSats:dest.sats};
+    await this.withdrawal(payout.address,BigInt(amount),{record}).settled();
     step(1);
     let coin:NormalizedExtendedVirtualCoin|undefined;
     for(let i=0;!(coin=await payout.coin(amount));i++){
@@ -679,7 +683,11 @@ export class ShieldedWallet extends Wallet {
      this.assertOpen();await new Promise(r=>setTimeout(r,1000));
     }
     step(2);
-    try{const paid=await exit(coin,payout.wallet);step(3);const result=await paid.settled();spent=true;return result.txid?{txid:result.txid}:{};}
+    try{
+     const paid=await exit(coin,payout.wallet);step(3);const result=await paid.settled();spent=true;
+     if(result.txid){record.onchainTxid=result.txid;void this.persist().catch(()=>{});}
+     return result.txid?{txid:result.txid}:{};
+    }
     catch(error){throw new Error(`The exit failed after the pool paid ${sats(amount)} sats to a fresh single-use key: ${reasonOf(error)}. Those sats stay saved under that key and shield back into the pool on their own.`,{cause:error});}
    }finally{this.nativeOperations--;await payout?.release({spent}).catch(()=>{});}
   }));

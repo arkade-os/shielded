@@ -1,4 +1,4 @@
-import {ArkAddress,Estimator,arkTarget,assertNoSelection,isValidArkAddress,tryResolveSendAmount,type FeeInfo,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {ArkAddress,Estimator,arkTarget,assertNoSelection,btcTarget,isValidArkAddress,tryResolveSendAmount,type FeeInfo,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {assetFieldOfId} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
@@ -96,6 +96,6 @@ export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()
   }
   if(!wallet.canExitPrivately())throw new Error('A private on-chain exit needs the recoverable companion wallet, which is not open. Reload and try again.');
   return {...quote,railId:'shielded-exit',fee:gross-quote.amount,total:gross,
-   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async(coin,payout)=>(await rail.quote({...req,selectedVtxos:[coin]},{...ctx,wallet:payout})).send())};
+   send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async(coin,payout)=>(await rail.quote({...req,selectedVtxos:[coin]},{...ctx,wallet:payout})).send(),{to:btcTarget(req.raw)??req.raw,sats:quote.amount})};
  }};
 }
