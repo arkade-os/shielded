@@ -203,11 +203,13 @@ export default function RollupWallet(){
   },async hash=>{
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
    let created:ShieldedWallet|undefined;
+   const arkProvider=new RestArkProvider(network.arkUrl),indexerProvider=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
+   const pairing=createLightningWallet(secret,{arkProvider,indexerProvider});pairing.catch(()=>{});
    try{
     const bornAt=bornAtFor(localStorage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
     created=await ShieldedWallet.create({
      identity:SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret),
-     arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl),
+     arkProvider,indexerProvider,
      storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
      settlementConfig:false,walletMode:'static',
      pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
@@ -215,11 +217,12 @@ export default function RollupWallet(){
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });
     nativeOpened=true;
-    companion=await createLightningWallet(secret,{arkProvider:created.arkProvider,indexerProvider:created.indexerProvider,onchainProvider:created.onchainProvider});
+    companion=await pairing;
     const swaps=await createPrivateLightning({wallet:created,companion,journal,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));}});created.swaps=swaps;
     lnurl=createLnurlReceive({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()});
     return created;
    }catch(error){
+    if(!companion)void pairing.then(c=>c.dispose()).catch(()=>{});
     try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;
