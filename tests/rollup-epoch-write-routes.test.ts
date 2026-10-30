@@ -171,7 +171,7 @@ test('a stored epoch spend whose anchor died in a rotation is dropped with a rea
  first.close();
  pendingOnDisk(directory,landed,died);
  const service=await ready(net,directory,join(directory,'keys')),{status,reason}=service.spend(died.id)!;
- assert.deepEqual([service.spend(landed.id),status,service.status().pool!.pending],[{status:'included'},'dropped',0]);
+ assert.deepEqual([service.spend(landed.id),status,service.status().pool!.pending],[{status:'included',batch:63,txid:batchesOf(service,63,1)[0]!.txid},'dropped',0]);
  assert.match(reason!,/^It could not be re-admitted after the pool restarted: The spend opens against another previous-epoch root/);
 });
 

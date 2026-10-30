@@ -33,7 +33,7 @@ const EPOCH_PIN_FINGERPRINT='93a57a93d9a0f81b50838b1cbbdc3d66acbfaab916adca6e07c
 const epochSpend=(w:{slot:unknown;publicSignals:bigint[]},origin?:number)=>({id:hex.encode(randomBytes(16)),slot:w.slot,publics:w.publicSignals,proof,...(origin!==undefined?{origin}:{})}) as never;
 const batchesOf=(service:RollupService,from:number,limit:number)=>service.batches(from,limit).batches as unknown as RollupEpochRecord[];
 type ScanPage={from:number;total:number;data:string};
-type Stored={id:string;slot:{nullifiers:bigint[]}};
+type Stored={id:string;slot:{nullifiers:bigint[]};publics:bigint[]};
 
 test('an epoch service opens an epoch pool, rotates, and lands a recover batch that reads included after a restart',async t=>{
  const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-service-');
@@ -109,7 +109,7 @@ test('an epoch service opens an epoch pool, rotates, and lands a recover batch t
  openSpendStore(join(directory,'spends')).save({id:'swept',status:'pending',nullifier:String((recover as Stored).slot.nullifiers[0]),at:Date.now()});
  const reopened=await ready(net,directory,keys);
  assert.deepEqual(reopened.scan(0,66),beforeRestart,'a replayed state passes the live-tree check and serves the same page');
- assert.deepEqual(reopened.spend((recover as Stored).id),{status:'included'},'restore reads the recovered set');
+ assert.deepEqual(reopened.spend((recover as Stored).id),{status:'included',batch:65,txid:recoverTx.id},'restore reads the recovered set, and the batch that carried the slot');
  await until('the sweep settles the record restore skipped',()=>reopened.spend('swept')?.status!=='pending',net);
  assert.deepEqual(reopened.spend('swept'),{status:'included'},'so does the sweep');
 });
@@ -258,6 +258,28 @@ test('a rebuilt spend of the same note that lands leaves the dropped original dr
  const settled=service.spend(staleId)!;
  assert.equal(settled.status,'dropped','that batch carried the note, but not this spend\'s own slot');
  assert.match(settled.reason!,/could not be re-admitted/);
+});
+
+test('a restart and the sweep settle a pending spend by the slot a batch carried, not by its note',async()=>{
+ const {net,directory,service:first}=await bakedPool({epochLen:64,batches:10,record:epochRecord(64)}),note=dummyInput();
+ const twin=epochSpend(deposit(anchors(first),0n,{inputs:[note]})),landedTwin=epochSpend(deposit(anchors(first),0n,{inputs:[note]}));
+ const own=epochSpend(deposit(anchors(first),0n)),[twinId,ownId]=[twin,own].map(s=>(s as Stored).id) as [string,string];
+ for(const s of [landedTwin,own]){await first.submit(s);await until('the spend lands',()=>first.spend((s as Stored).id)?.status==='included',net);}
+ const settled=first.spend(ownId)!;
+ first.close();
+ // Left pending as a crash before settling would: `own` landed itself, `twin`'s note was spent by the copy that landed.
+ pendingOnDisk(directory,own,twin);
+ const store=openSpendStore(join(directory,'spends'));
+ const bodyless=(id:string,s:Stored)=>store.save({id,status:'pending',nullifier:String(s.slot.nullifiers[0]),statement:String(s.publics[0]),at:Date.now()});
+ bodyless('swept-own',own as Stored);bodyless('swept-twin',twin as Stored);
+ const service=await reopen(net,directory);
+ assert.deepEqual(service.spend(ownId),settled,'restore reads the batch its own slot is in');
+ assert.deepEqual([service.spend(twinId)!.status,service.spend(twinId)!.batch],['dropped',undefined],'another spend of the note landed, so this one never can');
+ assert.match(service.spend(twinId)!.reason!,/can never land/);
+ await until('the sweep settles the records restore skipped',()=>['swept-own','swept-twin'].every(id=>service.spend(id)?.status!=='pending'),net);
+ assert.deepEqual(service.spend('swept-own'),settled,'the sweep reads the same batch');
+ assert.equal(service.spend('swept-twin')!.status,'dropped','and drops the one no batch carried');
+ service.close();
 });
 
 test('an epoch genesis writes version 2 and reads back as epoch',()=>{

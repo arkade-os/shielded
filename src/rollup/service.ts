@@ -45,6 +45,8 @@ const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000,NOTICE_AFTER_MS=30_000;
+// A tracked spend is pruned an hour after it was submitted, so the batch that carried it is always near the newest; the skew is the indexer clock that dates a followed batch, and the cap bounds a record that carries no date at all.
+const CARRIED_SKEW_MS=10*60_000,CARRIED_SCAN=4096;
 // Batching retries every second but renewal only every RENEW_CHECK_MS, so one blip would read as a stall for most of that gap.
 export const RENEW_NOTICE_AFTER_MS=RENEW_CHECK_MS+NOTICE_AFTER_MS;
 export const rollupNotice=(reasons:readonly (readonly [{message:string;since:number}|undefined,number])[],now:number):string|undefined=>
@@ -193,6 +195,21 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const t=tracked.get(id);if(!t)return;Object.assign(t,patch);
   store.save({id,status:t.status==='signing'?'pending':t.status,nullifier:t.nullifier,...(t.statement?{statement:t.statement}:{}),at:t.at,...(t.batch!==undefined?{batch:t.batch}:{}),...(t.txid?{txid:t.txid}:{}),...(t.reason?{reason:t.reason}:{})});
  };
+ /** The accepted batch whose record carries this very slot, newest first: one accepted before the spend was submitted cannot hold it. A walk the cap cuts short proves nothing either way. */
+ const carriedBy=(statement:string,since:number):{batch:number;txid?:string}|'unproven'|undefined=>{
+  for(let n=live!.operator.status().archive.batches-1,read=0;n>=0;n--,read++){
+   if(read>=CARRIED_SCAN)return 'unproven';
+   const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${n}.json`));
+   if(record.at!==undefined&&record.at<since-CARRIED_SKEW_MS)return undefined;
+   if(record.slots.some(s=>s.publics[0]===statement))return {batch:n,...(record.txid?{txid:record.txid}:{})};
+  }
+  return undefined;
+ };
+ /** A pending spend whose note is spent: included on the batch that carried its own slot; dropped where no batch did, as another spend of that note is then what landed; and, where its slot cannot be proven either way, the bare included of old. */
+ const settleLanded=(id:string,t:{statement?:string;at:number})=>{
+  const carried=t.statement?carriedBy(t.statement,t.at):'unproven';
+  settle(id,carried==='unproven'?{status:'included'}:carried?{status:'included',...carried}:{status:'dropped',reason:'Another spend of this note landed first, so this one can never land.'});
+ };
  /** A deposit coin as the indexer knows it: value, script and asset holdings come from there, never from the client. */
  const resolveCoin=async(c:CoinRef):Promise<RollupCoin&{assetAmount?:bigint;assetId?:string}>=>{
   const raw=(await live!.indexer.getVirtualTxs([c.txid])).txs.map(decodeStockIndexerTransaction).find(tx=>tx.id===c.txid);
@@ -207,9 +224,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   for(const record of store.load()){
    if(Date.now()-record.at>3600_000){store.remove(record.id);continue;}
    const statement=record.statement??record.spend?.publics[0];
-   tracked.set(record.id,{status:record.status,nullifier:record.nullifier,...(statement?{statement}:{}),at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})});
+   const entry={status:record.status,nullifier:record.nullifier,...(statement?{statement}:{}),at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})};
+   tracked.set(record.id,entry);
    if(record.status!=='pending'||!record.spend)continue;
-   if(landed(operator.state,BigInt(record.nullifier))){settle(record.id,{status:'included'});continue;}
+   if(landed(operator.state,BigInt(record.nullifier))){settleLanded(record.id,entry);continue;}
    try{const {spend}=record,coin=spend.coin?await resolveCoin(spend.coin):undefined;await operator.submit({...decodeEpochSpend(spend as EncodedEpochSpend),...(coin?{coin}:{})});}
    catch(error){settle(record.id,{status:'dropped',reason:'It could not be re-admitted after the pool restarted: '+(error as Error).message});}
   }
@@ -305,7 +323,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   const sweep=()=>{
    const waiting=new Set(operator.pendingIds());
    for(const [id,t] of tracked){
-    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id))settle(id,landed(operator.state,BigInt(t.nullifier))?{status:'included'}:{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
+    if(t.status==='pending'&&!waiting.has(id)&&!sessions.has(id)){
+     if(landed(operator.state,BigInt(t.nullifier)))settleLanded(id,t);
+     else settle(id,{status:'dropped',reason:'The operator dropped this spend before it reached a batch; build it again.'});
+    }
     if(Date.now()-t.at>3600_000){tracked.delete(id);store.remove(id);}
    }
   };
