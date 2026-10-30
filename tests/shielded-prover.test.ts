@@ -6,6 +6,7 @@ import * as snarkjs from 'snarkjs';
 import * as prover from '../app/src/shielded-prover.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupPoolStatus} from '../src/shielded/pool.ts';
+import {prefetchProvingKeys,snarkjsProver} from '../src/shielded/prover.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
@@ -53,6 +54,15 @@ test('an in-flight successful prefetch is reused by proving without another down
  const pending=outcome(prover.browserProver(()=>pool).prove(built,'spend'));await flush();assert.equal(calls.length,2);release();
  const result=await pending;assert.equal(result.error,undefined);assert.ok(result.value);assert.equal(calls.length,2);
  prover.prefetchProvingKeys(pool);await prover.browserProver(()=>pool).prove(built,'spend');assert.equal(calls.length,2);
+});
+
+test('a prover for another origin downloads its proving files from that origin',async t=>{
+ const calls:string[]=[];
+ t.mock.method(globalThis,'fetch',async(url:unknown)=>{calls.push(String(url));return new Response(String(url).includes('.wasm')?wasm:zkey);});
+ const pool=status('remote-origin');
+ assert.ok(await snarkjsProver({status:()=>pool,origin:'https://pool.example'}).prove(built,'spend'));
+ prefetchProvingKeys(pool,'spend','https://pool.example');await flush();
+ assert.equal(calls.length,2);assert.ok(calls.every(url=>url.startsWith('https://pool.example/api/rollup/proving/epoch-spend.')),calls.join(' '));
 });
 
 test('definitive HTTP refusals are not retried or cached',async t=>{
