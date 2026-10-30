@@ -54,7 +54,7 @@ Every action returns an SDK `PaymentHandle` with named steps.
 | `repository` | `IndexedDBShieldedNoteRepository` in browsers, otherwise in memory |
 | `prover` | `snarkjsProver`, which downloads proving files from the pool |
 | `hash` | circomlib Poseidon from `circomlibjs` |
-| `fetch` | global `fetch` |
+| `fetch` | global `fetch`, for the pool's API. Proving files and the Arkade server always use the global `fetch`. |
 
 `shieldedWalletConfig(options)` returns the full `ShieldedWalletConfig` without starting a wallet. Pass it to `ShieldedWallet.create` to change anything first.
 

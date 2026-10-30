@@ -65,6 +65,14 @@ test('a prover for another origin downloads its proving files from that origin',
  assert.equal(calls.length,2);assert.ok(calls.every(url=>url.startsWith('https://pool.example/api/rollup/proving/epoch-spend.')),calls.join(' '));
 });
 
+test('a join flag store that throws reads as not ready and never discards a finished join proof',async t=>{
+ t.mock.method(globalThis,'fetch',async(url:unknown)=>new Response(String(url).includes('.wasm')?wasm:zkey));
+ const joined={witness:{input,slot:{nullifiers:[11n,22n]}},slot:{nullifiers:[11n,22n]}} as unknown as EpochBuiltSpend;
+ const broken=snarkjsProver({status:()=>({proving:{spend:{wasm:'flag',zkey:'flag'},join:{wasm:'flag',zkey:'flag'}}}) as RollupPoolStatus,joinReady:{get:()=>{throw new Error('storage disabled');},set:()=>{throw new Error('quota exceeded');}}});
+ assert.equal(broken.joinReady!(),false);assert.ok(await broken.prove(joined,'join'));
+ await assert.rejects(snarkjsProver({status:()=>({}) as RollupPoolStatus}).prove(built,'spend'),/not published its proving keys/);
+});
+
 test('definitive HTTP refusals are not retried or cached',async t=>{
  let calls=0;t.mock.method(globalThis,'fetch',async()=>++calls===1?new Response('missing',{status:404}):new Response(wasm));
  await assert.rejects(prover.loadProvingFile('/missing.wasm'),/404/);assert.equal(calls,1);

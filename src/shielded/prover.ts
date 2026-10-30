@@ -52,13 +52,16 @@ export function snarkjsProver({status,origin='',joinReady}:{status:()=>RollupPoo
  let joined=false;
  const ready=joinReady??{get:()=>joined,set:()=>{joined=true;}};
  return {
-  joinReady:()=>ready.get(),
+  // A flag store that throws (storage disabled or full) only means "not ready yet"; it must never fail a payment or discard a proof.
+  joinReady:()=>{try{return ready.get();}catch{return false;}},
   prove(built:EpochBuiltSpend){
    const next=queue.then(async()=>{
-    const urls=epochProvingUrls(built,status().proving!,origin);
+    const proving=status().proving;
+    if(!proving)throw new Error('The pool has not published its proving keys, so this wallet cannot prove yet.');
+    const urls=epochProvingUrls(built,proving,origin);
     const [wasm,zkey]=await Promise.all([loadProvingFile(urls.wasm),loadProvingFile(urls.zkey)]);
     const {groth16}=await import('snarkjs'),{proof}=await groth16.fullProve(toCircuitInput(built.witness.input),wasm,zkey);
-    if(built.witness.slot.nullifiers.length===2)ready.set();
+    if(built.witness.slot.nullifiers.length===2)try{ready.set();}catch{}
     return proof;
    });
    queue=next.then(()=>undefined,()=>undefined);
