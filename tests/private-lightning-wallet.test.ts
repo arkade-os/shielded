@@ -11,7 +11,7 @@ import {base64,hex} from '@scure/base';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
 import {IndexedDbLightningRepository,InMemoryLightningRepository,type LightningRepository} from '../src/shielded/lightning-repository.ts';
-import {artifactWallet,createPrivateLightning,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
+import {artifactWallet,createPrivateLightning,lightningOwner,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
 import {ShieldedWallet} from '../src/shielded/wallet.ts';
 import {checkRecoveryWitnessRepair,completeRecoveryWitnesses} from '../src/shielded/lightning-exit-witness.ts';
 import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
@@ -717,6 +717,26 @@ test('reload resumes only an existing durable funding body for the same accepted
   assert.deepEqual((await f.journal.get(owner,pool,'lightning-fund-0'))!.body,f.record.body);
   assert.equal((await f.journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool)).length,1);
  }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a tab whose sibling holds a swap session still opens Lightning, and leaves that swap to the sibling',async()=>{
+ const f=await interruptedFunding(),errors:Error[]=[],[artifact]=await f.journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool);
+ const held=`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`;f.live.add(held);
+ const service=await createPrivateLightning({...f.options,onError:error=>errors.push(error)});
+ try{
+  await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(f.funded.length,0,'only the tab holding the session drives the swap');
+  assert.match(errors.map(e=>e.message).join('|'),/another tab/);
+ }finally{await service[Symbol.asyncDispose]();}
+ assert.ok(f.live.has(held));
+});
+
+test('a tab whose sibling holds legacy recovery still opens Lightning, and leaves legacy swaps to the sibling',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),address=await f.wallet.getAddress(),held=`shielded-lightning-legacy-${address}`;f.live.add(held);
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession});
+ try{assert.equal(f.repositories.has(`shielded-swaps-${address}`),false);}
+ finally{await service[Symbol.asyncDispose]();}
+ assert.ok(f.live.has(held));
 });
 
 test('expired recovery reconciles the saved spend without creating another funding POST',async t=>{

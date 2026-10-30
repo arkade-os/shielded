@@ -342,7 +342,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
   await registerPayouts(restoredPayouts);
   for(const artifact of artifacts){
-   if(artifact.state==='accepted'&&artifact.kind!=='exit'){const session=await open(artifact);await startSession(session);}
+   if(artifact.state==='accepted'&&artifact.kind!=='exit'){const session=await open(artifact).catch(report);if(session)await startSession(session);}
    else if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
     try{
      const release=await acquireSession(`${namespace}-${artifact.id}`);
@@ -352,9 +352,12 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    }
   }
   if(legacyRecovery){
-   const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`);legacyRepository=repositoryFor(`shielded-swaps-${address}`);
-   const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
-   legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await legacy.ready;await legacy.start();
+   const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`).catch(()=>undefined);
+   if(releaseLegacy){
+    legacyRepository=repositoryFor(`shielded-swaps-${address}`);
+    const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
+    legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await legacy.ready;await legacy.start();
+   }
   }
   offPayout=(await companion.getContractManager()).onContractEvent(event=>{
    if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
