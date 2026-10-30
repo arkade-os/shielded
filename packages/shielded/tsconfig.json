@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false, "declaration": true, "rewriteRelativeImportExtensions": true,
+    "lib": ["ES2023", "ESNext.Disposable", "DOM"], "rootDir": "../..", "outDir": "dist"
+  },
+  "include": [],
+  "files": ["src/index.ts", "../../src/vendor.d.ts"]
+}
