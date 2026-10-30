@@ -8,8 +8,8 @@ import {slotOf,type RollupEpochSpend} from './epoch-operator.ts';
 /** The coin as the client named it; the store re-resolves it from the indexer rather than keeping transaction bytes. */
 export interface CoinRef {txid:string;vout:number;tapTree:string;leaf:string}
 export interface EncodedEpochSpend {id:string;slot:{anchor:string;rCur?:{epoch:number;root:string};origin?:number;nullifiers:string[];commitments:[string,string];ctDigest:string;groupId:string;groupSize:number};publics:string[];proof:SnarkProof;ciphertext?:string;asset?:string;program?:string;coin?:CoinRef}
-/** `statement` is the spend's own slot: the first public input its proof opens. A record written before that field carries it only inside `spend`. */
-export interface StoredSpend {id:string;status:'pending'|'included'|'dropped';nullifier:string;statement?:string;at:number;batch?:number;txid?:string;reason?:string;spend?:EncodedEpochSpend}
+/** `statement` is the spend's own slot (the first public input its proof opens) and `from` the batch count when it was admitted, below which no batch can carry it; a record written before these has the statement only inside `spend`. */
+export interface StoredSpend {id:string;status:'pending'|'included'|'dropped';nullifier:string;statement?:string;from?:number;at:number;batch?:number;txid?:string;reason?:string;spend?:EncodedEpochSpend}
 
 export const encodeEpochSpend=(s:Omit<RollupEpochSpend,'receivedAt'|'coin'>,coin?:CoinRef):EncodedEpochSpend=>({id:s.id,slot:recordSlotOf(s.slot),
  publics:s.publics.map(String),proof:s.proof,...(s.ciphertext?{ciphertext:hex.encode(s.ciphertext)}:{}),...(s.asset?{asset:s.asset}:{}),...(s.program?{program:hex.encode(s.program)}:{}),...(coin?{coin}:{})});

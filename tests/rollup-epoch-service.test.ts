@@ -19,7 +19,7 @@ import {rollupEpochPoolTree} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {EPOCH_KEY_FILES,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
-import {openSpendStore} from '../src/rollup/spend-store.ts';
+import {encodeEpochSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {signDeposit} from '../src/shielded/pool.ts';
 import {stockJournalFingerprint} from '../src/stock/journal.ts';
 import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
@@ -264,14 +264,18 @@ test('a restart and the sweep settle a pending spend by the slot a batch carried
  const {net,directory,service:first}=await bakedPool({epochLen:64,batches:10,record:epochRecord(64)}),note=dummyInput();
  const twin=epochSpend(deposit(anchors(first),0n,{inputs:[note]})),landedTwin=epochSpend(deposit(anchors(first),0n,{inputs:[note]}));
  const own=epochSpend(deposit(anchors(first),0n)),[twinId,ownId]=[twin,own].map(s=>(s as Stored).id) as [string,string];
- for(const s of [landedTwin,own]){await first.submit(s);await until('the spend lands',()=>first.spend((s as Stored).id)?.status==='included',net);}
- const settled=first.spend(ownId)!;
+ const built=first.status().pool!.batches,spare=epochSpend(deposit(anchors(first),0n));
+ for(const s of [landedTwin,own,spare]){await first.submit(s);await until('the spend lands',()=>first.spend((s as Stored).id)?.status==='included',net);}
+ const settled=first.spend(ownId)!,later=first.spend((spare as Stored).id)!.batch!;
  first.close();
- // Left pending as a crash before settling would: `own` landed itself, `twin`'s note was spent by the copy that landed.
- pendingOnDisk(directory,own,twin);
+ // A batch a lagging indexer clock dated to the epoch: it sits above the record that carries `own`, and must not end the walk.
+ const dated=join(directory,'operator','batches',`${later}.json`);
+ writeFileSync(dated,JSON.stringify({...JSON.parse(readFileSync(dated,'utf8')),at:1}));
  const store=openSpendStore(join(directory,'spends'));
- const bodyless=(id:string,s:Stored)=>store.save({id,status:'pending',nullifier:String(s.slot.nullifiers[0]),statement:String(s.publics[0]),at:Date.now()});
- bodyless('swept-own',own as Stored);bodyless('swept-twin',twin as Stored);
+ const pending=(id:string,s:Stored,from:number,body=false)=>store.save({id,status:'pending',nullifier:String(s.slot.nullifiers[0]),statement:String(s.publics[0]),from,at:Date.now(),...(body?{spend:encodeEpochSpend(s as never)}:{})});
+ // Left pending as a crash before settling would: `own` landed itself, `twin`'s note was spent by the copy that landed.
+ pending(ownId,own as Stored,settled.batch!,true);pending(twinId,twin as Stored,built,true);
+ pending('swept-own',own as Stored,settled.batch!);pending('swept-twin',twin as Stored,built);
  const service=await reopen(net,directory);
  assert.deepEqual(service.spend(ownId),settled,'restore reads the batch its own slot is in');
  assert.deepEqual([service.spend(twinId)!.status,service.spend(twinId)!.batch],['dropped',undefined],'another spend of the note landed, so this one never can');

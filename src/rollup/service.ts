@@ -45,8 +45,8 @@ const SETUP_MEMORY_BYTES=6*1024**3,SETUP_ATTEMPTS=3,SETUP_RETRY_MS=10*60_000;
 // arkd sweeps a pool coin at its batch expiry, so the pool moves to a fresh round well before. A batch inherits its
 // earliest input expiry, so a deposit coin may shorten the head's life, but never below the renewal threshold's reach.
 const RENEW_BEFORE_MS=48*3600_000,RENEW_CHECK_MS=10*60_000,DEPOSIT_FLOOR_MS=24*3600_000,LIST_CHECK_MS=60_000,NOTICE_AFTER_MS=30_000;
-// A tracked spend is pruned an hour after it was submitted, so the batch that carried it is always near the newest; the skew is the indexer clock that dates a followed batch, and the cap bounds a record that carries no date at all.
-const CARRIED_SKEW_MS=10*60_000,CARRIED_SCAN=4096;
+// A ceiling on the batch records one settlement reads, for a pool that batched far faster than the hour a tracked spend lives.
+const CARRIED_SCAN=4096;
 // Batching retries every second but renewal only every RENEW_CHECK_MS, so one blip would read as a stall for most of that gap.
 export const RENEW_NOTICE_AFTER_MS=RENEW_CHECK_MS+NOTICE_AFTER_MS;
 export const rollupNotice=(reasons:readonly (readonly [{message:string;since:number}|undefined,number])[],now:number):string|undefined=>
@@ -189,25 +189,24 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const noticeOf=()=>{const notice=rollupNotice(rollupNoticeReasons(blocked,stalled),Date.now());return notice?{notice}:{};};
  // In memory only: after a restart it is absent until this process publishes a batch.
  let lastBatch:RollupStatusBatch|undefined;
- const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;statement?:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
- /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. The statement rides along: a settled record keeps no spend body to read it back from. */
+ const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;statement?:string;from?:number;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
+ /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. The slot and the batch count it was admitted at ride along: a settled record keeps no spend body to read them back from. */
  const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
   const t=tracked.get(id);if(!t)return;Object.assign(t,patch);
-  store.save({id,status:t.status==='signing'?'pending':t.status,nullifier:t.nullifier,...(t.statement?{statement:t.statement}:{}),at:t.at,...(t.batch!==undefined?{batch:t.batch}:{}),...(t.txid?{txid:t.txid}:{}),...(t.reason?{reason:t.reason}:{})});
+  store.save({id,status:t.status==='signing'?'pending':t.status,nullifier:t.nullifier,...(t.statement?{statement:t.statement}:{}),...(t.from!==undefined?{from:t.from}:{}),at:t.at,...(t.batch!==undefined?{batch:t.batch}:{}),...(t.txid?{txid:t.txid}:{}),...(t.reason?{reason:t.reason}:{})});
  };
- /** The accepted batch whose record carries this very slot, newest first: one accepted before the spend was submitted cannot hold it. A walk the cap cuts short proves nothing either way. */
- const carriedBy=(statement:string,since:number):{batch:number;txid?:string}|'unproven'|undefined=>{
-  for(let n=live!.operator.status().archive.batches-1,read=0;n>=0;n--,read++){
+ /** The accepted batch whose record carries this very slot, newest first down to the batch count the spend was admitted at, since no batch below that can hold it. A walk the cap cuts short proves nothing either way. */
+ const carriedBy=(statement:string,from:number):{batch:number;txid?:string}|'unproven'|undefined=>{
+  for(let n=live!.operator.status().archive.batches-1,read=0;n>=from;n--,read++){
    if(read>=CARRIED_SCAN)return 'unproven';
    const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${n}.json`));
-   if(record.at!==undefined&&record.at<since-CARRIED_SKEW_MS)return undefined;
    if(record.slots.some(s=>s.publics[0]===statement))return {batch:n,...(record.txid?{txid:record.txid}:{})};
   }
   return undefined;
  };
  /** A pending spend whose note is spent: included on the batch that carried its own slot; dropped where no batch did, as another spend of that note is then what landed; and, where its slot cannot be proven either way, the bare included of old. */
- const settleLanded=(id:string,t:{statement?:string;at:number})=>{
-  const carried=t.statement?carriedBy(t.statement,t.at):'unproven';
+ const settleLanded=(id:string,t:{statement?:string;from?:number})=>{
+  const carried=t.statement&&t.from!==undefined?carriedBy(t.statement,t.from):'unproven';
   settle(id,carried==='unproven'?{status:'included'}:carried?{status:'included',...carried}:{status:'dropped',reason:'Another spend of this note landed first, so this one can never land.'});
  };
  /** A deposit coin as the indexer knows it: value, script and asset holdings come from there, never from the client. */
@@ -224,7 +223,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   for(const record of store.load()){
    if(Date.now()-record.at>3600_000){store.remove(record.id);continue;}
    const statement=record.statement??record.spend?.publics[0];
-   const entry={status:record.status,nullifier:record.nullifier,...(statement?{statement}:{}),at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})};
+   const entry={status:record.status,nullifier:record.nullifier,...(statement?{statement}:{}),...(record.from!==undefined?{from:record.from}:{}),at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})};
    tracked.set(record.id,entry);
    if(record.status!=='pending'||!record.spend)continue;
    if(landed(operator.state,BigInt(record.nullifier))){settleLanded(record.id,entry);continue;}
@@ -513,14 +512,14 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
    await live.operator.submit(spend);kick();
-   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),statement:String(spend.publics[0]),at:Date.now()};
+   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),statement:String(spend.publics[0]),from:live.operator.status().archive.batches,at:Date.now()};
    tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:encodeEpochSpend(spend,coin)});
   },
   spend:(id:string):RollupSpendStatus|undefined=>{
    const s=sessions.get(id),t=tracked.get(id);
    if(s&&!s.signed)return {status:'signing',arkTx:s.arkTx,checkpoint:s.checkpoints[s.vin]!,checkpoints:s.checkpoints,vin:s.vin};
    if(!t)return undefined;
-   const {nullifier:_n,statement:_s,at:_a,...rest}=t;return rest;
+   const {nullifier:_n,statement:_s,from:_f,at:_a,...rest}=t;return rest;
   },
   sign:(id:string,signed:{arkTx:string;checkpoint:string})=>{
    const s=sessions.get(id);
