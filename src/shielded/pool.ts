@@ -31,7 +31,8 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   const read=body===undefined?new AbortController():undefined,timer=read&&setTimeout(()=>read.abort(new Error(`The pool did not answer within ${READ_TIMEOUT_MS/1000} s.`)),READ_TIMEOUT_MS);
   try{
    response=await fetcher(origin+'/api/rollup'+path,read?{...request,signal:read.signal}:request);
-   if(response.status<500)json=await response.json().catch((error:unknown)=>{if(response!.ok)throw error;return {};});
+   // An unreadable GET is read again; an admitted POST is not resent (the pool refuses a duplicate id), its caller polls it by id.
+   if(response.status<500)json=await response.json().catch((error:unknown)=>{if(response!.ok&&read)throw error;return {};});
   }catch(error){response=undefined;if(attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
   finally{clearTimeout(timer);}
   if(response&&response.status<500){

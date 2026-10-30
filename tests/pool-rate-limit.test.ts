@@ -56,6 +56,10 @@ test('a successful answer whose body cannot be read is read again, never taken a
  const fetcher=(async()=>++calls===1?new Response('{"batches":[',{status:200}):Response.json({batches:[]})) as typeof fetch;
  assert.deepEqual(await rollupApi('/batches?from=0&limit=50',undefined,fetcher,0,'https://truncated.test'),{batches:[]});
  assert.equal(calls,2);
+ let posts=0;
+ const admitted=(async()=>{posts++;return new Response('{"id":"fixed","sta',{status:202});}) as typeof fetch;
+ assert.deepEqual(await rollupApi('/spends',{id:'fixed'},admitted,0,'https://truncated.test'),{});
+ assert.equal(posts,1,'an admitted POST is never resent; the caller reconciles it by id');
 });
 
 test('a past Retry-After date waits a minute while numeric zero retains the one-second minimum',async t=>{
