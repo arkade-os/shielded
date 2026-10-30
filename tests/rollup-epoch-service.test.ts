@@ -22,7 +22,7 @@ import {EPOCH_KEY_FILES,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupPr
 import {openSpendStore} from '../src/rollup/spend-store.ts';
 import {signDeposit} from '../src/shielded/pool.ts';
 import {stockJournalFingerprint} from '../src/stock/journal.ts';
-import type {StockWireRequest} from '../src/stock/transport.ts';
+import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
 import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 
@@ -183,7 +183,7 @@ test('a renewal left on disk whose head another batch spent is kept and reported
 const depositor=SingleKey.fromHex('03'.repeat(32)),user=await depositor.xOnlyPublicKey();
 const collab=MultisigTapscript.encode({pubkeys:[user,hex.decode(serverKey)]}).script;
 const userTree=new VtxoScript([collab,CSVMultisigTapscript.encode({timelock:{type:'seconds',value:2048n},pubkeys:[user]}).script]);
-/** The tests share one network, so `answering` belongs to the adopting test alone and the test that lands a batch of its own runs last. */
+/** One instance per network: `answering` belongs to the adopting test alone, and a batch that must stay off the network needs an instance that never publishes. */
 async function openAbandonedDeposit(){
  const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-abandoned-'),state=EpochState.genesis(hash,64);
  const service=await ready(net,directory,keys,'64'),pool=()=>service.status().pool!;
@@ -200,16 +200,21 @@ async function openAbandonedDeposit(){
  await until('the refused batch is abandoned and its deposit reported dropped',()=>service.spend(id)?.status==='dropped',net);
  assert.deepEqual(service.spend(id),{status:'dropped',reason:'The network kept refusing the batch with this deposit.'});
  service.close();net.transport.submit=sent;
- const receipt=await sent(plan!,1);
- return {net,id,nullifier:String(slot.nullifiers[0]),receipt,answering:(on:boolean)=>{net.transport.lookup=async()=>on?receipt:undefined;},
+ let receipt:StockNativeReceipt|undefined;
+ return {net,id,nullifier:String(slot.nullifiers[0]),directory,
+  publish:async()=>receipt??=await sent(plan!,1),
+  answering:(on:boolean)=>{net.transport.lookup=async()=>on?receipt:undefined;},
   copy:(prefix:string)=>{const dir=scratch(prefix);cpSync(directory,dir,{recursive:true});return dir;}};
 }
-let abandoned:ReturnType<typeof openAbandonedDeposit>|undefined;
-const abandonedDeposit=()=>abandoned??=openAbandonedDeposit();
+let published:ReturnType<typeof openAbandonedDeposit>|undefined,offNetwork:ReturnType<typeof openAbandonedDeposit>|undefined;
+const abandonedThatLanded=()=>published??=openAbandonedDeposit();
+const abandonedOffNetwork=()=>offNetwork??=openAbandonedDeposit();
 const reopen=(net:ReturnType<typeof offline>,directory:string)=>ready(net,directory,join(directory,'keys'));
+const anchors=(service:RollupService)=>{const p=service.status().pool!;
+ return {epoch:p.epoch,latestRoot:()=>BigInt(p.root),nextAnchorRoot:()=>BigInt(rotatesAt(p.batches,p.epochLen!)?p.root:p.prevNoteRoot!)} as unknown as EpochState;};
 
 test('a deposit the abandon path reported dropped reads included once its batch is adopted, on disk too',async()=>{
- const {net,id,nullifier,receipt,answering,copy}=await abandonedDeposit(),directory=copy('rollup-epoch-adopted-');
+ const {net,id,nullifier,publish,answering,copy}=await abandonedThatLanded(),receipt=await publish(),directory=copy('rollup-epoch-adopted-');
  answering(true);
  try{
   const service=await reopen(net,directory);
@@ -222,19 +227,37 @@ test('a deposit the abandon path reported dropped reads included once its batch 
 });
 
 test('a followed batch settles that deposit too, as the adopted one does',async()=>{
- const {net,id,receipt,copy}=await abandonedDeposit(),service=await reopen(net,copy('rollup-epoch-followed-'));
+ const {net,id,publish,copy}=await abandonedThatLanded(),receipt=await publish(),service=await reopen(net,copy('rollup-epoch-followed-'));
  assert.deepEqual(await service.external(receipt.txid),{batch:0,txid:receipt.txid},'followed chain-only, from the transaction alone');
  assert.deepEqual(service.spend(id),{status:'included',batch:0,txid:receipt.txid});
  service.close();
 });
 
-test('a deposit whose abandoned batch never lands stays dropped, even as the next batch settles',async()=>{
- const {net,id,copy}=await abandonedDeposit(),service=await reopen(net,copy('rollup-epoch-unlanded-'));
+test('a deposit whose abandoned batch the network never saw stays dropped, even as the next batch settles',async()=>{
+ const {net,id,directory}=await abandonedOffNetwork(),service=await reopen(net,directory);
  const next=epochSpend(deposit(EpochState.genesis(hash,64),0n));
  await service.submit(next);
  await until('the next batch lands',()=>service.spend((next as Stored).id)?.status==='included',net);
- assert.deepEqual(service.spend(id),{status:'dropped',reason:'The network kept refusing the batch with this deposit.'},'no batch carried its nullifier');
+ assert.deepEqual(service.spend(id),{status:'dropped',reason:'The network kept refusing the batch with this deposit.'},'nothing the pool landed carried its slot');
  service.close();
+});
+
+test('a rebuilt spend of the same note that lands leaves the dropped original dropped',async()=>{
+ const {net,directory,service:first}=await bakedPool({epochLen:64,batches:63,record:epochRecord(64)}),note=dummyInput();
+ const stale=epochSpend(deposit(anchors(first),0n,{inputs:[note]}));
+ await first.submit(epochSpend(deposit(anchors(first),0n)));
+ await until('the batch that ends epoch 0 lands',()=>first.status().pool!.batches===64,net);
+ const rebuilt=epochSpend(deposit(anchors(first),0n,{inputs:[note]}));
+ first.close();
+ pendingOnDisk(directory,stale,rebuilt);
+ const [staleId,rebuiltId]=[stale,rebuilt].map(s=>(s as Stored).id) as [string,string];
+ assert.equal(String((stale as Stored).slot.nullifiers[0]),String((rebuilt as Stored).slot.nullifiers[0]),'one note, two slots');
+ const service=await reopen(net,directory);
+ await until('the rebuild lands',()=>service.spend(rebuiltId)?.status==='included',net);
+ assert.deepEqual(service.spend(rebuiltId),{status:'included',batch:64,txid:batchesOf(service,64,1)[0]!.txid},'the rebuild names the batch that carried it');
+ const settled=service.spend(staleId)!;
+ assert.equal(settled.status,'dropped','that batch carried the note, but not this spend\'s own slot');
+ assert.match(settled.reason!,/could not be re-admitted/);
 });
 
 test('an epoch genesis writes version 2 and reads back as epoch',()=>{

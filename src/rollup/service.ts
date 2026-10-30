@@ -187,11 +187,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  const noticeOf=()=>{const notice=rollupNotice(rollupNoticeReasons(blocked,stalled),Date.now());return notice?{notice}:{};};
  // In memory only: after a restart it is absent until this process publishes a batch.
  let lastBatch:RollupStatusBatch|undefined;
- const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
- /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. */
+ const sessions=new Map<string,Session>(),tracked=new Map<string,RollupSpendStatus&{nullifier:string;statement?:string;at:number}>(),store=openSpendStore(join(o.directory,'spends'));
+ /** Moves a tracked spend to a new status, on disk too, so a restart neither forgets nor re-runs it. The statement rides along: a settled record keeps no spend body to read it back from. */
  const settle=(id:string,patch:Partial<RollupSpendStatus>)=>{
   const t=tracked.get(id);if(!t)return;Object.assign(t,patch);
-  store.save({id,status:t.status==='signing'?'pending':t.status,nullifier:t.nullifier,at:t.at,...(t.batch!==undefined?{batch:t.batch}:{}),...(t.txid?{txid:t.txid}:{}),...(t.reason?{reason:t.reason}:{})});
+  store.save({id,status:t.status==='signing'?'pending':t.status,nullifier:t.nullifier,...(t.statement?{statement:t.statement}:{}),at:t.at,...(t.batch!==undefined?{batch:t.batch}:{}),...(t.txid?{txid:t.txid}:{}),...(t.reason?{reason:t.reason}:{})});
  };
  /** A deposit coin as the indexer knows it: value, script and asset holdings come from there, never from the client. */
  const resolveCoin=async(c:CoinRef):Promise<RollupCoin&{assetAmount?:bigint;assetId?:string}>=>{
@@ -206,7 +206,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  async function restore(operator:RollupEpochOperator){
   for(const record of store.load()){
    if(Date.now()-record.at>3600_000){store.remove(record.id);continue;}
-   tracked.set(record.id,{status:record.status,nullifier:record.nullifier,at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})});
+   const statement=record.statement??record.spend?.publics[0];
+   tracked.set(record.id,{status:record.status,nullifier:record.nullifier,...(statement?{statement}:{}),at:record.at,...(record.batch!==undefined?{batch:record.batch}:{}),...(record.txid?{txid:record.txid}:{}),...(record.reason?{reason:record.reason}:{})});
    if(record.status!=='pending'||!record.spend)continue;
    if(landed(operator.state,BigInt(record.nullifier))){settle(record.id,{status:'included'});continue;}
    try{const {spend}=record,coin=spend.coin?await resolveCoin(spend.coin):undefined;await operator.submit({...decodeEpochSpend(spend as EncodedEpochSpend),...(coin?{coin}:{})});}
@@ -273,10 +274,10 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   return {fundingAddress,checkpoint,indexer,prover,transport:p.transport??createRollupTransport(network),verify:p.verify};
  };
  const onDrop=(ids:string[],reason:string)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});};
- /** Every landing path's last word: a spend the abandon path reported dropped did land after all, so its drop and reason are taken back. */
+ /** Every landing path's last word: a spend reported dropped did land, so the drop is taken back — on its own slot, never on its note alone, as another spend of that note may be what landed. */
  const included=(batch:number,txid:string)=>{
-  const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${batch}.json`)),spent=new Set(record.slots.flatMap(s=>s.nullifiers));
-  for(const [id,t] of tracked)if(t.status!=='included'&&spent.has(t.nullifier)){delete t.reason;settle(id,{status:'included',batch,txid});}
+  const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${batch}.json`)),carried=new Set(record.slots.map(s=>s.publics[0]));
+  for(const [id,t] of tracked)if(t.status!=='included'&&t.statement&&carried.has(t.statement)){delete t.reason;settle(id,{status:'included',batch,txid});}
  };
 
  async function openEpoch(network:StockNetworkInfo,saved:Genesis,epochLen:number){
@@ -491,14 +492,14 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
    await live.operator.submit(spend);kick();
-   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),at:Date.now()};
+   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),statement:String(spend.publics[0]),at:Date.now()};
    tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:encodeEpochSpend(spend,coin)});
   },
   spend:(id:string):RollupSpendStatus|undefined=>{
    const s=sessions.get(id),t=tracked.get(id);
    if(s&&!s.signed)return {status:'signing',arkTx:s.arkTx,checkpoint:s.checkpoints[s.vin]!,checkpoints:s.checkpoints,vin:s.vin};
    if(!t)return undefined;
-   const {nullifier:_n,at:_a,...rest}=t;return rest;
+   const {nullifier:_n,statement:_s,at:_a,...rest}=t;return rest;
   },
   sign:(id:string,signed:{arkTx:string;checkpoint:string})=>{
    const s=sessions.get(id);
