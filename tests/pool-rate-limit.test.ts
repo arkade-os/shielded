@@ -37,6 +37,27 @@ test('a JSON null refusal retains its HTTP status and successful JSON is returne
  }
 });
 
+test('a GET that never answers is abandoned after a minute and read again, while a POST is never timed out',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const signals:(AbortSignal|null|undefined)[]=[];
+ const fetcher=(async(_url:string,init?:RequestInit)=>{signals.push(init?.signal);
+  if(signals.length>1)return Response.json({ok:true});
+  return new Promise<Response>((_,reject)=>init!.signal!.addEventListener('abort',()=>reject(init!.signal!.reason)));
+ }) as typeof fetch;
+ const pending=outcome(rollupApi('/status',undefined,fetcher,0,'https://hung.test'));
+ await flush();t.mock.timers.tick(59_999);await flush();assert.equal(signals.length,1);
+ t.mock.timers.tick(1);await flush();t.mock.timers.tick(0);await flush();
+ assert.deepEqual(await pending,{value:{ok:true},error:undefined});assert.equal(signals.length,2);
+ await rollupApi('/spends',{id:'fixed'},fetcher,0,'https://hung.test');assert.equal(signals[2],undefined);
+});
+
+test('a successful answer whose body cannot be read is read again, never taken as an empty result',async()=>{
+ let calls=0;
+ const fetcher=(async()=>++calls===1?new Response('{"batches":[',{status:200}):Response.json({batches:[]})) as typeof fetch;
+ assert.deepEqual(await rollupApi('/batches?from=0&limit=50',undefined,fetcher,0,'https://truncated.test'),{batches:[]});
+ assert.equal(calls,2);
+});
+
 test('a past Retry-After date waits a minute while numeric zero retains the one-second minimum',async t=>{
  for(const [name,header,delay] of [['past',new Date(999_000).toUTCString(),60_000],['zero','0',1000]] as const){
   t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});

@@ -10,6 +10,7 @@ export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Prom
 export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=><T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
 export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+const READ_TIMEOUT_MS=60_000;
 const rateLimitedUntil=new Map<string,number>();
 const admissionLimitedUntil=new Map<string,number>();
 class PoolRequestError extends Error {
@@ -25,11 +26,15 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
  for(let attempt=0;;attempt++){
   for(let remaining;(remaining=Math.max(rateLimitedUntil.get(key)??0,admission?admissionLimitedUntil.get(key)??0:0)-Date.now())>0;)await sleep(Math.min(remaining,2_147_483_647));
   beforeRequest?.();
-  let response:Response|undefined;
-  try{response=await fetcher(origin+'/api/rollup'+path,request);}
-  catch(error){if(attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
+  let response:Response|undefined,json:any;
+  // A batch page runs to ~0.5 MB, hence a minute; a POST gets no bound, since aborting it could resend a spend the pool is still admitting.
+  const read=body===undefined?new AbortController():undefined,timer=read&&setTimeout(()=>read.abort(new Error(`The pool did not answer within ${READ_TIMEOUT_MS/1000} s.`)),READ_TIMEOUT_MS);
+  try{
+   response=await fetcher(origin+'/api/rollup'+path,read?{...request,signal:read.signal}:request);
+   if(response.status<500)json=await response.json().catch((error:unknown)=>{if(response!.ok)throw error;return {};});
+  }catch(error){response=undefined;if(attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
+  finally{clearTimeout(timer);}
   if(response&&response.status<500){
-   const json=await response.json().catch(()=>({}));
    const metadata=json&&typeof json==='object'?json:{};
    if(response.status===429){
     const retryAfter=response.headers.get('Retry-After')?.trim();
