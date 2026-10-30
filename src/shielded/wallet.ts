@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,isVtxoSpent,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
 import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
@@ -430,11 +430,41 @@ export class ShieldedWallet extends Wallet {
    return saved;
   },record=>{if(record.coin&&record.state!=='dropped')this.used.add(`${record.coin.txid}:${record.coin.vout}`);return record.state==='dropped'?[]:record.nullifiers.map(BigInt);});
  }
+ private landedCopy(record:LightningSpendRecord):string|false|undefined{
+  const nullifier=BigInt(record.nullifiers[0]!),landed=this.account.history.find(entry=>entry.spent.includes(nullifier));
+  if(landed)return landed.txid;
+  // A spent note can have no history row (a zero-net group records none), so a note neither held nor listed stays reserved for good.
+  return this.account.notes().some(note=>note.nullifier===nullifier)?false:undefined;
+ }
+ /** Its batch spends the deposit coin through a checkpoint, so `arkTxId` names the batch; swept, unrolled or spent by anything else says nothing. */
+ private async landedDeposit(coin:{txid:string;vout:number}):Promise<string|false|undefined>{
+  const vtxos=await this.indexerProvider.getVtxos({outpoints:[{txid:coin.txid,vout:coin.vout}]}).then(found=>found.vtxos,()=>undefined);
+  const one=vtxos?.length===1?vtxos[0]!:undefined;
+  if(!one||one.txid!==coin.txid||one.vout!==coin.vout||one.isSwept||one.isUnrolled)return undefined;
+  if(!isVtxoSpent(one))return false;
+  return one.arkTxId&&this.account.txids.has(one.arkTxId)?one.arkTxId:undefined;
+ }
+ /**
+  * A window-tag refusal or a lapsed deadline can never be submitted, so the pool decides it: a txid landed, false landed nothing, undefined cannot
+  * tell and keeps the reservation. A deposit spends no note of ours, so only its coin answers; sync() is a silent no-op while the account is unchecked.
+  */
+ private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
+  if(this.offline||(!rejected(error,'window-tag')&&!rejected(error,'deadline-expired')))throw error;
+  // A POST sent just before the deadline can still be admitting, untracked by /spends; ten minutes on, a 404 is final. window-tag needs no wait: a queued copy answers double-spend first.
+  if(rejected(error,'deadline-expired')&&Date.now()/1000<record.expiresAt!+600)throw error;
+  try{await this.sync();}catch{throw error;}
+  const landed=record.coin?await this.landedDeposit(record.coin):this.landedCopy(record);
+  // An unreadable txid would fail validateLightningSpend on the next open and block the wallet, so it stays reserved instead.
+  if(landed===undefined||landed&&!/^[0-9a-f]{64}$/.test(landed))throw error;
+  const final:SpendStatus=landed?{status:'included',txid:landed}:{status:'dropped',reason:`${reasonOf(error)} No batch of this pool carried it, so the funds never moved.`};
+  await store.finish(record.owner,record.pool,record.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason}:{})});
+  return final;
+ }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
   const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
   const run=(async()=>{
    const api:PoolApi=async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{const guard=()=>{this.assertOpen();signal?.throwIfAborted();beforeRequest?.();};guard();return this.api<T>(path,body,guard);};
-   const final=await submitLightningSpend(record,store,{api,identity,poolScript:this.poolScript,step});
+   const final=await submitLightningSpend(record,store,{api,identity,poolScript:this.poolScript,step}).catch(error=>this.settleUnsubmittable(record,store,error));
    if(final.status==='dropped'){
     this.notes.release(record.nullifiers.map(BigInt));if(record.coin)this.used.delete(`${record.coin.txid}:${record.coin.vout}`);
     await this.restoreLightningSpends();this.changed();throw new Error(final.reason??'The pool dropped this Lightning spend.');

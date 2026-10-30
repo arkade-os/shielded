@@ -10,7 +10,8 @@ import {lightningSpendConflict,sameLightningSpendRequest,validateLightningSpend,
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {rollupApi,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
-import {epochPool,posted} from './fixtures/epoch-pool.ts';
+import {epochPool,fromBody,posted} from './fixtures/epoch-pool.ts';
+import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
@@ -46,6 +47,23 @@ async function open(store:LightningSpendStore,repository=new InMemoryShieldedNot
 }
 async function fund(wallet:ShieldedWallet,amounts=[900n]){const deposits=await Promise.all(amounts.map(deposit=>wallet.account.spend({deposit},wallet.self)));await wallet.account.apply(epochPool(hash,EPOCH_LEN).land('spend',deposits.map(posted)));await wallet.save();}
 const missing=()=>Object.assign(new Error('Unknown spend after restart.'),{status:404});
+/** One pool per wallet, so the funding batch and any later one keep distinct numbers, roots and txids. */
+async function funded(store:LightningSpendStore,amounts=[900n]){
+ const wallet=await open(store),pool=epochPool(hash,EPOCH_LEN);
+ const deposits=await Promise.all(amounts.map(deposit=>wallet.account.spend({deposit},wallet.self)));
+ await wallet.account.apply(pool.land('spend',deposits.map(posted)));await wallet.save();
+ return {wallet,pool};
+}
+const refusal=(code:string,message:string)=>Object.assign(new Error(message),{code,status:400});
+const WINDOW_TAG='The spend anchors on a root that is not a window leaf of a live epoch.';
+/** The pool refused admission, so it never knew the submission; `onPost` may land the same slot anyway. */
+function refusedApi(pool:ReturnType<typeof epochPool>,error:Error,onPost:(body:unknown)=>void=()=>{}):PoolApi {
+ return (async(path:string,body?:unknown)=>{
+  if(path.startsWith('/batches')){const from=Number(new URL(path,'http://pool').searchParams.get('from')??0);return {total:pool.records.length,batches:pool.records.slice(from,from+50)};}
+  if(path==='/spends'){onPost(body);throw error;}
+  throw missing();
+ }) as PoolApi;
+}
 function includedApi(onPost:(body:unknown)=>void=()=>{}):PoolApi {
  let posted=false;
  return (async(path:string,body?:unknown)=>{
@@ -345,4 +363,140 @@ test('Lightning shielding polls slowly while still signing inside a 30-second ro
   assert.equal(signingRequested,true);await signed;await setImmediate();t.mock.timers.tick(1000);
   assert.equal((await pending).txid,TXID);assert.ok(polls<=6,String(polls));assert.ok(signedAt>=1_006_001&&signedAt<=1_011_001,String(signedAt));
  }finally{t.mock.timers.reset();await wallet.dispose();}
+});
+
+test('a window-tag refusal the pool never admitted drops the saved spend and frees its note again',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store);
+ try{
+  wallet.api=refusedApi(pool,refusal('window-tag',WINDOW_TAG));
+  await assert.rejects(wallet.fundLightning('window',PAYMENT,destination,700n,store),/window leaf/);
+  const saved=store.rows.get('window')!;
+  assert.equal(saved.state,'dropped');assert.match(saved.reason!,/window leaf/);
+  assert.equal(wallet.inFlight.size,0);assert.equal(wallet.canWithdraw(700n),true);
+ }finally{await wallet.dispose();}
+});
+
+test('a window-tag refusal whose own slot already landed finishes the saved spend as included',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store);
+ try{
+  wallet.api=refusedApi(pool,refusal('window-tag',WINDOW_TAG),body=>{const {slot,publics,ciphertext}=fromBody(body as EpochSpendBody);pool.land('spend',[{slot,publics,ciphertext}]);});
+  assert.equal(await wallet.fundLightning('landed',PAYMENT,destination,700n,store),pool.records[1]!.txid);
+  const saved=store.rows.get('landed')!;
+  assert.equal(saved.state,'included');assert.equal(saved.txid,pool.records[1]!.txid);
+  assert.equal(wallet.account.notes().some(n=>n.nullifier===BigInt(saved.nullifiers[0]!)),false);
+ }finally{await wallet.dispose();}
+});
+
+test('a lapsed Lightning funding deadline stays reserved while an earlier POST could still be admitting, then drops and frees its note',async t=>{
+ const store=new Store(),{wallet,pool}=await funded(store);let now=1_000_000,posts=0;
+ try{
+  t.mock.method(Date,'now',()=>now);
+  wallet.prover={prove:async()=>{now=1_002_000;return prover.prove(undefined as never,'spend');}};
+  wallet.api=refusedApi(pool,refusal('never','posted'),()=>{posts++;});
+  await assert.rejects(wallet.fundLightning('lapsed',PAYMENT,destination,700n,store,undefined,1001),/deadline expired/);
+  const held=store.rows.get('lapsed')!;
+  assert.equal(held.state,'prepared');assert.equal(wallet.inFlight.has(BigInt(held.nullifiers[0]!)),true);
+  now=(1001+600)*1000;
+  await assert.rejects(wallet.fundLightning('lapsed',PAYMENT,destination,700n,store,undefined,1001),/deadline expired/);
+  const saved=store.rows.get('lapsed')!;
+  assert.equal(posts,0);assert.equal(saved.state,'dropped');assert.match(saved.reason!,/deadline expired/);
+  assert.equal(wallet.inFlight.size,0);
+ }finally{await wallet.dispose();}
+});
+
+test('an unchecked account decides nothing, so a window-tag refusal stays reserved until the pool answers',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store);
+ try{
+  let unchecked=true;
+  wallet.api=refusedApi(pool,refusal('window-tag',WINDOW_TAG),()=>{(wallet as any).offline=unchecked;});
+  await assert.rejects(wallet.fundLightning('unchecked',PAYMENT,destination,700n,store),/window leaf/);
+  assert.equal(store.rows.get('unchecked')!.state,'prepared');assert.equal(wallet.inFlight.size,1);
+  unchecked=false;(wallet as any).offline=false;
+  await assert.rejects(wallet.fundLightning('unchecked',PAYMENT,destination,700n,store),/window leaf/);
+  assert.equal(store.rows.get('unchecked')!.state,'dropped');assert.equal(wallet.inFlight.size,0);
+ }finally{await wallet.dispose();}
+});
+
+test('a window-tag refusal stays reserved when the account never held the note, so it cannot say where it went',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),second=await open(store);
+ try{
+  wallet.api=refusedApi(pool,refusal('busy','pool unavailable'));
+  await assert.rejects(wallet.fundLightning('elsewhere',PAYMENT,destination,700n,store),/pool unavailable/);
+  second.api=refusedApi(epochPool(hash,EPOCH_LEN),refusal('window-tag',WINDOW_TAG));
+  await assert.rejects(second.fundLightning('elsewhere',PAYMENT,destination,700n,store),/window leaf/);
+  assert.equal(store.rows.get('elsewhere')!.state,'prepared');assert.equal(second.inFlight.size,1);
+ }finally{await second.dispose();await wallet.dispose();}
+});
+
+/** A plain HD Lightning payout coin and the child key that signs it, as shieldLightning requires. */
+async function payout(){
+ const child=SingleKey.fromHex('22'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
+ const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+ return {child,coin,reference:`${coin.txid}:${coin.vout}`};
+}
+const sees=(wallet:ShieldedWallet,coin:ExtendedVirtualCoin,state:()=>Record<string,unknown>|undefined)=>{
+ (wallet.indexerProvider as any).getVtxos=async(o:{outpoints?:{txid:string;vout:number}[]})=>{
+  const found=state();
+  return {vtxos:o.outpoints?.some(p=>p.txid===coin.txid&&p.vout===coin.vout)&&found?[{txid:coin.txid,vout:coin.vout,...found}]:[]};
+ };
+};
+
+test('a window-tag refusal on a shield whose payout coin is unspent drops it and frees the coin',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout();
+ try{
+  sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
+  wallet.api=refusedApi(pool,refusal('window-tag',WINDOW_TAG));
+  const handle=await wallet.shieldLightning(coin,child,store,{id:'shield-unspent',reference});
+  await assert.rejects(handle.settled(),/window leaf/);
+  const saved=store.rows.get('shield-unspent')!;
+  assert.equal(saved.state,'dropped');assert.match(saved.reason!,/window leaf/);
+  assert.ok(wallet.planFor([{txid:coin.txid,vout:coin.vout,value:coin.value}],false),'the payout coin is shieldable again');
+ }finally{await wallet.dispose();}
+});
+
+test('a window-tag refusal on a shield whose deposit landed in a pool batch finishes it included with that batch txid',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout();
+ try{
+  sees(wallet,coin,()=>pool.records.length>1?{isSpent:true,spentBy:'bb'.repeat(32),arkTxId:pool.records.at(-1)!.txid}:{isSpent:false,spentBy:''});
+  wallet.api=refusedApi(pool,refusal('window-tag',WINDOW_TAG),body=>{const {slot,publics,ciphertext}=fromBody(body as EpochSpendBody);pool.land('spend',[{slot,publics,ciphertext}]);});
+  const handle=await wallet.shieldLightning(coin,child,store,{id:'shield-landed',reference});
+  const txid=(await handle.settled()).txid;
+  assert.equal(pool.records.length,2);
+  const landed=pool.records[1]!.txid;
+  assert.equal(txid,landed,'the batch that carried the deposit, not the funding batch');
+  const saved=store.rows.get('shield-landed')!;
+  assert.equal(saved.state,'included');assert.equal(saved.txid,landed);
+  assert.equal(wallet.shieldedBalance(),1900n,'the funding deposit plus the landed payout');
+ }finally{await wallet.dispose();}
+});
+
+for(const [name,state] of [['spent by a transaction outside this pool',{isSpent:true,spentBy:'bb'.repeat(32),arkTxId:'ee'.repeat(32)}],
+ ['spent with no Arkade transaction named',{isSpent:true,spentBy:'bb'.repeat(32)}],
+ ['swept by the server',{isSpent:false,spentBy:'',isSwept:true}],
+ ['unknown to the indexer',undefined]] as const)
+ test(`a window-tag refusal on a shield keeps its payout coin reserved when the coin is ${name}`,async()=>{
+  const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout();
+  try{
+   sees(wallet,coin,()=>state as Record<string,unknown>|undefined);
+   wallet.api=refusedApi(pool,refusal('window-tag',WINDOW_TAG));
+   const handle=await wallet.shieldLightning(coin,child,store,{id:'shield-unclear',reference});
+   await assert.rejects(handle.settled(),/window leaf/);
+   assert.equal(store.rows.get('shield-unclear')!.state,'prepared');
+   assert.equal(wallet.planFor([{txid:coin.txid,vout:coin.vout,value:coin.value}],false),undefined,'the payout coin stays reserved');
+  }finally{await wallet.dispose();}
+ });
+
+test('a stale-anchor refusal still drops at once, on the pool verdict alone and without reading a batch',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store);const reason='The spend opens against another previous-epoch root than the next batch does; prove it again.';let batches=0;
+ try{
+  wallet.api=(async(path:string)=>{
+   if(path.startsWith('/batches')){batches++;return {total:pool.records.length,batches:[]};}
+   if(path==='/spends')throw refusal('stale-anchor',reason);
+   throw missing();
+  }) as PoolApi;
+  await assert.rejects(wallet.fundLightning('stale',PAYMENT,destination,700n,store),/prove it again/);
+  const saved=store.rows.get('stale')!;
+  assert.equal(saved.state,'dropped');assert.equal(saved.reason,reason);
+  assert.equal(wallet.inFlight.size,0);assert.equal(batches,0);
+ }finally{await wallet.dispose();}
 });
