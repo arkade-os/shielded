@@ -10,8 +10,8 @@ import type {RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../src/rollup/http.ts';
 import type {RollupService} from '../src/rollup/service.ts';
 
-async function serve(service:Partial<RollupService>|undefined){
- const app=express();app.set('env','test');app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined));
+async function serve(service:Partial<RollupService>|undefined,options?:Parameters<typeof createRollupRouter>[1]){
+ const app=express();app.set('env','test');app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined,options));
  const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/rollup`;
  return {base,close:()=>new Promise(resolve=>server.close(resolve))};
@@ -29,6 +29,23 @@ test('the rollup API is closed until the service exists, and refuses cross-origi
  assert.equal(answered.status,200);
  assert.deepEqual((await answered.json()).pool.lastBatch,lastBatch,'the last batch\'s timings reach the status endpoint');
  assert.equal((await post(open.base+'/spends',spend,'https://evil.example')).status,403);
+});
+
+test('a listed origin may read and write cross-origin; every other origin is still refused',async(t)=>{
+ const status=()=>({version:1,phase:'ready',message:'',pool:{}} as never);
+ const closed=await serve({ready:()=>true,status});t.after(closed.close);
+ assert.equal((await fetch(closed.base+'/status',{headers:{origin:'https://app.example'}})).headers.get('access-control-allow-origin'),null);
+ const api=await serve({ready:()=>true,status},{allowedOrigins:['https://app.example/']});t.after(api.close);
+ const preflight=await fetch(api.base+'/spends',{method:'OPTIONS',headers:{origin:'https://app.example','access-control-request-method':'POST','access-control-request-headers':'content-type'}});
+ assert.equal(preflight.status,204);assert.equal(preflight.headers.get('access-control-allow-origin'),'https://app.example');
+ assert.match(preflight.headers.get('access-control-allow-headers')??'',/content-type/);assert.match(preflight.headers.get('access-control-allow-methods')??'',/POST/);
+ const read=await fetch(api.base+'/status',{headers:{origin:'https://app.example'}});
+ assert.equal(read.headers.get('access-control-allow-origin'),'https://app.example');assert.match(read.headers.get('access-control-expose-headers')??'',/Retry-After/i);
+ const write=await post(api.base+'/spends',spend,'https://app.example');
+ assert.notEqual(write.status,403);assert.equal(write.headers.get('access-control-allow-origin'),'https://app.example');
+ const refused=await post(api.base+'/spends',spend,'https://evil.example');
+ assert.equal(refused.status,403);assert.equal(refused.headers.get('access-control-allow-origin'),null);
+ assert.throws(()=>createRollupRouter(()=>undefined,{allowedOrigins:['not an origin']}),/Invalid URL/);
 });
 
 test('proving keys are served from any key directory, including one under a dot-directory',async(t)=>{

@@ -35,9 +35,18 @@ const logged=(route:string,error:unknown)=>console.error(`[rollup] ${route}: ${(
 const POSTS_PER_MINUTE=60;
 /** Each admission checks a Groth16 proof in this process; past this many at once, a flood from many addresses would stall batching. */
 const ADMITTING_AT_ONCE=8;
-export function createRollupRouter(service:()=>RollupService|undefined){
- const router=express.Router();
+export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[]}:{allowedOrigins?:readonly string[]}={}){
+ const router=express.Router(),allowed=new Set(allowedOrigins.map(origin=>new URL(origin).origin));
  let admitting=0;
+ // First, so a preflight and a rate-limit refusal both reach a listed origin's page readable.
+ router.use((req,res,next)=>{
+  const origin=req.get('origin');
+  if(!origin||!allowed.has(origin))return next();
+  res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Access-Control-Expose-Headers','Retry-After');res.vary('Origin');
+  if(req.method!=='OPTIONS')return next();
+  res.setHeader('Access-Control-Allow-Methods','GET, POST');res.setHeader('Access-Control-Allow-Headers','content-type');res.setHeader('Access-Control-Max-Age','600');
+  res.status(204).end();
+ });
  // Every submission costs a proof check, so each address gets a budget; reads and signatures, which an admitted deposit owes within its round, stay open.
  const writes=new Map<string,{count:number;since:number}>();
  router.use((req,res,next)=>{
@@ -49,7 +58,7 @@ export function createRollupRouter(service:()=>RollupService|undefined){
  });
  router.use(express.json({limit:'64kb',strict:true}));
  router.use((req,res,next)=>{
-  if(req.method==='POST'&&req.get('origin')){let origin:string;try{origin=new URL(req.get('origin')!).host;}catch{res.status(403).json({error:'Invalid origin'});return;}if(origin!==req.get('host')){res.status(403).json({error:'Same-origin request required'});return;}}
+  if(req.method==='POST'&&req.get('origin')&&!allowed.has(req.get('origin')!)){let origin:string;try{origin=new URL(req.get('origin')!).host;}catch{res.status(403).json({error:'Invalid origin'});return;}if(origin!==req.get('host')){res.status(403).json({error:'Same-origin request required'});return;}}
   if(!service()){res.status(503).json({error:'The rollup pool is starting.'});return;}
   next();
  });
