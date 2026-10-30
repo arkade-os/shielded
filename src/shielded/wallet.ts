@@ -430,11 +430,21 @@ export class ShieldedWallet extends Wallet {
    return saved;
   },record=>{if(record.coin&&record.state!=='dropped')this.used.add(`${record.coin.txid}:${record.coin.vout}`);return record.state==='dropped'?[]:record.nullifiers.map(BigInt);});
  }
+ /** A window-tag refusal or a lapsed deadline can never be submitted; only a synced account tells a landed copy from none, and sync() is a silent no-op offline. */
+ private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
+  if(this.offline||!rejected(error,'window-tag')&&!rejected(error,'deadline-expired'))throw error;
+  try{await this.sync();}catch{throw error;}
+  const nullifier=BigInt(record.nullifiers[0]!),landed=this.account.history.find(entry=>entry.spent.includes(nullifier));
+  if(landed?!landed.txid:!this.account.notes().some(note=>note.nullifier===nullifier))throw error;
+  const final:SpendStatus=landed?{status:'included',txid:landed.txid}:{status:'dropped',reason:`${reasonOf(error)} No batch of this pool spent its note, so the funds stay in the pool.`};
+  await store.finish(record.owner,record.pool,record.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason}:{})});
+  return final;
+ }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
   const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
   const run=(async()=>{
    const api:PoolApi=async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{const guard=()=>{this.assertOpen();signal?.throwIfAborted();beforeRequest?.();};guard();return this.api<T>(path,body,guard);};
-   const final=await submitLightningSpend(record,store,{api,identity,poolScript:this.poolScript,step});
+   const final=await submitLightningSpend(record,store,{api,identity,poolScript:this.poolScript,step}).catch(error=>this.settleUnsubmittable(record,store,error));
    if(final.status==='dropped'){
     this.notes.release(record.nullifiers.map(BigInt));if(record.coin)this.used.delete(`${record.coin.txid}:${record.coin.vout}`);
     await this.restoreLightningSpends();this.changed();throw new Error(final.reason??'The pool dropped this Lightning spend.');

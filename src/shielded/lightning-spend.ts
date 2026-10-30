@@ -49,7 +49,7 @@ export async function submitLightningSpend(record:LightningSpendRecord,store:Lig
  try{first=await o.api<SpendStatus>(`/spends/${r.body.id}`);}
  catch(error){
   if((error as {status?:number})?.status!==404)throw error;
-  const beforeRequest=()=>{if(r.expiresAt!==undefined&&Date.now()/1000>=r.expiresAt)throw new Error('The Lightning funding deadline expired; the saved spend remains reserved until reconciled.');};
+  const beforeRequest=()=>{if(r.expiresAt!==undefined&&Date.now()/1000>=r.expiresAt)throw Object.assign(new Error('The Lightning funding deadline expired; the saved spend remains reserved until reconciled.'),{code:'deadline-expired'});};
   try{beforeRequest();await o.api('/spends',JSON.parse(JSON.stringify(r.body)),beforeRequest);}
   catch(postError){
    // stale-anchor follows the double-spend check over the anchor epoch's sets (epoch-operator.ts:202, :211), so no copy landed; window-tag's older epoch proves nothing.
