@@ -42,10 +42,10 @@ export const stamp=(n:number)=>({txid:sha(`batch ${n}`),at:1_700_000_000_000+n*1
 // applyFromChain never reads origin and no admission sees a baked record, so the -1 below is only a placeholder.
 export const epochRecord=(epochLen:number)=>(n:number):RollupEpochRecord=>({kind:n<epochLen?'spend':'recover',
  slots:n<epochLen?Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',...slotOf(n,s)})):[{anchor:'0',origin:-1,...slotOf(n,0)}],noteBlockRoot:String(blockRoot(n)),...stamp(n)});
-/** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would. */
+/** Leaves each spend pending on disk as submit() stores it, as a crash before its batch settled would; `from` 0 searches every batch, which no caller here can know. */
 export const pendingOnDisk=(directory:string,...spends:Omit<RollupEpochSpend,'receivedAt'>[])=>{
  const store=openSpendStore(join(directory,'spends'));
- for(const s of spends)store.save({id:s.id,status:'pending',nullifier:String(s.slot.nullifiers[0]),at:Date.now(),spend:encodeEpochSpend(s)});
+ for(const s of spends)store.save({id:s.id,status:'pending',nullifier:String(s.slot.nullifiers[0]),from:0,at:Date.now(),spend:encodeEpochSpend(s)});
 };
 
 // Shared-setup verifying keys from the committed fixtures; wasm and zkey are stand-ins.
