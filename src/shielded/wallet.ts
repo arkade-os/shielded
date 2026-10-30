@@ -433,6 +433,7 @@ export class ShieldedWallet extends Wallet {
  private landedCopy(record:LightningSpendRecord):string|false|undefined{
   const nullifier=BigInt(record.nullifiers[0]!),landed=this.account.history.find(entry=>entry.spent.includes(nullifier));
   if(landed)return landed.txid;
+  // A spent note can have no history row (a zero-net group records none), so a note neither held nor listed stays reserved for good.
   return this.account.notes().some(note=>note.nullifier===nullifier)?false:undefined;
  }
  /** Its batch spends the deposit coin through a checkpoint, so `arkTxId` names the batch; swept, unrolled or spent by anything else says nothing. */
@@ -448,7 +449,7 @@ export class ShieldedWallet extends Wallet {
   * tell and keeps the reservation. A deposit spends no note of ours, so only its coin answers; sync() is a silent no-op while the account is unchecked.
   */
  private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
-  if(this.offline||!rejected(error,'window-tag')&&!rejected(error,'deadline-expired'))throw error;
+  if(this.offline||(!rejected(error,'window-tag')&&!rejected(error,'deadline-expired')))throw error;
   try{await this.sync();}catch{throw error;}
   const landed=record.coin?await this.landedDeposit(record.coin):this.landedCopy(record);
   // An unreadable txid would fail validateLightningSpend on the next open and block the wallet, so it stays reserved instead.
