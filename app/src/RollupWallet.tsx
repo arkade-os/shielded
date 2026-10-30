@@ -218,9 +218,12 @@ export default function RollupWallet(){
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });
     nativeOpened=true;
-    companion=await pairing;
-    const swaps=await createPrivateLightning({wallet:created,companion,journal,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));}});created.swaps=swaps;
-    lnurl=createLnurlReceive({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()});
+    const reportLightning=(error:unknown)=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));};
+    try{
+     companion=await pairing;
+     const swaps=await createPrivateLightning({wallet:created,companion,journal,onError:reportLightning});created.swaps=swaps;
+     lnurl=createLnurlReceive({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()});
+    }catch(error){reportLightning(new Error(`Lightning could not start: ${errorText(error)}`));}
     return created;
    }catch(error){
     if(!companion)void pairing.then(c=>c.dispose()).catch(()=>{});
@@ -245,10 +248,12 @@ export default function RollupWallet(){
    unwatch.push(created.onAction(handle=>{if(current()){funds.update();quotes.clear();sheetOwner.watch(handle,handle.title);}}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes: ${created.repositoryError}`);
-   unwatch.push(created.swaps!.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
+   if(created.swaps)unwatch.push(created.swaps.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
    lnurlRef.current=lnurl;
-   void lnurl!.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
-   lnurl!.start(error=>{if(current())lnFail(error);});
+   if(lnurl){
+    void lnurl.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
+    lnurl.start(error=>{if(current())lnFail(error);});
+   }
    setWallet(created);
   }).catch(error=>{if(current())setStartupError(errorText(error));});
   return()=>{void close().catch(()=>{});};

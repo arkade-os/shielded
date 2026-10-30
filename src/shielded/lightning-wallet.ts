@@ -69,12 +69,13 @@ export const exitReservation=(owner:string,script:string)=>`shielded-exit-${owne
 const terminal=new Set(['paid','claimed','refunded','lapsed','failed','cancelled','filled']);
 const artifactEnded=(artifact:LightningArtifact)=>artifact.state==='ended';
 const biggestNote=(wallet:ShieldedWallet)=>{try{return Number(wallet.account.spendableNotes(BTC_ASSET,wallet.inFlight).reduce((max,n)=>n.amount>max?n.amount:max,0n));}catch{return 0;}};
+export class LightningSessionBusy extends Error {constructor(){super('This Lightning payment is running in another tab. It continues there; to continue it here, close that tab and reload this one.');}}
 export async function acquireLightningSession(name:string):Promise<()=>Promise<void>>{
  if(typeof navigator==='undefined'||!navigator.locks)throw new Error('Private Lightning requires browser locking to protect active payments');
  let release!:()=>void,done!:Promise<void>;
  const held=new Promise<void>(resolve=>{release=resolve;});
  await new Promise<void>((resolve,reject)=>{
-  done=navigator.locks.request(name,{ifAvailable:true},async lock=>{if(!lock){reject(new Error('This Lightning payment is active in another tab'));return;}resolve();await held;});
+  done=navigator.locks.request(name,{ifAvailable:true},async lock=>{if(!lock){reject(new LightningSessionBusy());return;}resolve();await held;});
   void done.catch(reject);
  });
  return async()=>{release();await done;};
@@ -342,7 +343,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
   await registerPayouts(restoredPayouts);
   for(const artifact of artifacts){
-   if(artifact.state==='accepted'&&artifact.kind!=='exit'){const session=await open(artifact);await startSession(session);}
+   if(artifact.state==='accepted'&&artifact.kind!=='exit'){const session=await open(artifact).catch(report);if(session)await startSession(session);}
    else if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
     try{
      const release=await acquireSession(`${namespace}-${artifact.id}`);
@@ -352,9 +353,12 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    }
   }
   if(legacyRecovery){
-   const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`);legacyRepository=repositoryFor(`shielded-swaps-${address}`);
-   const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
-   legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await legacy.ready;await legacy.start();
+   const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
+   if(releaseLegacy){
+    legacyRepository=repositoryFor(`shielded-swaps-${address}`);
+    const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
+    legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await legacy.ready;await legacy.start();
+   }
   }
   offPayout=(await companion.getContractManager()).onContractEvent(event=>{
    if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
