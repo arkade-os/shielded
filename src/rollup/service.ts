@@ -511,8 +511,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   submit:async(spend:Omit<RollupEpochSpend,'receivedAt'>,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');
    if(tracked.has(spend.id))throw new Error('Duplicate rollup spend id.');
+   const from=live.operator.status().archive.batches;
    await live.operator.submit(spend);kick();
-   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),statement:String(spend.publics[0]),from:live.operator.status().archive.batches,at:Date.now()};
+   const record={status:'pending' as const,nullifier:String(spend.slot.nullifiers[0]),statement:String(spend.publics[0]),from,at:Date.now()};
    tracked.set(spend.id,record);store.save({id:spend.id,...record,spend:encodeEpochSpend(spend,coin)});
   },
   spend:(id:string):RollupSpendStatus|undefined=>{
