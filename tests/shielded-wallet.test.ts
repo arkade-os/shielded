@@ -597,7 +597,7 @@ test('SDK self-send output events cannot plan another shield before its database
  readyDeposit(wallet);wallet.getSpendableVtxos=async()=>lookup.promise as never;
  const earlier=wallet.shield();
  wallet.getSpendableVtxos=async()=>[a,b] as never;
- wallet.buildAndSubmitOffchainTx=async()=>({arkTxid:output.txid,signedCheckpointTxs:[]}) as never;
+ (wallet as any)._buildAndSubmitOffchainTx=async()=>({arkTxid:output.txid,signedCheckpointTxs:[]}) as never;
  (wallet as any).updateDbAfterOffchainTx=async()=>{entered.resolve();await database.promise;};
  t.mock.method(Wallet.prototype,'send',async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{}));
  wallet.api=(async(path:string)=>path==='/spends'?{}:path.startsWith('/spends/')?verdict.promise:{total:0,batches:[]}) as never;
@@ -620,7 +620,7 @@ test('real SDK persistence after an in-flight self-send cannot reopen a disposed
  const wallet=await open(),a=coin('aa'.repeat(32),200),b=coin('bb'.repeat(32),300),entered=deferred<void>();
  const transport=deferred<{arkTxid:string;signedCheckpointTxs:string[]}>();
  wallet.getSpendableVtxos=async()=>[a,b] as never;
- wallet.buildAndSubmitOffchainTx=async()=>{entered.resolve();return transport.promise;};
+ (wallet as any)._buildAndSubmitOffchainTx=async()=>{entered.resolve();return transport.promise;};
  t.mock.method(Wallet.prototype,'send',async()=>(Wallet.prototype as any)._submitOffchainSpend.call(wallet,[],[],{
   offchainTapscript:(wallet as any).offchainTapscript,serverPubKey:(wallet as any).arkServerPublicKey,changeAmount:0n,sentAmount:500,changeVout:0,
  }));
