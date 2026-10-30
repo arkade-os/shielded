@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,isVtxoSpent,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
 import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
@@ -430,13 +430,30 @@ export class ShieldedWallet extends Wallet {
    return saved;
   },record=>{if(record.coin&&record.state!=='dropped')this.used.add(`${record.coin.txid}:${record.coin.vout}`);return record.state==='dropped'?[]:record.nullifiers.map(BigInt);});
  }
- /** A window-tag refusal or a lapsed deadline can never be submitted; only a synced account tells a landed copy from none, and sync() is a silent no-op offline. */
+ private landedCopy(record:LightningSpendRecord):string|false|undefined{
+  const nullifier=BigInt(record.nullifiers[0]!),landed=this.account.history.find(entry=>entry.spent.includes(nullifier));
+  if(landed)return landed.txid;
+  return this.account.notes().some(note=>note.nullifier===nullifier)?false:undefined;
+ }
+ /** Its batch spends the deposit coin through a checkpoint, so `arkTxId` names the batch; swept, unrolled or spent by anything else says nothing. */
+ private async landedDeposit(coin:{txid:string;vout:number}):Promise<string|false|undefined>{
+  const vtxos=await this.indexerProvider.getVtxos({outpoints:[{txid:coin.txid,vout:coin.vout}]}).then(found=>found.vtxos,()=>undefined);
+  const one=vtxos?.length===1?vtxos[0]!:undefined;
+  if(!one||one.txid!==coin.txid||one.vout!==coin.vout||one.isSwept||one.isUnrolled)return undefined;
+  if(!isVtxoSpent(one))return false;
+  return one.arkTxId&&this.account.txids.has(one.arkTxId)?one.arkTxId:undefined;
+ }
+ /**
+  * A window-tag refusal or a lapsed deadline can never be submitted, so the pool decides it: a txid landed, false landed nothing, undefined cannot
+  * tell and keeps the reservation. A deposit spends no note of ours, so only its coin answers; sync() is a silent no-op while the account is unchecked.
+  */
  private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
   if(this.offline||!rejected(error,'window-tag')&&!rejected(error,'deadline-expired'))throw error;
   try{await this.sync();}catch{throw error;}
-  const nullifier=BigInt(record.nullifiers[0]!),landed=this.account.history.find(entry=>entry.spent.includes(nullifier));
-  if(landed?!landed.txid:!this.account.notes().some(note=>note.nullifier===nullifier))throw error;
-  const final:SpendStatus=landed?{status:'included',txid:landed.txid}:{status:'dropped',reason:`${reasonOf(error)} No batch of this pool spent its note, so the funds stay in the pool.`};
+  const landed=record.coin?await this.landedDeposit(record.coin):this.landedCopy(record);
+  // An unreadable txid would fail validateLightningSpend on the next open and block the wallet, so it stays reserved instead.
+  if(landed===undefined||landed&&!/^[0-9a-f]{64}$/.test(landed))throw error;
+  const final:SpendStatus=landed?{status:'included',txid:landed}:{status:'dropped',reason:`${reasonOf(error)} No batch of this pool carried it, so the funds never moved.`};
   await store.finish(record.owner,record.pool,record.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason}:{})});
   return final;
  }
