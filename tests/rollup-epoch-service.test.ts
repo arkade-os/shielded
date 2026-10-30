@@ -183,11 +183,7 @@ test('a renewal left on disk whose head another batch spent is kept and reported
 const depositor=SingleKey.fromHex('03'.repeat(32)),user=await depositor.xOnlyPublicKey();
 const collab=MultisigTapscript.encode({pubkeys:[user,hex.decode(serverKey)]}).script;
 const userTree=new VtxoScript([collab,CSVMultisigTapscript.encode({timelock:{type:'seconds',value:2048n},pubkeys:[user]}).script]);
-/**
- * A deposit the network kept refusing: the operator gave its batch up, reported the deposit dropped, and kept the plan, which the
- * network then published without a receipt this operator ever saw. Each test opens its own copy of the pool as it stood then, on one
- * shared network, so `answering` belongs to the adopting test alone and the test that lands a batch of its own comes last.
- */
+/** The tests share one network, so `answering` belongs to the adopting test alone and the test that lands a batch of its own runs last. */
 async function openAbandonedDeposit(){
  const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-abandoned-'),state=EpochState.genesis(hash,64);
  const service=await ready(net,directory,keys,'64'),pool=()=>service.status().pool!;
