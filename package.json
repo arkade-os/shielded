@@ -7,13 +7,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "preserver": "node tools/patch-swap-claim.mjs",
     "server": "node --experimental-eventsource --import tsx src/server.ts",
-    "preapp": "node tools/patch-swap-claim.mjs",
     "app": "vite --config app/vite.config.ts --host 127.0.0.1 --force",
-    "prebuild": "node tools/patch-swap-claim.mjs",
     "build": "tsc --noEmit && vite build --config app/vite.config.ts",
-    "pretest": "node tools/patch-swap-claim.mjs",
     "test": "node --import tsx --test tests/*.test.ts",
     "vm:build": "node --import tsx tools/build-vm.ts",
     "circom": "node tools/prepare-circom.mjs",
@@ -28,8 +24,8 @@
   },
   "dependencies": {
     "@arkade-os/lnurl-client": "0.9.0",
-    "@arkade-os/sdk": "0.5.0-rc.20",
-    "@arkade-os/swap": "0.1.0-rc.23",
+    "@arkade-os/sdk": "0.5.0-rc.31",
+    "@arkade-os/swap": "0.1.0-rc.34",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@scure/base": "2.4.0",
@@ -41,7 +37,7 @@
     "compression": "1.8.2",
     "express": "5.3.0",
     "ffjavascript": "^0.3.1",
-    "nostr-tools": "2.25.2",
+    "nostr-tools": "2.24.1",
     "qr": "0.7.2",
     "react": "19.3.1",
     "react-dom": "19.3.1",
