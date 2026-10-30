@@ -273,6 +273,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   return {fundingAddress,checkpoint,indexer,prover,transport:p.transport??createRollupTransport(network),verify:p.verify};
  };
  const onDrop=(ids:string[],reason:string)=>{for(const id of ids)if(tracked.get(id)?.status==='pending')settle(id,{status:'dropped',reason});};
+ /** Every landing path's last word: a spend the abandon path reported dropped did land after all, so its drop and reason are taken back. */
+ const included=(batch:number,txid:string)=>{
+  const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${batch}.json`)),spent=new Set(record.slots.flatMap(s=>s.nullifiers));
+  for(const [id,t] of tracked)if(t.status!=='included'&&spent.has(t.nullifier)){delete t.reason;settle(id,{status:'included',batch,txid});}
+ };
 
  async function openEpoch(network:StockNetworkInfo,saved:Genesis,epochLen:number){
   const leaves=await epochSpec(saved.token),pool=rollupEpochPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay);
@@ -296,10 +301,6 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
   /** Renewal and listing move the head or reserves, so batches pause and they run one at a time. */
   const exclusive=(work:()=>Promise<void>)=>{const turn=lock.then(async()=>{paused=true;try{await ticking?.catch(()=>{});if(operator.status().pending)throw new Error('a submitted batch is unresolved; this waits.');await work();}finally{paused=false;}});lock=turn.catch(()=>{});return turn;};
   const note=(message:string)=>{if(message!==lastError)log(message);lastError=message;};
-  const included=(batch:number,txid:string)=>{
-   const record=readJson<RollupEpochRecord>(join(o.directory,'operator','batches',`${batch}.json`)),spent=new Set(record.slots.flatMap(s=>s.nullifiers));
-   for(const [id,t] of tracked)if(t.status==='pending'&&spent.has(t.nullifier))settle(id,{status:'included',batch,txid});
-  };
   const sweep=()=>{
    const waiting=new Set(operator.pendingIds());
    for(const [id,t] of tracked){
@@ -484,7 +485,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    const outs=(await indexer.getVtxos({outpoints:[{txid,vout:0},{txid,vout:1}]})).vtxos,created=outs.find(v=>v.vout===0)?.createdAt;
    const reserveAmount=moved?String(outs.find(v=>v.vout===1)?.assets?.find(a=>a.assetId===moved)?.amount??0):undefined;
    const followed={tx,checkpoints:checkpoints as Transaction[],at:created instanceof Date?created.getTime():Date.now(),...(reserveAmount!==undefined?{reserveAmount}:{})};
-   return operator.follow({...followed,slots});
+   const result=await operator.follow({...followed,slots});included(result.batch,result.txid);return result;
   },
   submit:async(spend:Omit<RollupEpochSpend,'receivedAt'>,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');

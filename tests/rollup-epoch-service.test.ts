@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {existsSync,readFileSync,writeFileSync} from 'node:fs';
+import {cpSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {after,test} from 'node:test';
-import {scriptFromTapLeafScript,VtxoScript} from '@arkade-os/sdk';
+import {CSVMultisigTapscript,MultisigTapscript,scriptFromTapLeafScript,SingleKey,VtxoScript} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {randomField} from '../packages/protocol/src/rollup/account.ts';
@@ -20,7 +20,9 @@ import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {EPOCH_KEY_FILES,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
 import {openSpendStore} from '../src/rollup/spend-store.ts';
+import {signDeposit} from '../src/shielded/pool.ts';
 import {stockJournalFingerprint} from '../src/stock/journal.ts';
+import type {StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
 import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 
@@ -176,6 +178,67 @@ test('a renewal left on disk whose head another batch spent is kept and reported
  const service=await ready(net,directory,keys);
  await until('the leftover renewal is refused',()=>net.logs.includes('renewal: The pool head was spent outside this operator, which cannot follow that yet.'),net);
  assert.deepEqual([existsSync(renewal),service.status().pool!.batches],[true,0],'the intent stays for a later settle, and nothing was followed');
+});
+
+const depositor=SingleKey.fromHex('03'.repeat(32)),user=await depositor.xOnlyPublicKey();
+const collab=MultisigTapscript.encode({pubkeys:[user,hex.decode(serverKey)]}).script;
+const userTree=new VtxoScript([collab,CSVMultisigTapscript.encode({timelock:{type:'seconds',value:2048n},pubkeys:[user]}).script]);
+/**
+ * A deposit the network kept refusing: the operator gave its batch up, reported the deposit dropped, and kept the plan, which the
+ * network then published without a receipt this operator ever saw. Each test opens its own copy of the pool as it stood then, on one
+ * shared network, so `answering` belongs to the adopting test alone and the test that lands a batch of its own comes last.
+ */
+async function openAbandonedDeposit(){
+ const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-abandoned-'),state=EpochState.genesis(hash,64);
+ const service=await ready(net,directory,keys,'64'),pool=()=>service.status().pool!;
+ await until('the padding queues are full',()=>pool().padding===4*BATCH_SLOTS,net);
+ const sats=1000,ref={...net.fund(userTree.pkScript,sats),tapTree:hex.encode(userTree.encode()),leaf:hex.encode(collab)};
+ const spend={...epochSpend(deposit(state,BigInt(sats))) as object,coin:await service.depositCoin(ref)} as never;
+ const {id,slot}=spend as Stored,sent=net.transport.submit;
+ let plan:StockWireRequest|undefined;
+ net.transport.submit=async request=>{plan=request;throw Object.assign(new Error('the Arkade Service refused the batch'),{refused:true});};
+ await service.submit(spend,ref);
+ await until('the batch asks the depositor to sign',()=>service.spend(id)?.status==='signing',net);
+ service.sign(id,await signDeposit(depositor,service.spend(id)!));
+ // Two refusals, each a quick-refusal grace apart, before the operator may give the batch up.
+ await until('the refused batch is abandoned and its deposit reported dropped',()=>service.spend(id)?.status==='dropped',net);
+ assert.deepEqual(service.spend(id),{status:'dropped',reason:'The network kept refusing the batch with this deposit.'});
+ service.close();net.transport.submit=sent;
+ const receipt=await sent(plan!,1);
+ return {net,id,nullifier:String(slot.nullifiers[0]),receipt,answering:(on:boolean)=>{net.transport.lookup=async()=>on?receipt:undefined;},
+  copy:(prefix:string)=>{const dir=scratch(prefix);cpSync(directory,dir,{recursive:true});return dir;}};
+}
+let abandoned:ReturnType<typeof openAbandonedDeposit>|undefined;
+const abandonedDeposit=()=>abandoned??=openAbandonedDeposit();
+const reopen=(net:ReturnType<typeof offline>,directory:string)=>ready(net,directory,join(directory,'keys'));
+
+test('a deposit the abandon path reported dropped reads included once its batch is adopted, on disk too',async()=>{
+ const {net,id,nullifier,receipt,answering,copy}=await abandonedDeposit(),directory=copy('rollup-epoch-adopted-');
+ answering(true);
+ try{
+  const service=await reopen(net,directory);
+  await until('the kept plan is adopted',()=>service.status().pool!.batches===1,net);
+  assert.deepEqual(service.spend(id),{status:'included',batch:0,txid:receipt.txid},'the deposit did land, so it no longer reads dropped');
+  assert.deepEqual(batchesOf(service,0,1).map(r=>[r.txid,r.slots.some(s=>s.nullifiers.includes(nullifier))]),[[receipt.txid,true]],'and that batch is the one its nullifier is in');
+  service.close();
+  assert.deepEqual((await reopen(net,directory)).spend(id),{status:'included',batch:0,txid:receipt.txid},'the correction survives a restart');
+ }finally{answering(false);}
+});
+
+test('a followed batch settles that deposit too, as the adopted one does',async()=>{
+ const {net,id,receipt,copy}=await abandonedDeposit(),service=await reopen(net,copy('rollup-epoch-followed-'));
+ assert.deepEqual(await service.external(receipt.txid),{batch:0,txid:receipt.txid},'followed chain-only, from the transaction alone');
+ assert.deepEqual(service.spend(id),{status:'included',batch:0,txid:receipt.txid});
+ service.close();
+});
+
+test('a deposit whose abandoned batch never lands stays dropped, even as the next batch settles',async()=>{
+ const {net,id,copy}=await abandonedDeposit(),service=await reopen(net,copy('rollup-epoch-unlanded-'));
+ const next=epochSpend(deposit(EpochState.genesis(hash,64),0n));
+ await service.submit(next);
+ await until('the next batch lands',()=>service.spend((next as Stored).id)?.status==='included',net);
+ assert.deepEqual(service.spend(id),{status:'dropped',reason:'The network kept refusing the batch with this deposit.'},'no batch carried its nullifier');
+ service.close();
 });
 
 test('an epoch genesis writes version 2 and reads back as epoch',()=>{
