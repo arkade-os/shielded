@@ -44,9 +44,12 @@ export function prefetchProvingKeys(status:RollupPoolStatus,circuit:'spend'|'joi
  for(const url of Object.values(epochCircuitUrls(circuit,status.proving,origin)))void loadProvingFile(url,'low').catch(()=>{});
 }
 
-// snarkjs races when two first proofs build its curve at once, so proofs queue.
+// snarkjs races when two first proofs build its process-wide curve at once, so every prover shares one queue.
+let queue:Promise<unknown>=Promise.resolve();
+/** snarkjs keeps a worker thread per CPU alive; in Node, call this after the last proof so the process can exit. */
+export const releaseProver=async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();};
 export function snarkjsProver({status,origin='',joinReady}:{status:()=>RollupPoolStatus;origin?:string;joinReady?:{get():boolean;set():void}}):ShieldedProver{
- let queue:Promise<unknown>=Promise.resolve(),joined=false;
+ let joined=false;
  const ready=joinReady??{get:()=>joined,set:()=>{joined=true;}};
  return {
   joinReady:()=>ready.get(),

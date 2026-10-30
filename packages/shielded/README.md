@@ -7,10 +7,10 @@ It runs on the Mutinynet test pool at `https://shielded.mutinynet.arkade.sh`, wi
 ## Install
 
 ```sh
-npm i @arkade-os/shielded @arkade-os/sdk
+npm i @arkade-os/shielded @arkade-os/sdk@0.5.0-rc.31
 ```
 
-`@arkade-os/sdk` is a peer dependency (`^0.5.0-rc.31`). The wallet subclasses your copy of the SDK, so there must be only one.
+`@arkade-os/sdk` is a peer dependency, pinned to `0.5.0-rc.31`, the version this wallet and its swap client are built on. The wallet subclasses your copy of the SDK, so there must be only one; `npm ls @arkade-os/sdk` should show one version.
 
 ## Use
 
@@ -70,11 +70,13 @@ export default {resolve:{alias:{circomlibjs:fileURLToPath(new URL('./node_module
 
 Without the alias, `createShieldedWallet` fails with a message that names it. You can also pass your own `hash`.
 
-The pool answers cross-origin requests only from origins its operator allows. Until yours is allowed, serve your app from the pool's origin, or proxy `/api/rollup` to it.
+The pool answers cross-origin requests only from origins its operator allows. Until yours is allowed, serve your app from the pool's origin, or proxy `/api/rollup` to it. Reveal links always point at `pool`.
 
 ## Node
 
 Run Node 24 with `--experimental-eventsource`. Without it, the SDK falls back to polling every 20 seconds.
+
+A proof starts snarkjs worker threads, which stay alive for the whole process. After the last wallet is disposed, `await releaseProver()` so the process can exit.
 
 ## TypeScript
 

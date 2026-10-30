@@ -10,7 +10,7 @@ export {ShieldedWallet,type ShieldedPoolConfig,type ShieldedProver,type Shielded
 export type {ShieldedPaymentHandle} from '../../../src/shielded/handle.ts';
 export type {RollupPoolStatus} from '../../../src/shielded/pool.ts';
 export {IndexedDBShieldedNoteRepository,InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../../../src/shielded/repository.ts';
-export {loadProvingFile,prefetchProvingKeys,snarkjsProver} from '../../../src/shielded/prover.ts';
+export {loadProvingFile,prefetchProvingKeys,releaseProver,snarkjsProver} from '../../../src/shielded/prover.ts';
 export {parseMasterSecret,recoveryPhraseOf} from '../../protocol/src/wallet-keys.ts';
 export type {Hash} from '../../protocol/src/rollup/notes.ts';
 
@@ -57,5 +57,9 @@ export async function shieldedWalletConfig(o:CreateShieldedWalletOptions):Promis
 
 /** A started `ShieldedWallet`, which is an `@arkade-os/sdk` `Wallet`, on the given pool. Call `dispose()` when done. */
 export async function createShieldedWallet(o:CreateShieldedWalletOptions):Promise<ShieldedWallet>{
- return ShieldedWallet.create(await shieldedWalletConfig(o));
+ const config=await shieldedWalletConfig(o),owned=o.repository?undefined:config.shieldedRepository;
+ let wallet:ShieldedWallet;
+ try{wallet=await ShieldedWallet.create(config);}catch(error){await owned?.[Symbol.asyncDispose]();throw error;}
+ if(owned){const dispose=wallet.dispose.bind(wallet);wallet.dispose=async()=>{try{await dispose();}finally{await owned[Symbol.asyncDispose]();}};}
+ return wallet;
 }
