@@ -17,7 +17,7 @@ export interface ExitPayout {
  release(outcome:{spent:boolean}):Promise<void>;
 }
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
- exitPayout():Promise<ExitPayout>;
+ exitPayout(poolAddress?:string):Promise<ExitPayout>;
  registerPayouts(records:LightningPayout[]):Promise<void>;
  getActivityHistory():Promise<Activity[]>;
  quoteRecovery(outpoint:string):Promise<ExitQuote>;
@@ -225,9 +225,14 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   return {id:artifact.id,descriptor:artifact.descriptor,address:artifact.address,script:artifact.script};
  };
  /** A never-reused key for one on-chain exit: saved and watched before the caller withdraws, so a crash mid-exit still finds the payout. */
- const exitPayout=async():Promise<ExitPayout>=>{
+ const exitPayout=async(poolAddress?:string):Promise<ExitPayout>=>{
   assertOpen();
-  const artifact=await materializeLightningArtifact(companion,await journal.allocateArtifact(owner,pool,'exit'));
+  const allocated=await journal.allocateArtifact(owner,pool,'exit'),artifact=await materializeLightningArtifact(companion,allocated);
+  // Refused before its descriptor is saved, since restore re-watches every saved descriptor.
+  if(poolAddress){
+   const mine=ArkAddress.decode(artifact.address!),theirs=ArkAddress.decode(poolAddress);
+   if(mine.hrp!==theirs.hrp||hex.encode(mine.serverPubKey)!==hex.encode(theirs.serverPubKey)){await journal.updateArtifact(owner,pool,{...allocated,state:'ended'});throw new Error('The exit payout key belongs to another Arkade server.');}
+  }
   await journal.updateArtifact(owner,pool,artifact);
   const script=artifact.script!,address=artifact.address!;
   let value=0,unlock:(()=>Promise<void>)|undefined;

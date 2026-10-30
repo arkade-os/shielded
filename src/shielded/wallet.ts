@@ -701,7 +701,7 @@ export class ShieldedWallet extends Wallet {
    let payout:ExitPayout|undefined,spent=false;
    try{
     step(0);
-    payout=await reserve();
+    payout=await reserve(this.ownPoolAddress);
     const key=ArkAddress.decode(payout.address),pool=ArkAddress.decode(this.ownPoolAddress);
     if(key.hrp!==pool.hrp||hex.encode(key.serverPubKey)!==hex.encode(pool.serverPubKey))throw new Error('The exit payout key belongs to another Arkade server.');
     const record:SentRecord={to:dest.to,onchainSats:dest.sats};

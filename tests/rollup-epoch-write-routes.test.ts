@@ -100,6 +100,12 @@ const openThirdParty=async()=>{
 let thirdParty:ReturnType<typeof openThirdParty>|undefined;
 const thirdPartyPools=()=>thirdParty??=openThirdParty();
 
+test('/external refuses a batch the indexer does not show spending the pool head',async()=>{
+ const {withSlots,records:[,second],requests}=await thirdPartyPools(),batches=withSlots.status().pool!.batches;
+ assert.deepEqual(await answer(post(requests.withSlots,'/external',{txid:second!.txid})),[400,{error:"That transaction has not spent this pool's head."}],'the batch before it spent the head');
+ assert.equal(withSlots.status().pool!.batches,batches);
+});
+
 test('/external follows a third-party epoch batch from its slots, for all three kinds',async()=>{
  const {withSlots,views,records,requests}=await thirdPartyPools();
  assert.deepEqual(records.map(r=>r.kind),['spend','join','recover']);

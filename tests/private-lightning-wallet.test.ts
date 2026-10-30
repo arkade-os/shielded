@@ -996,6 +996,23 @@ test('an exit payout reserves a fresh HD key, persists it before the pool is ask
  }finally{await service[Symbol.asyncDispose]();}
 });
 
+test('an exit payout keyed to another server is refused before it is saved, watched or held, and a reload never watches it',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),body=new Uint8Array(32).fill(7);
+ const service=await exitService(f,journal),contracts=f.contracts.length,held=f.live.size;
+ try{
+  await assert.rejects(service.exitPayout(new ArkAddress(await root.xOnlyPublicKey(),body,'tark').encode()),/another Arkade server/);
+  const [refused]=await journal.artifacts(ownerKey,pool);
+  assert.deepEqual([refused?.kind,refused?.state,refused?.descriptor],['exit','ended',undefined]);
+  assert.deepEqual([await journal.payouts(ownerKey,pool),f.contracts.length,f.live.size],[[],contracts,held]);
+  const payout=await service.exitPayout(new ArkAddress(server,body,'tark').encode());
+  assert.equal((await journal.artifacts(ownerKey,pool))[1]?.address,payout.address);
+  await payout.release({spent:true});
+ }finally{await service[Symbol.asyncDispose]();}
+ const restored=await exitService(f,journal);
+ try{await flushTasks();assert.equal(f.contracts.some(c=>c.script===undefined||c.address===undefined),false);assert.deepEqual((await journal.payouts(ownerKey,pool)).length,1);}
+ finally{await restored[Symbol.asyncDispose]();}
+});
+
 test('a spent exit payout is left alone, while a reload shields an unreleased one back into the pool',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
  const service=await exitService(f,journal);
