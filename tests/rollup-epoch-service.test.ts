@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {after,test} from 'node:test';
 import {scriptFromTapLeafScript,VtxoScript} from '@arkade-os/sdk';
@@ -158,6 +158,24 @@ test('the stall across a rotation is measured and the pool resumes',async t=>{
  assert.equal(last!.slots.some(s=>s.ciphertext),false,'the last batch of the epoch took no padding');
  assert.deepEqual([pool().epoch,pool().batchesInEpoch],[1,1]);
  for(const s of first!.slots)assert.equal(s.anchor,String(anchorOf(hash,final,BigInt(s.rCur!.root))),'every slot opens against epoch 0\'s final root');
+});
+
+test('a renewal left on disk whose head another batch spent is kept and reported, not cleared',async t=>{
+ const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-moved-');
+ (await ready(net,directory,keys,'64')).close();
+ const saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8')),leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(directory,'spec.json')),stub={prove:async()=>proof};
+ const other=await openRollupEpochOperator({directory:scratch('rollup-epoch-other-'),epochLen:64,genesis:saved.archive,leaves,token,serverKey:hex.decode(serverKey),emulatorKey:hex.decode(emulatorKey),exitDelay,checkpoint,hash,
+  pin:rollupEpochPin({leaves,manifest:readFileSync(join(directory,'keys','manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey,emulatorKey}),
+  clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},transport:net.transport,signDeposits:async()=>undefined,verify:async()=>true,batchWaitMs:0});
+ t.after(()=>other.close());
+ await other.submit(epochSpend(deposit(other.state,0n)));
+ other.addPadding(Array.from({length:BATCH_SLOTS-1},()=>({...epochSpend(deposit(other.state,0n)) as object,receivedAt:Infinity}) as never));
+ assert.ok('txid' in (await other.tick())!);
+ const renewal=join(directory,'renewal.json');
+ writeFileSync(renewal,JSON.stringify({intentId:'intent-42',head:{txid:saved.archive.head.txid,vout:saved.archive.head.vout}}));
+ const service=await ready(net,directory,keys);
+ await until('the leftover renewal is refused',()=>net.logs.includes('renewal: The pool head was spent outside this operator, which cannot follow that yet.'),net);
+ assert.deepEqual([existsSync(renewal),service.status().pool!.batches],[true,0],'the intent stays for a later settle, and nothing was followed');
 });
 
 test('an epoch genesis writes version 2 and reads back as epoch',()=>{

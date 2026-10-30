@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdirSync,mkdtempSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test,type TestContext} from 'node:test';
@@ -13,12 +13,12 @@ import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rol
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
-import {openRollupEpochOperator,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
+import {openRollupEpochOperator,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
 import {readEpochBatchTx} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupSpecOf} from '../src/rollup/service.ts';
-import type {StockWireRequest} from '../src/stock/transport.ts';
+import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
 
@@ -407,4 +407,159 @@ test('a restart replays its own records back to the committed state across a rot
  await assert.rejects(w.open(t),/head commits to/);
  writeFileSync(path,original);
  assert.equal((await w.open(t)).state.commitment(),commitment,'the refusal released the journal');
+});
+
+const queue=async(op:Operator,client=fastSpend(op.state))=>{await op.submit(client);op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));return client;};
+const blocked=async(op:Operator)=>{const tick=await op.tick();assert.ok(tick&&'blocked' in tick,JSON.stringify(tick));return tick.blocked;};
+const landsAs=async(op:Operator)=>{const tick=await op.tick();assert.ok(tick&&'txid' in tick,JSON.stringify(tick));return tick.batch;};
+const refused=(message='internal error')=>Object.assign(new Error(message),{refused:true});
+const carried=(dir:string,n:number,s:Spend)=>(JSON.parse(readFileSync(join(dir,'batches',`${n}.json`),'utf8')) as RollupEpochRecord).slots.some(slot=>slot.nullifiers[0]===String(s.slot.nullifiers[0]));
+const stateAt=(op:Operator)=>[op.state.batchCount,op.state.commitment()],headAt=(op:Operator)=>[op.status().archive.batches,headCommitment(op.status().archive.head.sourceTxHex)];
+const kept=(w:World)=>readdirSync(join(w.dir,'abandoned')).length;
+
+test('a head another prover spent stops batching with a pointer to /external, keeps the spend and its pads, and the batch after the followed one carries it',async t=>{
+ const w=await world(64),a=await w.open(t),genesis=a.status().archive.head.txid,dir=mkdtempSync(join(tmpdir(),'rollup-epoch-follower-'));
+ await land(a,'spend',[fastSpend(a.state)]);
+ const taker=landedTx(w,0).tx.id,b=await w.open(t,{directory:dir,transport:{...w.transport,spentBy:async head=>head.txid===genesis?taker:undefined}});
+ const mine=await queue(b);
+ assert.match(await blocked(b),new RegExp(`spent by ${taker}.*/api/rollup/external`));
+ assert.deepEqual([b.pendingIds(),b.padding('spend'),b.status().pending,b.state.batchCount,w.landed.length],[[mine.id],BATCH_SLOTS-1,undefined,0,1],'nothing was applied or sent on a spent head');
+ const followed={...landedTx(w,0),slots:recordAt(w,0).slots,at:1};
+ assert.deepEqual(await b.follow(followed),{batch:0,txid:taker});
+ await assert.rejects(b.follow(followed),/not this pool's head/,'the same batch cannot be followed twice');
+ assert.equal(await landsAs(b),1);
+ assert.ok(carried(dir,1,mine));
+});
+
+test('an operator whose own batch lost the race never abandons it on a spent head, drops it on following the winner, and re-sends its spend',async t=>{
+ let clock=1_000_000,fails=Infinity;
+ const w=await world(64),dir=mkdtempSync(join(tmpdir(),'rollup-epoch-loser-'));
+ const spent=(coin:{txid:string;vout:number})=>w.landed.some(r=>r.checkpoints.some(c=>{const input=Transaction.fromPSBT(base64.decode(c)).getInput(0);return hex.encode(input.txid!)===coin.txid&&input.index===coin.vout;}));
+ const a=await w.open(t),b=await w.open(t,{directory:dir,now:()=>clock,transport:{...w.transport,unspent:async coin=>!spent(coin),
+  submit:async(request,first)=>{if(fails-->0)throw new Error('proxy timeout');return w.transport.submit(request,first);}}});
+ const mine=await queue(b);
+ assert.match(await blocked(b),/proxy timeout/);
+ await land(a,'spend',[fastSpend(a.state)]);
+ for(let n=1;n<=2;n++){clock+=ROLLUP_RESEND_GRACE_MS;assert.match(await blocked(b),/proxy timeout/,`re-send ${n}: a head another batch spent is never abandoned`);}
+ assert.deepEqual(await b.follow({...landedTx(w,0),slots:recordAt(w,0).slots,at:1}),{batch:0,txid:landedTx(w,0).tx.id});
+ assert.deepEqual([b.status().pending,b.state.commitment(),b.pendingIds(),b.padding('spend')],[undefined,a.state.commitment(),[mine.id],BATCH_SLOTS-1]);
+ fails=1;assert.match(await blocked(b),/proxy timeout/);
+ clock+=ROLLUP_RESEND_GRACE_MS;assert.equal(await landsAs(b),1,'the dropped batch\'s tries do not count against this one');
+ assert.ok(carried(dir,1,mine));
+});
+
+test('after a restart, following the winner drops the journaled plan with no applied batch to undo',async t=>{
+ const w=await world(64),a=await w.open(t),dir=mkdtempSync(join(tmpdir(),'rollup-epoch-restarted-')),dead={...w.transport,submit:async()=>{throw new Error('proxy timeout');}};
+ let c=await w.open(t,{directory:dir,transport:dead});
+ await queue(c);assert.match(await blocked(c),/proxy timeout/);
+ c.close();c=await w.open(t,{directory:dir,transport:dead});
+ await land(a,'spend',[fastSpend(a.state)]);
+ assert.deepEqual(await c.follow({...landedTx(w,0),slots:recordAt(w,0).slots,at:1}),{batch:0,txid:landedTx(w,0).tx.id});
+ assert.deepEqual([c.status().pending,c.state.commitment()],[undefined,a.state.commitment()]);
+});
+
+test('a batch the network keeps refusing is abandoned: its deposit is dropped, the rest is rebuilt and lands, and the kept plan goes once the head moves',async t=>{
+ let clock=1_000_000,submits=0,flaky=1;
+ const w=await world(64),drops:[string[],string][]=[];
+ const op=await w.open(t,{now:()=>clock,onDrop:(ids,reason)=>drops.push([ids,reason]),transport:{...w.transport,submit:async(request,first)=>{
+  submits++;
+  if(Transaction.fromPSBT(base64.decode(request.arkTx)).inputsLength>1)throw refused('arkd rejected the deposit input');
+  if(flaky-->0)throw refused();
+  return w.transport.submit(request,first);
+ }}});
+ const paid=spendOf(deposit(op.state,1000n),{coin:w.coin(1)}),transfer=fastSpend(op.state);
+ await op.submit(paid);await queue(op,transfer);
+ assert.match(await blocked(op),/rejected the deposit/);
+ for(const next of [/rejected the deposit/,/abandoned/]){clock+=ROLLUP_QUICK_REFUSAL_MS-1;assert.match(await blocked(op),/no known outcome/);clock+=1;assert.match(await blocked(op),next);}
+ assert.deepEqual([op.state.batchCount,op.pendingIds(),op.padding('spend'),kept(w),drops],[0,[transfer.id],BATCH_SLOTS-1,1,[[[paid.id],'The network kept refusing the batch with this deposit.']]]);
+ assert.match(await blocked(op),/internal error/);
+ clock+=ROLLUP_QUICK_REFUSAL_MS;assert.equal(await landsAs(op),0,'the rebuilt batch is re-sent, not abandoned on the abandoned one\'s tries');
+ assert.deepEqual([op.status().archive.head.value,submits],[100_330,4]);
+ assert.deepEqual([await op.tick(),kept(w)],[undefined,0],'the kept plan goes once the head moves past it');
+});
+
+test('a refusal slower than the quick window keeps the long grace, as a finalize that hung may still land',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),op=await w.open(t,{now:()=>clock,transport:{...w.transport,submit:async()=>{clock+=ROLLUP_QUICK_REFUSAL_MS;throw refused();}}});
+ await queue(op);assert.match(await blocked(op),/internal error/);
+ clock+=ROLLUP_QUICK_REFUSAL_MS;assert.match(await blocked(op),/no known outcome/);
+});
+
+test('a batch the network shows only at the last look before abandoning lands instead, deposit included',async t=>{
+ let clock=1_000_000,submits=0;
+ const w=await world(64),drops:string[][]=[],landing=new Map<string,StockNativeReceipt>(),seen=new Map<string,StockNativeReceipt>();
+ const op=await w.open(t,{now:()=>clock,onDrop:ids=>drops.push(ids),transport:{...w.transport,
+  // The indexer shows a landing one look late, so reconcile's look misses it and only the abandon check's look sees it.
+  lookup:async request=>{const found=seen.get(request.arkTx),landed=landing.get(request.arkTx);if(landed)seen.set(request.arkTx,landed);return found;},
+  submit:async(request,first)=>{if(++submits===2)landing.set(request.arkTx,await w.transport.submit(request,first));throw new Error('proxy timeout');}}});
+ await queue(op,spendOf(deposit(op.state,1000n),{coin:w.coin(1)}));
+ assert.match(await blocked(op),/proxy timeout/);
+ clock+=ROLLUP_RESEND_GRACE_MS;assert.match(await blocked(op),/proxy timeout/);
+ clock+=ROLLUP_RESEND_GRACE_MS;assert.equal(await landsAs(op),0);
+ assert.deepEqual([drops,op.status().archive.head.value,kept(w)],[[],101_330,0]);
+});
+
+test('an abandoned batch that lands late is adopted after a restart, head and record included',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),net={landed:undefined as {arkTx:string;receipt:StockNativeReceipt}|undefined,indexed:false,sent:[] as string[]};
+ const transport:RollupTransport={...w.transport,unspent:async()=>!(net.indexed&&net.landed),
+  lookup:async request=>net.indexed&&net.landed?.arkTx===request.arkTx?net.landed.receipt:undefined,
+  submit:async(request,first)=>{
+   net.sent.push(request.arkTx);
+   if(net.landed)throw new Error('the emulator already knows this batch');
+   net.landed={arkTx:request.arkTx,receipt:await w.transport.submit(request,first)};throw new Error('proxy timeout after the emulator accepted it');
+  }};
+ let op=await w.open(t,{transport,now:()=>clock});
+ const mine=await queue(op);
+ assert.match(await blocked(op),/proxy timeout/);
+ for(const reason of [/already knows/,/abandoned/]){clock+=ROLLUP_RESEND_GRACE_MS;assert.match(await blocked(op),reason);}
+ op.close();op=await w.open(t,{transport,now:()=>clock});
+ assert.deepEqual([await op.tick(),kept(w)],[undefined,1],'a kept plan the network does not show stays kept');
+ net.indexed=true;
+ assert.deepEqual(await op.tick(),{txid:net.landed!.receipt.txid,batch:0});
+ assert.deepEqual([kept(w),stateAt(op)],[0,headAt(op)]);
+ assert.ok(carried(w.dir,0,mine));
+ assert.deepEqual([...new Set(net.sent)],[net.landed!.arkTx],'only one transaction is ever built on the head');
+});
+
+test('a refused batch is re-sent after its grace, never abandoned on the tries of the batch before, whether that one landed or was found landed',async t=>{
+ let clock=1_000_000;
+ const w=await world(64),found=new Map<string,StockNativeReceipt>(),steps=['land','refuse','land','land-refused','refuse','land'];
+ const op=await w.open(t,{now:()=>clock,transport:{...w.transport,lookup:async request=>found.get(request.arkTx),
+  submit:async(request,first)=>{
+   const step=steps.shift();if(step==='refuse')throw refused();
+   const receipt=await w.transport.submit(request,first);if(step==='land')return receipt;
+   found.set(request.arkTx,receipt);throw refused();
+  }}});
+ await queue(op);assert.equal(await landsAs(op),0);
+ await queue(op);assert.match(await blocked(op),/internal error/);
+ clock+=ROLLUP_QUICK_REFUSAL_MS;assert.equal(await landsAs(op),1,'after a batch that landed at once');
+ await queue(op);assert.match(await blocked(op),/internal error/);
+ assert.equal(await landsAs(op),2,'found landed on the next tick');
+ await queue(op);assert.match(await blocked(op),/internal error/);
+ clock+=ROLLUP_QUICK_REFUSAL_MS;assert.equal(await landsAs(op),3,'after a batch found landed');
+});
+
+test('after a restart a batch left in flight is found landed, or re-sent at once and abandoned without undoing an accepted batch',async t=>{
+ let clock=1_000_000,mode:'up'|'lost'|'down'='up';
+ const w=await world(64),found=new Map<string,StockNativeReceipt>();
+ const transport:RollupTransport={...w.transport,lookup:async request=>found.get(request.arkTx),
+  submit:async(request,first)=>{
+   if(mode==='down')throw new Error('fetch failed');
+   const receipt=await w.transport.submit(request,first);if(mode==='up')return receipt;
+   found.set(request.arkTx,receipt);throw new Error('proxy timeout');
+  }};
+ const reopen=(op?:Operator)=>{op?.close();return w.open(t,{transport,now:()=>clock});};
+ let op=await reopen();
+ await land(op,'spend',[fastSpend(op.state)]);
+ mode='lost';await queue(op);assert.match(await blocked(op),/proxy timeout/);
+ op=await reopen(op);
+ assert.equal(await landsAs(op),1);
+ assert.deepEqual(stateAt(op),headAt(op),'the replayed state takes the found batch from its plan');
+ mode='down';await queue(op);assert.match(await blocked(op),/fetch failed/);
+ op=await reopen(op);
+ assert.match(await blocked(op),/fetch failed/,'re-sent at once');
+ clock+=ROLLUP_QUICK_REFUSAL_MS;assert.match(await blocked(op),/no known outcome/,'an unreachable network keeps the long grace');
+ for(const reason of [/fetch failed/,/abandoned/]){clock+=ROLLUP_RESEND_GRACE_MS;assert.match(await blocked(op),reason);}
+ assert.deepEqual(stateAt(op),headAt(op),'abandoning after a restart undoes nothing accepted');
 });
