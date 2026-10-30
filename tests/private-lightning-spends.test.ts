@@ -387,12 +387,16 @@ test('a window-tag refusal whose own slot already landed finishes the saved spen
  }finally{await wallet.dispose();}
 });
 
-test('a lapsed Lightning funding deadline drops the never-submitted spend and frees its note',async t=>{
+test('a lapsed Lightning funding deadline stays reserved while an earlier POST could still be admitting, then drops and frees its note',async t=>{
  const store=new Store(),{wallet,pool}=await funded(store);let now=1_000_000,posts=0;
  try{
   t.mock.method(Date,'now',()=>now);
   wallet.prover={prove:async()=>{now=1_002_000;return prover.prove(undefined as never,'spend');}};
   wallet.api=refusedApi(pool,refusal('never','posted'),()=>{posts++;});
+  await assert.rejects(wallet.fundLightning('lapsed',PAYMENT,destination,700n,store,undefined,1001),/deadline expired/);
+  const held=store.rows.get('lapsed')!;
+  assert.equal(held.state,'prepared');assert.equal(wallet.inFlight.has(BigInt(held.nullifiers[0]!)),true);
+  now=(1001+600)*1000;
   await assert.rejects(wallet.fundLightning('lapsed',PAYMENT,destination,700n,store,undefined,1001),/deadline expired/);
   const saved=store.rows.get('lapsed')!;
   assert.equal(posts,0);assert.equal(saved.state,'dropped');assert.match(saved.reason!,/deadline expired/);

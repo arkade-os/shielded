@@ -450,6 +450,8 @@ export class ShieldedWallet extends Wallet {
   */
  private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
   if(this.offline||(!rejected(error,'window-tag')&&!rejected(error,'deadline-expired')))throw error;
+  // A POST sent just before the deadline can still be admitting, untracked by /spends; ten minutes on, a 404 is final. window-tag needs no wait: a queued copy answers double-spend first.
+  if(rejected(error,'deadline-expired')&&Date.now()/1000<record.expiresAt!+600)throw error;
   try{await this.sync();}catch{throw error;}
   const landed=record.coin?await this.landedDeposit(record.coin):this.landedCopy(record);
   // An unreadable txid would fail validateLightningSpend on the next open and block the wallet, so it stays reserved instead.
