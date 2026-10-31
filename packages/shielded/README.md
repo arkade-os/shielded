@@ -7,10 +7,10 @@ It runs on the Mutinynet test pool at `https://shielded.mutinynet.arkade.sh`, wi
 ## Install
 
 ```sh
-npm i @arkade-os/shielded @arkade-os/sdk@0.5.0-rc.31
+npm i @arkade-os/shielded @arkade-os/sdk@0.5.0
 ```
 
-`@arkade-os/sdk` is a peer dependency, pinned to `0.5.0-rc.31`, the version this wallet and its swap client are built on. The wallet subclasses your copy of the SDK, so there must be only one; `npm ls @arkade-os/sdk` should show one version.
+`@arkade-os/sdk` is a peer dependency, pinned to `0.5.0`, the version this wallet and its swap client are built on. The wallet subclasses your copy of the SDK, so there must be only one; `npm ls @arkade-os/sdk` should show one version.
 
 ## Use
 
