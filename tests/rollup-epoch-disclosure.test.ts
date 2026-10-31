@@ -7,8 +7,8 @@ import { epochSyncAccount } from '../src/shielded/epoch-pool.ts';
 import { epochCatchUp, type EpochBatchPage } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi } from '../src/shielded/pool.ts';
 import type { SentRecord } from '../src/shielded/repository.ts';
-import { ROLLUP_DOMAIN } from '../packages/protocol/src/rollup/constants.ts';
-import { decodeDisclosure, fullViewKeyOf, parseFullViewKey, parseViewKey, sentNoteOf, verifyDisclosure, viewKeyOf, type Disclosure, type IncomingNote } from '../packages/protocol/src/rollup/disclosure.ts';
+import { ROLLUP_DOMAIN, ROLLUP_FIELD } from '../packages/protocol/src/rollup/constants.ts';
+import { decodeDisclosure, encodeDisclosure, fullViewKeyOf, parseFullViewKey, parseViewKey, sentNoteOf, verifyDisclosure, viewKeyOf, type DisclosedNote, type Disclosure, type IncomingNote } from '../packages/protocol/src/rollup/disclosure.ts';
 import { EpochAccount, type EpochHistoryEntry } from '../packages/protocol/src/rollup/epoch-account.ts';
 import { akOf } from '../packages/protocol/src/rollup/notes.ts';
 import { parseRollupAddress, rollupAddressOf, rollupRecipientOf, type RollupRecipient } from '../packages/protocol/src/rollup/wallet.ts';
@@ -88,6 +88,17 @@ test('a reveal link for a send verifies, unchanged from the classic computation'
   assert.deepEqual([disclosure.to, await verifyOnPool(pool.api, disclosure)], [bobAddress, disclosure.notes.map(() => true)], `batch ${entry.batch}`);
  }
  assert.deepEqual(disclosureOf(epochRevealLinkOf(ORIGIN, sends[1]!, o)).notes.map(n => [n.index, n.amount]), [[160, 500n], [162, 100n]], 'each leg of a group is named by its own slot');
+});
+
+test('a disclosure that repeats a note, or names a value past what a note holds, is refused, so its verified total cannot be inflated', async () => {
+ const { pool, sent } = await world(), alice = await replay(fresh(aliceKeys), pool.api), send = alice.history.find(e => e.kind === 'send')!;
+ const disclosure = disclosureOf(epochRevealLinkOf(ORIGIN, send, { self: aliceAddress, sentOf: (nullifier: bigint) => sent.get(nullifier) })), note = disclosure.notes[0]!;
+ const inflated: [string, DisclosedNote[]][] = [['a repeated note', [note, note]], ['an amount past 64 bits', [{ ...note, amount: note.amount + ROLLUP_FIELD }]],
+  ['an asset past the field', [{ ...note, asset: note.asset + ROLLUP_FIELD }]], ['a rho past the field', [{ ...note, rho: note.rho + ROLLUP_FIELD }]]];
+ for (const [what, notes] of inflated) {
+  assert.ok((await verifyOnPool(pool.api, { ...disclosure, notes })).every(Boolean), `${what} still matches the published commitment`);
+  assert.throws(() => decodeDisclosure(encodeDisclosure({ ...disclosure, notes })), /Not a shielded payment disclosure/, what);
+ }
 });
 
 test('a view key lists every note it received across three epochs, at the right batches', async () => {
