@@ -7,10 +7,10 @@ It runs on the Mutinynet test pool at `https://shielded.mutinynet.arkade.sh`, wi
 ## Install
 
 ```sh
-npm i @arkade-os/shielded @arkade-os/sdk@0.5.0-rc.31
+npm i @arkade-os/shielded @arkade-os/sdk@0.5.0
 ```
 
-`@arkade-os/sdk` is a peer dependency, pinned to `0.5.0-rc.31`, the version this wallet and its swap client are built on. The wallet subclasses your copy of the SDK, so there must be only one; `npm ls @arkade-os/sdk` should show one version.
+`@arkade-os/sdk` is a peer dependency, pinned to `0.5.0`, the version this wallet and its swap client are built on. The wallet subclasses your copy of the SDK, so there must be only one; `npm ls @arkade-os/sdk` should show one version.
 
 ## Use
 
@@ -68,7 +68,7 @@ import {fileURLToPath} from 'node:url';
 export default {resolve:{alias:{circomlibjs:fileURLToPath(new URL('./node_modules/circomlibjs/src/poseidon_wasm.js',import.meta.url))}}};
 ```
 
-Without the alias, `createShieldedWallet` fails with a message that names it. You can also pass your own `hash`.
+webpack 5 takes the same `resolve.alias` entry in its config. Without the alias, `createShieldedWallet` fails with a message that names it. You can also pass your own `hash`.
 
 The pool answers cross-origin requests only from origins its operator allows. Until yours is allowed, serve your app from the pool's origin, or proxy `/api/rollup` to it. Reveal links always point at `pool`.
 
