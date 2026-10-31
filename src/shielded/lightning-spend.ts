@@ -60,7 +60,7 @@ export async function submitLightningSpend(record:LightningSpendRecord,store:Lig
  o.step?.(2);
  const final=await waitForSpend(r.body.id,async request=>{
   if(!r.coin)throw new Error('The pool asked to sign a Lightning funding withdrawal; not signing.');
-  checkSigningRequest(request,r.coin,o.poolScript);o.step?.(3);
+  checkSigningRequest(request,r.coin,o.poolScript,BigInt(r.body.publics[0]!));o.step?.(3);
   await o.api(`/spends/${r.body.id}/sign`,await signDeposit(o.identity,request));
  },async<T,>(path:string,body?:unknown)=>{if(first&&body===undefined&&path===`/spends/${r.body.id}`){const result=first;first=undefined;return result as T;}return o.api<T>(path,body);},1000,30*60_000);
  if(final.status==='included'&&(!final.txid||!/^[0-9a-f]{64}$/.test(final.txid)))throw new Error('The pool did not identify the included Lightning spend.');

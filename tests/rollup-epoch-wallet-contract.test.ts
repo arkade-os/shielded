@@ -60,7 +60,7 @@ async function buildWorld(){
  const settle=async(spend:EpochBuiltSpend,extra:Parameters<typeof epochTransferBody>[3]={})=>{
   const id=hex.encode(randomBytes(16)),body=epochTransferBody(id,spend,proof,extra);
   await api('/spends',body);
-  const done=await waitForSpend(id,async request=>{checkSigningRequest(request,extra.coin!,poolScript);await api(`/spends/${id}/sign`,await signDeposit(depositor,request));},api,50,60_000);
+  const done=await waitForSpend(id,async request=>{checkSigningRequest(request,extra.coin!,poolScript,spend.witness.publicSignals[0]!);await api(`/spends/${id}/sign`,await signDeposit(depositor,request));},api,50,60_000);
   assert.equal(done.status,'included',done.reason);
   return {spend,slot:JSON.parse(JSON.stringify(body.slot)) as Record<string,unknown>,batch:done.batch!};
  };

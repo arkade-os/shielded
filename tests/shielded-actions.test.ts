@@ -10,6 +10,7 @@ import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {submitAll} from '../src/shielded/submit.ts';
 import {NoteReservation,coversWithdrawal,mergeAssetFields,needsRenewal,nextShieldPlan,programOf,shieldTitle,shieldedSteps,topThree} from '../src/shielded/wallet.ts';
+import {batchWitnessOutput} from './fixtures/batch-witness.ts';
 import {epochPool} from './fixtures/epoch-pool.ts';
 
 const built=(nullifiers:bigint[],groupId=0n,groupSize=0)=>{const slot={nullifiers,commitments:[12n,13n],ctDigest:14n,groupId,groupSize};
@@ -44,7 +45,7 @@ test('a two-nullifier member proves with the join circuit and a one-nullifier me
 test('only the member that owns a deposit coin signs, and a request for a member without one is refused',async()=>{
  const pool=hex.decode('5120'+'aa'.repeat(32)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
  const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
- const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);
+ const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);ark.addOutput(batchWitnessOutput([1n]));
  const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
  const signed:string[]=[];
  let asked=false;
@@ -66,7 +67,7 @@ test('ordinary deposits poll slowly while still signing within the server round'
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
  const pool=hex.decode('5120'+'aa'.repeat(32)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
  const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
- const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);
+ const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);ark.addOutput(batchWitnessOutput([1n]));
  const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
  let signedAt=0,polls=0;
  const api=(async(path:string)=>{
