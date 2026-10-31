@@ -68,7 +68,7 @@ import {fileURLToPath} from 'node:url';
 export default {resolve:{alias:{circomlibjs:fileURLToPath(new URL('./node_modules/circomlibjs/src/poseidon_wasm.js',import.meta.url))}}};
 ```
 
-Without the alias, `createShieldedWallet` fails with a message that names it. You can also pass your own `hash`.
+webpack 5 takes the same `resolve.alias` entry in its config. Without the alias, `createShieldedWallet` fails with a message that names it. You can also pass your own `hash`.
 
 The pool answers cross-origin requests only from origins its operator allows. Until yours is allowed, serve your app from the pool's origin, or proxy `/api/rollup` to it. Reveal links always point at `pool`.
 
