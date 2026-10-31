@@ -16,15 +16,17 @@ export function loadProvingFile(url:string,priority:'high'|'low'|'auto'='auto'):
  const cooldown=cooldowns.get(url);if(cooldown&&cooldown>Date.now())return Promise.reject(cooldownError(url,cooldown));
  cooldowns.delete(url);
  const loading=(async()=>{
-  for(let attempt=0;;attempt++){
+  for(let attempt=0,reload=false;;attempt++){
    let response:Response|undefined,failure:unknown,bytes:Uint8Array<ArrayBuffer>|undefined;
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(new Error(`The proving file ${url} download timed out.`)),120_000);
-   try{response=await fetch(url,{priority,signal:controller.signal});if(response.ok)bytes=new Uint8Array(await response.arrayBuffer());}
+   try{response=await fetch(url,{priority,signal:controller.signal,...(reload?{cache:'reload' as const}:{})});if(response.ok)bytes=new Uint8Array(await response.arrayBuffer());}
    catch(error){failure=error;}
    finally{clearTimeout(timer);}
    if(bytes){
-    if(hex.encode(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))!==digest)throw new Error(`The proving file ${url} does not match its published digest; not proving with it.`);
-    return bytes;
+    if(hex.encode(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))===digest)return bytes;
+    if(reload)throw new Error(`The proving file ${url} does not match its published digest; not proving with it.`);
+    // The file is served immutable for a year, so a bad copy can sit in the HTTP cache; the one retry goes past it and replaces it.
+    reload=true;continue;
    }
    if(response&&!response.ok){
     failure=new Error(`The proving file ${url} answered HTTP ${response.status}.${response.status===404?' This page may be out of date; reload it.':''}`);

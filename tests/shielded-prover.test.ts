@@ -82,11 +82,13 @@ test('definitive HTTP refusals are not retried or cached',async t=>{
  assert.deepEqual(await prover.loadProvingFile(file('/missing.wasm')),new Uint8Array(wasm));assert.equal(calls,2);
 });
 
-test('a proving file that does not match its published digest is refused without a retry or a cached copy, and a bare URL is never fetched',async t=>{
- let calls=0;t.mock.method(globalThis,'fetch',async()=>new Response(++calls===1?zkey:wasm));
- await assert.rejects(prover.loadProvingFile(file('/tampered.wasm')),/does not match its published digest/);assert.equal(calls,1);
- assert.deepEqual(await prover.loadProvingFile(file('/tampered.wasm')),new Uint8Array(wasm));assert.equal(calls,2);
- await assert.rejects(prover.loadProvingFile('/bare.wasm'),/names no digest/);assert.equal(calls,2);
+test('a proving file that does not match its digest is fetched once more past the HTTP cache, then refused and not kept, and a bare URL is never fetched',async t=>{
+ const modes:(RequestCache|undefined)[]=[];let serve:(typeof wasm)[]=[];
+ t.mock.method(globalThis,'fetch',async(_url:unknown,init?:RequestInit)=>{modes.push(init?.cache);return new Response(serve.shift()!);});
+ serve=[zkey,wasm];assert.deepEqual(await prover.loadProvingFile(file('/stale-cache.wasm')),new Uint8Array(wasm));assert.deepEqual(modes,[undefined,'reload']);
+ serve=[zkey,zkey];await assert.rejects(prover.loadProvingFile(file('/tampered.wasm')),/does not match its published digest/);assert.deepEqual(modes.slice(2),[undefined,'reload']);
+ serve=[wasm];assert.deepEqual(await prover.loadProvingFile(file('/tampered.wasm')),new Uint8Array(wasm));assert.equal(modes.length,5);
+ await assert.rejects(prover.loadProvingFile('/bare.wasm'),/names no digest/);assert.equal(modes.length,5);
 });
 
 test('a 404 from a proving file tells a stale page to reload, and an outage does not',async t=>{
