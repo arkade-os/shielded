@@ -340,16 +340,16 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   await Promise.allSettled([...exiting.values()].map(release=>release()));exiting.clear();listeners.clear();};
  // An accepted swap nobody here drives: opened at startup, and on each tick once a sibling tab holding it closes.
  const unopenable=new Set<string>();
- const takeOver=async(notifyBusy:boolean)=>{
+ const takeOver=async(startup:boolean)=>{
   for(const artifact of await journal.artifacts(owner,pool)){
    if(stopped)return;
    if(artifact.state!=='accepted'||artifact.kind==='exit'||sessions.has(artifact.id)||unopenable.has(artifact.id))continue;
    // A swap a sibling started after this tab did has no payout watch here yet, so its payout would never be shielded.
    if(artifact.descriptor&&!payouts.has(artifact.script!))try{await registerPayouts([await watchArtifact(artifact)]);}catch(error){unopenable.add(artifact.id);report(error);continue;}
-   const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||notifyBusy)report(error);});
+   const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
    if(!session)continue;
    if(stopped){await close(session);return;}
-   try{await startSession(session);}catch(error){unopenable.add(artifact.id);await close(session);throw error;}
+   try{await startSession(session);}catch(error){unopenable.add(artifact.id);await close(session);if(startup)throw error;report(error);}
   }
  };
  try{

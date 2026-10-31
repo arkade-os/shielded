@@ -736,11 +736,10 @@ test('a tab takes over a swap on the next timer pass after its sibling lets go o
  const held=`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`;f.live.add(held);
  t.mock.timers.enable({apis:['setTimeout']});
  const service=await createPrivateLightning(f.options);
- const settle=async()=>{for(let i=0;i<20;i++)for(let j=0;j<100;j++)await Promise.resolve();};
  try{
-  await settle();t.mock.timers.tick(20_000);await settle();
+  await flushTasks();t.mock.timers.tick(20_000);await flushTasks();
   assert.equal(f.funded.length,0,'a sibling still holding the swap keeps it');
-  f.live.delete(held);t.mock.timers.tick(20_000);await settle();
+  f.live.delete(held);t.mock.timers.tick(20_000);await flushTasks();
   assert.equal(f.funded.length,1,'the swap resumes here once the sibling lets go');assert.ok(f.live.has(held));
  }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
@@ -748,14 +747,26 @@ test('a tab takes over a swap on the next timer pass after its sibling lets go o
 test('a tab taking over a swap its sibling started later also watches that swap\'s payout',async t=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false};
  t.mock.timers.enable({apis:['setTimeout']});
- const tab=await createPrivateLightning(options),settle=async()=>{for(let i=0;i<20;i++)for(let j=0;j<100;j++)await Promise.resolve();};
+ const tab=await createPrivateLightning(options);
  try{
   const sibling=await createPrivateLightning(options),q=await sibling.quote({to:'invoice'});f.failAccept();await assert.rejects(sibling.accept(q),/lost acceptance response/);await sibling[Symbol.asyncDispose]();
   const [artifact]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool),watched:string[]=[];
   t.mock.method(await f.base.getContractManager(),'setContractWatchState',async(script:string)=>{watched.push(script);});
-  t.mock.timers.tick(20_000);await settle();
+  t.mock.timers.tick(20_000);await flushTasks();
   assert.ok(watched.includes(artifact!.script!),'the payout is watched by the tab that now drives the swap');
  }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
+});
+
+test('a swap that cannot open for another reason is reported once, not again on every tick',async t=>{
+ const f=await interruptedFunding(),errors:Error[]=[],[artifact]=await f.journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool);
+ const lock=`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`;
+ const acquireSession=async(name:string)=>{if(name===lock)throw new Error('locks unavailable');return f.acquireSession(name);};
+ t.mock.timers.enable({apis:['setTimeout']});
+ const service=await createPrivateLightning({...f.options,acquireSession,onError:error=>errors.push(error)});
+ try{
+  await flushTasks();t.mock.timers.tick(20_000);await flushTasks();t.mock.timers.tick(20_000);await flushTasks();
+  assert.deepEqual(errors.map(e=>e.message).filter(m=>m==='locks unavailable'),['locks unavailable']);assert.equal(f.funded.length,0);
+ }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
 
 test('a tab whose sibling holds legacy recovery still opens Lightning, and leaves legacy swaps to the sibling',async()=>{
