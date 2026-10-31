@@ -6,6 +6,7 @@ import * as snarkjs from 'snarkjs';
 import * as prover from '../app/src/shielded-prover.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupPoolStatus} from '../src/shielded/pool.ts';
+import {prefetchProvingKeys,releaseProver,snarkjsProver} from '../src/shielded/prover.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
@@ -13,7 +14,7 @@ const wasm=readFileSync('tests/fixtures/rollup-toy/covenant-client.wasm'),zkey=r
 const input={pub:49n,nf0:11n,nf1:22n,deposit:33n,withdraw:44n,boundaryAsset:55n,destination:66n,w:7n};
 const built={witness:{input,slot:{nullifiers:[11n]}},slot:{nullifiers:[11n]}} as unknown as EpochBuiltSpend;
 const status=(id:string)=>({proving:{spend:{wasm:id,zkey:id}}}) as RollupPoolStatus;
-after(async()=>{await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();});
+after(releaseProver);
 
 test('prefetch never consumes or caches an HTTP error body',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
@@ -53,6 +54,23 @@ test('an in-flight successful prefetch is reused by proving without another down
  const pending=outcome(prover.browserProver(()=>pool).prove(built,'spend'));await flush();assert.equal(calls.length,2);release();
  const result=await pending;assert.equal(result.error,undefined);assert.ok(result.value);assert.equal(calls.length,2);
  prover.prefetchProvingKeys(pool);await prover.browserProver(()=>pool).prove(built,'spend');assert.equal(calls.length,2);
+});
+
+test('a prover for another origin downloads its proving files from that origin',async t=>{
+ const calls:string[]=[];
+ t.mock.method(globalThis,'fetch',async(url:unknown)=>{calls.push(String(url));return new Response(String(url).includes('.wasm')?wasm:zkey);});
+ const pool=status('remote-origin');
+ assert.ok(await snarkjsProver({status:()=>pool,origin:'https://pool.example'}).prove(built,'spend'));
+ prefetchProvingKeys(pool,'spend','https://pool.example');await flush();
+ assert.equal(calls.length,2);assert.ok(calls.every(url=>url.startsWith('https://pool.example/api/rollup/proving/epoch-spend.')),calls.join(' '));
+});
+
+test('a join flag store that throws reads as not ready and never discards a finished join proof',async t=>{
+ t.mock.method(globalThis,'fetch',async(url:unknown)=>new Response(String(url).includes('.wasm')?wasm:zkey));
+ const joined={witness:{input,slot:{nullifiers:[11n,22n]}},slot:{nullifiers:[11n,22n]}} as unknown as EpochBuiltSpend;
+ const broken=snarkjsProver({status:()=>({proving:{spend:{wasm:'flag',zkey:'flag'},join:{wasm:'flag',zkey:'flag'}}}) as RollupPoolStatus,joinReady:{get:()=>{throw new Error('storage disabled');},set:()=>{throw new Error('quota exceeded');}}});
+ assert.equal(broken.joinReady!(),false);assert.ok(await broken.prove(joined,'join'));
+ await assert.rejects(snarkjsProver({status:()=>({}) as RollupPoolStatus}).prove(built,'spend'),/not published its proving keys/);
 });
 
 test('definitive HTTP refusals are not retried or cached',async t=>{

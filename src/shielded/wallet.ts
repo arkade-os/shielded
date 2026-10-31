@@ -210,7 +210,7 @@ export class ShieldedWallet extends Wallet {
   const sdk=await super.getTransactionHistory();
   return [...sdk,...this.rows.rows()].sort((a,b)=>b.createdAt-a.createdAt);
  }
- private origin(){return typeof location==='undefined'?this.pool.origin:location.origin;}
+ private origin(){return this.pool.origin||globalThis.location?.origin||'';}
  revealLink(payment:EpochHistoryEntry):string|undefined{
   return epochRevealLinkOf(this.origin(),payment,{self:this.shieldedAddress(),sentOf:n=>this.sentOf(n)});
  }

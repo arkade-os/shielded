@@ -23,6 +23,7 @@ jobs:
         working-directory: tools/vm
       - run: npm test
       - run: npm run build
+      - run: npm run sdk:build
   epoch-circuits:
     runs-on: ubuntu-latest
     timeout-minutes: 90

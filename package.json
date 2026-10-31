@@ -11,6 +11,7 @@
     "app": "vite --config app/vite.config.ts --host 127.0.0.1 --force",
     "build": "tsc --noEmit && vite build --config app/vite.config.ts",
     "test": "node --import tsx --test tests/*.test.ts",
+    "sdk:build": "tsc -p packages/shielded/tsconfig.json",
     "vm:build": "node --import tsx tools/build-vm.ts",
     "circom": "node tools/prepare-circom.mjs",
     "rollup:compile:epoch": "node circuits/rollup/generate-epoch.mjs",

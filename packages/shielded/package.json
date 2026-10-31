@@ -1,0 +1,32 @@
+{
+  "name": "@arkade-os/shielded",
+  "version": "0.1.0",
+  "description": "A shielded balance for @arkade-os/sdk wallets on the Arkade shielded pool (Mutinynet).",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/packages/shielded/src/index.d.ts",
+      "default": "./dist/packages/shielded/src/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@arkade-os/sdk": "0.5.0-rc.31"
+  },
+  "dependencies": {
+    "@arkade-os/lnurl-client": "0.9.0",
+    "@arkade-os/swap": "0.1.0-rc.34",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@scure/base": "2.4.0",
+    "@scure/bip39": "2.4.0",
+    "@scure/btc-signer": "2.4.1",
+    "circomlibjs": "0.1.7",
+    "nostr-tools": "2.24.1",
+    "snarkjs": "0.7.6"
+  }
+}
