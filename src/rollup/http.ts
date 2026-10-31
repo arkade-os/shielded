@@ -36,13 +36,18 @@ const POSTS_PER_MINUTE=60;
 /** Each admission checks a Groth16 proof in this process; past this many at once, a flood from many addresses would stall batching. */
 const ADMITTING_AT_ONCE=8;
 export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[]}:{allowedOrigins?:readonly string[]}={}){
- const router=express.Router(),allowed=new Set(allowedOrigins.map(origin=>new URL(origin).origin));
+ // A file:, data: or other opaque entry normalises to "null", which sandboxed and local pages send as their Origin.
+ const allowed=new Set(allowedOrigins.map(entry=>{const origin=new URL(entry).origin;if(origin==='null')throw new Error(`${entry} is not an http(s) origin.`);return origin;}));
+ const router=express.Router();
  let admitting=0;
  // First, so a preflight and a rate-limit refusal both reach a listed origin's page readable.
  router.use((req,res,next)=>{
+  if(!allowed.size)return next();
+  // On every response, or one cached without CORS headers (the year-long proving files) is replayed to a listed origin.
+  res.vary('Origin');
   const origin=req.get('origin');
   if(!origin||!allowed.has(origin))return next();
-  res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Access-Control-Expose-Headers','Retry-After');res.vary('Origin');
+  res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Access-Control-Expose-Headers','Retry-After');
   if(req.method!=='OPTIONS')return next();
   res.setHeader('Access-Control-Allow-Methods','GET, POST');res.setHeader('Access-Control-Allow-Headers','content-type');res.setHeader('Access-Control-Max-Age','600');
   res.status(204).end();

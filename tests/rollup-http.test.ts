@@ -35,17 +35,20 @@ test('a listed origin may read and write cross-origin; every other origin is sti
  const status=()=>({version:1,phase:'ready',message:'',pool:{}} as never);
  const closed=await serve({ready:()=>true,status});t.after(closed.close);
  assert.equal((await fetch(closed.base+'/status',{headers:{origin:'https://app.example'}})).headers.get('access-control-allow-origin'),null);
- const api=await serve({ready:()=>true,status},{allowedOrigins:['https://app.example/']});t.after(api.close);
+ const submitted:unknown[]=[];
+ const api=await serve({ready:()=>true,status,submit:async s=>{submitted.push(s);},spend:()=>undefined},{allowedOrigins:['https://app.example/']});t.after(api.close);
  const preflight=await fetch(api.base+'/spends',{method:'OPTIONS',headers:{origin:'https://app.example','access-control-request-method':'POST','access-control-request-headers':'content-type'}});
  assert.equal(preflight.status,204);assert.equal(preflight.headers.get('access-control-allow-origin'),'https://app.example');
  assert.match(preflight.headers.get('access-control-allow-headers')??'',/content-type/);assert.match(preflight.headers.get('access-control-allow-methods')??'',/POST/);
  const read=await fetch(api.base+'/status',{headers:{origin:'https://app.example'}});
  assert.equal(read.headers.get('access-control-allow-origin'),'https://app.example');assert.match(read.headers.get('access-control-expose-headers')??'',/Retry-After/i);
  const write=await post(api.base+'/spends',spend,'https://app.example');
- assert.notEqual(write.status,403);assert.equal(write.headers.get('access-control-allow-origin'),'https://app.example');
+ assert.equal(write.status,202);assert.equal(submitted.length,1);assert.equal(write.headers.get('access-control-allow-origin'),'https://app.example');
  const refused=await post(api.base+'/spends',spend,'https://evil.example');
  assert.equal(refused.status,403);assert.equal(refused.headers.get('access-control-allow-origin'),null);
+ assert.match(refused.headers.get('vary')??'',/origin/i);assert.match((await fetch(api.base+'/status')).headers.get('vary')??'',/origin/i);
  assert.throws(()=>createRollupRouter(()=>undefined,{allowedOrigins:['not an origin']}),/Invalid URL/);
+ assert.throws(()=>createRollupRouter(()=>undefined,{allowedOrigins:['file:///x']}),/not an http\(s\) origin/);
 });
 
 test('proving keys are served from any key directory, including one under a dot-directory',async(t)=>{
