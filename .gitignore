@@ -14,6 +14,7 @@ bin/
 .recovery/
 app/dist/
 packages/*/dist/
+packages/*/*.tgz
 data/
 backups/
 private-backups/
