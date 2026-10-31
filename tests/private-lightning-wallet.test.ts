@@ -757,6 +757,19 @@ test('a tab taking over a swap its sibling started later also watches that swap\
  }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
 
+test('a tab also watches the payout of a swap its sibling started later and that has already ended',async t=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false};
+ t.mock.timers.enable({apis:['setTimeout']});
+ const tab=await createPrivateLightning(options);
+ try{
+  const sibling=await createPrivateLightning(options),q=await sibling.quote({to:'invoice'});f.failAccept();await assert.rejects(sibling.accept(q),/lost acceptance response/);await sibling[Symbol.asyncDispose]();
+  const key=hex.encode(await root.xOnlyPublicKey()),[artifact]=await journal.artifacts(key,pool);artifact!.state='ended';await journal.updateArtifact(key,pool,artifact!);
+  const watched:string[]=[];t.mock.method(await f.base.getContractManager(),'setContractWatchState',async(script:string)=>{watched.push(script);});
+  t.mock.timers.tick(20_000);await flushTasks();
+  assert.ok(watched.includes(artifact!.script!));assert.equal(f.funded.length,0,'an ended swap is watched, not driven');
+ }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
+});
+
 test('a swap that cannot open for another reason is reported once, not again on every tick',async t=>{
  const f=await interruptedFunding(),errors:Error[]=[],[artifact]=await f.journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool);
  const lock=`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`;

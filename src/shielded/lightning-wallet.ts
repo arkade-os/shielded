@@ -343,9 +343,10 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const takeOver=async(startup:boolean)=>{
   for(const artifact of await journal.artifacts(owner,pool)){
    if(stopped)return;
-   if(artifact.state!=='accepted'||artifact.kind==='exit'||sessions.has(artifact.id)||unopenable.has(artifact.id))continue;
-   // A swap a sibling started after this tab did has no payout watch here yet, so its payout would never be shielded.
+   if(artifact.kind==='exit'||unopenable.has(artifact.id))continue;
+   // A swap a sibling started after this tab did, even one that has ended, has no payout watch here yet, so its payout would never be shielded.
    if(artifact.descriptor&&!payouts.has(artifact.script!))try{await registerPayouts([await watchArtifact(artifact)],false);}catch(error){unopenable.add(artifact.id);report(error);continue;}
+   if(artifact.state!=='accepted'||sessions.has(artifact.id))continue;
    const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
    if(!session)continue;
    if(stopped){await close(session);return;}
