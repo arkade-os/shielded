@@ -769,6 +769,20 @@ test('a swap that cannot open for another reason is reported once, not again on 
  }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
 
+test('a swap taken over on a tick that then fails to start is reported once and its session released',async t=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:(error:Error)=>errors.push(error)};
+ const first=await createPrivateLightning(options),q=await first.quote({to:'invoice'});f.failAccept();await assert.rejects(first.accept(q),/lost acceptance response/);await first[Symbol.asyncDispose]();
+ const record=spend('lightning-fund-0',pool,'1','01'.repeat(32));record.amount='999';record.body.publics[4]='999';record.expiresAt=q.expiresAt;await journal.create(record);
+ const [artifact]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool),held=`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`;f.live.add(held);
+ t.mock.timers.enable({apis:['setTimeout']});
+ const service=await createPrivateLightning(options);
+ try{
+  f.live.delete(held);t.mock.timers.tick(20_000);await flushTasks();t.mock.timers.tick(20_000);await flushTasks();
+  assert.equal(errors.filter(e=>/does not match its accepted HTLC/.test(e.message)).length,1);
+  assert.equal(f.live.has(held),false);assert.equal(f.funded.length,0);
+ }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
+});
+
 test('a tab whose sibling holds legacy recovery still opens Lightning, and leaves legacy swaps to the sibling',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],address=await f.wallet.getAddress(),held=`shielded-lightning-legacy-${address}`;f.live.add(held);
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,onError:error=>errors.push(error)});

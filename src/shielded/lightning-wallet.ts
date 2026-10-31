@@ -211,12 +211,12 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const recovery=createLightningRecovery({owner,pool,companion,journal,acquireSession,options:async outpoint=>(await recoveryOptions(outpoint)).options,
   stopShielding:async outpoint=>{shieldingControllers.get(outpoint)?.abort();await shielding.get(outpoint)?.catch(()=>{});},
   reconcileShielding:outpoint=>wallet.reconcileLightningPayout(outpoint,journal),changed:()=>wallet.changed(),report});
- const registerPayouts=async(records:LightningPayout[])=>{
+ const registerPayouts=async(records:LightningPayout[],rescan=true)=>{
   await validatePayouts(records);const manager=await companion.getContractManager();
   await journal.savePayouts(owner,pool,records);
   for(const record of records){payouts.set(record.script,record);await manager.setContractWatchState(record.script,'watched');}
   wallet.changed();
-  await scan();
+  if(rescan)await scan();
  };
  const watchArtifact=async(artifact:LightningArtifact)=>{
   if(!artifact.descriptor||!artifact.address||!artifact.script||!artifact.serverPubKey||!artifact.csvTimelock)throw new Error('Incomplete saved Lightning artifact');
@@ -345,7 +345,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    if(stopped)return;
    if(artifact.state!=='accepted'||artifact.kind==='exit'||sessions.has(artifact.id)||unopenable.has(artifact.id))continue;
    // A swap a sibling started after this tab did has no payout watch here yet, so its payout would never be shielded.
-   if(artifact.descriptor&&!payouts.has(artifact.script!))try{await registerPayouts([await watchArtifact(artifact)]);}catch(error){unopenable.add(artifact.id);report(error);continue;}
+   if(artifact.descriptor&&!payouts.has(artifact.script!))try{await registerPayouts([await watchArtifact(artifact)],false);}catch(error){unopenable.add(artifact.id);report(error);continue;}
    const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
    if(!session)continue;
    if(stopped){await close(session);return;}
