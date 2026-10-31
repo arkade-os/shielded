@@ -731,6 +731,20 @@ test('a tab whose sibling holds a swap session still opens Lightning, and leaves
  assert.ok(f.live.has(held));
 });
 
+test('a tab takes over a swap on the next timer pass after its sibling lets go of it',async t=>{
+ const f=await interruptedFunding(),[artifact]=await f.journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool);
+ const held=`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`;f.live.add(held);
+ t.mock.timers.enable({apis:['setTimeout']});
+ const service=await createPrivateLightning(f.options);
+ const settle=async()=>{for(let i=0;i<20;i++)for(let j=0;j<100;j++)await Promise.resolve();};
+ try{
+  await settle();t.mock.timers.tick(20_000);await settle();
+  assert.equal(f.funded.length,0,'a sibling still holding the swap keeps it');
+  f.live.delete(held);t.mock.timers.tick(20_000);await settle();
+  assert.equal(f.funded.length,1,'the swap resumes here once the sibling lets go');assert.ok(f.live.has(held));
+ }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
+});
+
 test('a tab whose sibling holds legacy recovery still opens Lightning, and leaves legacy swaps to the sibling',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],address=await f.wallet.getAddress(),held=`shielded-lightning-legacy-${address}`;f.live.add(held);
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,onError:error=>errors.push(error)});

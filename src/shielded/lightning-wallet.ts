@@ -69,7 +69,7 @@ export const exitReservation=(owner:string,script:string)=>`shielded-exit-${owne
 const terminal=new Set(['paid','claimed','refunded','lapsed','failed','cancelled','filled']);
 const artifactEnded=(artifact:LightningArtifact)=>artifact.state==='ended';
 const biggestNote=(wallet:ShieldedWallet)=>{try{return Number(wallet.account.spendableNotes(BTC_ASSET,wallet.inFlight).reduce((max,n)=>n.amount>max?n.amount:max,0n));}catch{return 0;}};
-export class LightningSessionBusy extends Error {constructor(){super('This Lightning payment is running in another tab. It continues there; to continue it here, close that tab and reload this one.');}}
+export class LightningSessionBusy extends Error {constructor(){super('This Lightning payment is running in another tab. It continues there, and this tab takes it over if that tab closes.');}}
 export async function acquireLightningSession(name:string):Promise<()=>Promise<void>>{
  if(typeof navigator==='undefined'||!navigator.locks)throw new Error('Private Lightning requires browser locking to protect active payments');
  let release!:()=>void,done!:Promise<void>;
@@ -323,7 +323,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   try{const swap=await session.client.accept(quoted);await session.retiring;if(!stopped&&!artifactEnded(artifact))await session.client.start();return swap;}
   catch(error){
    const stored=await session.repository.getSwapRecord(quoted.id);await close(session);
-   if(stored&&!artifactEnded(artifact)){const resumed=await open(artifact);await startSession(resumed);}
+   if(stored&&!artifactEnded(artifact)){const resumed=await open(artifact).catch(e=>{if(e instanceof LightningSessionBusy)return undefined;throw e;});if(resumed)await startSession(resumed);}
    else if(!stored){artifact.state='ended';await journal.updateArtifact(owner,pool,artifact);}
    throw error;
   }finally{session.accepting=false;if(artifact.state==='ended')await close(session);}
@@ -338,13 +338,24 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  let offPayout:()=>void=()=>{};
  const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();await recovery.dispose();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);
   await Promise.allSettled([...exiting.values()].map(release=>release()));exiting.clear();listeners.clear();};
+ // An accepted swap nobody here drives: opened at startup, and on each tick once a sibling tab holding it closes.
+ const unopenable=new Set<string>();
+ const takeOver=async(notifyBusy:boolean)=>{
+  for(const artifact of await journal.artifacts(owner,pool)){
+   if(stopped)return;
+   if(artifact.state!=='accepted'||artifact.kind==='exit'||sessions.has(artifact.id)||unopenable.has(artifact.id))continue;
+   const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||notifyBusy)report(error);});
+   if(!session)continue;
+   if(stopped){await close(session);return;}
+   try{await startSession(session);}catch(error){unopenable.add(artifact.id);await close(session);throw error;}
+  }
+ };
  try{
   const artifacts=await journal.artifacts(owner,pool),restoredPayouts=await journal.payouts(owner,pool);
   for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
   await registerPayouts(restoredPayouts);
   for(const artifact of artifacts){
-   if(artifact.state==='accepted'&&artifact.kind!=='exit'){const session=await open(artifact).catch(report);if(session)await startSession(session);}
-   else if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
+   if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
     try{
      const release=await acquireSession(`${namespace}-${artifact.id}`);
      try{const repository=repositoryFor(`${namespace}-${artifact.id}`);try{await repairReceipt(artifact,repository);}finally{await repository[Symbol.asyncDispose]?.();}}
@@ -352,6 +363,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     }catch{report(new Error('A saved Lightning receipt is unavailable; it remains unchanged.'));}
    }
   }
+  await takeOver(true);
   if(legacyRecovery){
    const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
    if(releaseLegacy){
@@ -364,7 +376,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
    wallet.changed();if(event.type==='vtxo_received'||event.type==='connection_reset')void scan().catch(report);
   });
-  const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
+  const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await takeOver(false);await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
   return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts,getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
