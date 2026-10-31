@@ -779,7 +779,9 @@ test('a payout watch that fails is reported once and retried, so the swap is sti
   const [artifact]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool);let failures=2;
   t.mock.method(await f.base.getContractManager(),'setContractWatchState',async()=>{if(failures-->0)throw new Error('watch unavailable');});
   const starts=f.starts.length;
-  for(let i=0;i<3;i++){t.mock.timers.tick(20_000);await flushTasks();}
+  for(let i=0;i<2;i++){t.mock.timers.tick(20_000);await flushTasks();}
+  assert.equal(failures,0,'each pass retries the watch');assert.equal(f.starts.length,starts,'a swap is not started while its payout is unwatched');
+  t.mock.timers.tick(20_000);await flushTasks();
   assert.equal(errors.filter(e=>e.message==='watch unavailable').length,1);assert.ok(f.starts.length>starts,'the swap is taken over once its watch is in place');assert.ok(f.live.has(`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`));
  }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
 });

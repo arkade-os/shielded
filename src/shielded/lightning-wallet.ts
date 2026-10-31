@@ -214,7 +214,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const registerPayouts=async(records:LightningPayout[],rescan=true)=>{
   await validatePayouts(records);const manager=await companion.getContractManager();
   await journal.savePayouts(owner,pool,records);
-  for(const record of records){payouts.set(record.script,record);await manager.setContractWatchState(record.script,'watched');}
+  // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
+  for(const record of records){await manager.setContractWatchState(record.script,'watched');payouts.set(record.script,record);}
   wallet.changed();
   if(rescan)await scan();
  };
