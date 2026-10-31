@@ -2,6 +2,7 @@
   "name": "@arkade-os/shielded",
   "version": "0.1.0",
   "description": "A shielded balance for @arkade-os/sdk wallets on the Arkade shielded pool (Mutinynet).",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "exports": {
