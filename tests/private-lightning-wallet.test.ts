@@ -745,6 +745,19 @@ test('a tab takes over a swap on the next timer pass after its sibling lets go o
  }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
 
+test('a tab taking over a swap its sibling started later also watches that swap\'s payout',async t=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false};
+ t.mock.timers.enable({apis:['setTimeout']});
+ const tab=await createPrivateLightning(options),settle=async()=>{for(let i=0;i<20;i++)for(let j=0;j<100;j++)await Promise.resolve();};
+ try{
+  const sibling=await createPrivateLightning(options),q=await sibling.quote({to:'invoice'});f.failAccept();await assert.rejects(sibling.accept(q),/lost acceptance response/);await sibling[Symbol.asyncDispose]();
+  const [artifact]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool),watched:string[]=[];
+  t.mock.method(await f.base.getContractManager(),'setContractWatchState',async(script:string)=>{watched.push(script);});
+  t.mock.timers.tick(20_000);await settle();
+  assert.ok(watched.includes(artifact!.script!),'the payout is watched by the tab that now drives the swap');
+ }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
+});
+
 test('a tab whose sibling holds legacy recovery still opens Lightning, and leaves legacy swaps to the sibling',async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],address=await f.wallet.getAddress(),held=`shielded-lightning-legacy-${address}`;f.live.add(held);
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,onError:error=>errors.push(error)});

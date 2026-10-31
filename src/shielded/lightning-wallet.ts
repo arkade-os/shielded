@@ -335,8 +335,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const swap=await accept(quoted);if(swap.artifact?.kind!=='invoice')throw new Error('Lightning receive returned no invoice');
   return swap as ReceiveRequest<C>;
  };
- let offPayout:()=>void=()=>{};
- const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();await recovery.dispose();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);
+ let offPayout:()=>void=()=>{},taking:Promise<void>=Promise.resolve();
+ const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();await taking.catch(()=>{});await recovery.dispose();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);
   await Promise.allSettled([...exiting.values()].map(release=>release()));exiting.clear();listeners.clear();};
  // An accepted swap nobody here drives: opened at startup, and on each tick once a sibling tab holding it closes.
  const unopenable=new Set<string>();
@@ -344,6 +344,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   for(const artifact of await journal.artifacts(owner,pool)){
    if(stopped)return;
    if(artifact.state!=='accepted'||artifact.kind==='exit'||sessions.has(artifact.id)||unopenable.has(artifact.id))continue;
+   // A swap a sibling started after this tab did has no payout watch here yet, so its payout would never be shielded.
+   if(artifact.descriptor&&!payouts.has(artifact.script!))try{await registerPayouts([await watchArtifact(artifact)]);}catch(error){unopenable.add(artifact.id);report(error);continue;}
    const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||notifyBusy)report(error);});
    if(!session)continue;
    if(stopped){await close(session);return;}
@@ -354,6 +356,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const artifacts=await journal.artifacts(owner,pool),restoredPayouts=await journal.payouts(owner,pool);
   for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
   await registerPayouts(restoredPayouts);
+  taking=takeOver(true);await taking;
   for(const artifact of artifacts){
    if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
     try{
@@ -363,7 +366,6 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     }catch{report(new Error('A saved Lightning receipt is unavailable; it remains unchanged.'));}
    }
   }
-  await takeOver(true);
   if(legacyRecovery){
    const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
    if(releaseLegacy){
@@ -376,7 +378,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
    wallet.changed();if(event.type==='vtxo_received'||event.type==='connection_reset')void scan().catch(report);
   });
-  const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}await takeOver(false);await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
+  const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}taking=takeOver(false);await taking;await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
   return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts,getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
