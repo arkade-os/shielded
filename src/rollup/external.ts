@@ -1,7 +1,7 @@
 import {EmulatorPacket,Extension,type Transaction} from '@arkade-os/sdk';
 import {RawWitness} from '@scure/btc-signer';
 import {hex} from '@scure/base';
-import {EPOCH_NULLIFIERS,EPOCH_SLOTS,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {EPOCH_NULLIFIERS,EPOCH_SLOTS,ROLLUP_FIELD,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {ROLLUP_STATE_PACKET,type RollupEpochLeaves} from './covenant.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
 
@@ -22,7 +22,9 @@ function readBatchFacts<K extends string>(tx:Transaction,table:readonly {script:
  if(items.length!==8+leaf.slots*15)throw new Error('The batch witness has the wrong shape.');
  // Per slot after the 8 proof items: pub, nf0, nf1, deposit, withdraw, boundaryAsset, destination. Slots run last to first.
  const parsed=Array.from({length:leaf.slots},(_,i)=>{const at=8+(leaf.slots-1-i)*15+8,p=items.slice(at,at+7);
-  return {publics:[scriptNum(p[0]!),scriptNum(p[1]!),scriptNum(p[2]!),scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:[scriptNum(p[1]!),scriptNum(p[2]!)].slice(0,leaf.nullifiers)};});
+  // The covenant reduces the nullifiers mod q (pub it does not), so a nullifier encoded past q verifies; the state takes the canonical one.
+  const nf=[scriptNum(p[1]!)%ROLLUP_FIELD,scriptNum(p[2]!)%ROLLUP_FIELD];
+  return {publics:[scriptNum(p[0]!),...nf,scriptNum(p[3]!),scriptNum(p[4]!),le(p[5]!),le(p[6]!)],nullifiers:nf.slice(0,leaf.nullifiers)};});
  return {kind:leaf.kind,publics:parsed.map(s=>s.publics),nullifiers:parsed.map(s=>s.nullifiers),commitment:le(state.subarray(0,32)),daRoot:le(state.subarray(32,64)),noteBlockRoot:le(state.subarray(64))};
 }
 
