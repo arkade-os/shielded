@@ -6,9 +6,14 @@ It runs on the Mutinynet test pool at `https://shielded.mutinynet.arkade.sh`, wi
 
 ## Install
 
+The package is not on npm yet. Until it is, build and pack it from a checkout of this repository, then install the tarball:
+
 ```sh
-npm i @arkade-os/shielded @arkade-os/sdk@0.5.0
+npm run sdk:build && (cd packages/shielded && npm pack)
+npm i ./path/to/arkade-os-shielded-0.1.0.tgz @arkade-os/sdk@0.5.0
 ```
+
+Once it is published, the install is `npm i @arkade-os/shielded @arkade-os/sdk@0.5.0`.
 
 `@arkade-os/sdk` is a peer dependency, pinned to `0.5.0`, the version this wallet and its swap client are built on. The wallet subclasses your copy of the SDK, so there must be only one; `npm ls @arkade-os/sdk` should show one version.
 
