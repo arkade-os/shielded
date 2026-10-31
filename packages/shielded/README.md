@@ -86,3 +86,7 @@ A proof starts snarkjs worker threads, which stay alive for the whole process. A
 ## TypeScript
 
 The SDK's types use `AsyncDisposable`, and so do these. Add `"ESNext.Disposable"` to `lib`, or keep `skipLibCheck`.
+
+## License
+
+MIT. Two runtime dependencies, `snarkjs` and `circomlibjs`, are GPL-3.0, and an app that ships them takes on their terms.
