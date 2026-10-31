@@ -66,11 +66,17 @@ export const pickNote=<N extends OwnedNote>(notes:N[],amount:bigint,inFlight:Rea
 
 /** Each slot's statement, from the pool head's witness: 8 batch-proof items, then 15 per slot (8 proof items, 7 publics). */
 export function batchStatements(ark:Transaction):bigint[]{
- let entry;try{const packet=Extension.fromTx(ark).getPacketByType(EmulatorPacket.PACKET_TYPE);entry=packet&&EmulatorPacket.fromBytes(packet.serialize()).entries.find(e=>e.vin===0);}catch{return [];}
- if(!entry?.witness)return [];
- const items=RawWitness.decode(entry.witness),slots=(items.length-8)/15;
- if(!Number.isInteger(slots)||slots<1)return [];
- return Array.from({length:slots},(_,i)=>items[8+i*15+8]!).filter(n=>!(n.length&&n[n.length-1]!&0x80)).map(n=>n.reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n));
+ let items:Uint8Array[]|undefined,cause:unknown;
+ try{
+  const packet=Extension.fromTx(ark).getPacketByType(EmulatorPacket.PACKET_TYPE);
+  const witness=packet&&EmulatorPacket.fromBytes(packet.serialize()).entries.find(e=>e.vin===0)?.witness;
+  if(witness)items=RawWitness.decode(witness);
+ }catch(error){cause=error;}
+ const slots=items?(items.length-8)/15:0;
+ if(!items||!Number.isInteger(slots)||slots<1)throw new Error('The batch\'s pool-head witness cannot be read; not signing.',{cause});
+ // rollupWitness writes slots last to first; a membership check does not depend on the order.
+ const pubs=Array.from({length:slots},(_,i)=>items![8+i*15+8]!);
+ return pubs.filter(n=>!(n.length&&n[n.length-1]!&0x80)).map(n=>n.reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n));
 }
 
 /** Batch inputs spend checkpoint outputs, so the pool head is checkpoint 0's input and our coin is our checkpoint's. */

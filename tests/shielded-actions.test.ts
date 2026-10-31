@@ -42,11 +42,11 @@ test('a two-nullifier member proves with the join circuit and a one-nullifier me
  assert.deepEqual(circuits,['join','spend']);
 });
 
-test('only the member that owns a deposit coin signs, and a request for a member without one is refused',async()=>{
+test('only the member that owns a deposit coin signs, a member without one is refused, and so is a batch without its statement',async()=>{
  const pool=hex.decode('5120'+'aa'.repeat(32)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
  const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
- const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);ark.addOutput(batchWitnessOutput([1n]));
- const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
+ const batch=(statement:bigint)=>{const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);ark.addOutput(batchWitnessOutput([statement]));return base64.encode(ark.toPSBT());};
+ let signing={status:'signing',arkTx:batch(1n),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
  const signed:string[]=[];
  let asked=false;
  const api=(async(path:string)=>{
@@ -61,6 +61,9 @@ test('only the member that owns a deposit coin signs, and a request for a member
  assert.equal(signed.length,1);
  asked=false;
  await assert.rejects(submitAll([{built:built([11n])}],{...withCoin,step:()=>{},first:0}),/no deposit coin/i);
+ asked=false;signing={...signing,arkTx:batch(2n)};
+ await assert.rejects(submitAll([{built:built([11n]),coin}],{...withCoin,step:()=>{},first:0}),/does not carry this deposit/);
+ assert.equal(signed.length,1,'the swapped batch is never signed');
 });
 
 test('ordinary deposits poll slowly while still signing within the server round',async t=>{
