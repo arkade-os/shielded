@@ -76,7 +76,7 @@ The pool answers cross-origin requests only from origins its operator allows. Un
 
 Run Node 24 with `--experimental-eventsource`. Without it, the SDK falls back to polling every 20 seconds.
 
-A proof starts snarkjs worker threads, which stay alive for the whole process. After the last wallet is disposed, `await releaseProver()` so the process can exit.
+A proof starts snarkjs worker threads, which stay alive for the whole process. After the last wallet is disposed, `await releaseProver()` so the process can exit. It waits for any proof still running.
 
 ## TypeScript
 
