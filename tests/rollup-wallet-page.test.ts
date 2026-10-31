@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
+import {rollupWitness} from '../src/rollup/covenant.ts';
+import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shortValue} from '../app/src/rollup-client.ts';
-import {bornAtFor,checkSigningRequest,pickNote,poolApiOf,rollupApi,shieldPlan,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
+import {batchStatements,bornAtFor,checkSigningRequest,pickNote,poolApiOf,rollupApi,shieldPlan,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
@@ -36,16 +39,28 @@ test('a spend takes the smallest single note that covers it, skipping notes alre
  assert.equal(pickNote(notes,600n,new Set()),undefined);
 });
 
-test('a depositor signs only a batch that spends the pool head first and its own coin at its input',()=>{
- const pool=hex.decode('0014'+'aa'.repeat(20)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
+test('a depositor signs only a batch that spends the pool head first, its own coin at its input, and carries its statement',()=>{
+ const pool=hex.decode('0014'+'aa'.repeat(20)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1},statement=0xffffn;
  const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
- const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);
- const request:SpendStatus={status:'signing',arkTx:psbt(ark),checkpoints:[psbt(head),psbt(mine)],checkpoint:psbt(mine),vin:1};
- checkSigningRequest(request,coin,hex.encode(pool));
- assert.throws(()=>checkSigningRequest(request,coin,hex.encode(user)),/pool head/);
- assert.throws(()=>checkSigningRequest(request,{...coin,vout:0},hex.encode(pool)),/deposit coin/);
+ const inputs=[{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}];
+ const carrying=(statements:bigint[])=>{const t=tx(inputs);t.addOutput(batchWitnessOutput(statements));return psbt(t);};
+ const request:SpendStatus={status:'signing',arkTx:carrying([7n,statement]),checkpoints:[psbt(head),psbt(mine)],checkpoint:psbt(mine),vin:1};
+ checkSigningRequest(request,coin,hex.encode(pool),statement);
+ assert.throws(()=>checkSigningRequest(request,coin,hex.encode(user),statement),/pool head/);
+ assert.throws(()=>checkSigningRequest(request,{...coin,vout:0},hex.encode(pool),statement),/deposit coin/);
  const elsewhere=tx([{txid:head.id,index:0,script:pool},{txid:'ee'.repeat(32),index:0,script:user}]);
- assert.throws(()=>checkSigningRequest({...request,arkTx:psbt(elsewhere)},coin,hex.encode(pool)),/deposit coin/);
+ assert.throws(()=>checkSigningRequest({...request,arkTx:psbt(elsewhere)},coin,hex.encode(pool),statement),/deposit coin/);
+ assert.throws(()=>checkSigningRequest({...request,arkTx:carrying([7n,statement+1n])},coin,hex.encode(pool),statement),/carry this deposit/);
+ assert.throws(()=>checkSigningRequest({...request,arkTx:psbt(tx(inputs))},coin,hex.encode(pool),statement),/witness cannot be read/);
+});
+
+test('batchStatements reads every slot of a witness rollupWitness wrote, last slot first, and refuses one it cannot read',()=>{
+ const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-epoch-covenant-snarkjs.json','utf8')),[slot]=fixture.slots,publics=slot.publicSignals.map(BigInt);
+ const other=[publics[0]+1n,...publics.slice(1)],items=rollupWitness(fixture.batch.proof,[{proof:slot.proof,publics},{proof:slot.proof,publics:other}]);
+ const witnessed=(witness:Uint8Array[])=>{const t=tx([{txid:'dd'.repeat(32),index:0,script:hex.decode('0014'+'aa'.repeat(20))}]);t.addOutput(witnessOutput(witness));return t;};
+ assert.deepEqual(batchStatements(witnessed(items)),[other[0],publics[0]]);
+ for(const bad of [items.slice(0,8),items.slice(0,-1)])assert.throws(()=>batchStatements(witnessed(bad)),/witness cannot be read/);
+ assert.throws(()=>batchStatements(tx([{txid:'dd'.repeat(32),index:0,script:hex.decode('0014'+'aa'.repeat(20))}])),/witness cannot be read/);
 });
 
 test('waiting on a spend signs each distinct batch once and stops when it is settled',async()=>{

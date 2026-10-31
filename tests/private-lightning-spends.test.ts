@@ -10,6 +10,7 @@ import {lightningSpendConflict,sameLightningSpendRequest,validateLightningSpend,
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {rollupApi,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
+import {batchWitnessOutput} from './fixtures/batch-witness.ts';
 import {epochPool,fromBody,posted} from './fixtures/epoch-pool.ts';
 import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 
@@ -133,22 +134,23 @@ test('only an explicit dropped status releases a Lightning reservation; retry ne
 });
 
 const tx=(txid:string,index:number,script:Uint8Array,leaf?:ExtendedVirtualCoin['intentTapLeafScript'])=>{const t=new Transaction({allowUnknownOutputs:true});t.addInput({txid,index,witnessUtxo:{script,amount:1000n},...(leaf?{tapLeafScript:[leaf]}:{})});t.addOutput({script,amount:1000n});return t;};
+const signingRequest=(coin:ExtendedVirtualCoin,tree:VtxoScript,statement:bigint)=>{
+ const head=tx('dd'.repeat(32),0,hex.decode(SCRIPT)),mine=tx(coin.txid,coin.vout,tree.pkScript,tree.leaves[0]),ark=new Transaction({allowUnknownOutputs:true});
+ ark.addInput({txid:head.id,index:0,witnessUtxo:{script:hex.decode(SCRIPT),amount:1000n}});
+ ark.addInput({txid:mine.id,index:0,witnessUtxo:{script:tree.pkScript,amount:1000n},tapLeafScript:[tree.leaves[0]!]});ark.addOutput({script:tree.pkScript,amount:2000n});ark.addOutput(batchWitnessOutput([statement]));
+ return {status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
+};
 test('one external HD payout is shielded directly and only its child signer signs the deposit',async()=>{
  const store=new Store(),wallet=await open(store),child=SingleKey.fromHex('22'.repeat(32)),key=await child.xOnlyPublicKey();
  const tree=new VtxoScript([hex.decode('20'+hex.encode(key)+'ac')]);
  const coin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!} satisfies ExtendedVirtualCoin;
- const head=tx('dd'.repeat(32),0,hex.decode(SCRIPT)),mine=tx(coin.txid,coin.vout,tree.pkScript,tree.leaves[0]);
- const ark=new Transaction({allowUnknownOutputs:true});
- ark.addInput({txid:head.id,index:0,witnessUtxo:{script:hex.decode(SCRIPT),amount:1000n}});
- ark.addInput({txid:mine.id,index:0,witnessUtxo:{script:tree.pkScript,amount:1000n},tapLeafScript:[tree.leaves[0]!]});ark.addOutput({script:tree.pkScript,amount:2000n});
- const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
- let posted=false,signed=false,childSigns=0;
+ let posted=false,signed=false,childSigns=0,signing:ReturnType<typeof signingRequest>|undefined;
  const signer={xOnlyPublicKey:()=>child.xOnlyPublicKey(),compressedPublicKey:()=>child.compressedPublicKey(),signerSession:()=>child.signerSession(),signMessage:child.signMessage.bind(child),sign:async(...args:Parameters<typeof child.sign>)=>{childSigns++;return child.sign(...args);}};
  try{
   wallet.getSpendableVtxos=async()=>{throw new Error('ordinary coins touched');};wallet.send=async()=>{throw new Error('native send touched');};
   wallet.api=(async(path:string,body?:any)=>{
    if(path.startsWith('/batches'))return {total:0,batches:[]};
-   if(path==='/spends'){posted=true;assert.equal(store.rows.get('shield')!.state,'prepared');assert.equal(body.publics[3],'1000');assert.equal(body.coin.txid,coin.txid);return {};}
+   if(path==='/spends'){posted=true;assert.equal(store.rows.get('shield')!.state,'prepared');assert.equal(body.publics[3],'1000');assert.equal(body.coin.txid,coin.txid);signing=signingRequest(coin,tree,BigInt(body.publics[0]));return {};}
    if(path.endsWith('/sign')){signed=true;const input=Transaction.fromPSBT(base64.decode(body.arkTx)).getInput(1);assert.equal(input.tapScriptSig?.length,1);assert.equal(hex.encode(input.tapScriptSig![0]![0].pubKey),hex.encode(key));return {};}
    if(!posted)throw missing();return signed?{status:'included',txid:TXID}:signing;
   }) as PoolApi;
@@ -338,18 +340,13 @@ test('a rate-limit delay cannot submit expired Lightning funding or release its 
 test('Lightning shielding polls slowly while still signing inside a 30-second round',async t=>{
  const store=new Store(),wallet=await open(store),child=SingleKey.fromHex('22'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
- const head=tx('dd'.repeat(32),0,hex.decode(SCRIPT)),mine=tx(coin.txid,coin.vout,tree.pkScript,tree.leaves[0]);
- const ark=new Transaction({allowUnknownOutputs:true});
- ark.addInput({txid:head.id,index:0,witnessUtxo:{script:hex.decode(SCRIPT),amount:1000n}});
- ark.addInput({txid:mine.id,index:0,witnessUtxo:{script:tree.pkScript,amount:1000n},tapLeafScript:[tree.leaves[0]!]});ark.addOutput({script:tree.pkScript,amount:2000n});
- const signing={status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};
- let posted=false,signedAt=0,polls=0,signingRequested=false,firstPollSeen!:()=>void,signPosted!:()=>void;
+ let posted=false,signedAt=0,polls=0,signingRequested=false,firstPollSeen!:()=>void,signPosted!:()=>void,signing:ReturnType<typeof signingRequest>|undefined;
  const firstPoll=new Promise<void>(resolve=>{firstPollSeen=resolve;}),signed=new Promise<void>(resolve=>{signPosted=resolve;});
  try{
   clearTimeout((wallet as any).timer);t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
-  wallet.api=(async(path:string)=>{
+  wallet.api=(async(path:string,body?:any)=>{
    if(path.startsWith('/batches'))return {total:0,batches:[]};
-   if(path==='/spends'){posted=true;return {};}
+   if(path==='/spends'){posted=true;signing=signingRequest(coin,tree,BigInt(body.publics[0]));return {};}
    if(path.endsWith('/sign')){signedAt=Date.now();signPosted();return {};}
    if(!posted)throw missing();
    polls++;firstPollSeen();

@@ -1,5 +1,6 @@
-import {Transaction,type Identity} from '@arkade-os/sdk';
+import {EmulatorPacket,Extension,Transaction,type Identity} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
+import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
@@ -63,12 +64,29 @@ export function bornAtFor(storage:Pick<Storage,'getItem'|'setItem'|'removeItem'>
 export const pickNote=<N extends OwnedNote>(notes:N[],amount:bigint,inFlight:ReadonlySet<bigint>):N|undefined=>
  notes.filter(n=>!inFlight.has(n.nullifier)&&n.amount>=amount).sort((a,b)=>a.amount<b.amount?-1:a.amount>b.amount?1:0)[0];
 
+/** Each slot's statement, from the pool head's witness: 8 batch-proof items, then 15 per slot (8 proof items, 7 publics). */
+export function batchStatements(ark:Transaction):bigint[]{
+ let items:Uint8Array[]|undefined,cause:unknown;
+ try{
+  const packet=Extension.fromTx(ark).getPacketByType(EmulatorPacket.PACKET_TYPE);
+  const witness=packet&&EmulatorPacket.fromBytes(packet.serialize()).entries.find(e=>e.vin===0)?.witness;
+  if(witness)items=RawWitness.decode(witness);
+ }catch(error){cause=error;}
+ const slots=items?(items.length-8)/15:0;
+ if(!items||!Number.isInteger(slots)||slots<1)throw new Error('The batch\'s pool-head witness cannot be read; not signing.',{cause});
+ // rollupWitness writes slots last to first; a membership check does not depend on the order.
+ const pubs=Array.from({length:slots},(_,i)=>items![8+i*15+8]!);
+ return pubs.filter(n=>!(n.length&&n[n.length-1]!&0x80)).map(n=>n.reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n));
+}
+
 /** Batch inputs spend checkpoint outputs, so the pool head is checkpoint 0's input and our coin is our checkpoint's. */
-export function checkSigningRequest(request:SpendStatus,coin:{txid:string;vout:number},poolScript:string){
+// The covenant binds deposit coins to legs only in total, so a batch without our slot could fund another deposit; our signature covers the witness.
+export function checkSigningRequest(request:SpendStatus,coin:{txid:string;vout:number},poolScript:string,statement:bigint){
  const ark=Transaction.fromPSBT(base64.decode(request.arkTx!)),head=Transaction.fromPSBT(base64.decode(request.checkpoints![0]!)),mine=Transaction.fromPSBT(base64.decode(request.checkpoint!));
  const headInput=head.getInput(0),spent=mine.getInput(0),vin=request.vin!;
  if(!headInput.witnessUtxo||hex.encode(headInput.witnessUtxo.script)!==poolScript||hex.encode(ark.getInput(0).txid!)!==head.id)throw new Error('The batch does not spend the pool head first; not signing.');
  if(hex.encode(spent.txid!)!==coin.txid||spent.index!==coin.vout||request.checkpoints![vin]!==request.checkpoint||vin>=ark.inputsLength||hex.encode(ark.getInput(vin).txid!)!==mine.id)throw new Error('The batch does not spend this deposit coin at its input; not signing.');
+ if(!batchStatements(ark).includes(statement))throw new Error('The batch does not carry this deposit; not signing.');
 }
 
 export async function signDeposit(identity:Identity,request:SpendStatus){

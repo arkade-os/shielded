@@ -64,7 +64,7 @@ async function submit(built:EpochBuiltSpend,coin?:{txid:string;vout:number;tapTr
  await api('/spends',epochTransferBody(id,built,proof,coin?{coin}:{}));
  const done=await waitForSpend(id,async request=>{
   if(!coin)throw new Error('The pool asked to sign a spend that has no deposit.');
-  checkSigningRequest(request,coin,status.pool!.script);await api(`/spends/${id}/sign`,await signDeposit(identity,request));
+  checkSigningRequest(request,coin,status.pool!.script,built.witness.publicSignals[0]!);await api(`/spends/${id}/sign`,await signDeposit(identity,request));
  },api,1000,30*60_000);
  if(done.status!=='included')throw new Error(`Spend ${id} was ${done.status}: ${done.reason??''}`);
  steps.push({batch:done.batch!,proveMs:proved-t,waitMs:Date.now()-proved});
