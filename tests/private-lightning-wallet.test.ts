@@ -765,8 +765,22 @@ test('a tab also watches the payout of a swap its sibling started later and that
   const sibling=await createPrivateLightning(options),q=await sibling.quote({to:'invoice'});f.failAccept();await assert.rejects(sibling.accept(q),/lost acceptance response/);await sibling[Symbol.asyncDispose]();
   const key=hex.encode(await root.xOnlyPublicKey()),[artifact]=await journal.artifacts(key,pool);artifact!.state='ended';await journal.updateArtifact(key,pool,artifact!);
   const watched:string[]=[];t.mock.method(await f.base.getContractManager(),'setContractWatchState',async(script:string)=>{watched.push(script);});
-  t.mock.timers.tick(20_000);await flushTasks();
-  assert.ok(watched.includes(artifact!.script!));assert.equal(f.funded.length,0,'an ended swap is watched, not driven');
+  const starts=f.starts.length;t.mock.timers.tick(20_000);await flushTasks();
+  assert.ok(watched.includes(artifact!.script!));assert.equal(f.starts.length,starts);assert.equal(f.funded.length,0,'an ended swap is watched, not driven');
+ }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
+});
+
+test('a payout watch that fails is reported once and retried, so the swap is still taken over',async t=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],options={wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:(error:Error)=>errors.push(error)};
+ t.mock.timers.enable({apis:['setTimeout']});
+ const tab=await createPrivateLightning(options);
+ try{
+  const sibling=await createPrivateLightning(options),q=await sibling.quote({to:'invoice'});f.failAccept();await assert.rejects(sibling.accept(q),/lost acceptance response/);await sibling[Symbol.asyncDispose]();
+  const [artifact]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),pool);let failures=2;
+  t.mock.method(await f.base.getContractManager(),'setContractWatchState',async()=>{if(failures-->0)throw new Error('watch unavailable');});
+  const starts=f.starts.length;
+  for(let i=0;i<3;i++){t.mock.timers.tick(20_000);await flushTasks();}
+  assert.equal(errors.filter(e=>e.message==='watch unavailable').length,1);assert.ok(f.starts.length>starts,'the swap is taken over once its watch is in place');assert.ok(f.live.has(`shielded-lightning-${await lightningOwner(f.base)}-${pool}-${artifact!.id}`));
  }finally{await tab[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
 
