@@ -4,15 +4,16 @@ import {mkdirSync,mkdtempSync,readdirSync,readFileSync,rmSync,writeFileSync} fro
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test,type TestContext} from 'node:test';
-import {asset,CSVMultisigTapscript,Extension,MultisigTapscript,scriptFromTapLeafScript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
+import {asset,CSVMultisigTapscript,EmulatorPacket,Extension,MultisigTapscript,scriptFromTapLeafScript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
+import {RawWitness} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
-import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
+import {buildRollupBatchTx,rollupEpochPoolTree,rollupPublicItems,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
 import {readEpochBatchTx} from '../src/rollup/external.ts';
@@ -44,11 +45,12 @@ const checkpoint=CSVMultisigTapscript.encode({pubkeys:[server],timelock:{type:'s
 const tokenPacket=asset.Packet.create([asset.AssetGroup.create(asset.AssetId.fromString(token),null,[asset.AssetInput.create(0,1n)],[asset.AssetOutput.create(0,1n)],[])]);
 const wire=(built:ReturnType<typeof buildRollupBatchTx>):StockWireRequest=>({arkTx:base64.encode(built.arkTx.toPSBT()),checkpoints:built.checkpoints.map(tx=>base64.encode(tx.toPSBT()))});
 /** The fixture's real recover batch, built in TypeScript on a head that carries its old packet, spent through `leaf`. */
-const fixtureRecover=(leaf:Uint8Array)=>{
+const fixtureRecover=(leaf:Uint8Array,publics=fixture.slots[0]!.publicSignals.map(BigInt))=>{
  const parent=offlineNativeFixture([{script:pool.tree.pkScript,amount:100_330n}],[tokenPacket,new UnknownPacket(ROLLUP_STATE_PACKET,hex.decode(fixture.oldPacket))]),[slot]=fixture.slots;
  return buildRollupBatchTx({kind:'recover',head:{txid:parent.id,vout:0,value:100_330,sourceTx:parent.toBytes(),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(leaf))},deposits:[],legs:[{deposit:0n,withdraw:0n,asset:false}],token,leaves,
-  witness:rollupWitness(fixture.batch.proof,[{proof:slot!.proof,publics:slot!.publicSignals.map(BigInt)}]),newPacket:hex.decode(fixture.newPacket),checkpoint});
+  witness:rollupWitness(fixture.batch.proof,[{proof:slot!.proof,publics}]),newPacket:hex.decode(fixture.newPacket),checkpoint});
 };
+const pastField=([pub,nf0,nf1,...rest]:bigint[])=>[pub!,nf0!+ROLLUP_FIELD,nf1!+ROLLUP_FIELD,...rest];
 
 const proof:SnarkProof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['1','2','1']};
 type Spend=Omit<RollupEpochSpend,'receivedAt'>;
@@ -180,6 +182,16 @@ test('a recover batch built in TypeScript is accepted by the real recover leaf',
  assert.equal(accepted.ok,true,accepted.error);
  const misrouted=await executeVmBinary(DEFAULT_VM_BINARY,wire(fixtureRecover(pool.batch)));
  assert.equal(misrouted.ok,false,'the same batch spent through the spend leaf is refused');
+});
+
+test('the real recover leaf accepts nullifiers encoded past the field, not pub, and the batch reads back canonical',async()=>{
+ const publics=fixture.slots[0]!.publicSignals.map(BigInt),built=fixtureRecover(pool.batchRecover,pastField(publics));
+ const accepted=await executeVmBinary(DEFAULT_VM_BINARY,wire(built));
+ assert.equal(accepted.ok,true,accepted.error);
+ const facts=readEpochBatchTx(built.arkTx,leaves);
+ assert.deepEqual([facts.publics,facts.nullifiers],[[publics],[[publics[1]]]]);
+ const shiftedPub=await executeVmBinary(DEFAULT_VM_BINARY,wire(fixtureRecover(pool.batchRecover,[publics[0]!+ROLLUP_FIELD,...publics.slice(1)])));
+ assert.equal(shiftedPub.ok,false,'pub reaches OP_ECMUL unreduced, so it is read as is');
 });
 
 test('admission refuses every recover submission the policy forbids',async t=>{
@@ -374,6 +386,21 @@ test('a followed batch reproduces the state the transaction committed to, for al
  assert.deepEqual([withRecords.state.commitment(),chainOnly.state.commitment()],[a.state.commitment(),a.state.commitment()]);
  const {tx:joinTx}=landedTx(w,1);
  assert.deepEqual(readEpochBatchTx(joinTx,leaves).nullifiers,recordAt(w,1).slots.map(s=>s.nullifiers.map(BigInt)));
+});
+
+test('a batch carrying nullifiers past the field is followed chain-only to the same state, not refused as out of range',async t=>{
+ const w=await world(2),a=await w.open(t);
+ await land(a,'spend',[fastSpend(a.state)]);
+ const {tx,checkpoints}=landedTx(w,0),vout=[...Array(tx.outputsLength).keys()].find(i=>Extension.isExtension(tx.getOutput(i).script!))!;
+ const packets=Extension.fromTx(tx).getPackets().map(p=>p.type()!==EmulatorPacket.PACKET_TYPE?p:EmulatorPacket.create(EmulatorPacket.fromBytes(p.serialize()).entries.map(e=>{
+  if(e.vin!==0)return e;
+  const items=RawWitness.decode(e.witness!);items.splice(16,7,...rollupPublicItems(pastField(readEpochBatchTx(tx,leaves).publics.at(-1)!)));
+  return {...e,witness:RawWitness.encode(items)};
+ })));
+ tx.updateOutput(vout,{script:Extension.create([...packets]).txOut().script});
+ const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-past-field-'))});
+ assert.deepEqual(await b.follow({tx,checkpoints,at:1}),{batch:0,txid:tx.id});
+ assert.equal(b.state.commitment(),a.state.commitment());
 });
 
 test('following the batch that ends an epoch empties the padding queue at once',async t=>{
