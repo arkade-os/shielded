@@ -411,7 +411,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     state.applyFromChain(facts.kind,facts.nullifiers,facts.noteBlockRoot);
     if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
-    archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));
+    // As the batch path's own undoLast does: a commit that does not land must leave no batch applied above the journal.
+    try{archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));}
+    catch(error){state.undoLast();throw error;}
     lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
     return {batch:archive.batches-1,txid:tx.id};
