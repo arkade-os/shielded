@@ -9,6 +9,7 @@ import {base64,hex} from '@scure/base';
 import {randomField} from '../packages/protocol/src/rollup/account.ts';
 import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
+import {chainOnly} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
@@ -259,6 +260,30 @@ test('/external waits for the batch in flight, then follows the winner though th
  release();
  assert.deepEqual(await followed,{batch:0,txid:winner});
  assert.deepEqual([order,service.status().pool!.batches],[['batch','external'],1],'the follow took its turn after the tick, though the submitted batch was unresolved');
+ service.close();
+});
+
+test('/external fills in a batch it followed chain-only, and /batches then serves the full record',async t=>{
+ const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-enriched-');
+ (await ready(net,directory,keys,'64')).close();
+ const saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8')),leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(directory,'spec.json')),stub={prove:async()=>proof};
+ const published=scratch('rollup-epoch-publisher-');
+ const other=await openRollupEpochOperator({directory:published,epochLen:64,genesis:saved.archive,leaves,token,serverKey:hex.decode(serverKey),emulatorKey:hex.decode(emulatorKey),exitDelay,checkpoint,hash,
+  pin:rollupEpochPin({leaves,manifest:readFileSync(join(directory,'keys','manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey,emulatorKey}),
+  clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},transport:net.transport,signDeposits:async()=>undefined,verify:async()=>true,batchWaitMs:0});
+ t.after(()=>other.close());
+ await other.submit(epochSpend(deposit(other.state,0n)));
+ other.addPadding(Array.from({length:BATCH_SLOTS-1},()=>({...epochSpend(deposit(other.state,0n)) as object,receivedAt:Infinity}) as never));
+ assert.ok('txid' in (await other.tick())!);
+ const winner=net.landed.at(-1)!.id,record=JSON.parse(readFileSync(join(published,'batches','0.json'),'utf8')) as RollupEpochRecord;
+ const service=await ready(net,directory,keys);
+ assert.deepEqual(await service.external(winner),{batch:0,txid:winner},'followed chain-only from the transaction alone');
+ assert.equal(chainOnly(batchesOf(service,0,1)[0]!),true);
+ assert.deepEqual(await service.external(winner,record.slots as never),{batch:0,txid:winner},'its real slots fill the record in');
+ const served=batchesOf(service,0,1)[0]!;
+ assert.deepEqual([chainOnly(served),served.slots.map(s=>s.commitments)],[false,record.slots.map(s=>s.commitments)],'/batches serves the full record');
+ assert.deepEqual(decodeEpochScan(base64.decode(service.scan(0,1).data),0,64).map(e=>e.root),[BigInt(served.noteBlockRoot)],'/scan still checks that block root against the live note tree');
+ assert.deepEqual([service.status().pool!.batches,service.status().pool!.root],[1,String(other.state.latestRoot())],'nothing was followed twice, and the state is the one the batch committed to');
  service.close();
 });
 

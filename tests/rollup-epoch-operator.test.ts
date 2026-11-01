@@ -5,14 +5,17 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test,type TestContext} from 'node:test';
 import {asset,CSVMultisigTapscript,EmulatorPacket,Extension,MultisigTapscript,scriptFromTapLeafScript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
+import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
-import {EPOCH_DERIVED_FIELDS,epochBatchInput} from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
+import {chainOnly,EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
+import {EPOCH_DERIVED_FIELDS,epochBatchInput,epochTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import type {RollupEpochRecord,RollupEpochRecordSlot} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
+import {ROLLUP_RECORD_BYTES,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupPublicItems,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
@@ -88,7 +91,8 @@ async function world(epochLen:number){
 }
 type World=Awaited<ReturnType<typeof world>>;
 type Operator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
-const recordAt=(w:World,n:number)=>JSON.parse(readFileSync(join(w.dir,'batches',`${n}.json`),'utf8')) as RollupEpochRecord;
+const recordIn=(dir:string,n:number)=>JSON.parse(readFileSync(join(dir,'batches',`${n}.json`),'utf8')) as RollupEpochRecord;
+const recordAt=(w:World,n:number)=>recordIn(w.dir,n);
 const landedTx=(w:World,n:number)=>({tx:Transaction.fromPSBT(base64.decode(w.landed[n]!.arkTx)),checkpoints:w.landed[n]!.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)))});
 const acceptedOf=(s:EpochState)=>({acceptedRoot:s.latestRoot(),acceptedPrevNoteRoot:s.prevNoteRoot,acceptedEpoch:s.epoch,acceptedErCount:s.archive.count(),acceptedRsCount:s.recovered.count(),acceptedNullifiers:s.nullifiers.count()});
 
@@ -412,6 +416,84 @@ test('following the batch that ends an epoch empties the padding queue at once',
  await b.follow({...landedTx(w,1),at:1});
  assert.deepEqual([b.state.rotatesNext(),b.padding(),drops.flatMap(([ids])=>ids)],[true,0,pads.map(p=>p.id)]);
  for(const [,reason] of drops)assert.match(reason,/rotation/);
+});
+
+test('a batch followed chain-only is enriched by its real record, and a wallet syncing from scratch then finds the note it was paid',async t=>{
+ const w=await world(64),a=await w.open(t),keys={ask:11n,nk:13n,viewSecret:x25519.utils.randomSecretKey()};
+ const self=rollupRecipientOf(hash,keys.ask,keys.nk,keys.viewSecret);
+ const built=await epochTransfer(hash,{rPrev:a.state.nextAnchorRoot(),rCur:{epoch:a.state.epoch,root:a.state.latestRoot()},sel:[],ask:0n,nk:0n,self,request:{deposit:1000n}});
+ await land(a,'spend',[{id:'paid',slot:built.slot,publics:built.witness.publicSignals as unknown as Spend['publics'],proof,ciphertext:built.ciphertext,coin:w.coin(1)}]);
+ const dir=mkdtempSync(join(tmpdir(),'rollup-epoch-enrich-')),b=await w.open(t,{directory:dir}),{tx}=landedTx(w,0);
+ await b.follow({...landedTx(w,0),at:7});
+ const paid=async(record:RollupEpochRecord)=>{const account=EpochAccount.owning(hash,keys,{epochLen:64});await account.apply(record);return account.balance();};
+ const bare=recordIn(dir,0);
+ assert.deepEqual([chainOnly(bare),await paid(bare)],[true,0n],'the chain-only record hides the note the batch paid');
+ // Someone holding the commitments but not the note records fills the record in first, as a griefer would.
+ assert.deepEqual(await b.enrich(tx.id,recordAt(w,0).slots.map(({ciphertext:_c,...s})=>s)),{batch:0,txid:tx.id});
+ assert.deepEqual([chainOnly(recordIn(dir,0)),await paid(recordIn(dir,0))],[false,0n],'without its note records the record still hides the note');
+ assert.deepEqual(await b.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the note records are added afterwards, so nothing was locked');
+ const full=recordIn(dir,0);
+ assert.deepEqual([chainOnly(full),await paid(full)],[false,1000n],'the enriched record pays a wallet that syncs it from scratch');
+ assert.deepEqual([full.txid,full.at,full.kind,full.noteBlockRoot],[bare.txid,7,bare.kind,bare.noteBlockRoot]);
+ assert.deepEqual(full.slots.map(s=>s.publics),bare.slots.map(s=>s.publics),'every slot keeps the publics the transaction carries');
+ assert.deepEqual([b.state.commitment(),b.status().archive.batches],[a.state.commitment(),1],'enriching moves no state');
+ b.close();
+ assert.equal((await w.open(t,{directory:dir})).state.commitment(),a.state.commitment(),'the enriched record still replays to the commitment its head carries');
+});
+
+test('an enrichment that does not match the chain data its record holds is refused, and the record stays chain-only',async t=>{
+ const w=await world(64),a=await w.open(t);
+ for(let n=0;n<2;n++)await land(a,'spend',[fastSpend(a.state)]);
+ const dir=mkdtempSync(join(tmpdir(),'rollup-epoch-forged-')),b=await w.open(t,{directory:dir});
+ await b.follow({...landedTx(w,0),at:1});
+ await b.follow({...landedTx(w,1),slots:recordAt(w,1).slots,at:1});
+ const real=recordAt(w,0).slots,bare=recordIn(dir,0),[first,second]=[landedTx(w,0).tx.id,landedTx(w,1).tx.id];
+ const edit=(i:number,patch:Partial<RollupEpochRecordSlot>)=>real.map((s,n)=>n===i?{...s,...patch}:s);
+ const refused:[string,string,RollupEpochRecordSlot[],RegExp][]=[
+  ['commitments that do not rebuild the block root',first,edit(0,{commitments:[real[0]!.commitments[1]!,real[0]!.commitments[0]!]}),/block root/],
+  ['nullifiers the transaction does not carry',first,edit(0,{nullifiers:[String(BigInt(real[0]!.nullifiers[0]!)+1n)]}),/notes the transaction carries/],
+  ['a slot whose statement is not the one the transaction carries',first,edit(1,{anchor:String(BigInt(real[1]!.anchor)+1n)}),/statement/],
+  ['a ciphertext that does not match its digest',first,edit(0,{ciphertext:hex.encode(new Uint8Array(ROLLUP_RECORD_BYTES))}),/digest/],
+  ['fewer slots than the batch has',first,real.slice(1),/number of slots/],
+  ['a batch followed with every note record it has',second,recordAt(w,1).slots,/already carries every note record/],
+  ['a transaction this pool never followed','ff'.repeat(32),real,/holds no followed record/],
+ ];
+ for(const [label,txid,slots,reason] of refused)await assert.rejects(b.enrich(txid,slots),reason,label);
+ assert.deepEqual(recordIn(dir,0),bare,'no refusal wrote anything');
+ assert.deepEqual(await b.enrich(first,real),{batch:0,txid:first},'the record is still enrichable by its real slots');
+ await assert.rejects(b.enrich(first,real),/already carries every note record/,'an enrichment that adds nothing is refused');
+});
+
+test('a batch followed chain-only stays enrichable after a restart, however many batches follow it',async t=>{
+ const w=await world(64),a=await w.open(t);
+ for(let n=0;n<3;n++)await land(a,'spend',[fastSpend(a.state)]);
+ const dir=mkdtempSync(join(tmpdir(),'rollup-epoch-indexed-')),b=await w.open(t,{directory:dir});
+ await b.follow({...landedTx(w,0),at:1});
+ for(let n=1;n<3;n++)await b.follow({...landedTx(w,n),slots:recordAt(w,n).slots,at:1});
+ b.close();
+ const {tx}=landedTx(w,0),c=await w.open(t,{directory:dir}),index=()=>JSON.parse(readFileSync(join(dir,'chain-only.json'),'utf8'));
+ // These spends carry no note records, so the two batches followed with their records can still be filled in too.
+ const fillable=Object.fromEntries([0,1,2].map(n=>[landedTx(w,n).tx.id,n]));
+ assert.deepEqual(index(),fillable,'every followed batch that can still be filled in is indexed');
+ assert.deepEqual(await c.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the index survives the restart, so no scan of later records is needed');
+ assert.equal(chainOnly(recordIn(dir,0)),false);
+ c.close();writeFileSync(join(dir,'chain-only.json'),'{not json');
+ const warned=t.mock.method(console,'warn',()=>{});
+ assert.equal((await w.open(t,{directory:dir})).state.commitment(),a.state.commitment(),'a damaged index never keeps the operator from opening');
+ assert.ok(warned.mock.calls.some(call=>/Rebuilding .*chain-only\.json/.test(String(call.arguments[0]))));
+ assert.deepEqual(index(),fillable,'it is rebuilt from the committed records');
+});
+
+test('a recover batch followed chain-only is enriched by its one slot, with no archive file of its origin on disk',async t=>{
+ const w=await world(2),a=await w.open(t);
+ await history(w,a);
+ const dir=mkdtempSync(join(tmpdir(),'rollup-epoch-enrich-recover-')),b=await w.open(t,{directory:dir});
+ for(let n=0;n<KINDS.length;n++)await b.follow({...landedTx(w,n),at:1});
+ const {tx}=landedTx(w,4),real=recordAt(w,4).slots;
+ assert.deepEqual([recordAt(w,4).kind,real.length,real[0]!.origin],['recover',1,0]);
+ rmSync(join(dir,'nullifiers'),{recursive:true,force:true});
+ assert.deepEqual(await b.enrich(tx.id,real),{batch:4,txid:tx.id},'enrichment verifies statements, not state, so it reads no frozen set');
+ assert.deepEqual([chainOnly(recordIn(dir,4)),recordIn(dir,4).slots[0]!.origin],[false,undefined],'an origin the statement does not bind is not served');
 });
 
 test('readEpochBatchTx says so when it is handed genesis-3 leaves',()=>{
