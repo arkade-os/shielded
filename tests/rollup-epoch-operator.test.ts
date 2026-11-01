@@ -428,7 +428,10 @@ test('a batch followed chain-only is enriched by its real record, and a wallet s
  const paid=async(record:RollupEpochRecord)=>{const account=EpochAccount.owning(hash,keys,{epochLen:64});await account.apply(record);return account.balance();};
  const bare=recordIn(dir,0);
  assert.deepEqual([chainOnly(bare),await paid(bare)],[true,0n],'the chain-only record hides the note the batch paid');
- assert.deepEqual(await b.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id});
+ // Someone holding the commitments but not the note records fills the record in first, as a griefer would.
+ assert.deepEqual(await b.enrich(tx.id,recordAt(w,0).slots.map(({ciphertext:_c,...s})=>s)),{batch:0,txid:tx.id});
+ assert.deepEqual([chainOnly(recordIn(dir,0)),await paid(recordIn(dir,0))],[false,0n],'without its note records the record still hides the note');
+ assert.deepEqual(await b.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the note records are added afterwards, so nothing was locked');
  const full=recordIn(dir,0);
  assert.deepEqual([chainOnly(full),await paid(full)],[false,1000n],'the enriched record pays a wallet that syncs it from scratch');
  assert.deepEqual([full.txid,full.at,full.kind,full.noteBlockRoot],[bare.txid,7,bare.kind,bare.noteBlockRoot]);
@@ -452,13 +455,13 @@ test('an enrichment that does not match the chain data its record holds is refus
   ['a slot whose statement is not the one the transaction carries',first,edit(1,{anchor:String(BigInt(real[1]!.anchor)+1n)}),/statement/],
   ['a ciphertext that does not match its digest',first,edit(0,{ciphertext:hex.encode(new Uint8Array(ROLLUP_RECORD_BYTES))}),/digest/],
   ['fewer slots than the batch has',first,real.slice(1),/number of slots/],
-  ['a batch followed with its record',second,recordAt(w,1).slots,/did not follow transaction .* chain-only/],
-  ['a transaction this pool never followed','ff'.repeat(32),real,/did not follow transaction .* chain-only/],
+  ['a batch followed with every note record it has',second,recordAt(w,1).slots,/already carries every note record/],
+  ['a transaction this pool never followed','ff'.repeat(32),real,/holds no followed record/],
  ];
  for(const [label,txid,slots,reason] of refused)await assert.rejects(b.enrich(txid,slots),reason,label);
  assert.deepEqual(recordIn(dir,0),bare,'no refusal wrote anything');
  assert.deepEqual(await b.enrich(first,real),{batch:0,txid:first},'the record is still enrichable by its real slots');
- await assert.rejects(b.enrich(first,real),/already carries its full record/,'a record already filled in is never replaced');
+ await assert.rejects(b.enrich(first,real),/already carries every note record/,'an enrichment that adds nothing is refused');
 });
 
 test('a batch followed chain-only stays enrichable after a restart, however many batches follow it',async t=>{
@@ -468,14 +471,17 @@ test('a batch followed chain-only stays enrichable after a restart, however many
  await b.follow({...landedTx(w,0),at:1});
  for(let n=1;n<3;n++)await b.follow({...landedTx(w,n),slots:recordAt(w,n).slots,at:1});
  b.close();
- const {tx}=landedTx(w,0),c=await w.open(t,{directory:dir});
- assert.deepEqual(JSON.parse(readFileSync(join(dir,'chain-only.json'),'utf8')),{[tx.id]:0},'only the chain-only batch is indexed');
- assert.deepEqual(await c.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the chain-only index survives the restart, so no scan of later records is needed');
+ const {tx}=landedTx(w,0),c=await w.open(t,{directory:dir}),index=()=>JSON.parse(readFileSync(join(dir,'chain-only.json'),'utf8'));
+ // These spends carry no note records, so the two batches followed with their records can still be filled in too.
+ const fillable=Object.fromEntries([0,1,2].map(n=>[landedTx(w,n).tx.id,n]));
+ assert.deepEqual(index(),fillable,'every followed batch that can still be filled in is indexed');
+ assert.deepEqual(await c.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the index survives the restart, so no scan of later records is needed');
  assert.equal(chainOnly(recordIn(dir,0)),false);
  c.close();writeFileSync(join(dir,'chain-only.json'),'{not json');
  const warned=t.mock.method(console,'warn',()=>{});
  assert.equal((await w.open(t,{directory:dir})).state.commitment(),a.state.commitment(),'a damaged index never keeps the operator from opening');
- assert.ok(warned.mock.calls.some(call=>/Ignoring .*chain-only\.json/.test(String(call.arguments[0]))));
+ assert.ok(warned.mock.calls.some(call=>/Rebuilding .*chain-only\.json/.test(String(call.arguments[0]))));
+ assert.deepEqual(index(),fillable,'it is rebuilt from the committed records');
 });
 
 test('a recover batch followed chain-only is enriched by its one slot, with no archive file of its origin on disk',async t=>{
