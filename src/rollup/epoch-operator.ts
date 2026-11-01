@@ -428,7 +428,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    try{
     const found=(()=>{
      const {batches}=journal.status().archive;
-     for(let n=batches-1;n>=0&&n>batches-1-ENRICH_SCAN;n--){const record=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord;if(record.txid===txid)return {batch:n,record};}
+     for(let n=batches-1;n>=0&&n>batches-1-ENRICH_SCAN;n--){const raw=readFileSync(bodyPath(n),'utf8');if(!raw.includes(txid))continue;const record=JSON.parse(raw) as RollupEpochRecord;if(record.txid===txid)return {batch:n,record};}
      return undefined;
     })();
     if(!found)throw new Error(`None of the last ${ENRICH_SCAN} batch records carries transaction ${txid}, so this pool never followed it.`);
@@ -443,7 +443,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
      if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...slotOf(s),root:BigInt(s.anchor)})!==BigInt(chain.publics[0]!))throw new Error(`Slot ${i} does not match the statement the transaction carries.`);
      if(ciphertext&&(ciphertext.length!==ROLLUP_RECORD_BYTES||ctDigestOf(ciphertext)!==BigInt(s.ctDigest)))throw new Error(`Slot ${i}'s note record does not match its digest.`);
     });
-    const full:RollupEpochRecord={...record,slots:slots.map((s,i)=>({...s,publics:record.slots[i]!.publics}))};
+    // The statement binds neither rCur nor origin, so neither can be checked here, and neither is served.
+    const full:RollupEpochRecord={...record,slots:slots.map(({rCur:_r,origin:_o,...s},i)=>({...s,publics:record.slots[i]!.publics}))};
     writeSnapshot(bodyPath(batch),new TextEncoder().encode(JSON.stringify(full)));
     return {batch,txid};
    }finally{busy=false;}

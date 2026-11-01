@@ -469,7 +469,7 @@ test('a recover batch followed chain-only is enriched by its one slot, with no a
  assert.deepEqual([recordAt(w,4).kind,real.length,real[0]!.origin],['recover',1,0]);
  rmSync(join(dir,'nullifiers'),{recursive:true,force:true});
  assert.deepEqual(await b.enrich(tx.id,real),{batch:4,txid:tx.id},'enrichment verifies statements, not state, so it reads no frozen set');
- assert.deepEqual([chainOnly(recordIn(dir,4)),recordIn(dir,4).slots[0]!.origin],[false,0]);
+ assert.deepEqual([chainOnly(recordIn(dir,4)),recordIn(dir,4).slots[0]!.origin],[false,undefined],'an origin the statement does not bind is not served');
 });
 
 test('readEpochBatchTx says so when it is handed genesis-3 leaves',()=>{
