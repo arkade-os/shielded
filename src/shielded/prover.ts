@@ -1,3 +1,4 @@
+import {hex} from '@scure/base';
 import {toCircuitInput} from '../../packages/protocol/src/rollup/client.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {epochCircuitUrls,epochProvingUrls} from './epoch-pool.ts';
@@ -7,17 +8,26 @@ import type {ShieldedProver} from './wallet.ts';
 const files=new Map<string,Promise<Uint8Array>>();
 const cooldowns=new Map<string,number>();
 const cooldownError=(url:string,until:number)=>new Error(`The proving file ${url} is temporarily unavailable. Retry in ${Math.ceil((until-Date.now())/1000)} seconds.`);
+/** A file's `?v=` is the SHA-256 the pool's manifest lists for it; the bytes must match it, since the file runs on the spend's secrets. */
 export function loadProvingFile(url:string,priority:'high'|'low'|'auto'='auto'):Promise<Uint8Array>{
  const cached=files.get(url);if(cached)return cached;
+ const digest=new URL(url,'http://pool.invalid').searchParams.get('v');
+ if(!digest||!/^[0-9a-f]{64}$/.test(digest))return Promise.reject(new Error(`The proving file ${url} names no digest to check it against.`));
  const cooldown=cooldowns.get(url);if(cooldown&&cooldown>Date.now())return Promise.reject(cooldownError(url,cooldown));
  cooldowns.delete(url);
  const loading=(async()=>{
-  for(let attempt=0;;attempt++){
-   let response:Response|undefined,failure:unknown;
+  for(let attempt=0,reload=false;;attempt++){
+   let response:Response|undefined,failure:unknown,bytes:Uint8Array<ArrayBuffer>|undefined;
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(new Error(`The proving file ${url} download timed out.`)),120_000);
-   try{response=await fetch(url,{priority,signal:controller.signal});if(response.ok)return new Uint8Array(await response.arrayBuffer());}
+   try{response=await fetch(url,{priority,signal:controller.signal,...(reload?{cache:'reload' as const}:{})});if(response.ok)bytes=new Uint8Array(await response.arrayBuffer());}
    catch(error){failure=error;}
    finally{clearTimeout(timer);}
+   if(bytes){
+    if(hex.encode(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)))===digest)return bytes;
+    if(reload)throw new Error(`The proving file ${url} does not match its published digest; not proving with it.`);
+    // The file is served immutable for a year, so a bad copy can sit in the HTTP cache; the one retry goes past it and replaces it.
+    reload=true;continue;
+   }
    if(response&&!response.ok){
     failure=new Error(`The proving file ${url} answered HTTP ${response.status}.${response.status===404?' This page may be out of date; reload it.':''}`);
     if(response.status!==429&&response.status<500)throw failure;

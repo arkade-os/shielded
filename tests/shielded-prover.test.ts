@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {setImmediate} from 'node:timers/promises';
 import {after,test} from 'node:test';
@@ -13,7 +14,10 @@ const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefi
 const wasm=readFileSync('tests/fixtures/rollup-toy/covenant-client.wasm'),zkey=readFileSync('tests/fixtures/rollup-toy/covenant-client.zkey');
 const input={pub:49n,nf0:11n,nf1:22n,deposit:33n,withdraw:44n,boundaryAsset:55n,destination:66n,w:7n};
 const built={witness:{input,slot:{nullifiers:[11n]}},slot:{nullifiers:[11n]}} as unknown as EpochBuiltSpend;
-const status=(id:string)=>({proving:{spend:{wasm:id,zkey:id}}}) as RollupPoolStatus;
+const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex'),digests={wasm:sha(wasm),zkey:sha(zkey)};
+const pool={proving:{spend:digests,join:digests}} as RollupPoolStatus;
+// Downloads are cached by URL for the whole process, so each test reads from its own origin.
+const at=(id:string)=>`https://${id}.test`,file=(path:string)=>`${path}?v=${path.endsWith('.zkey')?digests.zkey:digests.wasm}`;
 after(releaseProver);
 
 test('prefetch never consumes or caches an HTTP error body',async t=>{
@@ -24,9 +28,9 @@ test('prefetch never consumes or caches an HTTP error body',async t=>{
   if(count===1){const limited=new Response('<html>blocked</html>',{status:429,headers:{'Retry-After':'9'}});t.mock.method(limited,'arrayBuffer',async()=>{htmlReads++;return new ArrayBuffer(0);});return limited;}
   return new Response(key.includes('.wasm')?wasm:zkey);
  });
- const pool=status('prefetch-limited');prover.prefetchProvingKeys(pool);await flush();assert.equal(htmlReads,0);
- prover.prefetchProvingKeys(pool);assert.deepEqual([...calls.values()],[1,1]);t.mock.timers.tick(9000);await flush();
- assert.deepEqual([...calls.values()],[2,2]);prover.prefetchProvingKeys(pool);await flush();assert.deepEqual([...calls.values()],[2,2]);
+ const origin=at('prefetch-limited');prover.prefetchProvingKeys(pool,'spend',origin);await flush();assert.equal(htmlReads,0);
+ prover.prefetchProvingKeys(pool,'spend',origin);assert.deepEqual([...calls.values()],[1,1]);t.mock.timers.tick(9000);await flush();
+ assert.deepEqual([...calls.values()],[2,2]);prover.prefetchProvingKeys(pool,'spend',origin);await flush();assert.deepEqual([...calls.values()],[2,2]);
 });
 
 test('proving waits out a 429 HTML response and supplies only successful file bytes to snarkjs',async t=>{
@@ -39,7 +43,7 @@ test('proving waits out a 429 HTML response and supplies only successful file by
   }
   return new Response(zkey);
  });
- const pending=outcome(prover.browserProver(()=>status('limited')).prove(built,'spend'));await flush();
+ const pending=outcome(snarkjsProver({status:()=>pool,origin:at('limited')}).prove(built,'spend'));await flush();
  assert.equal(wasmCalls,1);assert.equal(htmlReads,0);t.mock.timers.tick(8999);await flush();assert.equal(wasmCalls,1);
  t.mock.timers.tick(1);await flush();t.mock.timers.reset();
  const result=await pending;assert.equal(result.error,undefined);assert.ok(result.value);assert.deepEqual(calls,[1_000_000,1_009_000]);assert.equal(htmlReads,0);
@@ -50,16 +54,15 @@ test('proving waits out a 429 HTML response and supplies only successful file by
 test('an in-flight successful prefetch is reused by proving without another download',async t=>{
  let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),calls:string[]=[];
  t.mock.method(globalThis,'fetch',async(url:unknown)=>{calls.push(String(url));await gate;return new Response(String(url).includes('.wasm')?wasm:zkey);});
- const pool=status('prefetched');prover.prefetchProvingKeys(pool);await flush();assert.equal(calls.length,2);
- const pending=outcome(prover.browserProver(()=>pool).prove(built,'spend'));await flush();assert.equal(calls.length,2);release();
+ const origin=at('prefetched'),wallet=snarkjsProver({status:()=>pool,origin});prover.prefetchProvingKeys(pool,'spend',origin);await flush();assert.equal(calls.length,2);
+ const pending=outcome(wallet.prove(built,'spend'));await flush();assert.equal(calls.length,2);release();
  const result=await pending;assert.equal(result.error,undefined);assert.ok(result.value);assert.equal(calls.length,2);
- prover.prefetchProvingKeys(pool);await prover.browserProver(()=>pool).prove(built,'spend');assert.equal(calls.length,2);
+ prover.prefetchProvingKeys(pool,'spend',origin);await wallet.prove(built,'spend');assert.equal(calls.length,2);
 });
 
 test('a prover for another origin downloads its proving files from that origin',async t=>{
  const calls:string[]=[];
  t.mock.method(globalThis,'fetch',async(url:unknown)=>{calls.push(String(url));return new Response(String(url).includes('.wasm')?wasm:zkey);});
- const pool=status('remote-origin');
  assert.ok(await snarkjsProver({status:()=>pool,origin:'https://pool.example'}).prove(built,'spend'));
  prefetchProvingKeys(pool,'spend','https://pool.example');await flush();
  assert.equal(calls.length,2);assert.ok(calls.every(url=>url.startsWith('https://pool.example/api/rollup/proving/epoch-spend.')),calls.join(' '));
@@ -68,22 +71,31 @@ test('a prover for another origin downloads its proving files from that origin',
 test('a join flag store that throws reads as not ready and never discards a finished join proof',async t=>{
  t.mock.method(globalThis,'fetch',async(url:unknown)=>new Response(String(url).includes('.wasm')?wasm:zkey));
  const joined={witness:{input,slot:{nullifiers:[11n,22n]}},slot:{nullifiers:[11n,22n]}} as unknown as EpochBuiltSpend;
- const broken=snarkjsProver({status:()=>({proving:{spend:{wasm:'flag',zkey:'flag'},join:{wasm:'flag',zkey:'flag'}}}) as RollupPoolStatus,joinReady:{get:()=>{throw new Error('storage disabled');},set:()=>{throw new Error('quota exceeded');}}});
+ const broken=snarkjsProver({status:()=>pool,origin:at('flag'),joinReady:{get:()=>{throw new Error('storage disabled');},set:()=>{throw new Error('quota exceeded');}}});
  assert.equal(broken.joinReady!(),false);assert.ok(await broken.prove(joined,'join'));
  await assert.rejects(snarkjsProver({status:()=>({}) as RollupPoolStatus}).prove(built,'spend'),/not published its proving keys/);
 });
 
 test('definitive HTTP refusals are not retried or cached',async t=>{
  let calls=0;t.mock.method(globalThis,'fetch',async()=>++calls===1?new Response('missing',{status:404}):new Response(wasm));
- await assert.rejects(prover.loadProvingFile('/missing.wasm'),/404/);assert.equal(calls,1);
- assert.deepEqual(await prover.loadProvingFile('/missing.wasm'),new Uint8Array(wasm));assert.equal(calls,2);
+ await assert.rejects(prover.loadProvingFile(file('/missing.wasm')),/404/);assert.equal(calls,1);
+ assert.deepEqual(await prover.loadProvingFile(file('/missing.wasm')),new Uint8Array(wasm));assert.equal(calls,2);
+});
+
+test('a proving file that does not match its digest is fetched once more past the HTTP cache, then refused and not kept, and a bare URL is never fetched',async t=>{
+ const modes:(RequestCache|undefined)[]=[];let serve:(typeof wasm)[]=[];
+ t.mock.method(globalThis,'fetch',async(_url:unknown,init?:RequestInit)=>{modes.push(init?.cache);return new Response(serve.shift()!);});
+ serve=[zkey,wasm];assert.deepEqual(await prover.loadProvingFile(file('/stale-cache.wasm')),new Uint8Array(wasm));assert.deepEqual(modes,[undefined,'reload']);
+ serve=[zkey,zkey];await assert.rejects(prover.loadProvingFile(file('/tampered.wasm')),/does not match its published digest/);assert.deepEqual(modes.slice(2),[undefined,'reload']);
+ serve=[wasm];assert.deepEqual(await prover.loadProvingFile(file('/tampered.wasm')),new Uint8Array(wasm));assert.equal(modes.length,5);
+ await assert.rejects(prover.loadProvingFile('/bare.wasm'),/names no digest/);assert.equal(modes.length,5);
 });
 
 test('a 404 from a proving file tells a stale page to reload, and an outage does not',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
  t.mock.method(globalThis,'fetch',async(url:unknown)=>new Response('no',{status:String(url).includes('stale')?404:503}));
- await assert.rejects(prover.loadProvingFile('/api/rollup/proving/spend.wasm?stale'),/HTTP 404\..*reload/i);
- const outage=outcome(prover.loadProvingFile('/outage-503.wasm'));await flush();
+ await assert.rejects(prover.loadProvingFile(file('/api/rollup/proving/stale-spend.wasm')),/HTTP 404\..*reload/i);
+ const outage=outcome(prover.loadProvingFile(file('/outage-503.wasm')));await flush();
  for(const delay of [1000,2000,4000,8000]){t.mock.timers.tick(delay);await flush();}
  const {error}=await outage;assert.match(String(error),/HTTP 503/);assert.doesNotMatch(String(error),/reload/i);
 });
@@ -91,16 +103,16 @@ test('a 404 from a proving file tells a stale page to reload, and an outage does
 test('network and server retries are bounded and an exhausted download can be fetched again',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
  let calls=0,healthy=false;t.mock.method(globalThis,'fetch',async()=>{calls++;if(healthy)return new Response(wasm);if(calls%2)throw new TypeError('Failed to fetch');return new Response('outage',{status:503});});
- const pending=outcome(prover.loadProvingFile('/outage.wasm'));await flush();
+ const pending=outcome(prover.loadProvingFile(file('/outage.wasm')));await flush();
  for(const delay of [1000,2000,4000,8000]){t.mock.timers.tick(delay-1);await flush();const before=calls;t.mock.timers.tick(1);await flush();assert.equal(calls,before+1);}
  const result=await pending;assert.ok(result.error);assert.equal(calls,5);healthy=true;
- assert.deepEqual(await prover.loadProvingFile('/outage.wasm'),new Uint8Array(wasm));assert.equal(calls,6);
+ assert.deepEqual(await prover.loadProvingFile(file('/outage.wasm')),new Uint8Array(wasm));assert.equal(calls,6);
 });
 
 test('Retry-After HTTP dates are honored before another file request',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0);
  let calls=0;t.mock.method(globalThis,'fetch',async()=>++calls===1?new Response('busy',{status:503,headers:{'Retry-After':new Date(1_010_000).toUTCString()}}):new Response(zkey));
- const pending=outcome(prover.loadProvingFile('/dated.zkey'));await flush();t.mock.timers.tick(9999);await flush();assert.equal(calls,1);
+ const pending=outcome(prover.loadProvingFile(file('/dated.zkey')));await flush();t.mock.timers.tick(9999);await flush();assert.equal(calls,1);
  t.mock.timers.tick(1);await flush();assert.equal((await pending).error,undefined);assert.equal(calls,2);
 });
 
@@ -111,13 +123,13 @@ for(const dated of [false,true])test(`a long Retry-After ${dated?'date':'delay'}
   if(!String(url).includes('.wasm'))return new Response(zkey);
   return ++calls===1?new Response('limited',{status:429,headers:{'Retry-After':dated?new Date(4_600_000).toUTCString():'3600'}}):new Response(wasm);
  });
- const pool=status(`long-cooldown-${dated}`),wallet=prover.browserProver(()=>pool);
+ const origin=at(`long-cooldown-${dated}`),wallet=snarkjsProver({status:()=>pool,origin});
  const pending=outcome(wallet.prove(built,'spend'));void pending.then(()=>{settled=true;});await flush();
  assert.equal(settled,true,'a long cooldown must reject without awaiting its timer');assert.match(String((await pending).error),/retry.*3600.*seconds/i);assert.equal(calls,1);
- prover.prefetchProvingKeys(pool);await assert.rejects(wallet.prove(built,'spend'),/retry/i);assert.equal(calls,1);
+ prover.prefetchProvingKeys(pool,'spend',origin);await assert.rejects(wallet.prove(built,'spend'),/retry/i);assert.equal(calls,1);
  t.mock.timers.tick(3_599_999);await assert.rejects(wallet.prove(built,'spend'),/retry/i);assert.equal(calls,1);
  t.mock.timers.tick(1);const recovered=wallet.prove(built,'spend');await flush();assert.equal(calls,2);t.mock.timers.reset();assert.ok(await recovered);
- prover.prefetchProvingKeys(pool);assert.ok(await wallet.prove(built,'spend'));assert.equal(calls,2);
+ prover.prefetchProvingKeys(pool,'spend',origin);assert.ok(await wallet.prove(built,'spend'));assert.equal(calls,2);
 });
 
 for(const body of [false,true])test(`a stalled ${body?'response body':'fetch'} aborts and retries one shared download`,async t=>{
@@ -129,7 +141,7 @@ for(const body of [false,true])test(`a stalled ${body?'response body':'fetch'} a
   if(!body){await stalled();return new Response(wasm);}
   const response=new Response(wasm);t.mock.method(response,'arrayBuffer',stalled);return response;
  });
- const url=`/stalled-${body}.wasm`,pending=prover.loadProvingFile(url);assert.equal(prover.loadProvingFile(url),pending);await flush();
+ const url=file(`/stalled-${body}.wasm`),pending=prover.loadProvingFile(url);assert.equal(prover.loadProvingFile(url),pending);await flush();
  t.mock.timers.tick(119_999);await flush();assert.equal(aborts,0);assert.equal(calls,1);
  t.mock.timers.tick(1);await flush();assert.equal(aborts,1);assert.equal(calls,1);assert.equal(prover.loadProvingFile(url),pending);
  t.mock.timers.tick(999);await flush();assert.equal(calls,1);t.mock.timers.tick(1);await flush();
@@ -144,10 +156,10 @@ test('exhausted download timeouts evict the failed promise so a later request ca
   calls++;if(healthy)return new Response(wasm);
   return new Promise<Response>((_,reject)=>{init?.signal?.addEventListener('abort',()=>reject(init.signal!.reason),{once:true});});
  });
- let settled=false;const pending=outcome(prover.loadProvingFile('/timeouts.wasm'));void pending.then(()=>{settled=true;});await flush();
+ let settled=false;const pending=outcome(prover.loadProvingFile(file('/timeouts.wasm')));void pending.then(()=>{settled=true;});await flush();
  for(let attempt=0;attempt<5;attempt++){
   t.mock.timers.tick(120_000);await flush();if(attempt<4){t.mock.timers.tick(1000*2**attempt);await flush();}
  }
  assert.equal(settled,true);assert.equal(calls,5);assert.match(String((await pending).error),/timed out/i);
- healthy=true;assert.deepEqual(await prover.loadProvingFile('/timeouts.wasm'),new Uint8Array(wasm));assert.equal(calls,6);
+ healthy=true;assert.deepEqual(await prover.loadProvingFile(file('/timeouts.wasm')),new Uint8Array(wasm));assert.equal(calls,6);
 });

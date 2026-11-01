@@ -1,5 +1,5 @@
 import { base64urlnopad, bech32m, hex } from '@scure/base';
-import { ROLLUP_DOMAIN } from './constants.ts';
+import { ROLLUP_DOMAIN, ROLLUP_FIELD } from './constants.ts';
 import { noteOf, outputRhoOf, ownerOf, type Hash } from './notes.ts';
 import { fromLe, le, openRollupNotes, parseRollupAddress, viewEcdh } from './wallet.ts';
 import type { BuiltSpend } from './account.ts';
@@ -17,10 +17,15 @@ export function decodeDisclosure(text: string): Disclosure {
  try { raw = JSON.parse(new TextDecoder().decode(base64urlnopad.decode(text.trim()))); } catch { throw bad(); }
  if (raw.v !== 1 || typeof raw.to !== 'string' || !Array.isArray(raw.notes) || raw.notes.length < 1 || raw.notes.length > 3) throw bad();
  parseRollupAddress(raw.to);
- return { v: 1, to: raw.to, notes: raw.notes.map(note => {
+ const notes = raw.notes.map(note => {
   if (!Array.isArray(note) || note.length !== 4 || !Number.isSafeInteger(note[0]) || note[0] < 0 || note.slice(1).some(v => typeof v !== 'string' || !/^\d{1,80}$/.test(v))) throw bad();
-  return { index: note[0], amount: BigInt(note[1]), asset: BigInt(note[2]), rho: BigInt(note[3]) };
- }) };
+  const n = { index: note[0], amount: BigInt(note[1]), asset: BigInt(note[2]), rho: BigInt(note[3]) };
+  // Poseidon reduces its inputs mod q, so a value past what a note holds opens the same commitment.
+  if (n.amount >= 1n << 64n || n.asset >= ROLLUP_FIELD || n.rho >= ROLLUP_FIELD) throw bad();
+  return n;
+ });
+ if (new Set(notes.map(n => n.index)).size !== notes.length) throw bad();
+ return { v: 1, to: raw.to, notes };
 }
 /** Whether each disclosed note is exactly the commitment published at its position. */
 export async function verifyDisclosure(hash: Hash, d: Disclosure, commitmentAt: (index: number) => string | undefined | Promise<string | undefined>): Promise<boolean[]> {
