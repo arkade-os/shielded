@@ -180,6 +180,8 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
  }
  let live:{operator:RollupEpochOperator;network:StockNetworkInfo;genesis:Genesis;address:string;pool:ReturnType<typeof rollupEpochPoolTree>;leaves:RollupEpochLeaves;indexer:Pick<RestIndexerProvider,'getVtxos'|'getVirtualTxs'>}|undefined;
  let stopped=false,kick=()=>{};
+ /** Set once the batch loop runs: a follow rewrites the head too, so it takes the same turn renewal and listing adoption do. */
+ let follow:<T>(work:()=>Promise<T>)=>Promise<T>=work=>work();
  const timers=new Set<ReturnType<typeof setTimeout>>();
  const later=(fn:()=>void,ms:number)=>{const t=setTimeout(()=>{timers.delete(t);fn();},ms);timers.add(t);return t;};
  const checkpointTimes:number[]=[];
@@ -316,8 +318,9 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
 
  function run(clientProvers:Record<'spend'|'join',ReturnType<typeof createRollupProver>>){
   const {operator}=live!;let paused=false,ticking:Promise<unknown>|undefined,lastError='',lock:Promise<unknown>=Promise.resolve();
-  /** Renewal and listing move the head or reserves, so batches pause and they run one at a time. */
-  const exclusive=(work:()=>Promise<void>)=>{const turn=lock.then(async()=>{paused=true;try{await ticking?.catch(()=>{});if(operator.status().pending)throw new Error('a submitted batch is unresolved; this waits.');await work();}finally{paused=false;}});lock=turn.catch(()=>{});return turn;};
+  /** Renewal, listing and /external move the head or reserves, so batches pause and they run one at a time; only a follow goes while a batch is unresolved, since following the winner is what drops it. */
+  const exclusive=<T>(work:()=>Promise<T>,following=false)=>{const turn=lock.then(async()=>{paused=true;try{await ticking?.catch(()=>{});if(!following&&operator.status().pending)throw new Error('a submitted batch is unresolved; this waits.');return await work();}finally{paused=false;}});lock=turn.catch(()=>{});return turn;};
+  follow=work=>exclusive(work,true);
   const note=(message:string)=>{if(message!==lastError)log(message);lastError=message;};
   const sweep=()=>{
    const waiting=new Set(operator.pendingIds());
@@ -506,7 +509,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    const outs=(await indexer.getVtxos({outpoints:[{txid,vout:0},{txid,vout:1}]})).vtxos,created=outs.find(v=>v.vout===0)?.createdAt;
    const reserveAmount=moved?String(outs.find(v=>v.vout===1)?.assets?.find(a=>a.assetId===moved)?.amount??0):undefined;
    const followed={tx,checkpoints:checkpoints as Transaction[],at:created instanceof Date?created.getTime():Date.now(),...(reserveAmount!==undefined?{reserveAmount}:{})};
-   const result=await operator.follow({...followed,slots});included(result.batch,result.txid);return result;
+   const result=await follow(()=>operator.follow({...followed,slots}));included(result.batch,result.txid);return result;
   },
   submit:async(spend:Omit<RollupEpochSpend,'receivedAt'>,coin?:CoinRef)=>{
    if(!live)throw new Error('The rollup pool is not open yet.');

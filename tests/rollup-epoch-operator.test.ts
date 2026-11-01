@@ -485,6 +485,20 @@ test('after a restart, following the winner drops the journaled plan with no app
  assert.deepEqual([c.status().pending,c.state.commitment()],[undefined,a.state.commitment()]);
 });
 
+test('a follow whose journal write fails applies nothing, and the batch is followed once the journal is free',async t=>{
+ const w=await world(64),a=await w.open(t);
+ await land(a,'spend',[fastSpend(a.state)]);
+ const b=await w.open(t,{directory:mkdtempSync(join(tmpdir(),'rollup-epoch-unwritten-'))}),{archive}=b.status();
+ const before=[b.state.commitment(),b.status()];
+ // relocate holds the journal as the renewal and listing work that moves the head does, so this follow's commit cannot land.
+ const moving=b.relocate({head:archive.head,reserves:archive.reserves});
+ await assert.rejects(b.follow({...landedTx(w,0),at:1}),/in flight/);
+ assert.deepEqual([b.state.commitment(),b.status()],before,'the refused follow left no batch applied ahead of the journal');
+ await moving;
+ assert.deepEqual(await b.follow({...landedTx(w,0),at:1}),{batch:0,txid:landedTx(w,0).tx.id});
+ assert.deepEqual([b.state.commitment(),headCommitment(b.status().archive.head.sourceTxHex)],[a.state.commitment(),a.state.commitment()]);
+});
+
 test('a batch the network keeps refusing is abandoned: its deposit is dropped, the rest is rebuilt and lands, and the kept plan goes once the head moves',async t=>{
  let clock=1_000_000,submits=0,flaky=1;
  const w=await world(64),drops:[string[],string][]=[];

@@ -233,6 +233,35 @@ test('a followed batch settles that deposit too, as the adopted one does',async(
  service.close();
 });
 
+test('/external waits for the batch in flight, then follows the winner though that batch is unresolved',async t=>{
+ const net=offline(),keys=keySet('epoch'),directory=scratch('rollup-epoch-serialized-');
+ (await ready(net,directory,keys,'64')).close();
+ const saved=JSON.parse(readFileSync(join(directory,'genesis.json'),'utf8')),leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(directory,'spec.json')),stub={prove:async()=>proof};
+ const other=await openRollupEpochOperator({directory:scratch('rollup-epoch-winner-'),epochLen:64,genesis:saved.archive,leaves,token,serverKey:hex.decode(serverKey),emulatorKey:hex.decode(emulatorKey),exitDelay,checkpoint,hash,
+  pin:rollupEpochPin({leaves,manifest:readFileSync(join(directory,'keys','manifest.json')),checkpoint:checkpoint.script,genesisTxid:saved.txid,serverKey,emulatorKey}),
+  clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},transport:net.transport,signDeposits:async()=>undefined,verify:async()=>true,batchWaitMs:0});
+ after(()=>other.close());
+ await other.submit(epochSpend(deposit(other.state,0n)));
+ other.addPadding(Array.from({length:BATCH_SLOTS-1},()=>({...epochSpend(deposit(other.state,0n)) as object,receivedAt:Infinity}) as never));
+ assert.ok('txid' in (await other.tick())!);
+ const winner=net.landed.at(-1)!.id,service=await ready(net,directory,keys);
+ await until('the padding queues are full',()=>service.status().pool!.padding===4*BATCH_SLOTS,net);
+ const order:string[]=[],sent=net.transport.submit;
+ let reached=false,release=()=>{};
+ const waiting=new Promise<void>(r=>{release=r;});
+ net.transport.submit=async()=>{reached=true;await waiting;order.push('batch');throw Object.assign(new Error('this operator lost the race'),{refused:true});};
+ t.after(()=>{release();net.transport.submit=sent;});
+ await service.submit(epochSpend(deposit(anchors(service),0n)));
+ await until('this operator\'s own batch is in flight',()=>reached,net);
+ const followed=service.external(winner).then(result=>{order.push('external');return result;});
+ const raced=await Promise.race([followed.then(()=>'ran',()=>'ran'),new Promise<string>(r=>setTimeout(()=>r('waiting'),300))]);
+ assert.deepEqual([raced,order,service.status().pool!.batches],['waiting',[],0],'/external neither follows nor refuses while the batch in flight holds the turn');
+ release();
+ assert.deepEqual(await followed,{batch:0,txid:winner});
+ assert.deepEqual([order,service.status().pool!.batches],[['batch','external'],1],'the follow took its turn after the tick, though the submitted batch was unresolved');
+ service.close();
+});
+
 test('a deposit whose abandoned batch the network never saw stays dropped, even as the next batch settles',async()=>{
  const {net,id,directory}=await abandonedOffNetwork(),service=await reopen(net,directory);
  const next=epochSpend(deposit(EpochState.genesis(hash,64),0n));
