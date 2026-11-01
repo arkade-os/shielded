@@ -452,12 +452,26 @@ test('an enrichment that does not match the chain data its record holds is refus
   ['a slot whose statement is not the one the transaction carries',first,edit(1,{anchor:String(BigInt(real[1]!.anchor)+1n)}),/statement/],
   ['a ciphertext that does not match its digest',first,edit(0,{ciphertext:hex.encode(new Uint8Array(ROLLUP_RECORD_BYTES))}),/digest/],
   ['fewer slots than the batch has',first,real.slice(1),/number of slots/],
-  ['a record that is already full',second,recordAt(w,1).slots,/already carries its full record/],
-  ['a transaction this pool never followed','ff'.repeat(32),real,/never followed/],
+  ['a batch followed with its record',second,recordAt(w,1).slots,/did not follow transaction .* chain-only/],
+  ['a transaction this pool never followed','ff'.repeat(32),real,/did not follow transaction .* chain-only/],
  ];
  for(const [label,txid,slots,reason] of refused)await assert.rejects(b.enrich(txid,slots),reason,label);
  assert.deepEqual(recordIn(dir,0),bare,'no refusal wrote anything');
  assert.deepEqual(await b.enrich(first,real),{batch:0,txid:first},'the record is still enrichable by its real slots');
+ await assert.rejects(b.enrich(first,real),/already carries its full record/,'a record already filled in is never replaced');
+});
+
+test('a batch followed chain-only stays enrichable after a restart, however many batches follow it',async t=>{
+ const w=await world(64),a=await w.open(t);
+ for(let n=0;n<3;n++)await land(a,'spend',[fastSpend(a.state)]);
+ const dir=mkdtempSync(join(tmpdir(),'rollup-epoch-indexed-')),b=await w.open(t,{directory:dir});
+ await b.follow({...landedTx(w,0),at:1});
+ for(let n=1;n<3;n++)await b.follow({...landedTx(w,n),slots:recordAt(w,n).slots,at:1});
+ b.close();
+ const {tx}=landedTx(w,0),c=await w.open(t,{directory:dir});
+ assert.deepEqual(JSON.parse(readFileSync(join(dir,'chain-only.json'),'utf8')),{[tx.id]:0},'only the chain-only batch is indexed');
+ assert.deepEqual(await c.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the chain-only index survives the restart, so no scan of later records is needed');
+ assert.equal(chainOnly(recordIn(dir,0)),false);
 });
 
 test('a recover batch followed chain-only is enriched by its one slot, with no archive file of its origin on disk',async t=>{

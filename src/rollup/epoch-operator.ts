@@ -81,7 +81,7 @@ interface RollupEpochPlan {version:1;request:StockWireRequest;record:RollupEpoch
 type FollowedSlot=Omit<RollupEpochRecordSlot,'publics'>&{publics?:string[]};
 
 const KINDS=['spend','join','recover'] as const;
-const SNAPSHOT_EVERY=32,ENRICH_SCAN=4096;
+const SNAPSHOT_EVERY=32;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
 export const slotOf=(s:Omit<RollupEpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
@@ -109,6 +109,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
+ // Every batch followed chain-only, by txid, so /external can fill its record in however far back it sits.
+ const barePath=join(o.directory,'chain-only.json'),bare=new Map<string,number>(existsSync(barePath)?Object.entries(JSON.parse(readFileSync(barePath,'utf8')) as Record<string,number>):[]);
  const frozenDir=join(o.directory,'nullifiers');mkdirSync(frozenDir,{recursive:true});
  const frozenPath=(epoch:number)=>epochNfArchivePath(frozenDir,epoch);
  let state=EpochState.genesis(o.hash,o.epochLen,false);
@@ -419,6 +421,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     catch(error){state.undoLast();throw error;}
     lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
+    if(!slots){bare.set(tx.id,archive.batches-1);try{writeSnapshot(barePath,new TextEncoder().encode(JSON.stringify(Object.fromEntries(bare))));}catch(error){console.warn(`[rollup] Could not index chain-only batch ${archive.batches-1}: ${(error as Error).message}`);}}
     return {batch:archive.batches-1,txid:tx.id};
    }finally{busy=false;}
   },
@@ -426,13 +429,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   enrich:async(txid:string,slots:FollowedSlot[]):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
    try{
-    const found=(()=>{
-     const {batches}=journal.status().archive;
-     for(let n=batches-1;n>=0&&n>batches-1-ENRICH_SCAN;n--){const raw=readFileSync(bodyPath(n),'utf8');if(!raw.includes(txid))continue;const record=JSON.parse(raw) as RollupEpochRecord;if(record.txid===txid)return {batch:n,record};}
-     return undefined;
-    })();
-    if(!found)throw new Error(`None of the last ${ENRICH_SCAN} batch records carries transaction ${txid}, so this pool never followed it.`);
-    const {batch,record}=found,m=EPOCH_NULLIFIERS[record.kind];
+    const batch=bare.get(txid)??-1,record=batch>=0&&batch<journal.status().archive.batches?JSON.parse(readFileSync(bodyPath(batch),'utf8')) as RollupEpochRecord:undefined;
+    if(!record||record.txid!==txid)throw new Error(`This pool did not follow transaction ${txid} chain-only, so it holds no record of it to fill in.`);
+    const m=EPOCH_NULLIFIERS[record.kind];
     if(!chainOnly(record))throw new Error(`Batch ${batch} already carries its full record, which is never replaced.`);
     if(slots.length!==record.slots.length)throw new Error('The record has the wrong number of slots.');
     if(slots.some(s=>s.nullifiers.length!==m))throw new Error(`Every slot of a ${record.kind} batch spends ${m===2?'two notes':'one note'}.`);
