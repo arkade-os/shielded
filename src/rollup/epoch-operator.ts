@@ -110,7 +110,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
  // Every batch followed chain-only, by txid, so /external can fill its record in however far back it sits.
- const barePath=join(o.directory,'chain-only.json'),bare=new Map<string,number>(existsSync(barePath)?Object.entries(JSON.parse(readFileSync(barePath,'utf8')) as Record<string,number>):[]);
+ const barePath=join(o.directory,'chain-only.json'),bare=new Map<string,number>((()=>{try{return existsSync(barePath)?Object.entries(JSON.parse(readFileSync(barePath,'utf8')) as Record<string,number>):[];}catch(error){console.warn(`[rollup] Ignoring ${barePath}: ${(error as Error).message}`);return [];}})());
  const frozenDir=join(o.directory,'nullifiers');mkdirSync(frozenDir,{recursive:true});
  const frozenPath=(epoch:number)=>epochNfArchivePath(frozenDir,epoch);
  let state=EpochState.genesis(o.hash,o.epochLen,false);

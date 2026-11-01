@@ -472,6 +472,10 @@ test('a batch followed chain-only stays enrichable after a restart, however many
  assert.deepEqual(JSON.parse(readFileSync(join(dir,'chain-only.json'),'utf8')),{[tx.id]:0},'only the chain-only batch is indexed');
  assert.deepEqual(await c.enrich(tx.id,recordAt(w,0).slots),{batch:0,txid:tx.id},'the chain-only index survives the restart, so no scan of later records is needed');
  assert.equal(chainOnly(recordIn(dir,0)),false);
+ c.close();writeFileSync(join(dir,'chain-only.json'),'{not json');
+ const warned=t.mock.method(console,'warn',()=>{});
+ assert.equal((await w.open(t,{directory:dir})).state.commitment(),a.state.commitment(),'a damaged index never keeps the operator from opening');
+ assert.ok(warned.mock.calls.some(call=>/Ignoring .*chain-only\.json/.test(String(call.arguments[0]))));
 });
 
 test('a recover batch followed chain-only is enriched by its one slot, with no archive file of its origin on disk',async t=>{
