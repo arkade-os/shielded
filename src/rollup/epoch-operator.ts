@@ -4,6 +4,7 @@ import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
+import {blockRootOf,chainOnly} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import {epochBatchInput} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
@@ -76,9 +77,11 @@ export const ROLLUP_GROUP_WAIT_MS=120_000;
 /** A spend with `origin` set is a recovery of a note from that archived epoch. */
 export interface RollupEpochSpend extends Omit<RollupSpend,'slot'> {slot:EpochSlot;origin?:number}
 interface RollupEpochPlan {version:1;request:StockWireRequest;record:RollupEpochRecord;firstDeposit:number;asset?:string;reserveAmount?:string}
+/** A record's slot as /external supplies it; a slot's publics are the chain's, never the caller's to assert. */
+type FollowedSlot=Omit<RollupEpochRecordSlot,'publics'>&{publics?:string[]};
 
 const KINDS=['spend','join','recover'] as const;
-const SNAPSHOT_EVERY=32;
+const SNAPSHOT_EVERY=32,ENRICH_SCAN=4096;
 const le32=(value:bigint)=>Uint8Array.from({length:32},(_,i)=>Number((value>>BigInt(8*i))&255n));
 const inField=(value:unknown)=>typeof value==='bigint'&&value>=0n&&value<ROLLUP_FIELD;
 export const slotOf=(s:Omit<RollupEpochRecordSlot,'publics'>):EpochSlot=>({anchor:BigInt(s.anchor),...(s.rCur?{rCur:{epoch:s.rCur.epoch,root:BigInt(s.rCur.root)}}:{}),...(s.origin!==undefined?{origin:s.origin}:{}),
@@ -376,7 +379,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   padding:(kind?:EpochBatchKind)=>kind?padding[kind].length:queued(padding).length,
   status:()=>({...journal.status(),...accepted}),
   /** Follows a batch another prover got accepted from this pool's head; the caller has checked the network accepted `tx`. With `slots` a recovery needs its origin's archive file, and without them (chain-only) it needs none. */
-  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:(Omit<RollupEpochRecordSlot,'publics'>&{publics?:string[]})[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
+  follow:async(external:{tx:Transaction;checkpoints:Transaction[];slots?:FollowedSlot[];at:number;reserveAmount?:string}):Promise<{batch:number;txid:string}>=>{
    if(busy)throw new Error('The operator is busy; try again.');busy=true;
    try{
     const {tx,slots}=external,facts=readEpochBatchTx(tx,o.leaves),[head,second]=spentCoins(tx,external.checkpoints);
@@ -417,6 +420,32 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
     return {batch:archive.batches-1,txid:tx.id};
+   }finally{busy=false;}
+  },
+  /** Fills in a record this pool followed chain-only, against the chain data that record already holds. The batch's state is already applied, so only the record is rewritten. */
+  enrich:async(txid:string,slots:FollowedSlot[]):Promise<{batch:number;txid:string}>=>{
+   if(busy)throw new Error('The operator is busy; try again.');busy=true;
+   try{
+    const found=(()=>{
+     const {batches}=journal.status().archive;
+     for(let n=batches-1;n>=0&&n>batches-1-ENRICH_SCAN;n--){const record=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord;if(record.txid===txid)return {batch:n,record};}
+     return undefined;
+    })();
+    if(!found)throw new Error(`None of the last ${ENRICH_SCAN} batch records carries transaction ${txid}, so this pool never followed it.`);
+    const {batch,record}=found,m=EPOCH_NULLIFIERS[record.kind];
+    if(!chainOnly(record))throw new Error(`Batch ${batch} already carries its full record, which is never replaced.`);
+    if(slots.length!==record.slots.length)throw new Error('The record has the wrong number of slots.');
+    if(slots.some(s=>s.nullifiers.length!==m))throw new Error(`Every slot of a ${record.kind} batch spends ${m===2?'two notes':'one note'}.`);
+    if(blockRootOf(o.hash,slots.flatMap(s=>s.commitments.map(BigInt)))!==BigInt(record.noteBlockRoot))throw new Error('The slots\' commitments do not rebuild the block root the batch committed to.');
+    slots.forEach((s,i)=>{
+     const chain=record.slots[i]!,ciphertext=s.ciphertext===undefined?undefined:hex.decode(s.ciphertext);
+     if(s.nullifiers.some((nf,k)=>BigInt(nf)!==BigInt(chain.nullifiers[k]!)))throw new Error(`Slot ${i} does not spend the notes the transaction carries.`);
+     if(statementOf(o.hash,{domain:ROLLUP_DOMAIN,...slotOf(s),root:BigInt(s.anchor)})!==BigInt(chain.publics[0]!))throw new Error(`Slot ${i} does not match the statement the transaction carries.`);
+     if(ciphertext&&(ciphertext.length!==ROLLUP_RECORD_BYTES||ctDigestOf(ciphertext)!==BigInt(s.ctDigest)))throw new Error(`Slot ${i}'s note record does not match its digest.`);
+    });
+    const full:RollupEpochRecord={...record,slots:slots.map((s,i)=>({...s,publics:record.slots[i]!.publics}))};
+    writeSnapshot(bodyPath(batch),new TextEncoder().encode(JSON.stringify(full)));
+    return {batch,txid};
    }finally{busy=false;}
   },
   relocate:(moved:Pick<RollupArchive,'head'|'reserves'>)=>journal.updateArchive(archive=>({...archive,head:moved.head,reserves:moved.reserves})),

@@ -504,7 +504,11 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    const ids=Array.from({length:tx.inputsLength},(_,vin)=>hex.encode(tx.getInput(vin).txid!)),found=await txs(ids),checkpoints=ids.map(id=>found.find(t=>t.id===id));
    if(checkpoints.some(c=>!c))throw new Error('The indexer lacks a checkpoint of that transaction.');
    const {archive}=operator.status(),[head]=(await indexer.getVtxos({outpoints:[{txid:archive.head.txid,vout:archive.head.vout}]})).vtxos;
-   if(!head?.isSpent||head.arkTxId!==txid)throw new Error("That transaction has not spent this pool's head.");
+   // A batch this pool already followed no longer spends the head, so its slots fill its record in rather than following it again.
+   if(!head?.isSpent||head.arkTxId!==txid){
+    if(!slots)throw new Error("That transaction has not spent this pool's head.");
+    return await follow(()=>operator.enrich(txid,slots));
+   }
    const second=checkpoints[1]?.getInput(0),moved=second&&Object.entries(archive.reserves).find(([,c])=>c.txid===hex.encode(second.txid!)&&c.vout===second.index)?.[0];
    const outs=(await indexer.getVtxos({outpoints:[{txid,vout:0},{txid,vout:1}]})).vtxos,created=outs.find(v=>v.vout===0)?.createdAt;
    const reserveAmount=moved?String(outs.find(v=>v.vout===1)?.assets?.find(a=>a.assetId===moved)?.amount??0):undefined;
