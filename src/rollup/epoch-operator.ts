@@ -250,17 +250,21 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   }catch{return false;}
  };
  /** Coins match deposit legs only in sum, so a unit is exempt only when every coin in it is this pool's payout. */
- const checkDepositFee=async(unit:readonly RollupEpochSpend[])=>{
-  const {schedule,owner,viewSecret}=o.depositFee!,coins=unit.filter(s=>s.coin);
-  if(coins.length&&coins.every(s=>poolPayout(s.coin!)))return;
-  const assetUnit=unit.some(s=>s.publics[5]!==0n);
-  for(const s of unit){
-   const sats=s.publics[3];if(sats===0n||s.publics[5]!==0n)continue;
-   const owed=assetUnit?carrierFeeOf(schedule,sats):depositFeeOf(schedule,sats);if(owed===0n)continue;
+ const checkDepositFee=async(unit:readonly RollupEpochSpend[]):Promise<RollupRejection|undefined>=>{
+  const {schedule,owner,viewSecret}=o.depositFee!,coins=unit.filter(s=>s.coin),btc=unit.filter(s=>s.publics[5]===0n);
+  if(coins.length&&coins.every(s=>poolPayout(s.coin!)))return undefined;
+  const paidBy=async(s:RollupEpochSpend)=>{
    const note=s.ciphertext?(await openRollupNotes(s.ciphertext,viewSecret,feeEcdh))[0]:undefined;
-   const paid=note&&note.asset===0n&&noteOf(o.hash,ROLLUP_DOMAIN,note.amount,0n,owner,note.rho)===s.slot.commitments[0]?note.amount:0n;
-   if(paid<owed)throw new RollupRejection('fee-missing',`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`);
+   return note&&note.asset===0n&&noteOf(o.hash,ROLLUP_DOMAIN,note.amount,0n,owner,note.rho)===s.slot.commitments[0]?note.amount:0n;
+  };
+  const refused=(sats:bigint,owed:bigint,paid:bigint)=>paid<owed?new RollupRejection('fee-missing',`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`):undefined;
+  // Charged per carrier, two dust-sized carriers would shield their sum free; one note must cover it, as notes are never summed.
+  if(unit.some(s=>s.publics[5]!==0n)){
+   const sats=btc.reduce((sum,s)=>sum+s.publics[3],0n),owed=carrierFeeOf(schedule,sats);
+   return owed===0n?undefined:refused(sats,owed,(await Promise.all(btc.map(paidBy))).reduce((most,paid)=>paid>most?paid:most,0n));
   }
+  for(const s of btc){const sats=s.publics[3],owed=sats===0n?0n:depositFeeOf(schedule,sats),refusal=owed===0n?undefined:refused(sats,owed,await paidBy(s));if(refusal)return refusal;}
+  return undefined;
  };
 
  /** The only gate: a spend the batch, the builder or the network would reject must never reserve a nullifier. */
@@ -319,7 +323,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    checkUnit(unit);
    if(groupId!==0n&&groupIdOf(o.hash,unit.map(s=>s.slot.nullifiers[0]!))!==groupId)throw new RollupRejection('group-invalid','The group id does not commit to its members.');
    // Guarded here rather than inside, so with the fee off admission awaits nothing new and interleaves as before.
-   if(o.depositFee)await checkDepositFee(unit);
+   const unpaid=o.depositFee&&await checkDepositFee(unit);
+   // The whole group goes, or its siblings would hold their notes until the stranded sweep and the rebuild would read as a double-spend.
+   if(unpaid){const rest=pending.spend.filter(s=>s!==admitted&&unit.includes(s));pending.spend=pending.spend.filter(s=>!rest.includes(s));dropped(rest,'Its group does not carry the deposit fee it owes; rebuild the group with the fee.');throw unpaid;}
    for(const s of unit)checked.add(s);
   }catch(error){pending[kind]=pending[kind].filter(s=>s!==admitted);throw error;}
  };

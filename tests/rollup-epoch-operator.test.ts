@@ -697,7 +697,8 @@ test('after a restart a batch left in flight is found landed, or re-sent at once
 });
 
 const owes=(sats:bigint,owed:bigint,paid:bigint)=>(error:unknown)=>rejection('fee-missing')(error)&&(error as Error).message===`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`;
-const pairOf=()=>{const dummies=[dummyInput(),dummyInput()];return {dummies,group:{id:groupIdOf(hash,dummies.map(d=>inputNullifierOf(hash,ROLLUP_DOMAIN,d))),size:2}};};
+const groupOf=(size=2)=>{const dummies=Array.from({length:size},dummyInput);return {dummies,group:{id:groupIdOf(hash,dummies.map(d=>inputNullifierOf(hash,ROLLUP_DOMAIN,d))),size}};};
+const coinless=({coin:_,...s}:Spend):Spend=>s;
 const p2tr=(program:Uint8Array)=>Uint8Array.of(0x51,0x20,...program);
 const withdrawal=(w:World,op:Operator,program=w.program)=>spendOf(deposit(op.state,0n,{withdraw:1000n,destination:destinationFieldOf(program)}),{program});
 const paidOut=async(w:World,op:Operator)=>{
@@ -722,7 +723,7 @@ const listed=(op:Operator)=>{
  return op.relocate({head:op.status().archive.head,reserves:{[x]:{txid:source.id,vout:0,value:330,sourceTxHex:hex.encode(source.toBytes()),amount:'1000'}}});
 };
 const assetDeposit=(w:World,op:Operator,sats:bigint)=>{
- const {dummies:[a,b],group}=pairOf(),g={groupId:group.id,groupSize:2};
+ const {dummies:[a,b],group}=groupOf(),g={groupId:group.id,groupSize:2};
  return [spendOf(deposit(op.state,5000n,{asset:assetFieldOfId(x),inputs:[a],...g}),{asset:x,coin:{...w.cash(sats),assetAmount:5000n}}),spendOf(deposit(op.state,sats,{inputs:[b],...g}))] as const;
 };
 const resealed=async(w:World,s:Spend,note:RollupNote):Promise<Spend>=>{
@@ -820,7 +821,7 @@ test('after a reserve at output 1 the payouts start at output 2, and the reserve
 });
 
 test('an asset payout shares its carrier\'s output, so it adds no payout output',async t=>{
- const w=await world(64),a=await w.open(t),{dummies:[i,j],group}=pairOf(),g={groupId:group.id,groupSize:2},{program}=w,destination=destinationFieldOf(program);
+ const w=await world(64),a=await w.open(t),{dummies:[i,j],group}=groupOf(),g={groupId:group.id,groupSize:2},{program}=w,destination=destinationFieldOf(program);
  await listed(a);
  await land(a,'spend',[spendOf(deposit(a.state,0n,{asset:assetFieldOfId(x),withdraw:500n,destination,inputs:[i],...g}),{asset:x,program}),spendOf(deposit(a.state,0n,{withdraw:330n,destination,inputs:[j],...g}),{program})]);
  const {tx,checkpoints}=forgedBatch(w,0,3),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
@@ -843,13 +844,15 @@ test('a record the fee check cannot read never keeps the pool from opening, and 
 });
 
 test('a group whose id does not commit to its members answers group-invalid before its missing fee',async t=>{
- const w=await world(64),op=await w.open(t,w.fee()),{dummies:[a,b]}=pairOf(),g={groupId:pairOf().group.id,groupSize:2};
- await op.submit(spendOf(deposit(op.state,1000n,{inputs:[a],...g}),{coin:w.cash(2000n)}));
+ const w=await world(64),op=await w.open(t,w.fee()),{dummies:[a,b]}=groupOf(),g={groupId:groupOf().group.id,groupSize:2};
+ const first=spendOf(deposit(op.state,1000n,{inputs:[a],...g}),{coin:w.cash(2000n)});
+ await op.submit(first);
  await assert.rejects(op.submit(spendOf(deposit(op.state,1000n,{inputs:[b],...g}))),rejection('group-invalid'));
+ assert.deepEqual(op.pendingIds(),[first.id],'group-invalid strands the rest of the group, as before');
 });
 
 test('a payout exempts its unit only when every coin in the unit is one',async t=>{
- const w=await world(64),op=await w.open(t,w.fee()),payout=await paidOut(w,op),{dummies:[a,b],group}=pairOf();
+ const w=await world(64),op=await w.open(t,w.fee()),payout=await paidOut(w,op),{dummies:[a,b],group}=groupOf();
  await op.submit(spendOf(deposit(op.state,10_000n,{inputs:[a],groupId:group.id,groupSize:2}),{coin:payout}));
  await assert.rejects(op.submit(await w.shield(op.state,1000n,{fee:100n,dummy:b,group,coin:w.cash(10_000n)})),owes(10_000n,100n,0n));
 });
@@ -861,13 +864,40 @@ test('the fee check runs after the double-spend check, so a landed copy still an
 });
 
 test('an asset deposit\'s carrier pays nothing at the free allowance and the fee above it',async t=>{
- const w=await world(64),op=await w.open(t,w.fee());
+ const drops:string[][]=[],w=await world(64),op=await w.open(t,{...w.fee(),onDrop:ids=>drops.push(ids)});
  await listed(op);
  const [free,allowance]=assetDeposit(w,op,330n),[waiting,carrier]=assetDeposit(w,op,1000n);
  for(const s of [free,allowance,waiting])await op.submit(s);
  await assert.rejects(op.submit(carrier),owes(1000n,100n,0n));
  await assert.rejects(op.submit(spendOf(deposit(op.state,330n),{coin:w.cash(330n)})),owes(330n,100n,0n),'a plain deposit of the allowance');
- assert.deepEqual(op.pendingIds(),[free.id,allowance.id,waiting.id],'the refused carrier holds nothing; its asset leg waits out the group timeout');
+ assert.deepEqual([op.pendingIds(),drops],[[free.id,allowance.id],[[waiting.id]]],'the refused group leaves whole, its asset leg reported dropped');
+});
+
+test('an asset unit owes one carrier fee on its BTC total, and one leg\'s note must cover it alone',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee());
+ await listed(op);
+ const unit=async(fees:bigint[])=>{
+  const {dummies:[a,...legs],group}=groupOf(3),g={groupId:group.id,groupSize:3};
+  const members=[spendOf(deposit(op.state,5000n,{asset:assetFieldOfId(x),inputs:[a],...g}),{asset:x,coin:{...w.cash(660n),assetAmount:5000n}}),...await Promise.all(legs.map((d,i)=>w.shield(op.state,330n,{fee:fees[i],dummy:d,group}).then(coinless)))];
+  for(const s of members.slice(0,-1))await op.submit(s);
+  return op.submit(members.at(-1)!);
+ };
+ await assert.rejects(unit([]),owes(660n,100n,0n),'two 330-sat carriers pay on 660 together');
+ await assert.rejects(unit([50n,50n]),owes(660n,100n,50n),'two notes that cover it only when summed');
+ await unit([100n]);
+});
+
+test('a fee refusal drops its whole group at once, so the same notes rebuilt with the fee are admitted',async t=>{
+ const drops:[string[],string][]=[],w=await world(64),op=await w.open(t,{...w.fee(),onDrop:(ids,reason)=>drops.push([ids,reason])});
+ await listed(op);
+ const {dummies:[a,b],group}=groupOf(),assetLeg=spendOf(deposit(op.state,5000n,{asset:assetFieldOfId(x),inputs:[a],groupId:group.id,groupSize:2}),{asset:x,coin:{...w.cash(1000n),assetAmount:5000n}});
+ await op.submit(assetLeg);
+ await assert.rejects(op.submit(coinless(await w.shield(op.state,1000n,{dummy:b,group}))),owes(1000n,100n,0n));
+ assert.deepEqual([drops.map(([ids])=>ids),op.pending()],[[[assetLeg.id]],0]);
+ assert.match(drops[0]![1],/deposit fee/);
+ await op.submit({...assetLeg,id:'rebuilt'});
+ await op.submit(coinless(await w.shield(op.state,1000n,{dummy:b,group,fee:100n})));
+ assert.equal(op.pending(),2);
 });
 
 test('a pool with no deposit fee configured admits a fee-less deposit unchanged',async t=>{

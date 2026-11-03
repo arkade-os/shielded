@@ -433,6 +433,9 @@ test('the pool gives its operator the fee schedule and the fee wallet, so a depo
  const owes=(paid:number)=>(error:unknown)=>rejection('fee-missing')(error)&&(error as Error).message.includes(`owes a 500-sat deposit fee to this pool; this one carries ${paid}.`);
  await assert.rejects(service.submit(await shield()),owes(0));
  await assert.rejects(service.submit(await shield(200n)),owes(200));
+ const paid:{id:string}=await shield(500n);
+ await service.submit(paid as never);
+ assert.ok(service.spend(paid.id),'the deposit that pays the full fee is admitted and tracked');
 });
 
 test('the environment asks for a deposit fee whenever any part of one is set, and hands a misspelled name or a non-decimal number on to be refused',()=>{
