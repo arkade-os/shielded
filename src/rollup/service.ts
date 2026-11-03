@@ -137,10 +137,11 @@ export function rollupEpochLenOf(o:{genesis?:{version?:number;epochLen?:number};
  throw new Error(`The rollup genesis has version ${JSON.stringify(o.genesis.version)}, which this build cannot open; run the build that created it.`);
 }
 
-type RollupDepositFeeConfig={address:string;viewKey:string;fixedSats:number;bps:number};
+type RollupDepositFeeConfig={address:string;viewKey:string;fixedSats:number;bps:number;problem?:string};
 /** What a configured deposit fee makes of the pool, or undefined while it is off. A fee that is set but malformed throws, as reading it as none would run the pool fee-free. A parser's own message is never repeated: a bech32 error quotes its input, and a view key must not reach /status. */
 function rollupDepositFeeOf(config:RollupDepositFeeConfig|undefined,log:(message:string)=>void):{advertised:DepositFee;operator:NonNullable<RollupEpochOperatorOptions['depositFee']>}|undefined {
  if(!config)return undefined;
+ if(config.problem)throw new Error(config.problem);
  const {address,viewKey,fixedSats,bps}=config,parsed=<T>(read:()=>T,problem:string):T=>{try{return read();}catch{throw new Error(problem);}};
  const to=parsed(()=>parseRollupAddress(address),'The deposit fee address is not a shielded rollup address (shrol2...).'),view=parsed(()=>parseViewKey(viewKey),'The deposit fee view key is not a shielded view key (shview2...).');
  if(view.owner!==to.owner)throw new Error('The deposit fee view key belongs to another wallet than the deposit fee address: the owners differ.');
@@ -150,10 +151,14 @@ function rollupDepositFeeOf(config:RollupDepositFeeConfig|undefined,log:(message
  if(!fixedSats&&!bps){log('warning: the deposit fee is off, as both its fixed sats and its bps are 0.');return undefined;}
  return {advertised:{fixedSats,bps,address},operator:{schedule:{fixedSats,bps},owner:to.owner,viewSecret:view.viewSecret}};
 }
-/** The fee the environment asks for. Anything set to other than zero is handed on, even with no address or view key and even if it is not a number, so a half-set fee blocks the pool in validation instead of running it fee-free. */
+const FEE_ENV=['ADDRESS','VIEW_KEY','SATS','BPS'].map(name=>'SHIELDED_DEPOSIT_FEE_'+name);
+/** The fee the environment asks for. Anything set to other than zero is handed on, even with no address or view key, so a half-set fee blocks the pool in validation instead of running it fee-free. A variable with the fee's prefix that is none of its four (a misspelling) and a number that is not plain decimal digits (Number() reads 0x64 and 1e2) are handed on as `problem`, which validation throws first. */
 export function rollupDepositFeeFromEnv(env:Record<string,string|undefined>):RollupDepositFeeConfig|undefined {
- const address=env.SHIELDED_DEPOSIT_FEE_ADDRESS?.trim()??'',viewKey=env.SHIELDED_DEPOSIT_FEE_VIEW_KEY?.trim()??'',fixedSats=Number(env.SHIELDED_DEPOSIT_FEE_SATS??0),bps=Number(env.SHIELDED_DEPOSIT_FEE_BPS??0);
- return address||viewKey||fixedSats!==0||bps!==0?{address,viewKey,fixedSats,bps}:undefined;
+ const [address,viewKey,satsText,bpsText]=FEE_ENV.map(name=>env[name]?.trim()??''),decimal=(text:string)=>/^\d*$/.test(text)?Number(text):NaN;
+ const fixedSats=decimal(satsText),bps=decimal(bpsText),strays=Object.keys(env).filter(name=>name.startsWith('SHIELDED_DEPOSIT_FEE_')&&!FEE_ENV.includes(name));
+ const undecimal=[[FEE_ENV[2],fixedSats],[FEE_ENV[3],bps]].filter(([,n])=>Number.isNaN(n)).map(([name])=>name);
+ const problem=strays.length?`The deposit fee has no variable ${strays.join(' or ')}; its variables are ${FEE_ENV.join(', ')}.`:undecimal.length?`${undecimal.join(' and ')} must be plain decimal digits.`:undefined;
+ return address||viewKey||fixedSats!==0||bps!==0||problem?{address,viewKey,fixedSats,bps,...(problem?{problem}:{})}:undefined;
 }
 
 /**

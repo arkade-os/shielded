@@ -406,6 +406,8 @@ test('a malformed deposit fee configuration stops the pool from opening, and the
   ['a view key that does not parse',{viewKey:'shview2xyz'},/deposit fee view key is not/],
   ['an address and no view key',{viewKey:''},/deposit fee view key is not/],
   ['a fixed fee and neither an address nor a view key, as the environment hands it over',{address:'',viewKey:'',fixedSats:100},/deposit fee address is not/],
+  ['a misspelled variable, as the environment hands it over',{...rollupDepositFeeFromEnv({SHIELDED_DEPOSIT_FEE_BP:'25'})},/no variable SHIELDED_DEPOSIT_FEE_BP;/],
+  ['a number that is not plain digits, as the environment hands it over',{...rollupDepositFeeFromEnv({SHIELDED_DEPOSIT_FEE_SATS:'0x64'})},/SHIELDED_DEPOSIT_FEE_SATS must be plain decimal digits/],
   ['this owner\'s view key with another view secret',{viewKey:viewKeyOf(mine.recipient.owner,x25519.utils.randomSecretKey())},/the view secret differs/],
   ['a zero schedule, which does not excuse another wallet\'s view key',{fixedSats:0,viewKey:other.viewKey},/the owners differ/],
   ...([['fractional',1.5],['negative',-1],['not a number',NaN],['unsafe',2**53]] as const).map(([why,fixedSats])=>[`a ${why} fixed fee`,{fixedSats},/deposit fee sats must be/] as [string,Partial<FeeConfig>,RegExp]),
@@ -433,15 +435,22 @@ test('the pool gives its operator the fee schedule and the fee wallet, so a depo
  await assert.rejects(service.submit(await shield(200n)),owes(200));
 });
 
-test('the environment asks for a deposit fee whenever any part of one is set, so a half-set fee reaches validation',()=>{
+test('the environment asks for a deposit fee whenever any part of one is set, and hands a misspelled name or a non-decimal number on to be refused',()=>{
  const asked=(set:Record<string,string>)=>rollupDepositFeeFromEnv(Object.fromEntries(Object.entries(set).map(([name,value])=>['SHIELDED_DEPOSIT_FEE_'+name,value])));
+ const problem=(set:Record<string,string>)=>asked(set)?.problem??'';
  for(const set of [{},{SATS:'0'},{BPS:'0'},{SATS:'0',BPS:'0'},{SATS:'',BPS:' '},{ADDRESS:'',VIEW_KEY:'  '}] as Record<string,string>[])assert.equal(asked(set),undefined,`${JSON.stringify(set)} asks for no fee`);
  const none={address:'',viewKey:'',fixedSats:0,bps:0};
  assert.deepEqual(asked({ADDRESS:'a'}),{...none,address:'a'});
  assert.deepEqual(asked({VIEW_KEY:'v'}),{...none,viewKey:'v'});
  assert.deepEqual(asked({SATS:'100'}),{...none,fixedSats:100});
  assert.deepEqual(asked({BPS:'25'}),{...none,bps:25});
- assert.deepEqual(asked({ADDRESS:' a\n',VIEW_KEY:' v ',SATS:'100',BPS:'25'}),{address:'a',viewKey:'v',fixedSats:100,bps:25},'the strings are trimmed');
+ assert.deepEqual(asked({ADDRESS:' a\n',VIEW_KEY:' v ',SATS:' 100\t',BPS:'25'}),{address:'a',viewKey:'v',fixedSats:100,bps:25},'the strings are trimmed');
  assert.deepEqual(asked({ADDRESS:'a',VIEW_KEY:'v'}),{address:'a',viewKey:'v',fixedSats:0,bps:0},'both numbers default to 0');
- for(const bad of ['abc','-1','1.5','Infinity'])for(const name of ['SATS','BPS'])assert.ok(asked({[name]:bad}),`${name}=${bad} is handed on to be rejected, not read as off`);
+ for(const stray of ['BP','FIXED_SATS','ADRESS','SAT'])for(const rest of [{},{BPS:'0'},{ADDRESS:'a',VIEW_KEY:'v',SATS:'100'}] as Record<string,string>[])
+  assert.match(problem({...rest,[stray]:'25'}),new RegExp(`no variable SHIELDED_DEPOSIT_FEE_${stray};`),`${stray} is no fee variable, and a fee it would have set must not read as off`);
+ assert.match(problem({BP:''}),/no variable SHIELDED_DEPOSIT_FEE_BP;/,'a stray is refused by its name, whatever its value');
+ for(const bad of ['abc','-1','1.5','Infinity','0x64','1e2',' 1 2','+5','1_000'])for(const name of ['SATS','BPS'])
+  assert.match(problem({[name]:bad}),new RegExp(`SHIELDED_DEPOSIT_FEE_${name} must be plain decimal digits`),`${name}=${bad} is refused by name, not read as a number`);
+ assert.match(problem({SATS:'0x64',BPS:'1e2'}),/SHIELDED_DEPOSIT_FEE_SATS and SHIELDED_DEPOSIT_FEE_BPS must be plain decimal digits/);
+ assert.deepEqual(asked({SATS:'007'}),{...none,fixedSats:7},'plain digits are plain digits');
 });

@@ -18,7 +18,7 @@ export const acceptsDepositFee = (advertised: DepositFeeSchedule | undefined, ac
  (advertised?.fixedSats ?? 0) <= (accepted?.fixedSats ?? 0) && (advertised?.bps ?? 0) <= (accepted?.bps ?? 0);
 export const maxDepositFeeOf = (a: DepositFeeSchedule | undefined, b: DepositFeeSchedule | undefined): DepositFeeSchedule | undefined =>
  a || b ? { fixedSats: Math.max(a?.fixedSats ?? 0, b?.fixedSats ?? 0), bps: Math.max(a?.bps ?? 0, b?.bps ?? 0) } : undefined;
-/** Anything malformed, over 100% or zero reads as no fee: a garbled /status or env value must never throw into its caller. */
+/** Anything malformed, over 100% or zero reads as no fee: a garbled /status must never throw into its caller. */
 export function parseDepositFee(value: unknown): DepositFee | undefined {
  const { fixedSats, bps, address } = (value ?? {}) as { fixedSats?: unknown; bps?: unknown; address?: unknown };
  if (!whole(fixedSats) || !whole(bps) || bps > FULL_BPS || !(fixedSats || bps) || typeof address !== 'string') return undefined;
