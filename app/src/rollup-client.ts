@@ -1,7 +1,7 @@
 import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
-import {CARRIER_FREE_SATS,acceptsDepositFee,depositFeeOf,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
 export * from '../../src/shielded/pool.ts';
@@ -83,7 +83,10 @@ export function listedAssetLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|
  const kept=plans.filter(plan=>!shieldableWithFee(plan,fee)).map(plan=>`This coin stays outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee, its ${satsText(plan.coin.value)} would be below the ${CARRIER_FREE_SATS}-sat minimum.`);
  return [...kept,paused&&kept.length<plans.length?PAUSED_LINE:''].filter(Boolean).join(' ');
 }
-export const invoiceFeeClause=(fee:DepositFeeSchedule|undefined,pays:bigint,swapFee:bigint)=>{const owed=depositFeeOf(fee,pays-swapFee);return owed?` and the deposit fee takes ${grouped(owed)}`:'';};
+export const invoiceFeeClause=(fee:DepositFeeSchedule|undefined,pays:bigint,swapFee:bigint)=>{
+ const payout:ShieldPlan={kind:'btc',coins:[],amount:Number(pays-swapFee)},owed=planFeeOf(payout,fee);
+ return owed&&shieldableWithFee(payout,fee)?` and the deposit fee takes ${grouped(owed)}`:'';
+};
 const LIGHTNING_REST='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
 /** The deposit rule only grows with the amount, so bisection finds the least payout it lets in, exactly. */
 export function lightningMinimumLine(fee:DepositFeeSchedule|undefined){

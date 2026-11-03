@@ -351,6 +351,7 @@ export default function RollupWallet(){
  // The banner renders and accepts this one value, so a fee raised after this render stays paused.
  const feePaused=wallet?.depositFeePaused,payoutFee=fee?` A single payout moves back into the pool without the deposit fee, and two or more together would pay it, so Shield again moves one payout at a time.${feePaused?' Accept the new fee above to move payouts back.':''}`:'';
  const fundingFee=fee?[feeLine,feePaused&&PAUSED_LINE,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' '):'';
+ useEffect(()=>{if(feePaused)setFeeConfirmed(false);},[!!feePaused]);
  const ready=pool?.phase==='ready',unit=assetId?'units':'sats';
  const settled=!!pool||!!startupError||!!poolError;
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;

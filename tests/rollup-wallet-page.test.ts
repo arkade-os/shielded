@@ -368,6 +368,11 @@ test('a waiting invoice names the deposit fee the pool takes from what arrives',
  assert.equal(invoiceFeeClause({fixedSats:0,bps:100},10_100n,100n),' and the deposit fee takes 100','1% of the 10,000-sat payout, not of the 10,100 paid');
 });
 
+test('a waiting invoice names no deposit fee for a payout too small to enter the pool',()=>{
+ assert.equal(invoiceFeeClause({fixedSats:2500,bps:0},1_050n,50n),'','a flat 2,500 on a 1,000-sat payout');
+ assert.deepEqual([479n,480n].map(pays=>invoiceFeeClause(flat,pays,50n)),['',' and the deposit fee takes 100'],'429 sats would keep 329; 430 keep the minimum');
+});
+
 test('a count of one reads as 1 sat',()=>{
  assert.deepEqual([satsText(1),satsText(1n),satsText(0),satsText(2_500n)],['1 sat','1 sat','0 sats','2,500 sats']);
  assert.equal(depositFeeLine({fixedSats:1,bps:50}),'This pool charges a deposit fee of 1 sat or 0.5% of each deposit, whichever is more.');
