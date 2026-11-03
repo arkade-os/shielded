@@ -944,11 +944,11 @@ test('a receive the deposit fee would leave under the pool minimum is refused be
   quote:async(input:Parameters<SwapClient['quote']>[0])=>{quotes++;const quoted=await quote(input);return take===undefined?quoted:{...quoted,take:{...quoted.take,amount:take}};}};};
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
  try{
-  await assert.rejects(service.receive({via:'lightning',amount:400n}),/needs at least 330 sats to enter the shielded pool, plus the pool's 100-sat deposit fee/);assert.equal(quotes,0);
-  take=400n;await assert.rejects(service.receive({via:'lightning',amount:1000n}),/quoted individual Lightning payout is below the shielded pool minimum of 330 sats after the pool's 100-sat deposit fee/);
-  take=undefined;await service.receive({via:'lightning',amount:1000n});
+  await assert.rejects(service.receive({via:'lightning',amount:429n}),/needs at least 330 sats to enter the shielded pool, plus the pool's 100-sat deposit fee/);assert.equal(quotes,0);
+  take=429n;await assert.rejects(service.receive({via:'lightning',amount:1000n}),/quoted individual Lightning payout is below the shielded pool minimum of 330 sats after the pool's 100-sat deposit fee/);
+  take=430n;assert.equal((await service.receive({via:'lightning',amount:430n})).take.amount,430n,'430 sats net exactly the minimum');
   const contract=f.contracts.at(-1)!,[ab,cd]=['ab'.repeat(32),'cd'.repeat(32)];
-  contract.vtxos=([[ab,0,400],[ab,1,431],[cd,0,400]] as const).map(([txid,vout,value])=>({txid,vout,value,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
+  contract.vtxos=([[ab,0,429],[ab,1,430],[cd,0,400]] as const).map(([txid,vout,value])=>({txid,vout,value,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
   const outcomes=Object.fromEntries((await service.getActivityHistory()).map(row=>[(row.intent?.metadata as {outpoint:string}).outpoint,row.intent?.outcome]));
   assert.deepEqual(outcomes,{[`${ab}:0`]:'below-minimum',[`${ab}:1`]:'received',[`${cd}:0`]:'received'},'an exit\'s payout the pool paid out owes no fee');
  }finally{await service[Symbol.asyncDispose]();}

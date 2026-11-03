@@ -486,7 +486,7 @@ for(const [name,state] of [['spent by a transaction outside this pool',{isSpent:
 
 const FEE=shieldedKeysOf(hash,'33'.repeat(32)),FEE_REFUSAL='A deposit of 1000 sats owes a 100-sat deposit fee to this pool; this one carries 0. Reload the page to shield at the current fee.';
 /** The pool starts charging a flat `fixedSats`, and the wallet accepts it as the page's banner would. */
-async function chargeFee(wallet:ShieldedWallet,fixedSats=100){wallet.pool={...wallet.pool,status:{...status,pool:{...status.pool!,depositFee:{fixedSats,bps:0,address:FEE.address}}}};await wallet.acceptDepositFee();}
+async function chargeFee(wallet:ShieldedWallet,fixedSats=100){const depositFee={fixedSats,bps:0,address:FEE.address};wallet.pool={...wallet.pool,status:{...status,pool:{...status.pool!,depositFee}}};await wallet.acceptDepositFee(depositFee);}
 const feePaid=async(body:EpochSpendBody)=>(await openRollupNotes(hex.decode(body.ciphertext),FEE.keys.viewSecret))[0]?.amount;
 
 test('a Lightning shield prepared before the fee is dropped on a fee refusal, its payout freed, and rebuilt with the fee',async()=>{
@@ -522,13 +522,16 @@ test('a saved Lightning shield is resent while deposits are paused and the fee w
 });
 
 test('a Lightning payout the fee would leave under the minimum is refused before it is prepared',async()=>{
- const store=new Store(),{wallet}=await funded(store),{child,coin,reference}=await payout();let proofs=0,posts=0;
+ const store=new Store(),{wallet}=await funded(store),{child,coin,reference}=await payout(),posted:EpochSpendBody[]=[];let proofs=0,posts=0;
  try{
   await chargeFee(wallet);
   wallet.prover={prove:async()=>{proofs++;throw new Error('The prover must not run');}};
   wallet.api=(async(path:string)=>{if(path==='/spends')posts++;throw new Error('The pool must not be asked');}) as PoolApi;
-  await assert.rejects(wallet.shieldLightning({...coin,value:400},child,store,{id:'small',reference}),/330-sat minimum after its 100-sat deposit fee/);
+  await assert.rejects(wallet.shieldLightning({...coin,value:429},child,store,{id:'small',reference}),/330-sat minimum after its 100-sat deposit fee/);
   assert.deepEqual([store.rows.size,proofs,posts],[0,0,0]);
+  wallet.prover=prover;wallet.api=includedApi(body=>posted.push(body as EpochSpendBody));
+  assert.equal((await (await wallet.shieldLightning({...coin,value:430},child,store,{id:'edge',reference})).settled()).txid,TXID,'430 sats net exactly the minimum');
+  assert.equal(await feePaid(posted[0]!),100n);
  }finally{await wallet.dispose();}
 });
 

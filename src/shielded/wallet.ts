@@ -109,7 +109,8 @@ export const shieldedSteps={
 } as const;
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
-const feePaused=(fee:DepositFeeSchedule)=>`Deposits are paused: this pool now charges a deposit fee of ${sats(fee.fixedSats)} sats or ${fee.bps} bps of the deposit, whichever is more, which is above what this wallet has accepted. Accept it with acceptDepositFee(), or pass maxDepositFee of at least {fixedSats:${fee.fixedSats},bps:${fee.bps}}.`;
+const feePaused=(fee:DepositFeeSchedule)=>`Deposits are paused: this pool now charges a deposit fee of ${sats(fee.fixedSats)} sats or ${fee.bps} bps of the deposit, whichever is more, which is above what this wallet has accepted. Once it is shown, accept it with acceptDepositFee({fixedSats:${fee.fixedSats},bps:${fee.bps}}), or pass maxDepositFee of at least that.`;
+const validSchedule=(value:unknown,name:string)=>{const schedule=parseDepositFeeSchedule(value);if(!schedule)throw new Error(`${name} must be {fixedSats,bps}: whole, non-negative numbers, with bps at most 10000.`);return schedule;};
 export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number;fee?:Parameters<typeof shieldPlan>[4]})=>
  shieldPlan(coins.filter(c=>!o.skip(c)&&!o.used.has(`${c.txid}:${c.vout}`)),o.listed,o.now,o.floorMs,o.fee);
 export const needsRenewal=(coins:readonly ArkCoin[],now:number,floorMs:number)=>coins.some(c=>c.expiresAt!==undefined&&c.expiresAt-now<=floorMs);
@@ -174,8 +175,7 @@ export class ShieldedWallet extends Wallet {
  private headExpiry?:number|null;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
-  const maxDepositFee=parseDepositFeeSchedule(config.maxDepositFee);
-  if(config.maxDepositFee!==undefined&&!maxDepositFee)throw new Error('maxDepositFee must be {fixedSats,bps}: whole, non-negative numbers, with bps at most 10000.');
+  const maxDepositFee=config.maxDepositFee===undefined?undefined:validSchedule(config.maxDepositFee,'maxDepositFee');
   const wallet=await super.create(config) as ShieldedWallet;
   try{
    config.onArkAddress?.(await wallet.getAddress());
@@ -197,9 +197,9 @@ export class ShieldedWallet extends Wallet {
  get depositFee():DepositFee|undefined{return depositFeeFor(this.pool.status);}
  get acceptedDepositFee():DepositFeeSchedule|undefined{return maxDepositFeeOf(this.maxDepositFee,this.feeAccepted);}
  get depositFeePaused():DepositFee|undefined{const fee=this.depositFee;return acceptsDepositFee(fee,this.acceptedDepositFee)?undefined:fee;}
- /** Raises the accepted schedule to the advertised one and saves it for this pool, then resumes auto-shield. */
- async acceptDepositFee():Promise<void>{
-  this.assertOpen();this.feeAccepted=maxDepositFeeOf(this.feeAccepted,this.depositFee);
+ /** Raises the accepted schedule to `shown`, the one the user saw, and saves it for this pool. Never the advertised one: a fee raised since stays paused. */
+ async acceptDepositFee(shown:DepositFeeSchedule):Promise<void>{
+  this.assertOpen();this.feeAccepted=maxDepositFeeOf(this.feeAccepted,validSchedule(shown,'The accepted schedule'));this.retryAt=0;
   await this.persist();this.changed();void this.autoShield().catch(()=>{});
  }
  /** What `plan`'s deposit pays, for a plan planFor returned: its exemption is exact only for the planner's output. */
