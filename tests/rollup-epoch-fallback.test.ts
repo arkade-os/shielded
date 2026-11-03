@@ -24,7 +24,7 @@ import {buildEpochFallbackBatch,openEpochReplica,type EpochFallbackSpend,type Ep
 import {indexerBatchWalker,type BatchIndexer} from '../src/rollup/external.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {rollupSpecOf,type RollupService} from '../src/rollup/service.ts';
-import {cacheBatch,cacheEpochArchive,replayEpochMirror} from '../tools/rollup-cache.ts';
+import {cacheBatch,cacheEpochArchive,checkEpochMirror,replayEpochMirror} from '../tools/rollup-cache.ts';
 import {epochPool,opens,posted} from './fixtures/epoch-pool.ts';
 import {hash,le32,listen,proof as stub,scratch,token} from './fixtures/epoch-service.ts';
 import {executeVmBinary,offlineNativeFixture} from './fixtures/native.ts';
@@ -139,6 +139,16 @@ test('a stale replica catches up from the chain to the head\'s commitment and on
  assert.deepEqual(replica.records.slice(9).map(r=>[r.txid,r.kind,r.at]),[[chain[9]!.id,'recover',undefined],[chain[10]!.id,'spend',undefined]],'placeholders, which no pool stamps with at');
  assert.equal(replica.state.commitment(),world.state.commitment());
  replica.preload(0);
+});
+
+test('a mirror checks out against the chain only when its replay reaches the commitment its last record\'s transaction carries',async()=>{
+ const chain=chainOf(world.records),txOf=async(txid:string)=>chain.find(t=>t.id===txid);
+ const records=world.records.map((r,i)=>({...r,txid:chain[i]!.id}));
+ assert.deepEqual(await checkEpochMirror(mirrorOf(records),hash,EPOCH_LEN,txOf),{batches:records.length,commitment:world.state.commitment()});
+ const forged=records.map((r,i)=>i===1?{...r,noteBlockRoot:String(BigInt(r.noteBlockRoot)+1n)}:r);
+ await assert.rejects(checkEpochMirror(mirrorOf(forged),hash,EPOCH_LEN,txOf),/replay to commitment \d+, but batch \d+'s transaction carries/,'an earlier record that is not the chain\'s');
+ await assert.rejects(checkEpochMirror(mirrorOf(records),hash,EPOCH_LEN,async()=>undefined),/carries no rollup state packet/);
+ await assert.rejects(checkEpochMirror(mirrorOf(records.map(({txid:_,...r})=>r)),hash,EPOCH_LEN,txOf),/names no transaction/);
 });
 
 test('a chain walk the indexer never ends stops at its cap with a labelled error, leaving the replica unbound',async()=>{

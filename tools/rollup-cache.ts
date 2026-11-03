@@ -2,10 +2,12 @@ import {randomUUID} from 'node:crypto';
 import {closeSync,existsSync,fsyncSync,linkSync,mkdirSync,openSync,readdirSync,readFileSync,renameSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
+import {Extension,type Transaction} from '@arkade-os/sdk';
 import {EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {chainOnly} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import type {Hash} from '../packages/protocol/src/rollup/notes.ts';
+import {ROLLUP_STATE_PACKET} from '../src/rollup/covenant.ts';
 import {epochNfArchivePath,readEpochNfArchive} from '../src/rollup/epoch-archive-file.ts';
 
 const read=(dir:string,index:number)=>JSON.parse(readFileSync(join(dir,'batches',`${index}.json`),'utf8')) as RollupEpochRecord;
@@ -25,6 +27,18 @@ export function replayEpochMirror(dir:string,hash:Hash,epochLen:number):EpochSta
  const state=EpochState.genesis(hash,epochLen,false);
  for(const index of cachedBatchNumbers(dir)){const r=read(dir,index);state.applyFromChain(r.kind,r.slots.map(s=>s.nullifiers.map(BigInt)),BigInt(r.noteBlockRoot));}
  return state;
+}
+/** Binds the mirrored records to the chain: their replay must reach the commitment the last record's own transaction carries, which every earlier record feeds. */
+export async function checkEpochMirror(dir:string,hash:Hash,epochLen:number,txOf:(txid:string)=>Promise<Transaction|undefined>):Promise<{batches:number;commitment:bigint}>{
+ const numbers=cachedBatchNumbers(dir);
+ if(!numbers.length)throw new Error('The mirror holds no batch records.');
+ const last=read(dir,numbers.length-1);
+ if(!last.txid)throw new Error(`Batch ${numbers.length-1} names no transaction to check against.`);
+ const tx=await txOf(last.txid),packet=tx&&Extension.fromTx(tx).getPacketByType(ROLLUP_STATE_PACKET)?.serialize();
+ if(!packet)throw new Error(`Transaction ${last.txid} carries no rollup state packet.`);
+ const commitment=replayEpochMirror(dir,hash,epochLen).commitment(),chained=packet.subarray(0,32).reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n);
+ if(commitment!==chained)throw new Error(`The mirrored records replay to commitment ${commitment}, but batch ${numbers.length-1}'s transaction carries ${chained}.`);
+ return {batches:numbers.length,commitment};
 }
 /** Writes an epoch's nullifier archive only once it rebuilds the root `state` archived for that epoch, never a root the pool asserts. */
 export function cacheEpochArchive(dir:string,state:EpochState,epoch:number,bytes:Uint8Array,hash:Hash):void{

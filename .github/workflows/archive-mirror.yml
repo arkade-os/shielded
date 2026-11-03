@@ -10,7 +10,40 @@ env:
   POOL_URL: https://shielded.mutinynet.arkade.sh
   RELEASE_TAG: rollup-genesis-4-archives
 jobs:
+  # Runs the repository's npm dependencies, so it holds no write token; the release job runs only Node's standard library.
   mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      mirrored: ${{ steps.mirror.outcome }}
+      archives: ${{ steps.archives.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      # Writes each archive only once it rebuilds the root its mirrored records replay to; one refusal does not hold back the rest.
+      - name: Mirror the pool's records and the archives they check
+        id: mirror
+        continue-on-error: true
+        run: node --import tsx tools/rollup-fallback.ts mirror --no-keys "$POOL_URL" "$RUNNER_TEMP/mirror"
+      - name: Check the mirrored records against the chain
+        run: node --import tsx tools/rollup-fallback.ts check "$RUNNER_TEMP/mirror"
+      - id: archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: archives
+          path: ${{ runner.temp }}/mirror/nullifiers/epoch-*.nf
+          if-no-files-found: ignore
+          retention-days: 1
+  release:
+    needs: mirror
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -19,77 +52,49 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
-      - name: Copy the closed epoch archives into the release
+      - if: needs.mirror.outputs.archives
+        uses: actions/download-artifact@v4
+        with:
+          name: archives
+          path: archives
+      - name: Upload the checked archives the release lacks or holds differently
         run: |
           node --input-type=module <<'JS'
           import {spawnSync} from 'node:child_process';
           import {createHash} from 'node:crypto';
-          import {mkdtempSync, writeFileSync} from 'node:fs';
-          import {tmpdir} from 'node:os';
-          import {join} from 'node:path';
+          import {existsSync, readdirSync, readFileSync} from 'node:fs';
 
           const {POOL_URL, RELEASE_TAG} = process.env;
-          const get = path => fetch(`${POOL_URL}/api/rollup${path}`, {signal: AbortSignal.timeout(60_000)});
           const gh = (...args) => {
             const {status, stdout, stderr, error} = spawnSync('gh', args, {encoding: 'utf8'});
             if (status !== 0) throw new Error(`gh ${args.slice(0, 2).join(' ')}: ${stderr?.trim() || error}`);
             return stdout;
           };
-          const fail = error => {
-            console.log(`::error::${error.message.split(/[\r\n]/)[0]}${error.cause?.code ? ` (${error.cause.code})` : ''}`);
-            process.exitCode = 1;
-          };
 
-          // The envelope only: each reader checks the file against its own ER root, so this host needs no trust.
-          const refusal = (bytes, epoch) => {
-            if (bytes.length < 46) return `${bytes.length} bytes is shorter than an empty archive`;
-            const body = 14 + 36 * bytes.readUInt32LE(10);
-            if (bytes.length !== body + 32) return `${bytes.length} bytes does not fit its leaf count`;
-            if (bytes.toString('latin1', 0, 4) !== 'SHNA' || bytes.readUInt16LE(4) !== 1) return 'not a version-1 nullifier archive';
-            if (bytes.readUInt32LE(6) !== epoch) return `labelled epoch ${bytes.readUInt32LE(6)}`;
-            if (!createHash('sha256').update(bytes.subarray(0, body)).digest().equals(bytes.subarray(body))) return 'checksum mismatch';
-          };
-
-          async function main() {
-            const listing = await get('/archives');
-            // A 404 (a proxy with no router, a pool without the route) is a fault.
-            if (!listing.ok) throw new Error(`GET /archives answered ${listing.status}`);
-            const {epochs} = await listing.json();
-            if (!Array.isArray(epochs) || !epochs.every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error('GET /archives did not list epoch numbers');
-            if (!epochs.length) {
-              console.log('No epoch has closed yet; nothing to mirror.');
-              return;
-            }
-
-            let assets;
-            try {
-              assets = JSON.parse(gh('release', 'view', RELEASE_TAG, '--json', 'assets')).assets;
-            } catch (error) {
-              if (!/release not found/.test(error.message)) throw error;
-              gh('release', 'create', RELEASE_TAG, '--latest=false', '--title', 'Rollup genesis-4 nullifier archives (Mutinynet, epoch pool)', '--notes', `Byte copies of the closed epochs' nullifier archives served at ${POOL_URL}/api/rollup/archives. Each reader checks a file against its own epoch root, so this host needs no trust.`);
-              assets = [];
-            }
-            // A failed upload can leave a half-open asset under the name; --clobber below replaces it.
-            const held = new Set(assets.filter(a => a.state === 'uploaded').map(a => a.name));
-            const missing = epochs.filter(n => !held.has(`epoch-${n}.nf`));
-            console.log(`${epochs.length} closed epoch(s) listed, ${missing.length} to mirror.`);
-
-            const dir = mkdtempSync(join(tmpdir(), 'archives-'));
-            for (const epoch of missing) {
-              const name = `epoch-${epoch}.nf`;
-              try {
-                const answer = await get(`/archives/${name}`);
-                if (!answer.ok) throw new Error(`GET /archives/${name} answered ${answer.status}`);
-                const bytes = Buffer.from(await answer.arrayBuffer());
-                const fault = refusal(bytes, epoch);
-                if (fault) throw new Error(`${name} refused: ${fault}`);
-                writeFileSync(join(dir, name), bytes);
-                gh('release', 'upload', RELEASE_TAG, join(dir, name), '--clobber');
-                console.log(`Uploaded ${name} (${bytes.length} bytes).`);
-              } catch (error) {
-                fail(error);
-              }
-            }
+          const names = existsSync('archives') ? readdirSync('archives').filter(name => /^epoch-(0|[1-9]\d*)\.nf$/.test(name)) : [];
+          if (!names.length) {
+            console.log('No closed epoch has a checked archive yet; nothing to upload.');
+            process.exit(0);
           }
-          await main().catch(fail);
+          let assets;
+          try {
+            assets = JSON.parse(gh('release', 'view', RELEASE_TAG, '--json', 'assets')).assets;
+          } catch (error) {
+            if (!/release not found/.test(error.message)) throw error;
+            gh('release', 'create', RELEASE_TAG, '--latest=false', '--title', 'Rollup genesis-4 nullifier archives (Mutinynet, epoch pool)', '--notes', `Copies of the closed epochs' nullifier archives served at ${POOL_URL}/api/rollup/archives, each uploaded only after it rebuilt the root that pool records bound to the chain replay to. Each reader still checks a file against its own epoch root.`);
+            assets = [];
+          }
+          for (const name of names) {
+            const bytes = readFileSync(`archives/${name}`), digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+            // A failed upload can leave a half-open asset under the name; --clobber replaces it.
+            const held = assets.find(a => a.name === name && a.state === 'uploaded');
+            if (held?.digest === digest) continue;
+            gh('release', 'upload', RELEASE_TAG, `archives/${name}`, '--clobber');
+            console.log(held ? `::warning::Replaced ${name}: the release held ${held.digest ?? 'a copy with no digest'}, not the checked ${digest}.` : `Uploaded ${name} (${bytes.length} bytes).`);
+          }
           JS
+      - name: Fail the run when the mirror refused anything
+        if: needs.mirror.outputs.mirrored == 'failure'
+        run: |
+          echo '::error::The mirror step failed; its log in the mirror job names what it refused.'
+          exit 1
