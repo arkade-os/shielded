@@ -10,6 +10,7 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {base64,hex} from '@scure/base';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
+import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {IndexedDbLightningRepository,InMemoryLightningRepository,type LightningRepository} from '../src/shielded/lightning-repository.ts';
 import {LightningSessionBusy,artifactWallet,createPrivateLightning,lightningOwner,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
 import {ShieldedWallet} from '../src/shielded/wallet.ts';
@@ -934,6 +935,57 @@ test('a receive quote whose net payout falls below the pool minimum is never acc
   accept:async()=>{accepts++;throw new Error('must not accept');}};};
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
  try{await assert.rejects(service.receive({via:'lightning',amount:330n}),/quoted individual Lightning payout is below.*330 sats/);assert.equal(accepts,0);assert.equal(f.funded.length,0);}finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a receive the deposit fee would leave under the pool minimum is refused before its invoice, and such a payout shows below the minimum',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();let quotes=0,take:bigint|undefined;
+ Object.assign(f.wallet,{depositFee:{fixedSats:100,bps:0,address:rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)})},isPoolPayout:(c:{txid:string})=>c.txid==='cd'.repeat(32)});
+ const clientFactory=(config:SwapClientConfig)=>{const client=f.clientFactory(config),quote=client.quote;return {...client,
+  quote:async(input:Parameters<SwapClient['quote']>[0])=>{quotes++;const quoted=await quote(input);return take===undefined?quoted:{...quoted,take:{...quoted.take,amount:take}};}};};
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await assert.rejects(service.receive({via:'lightning',amount:429n}),/needs at least 330 sats to enter the shielded pool, plus the pool's 100-sat deposit fee/);assert.equal(quotes,0);
+  take=429n;await assert.rejects(service.receive({via:'lightning',amount:1000n}),/quoted individual Lightning payout is below the shielded pool minimum of 330 sats after the pool's 100-sat deposit fee/);
+  take=430n;assert.equal((await service.receive({via:'lightning',amount:430n})).take.amount,430n,'430 sats net exactly the minimum');
+  const contract=f.contracts.at(-1)!,[ab,cd]=['ab'.repeat(32),'cd'.repeat(32)];
+  contract.vtxos=([[ab,0,429],[ab,1,430],[cd,0,400]] as const).map(([txid,vout,value])=>({txid,vout,value,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
+  const outcomes=Object.fromEntries((await service.getActivityHistory()).map(row=>[(row.intent?.metadata as {outpoint:string}).outpoint,row.intent?.outcome]));
+  assert.deepEqual(outcomes,{[`${ab}:0`]:'below-minimum',[`${ab}:1`]:'received',[`${cd}:0`]:'received'},'an exit\'s payout the pool paid out owes no fee');
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('the Lightning scan resends saved shields, but leaves a new payout waiting while paused, and outside when the fee would eat it',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],fee={fixedSats:100,bps:0,address:rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)})};
+ Object.assign(f.wallet,{depositFee:fee,depositFeePaused:fee,isPoolPayout:()=>false});
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
+ try{
+  await service.receive({via:'lightning',amount:1000n});
+  const contract=f.contracts[0]!,coins=([[0,1000],[1,400],[2,400]] as const).map(([vout,value])=>({txid:'ab'.repeat(32),vout,value,script:contract.script,createdAt:new Date(1000+vout)}));
+  await journal.create(shieldingRecord('saved',coins[2]));
+  f.base.getVtxos=async()=>coins as never;
+  for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:contract.script,vtxos:coins});
+  await flushTasks();
+  assert.deepEqual([...new Set(f.shielded.map(args=>(args[3] as {id:string}).id))],['saved'],'only the saved attempt is sent, though paused and under the floor');
+  assert.deepEqual(errors.map(error=>error.message),['This individual Lightning payout is below the pool minimum of 330 sats after its 100-sat deposit fee and cannot be shielded alone.'],'no pause message, only the payout the fee would eat');
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+test('an exit payout refused for its fee is judged with that fee, so one the fee would eat stays outside and is not retried',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],exit='cd'.repeat(32),fee={fixedSats:100,bps:0,address:rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)})};
+ Object.assign(f.wallet,{depositFee:fee,isPoolPayout:(c:{txid:string})=>c.txid===exit});
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
+ try{
+  await service.receive({via:'lightning',amount:1000n});
+  const contract=f.contracts[0]!,coins=[0,1].map(vout=>({txid:exit,vout,value:400,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
+  for(const [vout,code] of [[0,'fee-missing'],[1,'window-tag']] as const){const record=shieldingRecord(`dropped-${vout}`,coins[vout]!);await journal.create(record);await journal.finish(owner,pool,record.id,{state:'dropped',reason:'refused',code});}
+  contract.vtxos=coins;f.base.getVtxos=async()=>coins as never;
+  for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:contract.script,vtxos:coins});
+  await flushTasks();
+  assert.deepEqual(f.shielded.map(args=>(args[3] as {reference:string}).reference),[`${exit}:1`],'only the payout a window-tag drop left exempt is tried again');
+  assert.deepEqual(errors.map(error=>error.message),['This individual Lightning payout is below the pool minimum of 330 sats after its 100-sat deposit fee and cannot be shielded alone.']);
+  const outcomes=Object.fromEntries((await service.getActivityHistory()).map(row=>[(row.intent?.metadata as {outpoint:string}).outpoint,row.intent?.outcome]));
+  assert.deepEqual(outcomes,{[`${exit}:0`]:'below-minimum',[`${exit}:1`]:'retrying'});
+ }finally{await service[Symbol.asyncDispose]();}
 });
 
 test('stored HTLC funding rejects altered amount, assets, extra selection and wrong destination',async()=>{

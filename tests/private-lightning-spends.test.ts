@@ -8,7 +8,8 @@ import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {lightningSpendConflict,sameLightningSpendRequest,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from '../src/shielded/lightning-spend.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
-import {ShieldedWallet,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {openRollupNotes} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupApi,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
 import {batchWitnessOutput} from './fixtures/batch-witness.ts';
 import {epochPool,fromBody,posted} from './fixtures/epoch-pool.ts';
@@ -482,6 +483,83 @@ for(const [name,state] of [['spent by a transaction outside this pool',{isSpent:
    assert.equal(wallet.planFor([{txid:coin.txid,vout:coin.vout,value:coin.value}],false),undefined,'the payout coin stays reserved');
   }finally{await wallet.dispose();}
  });
+
+const FEE=shieldedKeysOf(hash,'33'.repeat(32)),FEE_REFUSAL='A deposit of 1000 sats owes a 100-sat deposit fee to this pool; this one carries 0. Reload the page to shield at the current fee.';
+/** The pool starts charging a flat `fixedSats`, and the wallet accepts it as the page's banner would. */
+async function chargeFee(wallet:ShieldedWallet,fixedSats=100){const depositFee={fixedSats,bps:0,address:FEE.address};wallet.pool={...wallet.pool,status:{...status,pool:{...status.pool!,depositFee}}};await wallet.acceptDepositFee(depositFee);}
+const feePaid=async(body:EpochSpendBody)=>(await openRollupNotes(hex.decode(body.ciphertext),FEE.keys.viewSecret))[0]?.amount;
+
+test('a Lightning shield prepared before the fee is dropped on a fee refusal, its payout freed, and rebuilt with the fee',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout(),posted:EpochSpendBody[]=[];
+ try{
+  sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
+  wallet.api=refusedApi(pool,refusal('busy','pool unavailable'));
+  await assert.rejects((await wallet.shieldLightning(coin,child,store,{id:'before-fee',reference})).settled(),/pool unavailable/);
+  const saved=clone(store.rows.get('before-fee')!);assert.equal(saved.state,'prepared');
+  await chargeFee(wallet);
+  wallet.api=refusedApi(pool,refusal('fee-missing',FEE_REFUSAL),body=>posted.push(body as EpochSpendBody));
+  await assert.rejects((await wallet.shieldLightning(coin,child,store,{id:'before-fee',reference})).settled(),/owes a 100-sat deposit fee/);
+  const dropped=store.rows.get('before-fee')!;
+  assert.deepEqual([posted,dropped.state],[[saved.body],'dropped'],'the saved proof is sent unchanged, and the refusal finishes it');
+  assert.equal((wallet as any).used.has(reference),false,'its payout is released');
+  wallet.api=includedApi(body=>posted.push(body as EpochSpendBody));
+  assert.equal((await (await wallet.shieldLightning(coin,child,store,{id:'after-fee',reference})).settled()).txid,TXID);
+  assert.equal(await feePaid(posted[1]!),100n,'the rebuilt shield pays the fee in output 0');
+ }finally{await wallet.dispose();}
+});
+
+test('a saved Lightning shield is resent while deposits are paused and the fee would eat it, so the pool still decides it',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout(),small={...coin,value:400};
+ try{
+  sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
+  wallet.api=refusedApi(pool,refusal('busy','pool unavailable'));
+  await assert.rejects((await wallet.shieldLightning(small,child,store,{id:'saved',reference})).settled(),/pool unavailable/);
+  wallet.pool={...wallet.pool,status:{...status,pool:{...status.pool!,depositFee:{fixedSats:100,bps:0,address:FEE.address}}}};assert.ok(wallet.depositFeePaused);
+  wallet.api=refusedApi(pool,refusal('fee-missing',FEE_REFUSAL));
+  await assert.rejects(async()=>(await wallet.shieldLightning(small,child,store,{id:'saved',reference})).settled(),/owes a 100-sat deposit fee/);
+  assert.deepEqual([store.rows.get('saved')!.state,(wallet as any).used.has(reference)],['dropped',false]);
+ }finally{await wallet.dispose();}
+});
+
+test('a Lightning payout the fee would leave under the minimum is refused before it is prepared',async()=>{
+ const store=new Store(),{wallet}=await funded(store),{child,coin,reference}=await payout(),posted:EpochSpendBody[]=[];let proofs=0,posts=0;
+ try{
+  await chargeFee(wallet);
+  wallet.prover={prove:async()=>{proofs++;throw new Error('The prover must not run');}};
+  wallet.api=(async(path:string)=>{if(path==='/spends')posts++;throw new Error('The pool must not be asked');}) as PoolApi;
+  await assert.rejects(wallet.shieldLightning({...coin,value:429},child,store,{id:'small',reference}),/330-sat minimum after its 100-sat deposit fee/);
+  assert.deepEqual([store.rows.size,proofs,posts],[0,0,0]);
+  wallet.prover=prover;wallet.api=includedApi(body=>posted.push(body as EpochSpendBody));
+  assert.equal((await (await wallet.shieldLightning({...coin,value:430},child,store,{id:'edge',reference})).settled()).txid,TXID,'430 sats net exactly the minimum');
+  assert.equal(await feePaid(posted[0]!),100n);
+ }finally{await wallet.dispose();}
+});
+
+test('a Lightning exit payout the pool paid out shields fee-free, and pays only after the pool refuses it for the fee',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout(),posted:EpochSpendBody[]=[];
+ try{
+  sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
+  await chargeFee(wallet);wallet.account.txids.add(coin.txid);
+  for(const [id,code,message] of [['exit-1','window-tag',WINDOW_TAG],['exit-2','fee-missing',FEE_REFUSAL]] as const){
+   wallet.api=refusedApi(pool,refusal(code,message),body=>posted.push(body as EpochSpendBody));
+   await assert.rejects((await wallet.shieldLightning(coin,child,store,{id,reference})).settled(),code==='window-tag'?/window leaf/:/deposit fee/);
+  }
+  wallet.api=includedApi(body=>posted.push(body as EpochSpendBody));
+  await (await wallet.shieldLightning(coin,child,store,{id:'exit-3',reference})).settled();
+  assert.deepEqual(await Promise.all(posted.map(feePaid)),[undefined,undefined,100n],'a window-tag drop leaves it exempt, and only the fee refusal makes the next attempt pay');
+ }finally{await wallet.dispose();}
+});
+
+test('a fee refusal on a Lightning shield reads the fee again, so the next attempt meets the one the pool charges now',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout(),raised={fixedSats:200,bps:0,address:FEE.address},refused=refusedApi(pool,refusal('fee-missing',FEE_REFUSAL));
+ try{
+  sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
+  await chargeFee(wallet);
+  wallet.api=(async(path:string,body?:unknown)=>path==='/status'?{...status,pool:{...status.pool!,depositFee:raised}}:refused(path,body)) as PoolApi;
+  await assert.rejects((await wallet.shieldLightning(coin,child,store,{id:'stale-fee',reference})).settled(),/owes a 100-sat deposit fee/);
+  assert.deepEqual([store.rows.get('stale-fee')!.state,wallet.depositFee,wallet.depositFeePaused],['dropped',raised,raised],'200 is above the 100 accepted, so the next attempt waits for it');
+ }finally{await wallet.dispose();}
+});
 
 test('a stale-anchor refusal still drops at once, on the pool verdict alone and without reading a batch',async()=>{
  const store=new Store(),{wallet,pool}=await funded(store);const reason='The spend opens against another previous-epoch root than the next batch does; prove it again.';let batches=0;

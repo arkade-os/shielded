@@ -6,15 +6,17 @@ import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
-import {BATCH_SLOTS,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {BATCH_SLOTS,BTC_ASSET,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import type {DepositFee,DepositFeeSchedule} from '../packages/protocol/src/rollup/deposit-fee.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src/rollup/notes.ts';
+import {openRollupNotes,parseRollupAddress} from '../packages/protocol/src/rollup/wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
-import type {EpochSpendBody} from '../src/shielded/epoch-pool.ts';
+import {epochTransferBody,type EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
@@ -24,8 +26,8 @@ const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de000
 const POOL_SCRIPT='5120e2d99617ad6f0911ce658123284c11e2dbf2ed7eaa3b7b5eb9804173c674016e';
 const POOL_ADDRESS='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mcfz88xtqfr9pxprckm7tkha23m0d0tnqzpw0r8gqtwfz8ete';
 const EPOCH_LEN=128,{pool:genesis}=await epochPool(hash,EPOCH_LEN).api<RollupPoolStatus>('/status');
-const status=(batches:number,root=genesis!.root):RollupPoolStatus=>({phase:'ready',message:'',proving:{spend:{wasm:'a',zkey:'b'},join:{wasm:'c',zkey:'d'},batch:{wasm:'e',zkey:'f'},batchJoin:{wasm:'g',zkey:'h'}},
- pool:{token:TOKEN,address:POOL_ADDRESS,script:POOL_SCRIPT,batches,root,head:{txid:'ab'.repeat(32),vout:0,value:1000},pending:0,padding:0,reserves:{},epoch:0,epochLen:EPOCH_LEN,prevNoteRoot:genesis!.prevNoteRoot}});
+const status=(batches:number,root=genesis!.root,depositFee?:DepositFee):RollupPoolStatus=>({phase:'ready',message:'',proving:{spend:{wasm:'a',zkey:'b'},join:{wasm:'c',zkey:'d'},batch:{wasm:'e',zkey:'f'},batchJoin:{wasm:'g',zkey:'h'}},
+ pool:{token:TOKEN,address:POOL_ADDRESS,script:POOL_SCRIPT,batches,root,head:{txid:'ab'.repeat(32),vout:0,value:1000},pending:0,padding:0,reserves:{},epoch:0,epochLen:EPOCH_LEN,prevNoteRoot:genesis!.prevNoteRoot,...(depositFee?{depositFee}:{})}});
 const chainOnlyRecord=(txid:string):RollupEpochRecord=>({kind:'spend',noteBlockRoot:'0',txid,slots:Array.from({length:BATCH_SLOTS},(_,s)=>({anchor:'0',nullifiers:[String(s+1)],commitments:['0','0'] as [string,string],ctDigest:'0',groupId:'0',groupSize:0,publics:[]}))});
 
 const prover:ShieldedProver={prove:async()=>({pi_a:[],pi_b:[],pi_c:[]})};
@@ -35,14 +37,14 @@ const indexer={getVtxos:async()=>({vtxos:[],page:undefined}),getVirtualTxs:async
 const onchain={getCoins:async()=>[],getTransactions:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never;
 
 /** Counts what the pool was asked for, so a resumed wallet can be shown not to re-read the published batches. */
-function poolFetcher(batches:number,root?:string){
+function poolFetcher(batches:number,root?:string,depositFee?:DepositFee){
  const paths:string[]=[];let empty=0;
  const fetcher=(async(url:string)=>{
   const path=String(url).replace('/api/rollup','');
   paths.push(path);
   empty=path.startsWith('/batches')&&Number(/from=(\d+)/.exec(path)?.[1])<batches?empty+1:0;
   if(empty>3)throw new Error('the wallet kept asking for pages after an empty one');
-  const body=path==='/status'?status(batches,root):path.startsWith('/batches')?{total:batches,batches:[]}:{};
+  const body=path==='/status'?status(batches,root,depositFee):path.startsWith('/batches')?{total:batches,batches:[]}:{};
   return new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}});
  }) as unknown as typeof fetch;
  return {fetcher,paths};
@@ -51,11 +53,11 @@ const fetcherOf=(api:PoolApi)=>(async(url:string)=>{
  try{return new Response(JSON.stringify(await api(String(url).replace('/api/rollup',''))),{status:200});}
  catch(error){return new Response(JSON.stringify({error:(error as Error).message}),{status:(error as {status?:number}).status??404});}
 }) as unknown as typeof fetch;
-const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void}={})=>
+const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:indexer,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
-  pool:{origin:'',status:status(o.batches??0)},secret:o.secret??'11'.repeat(32),hash,prover,
-  fetcher:o.fetcher??poolFetcher(o.batches??0).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{})});
+  pool:{origin:'',status:status(o.batches??0,undefined,o.depositFee)},secret:o.secret??'11'.repeat(32),hash,prover,
+  fetcher:o.fetcher??poolFetcher(o.batches??0,undefined,o.depositFee).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{}),...(o.maxDepositFee?{maxDepositFee:o.maxDepositFee}:{})});
 
 // The spec's written-first test: the inherited factory must produce the subclass against the patched SDK.
 test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',async()=>{
@@ -342,9 +344,11 @@ const flush=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
 const coin=(txid='aa'.repeat(32),value=500)=>({txid,vout:0,value});
 const fakeSpend=()=>({witness:{slot:{root:0n,nullifiers:[1n],commitments:[2n,3n],ctDigest:4n,groupId:0n,groupSize:0},publicSignals:[],input:{}},slot:{anchor:0n,rCur:{epoch:0,root:0n},nullifiers:[1n],commitments:[2n,3n],ctDigest:4n,groupId:0n,groupSize:0},ciphertext:new Uint8Array(),change:0n} as unknown as EpochBuiltSpend);
 function readyDeposit(wallet:ShieldedWallet){
+ const requests:unknown[]=[];
  (wallet as any).depositCoin=async(txid:string,value:number)=>({...coin(txid,value),tapTree:'aa',leaf:'bb'});
- wallet.account.spend=async()=>fakeSpend();
+ wallet.account.spend=async request=>{requests.push(request);return fakeSpend();};
  wallet.account.depositAsset=async()=>[fakeSpend(),fakeSpend()];
+ return requests;
 }
 
 for(const asset of [false,true]){
@@ -496,6 +500,219 @@ test('auto-shield catches up before planning a newly received pool payout',async
   await (wallet as any).autoShield();await flush();
   assert.equal(wallet.isPoolPayout(input),true);assert.equal(posts,0);
   assert.equal((wallet as any).used.size,0);
+ }finally{await wallet.dispose();}
+});
+
+const FEE=shieldedKeysOf(hash,'33'.repeat(32)),feeOf=(fixedSats:number,bps=0):DepositFee=>({fixedSats,bps,address:FEE.address});
+const feeTo=(amount:bigint)=>({recipient:parseRollupAddress(FEE.address),amount});
+/** A pool advertising `fee` that answers its first `refused` POSTs fee-missing and includes the rest. */
+function feePool(fee?:DepositFee,refused=0){
+ const bodies:EpochSpendBody[]=[],asked:string[]=[];
+ const api=(async(path:string,body?:EpochSpendBody)=>{
+  asked.push(path);
+  if(path==='/status')return status(0,undefined,fee);
+  if(path==='/spends'){bodies.push(body!);if(bodies.length<=refused)throw Object.assign(new Error('This deposit owes a deposit fee to this pool. Reload the page to shield at the current fee.'),{status:400,code:'fee-missing'});return {};}
+  return path.startsWith('/spends/')?{status:'included',txid:'cc'.repeat(32)}:{total:0,batches:[]};
+ }) as PoolApi;
+ return {api,bodies,asked};
+}
+/** Undefined unless `promise` settles within `ms`, so a regression fails the test rather than hanging it. */
+const within=<T,>(promise:Promise<T>,ms=3000)=>{let timer:ReturnType<typeof setTimeout>|undefined;return Promise.race([promise,new Promise<undefined>(resolve=>{timer=setTimeout(resolve,ms,undefined);})]).finally(()=>clearTimeout(timer));};
+
+test('a deposit on a pool with a fee pays it to the fee address in output 0 and keeps the change',async()=>{
+ const fee=feeOf(100),wallet=await open({depositFee:fee,maxDepositFee:fee}),pool=feePool(fee),requests:unknown[]=[];
+ (wallet as any).depositCoin=async(txid:string,value:number)=>({...coin(txid,value),tapTree:'aa',leaf:'bb'});
+ const spend=wallet.account.spend.bind(wallet.account);wallet.account.spend=async(request,...rest)=>{requests.push(request);return spend(request,...rest);};
+ wallet.api=pool.api;
+ try{
+  await (await wallet.shield([coin('aa'.repeat(32),10_000)]))!.settled();
+  assert.deepEqual(requests,[{deposit:10_000n,to:feeTo(100n)}]);
+  const [body]=pool.bodies,record=hex.decode(body!.ciphertext),[paid]=await openRollupNotes(record,FEE.keys.viewSecret),[,change]=await openRollupNotes(record,shieldedKeysOf(hash,'11'.repeat(32)).keys.viewSecret);
+  assert.deepEqual([body!.publics[3],paid?.amount,paid?.asset,change?.amount],['10000',100n,0n,9_900n]);
+  assert.equal(noteOf(hash,ROLLUP_DOMAIN,paid!.amount,0n,FEE.self.owner,paid!.rho),BigInt(body!.slot.commitments[0]!),'output 0 commits to the fee note, as the operator checks');
+ }finally{await wallet.dispose();}
+});
+
+test('a pool with no fee builds the same deposit as before',async()=>{
+ const wallet=await open(),requests=readyDeposit(wallet),pool=feePool(),input=coin('aa'.repeat(32),10_000),deposited={...input,tapTree:'aa',leaf:'bb'};
+ wallet.api=pool.api;
+ try{
+  await (await wallet.shield([input]))!.settled();
+  assert.deepEqual(requests,[{deposit:10_000n}]);
+  assert.deepEqual(pool.bodies,[epochTransferBody(pool.bodies[0]!.id,fakeSpend(),{pi_a:[],pi_b:[],pi_c:[]},{coin:deposited})]);
+ }finally{await wallet.dispose();}
+});
+
+test('a deposit of a coin the pool paid out carries no fee',async()=>{
+ const fee=feeOf(100),wallet=await open({depositFee:fee,maxDepositFee:fee}),requests=readyDeposit(wallet),payout=coin('ab'.repeat(32),400),plain=coin('cd'.repeat(32),10_000);
+ wallet.account.txids.add(payout.txid);wallet.api=feePool(fee).api;
+ try{
+  assert.deepEqual([wallet.depositFeeOnPlan(wallet.planFor([payout],false)!),wallet.depositFeeOnPlan(wallet.planFor([plain])!)],[0n,100n],'what the page shows for each');
+  assert.equal(await wallet.shield([coin('ef'.repeat(32),400)]),undefined,'a plain coin of the same 400 sats stays outside, since the fee would eat it');
+  await (await wallet.shield([payout]))!.settled();
+  assert.deepEqual(requests,[{deposit:400n}],'charged, 400 sats would net under the minimum');
+ }finally{await wallet.dispose();}
+});
+
+test('an asset deposit pays the carrier fee on its BTC leg, and nothing on a dust carrier',async()=>{
+ const fee=feeOf(100),wallet=await open({depositFee:fee,maxDepositFee:fee}),carriers:unknown[]=[];
+ try{
+  const [,carrier]=await wallet.account.depositAsset(assetFieldOfId(TOKEN),5n,1000n,wallet.self,feeTo(100n));
+  assert.equal((await openRollupNotes(carrier.ciphertext,FEE.keys.viewSecret))[0]?.amount,100n,'the carrier leg\'s output 0 is the fee note');
+  readyDeposit(wallet);wallet.api=feePool(fee).api;wallet.pool.status.pool!.reserves={[TOKEN]:'10'};
+  wallet.account.depositAsset=async(...args)=>{carriers.push(args[4]);return [fakeSpend(),fakeSpend()];};
+  for(const [txid,value] of [['a1'.repeat(32),1000],['a2'.repeat(32),330]] as const)await (await wallet.shield([{...coin(txid,value),assets:[{assetId:TOKEN,amount:5n}]}]))!.settled();
+  assert.deepEqual(carriers,[feeTo(100n),undefined]);
+ }finally{await wallet.dispose();}
+});
+
+test('an asset deposit on a pool with no fee builds both legs as before',async()=>{
+ const wallet=await open(),requests=readyDeposit(wallet);
+ wallet.account.depositAsset=EpochAccount.prototype.depositAsset;wallet.api=feePool().api;wallet.pool.status.pool!.reserves={[TOKEN]:'10'};
+ try{
+  await (await wallet.shield([{...coin('a1'.repeat(32),1000),assets:[{assetId:TOKEN,amount:5n}]}]))!.settled();
+  assert.deepEqual((requests as {dummy?:unknown}[]).map(({dummy:_,...request})=>request),[{asset:assetFieldOfId(TOKEN),deposit:5n},{deposit:1000n}]);
+ }finally{await wallet.dispose();}
+});
+
+test('an asset group refused for its fee is rebuilt once with the carrier fee, and freed when refused again',async()=>{
+ for(const refusals of [1,Infinity]){
+  const fee=feeOf(100),wallet=await open({depositFee:fee,maxDepositFee:fee}),carriers:unknown[]=[],posts:EpochSpendBody[]=[],input={...coin('a1'.repeat(32),1000),assets:[{assetId:TOKEN,amount:5n}]};
+  readyDeposit(wallet);wallet.pool.status.pool!.reserves={[TOKEN]:'10'};wallet.account.txids.add(input.txid);
+  wallet.account.depositAsset=async(...args)=>{carriers.push(args[4]);return [fakeSpend(),fakeSpend()];};
+  let refused=0;
+  // The carrier completes the unit, so it is the member the pool refuses; the asset member before it was admitted.
+  wallet.api=(async(path:string,body?:EpochSpendBody)=>{
+   if(path==='/status')return status(0,undefined,fee);
+   if(path==='/spends'){posts.push(body!);if(!body!.asset&&refused++<refusals)throw Object.assign(new Error('Its group does not carry the deposit fee it owes; rebuild the group with the fee.'),{status:400,code:'fee-missing'});return {};}
+   return path.startsWith('/spends/')?{status:'included',txid:'cc'.repeat(32)}:{total:0,batches:[]};
+  }) as never;
+  try{
+   const settled=(await wallet.shield([input]))!.settled();
+   if(refusals===1)assert.equal((await settled).txid,'cc'.repeat(32));else{await assert.rejects(settled,/deposit fee/);await flush();}
+   assert.deepEqual([carriers,posts.map(p=>p.asset)],[[undefined,feeTo(100n)],[TOKEN,undefined,TOKEN,undefined]],'both members, then the group once more with the fee');
+   if(refusals!==1)assert.equal((wallet as any).used.has(`${input.txid}:0`),false,'refused again, the coin is free');
+  }finally{await wallet.dispose();}
+ }
+});
+
+test('auto-shield pauses when the advertised fee exceeds the accepted one, and resumes once the shown fee is accepted',async()=>{
+ const wallet=await open({depositFee:feeOf(100)}),requests=readyDeposit(wallet),pool=feePool(feeOf(500)),input=coin('aa'.repeat(32),10_000),resumed=deferred<ShieldedPaymentHandle>();
+ clearTimeout((wallet as any).timer);
+ try{
+  assert.deepEqual(wallet.depositFeePaused,feeOf(100),'a wallet that accepted nothing pauses on any fee');
+  await wallet.acceptDepositFee(feeOf(100));await flush();
+  assert.deepEqual([wallet.acceptedDepositFee,wallet.depositFeePaused],[{fixedSats:100,bps:0},undefined]);
+  wallet.api=pool.api;
+  await (wallet as any).tick();clearTimeout((wallet as any).timer);
+  assert.deepEqual(wallet.depositFeePaused,feeOf(500));
+  wallet.coins=async()=>[input];wallet.onAction(h=>resumed.resolve(h));
+  assert.equal(await (wallet as any).autoShield(),undefined);await flush();
+  assert.deepEqual([pool.bodies.length,requests.length],[0,0],'paused: nothing built or submitted');
+  await assert.rejects(wallet.shield([input]),/500 sats.*acceptDepositFee\(\{fixedSats:500,bps:0\}\).*maxDepositFee/);
+  await wallet.acceptDepositFee(feeOf(100));await flush();
+  assert.deepEqual([wallet.depositFeePaused,pool.bodies.length],[feeOf(500),0],'a banner the tick made stale accepts only what it showed');
+  await wallet.acceptDepositFee(feeOf(500));
+  await (await within(resumed.promise))!.settled();
+  assert.deepEqual([requests,pool.bodies.length],[[{deposit:10_000n,to:feeTo(500n)}],1]);
+ }finally{await wallet.dispose();}
+});
+
+test('a fee-missing refusal refreshes the schedule and rebuilds the deposit once, with the fee',async()=>{
+ const fee=feeOf(100),wallet=await open({depositFee:fee,maxDepositFee:fee}),requests=readyDeposit(wallet),pool=feePool(fee,1),payout=coin('ab'.repeat(32),10_000);
+ wallet.account.txids.add(payout.txid);wallet.api=pool.api;
+ try{
+  assert.equal((await (await wallet.shield([payout]))!.settled()).txid,'cc'.repeat(32));
+  assert.deepEqual(requests,[{deposit:10_000n},{deposit:10_000n,to:feeTo(100n)}],'the wallet took the coin for its payout and the pool did not, so the rebuild pays');
+  assert.deepEqual(pool.asked.filter(p=>p==='/spends'||p==='/status'),['/spends','/status','/spends']);
+ }finally{await wallet.dispose();}
+});
+
+test('a fee-missing rebuild submits nothing when the new fee is not accepted or eats the deposit, and frees the coin',async()=>{
+ for(const [value,advertised,refusal] of [[10_000,feeOf(500),/acceptDepositFee/],[400,feeOf(100),/330-sat minimum after its 100-sat deposit fee/]] as const){
+  const wallet=await open({maxDepositFee:feeOf(100)}),requests=readyDeposit(wallet),pool=feePool(advertised,Infinity),input=coin('aa'.repeat(32),value);
+  wallet.api=pool.api;
+  try{
+   await assert.rejects((await wallet.shield([input]))!.settled(),refusal);await flush();
+   assert.deepEqual([pool.bodies.length,requests.length],[1,1],'the one refused deposit, and no rebuild');
+   assert.equal((wallet as any).used.has(`${input.txid}:0`),false,'the coin is free again');
+  }finally{await wallet.dispose();}
+ }
+});
+
+test('accepting the fee a rebuild stopped on shields at once, without the retry wait',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),requests=readyDeposit(wallet),pool=feePool(feeOf(500),1),input=coin('aa'.repeat(32),10_000),resumed=deferred<ShieldedPaymentHandle>();
+ clearTimeout((wallet as any).timer);wallet.api=pool.api;wallet.coins=async()=>[input];
+ try{
+  const stopped=(await wallet.shield([input]))!;
+  await assert.rejects(stopped.settled(),/acceptDepositFee/);await flush();
+  assert.ok((wallet as any).retryAt>Date.now(),'a failed shield holds auto-shield off for a while');
+  wallet.onAction(h=>{if(h!==stopped)resumed.resolve(h);});
+  await wallet.acceptDepositFee(feeOf(500));
+  await (await within(resumed.promise))!.settled();
+  assert.deepEqual(requests,[{deposit:10_000n},{deposit:10_000n,to:feeTo(500n)}]);
+ }finally{await wallet.dispose();}
+});
+
+test('the accepted fee schedule survives a reopen and merges upward across tabs',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),fee=feeOf(500),a=await open({repository,depositFee:fee});
+ try{
+  await a.acceptDepositFee(fee);
+  const b=await open({repository,depositFee:fee});
+  try{
+   assert.deepEqual([b.acceptedDepositFee,b.depositFeePaused],[{fixedSats:500,bps:0},undefined]);
+   await repository.saveAccount(TOKEN,{...(await repository.getAccount(TOKEN))!,feeAccepted:{fixedSats:100,bps:30}});
+   await b.save();await a.save();
+   assert.deepEqual([b.acceptedDepositFee,a.acceptedDepositFee,(await repository.getAccount(TOKEN))!.feeAccepted],[{fixedSats:500,bps:30},{fixedSats:500,bps:30},{fixedSats:500,bps:30}],'neither tab lowers what the other accepted');
+  }finally{await b.dispose();}
+ }finally{await a.dispose();}
+});
+
+test('a stored or configured fee ceiling that is not a whole, in-range schedule is never trusted',async()=>{
+ for(const bad of [{fixedSats:1.5,bps:0},{fixedSats:100,bps:10_001},{fixedSats:-1,bps:0}])await assert.rejects(open({maxDepositFee:bad}).then(wallet=>wallet.dispose()),/maxDepositFee/,JSON.stringify(bad));
+ const zero=await open({maxDepositFee:{fixedSats:0,bps:0},depositFee:feeOf(100)});
+ try{
+  await assert.rejects(zero.acceptDepositFee({fixedSats:-1,bps:0}),/accepted schedule must be/);
+  assert.deepEqual([zero.acceptedDepositFee,zero.depositFeePaused],[{fixedSats:0,bps:0},feeOf(100)]);
+ }finally{await zero.dispose();}
+ for(const bad of [{fixedSats:'500',bps:0},{fixedSats:null,bps:0},{fixedSats:100,bps:10_001},'all']){
+  const repository=new InMemoryShieldedNoteRepository(),first=await open({repository});
+  try{await first.save();}finally{await first.dispose();}
+  await repository.saveAccount(TOKEN,{...(await repository.getAccount(TOKEN))!,feeAccepted:bad as never});
+  const wallet=await open({repository,depositFee:feeOf(100)});
+  try{
+   assert.deepEqual([wallet.resumed,wallet.acceptedDepositFee,wallet.depositFeePaused],[true,undefined,feeOf(100)],JSON.stringify(bad));
+   await wallet.save();assert.equal((await repository.getAccount(TOKEN))!.feeAccepted,undefined);
+  }finally{await wallet.dispose();}
+ }
+});
+
+test('merge can be asked to consolidate down to a single note, and never past it',async()=>{
+ const wallet=await open(),lone=await open();
+ try{
+  await fundPrivate(wallet,[{amount:400n},{amount:500n}]);await fundPrivate(lone,[{amount:400n}]);
+  wallet.prover={prove:async()=>{throw new Error('not proving here');}};
+  assert.equal(await wallet.merge(BTC_ASSET),undefined,'two notes are under the default threshold');
+  for(const above of [0,-1,Number.NaN])assert.equal(await lone.merge(BTC_ASSET,above),undefined,`one note has nothing to merge with (above ${above})`);
+  const handle=await wallet.merge(BTC_ASSET,1);
+  assert.equal(handle?.title,'Merging two notes');await assert.rejects(handle!.settled(),/not proving here/);
+ }finally{await wallet.dispose();await lone.dispose();}
+});
+
+test('accepting a lower schedule never lowers the one already accepted',async()=>{
+ const wallet=await open({depositFee:feeOf(500)});
+ try{
+  await wallet.acceptDepositFee(feeOf(500));await wallet.acceptDepositFee(feeOf(100));
+  assert.deepEqual([wallet.acceptedDepositFee,wallet.depositFeePaused],[{fixedSats:500,bps:0},undefined]);
+ }finally{await wallet.dispose();}
+});
+
+test('accepting a fee rejects when its own save fails, though the acceptance holds for the session',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),fee=feeOf(500),wallet=await open({repository,depositFee:fee});let changes=0;
+ try{
+  repository.saveAccount=async()=>{throw new Error('disk full');};wallet.onShieldedChange(()=>{changes++;});
+  await assert.rejects(wallet.acceptDepositFee(fee),/disk full/);
+  assert.deepEqual([wallet.acceptedDepositFee,wallet.depositFeePaused,(await repository.getAccount(TOKEN))?.feeAccepted,changes],[{fixedSats:500,bps:0},undefined,undefined,1],'the page still hears of the acceptance it can use');
  }finally{await wallet.dispose();}
 });
 

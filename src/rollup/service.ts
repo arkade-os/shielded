@@ -10,7 +10,7 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {randomField} from '../../packages/protocol/src/rollup/account.ts';
-import type {DepositFee} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import {parseDepositFee,type DepositFee} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {parseViewKey} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {EpochState} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
@@ -149,7 +149,8 @@ function rollupDepositFeeOf(config:RollupDepositFeeConfig|undefined,log:(message
  if(!Number.isSafeInteger(fixedSats)||fixedSats<0)throw new Error(`The deposit fee sats must be a non-negative whole number; got ${fixedSats}.`);
  if(!Number.isSafeInteger(bps)||bps<0||bps>10_000)throw new Error(`The deposit fee bps must be a whole number from 0 to 10000; got ${bps}.`);
  if(!fixedSats&&!bps){log('warning: the deposit fee is off, as both its fixed sats and its bps are 0.');return undefined;}
- return {advertised:{fixedSats,bps,address},operator:{schedule:{fixedSats,bps},owner:to.owner,viewSecret:view.viewSecret}};
+ const advertised=parseDepositFee({fixedSats,bps,address});if(!advertised)throw new Error('A wallet would read this deposit fee as no fee.');
+ return {advertised,operator:{schedule:{fixedSats,bps},owner:to.owner,viewSecret:view.viewSecret}};
 }
 const FEE_ENV=['ADDRESS','VIEW_KEY','SATS','BPS'].map(name=>'SHIELDED_DEPOSIT_FEE_'+name);
 /** The fee the environment asks for. Anything set to other than zero is handed on, even with no address or view key, so a half-set fee blocks the pool in validation instead of running it fee-free. A variable with the fee's prefix that is none of its four (a misspelling) and a number that is not plain decimal digits (Number() reads 0x64 and 1e2) are handed on as `problem`, which validation throws first. */

@@ -8,16 +8,18 @@ export type LightningTransferBody=ReturnType<typeof epochTransferBody>;
 export interface LightningSpendRecord {
  v:1;id:string;owner:string;pool:string;reference:string;kind:'fund'|'shield';paymentHash?:string;destination?:string;amount:string;expiresAt?:number;
  nullifiers:string[];coin?:{txid:string;vout:number;value:number;tapTree:string;leaf:string};body:LightningTransferBody;
- state:'prepared'|'included'|'dropped';txid?:string;reason?:string;
+ state:'prepared'|'included'|'dropped';txid?:string;reason?:string;code?:string;
 }
 export interface LightningSpendStore {
  get(owner:string,pool:string,id:string):Promise<LightningSpendRecord|undefined>;
  list(owner:string,pool:string):Promise<LightningSpendRecord[]>;
  create(record:LightningSpendRecord):Promise<LightningSpendRecord>;
- finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string}):Promise<void>;
+ finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string;code?:string}):Promise<void>;
 }
 export const sameLightningSpendRequest=(a:LightningSpendRecord,b:LightningSpendRecord)=>
  a.v===b.v&&a.id===b.id&&a.owner===b.owner&&a.pool===b.pool&&a.reference===b.reference&&a.kind===b.kind&&a.paymentHash===b.paymentHash&&a.destination===b.destination&&a.amount===b.amount&&a.expiresAt===b.expiresAt&&JSON.stringify(a.coin)===JSON.stringify(b.coin);
+/** Once the pool refused a payout's attempt for its fee, even an exempt payout pays, or a refused exemption would loop. */
+export const feeRefused=(records:readonly LightningSpendRecord[],reference:string)=>records.some(r=>r.reference===reference&&r.state==='dropped'&&r.code==='fee-missing');
 export const lightningSpendConflict=(a:LightningSpendRecord,b:LightningSpendRecord)=>
  a.owner===b.owner&&a.pool===b.pool&&a.id!==b.id&&a.state!=='dropped'&&b.state!=='dropped'&&
  (a.reference===b.reference||!!a.paymentHash&&a.paymentHash===b.paymentHash||a.body.id===b.body.id||a.nullifiers.some(n=>b.nullifiers.includes(n))||!!a.coin&&!!b.coin&&a.coin.txid===b.coin.txid&&a.coin.vout===b.coin.vout);

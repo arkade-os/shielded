@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {RestArkProvider,RestIndexerProvider,SingleKey} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
-import {createShieldedWallet,shieldedWalletConfig} from '../packages/shielded/src/index.ts';
+import info from './fixtures/ark-info.json' with {type:'json'};
+import {createShieldedWallet,depositFeeOf,shieldedWalletConfig,type DepositFee,type DepositFeeSchedule} from '../packages/shielded/src/index.ts';
+import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveWalletKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,type ShieldedWalletConfig} from '../src/shielded/wallet.ts';
@@ -48,4 +50,27 @@ test('a note cache the facade made is closed with its wallet, or when the wallet
  const mine:ShieldedNoteRepository=new InMemoryShieldedNoteRepository();mine[Symbol.asyncDispose]=async()=>{closes.push('mine');};
  create.mock.mockImplementation(async()=>started('mine'));
  await (await createShieldedWallet({pool:origin,secret,fetch:serving(ready).fetch,repository:mine})).dispose();assert.deepEqual(closes,['started','refused']);
+});
+
+const offline:Partial<ShieldedWalletConfig>={arkProvider:{serverUrl:'https://ark.example',getInfo:async()=>info} as never,
+ indexerProvider:{getVtxos:async()=>({vtxos:[],page:undefined}),getVirtualTxs:async()=>({txs:[]}),subscribeForScripts:async()=>'sub',getSubscription:async function*(){},unsubscribeForScripts:async()=>{}} as never,
+ onchainProvider:{getCoins:async()=>[],getTransactions:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never};
+const fee:DepositFee={fixedSats:100,bps:0,address:rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)})};
+const charging={...ready,pool:{...ready.pool,script:'51'.repeat(34),batches:0,epoch:0,epochLen:128,depositFee:fee}};
+const chargingPool=(async(url:unknown)=>Response.json(String(url).endsWith('/status')?charging:{total:0,batches:[]})) as typeof fetch;
+
+test('a pool that charges a deposit fee needs a maximum the caller accepts, and says so when it is missing',async t=>{
+ const created=ShieldedWallet.create;t.mock.method(ShieldedWallet,'create',(config:ShieldedWalletConfig)=>created.call(ShieldedWallet,{...config,...offline}));
+ const wallet=await createShieldedWallet({pool:origin,secret,fetch:chargingPool});
+ try{
+  assert.deepEqual(wallet.depositFeePaused,fee);assert.equal(depositFeeOf(wallet.depositFeePaused,10_000n),100n);
+  await assert.rejects(wallet.shield(),/100 sats.*maxDepositFee/);
+ }finally{await wallet.dispose();}
+ const accepting=await createShieldedWallet({pool:origin,secret,fetch:chargingPool,maxDepositFee:{fixedSats:100,bps:0}});
+ try{assert.deepEqual([accepting.depositFee,accepting.depositFeePaused],[fee,undefined]);}finally{await accepting.dispose();}
+});
+
+test('a maximum the caller passes is carried into the wallet configuration',async()=>{
+ const maxDepositFee:DepositFeeSchedule={fixedSats:100,bps:0};
+ assert.deepEqual((await shieldedWalletConfig({pool:origin,secret,fetch:serving(ready).fetch,maxDepositFee})).maxDepositFee,maxDepositFee);
 });

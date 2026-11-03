@@ -2,9 +2,10 @@ import {EmulatorPacket,Extension,Transaction,type Identity} from '@arkade-os/sdk
 import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
+import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
- epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number}}
+ epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number;depositFee?:DepositFee}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Promise<T>;
@@ -114,11 +115,24 @@ export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Pr
 
 export interface ArkCoin {txid:string;vout:number;value:number;expiresAt?:number;assets?:{assetId:string;amount:bigint}[]}
 export type ShieldPlan={kind:'btc';coins:ArkCoin[];amount:number}|{kind:'asset';coin:ArkCoin;assetId:string;units:bigint};
-/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry. */
-export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,now:number,floorMs:number):ShieldPlan|undefined {
- const usable=coins.filter(c=>c.expiresAt===undefined||c.expiresAt-now>floorMs);
- const plain=usable.filter(c=>!c.assets?.length),amount=plain.reduce((sum,c)=>sum+c.value,0);
- if(amount>=DUST)return {kind:'btc',coins:plain,amount};
- const coin=usable.find(c=>c.assets?.length===1&&listed.has(c.assets[0]!.assetId));
- return coin?{kind:'asset',coin,assetId:coin.assets![0]!.assetId,units:coin.assets![0]!.amount}:undefined;
+export const depositFeeFor=(status:RollupPoolStatus|undefined)=>parseDepositFee(status?.pool?.depositFee);
+/** Exact only for a plan shieldPlan returned: several payouts unreduced read 0, though the coin merging them would pay. */
+export const planFeeOf=(plan:ShieldPlan,fee:DepositFeeSchedule|undefined,exempt?:(coin:ArkCoin)=>boolean)=>{
+ if(exempt&&(plan.kind==='btc'?plan.coins:[plan.coin]).every(exempt))return 0n;
+ return plan.kind==='btc'?depositFeeOf(fee,BigInt(plan.amount)):carrierFeeOf(fee,BigInt(plan.coin.value));
+};
+export const shieldableWithFee=(plan:ShieldPlan,fee:DepositFeeSchedule|undefined,exempt?:(coin:ArkCoin)=>boolean)=>{
+ const owed=planFeeOf(plan,fee,exempt);
+ if(plan.kind==='btc')return BigInt(plan.amount)-owed>=BigInt(DUST);
+ const carrier=BigInt(plan.coin.value),free=BigInt(CARRIER_FREE_SATS);
+ return carrier<=free||carrier-owed>=free;
+};
+/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry, and a deposit the fee would eat is left out. While a fee charges, pool payouts (`exempt`) go one at a time: a merged coin is a plain send and would pay. */
+export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,now:number,floorMs:number,fee:{schedule?:DepositFeeSchedule;exempt?:(coin:ArkCoin)=>boolean}={}):ShieldPlan|undefined {
+ const {schedule,exempt}=fee,usable=coins.filter(c=>c.expiresAt===undefined||c.expiresAt-now>floorMs);
+ let plain=usable.filter(c=>!c.assets?.length);
+ if(exempt&&plain.length>1&&(schedule?.fixedSats||schedule?.bps)&&plain.every(exempt))plain=[plain.reduce((a,b)=>b.value>a.value?b:a)];
+ const btc:ShieldPlan={kind:'btc',coins:plain,amount:plain.reduce((sum,c)=>sum+c.value,0)};
+ if(shieldableWithFee(btc,schedule,exempt))return btc;
+ return usable.filter(c=>c.assets?.length===1&&listed.has(c.assets[0]!.assetId)).map((coin):ShieldPlan=>({kind:'asset',coin,assetId:coin.assets![0]!.assetId,units:coin.assets![0]!.amount})).find(plan=>shieldableWithFee(plan,schedule,exempt));
 }

@@ -26,7 +26,7 @@ const secret=crypto.getRandomValues(new Uint8Array(32)).reduce((hex,b)=>hex+b.to
 const wallet=await createShieldedWallet({pool:'https://shielded.mutinynet.arkade.sh',secret});
 
 wallet.shieldedAddress();   // shrol1… — share it to receive privately
-await wallet.getAddress();  // tark1… — Arkade funds sent here move into the pool while the wallet runs
+await wallet.getAddress();  // tark1… — Arkade funds sent here move into the pool while the wallet runs, once any deposit fee is accepted (see Deposit fee)
 wallet.shieldedBalance();   // bigint, in sats
 
 const payment=await wallet.pay('shrol1…',1_000n);
@@ -60,8 +60,21 @@ Every action returns an SDK `PaymentHandle` with named steps.
 | `prover` | `snarkjsProver`, which downloads proving files from the pool |
 | `hash` | circomlib Poseidon from `circomlibjs` |
 | `fetch` | global `fetch`, for the pool's API. Proving files and the Arkade server always use the global `fetch`. |
+| `maxDepositFee` | none. A `DepositFeeSchedule`, `{fixedSats,bps}`: the most deposit fee to accept. See Deposit fee below. |
 
 `shieldedWalletConfig(options)` returns the full `ShieldedWalletConfig` without starting a wallet. Pass it to `ShieldedWallet.create` to change anything first.
+
+### Deposit fee
+
+A pool may charge a fee on each deposit and advertise it as `depositFee`: `fixedSats` sats or `bps` basis points of the deposit, whichever is more. `wallet.depositFee` is the fee it charges now, or `undefined`.
+
+`maxDepositFee` is the most you accept, as a schedule `{fixedSats,bps}`. The fields are compared one by one: the pool's `fixedSats` and its `bps` must each be at most yours. If the pool raises either one past it, deposits pause again.
+
+A wallet without `maxDepositFee` still opens on a pool that charges a fee, shows balances, pays and withdraws. It refuses to deposit until the fee is accepted: `shield()` rejects, and funds sent to its Arkade address stay there instead of moving into the pool.
+
+`wallet.depositFeePaused` is the advertised `depositFee` while deposits are paused, and `undefined` otherwise. Show it to your user, or copy its `fixedSats` and `bps` into `maxDepositFee`. An app that asks its user can instead call `await wallet.acceptDepositFee({fixedSats,bps})` with the schedule it showed. Pass what the user saw, not a fresh read of `depositFeePaused`: a fee raised since then stays paused. The wallet saves what it accepted in `repository`, and on a later open accepts the larger of that and `maxDepositFee`, field by field.
+
+To show the fee before a deposit, set `plan` to `wallet.planFor(await wallet.coins())`. `planFor` returns `undefined` when no coin is eligible, which includes coins the fee would leave under the minimum. If `plan` is defined, `wallet.depositFeeOnPlan(plan)` returns the fee in sats as a `bigint`. `depositFeeOf(schedule,sats)` gives it for any amount.
 
 ## Browser bundles
 

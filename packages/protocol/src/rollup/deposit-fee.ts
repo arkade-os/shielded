@@ -18,10 +18,15 @@ export const acceptsDepositFee = (advertised: DepositFeeSchedule | undefined, ac
  (advertised?.fixedSats ?? 0) <= (accepted?.fixedSats ?? 0) && (advertised?.bps ?? 0) <= (accepted?.bps ?? 0);
 export const maxDepositFeeOf = (a: DepositFeeSchedule | undefined, b: DepositFeeSchedule | undefined): DepositFeeSchedule | undefined =>
  a || b ? { fixedSats: Math.max(a?.fixedSats ?? 0, b?.fixedSats ?? 0), bps: Math.max(a?.bps ?? 0, b?.bps ?? 0) } : undefined;
+/** A ceiling a wallet stored or was given, by parseDepositFee's number rules; zero is a valid ceiling, accepting no fee. */
+export function parseDepositFeeSchedule(value: unknown): DepositFeeSchedule | undefined {
+ const { fixedSats, bps } = (value ?? {}) as { fixedSats?: unknown; bps?: unknown };
+ return whole(fixedSats) && whole(bps) && bps <= FULL_BPS ? { fixedSats, bps } : undefined;
+}
 /** Anything malformed, over 100% or zero reads as no fee: a garbled /status must never throw into its caller. */
 export function parseDepositFee(value: unknown): DepositFee | undefined {
- const { fixedSats, bps, address } = (value ?? {}) as { fixedSats?: unknown; bps?: unknown; address?: unknown };
- if (!whole(fixedSats) || !whole(bps) || bps > FULL_BPS || !(fixedSats || bps) || typeof address !== 'string') return undefined;
+ const schedule = parseDepositFeeSchedule(value), { address } = (value ?? {}) as { address?: unknown };
+ if (!schedule || !(schedule.fixedSats || schedule.bps) || typeof address !== 'string') return undefined;
  try { parseRollupAddress(address); } catch { return undefined; }
- return { fixedSats, bps, address };
+ return { ...schedule, address };
 }
