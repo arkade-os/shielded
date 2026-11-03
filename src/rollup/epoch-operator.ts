@@ -182,7 +182,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   if(committed!==undefined&&state.commitment()!==committed)throw new Error(`Replaying ${atOpen.batches} batches gives commitment ${state.commitment()}, but the pool head commits to ${committed}; a batch record is wrong, so the pool does not open.`);
  }catch(error){journal.close();throw error;}
  accepted=acceptedOf(state);
- // ponytail: every record's txid is read at open; a persisted index like chain-only.json is the upgrade if startup cost matters.
+ // ponytail: every record's txid is read at open, and the set grows a txid per batch for the process's life; a persisted index, or keeping only batches within the VTXO lifetime, is the upgrade.
  if(batchTxids)for(let n=0;n<atOpen.batches;n++){
   try{const {txid}=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord;if(txid)batchTxids.add(txid);}
   catch(error){console.warn(`[rollup] Batch ${n}'s record is unreadable, so a coin it paid out pays the deposit fee: ${(error as Error).message}`);}
@@ -241,10 +241,19 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  // selectRollupBatch reads only a slot's groupId and groupSize, which both slot shapes carry.
  const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number,lastAt:number)=>
   selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs,lastAt) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
+ const poolScript=hex.encode(pool.tree.pkScript),poolDestination=destinationFieldOf(pool.tree.pkScript.subarray(2));
+ /** The covenant checks only the outputs from 1 (2 after a reserve), one per BTC payout in slot order, so a lander may add more; a payout to the pool's own script would pass for a reserve, so such a batch exempts nothing. */
+ const poolPayout=(coin:RollupCoin)=>{
+  if(!batchTxids!.has(coin.txid))return false;
+  try{
+   const tx=Transaction.fromRaw(coin.sourceTx,{allowUnknownOutputs:true}),btc=readEpochBatchTx(tx,o.leaves).publics.filter(p=>p[4]>0n&&p[5]===0n),first=hex.encode(tx.getOutput(1).script!)===poolScript?2:1;
+   return !btc.some(p=>p[6]===poolDestination)&&coin.vout>=first&&coin.vout<first+btc.length;
+  }catch{return false;}
+ };
  /** Coins match deposit legs only in sum, so a unit is exempt only when every coin in it is this pool's payout. */
  const checkDepositFee=async(unit:readonly RollupEpochSpend[])=>{
   const {schedule,owner,viewSecret}=o.depositFee!,coins=unit.filter(s=>s.coin);
-  if(coins.length&&coins.every(s=>batchTxids!.has(s.coin!.txid)))return;
+  if(coins.length&&coins.every(s=>poolPayout(s.coin!)))return;
   const assetUnit=unit.some(s=>s.publics[5]!==0n);
   for(const s of unit){
    const sats=s.publics[3];if(sats===0n||s.publics[5]!==0n)continue;

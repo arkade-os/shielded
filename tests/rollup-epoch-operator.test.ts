@@ -698,9 +698,27 @@ test('after a restart a batch left in flight is found landed, or re-sent at once
 
 const owes=(sats:bigint,owed:bigint,paid:bigint)=>(error:unknown)=>rejection('fee-missing')(error)&&(error as Error).message===`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`;
 const pairOf=()=>{const dummies=[dummyInput(),dummyInput()];return {dummies,group:{id:groupIdOf(hash,dummies.map(d=>inputNullifierOf(hash,ROLLUP_DOMAIN,d))),size:2}};};
+const p2tr=(program:Uint8Array)=>Uint8Array.of(0x51,0x20,...program);
+const withdrawal=(w:World,op:Operator,program=w.program)=>spendOf(deposit(op.state,0n,{withdraw:1000n,destination:destinationFieldOf(program)}),{program});
 const paidOut=async(w:World,op:Operator)=>{
- await land(op,'spend',[spendOf(deposit(op.state,0n,{withdraw:1000n,destination:destinationFieldOf(w.program)}),{program:w.program})]);
- return w.coinOf(landedTx(w,w.landed.length-1).tx,1);
+ await land(op,'spend',[withdrawal(w,op)]);
+ const {tx}=landedTx(w,w.landed.length-1);
+ assert.equal(hex.encode(tx.getOutput(1).script!),hex.encode(p2tr(w.program)),'output 1 is the payout');
+ return w.coinOf(tx,1);
+};
+/** Batch n as a lander may build it: an input of its own, spent to output `at`, just past the payouts, where the extension sat. */
+const forgedBatch=(w:World,n:number,at=2)=>{
+ const landed=landedTx(w,n),tx=Transaction.fromRaw(landed.tx.toBytes(true,true),{allowUnknownOutputs:true}),ext=tx.getOutput(at),spare=offlineNativeFixture([{script:p2tr(w.program),amount:5000n}]);
+ tx.updateOutput(at,{script:p2tr(w.program),amount:5000n});tx.addOutput(ext);tx.addInput({txid:spare.id,index:0});
+ return {tx,checkpoints:[...landed.checkpoints,spare]};
+};
+const listed=(op:Operator)=>{
+ const source=offlineNativeFixture([{script:pool.tree.pkScript,amount:330n}]);
+ return op.relocate({head:op.status().archive.head,reserves:{[x]:{txid:source.id,vout:0,value:330,sourceTxHex:hex.encode(source.toBytes()),amount:'1000'}}});
+};
+const assetDeposit=(w:World,op:Operator,sats:bigint)=>{
+ const {dummies:[a,b],group}=pairOf(),g={groupId:group.id,groupSize:2};
+ return [spendOf(deposit(op.state,5000n,{asset:assetFieldOfId(x),inputs:[a],...g}),{asset:x,coin:{...w.cash(sats),assetAmount:5000n}}),spendOf(deposit(op.state,sats,{inputs:[b],...g}))] as const;
 };
 const resealed=async(w:World,s:Spend,note:RollupNote):Promise<Spend>=>{
  const ciphertext=await sealRollupNotes([w.feeTo,w.feeTo],[note,note]),slot={...s.slot,ctDigest:ctDigestOf(ciphertext)};
@@ -752,18 +770,48 @@ test('a fee-less deposit of a coin this pool paid out is admitted, and still is 
 
 test('a coin from a transaction that only copies a batch\'s packets owes the fee',async t=>{
  const w=await world(64),op=await w.open(t,w.fee());
- await land(op,'spend',[fastSpend(op.state)]);
- const decoy=offlineNativeFixture([{script:Uint8Array.of(0x51,0x20,...w.program),amount:5000n}],Extension.fromTx(landedTx(w,0).tx).getPackets());
+ await paidOut(w,op);
+ const decoy=offlineNativeFixture([{script:p2tr(w.program),amount:330n},{script:p2tr(w.program),amount:5000n}],Extension.fromTx(landedTx(w,0).tx).getPackets());
  assert.equal(readEpochBatchTx(decoy,leaves).kind,'spend','its packets alone read as this pool\'s batch');
- await assert.rejects(op.submit(spendOf(deposit(op.state,5000n),{coin:w.coinOf(decoy,0)})),owes(5000n,100n,0n));
+ await assert.rejects(op.submit(spendOf(deposit(op.state,5000n),{coin:w.coinOf(decoy,1)})),owes(5000n,100n,0n),'output 1, where that batch\'s payout sits');
 });
 
-test('a coin paid out by a batch this operator followed is exempt too',async t=>{
- const w=await world(64),a=await w.open(t),payout=await paidOut(w,a);
- const b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
- await assert.rejects(b.submit(spendOf(deposit(b.state,1000n),{coin:payout})),owes(1000n,100n,0n),'before the follow');
- await b.follow({...landedTx(w,0),at:1});
- await land(b,'spend',[spendOf(deposit(b.state,1000n),{coin:payout})]);
+test('a followed batch exempts its payout, but not an output its lander added right after it',async t=>{
+ const w=await world(64),a=await w.open(t);
+ await paidOut(w,a);
+ const {tx,checkpoints}=forgedBatch(w,0),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ await assert.rejects(b.submit(spendOf(deposit(b.state,1000n),{coin:w.coinOf(tx,1)})),owes(1000n,100n,0n),'before the follow');
+ await b.follow({tx,checkpoints,at:1});
+ await assert.rejects(b.submit(spendOf(deposit(b.state,5000n),{coin:w.coinOf(tx,2)})),owes(5000n,100n,0n),'the lander\'s own output');
+ await land(b,'spend',[spendOf(deposit(b.state,1000n),{coin:w.coinOf(tx,1)})]);
+});
+
+test('a batch that pays the pool\'s own script exempts nothing, since that payout would pass for a reserve',async t=>{
+ const w=await world(64),a=await w.open(t);
+ await land(a,'spend',[withdrawal(w,a,pool.tree.pkScript.subarray(2))]);
+ const {tx,checkpoints}=forgedBatch(w,0),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ await b.follow({tx,checkpoints,at:1});
+ await assert.rejects(b.submit(spendOf(deposit(b.state,5000n),{coin:w.coinOf(tx,2)})),owes(5000n,100n,0n));
+});
+
+test('after a reserve at output 1 the payouts start at output 2, and the reserve is no payout',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee());
+ await listed(op);
+ await land(op,'spend',[...assetDeposit(w,op,330n),withdrawal(w,op)]);
+ const {tx}=landedTx(w,0);
+ assert.equal(hex.encode(tx.getOutput(1).script!),hex.encode(pool.tree.pkScript),'output 1 is the reserve');
+ await assert.rejects(op.submit(spendOf(deposit(op.state,330n),{coin:w.coinOf(tx,1)})),owes(330n,100n,0n),'the reserve output');
+ await land(op,'spend',[spendOf(deposit(op.state,1000n),{coin:w.coinOf(tx,2)})]);
+});
+
+test('an asset payout shares its carrier\'s output, so it adds no payout output',async t=>{
+ const w=await world(64),a=await w.open(t),{dummies:[i,j],group}=pairOf(),g={groupId:group.id,groupSize:2},{program}=w,destination=destinationFieldOf(program);
+ await listed(a);
+ await land(a,'spend',[spendOf(deposit(a.state,0n,{asset:assetFieldOfId(x),withdraw:500n,destination,inputs:[i],...g}),{asset:x,program}),spendOf(deposit(a.state,0n,{withdraw:330n,destination,inputs:[j],...g}),{program})]);
+ const {tx,checkpoints}=forgedBatch(w,0,3),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ await b.follow({tx,checkpoints,at:1});
+ await assert.rejects(b.submit(spendOf(deposit(b.state,5000n),{coin:w.coinOf(tx,3)})),owes(5000n,100n,0n),'the output past the one shared payout');
+ await b.submit(spendOf(deposit(b.state,330n),{coin:w.coinOf(tx,2)}));
 });
 
 test('a record the fee check cannot read never keeps the pool from opening, and a coin its batch paid out pays the fee',async t=>{
@@ -799,10 +847,8 @@ test('the fee check runs after the double-spend check, so a landed copy still an
 
 test('an asset deposit\'s carrier pays nothing at the free allowance and the fee above it',async t=>{
  const w=await world(64),op=await w.open(t,w.fee());
- await op.relocate({head:op.status().archive.head,reserves:{[x]:{txid:'ee'.repeat(32),vout:0,value:330,sourceTxHex:'',amount:'0'}}});
- const listed=(sats:bigint)=>{const {dummies:[a,b],group}=pairOf(),g={groupId:group.id,groupSize:2};
-  return [spendOf(deposit(op.state,5000n,{asset:assetFieldOfId(x),inputs:[a],...g}),{asset:x,coin:{...w.cash(sats),assetAmount:5000n}}),spendOf(deposit(op.state,sats,{inputs:[b],...g}))] as const;};
- const [free,allowance]=listed(330n),[waiting,carrier]=listed(1000n);
+ await listed(op);
+ const [free,allowance]=assetDeposit(w,op,330n),[waiting,carrier]=assetDeposit(w,op,1000n);
  for(const s of [free,allowance,waiting])await op.submit(s);
  await assert.rejects(op.submit(carrier),owes(1000n,100n,0n));
  await assert.rejects(op.submit(spendOf(deposit(op.state,330n),{coin:w.cash(330n)})),owes(330n,100n,0n),'a plain deposit of the allowance');
