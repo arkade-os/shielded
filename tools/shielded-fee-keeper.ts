@@ -48,17 +48,20 @@ async function main(){
  const ms=every?(/^\d+$/.test(every)?Number(every):NaN):60_000;
  if(!(ms>=1000&&ms<2**31))throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a whole number of milliseconds from 1000 to 2147483647 (60000 is a minute); Node would fire a longer timer at once.');
  log(`syncing with ${new URL(pool).origin}`);
- const wallet=await createShieldedWallet({pool,secret}),refused=feeAddressProblem(wallet);
- if(refused){console.error(refused);await wallet.dispose().catch(()=>{});process.exit(1);}
- log(`fee wallet ${wallet.shieldedAddress()} holds ${wallet.shieldedBalance()} sats; merging every ${ms} ms`);
- // snarkjs worker threads outlive the wallet, so the process is ended rather than waited on.
- const stop=()=>void wallet.dispose().catch(()=>{}).then(()=>process.exit(0));
- process.once('SIGTERM',stop).once('SIGINT',stop);
- for(;;){
-  const problem=feeAddressProblem(wallet);if(problem)warn(problem);
-  await feeKeeperTick(wallet,wallet.mergeableAssets(),merged=>log(`merge ${merged} landed, batch ${wallet.batchCount()}`)).then(({merged,notes})=>log(`merged ${merged}, notes remaining ${notes}, batch ${wallet.batchCount()}`),error=>warn('pass failed:',reasonOf(error)));
-  await sleep(ms);
- }
+ const wallet=await createShieldedWallet({pool,secret});
+ // snarkjs worker threads and the pool's event stream outlive the wallet, so once it exists every exit is explicit: a hang would keep a supervisor from restarting it.
+ const end=(code:number)=>wallet.dispose().catch(()=>{}).then(()=>process.exit(code));
+ process.once('SIGTERM',()=>void end(0)).once('SIGINT',()=>void end(0));
+ try{
+  const refused=feeAddressProblem(wallet);
+  if(refused){console.error(refused);return await end(1);}
+  log(`fee wallet ${wallet.shieldedAddress()} holds ${wallet.shieldedBalance()} sats; merging every ${ms} ms`);
+  for(;;){
+   const problem=feeAddressProblem(wallet);if(problem)warn(problem);
+   await feeKeeperTick(wallet,wallet.mergeableAssets(),merged=>log(`merge ${merged} landed, batch ${wallet.batchCount()}`)).then(({merged,notes})=>log(`merged ${merged}, notes remaining ${notes}, batch ${wallet.batchCount()}`),error=>warn('pass failed:',reasonOf(error)));
+   await sleep(ms);
+  }
+ }catch(error){console.error(reasonOf(error));await end(1);}
 }
 
 if(import.meta.main)await main().catch(error=>{console.error(reasonOf(error));process.exitCode=1;});
