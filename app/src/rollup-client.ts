@@ -1,4 +1,4 @@
-import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
+import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,depositFeeOf,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
@@ -65,7 +65,8 @@ const feeCharged=(fee:DepositFeeSchedule)=>fee.bps?`a deposit fee of ${feeTerms(
 export const depositFeeLine=(fee:DepositFeeSchedule|undefined)=>charges(fee)?`This pool charges ${feeCharged(fee)}.`:'';
 export const depositFeeAmountLine=(feeSats:bigint,sats:number)=>feeSats?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(feeSats)}-sat fee, so ${grouped(BigInt(sats)-feeSats)} sats reach the pool.`:'';
 export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
- `${charges(accepted)?`This pool ${acceptsDepositFee(accepted,advertised)?'raised':'changed'} its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Nothing moves into the pool until you accept it.`;
+ `${charges(accepted)?`This pool ${acceptsDepositFee(accepted,advertised)?'raised':'changed'} its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Nothing new moves into the pool until you accept it.`;
+export const PAUSED_LINE='Nothing new moves into the pool until you accept the new fee.';
 /** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
 export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
  const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
@@ -76,9 +77,11 @@ export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSch
  const plan=shieldPlan(coins,new Set(),now,floorMs);
  return plan?.kind==='btc'&&!shieldableWithFee(plan,fee)?`${grouped(plan.amount)} sats stay outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee they would be below the ${DUST}-sat minimum.`:'';
 }
-/** Listed asset coins only the fee keeps out, each judged alone as the planner takes them. */
-export function assetFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,listed:ReadonlySet<string>,now:number,floorMs:number){
- return coins.map(coin=>shieldPlan([coin],listed,now,floorMs)).map(plan=>plan?.kind==='asset'&&!shieldableWithFee(plan,fee)?`Its ${grouped(plan.coin.value)} sats stay outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee they would be below the ${CARRIER_FREE_SATS}-sat minimum.`:'').filter(Boolean).join(' ');
+/** A listed asset's coins, each judged alone as the planner takes them: those only the fee keeps out, and while paused, those it lets in. */
+export function listedAssetLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,listed:ReadonlySet<string>,now:number,floorMs:number,paused:boolean){
+ const plans=coins.map(coin=>shieldPlan([coin],listed,now,floorMs)).filter((plan):plan is Extract<ShieldPlan,{kind:'asset'}>=>plan?.kind==='asset');
+ const kept=plans.filter(plan=>!shieldableWithFee(plan,fee)).map(plan=>`This coin stays outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee, its ${satsText(plan.coin.value)} would be below the ${CARRIER_FREE_SATS}-sat minimum.`);
+ return [...kept,paused&&kept.length<plans.length?PAUSED_LINE:''].filter(Boolean).join(' ');
 }
 export const invoiceFeeClause=(fee:DepositFeeSchedule|undefined,pays:bigint,swapFee:bigint)=>{const owed=depositFeeOf(fee,pays-swapFee);return owed?` and the deposit fee takes ${grouped(owed)}`:'';};
 const LIGHTNING_REST='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
