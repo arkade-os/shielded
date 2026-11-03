@@ -166,6 +166,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    const payout=payouts.get(coin.script),outpoint=`${coin.txid}:${coin.vout}`;
    if(!payout||coin.assets?.length||exiting.has(coin.script)||shielding.has(outpoint)||await recovery.held(outpoint))continue;
    const attempts=(await journal.list(String(wallet.self.owner),pool)).filter(r=>r.kind==='shield'&&r.reference===outpoint);
+   if(shielding.has(outpoint))continue;
    const fee=feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint)),below=BigInt(coin.value)-fee<BigInt(DUST);
    // A saved attempt goes on regardless, since only the pool's verdict frees its payout. A new one waits out a pause unreported: the page's banner says why.
    if((below||wallet.depositFeePaused)&&!attempts.some(r=>r.state==='prepared')){
