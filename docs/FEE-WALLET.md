@@ -27,10 +27,12 @@ SHIELDED_DEPOSIT_FEE_ADDRESS=shrol2…
 SHIELDED_DEPOSIT_FEE_VIEW_KEY=shview2…
 ```
 
-`--silent` keeps npm's banner out of the output, so those two lines can go straight into the pool's env file. Running node directly does the same:
+`--silent` keeps npm's banner out of the output, so those two lines can go straight into the pool's env file. Running node directly does the same, with the phrase taken the same way:
 
 ```sh
+read -rs SHIELDED_FEE_WALLET_PHRASE && export SHIELDED_FEE_WALLET_PHRASE
 node --experimental-eventsource --import tsx tools/shielded-fee-keeper.ts --derive
+unset SHIELDED_FEE_WALLET_PHRASE
 ```
 
 `--derive` makes no network call. The keeper refuses every other argument.
@@ -53,7 +55,7 @@ SHIELDED_DEPOSIT_FEE_SATS=100
 SHIELDED_DEPOSIT_FEE_BPS=0
 ```
 
-The fee on a deposit is `max(SATS, ceil(deposit × BPS / 10000))`.
+The fee on a deposit is `max(SATS, ceil(deposit × BPS / 10000))`. A deposit whose coins are all payouts this pool made pays no fee. An asset deposit pays nothing while its BTC carrier sats total 330 or less, and the full fee on that total above it.
 
 | Set | Result |
 | --- | --- |
