@@ -35,7 +35,7 @@ export async function checkEpochMirror(dir:string,hash:Hash,epochLen:number,txOf
  const last=read(dir,numbers.length-1);
  if(!last.txid)throw new Error(`Batch ${numbers.length-1} names no transaction to check against.`);
  const tx=await txOf(last.txid),packet=tx&&Extension.fromTx(tx).getPacketByType(ROLLUP_STATE_PACKET)?.serialize();
- if(!packet)throw new Error(`Transaction ${last.txid} carries no rollup state packet.`);
+ if(packet?.length!==96)throw new Error(`Transaction ${last.txid} carries no 96-byte rollup state packet.`);
  const commitment=replayEpochMirror(dir,hash,epochLen).commitment(),chained=packet.subarray(0,32).reduceRight((acc,byte)=>(acc<<8n)|BigInt(byte),0n);
  if(commitment!==chained)throw new Error(`The mirrored records replay to commitment ${commitment}, but batch ${numbers.length-1}'s transaction carries ${chained}.`);
  return {batches:numbers.length,commitment};

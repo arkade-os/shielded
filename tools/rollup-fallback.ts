@@ -74,14 +74,15 @@ async function mirror(url:string,dir:string){
   if(typeof epoch!=='number'||!Number.isSafeInteger(epoch)||epoch<0)throw new Error(`The pool lists an archive for epoch ${JSON.stringify(epoch)}.`);
   if(epoch>=closed){warn('skipped archive',epoch,'- the mirrored records have not closed that epoch');continue;}
   if(existsSync(epochNfArchivePath(folder,epoch)))continue;
-  const bytes=new Uint8Array(await (await get(`/archives/epoch-${epoch}.nf`)).arrayBuffer());
-  state??=replayEpochMirror(dir,hash,epochLen);
-  try{cacheEpochArchive(dir,state,epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');}
-  catch(error){refused++;warn('refused archive',`${epoch}:`,(error as Error).message);}
+  try{
+   const bytes=new Uint8Array(await (await get(`/archives/epoch-${epoch}.nf`)).arrayBuffer());
+   state??=replayEpochMirror(dir,hash,epochLen);
+   cacheEpochArchive(dir,state,epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');
+  }catch(error){refused++;warn('refused archive',`${epoch}:`,(error as Error).message);}
  }
  for(let epoch=0;epoch<closed;epoch++)if(!existsSync(epochNfArchivePath(folder,epoch)))warn('no archive file for closed epoch',epoch);
  log('mirrored',batchesIn(dir).length,'batches into',dir);
- if(refused)throw new Error(`${refused} archive file(s) did not check against the mirrored records and were not written; mirror again.`);
+ if(refused)throw new Error(`${refused} archive file(s) could not be fetched or did not check against the mirrored records, and were not written; mirror again.`);
 }
 
 async function wallet(){
@@ -171,6 +172,7 @@ async function publish(dir:string,url:string,batch:number){
 
 async function check(dir:string){
  const pool=epochPoolOf(dir),indexer=new RestIndexerProvider(pool.network.indexerUrl??pool.network.arkUrl);
+ if(!batchesIn(dir).length){log('the mirror holds no batch records yet; nothing to check');return;}
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
  const {batches,commitment}=await checkEpochMirror(dir,hash,pool.epochLen,async txid=>(await indexer.getVirtualTxs([txid])).txs.map(decodeStockIndexerTransaction).find(t=>t.id===txid));
  log('checked',batches,'mirrored batches against the chain: commitment',String(commitment));

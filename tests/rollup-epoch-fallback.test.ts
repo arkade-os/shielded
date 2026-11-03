@@ -147,7 +147,10 @@ test('a mirror checks out against the chain only when its replay reaches the com
  assert.deepEqual(await checkEpochMirror(mirrorOf(records),hash,EPOCH_LEN,txOf),{batches:records.length,commitment:world.state.commitment()});
  const forged=records.map((r,i)=>i===1?{...r,noteBlockRoot:String(BigInt(r.noteBlockRoot)+1n)}:r);
  await assert.rejects(checkEpochMirror(mirrorOf(forged),hash,EPOCH_LEN,txOf),/replay to commitment \d+, but batch \d+'s transaction carries/,'an earlier record that is not the chain\'s');
- await assert.rejects(checkEpochMirror(mirrorOf(records),hash,EPOCH_LEN,async()=>undefined),/carries no rollup state packet/);
+ await assert.rejects(checkEpochMirror(mirrorOf(records),hash,EPOCH_LEN,async()=>undefined),/carries no 96-byte rollup state packet/);
+ const short=new Transaction({allowUnknownOutputs:true});short.addInput({txid:'cd'.repeat(32),index:0});
+ short.addOutput(Extension.create([new UnknownPacket(ROLLUP_STATE_PACKET,Uint8Array.from(le32(world.state.commitment())))]).txOut());
+ await assert.rejects(checkEpochMirror(mirrorOf(records),hash,EPOCH_LEN,async()=>short),/carries no 96-byte rollup state packet/,'a short packet whose commitment prefix matches');
  await assert.rejects(checkEpochMirror(mirrorOf(records.map(({txid:_,...r})=>r)),hash,EPOCH_LEN,txOf),/names no transaction/);
 });
 

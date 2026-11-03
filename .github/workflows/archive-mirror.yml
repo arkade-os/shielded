@@ -89,8 +89,13 @@ jobs:
             // A failed upload can leave a half-open asset under the name; --clobber replaces it.
             const held = assets.find(a => a.name === name && a.state === 'uploaded');
             if (held?.digest === digest) continue;
-            gh('release', 'upload', RELEASE_TAG, `archives/${name}`, '--clobber');
-            console.log(held ? `::warning::Replaced ${name}: the release held ${held.digest ?? 'a copy with no digest'}, not the checked ${digest}.` : `Uploaded ${name} (${bytes.length} bytes).`);
+            try {
+              gh('release', 'upload', RELEASE_TAG, `archives/${name}`, '--clobber');
+              console.log(held ? `::warning::Replaced ${name}: the release held ${held.digest ?? 'a copy with no digest'}, not the checked ${digest}.` : `Uploaded ${name} (${bytes.length} bytes).`);
+            } catch (error) {
+              console.log(`::error::${error.message.split(/[\r\n]/)[0]}`);
+              process.exitCode = 1;
+            }
           }
           JS
       - name: Fail the run when the mirror refused anything
