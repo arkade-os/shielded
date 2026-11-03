@@ -133,7 +133,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     const recoveryState=await recovery.get(outpoint),source=artifacts.find(a=>a.script===contract.script);
     // A completed exit spent its payout on-chain and left no shield attempt behind; the SDK's own history carries that spend.
     if(source?.kind==='exit'&&isVtxoSpent(coin)&&!attempts.length&&!recoveryState)continue;
-    const outcome=recoveryState?.state==='complete'?'onchain-recovered':recoveryState?.state==='shielded'?'shielded':recoveryState?'onchain-recovery':attempts.some(r=>r.state==='included')?'shielded':BigInt(coin.value)-feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint))<BigInt(DUST)?'below-minimum':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':attempts.length?'retrying':'received';
+    const outcome=recoveryState?.state==='complete'?'onchain-recovered':recoveryState?.state==='shielded'?'shielded':recoveryState?'onchain-recovery':attempts.some(r=>r.state==='included')?'shielded':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':BigInt(coin.value)-feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint))<BigInt(DUST)?'below-minimum':attempts.length?'retrying':'received';
     const id=`shielded-lightning:receive:${outpoint}`,createdAt=coin.createdAt.getTime(),settled=!coin.isPreconfirmed;
     rows.set(id,{id,amount:coin.value,createdAt,settled,intent:{kind:'lightning-receive',label:source?.kind==='send'?'Lightning refund':source?.kind==='exit'?'On-chain exit payout':'Received via Lightning',outcome,metadata:{outpoint}},
      txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:coin.txid},type:TxType.TxReceived,amount:coin.value,createdAt,settled}]});
@@ -162,10 +162,11 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  });};
  const scan=async()=>{
   if(stopped||!payouts.size)return;
+  let spends:Awaited<ReturnType<typeof journal.list>>|undefined;
   for(const coin of await companion.getVtxos({withRecoverable:false})){
    const payout=payouts.get(coin.script),outpoint=`${coin.txid}:${coin.vout}`;
    if(!payout||coin.assets?.length||exiting.has(coin.script)||shielding.has(outpoint)||await recovery.held(outpoint))continue;
-   const attempts=(await journal.list(String(wallet.self.owner),pool)).filter(r=>r.kind==='shield'&&r.reference===outpoint);
+   const attempts=(spends??=await journal.list(String(wallet.self.owner),pool)).filter(r=>r.kind==='shield'&&r.reference===outpoint);
    if(shielding.has(outpoint))continue;
    const fee=feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint)),below=BigInt(coin.value)-fee<BigInt(DUST);
    // A saved attempt goes on regardless, since only the pool's verdict frees its payout. A new one waits out a pause unreported: the page's banner says why.
