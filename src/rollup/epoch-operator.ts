@@ -241,13 +241,12 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  // selectRollupBatch reads only a slot's groupId and groupSize, which both slot shapes carry.
  const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number,lastAt:number)=>
   selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs,lastAt) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
- const poolScript=hex.encode(pool.tree.pkScript),poolDestination=destinationFieldOf(pool.tree.pkScript.subarray(2));
- /** The covenant checks only the outputs from 1 (2 after a reserve), one per BTC payout in slot order, so a lander may add more; a payout to the pool's own script would pass for a reserve, so such a batch exempts nothing. */
+ /** Payouts take outputs from 1, or 2 when an asset leg needs the reserve, one per BTC withdrawal in slot order; a lander's extra outputs sit past them, and a needless reserve only costs the last payout its exemption. */
  const poolPayout=(coin:RollupCoin)=>{
   if(!batchTxids!.has(coin.txid))return false;
   try{
-   const tx=Transaction.fromRaw(coin.sourceTx,{allowUnknownOutputs:true}),btc=readEpochBatchTx(tx,o.leaves).publics.filter(p=>p[4]>0n&&p[5]===0n),first=hex.encode(tx.getOutput(1).script!)===poolScript?2:1;
-   return !btc.some(p=>p[6]===poolDestination)&&coin.vout>=first&&coin.vout<first+btc.length;
+   const {publics}=readEpochBatchTx(Transaction.fromRaw(coin.sourceTx,{allowUnknownOutputs:true}),o.leaves),first=publics.some(p=>p[5]!==0n)?2:1;
+   return coin.vout>=first&&coin.vout<first+publics.filter(p=>p[4]>0n&&p[5]===0n).length;
   }catch{return false;}
  };
  /** Coins match deposit legs only in sum, so a unit is exempt only when every coin in it is this pool's payout. */

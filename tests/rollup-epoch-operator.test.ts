@@ -706,10 +706,15 @@ const paidOut=async(w:World,op:Operator)=>{
  assert.equal(hex.encode(tx.getOutput(1).script!),hex.encode(p2tr(w.program)),'output 1 is the payout');
  return w.coinOf(tx,1);
 };
-/** Batch n as a lander may build it: an input of its own, spent to output `at`, just past the payouts, where the extension sat. */
-const forgedBatch=(w:World,n:number,at=2)=>{
- const landed=landedTx(w,n),tx=Transaction.fromRaw(landed.tx.toBytes(true,true),{allowUnknownOutputs:true}),ext=tx.getOutput(at),spare=offlineNativeFixture([{script:p2tr(w.program),amount:5000n}]);
- tx.updateOutput(at,{script:p2tr(w.program),amount:5000n});tx.addOutput(ext);tx.addInput({txid:spare.id,index:0});
+/** Batch n as a lander may rebuild it: a coin of its own spent in after the inputs and out at `at`, just past the payouts; with `reserve` that coin has the pool's script and also takes output 1, though no asset leg needs it. */
+const forgedBatch=(w:World,n:number,at=2,reserve=false)=>{
+ const landed=landedTx(w,n),src=landed.tx,tx=new Transaction({version:src.version,lockTime:src.lockTime}),outs=Array.from({length:src.outputsLength},(_,i)=>src.getOutput(i));
+ const spare=offlineNativeFixture([{script:reserve?pool.tree.pkScript:p2tr(w.program),amount:5000n}]);
+ if(reserve)outs.splice(1,0,{script:pool.tree.pkScript,amount:5000n});
+ outs.splice(at,0,{script:p2tr(w.program),amount:5000n});
+ for(let i=0;i<src.inputsLength;i++){const {txid,index}=src.getInput(i);tx.addInput({txid:txid!,index:index!});}
+ tx.addInput({txid:spare.id,index:0});
+ for(const {script,amount} of outs)tx.addOutput({script:script!,amount:amount!});
  return {tx,checkpoints:[...landed.checkpoints,spare]};
 };
 const listed=(op:Operator)=>{
@@ -786,12 +791,22 @@ test('a followed batch exempts its payout, but not an output its lander added ri
  await land(b,'spend',[spendOf(deposit(b.state,1000n),{coin:w.coinOf(tx,1)})]);
 });
 
-test('a batch that pays the pool\'s own script exempts nothing, since that payout would pass for a reserve',async t=>{
+test('a payout to the pool\'s own script in a batch with no asset leg leaves its other payouts exempt, and no output past them',async t=>{
  const w=await world(64),a=await w.open(t);
- await land(a,'spend',[withdrawal(w,a,pool.tree.pkScript.subarray(2))]);
- const {tx,checkpoints}=forgedBatch(w,0),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ await land(a,'spend',[withdrawal(w,a,pool.tree.pkScript.subarray(2)),withdrawal(w,a)]);
+ const {tx,checkpoints}=forgedBatch(w,0,3),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ assert.equal(hex.encode(tx.getOutput(1).script!),hex.encode(pool.tree.pkScript),'output 1 looks like a reserve');
  await b.follow({tx,checkpoints,at:1});
- await assert.rejects(b.submit(spendOf(deposit(b.state,5000n),{coin:w.coinOf(tx,2)})),owes(5000n,100n,0n));
+ await assert.rejects(b.submit(spendOf(deposit(b.state,5000n),{coin:w.coinOf(tx,3)})),owes(5000n,100n,0n),'the lander\'s own output');
+ await land(b,'spend',[spendOf(deposit(b.state,1000n),{coin:w.coinOf(tx,2)})]);
+});
+
+test('a lander\'s needless reserve in a batch with no asset leg still leaves its own output paying',async t=>{
+ const w=await world(64),a=await w.open(t);
+ await paidOut(w,a);
+ const {tx,checkpoints}=forgedBatch(w,0,3,true),b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ await b.follow({tx,checkpoints,at:1});
+ await assert.rejects(b.submit(spendOf(deposit(b.state,5000n),{coin:w.coinOf(tx,3)})),owes(5000n,100n,0n));
 });
 
 test('after a reserve at output 1 the payouts start at output 2, and the reserve is no payout',async t=>{
