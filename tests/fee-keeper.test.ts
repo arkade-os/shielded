@@ -40,7 +40,7 @@ const refusal=async(args:string[],env:Record<string,string>)=>{
  assert.ok(failed,'the run should have been refused');
  assert.equal(failed.code,1);
  assert.ok(!(failed.stdout+failed.stderr).includes(phrase),'a refusal never repeats the phrase');
- return failed.stderr;
+ return failed.stdout+failed.stderr;
 };
 
 test('the keeper merges while more than one note is held and stops when one is left',async()=>{
@@ -72,18 +72,19 @@ test('a merge that fails is logged and left for the next pass, and the other ass
 
 test('each merge is reported as it lands, counted within the pass, and a merge that fails is not',async t=>{
  t.mock.method(console,'error',()=>{});
- const landed:number[]=[];
- await feeKeeperTick(stubWallet({0:4}).wallet,[0n],n=>landed.push(n));
- assert.deepEqual(landed,[1,2,3]);
- landed.length=0;
- await feeKeeperTick(stubWallet({0:3,7:3},{0:'settle'}).wallet,[0n,7n],n=>landed.push(n));
- assert.deepEqual(landed,[1,2],'the failed merge of asset 0 is skipped, and asset 7 lands two');
+ const reported:number[]=[];
+ await feeKeeperTick(stubWallet({0:4}).wallet,[0n],n=>reported.push(n));
+ assert.deepEqual(reported,[1,2,3]);
+ reported.length=0;
+ await feeKeeperTick(stubWallet({0:3,7:3},{0:'settle'}).wallet,[0n,7n],n=>reported.push(n));
+ assert.deepEqual(reported,[1,2],'the failed merge of asset 0 is skipped, and asset 7 lands two');
 });
 
 test('a pool that sends its fee to another wallet is a problem, and a pool with no fee or this wallet\'s is not',()=>{
  const own='shrol2-own',other='shrol2-other';
  assert.equal(feeAddressProblem({shieldedAddress:()=>own}),undefined,'no fee is advertised, so there is nothing to check');
  assert.equal(feeAddressProblem({depositFee:{address:own},shieldedAddress:()=>own}),undefined);
+ assert.equal(feeAddressProblem({depositFee:{address:own.toUpperCase()},shieldedAddress:()=>own}),undefined,'an all-caps address is the same address');
  const problem=feeAddressProblem({depositFee:{address:other},shieldedAddress:()=>own});
  assert.ok(problem?.includes(own)&&problem.includes(other),problem);
 });

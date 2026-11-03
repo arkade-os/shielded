@@ -29,7 +29,7 @@ export const feeKeeperTick=async(wallet:FeeKeeperWallet,assets:bigint[],onMerged
 /** A wrong phrase otherwise reads as "holds 0 sats" for good, while the real fee notes miss their renewal. */
 export const feeAddressProblem=(wallet:{depositFee?:{address:string};shieldedAddress():string}):string|undefined=>{
  const fee=wallet.depositFee,own=wallet.shieldedAddress();
- return fee&&fee.address!==own?`The pool sends its deposit fee to ${fee.address}, not to this wallet ${own}; check SHIELDED_FEE_WALLET_PHRASE.`:undefined;
+ return fee&&fee.address.toLowerCase()!==own.toLowerCase()?`The pool sends its deposit fee to ${fee.address}, not to this wallet ${own}; check SHIELDED_FEE_WALLET_PHRASE.`:undefined;
 };
 
 /** The two values the pool is configured with; the rest of shieldedKeysOf is spend and full-viewing material that stays here. */
