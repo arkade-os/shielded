@@ -70,6 +70,16 @@ test('a merge that fails is logged and left for the next pass, and the other ass
  }
 });
 
+test('each merge is reported as it lands, counted within the pass, and a merge that fails is not',async t=>{
+ t.mock.method(console,'error',()=>{});
+ const landed:number[]=[];
+ await feeKeeperTick(stubWallet({0:4}).wallet,[0n],n=>landed.push(n));
+ assert.deepEqual(landed,[1,2,3]);
+ landed.length=0;
+ await feeKeeperTick(stubWallet({0:3,7:3},{0:'settle'}).wallet,[0n,7n],n=>landed.push(n));
+ assert.deepEqual(landed,[1,2],'the failed merge of asset 0 is skipped, and asset 7 lands two');
+});
+
 test('the derived address and view key are the pool\'s fee settings: they parse and name one wallet',()=>{
  const keys=feeWalletKeysOf(hash,phrase),to=parseRollupAddress(keys.address),view=parseViewKey(keys.viewKey),wallet=shieldedKeysOf(hash,phrase);
  assert.equal(view.owner,to.owner);

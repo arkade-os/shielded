@@ -10,9 +10,9 @@ const log=(...parts:unknown[])=>console.log(new Date().toISOString(),...parts),w
 const reasonOf=(error:unknown)=>error instanceof Error?error.message:String(error);
 
 /** Merges each asset down to one note, waiting for every merge to land. Above 1, not the wallet's own 8, which a busy pool outruns. */
-export const feeKeeperTick=async(wallet:FeeKeeperWallet,assets:bigint[]):Promise<{merged:number;notes:number}>=>{
+export const feeKeeperTick=async(wallet:FeeKeeperWallet,assets:bigint[],onMerged:(merged:number)=>void=()=>{}):Promise<{merged:number;notes:number}>=>{
  let merged=0;
- for(const asset of assets)try{for(let handle=await wallet.merge(asset,1);handle;handle=await wallet.merge(asset,1)){await handle.settled();merged++;}}
+ for(const asset of assets)try{for(let handle=await wallet.merge(asset,1);handle;handle=await wallet.merge(asset,1)){await handle.settled();onMerged(++merged);}}
  catch(error){warn(`merging asset ${asset} failed, trying again next pass:`,reasonOf(error));}
  return {merged,notes:assets.reduce((sum,asset)=>sum+wallet.shieldedNotes(asset).length,0)};
 };
@@ -32,13 +32,14 @@ async function main(){
  if(!pool)throw new Error('Set SHIELDED_POOL_ORIGIN to the pool, for example https://shielded.mutinynet.arkade.sh.');
  const ms=Number(every||60_000);
  if(!Number.isSafeInteger(ms)||ms<1||ms>=2**31)throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a whole number of milliseconds from 1 to 2147483647; a longer timer would fire at once.');
+ log(`syncing with ${new URL(pool).origin}`);
  const wallet=await createShieldedWallet({pool,secret});
  log(`fee wallet ${wallet.shieldedAddress()} holds ${wallet.shieldedBalance()} sats; merging every ${ms} ms`);
  // snarkjs worker threads outlive the wallet, so the process is ended rather than waited on.
  const stop=()=>void wallet.dispose().catch(()=>{}).then(()=>process.exit(0));
  process.once('SIGTERM',stop).once('SIGINT',stop);
  for(;;){
-  await feeKeeperTick(wallet,wallet.mergeableAssets()).then(({merged,notes})=>log(`merged ${merged}, notes remaining ${notes}, batch ${wallet.batchCount()}`),error=>warn('pass failed:',reasonOf(error)));
+  await feeKeeperTick(wallet,wallet.mergeableAssets(),merged=>log(`merge ${merged} landed, batch ${wallet.batchCount()}`)).then(({merged,notes})=>log(`merged ${merged}, notes remaining ${notes}, batch ${wallet.batchCount()}`),error=>warn('pass failed:',reasonOf(error)));
   await sleep(ms);
  }
 }
