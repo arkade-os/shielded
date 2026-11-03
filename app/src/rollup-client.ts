@@ -1,6 +1,8 @@
-import {DUST,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
+import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
+import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
 export * from '../../src/shielded/pool.ts';
 export * from '../../src/shielded/epoch-pool.ts';
@@ -52,6 +54,50 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
  :railId==='lnurl-arkade'?{title:'Pay the Lightning address on Arkade',detail:'Straight from the pool to the Arkade address its owner gave; the amount and destination become public.'}
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};
 
+const grouped=(n:number|bigint)=>n.toLocaleString('en-US');
+export const satsText=(n:number|bigint)=>`${grouped(n)} ${Number(n)===1?'sat':'sats'}`;
+const charges=(fee:DepositFeeSchedule|undefined):fee is DepositFeeSchedule=>!!(fee&&(fee.fixedSats||fee.bps));
+const feeTerms=({fixedSats,bps}:DepositFeeSchedule)=>{
+ const fixed=satsText(fixedSats),share=`${bps/100}% of each deposit`;
+ return fixedSats&&bps?`${fixed} or ${share}, whichever is more`:fixedSats?fixed:share;
+};
+const feeCharged=(fee:DepositFeeSchedule)=>fee.bps?`a deposit fee of ${feeTerms(fee)}`:`a ${grouped(fee.fixedSats)}-sat deposit fee`;
+export const depositFeeLine=(fee:DepositFeeSchedule|undefined)=>charges(fee)?`This pool charges ${feeCharged(fee)}.`:'';
+export const depositFeeAmountLine=(feeSats:bigint,sats:number)=>feeSats?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(feeSats)}-sat fee, so ${grouped(BigInt(sats)-feeSats)} sats reach the pool.`:'';
+export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
+ `${charges(accepted)?`This pool ${acceptsDepositFee(accepted,advertised)?'raised':'changed'} its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Nothing new moves into the pool until you accept it.`;
+export const PAUSED_LINE='Nothing new moves into the pool until you accept the new fee.';
+/** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
+export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
+ const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
+ return entry.kind==='shield'?btc(entry.amounts)-btc(entry.created):undefined;
+};
+/** Plain coins only the fee keeps out: asked without it, the planner would deposit them. */
+export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,now:number,floorMs:number){
+ const plan=shieldPlan(coins,new Set(),now,floorMs);
+ return plan?.kind==='btc'&&!shieldableWithFee(plan,fee)?`${grouped(plan.amount)} sats stay outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee they would be below the ${DUST}-sat minimum.`:'';
+}
+/** A listed asset's coins, each judged alone as the planner takes them: those only the fee keeps out, and while paused, those it lets in. */
+export function listedAssetLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,listed:ReadonlySet<string>,now:number,floorMs:number,paused:boolean){
+ const plans=coins.map(coin=>shieldPlan([coin],listed,now,floorMs)).filter((plan):plan is Extract<ShieldPlan,{kind:'asset'}>=>plan?.kind==='asset');
+ const kept=plans.filter(plan=>!shieldableWithFee(plan,fee)).map(plan=>`This coin stays outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee, its ${satsText(plan.coin.value)} would be below the ${CARRIER_FREE_SATS}-sat minimum.`);
+ return [...kept,paused&&kept.length<plans.length?PAUSED_LINE:''].filter(Boolean).join(' ');
+}
+export const invoiceFeeClause=(fee:DepositFeeSchedule|undefined,pays:bigint,swapFee:bigint)=>{
+ const payout:ShieldPlan={kind:'btc',coins:[],amount:Number(pays-swapFee)},owed=planFeeOf(payout,fee);
+ return owed&&shieldableWithFee(payout,fee)?` and the deposit fee takes ${grouped(owed)}`:'';
+};
+const LIGHTNING_REST='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
+/** The deposit rule only grows with the amount, so bisection finds the least payout it lets in, exactly. */
+export function lightningMinimumLine(fee:DepositFeeSchedule|undefined){
+ if(!charges(fee))return `Payouts of at least ${DUST} sats ${LIGHTNING_REST}`;
+ const enters=(amount:number)=>shieldableWithFee({kind:'btc',coins:[],amount},fee);
+ if(!enters(Number.MAX_SAFE_INTEGER))return `Payouts stay outside the pool: the deposit fee would leave each one below the ${DUST}-sat minimum.`;
+ let low=DUST,high=Number.MAX_SAFE_INTEGER;
+ while(low<high){const mid=low+Math.floor((high-low)/2);if(enters(mid))high=mid;else low=mid+1;}
+ return `Payouts of at least ${grouped(low)} sats, the ${DUST}-sat minimum plus the deposit fee, ${LIGHTNING_REST}`;
+}
+
 /** Why a token cannot be a claim link, read before any network call; '' when it can be. */
 export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};
 export const claimUrl=(origin:string,token:string)=>`${origin}/claim#${token}`;
@@ -67,6 +113,6 @@ export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],asset
  for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
  return [...totals].map(([asset,amount])=>{
   const count=amount.toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
-  return asset===0n?`${count} sats`:`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
+  return asset===0n?satsText(amount):`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
  }).join(' and ');
 }

@@ -5,9 +5,10 @@ import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shortValue} from '../app/src/rollup-client.ts';
+import {PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
+import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
@@ -245,6 +246,47 @@ test('the route preview names what each rail makes public, and never leaves a ra
  for(const claim of [/private inside the pool/i,/shielded address its owner registered/,/address service sees the amount you request/,/also learns that you pay from the pool/])assert.match(shielded.detail,claim);
 });
 
+test('the deposit-fee line names a fixed fee, a share, or both, and says nothing when there is no fee',()=>{
+ assert.equal(depositFeeLine(undefined),'');
+ assert.equal(depositFeeLine({fixedSats:0,bps:0}),'');
+ assert.match(depositFeeLine({fixedSats:100,bps:0}),/100-sat deposit fee/);
+ assert.match(depositFeeLine({fixedSats:0,bps:50}),/0\.5% of each deposit/);
+ assert.match(depositFeeLine({fixedSats:100,bps:50}),/100 sats or 0\.5%.*whichever is more/);
+ assert.equal(depositFeeLine({fixedSats:2500,bps:0}),'This pool charges a 2,500-sat deposit fee.');
+ assert.equal(depositFeeLine({fixedSats:0,bps:1}),'This pool charges a deposit fee of 0.01% of each deposit.');
+ assert.equal(depositFeeLine({fixedSats:1500,bps:125}),'This pool charges a deposit fee of 1,500 sats or 1.25% of each deposit, whichever is more.');
+});
+
+test('the pause banner reads as a new fee when nothing was accepted, and as a rise when a lower fee was',()=>{
+ const tail=' Nothing new moves into the pool until you accept it.',fixed={fixedSats:100,bps:0},both={fixedSats:100,bps:50};
+ for(const accepted of [undefined,{fixedSats:0,bps:0}])assert.equal(depositFeeBanner(fixed,accepted),'This pool now charges a 100-sat deposit fee.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:0,bps:50},undefined),'This pool now charges a deposit fee of 0.5% of each deposit.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:300,bps:0},fixed),'This pool raised its deposit fee to 300 sats.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:0,bps:100},{fixedSats:0,bps:50}),'This pool raised its deposit fee to 1% of each deposit.'+tail);
+ assert.equal(depositFeeBanner(both,fixed),'This pool raised its deposit fee to 100 sats or 0.5% of each deposit, whichever is more.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:0,bps:0},undefined),'');
+ for(const text of [depositFeeLine(both),depositFeeBanner(both,undefined),depositFeeBanner(both,fixed)])assert.doesNotMatch(text,/bps|schedule|basis point/i);
+});
+
+test('the amount line states the fee a deposit pays and what reaches the pool, and nothing when it pays none',()=>{
+ assert.equal(depositFeeAmountLine(100n,5000),'Your next deposit of 5,000 sats pays a 100-sat fee, so 4,900 sats reach the pool.');
+ assert.equal(depositFeeAmountLine(12345n,123456789),'Your next deposit of 123,456,789 sats pays a 12,345-sat fee, so 123,444,444 sats reach the pool.');
+ assert.equal(depositFeeAmountLine(0n,5000),'');
+});
+
+test('a shield row\'s fee is the deposited amount less the notes it created',()=>{
+ const owned=(amount:bigint,asset=0n):EpochOwnedNote=>({amount,asset,rho:1n,epoch:0,index:0,nullifier:amount}),field=7n;
+ const entry=(kind:EpochHistoryEntry['kind'],amounts:EpochHistoryEntry['amounts'],created:EpochOwnedNote[]):EpochHistoryEntry=>({kind,batch:1,epoch:0,amounts,spent:[],created,slots:[0]});
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:1000n}],[owned(900n)])),100n);
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:1000n}],[owned(1000n)])),0n);
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:1000n}],[owned(500n),owned(400n)])),100n,'every BTC note it created counts');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:400n}],[owned(9n,field),owned(300n)])),100n,'an asset group reports its carrier\'s fee, not its units');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:330n}],[owned(9n,field),owned(330n)])),0n,'a dust-sized carrier is free');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:400n}],[owned(4n,field),owned(300n)])),100n,'asset units deposited do not count');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:400n}],[owned(5n,field),owned(300n)])),100n,'nor do asset notes created');
+ for(const kind of ['receive','send','withdraw','merge','renew','recover'] as const)assert.equal(shieldFeeOf(entry(kind,[{asset:0n,amount:1000n}],[owned(900n)])),undefined,kind);
+});
+
 test('the private-receive box follows the user\'s choice, and one notice follows what the service lists',()=>{
  const none:PrivateReceiveState={on:false,pending:false,refused:false,withdrawing:false,listed:null};
  const table:[string,Partial<PrivateReceiveState>,boolean,string[]][]=[
@@ -272,6 +314,68 @@ test('the claim card reads a link\'s token and holdings without the network',()=
  const id='1e291e28'.padEnd(64,'0')+'0000',field=7n,assetIdOf=(f:bigint)=>f===field?id:undefined;
  assert.equal(holdingsText([{asset:0n,amount:600n},{asset:0n,amount:400n}],assetIdOf),'1,000 sats');
  assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
- assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sats');
+ assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sat');
  assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
+});
+
+test('the keep-out line names the plain sats only the fee leaves under the minimum',()=>{
+ const now=1_000_000,floor=25*3600_000,at=(n:number,value:number,hours=100):ArkCoin=>({...coinOf(n,value),expiresAt:now+hours*3600_000}),out=(coins:ArkCoin[])=>depositFeeOutsideLine(coins,flat,now,floor);
+ assert.equal(out([at(1,400)]),'400 sats stay outside the pool: after the 100-sat deposit fee they would be below the 330-sat minimum.');
+ assert.equal(out([at(1,200),at(2,200)]),out([at(3,400)]),'the plain coins one deposit would take count together');
+ assert.match(depositFeeOutsideLine([at(1,659)],{fixedSats:0,bps:5_000},now,floor),/^659 sats .* after the 330-sat deposit fee/);
+ const quiet:[ArkCoin[],string][]=[[[at(1,430)],'the fee leaves the minimum'],[[at(1,329)],'under the minimum with no fee too'],[[at(1,400,1)],'expiring, which the renew line covers'],[[],'no coins']];
+ for(const [coins,why] of quiet)assert.equal(out(coins),'',why);
+ const asset=coinOf(4,400,[{assetId:'ee'.repeat(34),amount:9n}]);
+ assert.deepEqual([out([asset]),listedAssetLine([asset],flat,new Set(['ee'.repeat(34)]),now,floor,false)],['','This coin stays outside the pool: after the 100-sat deposit fee, its 400 sats would be below the 330-sat minimum.'],'an asset coin is told on its own card, not the funding one');
+ assert.equal(depositFeeOutsideLine([at(1,400)],undefined,now,floor),'','no fee, no line');
+});
+
+test('the Lightning minimum is the smallest payout that keeps 330 sats after its own fee',()=>{
+ const tail='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
+ assert.equal(lightningMinimumLine(undefined),`Payouts of at least 330 sats ${tail}`,'no fee: the sentence as before');
+ assert.equal(lightningMinimumLine(flat),`Payouts of at least 430 sats, the 330-sat minimum plus the deposit fee, ${tail}`);
+ const pinned:[typeof flat,number][]=[[flat,430],[{fixedSats:0,bps:303},341],[{fixedSats:0,bps:5_000},660],[{fixedSats:2500,bps:125},2830],[{fixedSats:1,bps:9_999},3_300_000]];
+ for(const [fee,least] of pinned){
+  assert.match(lightningMinimumLine(fee),new RegExp(`^Payouts of at least ${least.toLocaleString('en-US')} sats,`),JSON.stringify(fee));
+  assert.deepEqual([least-1,least].map(amount=>shieldableWithFee({kind:'btc',coins:[],amount},fee)),[false,true],`the wallet shields ${least} and not one sat less`);
+ }
+ assert.equal(lightningMinimumLine({fixedSats:0,bps:10_000}),'Payouts stay outside the pool: the deposit fee would leave each one below the 330-sat minimum.');
+});
+
+test('a listed asset coin the fee would leave under the carrier minimum says so, and while paused one it lets in waits',()=>{
+ const x='ee'.repeat(34),listed=new Set([x]),now=1_000_000,floor=25*3600_000;
+ const coin=(n:number,value:number,hours=100,assets=[{assetId:x,amount:9n}]):ArkCoin=>({...coinOf(n,value,assets),expiresAt:now+hours*3600_000});
+ const line=(coins:ArkCoin[],fee:typeof flat|undefined,paused=false,ids:Set<string>=listed)=>listedAssetLine(coins,fee,ids,now,floor,paused);
+ const out='This coin stays outside the pool: after the 100-sat deposit fee, its 400 sats would be below the 330-sat minimum.';
+ assert.equal(line([coin(1,400),coin(2,330)],flat),out,'only the coin the fee keeps out');
+ assert.deepEqual([line([coin(2,330)],flat,true),line([coin(1,400),coin(2,330)],flat,true),line([coin(1,400)],flat,true)],[PAUSED_LINE,`${out} ${PAUSED_LINE}`,out],'while paused a coin the fee lets in waits; one it keeps out is told only that');
+ assert.equal(PAUSED_LINE,'Nothing new moves into the pool until you accept the new fee.');
+ const quiet:[ArkCoin[],string][]=[[[coin(1,330)],'a dust carrier is free'],[[coin(1,430)],'the fee leaves the minimum'],[[coin(1,400,1)],'expiring'],[[coin(1,400,100,[{assetId:x,amount:9n},{assetId:'ff'.repeat(34),amount:1n}])],'a coin with two assets never shields']];
+ for(const [coins,why] of quiet)assert.equal(line(coins,flat),'',why);
+ assert.equal(line([coin(1,400)],flat,false,new Set()),'','an unlisted asset');
+ assert.equal(line([coin(1,400)],undefined),'','no fee');
+});
+
+test('the banner says raised only when no part of the fee fell',()=>{
+ const tail=' Nothing new moves into the pool until you accept it.';
+ assert.equal(depositFeeBanner({fixedSats:100,bps:50},{fixedSats:200,bps:0}),'This pool changed its deposit fee to 100 sats or 0.5% of each deposit, whichever is more.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:200,bps:50},{fixedSats:200,bps:0}),'This pool raised its deposit fee to 200 sats or 0.5% of each deposit, whichever is more.'+tail,'a part that held is not a fall');
+});
+
+test('a waiting invoice names the deposit fee the pool takes from what arrives',()=>{
+ assert.equal(invoiceFeeClause(undefined,5_050n,50n),'');
+ assert.equal(invoiceFeeClause(flat,5_050n,50n),' and the deposit fee takes 100');
+ assert.equal(invoiceFeeClause({fixedSats:0,bps:100},10_100n,100n),' and the deposit fee takes 100','1% of the 10,000-sat payout, not of the 10,100 paid');
+});
+
+test('a waiting invoice names no deposit fee for a payout too small to enter the pool',()=>{
+ assert.equal(invoiceFeeClause({fixedSats:2500,bps:0},1_050n,50n),'','a flat 2,500 on a 1,000-sat payout');
+ assert.deepEqual([479n,480n].map(pays=>invoiceFeeClause(flat,pays,50n)),['',' and the deposit fee takes 100'],'429 sats would keep 329; 430 keep the minimum');
+});
+
+test('a count of one reads as 1 sat',()=>{
+ assert.deepEqual([satsText(1),satsText(1n),satsText(0),satsText(2_500n)],['1 sat','1 sat','0 sats','2,500 sats']);
+ assert.equal(depositFeeLine({fixedSats:1,bps:50}),'This pool charges a deposit fee of 1 sat or 0.5% of each deposit, whichever is more.');
+ assert.equal(depositFeeBanner({fixedSats:1,bps:50},{fixedSats:0,bps:50}),'This pool raised its deposit fee to 1 sat or 0.5% of each deposit, whichever is more. Nothing new moves into the pool until you accept it.');
+ assert.equal(holdingsText([{asset:0n,amount:1n}],()=>undefined),'1 sat');
 });
