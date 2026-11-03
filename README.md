@@ -56,6 +56,16 @@ SHIELDED_DATA_DIR=.deps/data SHIELDED_ROLLUP_KEYS=.deps/keys HOST=127.0.0.1 npm 
 
 That same operator wallet keeps paying after genesis. arkd charges each renewal intent 0.2% of **every input** under a day old — the head, each reserve the intent carries, and the wallet's own float coins — and a batch re-creates the head each time, so a renewal of a 6,000-sat head costs 12 sats. A pool with reserves sends one intent per 8 reserves, and each of those intents pays for the head again. Fund the wallet above the 2,000-sat minimum, sized to the head and the reserve count you mean to run — the change returns as a fresh coin, which the next renewal carries along so arkd cannot sweep it. At most 8 of the wallet's coins ride in one intent, largest first, so coins anyone pays to the published address can neither crowd the float out nor grow the intent past arkd's weight limit. A wallet that cannot cover the fee stops the pool renewing, and says so in the `notice` on `/api/rollup/status`.
 
+## Deposit fee
+
+A deposit is free unless the operator turns a fee on. The fee goes to a separate fee wallet, so the server needs only that wallet's address and view key, never its spend key:
+
+- `SHIELDED_DEPOSIT_FEE_ADDRESS`: the fee wallet's `shrol2…` address.
+- `SHIELDED_DEPOSIT_FEE_VIEW_KEY`: its `shview2…` view key, which the pool uses to check each deposit's fee note.
+- `SHIELDED_DEPOSIT_FEE_SATS` and `SHIELDED_DEPOSIT_FEE_BPS`: the fee is the larger of the fixed sats and the bps share of the deposit, rounded up. Both default to 0.
+
+Without them the fee is off, and so it is when both numbers are 0 (the pool logs a warning). Once it is live, `/api/rollup/status` shows `pool.depositFee` as `{fixedSats, bps, address}`; the view key is never served. A fee that is set but wrong blocks the pool instead of running it fee-free, with the reason in `/api/rollup/status` and the log: an address or view key that does not parse (or only one of the two), a view key that is not the address's, a sats or bps value that is not a non-negative whole number, or bps above 10000.
+
 ## Proving keys
 
 The proving keys come from a two-phase Groth16 setup.

@@ -2,30 +2,33 @@ import assert from 'node:assert/strict';
 import {randomBytes} from 'node:crypto';
 import {cpSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {after,test} from 'node:test';
+import {after,test,type TestContext} from 'node:test';
 import {CSVMultisigTapscript,MultisigTapscript,scriptFromTapLeafScript,SingleKey,VtxoScript} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {randomField} from '../packages/protocol/src/rollup/account.ts';
 import {BATCH_SLOTS,CHECKPOINT_EVERY,ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {parseDepositFee} from '../packages/protocol/src/rollup/deposit-fee.ts';
+import {viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
 import {anchorOf,EpochState} from '../packages/protocol/src/rollup/epoch.ts';
 import {chainOnly} from '../packages/protocol/src/rollup/epoch-account.ts';
-import {epochPaddingTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
+import {epochPaddingTransfer,epochTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-scan.ts';
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
-import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
+import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupEpochPoolTree} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import {EPOCH_KEY_FILES,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
+import {EPOCH_KEY_FILES,openRollupService,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
 import {encodeEpochSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {signDeposit} from '../src/shielded/pool.ts';
 import {stockJournalFingerprint} from '../src/stock/journal.ts';
 import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
-import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
+import {offlineNativeFixture} from './fixtures/native.ts';
+import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until,type Offline} from './fixtures/epoch-service.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
 // rollupEpochPin with the inputs below, as of its introduction: once a genesis-4 pool is live, a move orphans its journal.
@@ -356,4 +359,89 @@ test('the epoch journal pin keeps its fingerprint',()=>{
  const leaves={batch:Uint8Array.of(1),batchJoin:Uint8Array.of(2),reserve:Uint8Array.of(3),renew:Uint8Array.of(4),batchRecover:Uint8Array.of(5)};
  const inputs={leaves,manifest:Buffer.from('manifest'),checkpoint:Uint8Array.of(0x51),genesisTxid:'55'.repeat(32),serverKey:'66'.repeat(32),emulatorKey:'77'.repeat(32)};
  assert.equal(stockJournalFingerprint(rollupEpochPin(inputs)),EPOCH_PIN_FINGERPRINT);
+});
+
+type FeeConfig=NonNullable<Parameters<typeof openRollupService>[0]['depositFee']>;
+const feeWallet=(seed:bigint)=>{const viewSecret=x25519.utils.randomSecretKey(),recipient=rollupRecipientOf(hash,seed,seed+1n,viewSecret);return {recipient,viewSecret,address:rollupAddressOf(recipient),viewKey:viewKeyOf(recipient.owner,viewSecret)};};
+const feeOf=(wallet:ReturnType<typeof feeWallet>,schedule={fixedSats:100,bps:0}):FeeConfig=>({address:wallet.address,viewKey:wallet.viewKey,...schedule});
+/** The endpoints are dead, so a service that got past the fee check would stop with another message. */
+async function openBlocked(t:TestContext,depositFee:FeeConfig){
+ const service=await openRollupService({directory:scratch('rollup-fee-blocked-'),circuits:'unused',setupTool:'unused',bundled:keySet('epoch'),vmBinary:DEFAULT_VM_BINARY,epochLen:64,depositFee,endpoints:{arkUrl:'http://127.0.0.1:1',emulatorUrl:'http://127.0.0.1:1'},log:()=>{}});
+ t.after(()=>service.close());await service.step();return service;
+}
+/** The fixture's open() takes no deposit fee, so the pool is created through it and reopened on stand-ins of its own. */
+async function openCharging(t:TestContext,net:Offline,depositFee:FeeConfig){
+ const keys=keySet('epoch'),directory=scratch('rollup-fee-'),expires=new Date(Date.now()+30*86400_000);
+ const answers:Record<string,unknown>={'http://ark.test/v1/info':{network:'mutinynet',signerPubkey:'02'+serverKey,maxTxWeight:'40000',dust:'330',unilateralExitDelay:'2048'},'http://emulator.test/v1/info':{signerPubkey:'02'+emulatorKey,version:'test'}};
+ (await ready(net,directory,keys,'64')).close();
+ const service=await openRollupService({directory,circuits:directory,setupTool:directory,bundled:keys,vmBinary:DEFAULT_VM_BINARY,epochLen:64,depositFee,log:m=>net.logs.push(m),
+  endpoints:{arkUrl:'http://ark.test',emulatorUrl:'http://emulator.test',fetcher:(async(url:URL|string)=>new Response(JSON.stringify(answers[String(url)]))) as typeof fetch},
+  providers:{wallet:async()=>({address:'tark1operator',wallet:{dispose:async()=>{}}}) as never,info:async()=>({checkpointTapscript:hex.encode(checkpoint.script),forfeitPubkey:'02'+serverKey}),
+   indexer:{getVtxos:async(q:{outpoints?:{txid:string;vout:number}[]})=>({vtxos:(q.outpoints??[]).map(p=>({...p,expiresAt:expires}))}),getVirtualTxs:async()=>({txs:[]})} as never,
+   transport:net.transport,prover:()=>({prove:async()=>proof}),verify:async()=>true}});
+ t.after(()=>service.close());await service.step();assert.equal(service.status().phase,'ready',service.status().message);return service;
+}
+
+test('a pool with no deposit fee configured serves the same /status keys as before',async()=>{
+ const net=offline(),service=await ready(net,scratch('rollup-fee-off-'),keySet('epoch'),'64'),{pool}=await (await (await listen(service))('/api/rollup/status')).json();
+ assert.deepEqual(Object.keys(pool).sort(),[...POOL_KEYS,...EPOCH_POOL_KEYS].sort());
+ assert.equal('depositFee' in pool,false);
+ assert.deepEqual(net.logs.filter(m=>/deposit fee/i.test(m)),[],'with nothing configured there is nothing to warn about');
+});
+
+test('a configured deposit fee is advertised with its address and never its view key',async t=>{
+ const wallet=feeWallet(1n),service=await openCharging(t,offline(),feeOf(wallet,{fixedSats:100,bps:25})),request=await listen(service);
+ const body=await (await request('/api/rollup/status')).text(),{pool}=JSON.parse(body);
+ assert.deepEqual(pool.depositFee,{fixedSats:100,bps:25,address:wallet.address});
+ assert.deepEqual(parseDepositFee(pool.depositFee),pool.depositFee,'a wallet reads back exactly what the pool advertises');
+ assert.deepEqual(Object.keys(pool).sort(),[...POOL_KEYS,...EPOCH_POOL_KEYS,'depositFee'].sort());
+ for(const secret of [wallet.viewKey,hex.encode(wallet.viewSecret)])assert.ok(!body.includes(secret),'the view key stays out of /status');
+});
+
+test('a fee address whose view key is not its own stops the pool from opening',async t=>{
+ const mine=feeWallet(1n),other=feeWallet(2n),service=await openBlocked(t,{...feeOf(mine),viewKey:other.viewKey}),status=service.status();
+ assert.deepEqual([status.phase,service.ready(),status.pool],['blocked',false,undefined]);
+ assert.match(status.message,/view key belongs to another wallet than the deposit fee address: the owners differ/);
+ assert.ok(!JSON.stringify(status).includes(other.viewKey),'the message does not repeat the key');
+});
+
+test('a fee schedule of zero sats and zero bps is not advertised, and the log says the fee is off',async t=>{
+ const net=offline(),service=await openCharging(t,net,feeOf(feeWallet(1n),{fixedSats:0,bps:0}));
+ assert.equal('depositFee' in service.status().pool!,false);
+ assert.equal(net.logs.filter(m=>/deposit fee is off/.test(m)).length,1,'one warning, when the service opens');
+});
+
+test('a malformed deposit fee configuration stops the pool from opening, and the message names the part',async t=>{
+ const mine=feeWallet(1n),other=feeWallet(2n),good=feeOf(mine);
+ const cases:[string,Partial<FeeConfig>,RegExp][]=[
+  ['an address that does not parse',{address:'shrol2xyz'},/deposit fee address is not/],
+  ['a view key and no address',{address:''},/deposit fee address is not/],
+  ['a view key mistyped into the address field',{address:mine.viewKey.slice(0,-1)+(mine.viewKey.endsWith('q')?'p':'q')},/deposit fee address is not/],
+  ['a view key that does not parse',{viewKey:'shview2xyz'},/deposit fee view key is not/],
+  ['an address and no view key',{viewKey:''},/deposit fee view key is not/],
+  ['this owner\'s view key with another view secret',{viewKey:viewKeyOf(mine.recipient.owner,x25519.utils.randomSecretKey())},/the view secret differs/],
+  ['a zero schedule, which does not excuse another wallet\'s view key',{fixedSats:0,viewKey:other.viewKey},/the owners differ/],
+  ...([['fractional',1.5],['negative',-1],['not a number',NaN],['unsafe',2**53]] as const).map(([why,fixedSats])=>[`a ${why} fixed fee`,{fixedSats},/deposit fee sats must be/] as [string,Partial<FeeConfig>,RegExp]),
+  ...([['above 100%',10_001],['negative',-1],['fractional',0.5],['not a number',NaN]] as const).map(([why,bps])=>[`bps ${why}`,{bps},/deposit fee bps must be/] as [string,Partial<FeeConfig>,RegExp]),
+ ];
+ for(const [why,change,message] of cases){
+  const config={...good,...change},service=await openBlocked(t,config),status=service.status();
+  assert.equal(status.phase,'blocked',`${why}: ${status.message}`);
+  assert.equal(service.ready(),false,why);
+  assert.match(status.message,message,why);
+  for(const text of [config.address,config.viewKey])if(text)assert.ok(!JSON.stringify(status).includes(text),`${why}: the message does not repeat what was configured`);
+ }
+});
+
+test('the pool gives its operator the fee schedule and the fee wallet, so a deposit must pay that wallet what the schedule asks',async t=>{
+ const wallet=feeWallet(1n),service=await openCharging(t,offline(),feeOf(wallet,{fixedSats:100,bps:50})),sats=100_000n;
+ const payer=rollupRecipientOf(hash,11n,13n,x25519.utils.randomSecretKey()),funding=offlineNativeFixture([{script:userTree.pkScript,amount:sats}]);
+ const shield=async(fee?:bigint)=>{
+  const state=anchors(service),built=await epochTransfer(hash,{rPrev:state.nextAnchorRoot(),rCur:{epoch:state.epoch,root:state.latestRoot()},sel:[],ask:0n,nk:0n,self:payer,request:{deposit:sats,...(fee?{to:{recipient:wallet.recipient,amount:fee}}:{})}});
+  return {id:hex.encode(randomBytes(16)),slot:built.slot,publics:built.witness.publicSignals,proof,ciphertext:built.ciphertext,coin:{txid:funding.id,vout:0,value:Number(sats),sourceTx:funding.toBytes(true,true),tapTree:userTree.encode(),leaf:userTree.findLeaf(hex.encode(collab))}} as never;
+ };
+ // 500 sats is the bps share of 100,000; swapping the two numbers would owe 1,000, and a wrong owner or view secret would read the 200 as 0.
+ const owes=(paid:number)=>(error:unknown)=>rejection('fee-missing')(error)&&(error as Error).message.includes(`owes a 500-sat deposit fee to this pool; this one carries ${paid}.`);
+ await assert.rejects(service.submit(await shield()),owes(0));
+ await assert.rejects(service.submit(await shield(200n)),owes(200));
 });
