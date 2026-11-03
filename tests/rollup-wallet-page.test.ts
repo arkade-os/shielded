@@ -6,7 +6,7 @@ import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
 import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shortValue} from '../app/src/rollup-client.ts';
-import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type SpendStatus} from '../src/shielded/pool.ts';
+import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
@@ -108,7 +108,10 @@ test('with a fee on, a plan whose coins are all pool payouts deposits the larges
  assert.deepEqual(planned([a,b,c],{schedule:flat,exempt:coin=>coin!==c}),{kind:'btc',coins:[a,b,c],amount:2100},'one coin that is not a payout leaves them merged');
  for(const fee of [{schedule:flat},{exempt},{schedule:{fixedSats:0,bps:0},exempt}])assert.deepEqual(planned([a,b,c],fee),{kind:'btc',coins:[a,b,c],amount:2100},'with no fee charging, or no exemption known, they merge as ever');
  assert.deepEqual(planned([c],{schedule:flat,exempt}),{kind:'btc',coins:[c],amount:700});
- assert.equal(planned([coinOf(5,400),coinOf(6,400)],{schedule:flat,exempt}),undefined,'payouts that cannot clear the minimum alone are not merged to clear it');
+ const [small,large]=[coinOf(5,330),coinOf(6,400)],half=[coinOf(7,200),coinOf(8,200)];
+ assert.deepEqual(planned([small,large],{schedule:flat,exempt}),{kind:'btc',coins:[large],amount:400},'the largest payout goes first, fee-free');
+ assert.deepEqual(planned([small],{schedule:flat,exempt}),{kind:'btc',coins:[small],amount:330},'and the other alone on a later pass');
+ assert.equal(planned(half,{schedule:flat,exempt:coin=>coin===half[0]}),undefined,'one coin that pays makes the whole plan pay: 400 less 100 is under the minimum');
 });
 
 test('a plan the fee would leave under the dust minimum is not shielded, and an asset coin behind it still is',()=>{
@@ -118,14 +121,27 @@ test('a plan the fee would leave under the dust minimum is not shielded, and an 
  assert.deepEqual(planned([small,asset],{schedule:flat},[x]),{kind:'asset',coin:asset,assetId:x,units:9n});
  assert.deepEqual([330,429,430].map(value=>planned([coinOf(3,value)],{schedule:flat})?.kind),[undefined,undefined,'btc'],'the plan keeps exactly the minimum, and plain sats get no free allowance');
  assert.deepEqual([659,660].map(value=>planned([coinOf(3,value)],{schedule:{fixedSats:0,bps:5_000}})?.kind),[undefined,'btc'],'the bps share rounds up');
+ assert.deepEqual([329,330,429].map(value=>planned([coinOf(3,value)],{schedule:flat,exempt:()=>true})?.kind),[undefined,'btc','btc'],'a pool payout pays no fee, so only the dust minimum gates it');
+ assert.equal(planned([small],{schedule:flat,exempt:()=>false}),undefined,'a coin that is not a payout still pays');
 });
 
 test('an asset coin shields when its carrier is free or the fee still leaves a dust carrier',()=>{
  const x='ee'.repeat(34),asset=(value:number)=>coinOf(1,value,[{assetId:x,amount:9n}]),carriers=[300,330,331,400,430,1000];
  assert.deepEqual(carriers.map(value=>shieldableWithFee({kind:'asset',coin:asset(value),assetId:x,units:9n},flat)),[true,true,false,false,true,true]);
  assert.deepEqual(carriers.map(value=>planned([asset(value)],{schedule:flat},[x])?.kind),['asset','asset',undefined,undefined,'asset','asset'],'the plan agrees');
+ const returning=()=>true;
+ assert.ok(carriers.every(value=>shieldableWithFee({kind:'asset',coin:asset(value),assetId:x,units:9n},flat,returning)),'a returning payout owes no carrier fee');
+ assert.deepEqual([returning,()=>false].map(exempt=>planned([asset(400)],{schedule:flat,exempt},[x])?.kind),['asset',undefined]);
  const paying=coinOf(2,1000,[{assetId:x,amount:3n}]);
  assert.deepEqual(planned([asset(400),paying],{schedule:flat},[x]),{kind:'asset',coin:paying,assetId:x,units:3n},'a coin the fee would eat does not hold back the next one');
+});
+
+test('a plan owes the schedule\'s fee, and nothing when every coin in it is exempt',()=>{
+ const x='ee'.repeat(34),schedule={fixedSats:100,bps:50},[a,b]=[coinOf(1,60_000),coinOf(2,40_000)],btc:ShieldPlan={kind:'btc',coins:[a,b],amount:100_000};
+ const carrier=(value:number):ShieldPlan=>({kind:'asset',coin:coinOf(3,value,[{assetId:x,amount:9n}]),assetId:x,units:9n});
+ assert.deepEqual([planFeeOf(btc,schedule),planFeeOf(btc,schedule,()=>true),planFeeOf(btc,schedule,coin=>coin===a),planFeeOf(btc,undefined)],[500n,0n,500n,0n],'one coin that pays makes the plan pay on the whole amount');
+ assert.deepEqual([330,400].map(value=>planFeeOf(carrier(value),schedule)),[0n,100n],'a dust carrier is free and a bigger one pays the whole fee');
+ assert.equal(planFeeOf(carrier(400),schedule,()=>true),0n);
 });
 
 test('a pool that advertises a malformed fee is read as no fee',()=>{
