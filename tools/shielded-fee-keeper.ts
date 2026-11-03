@@ -50,7 +50,8 @@ async function main(){
  log(`syncing with ${new URL(pool).origin}`);
  const wallet=await createShieldedWallet({pool,secret});
  // snarkjs worker threads and the pool's event stream outlive the wallet, so once it exists every exit is explicit: a hang would keep a supervisor from restarting it.
- const end=(code:number)=>wallet.dispose().catch(()=>{}).then(()=>process.exit(code));
+ let ending:Promise<never>|undefined;
+ const end=(code:number)=>ending??=wallet.dispose().catch(()=>{}).then(()=>process.exit(code));
  process.once('SIGTERM',()=>void end(0)).once('SIGINT',()=>void end(0));
  try{
   const refused=feeAddressProblem(wallet);
