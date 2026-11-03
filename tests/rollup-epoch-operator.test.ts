@@ -938,6 +938,35 @@ test('a commit that fails leaves its index entry ahead of the journal, and the r
  assert.deepEqual(indexed(dir),[tx.id],'the retry replaces it, so later batches stay aligned');
 });
 
+const blockIndexWrites=(dir:string)=>{const tmp=`${txidIndex(dir)}.tmp`;mkdirSync(tmp);return ()=>rmSync(tmp,{recursive:true});};
+const unwritten=(warned:{mock:{calls:{arguments:unknown[]}[]}})=>warned.mock.calls.filter(call=>/Could not write .*batch-txids\.json/.test(String(call.arguments[0]))).length;
+
+test('an index write that throws neither stops a batch from landing nor costs its payout the exemption, and a reopen restores the entry',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
+ let op=await w.open(t,w.fee());
+ const first=await paidOut(w,op),unblock=blockIndexWrites(w.dir),second=await paidOut(w,op),third=await paidOut(w,op);
+ await op.submit(redeposit(op,second));
+ assert.deepEqual(indexed(w.dir),[first.txid],'the file keeps its last good write');
+ assert.equal(unwritten(warned),1,'one warning, not one per batch');
+ op.close();unblock();
+ op=await w.open(t,w.fee());
+ assert.deepEqual(indexed(w.dir),[first.txid,second.txid,third.txid]);
+ await op.submit(redeposit(op,third));
+});
+
+test('an index write that throws does not stop a follow either, and the followed payout is exempt at once',async t=>{
+ const w=await world(64),a=await w.open(t),dir=mkdtempSync(join(tmpdir(),'rollup-epoch-fee-unindexed-')),warned=t.mock.method(console,'warn',()=>{}),open=()=>w.open(t,{...w.fee(),directory:dir});
+ const payout=await paidOut(w,a),{tx,checkpoints}=landedTx(w,0);
+ let b=await open();
+ const unblock=blockIndexWrites(dir);
+ assert.deepEqual(await b.follow({tx,checkpoints,at:1}),{batch:0,txid:tx.id});
+ await b.submit(redeposit(b,payout));
+ assert.deepEqual([indexed(dir),unwritten(warned)],[[],1]);
+ b.close();unblock();
+ b=await open();
+ assert.deepEqual(indexed(dir),[tx.id]);
+});
+
 test('with no deposit fee the operator neither writes the batch txid index nor reads one',async t=>{
  const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
  let op=await w.open(t,{snapshotEvery:1});

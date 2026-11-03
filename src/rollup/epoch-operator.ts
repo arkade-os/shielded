@@ -117,7 +117,10 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const barePath=join(o.directory,'chain-only.json'),bare=new Map<string,number>(),saveBare=()=>writeSnapshot(barePath,new TextEncoder().encode(JSON.stringify(Object.fromEntries(bare))));
  const fillable=(r:RollupEpochRecord)=>chainOnly(r)||r.slots.some(s=>s.ctDigest!=='0'&&!s.ciphertext);
  // The fee exemption's txids in batch order, '' where a record gave none. An entry is written before its batch's journal commit, so a failed commit leaves one extra, which the next open cuts.
- const txidsPath=join(o.directory,'batch-txids.json'),txids:string[]=[],saveTxids=()=>writeSnapshot(txidsPath,new TextEncoder().encode(JSON.stringify(txids)));
+ // It only caches the records: a write that fails warns once and the batch goes on, and the next open reads what the file lacks.
+ const txidsPath=join(o.directory,'batch-txids.json'),txids:string[]=[];
+ let txidsWarned=false;
+ const saveTxids=()=>{try{writeSnapshot(txidsPath,new TextEncoder().encode(JSON.stringify(txids)));}catch(error){if(!txidsWarned)console.warn(`[rollup] Could not write ${txidsPath}; batches go on, and the next open reads the records it lacks: ${(error as Error).message}`);txidsWarned=true;}};
  const indexTxid=(n:number,txid:string)=>{if(batchTxids){txids.length=n;txids.push(txid);saveTxids();}};
  const frozenDir=join(o.directory,'nullifiers');mkdirSync(frozenDir,{recursive:true});
  const frozenPath=(epoch:number)=>epochNfArchivePath(frozenDir,epoch);
@@ -199,7 +202,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    catch(error){txids[n]='';console.warn(`[rollup] Batch ${n}'s record is unreadable, so a coin it paid out pays the deposit fee: ${(error as Error).message}`);}
   }
   for(const txid of txids)if(txid)batchTxids.add(txid);
-  if(JSON.stringify(txids)!==text)try{saveTxids();}catch(error){console.warn(`[rollup] Could not write ${txidsPath}: ${(error as Error).message}`);}
+  if(JSON.stringify(txids)!==text)saveTxids();
  }
  // A missing or damaged index is rebuilt from the committed records; it may then also name operator-landed batches, which only widens what can be filled in, never what is trusted.
  try{for(const [txid,n] of Object.entries(JSON.parse(readFileSync(barePath,'utf8')) as Record<string,number>))bare.set(txid,n);}
@@ -477,7 +480,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     // As the batch path's own undoLast does: a commit that does not land must leave no batch applied above the journal.
-    // The indexes are written first, so none misses a committed batch; an entry for one that did not land is ignored by enrich, or cut at the next open.
+    // The indexes are written first, so a crash leaves none behind the journal; an entry for one that did not land is ignored by enrich, or cut at the next open.
     try{if(fillable(record)){bare.set(tx.id,archive.batches);saveBare();}indexTxid(archive.batches,tx.id);archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));}
     catch(error){state.undoLast();throw error;}
     lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);batchTxids?.add(tx.id);
