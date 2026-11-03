@@ -1,7 +1,7 @@
 import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
-import type {DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import {CARRIER_FREE_SATS,acceptsDepositFee,depositFeeOf,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
 export * from '../../src/shielded/pool.ts';
@@ -55,16 +55,17 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};
 
 const grouped=(n:number|bigint)=>n.toLocaleString('en-US');
+export const satsText=(n:number|bigint)=>`${grouped(n)} ${Number(n)===1?'sat':'sats'}`;
 const charges=(fee:DepositFeeSchedule|undefined):fee is DepositFeeSchedule=>!!(fee&&(fee.fixedSats||fee.bps));
 const feeTerms=({fixedSats,bps}:DepositFeeSchedule)=>{
- const fixed=`${grouped(fixedSats)} sats`,share=`${bps/100}% of each deposit`;
+ const fixed=satsText(fixedSats),share=`${bps/100}% of each deposit`;
  return fixedSats&&bps?`${fixed} or ${share}, whichever is more`:fixedSats?fixed:share;
 };
 const feeCharged=(fee:DepositFeeSchedule)=>fee.bps?`a deposit fee of ${feeTerms(fee)}`:`a ${grouped(fee.fixedSats)}-sat deposit fee`;
 export const depositFeeLine=(fee:DepositFeeSchedule|undefined)=>charges(fee)?`This pool charges ${feeCharged(fee)}.`:'';
 export const depositFeeAmountLine=(feeSats:bigint,sats:number)=>feeSats?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(feeSats)}-sat fee, so ${grouped(BigInt(sats)-feeSats)} sats reach the pool.`:'';
 export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
- `${charges(accepted)?`This pool raised its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Automatic shielding is paused until you accept it.`;
+ `${charges(accepted)?`This pool ${acceptsDepositFee(accepted,advertised)?'raised':'changed'} its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Nothing moves into the pool until you accept it.`;
 /** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
 export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
  const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
@@ -75,6 +76,11 @@ export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSch
  const plan=shieldPlan(coins,new Set(),now,floorMs);
  return plan?.kind==='btc'&&!shieldableWithFee(plan,fee)?`${grouped(plan.amount)} sats stay outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee they would be below the ${DUST}-sat minimum.`:'';
 }
+/** Listed asset coins only the fee keeps out, each judged alone as the planner takes them. */
+export function assetFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,listed:ReadonlySet<string>,now:number,floorMs:number){
+ return coins.map(coin=>shieldPlan([coin],listed,now,floorMs)).map(plan=>plan?.kind==='asset'&&!shieldableWithFee(plan,fee)?`Its ${grouped(plan.coin.value)} sats stay outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee they would be below the ${CARRIER_FREE_SATS}-sat minimum.`:'').filter(Boolean).join(' ');
+}
+export const invoiceFeeClause=(fee:DepositFeeSchedule|undefined,pays:bigint,swapFee:bigint)=>{const owed=depositFeeOf(fee,pays-swapFee);return owed?` and the deposit fee takes ${grouped(owed)}`:'';};
 const LIGHTNING_REST='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
 /** The deposit rule only grows with the amount, so bisection finds the least payout it lets in, exactly. */
 export function lightningMinimumLine(fee:DepositFeeSchedule|undefined){
@@ -101,6 +107,6 @@ export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],asset
  for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
  return [...totals].map(([asset,amount])=>{
   const count=amount.toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
-  return asset===0n?`${count} sats`:`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
+  return asset===0n?satsText(amount):`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
  }).join(' and ');
 }

@@ -16,7 +16,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
-import {arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,lightningMinimumLine,listingBlocked,payTarget,privateReceiveView,routeCopy,shieldFeeOf,shortValue} from './rollup-client.ts';
+import {arkAssetHoldings,assetFeeOutsideLine,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listingBlocked,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOf,shortValue} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
 import {CopyButton,Icon} from './components.tsx';
@@ -55,15 +55,18 @@ const WHERE:Record<string,string>={
 const whereOf=(kind:string|undefined,received:boolean)=>(kind?WHERE[kind]:undefined)??(received?'Into your Arkade address, outside the pool.':'From your Arkade address, outside the pool.');
 type Invoice={id:string;bolt11:string;outcome:Outcome;pays:bigint;fee:bigint;failure?:string};
 const INVOICE:Partial<Record<Outcome,string>>={funding:'Paid. Claiming the sats.',funded:'Paid. Claiming the sats.',claimed:'Received. The sats move into the pool shortly.',lapsed:'It expired unpaid.'};
-const invoiceLine=(i:Invoice)=>i.outcome==='accepted'||i.outcome==='open'?`Waiting for a payment of ${sats(i.pays)} sats, of which the swap keeps ${sats(i.fee)}.`
+const invoiceLine=(i:Invoice,fee:DepositFeeSchedule|undefined)=>i.outcome==='accepted'||i.outcome==='open'?`Waiting for a payment of ${sats(i.pays)} sats, of which the swap keeps ${sats(i.fee)}${invoiceFeeClause(fee,i.pays,i.fee)}.`
  :INVOICE[i.outcome]??`The swap ${i.outcome==='needs_recovery'?'needs recovery':'failed'}${i.failure?`: ${i.failure}`:'.'}`;
 const LINK_STATE={unclaimed:'Unclaimed',claimed:'Claimed','taken-back':'Taken back'} as const;
 type ClaimView={notes:{asset:bigint;amount:bigint}[];mine:boolean}|{error:string};
 const NOT_PRIVATE:PrivateReceiveState={on:false,pending:false,refused:false,withdrawing:false,listed:null};
 const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].includes(errorText(error));
+const PAUSED='Nothing moves into the pool until you accept the new fee.';
+// Stable, so React focuses it once on mount; an inline ref would take focus back on every render.
+const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
 export default function RollupWallet(){
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
- const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState('');
+ const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
@@ -136,8 +139,9 @@ export default function RollupWallet(){
  };
 
  const acceptFee=(target:ShieldedWallet,shown:DepositFeeSchedule)=>{
-  setFeeNotice('');
-  void target.acceptDepositFee(shown).catch(error=>{if(mounted.current&&!restoring.current)setFeeNotice(acceptsDepositFee(shown,target.acceptedDepositFee)?'Accepted for this session, but this browser could not save it.':errorText(error));});
+  setFeeNotice('');setFeeConfirmed(false);
+  const settle=(held:boolean,notice='')=>{if(mounted.current&&!restoring.current){setFeeConfirmed(held);setFeeNotice(notice);}};
+  void target.acceptDepositFee(shown).then(()=>settle(true),error=>{const held=acceptsDepositFee(shown,target.acceptedDepositFee);settle(held,held?'Accepted for this session, but this browser could not save it.':errorText(error));});
  };
 
  const lnFail=(error:unknown)=>{
@@ -248,8 +252,8 @@ export default function RollupWallet(){
   void session.ready.then(created=>{
    if(!created||!current())return;
    setStartupError('');
-   // A wallet this page just made holds nothing, and its funding card shows the fee before anything is sent.
-   const shown=createdHere.current&&created.depositFeePaused;if(shown)acceptFee(created,shown);
+   // A wallet made here was only ever shown with this status's fee, so it accepts that one, never a newer one. A failed save shows as the saved-notes error.
+   const shown=createdHere.current&&created.depositFeePaused?depositFeeFor(status):undefined;if(shown)void created.acceptDepositFee(shown).catch(()=>{});
    const funds=pageQuoteFunds(()=>({token:created.pool.status.pool?.token,notes:created.mergeableAssets().flatMap(asset=>created.shieldedNotes(asset)),inFlight:created.inFlight}),()=>{quotes.clear();setQuoteRevision(v=>v+1);});
    fundsRef.current={wallet:created,watch:funds};
    unwatch.push(created.onShieldedChange(()=>{if(current()){funds.update();setTick(t=>t+1);}}));
@@ -344,10 +348,10 @@ export default function RollupWallet(){
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
  const expiring=coins.filter(c=>!wallet?.isPoolPayout(c)&&!c.assets?.length&&c.expiresAt!==undefined&&c.expiresAt-Date.now()<=SHIELD_FLOOR_MS).reduce((sum,c)=>sum+c.value,0);
  // The funding address shows before the wallet opens, so until then the fee comes from the pool's own status.
- const fee=wallet?wallet.depositFee:depositFeeFor(pool),feeLine=depositFeeLine(fee),nextPlan=wallet?.planFor(coins);
- const fundingFee=[feeLine,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' ');
+ const fee=wallet?wallet.depositFee:depositFeeFor(pool),feeLine=depositFeeLine(fee),nextPlan=fee?wallet?.planFor(coins):undefined;
  // The banner renders and accepts this one value, so a fee raised after this render stays paused.
- const feePaused=wallet?.depositFeePaused,payoutFee=fee?' A single payout moves back into the pool without the deposit fee, and two or more together would pay it, so Shield again moves one payout at a time.':'';
+ const feePaused=wallet?.depositFeePaused,payoutFee=fee?` A single payout moves back into the pool without the deposit fee, and two or more together would pay it, so Shield again moves one payout at a time.${feePaused?' Accept the new fee above to move payouts back.':''}`:'';
+ const fundingFee=fee?[feeLine,feePaused&&PAUSED,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' '):'';
  const ready=pool?.phase==='ready',unit=assetId?'units':'sats';
  const settled=!!pool||!!startupError||!!poolError;
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
@@ -389,6 +393,7 @@ export default function RollupWallet(){
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
   {wallet?.operatorDown&&<section className="stock-warning" role="alert"><strong>The pool operator is not answering</strong><span>Your notes are safe, but only the operator renews the pool. If it stays down, the pool head and every payout from it expire {wallet.operatorDown.headExpiresAt?`on ${when(wallet.operatorDown.headExpiresAt)}`:'within a week of its last renewal'}. To withdraw without the operator, see <a href="https://github.com/arkade-os/shielded#if-the-operator-stops">If the operator stops</a>.</span></section>}
   {wallet&&feePaused&&<section className="stock-warning" role="alert"><strong>Shielding is paused</strong><span>{depositFeeBanner(feePaused,wallet.acceptedDepositFee)}</span><p><button type="button" className="stock-ghost stock-mini" onClick={()=>acceptFee(wallet,feePaused)}>Accept the new fee</button></p></section>}
+  {feeConfirmed&&!feePaused&&<section className="stock-message" role="status" tabIndex={-1} ref={focusOnMount}>New fee accepted.</section>}
   {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{startupError||poolError||pool?.message}</p></div></section>}
   {ready&&<>
    {claim&&<section className="stock-card"><h2>{claimView&&'mine' in claimView&&claimView.mine?'Your claim link':'A claim link for you'}</h2>
@@ -419,7 +424,7 @@ export default function RollupWallet(){
      <div className="stock-address"><small>LIGHTNING</small>
       {lnAddress?<Copyable value={lnAddress} qr={lnAddress} label="QR code of your Lightning address"/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
       <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount}>Create invoice</button></form>
-      {invoice&&<><Copyable value={invoice.bolt11} qr={invoiceQr(invoice.bolt11)} label="QR code of the invoice"/><p className="stock-muted">{invoiceLine(invoice)}</p></>}
+      {invoice&&<><Copyable value={invoice.bolt11} qr={invoiceQr(invoice.bolt11)} label="QR code of the invoice"/><p className="stock-muted">{invoiceLine(invoice,fee)}</p></>}
       {lnAddress&&<>
        <label className="stock-check"><input type="checkbox" checked={privateChecked} aria-disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>{if(!lnBusy)void setPrivate(e.target.checked);}}/>Private receive</label>
        <p id="stock-private-hint" className="stock-muted">Lists your shielded address on this Lightning address so payers can pay you inside the pool. Anyone who looks the Lightning address up can then see that you use the pool.</p>
@@ -433,12 +438,12 @@ export default function RollupWallet(){
        {(privateNotice==='foreign'||privateNotice==='own'||privateNotice==='refused')&&<div className="stock-actions">{privateNotice==='own'&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void setPrivate(true)}>Keep it on</button>}{turnOff(privateNotice==='refused'?'Dismiss':'Turn off')}</div>}
        <details className="stock-more"><summary>How private receive works</summary><p className="stock-muted">Payments to your shielded address stay private inside the pool. Turning this on lists that address on your Lightning address: anyone who looks it up learns that you use the pool and gets your shielded address, the same one every payer gets, and it never changes. The Lightning address service learns it too. Turning it off asks the service to remove it; if the service keeps it, this wallet says so and asks again while this page is open. The choice is saved on this device only: another device with your recovery phrase decides for itself, and one that has it on lists the address again.</p></details></>}
       {lnError&&<p className="stock-blocked">{lnError}</p>}
-      {feeLine&&<p className="stock-muted">{feeLine}</p>}
+      {feeLine&&<p className="stock-muted">{feeLine}{feePaused&&` ${PAUSED}`}</p>}
       <details className="stock-more"><summary>How Lightning receive works</summary><p className="stock-muted">Your Lightning address pays one Arkade payout address at a time, which this wallet derives and replaces after a payment or once a day. {lightningMinimumLine(fee)} Your Lightning address stays the same and accepts payments while closed. Its service sees each payout address it serves and can link them to the alias; payers before the next replacement share one address.</p></details></div>
      {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
      {arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(a.coins),'Shielding again')}>Shield again</button></>
-       :reserves.includes(a.assetId)?<p className="stock-muted">Listed in the pool, so it moves in on its own.</p>
+       :reserves.includes(a.assetId)?<p className="stock-muted">{(fee&&assetFeeOutsideLine(a.coins,fee,new Set(reserves),Date.now(),SHIELD_FLOOR_MS))||'Listed in the pool, so it moves in on its own.'}</p>
        :listingFull?<p className="stock-blocked">{listingFull}</p>
        :listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>
        :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}</div>)}
@@ -474,7 +479,7 @@ export default function RollupWallet(){
        <dt>Where</dt><dd>{whereOf(kind,received)}</dd>
        {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
        {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={newest.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
-       {feePaid!==undefined&&feePaid>0n&&<><dt>Deposit fee</dt><dd>{sats(feePaid)} sats</dd></>}
+       {feePaid!==undefined&&feePaid>0n&&<><dt>Deposit fee</dt><dd>{satsText(feePaid)}</dd></>}
        {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
         {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
         <dt>Bitcoin transaction</dt><dd><TxLink txid={item.intent.metadata.onchainTxid} path="commitment-tx"/></dd></>}
