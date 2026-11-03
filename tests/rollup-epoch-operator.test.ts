@@ -744,6 +744,7 @@ test('a deposit that carries no fee note is refused as fee-missing and reserves 
  const bare=await w.shield(op.state,10_000n,{dummy}),paid=await w.shield(op.state,10_000n,{dummy,fee:100n});
  assert.deepEqual(paid.slot.nullifiers,bare.slot.nullifiers,'one note, proved twice');
  await assert.rejects(op.submit(bare),owes(10_000n,100n,0n));
+ await assert.rejects(op.submit({...paid,ciphertext:undefined}),owes(10_000n,100n,0n),'a paying spend sent without its note record');
  assert.equal(op.pending(),0);
  await land(op,'spend',[paid]);
 });
