@@ -84,34 +84,50 @@ Run it on a separate host. On the pool's own host, even outside the container, o
 | --- | --- |
 | `SHIELDED_POOL_ORIGIN` | The pool, for example `https://shielded.mutinynet.arkade.sh` |
 | `SHIELDED_FEE_WALLET_PHRASE` | The 24 words, from the secret store |
-| `SHIELDED_FEE_KEEPER_INTERVAL_MS` | Optional: the pause between passes in milliseconds, default 60000; a whole number from 1 to 2147483647 |
+| `SHIELDED_FEE_KEEPER_INTERVAL_MS` | Optional: the pause between passes, a whole number of milliseconds from 1000 to 2147483647, digits only; default 60000. Anything else is refused, `60` included, which would be 60 ms, not a minute |
 
 ```sh
 npm run fee:keeper
 ```
 
-It keeps nothing on disk, so each start reads the whole pool again and the first pass waits for that. It exits with status 1 if the pool is not open when it starts (blocked, restarting, unreachable) and does not retry. Run it under a supervisor that restarts it.
+It keeps nothing on disk, so each start reads the whole pool again. It logs `syncing with <pool>` first, and the start line comes only after that read, because creating the wallet waits for the first sync; the first pass follows at once. It exits with status 1 if the pool is not open when it starts (blocked, restarting, unreachable) and does not retry. Run it under a supervisor that restarts it.
 
-It logs one line when it starts and one at the end of each pass:
+It logs a line when it starts syncing, one when it starts merging, one for each merge that lands, and one at the end of each pass:
 
 ```
+<time> syncing with https://shielded.mutinynet.arkade.sh
 <time> fee wallet shrol2… holds 1200 sats; merging every 60000 ms
+<time> merge 1 landed, batch 411
+<time> merge 2 landed, batch 412
 <time> merged 2, notes remaining 1, batch 412
 ```
 
-`merged` counts the merges in that pass. `notes remaining` is every note the wallet holds, including notes awaiting recovery. `batch` is how far it has read the pool. A pass prints its line only when it ends: when nothing is left to merge, or after a failed merge. A merge that fails, or has not landed after 10 minutes, is logged to stderr as `merging asset … failed, trying again next pass: …`, and the wallet waits 60 s before merging again. Node's one-time `EventSource is experimental` warning on stderr at start is expected.
+`merge n landed` counts the merges of the current pass. In the pass line, `merged` counts the merges in that pass and `notes remaining` is every note the wallet holds, including notes awaiting recovery. `batch` is how far the wallet has read the pool. A pass ends, and prints its line, when nothing is left to merge or after a failed merge. A merge that was sent and then fails, or has not landed 10 minutes after it was sent, is logged to stderr as `merging asset … failed, trying again next pass: …`, and the wallet waits 60 s before it builds another merge. A merge that cannot be planned is logged the same way and sets no wait. Node's one-time `EventSource is experimental` warning on stderr at start is expected.
+
+**Wrong phrase.** If the pool advertises a fee address that is not this wallet's, the keeper writes `The pool sends its deposit fee to <the pool's address>, not to this wallet <this wallet's>; check SHIELDED_FEE_WALLET_PHRASE.` to stderr and exits 1. It checks once the wallet has synced, so the refusal follows the start-up wait. If the pool's fee address changes under a running keeper, the same message is logged at the start of each pass and the keeper carries on. With the fee off the pool advertises no address and there is nothing to check, so compare the start line's `shrol2…` with the address `--derive` printed.
+
+**One keeper per phrase.** A second keeper on the same phrase only races the first for the same notes: the pool takes one merge and refuses the other as a double spend, which that keeper logs as a failed merge.
 
 ## First turn-on checklist
 
 Use a small fixed fee for the first run (`SHIELDED_DEPOSIT_FEE_SATS=100`, `SHIELDED_DEPOSIT_FEE_BPS=0`), once both conditions under [Configure the pool](#configure-the-pool) hold.
 
+**Dry run first, with the fee off.** Before step 1, run the keeper on the fee wallet against the pool while it still charges nothing, and watch it merge:
+
+- Start it (`npm run fee:keeper`) with the fee wallet's phrase. Its start line prints the wallet's `shrol2…`, which should be the `SHIELDED_DEPOSIT_FEE_ADDRESS` that `--derive` printed.
+- From any test wallet that holds a shielded balance (a deposit of at least 330 sats made while the fee is off), pay that `shrol2…` address twice: on the **Send** tab paste it into **To**, enter the sats, press **Get quote**, then **Private payment**. The page, the wallet and the pool enforce no minimum on a payment to a shielded address; only a withdrawal has one, 330 sats. So pay at least 330 sats in all, for example 200 and 200, or the merged note could not be withdrawn.
+- Watch for `merge 1 landed`, then a pass line with `notes remaining 1`.
+- Then withdraw the test funds from the fee wallet ([Spend the fees](#spend-the-fees)).
+
 1. Have the keeper's host ready, with the phrase in its secret store. Set the four variables and redeploy. When `/api/rollup/status` shows `"phase": "ready"`, start the keeper, before the first deposit.
 2. `curl -s https://shielded.mutinynet.arkade.sh/api/rollup/status | jq .pool.depositFee` shows `{fixedSats, bps, address}`, with the address the keeper's start line prints. The same URL piped to `grep -c shview` prints `0`: the view key is not served.
 3. In a fresh browser profile, open `/wallet`. The funding card names the fee.
 4. Fund the wallet from the Mutinynet faucet (linked on the funding card) with at least 330 sats plus the fee; a smaller coin stays outside the pool, and the card says so. No accept click is needed. One deposit lands, and its History row has a **Deposit fee** line equal to the configured fee.
-5. The keeper logs `notes remaining 1` within a pass or two of the deposit (the wallet syncs on pool events and every 60 s). Restart it: the start line reads `holds N sats`, N being the fee. Fund again, and the first pass after that deposit lands logs `merged 1, notes remaining 1`.
+5. The keeper logs `notes remaining 1` within a pass or two of the deposit (the wallet syncs on pool events and every 60 s). Restart it: the start line reads `holds N sats`, N being the fee. Fund again, and the first pass after that deposit lands logs `merge 1 landed`, then `merged 1, notes remaining 1`.
 6. Withdraw at least 330 sats to this wallet's own Arkade address, the one on the funding card. When the payout lands, the **BACK ON ARKADE FROM THE POOL** card shows **Shield again**. Press it: the whole payout shields with no fee and no `fee-missing` refusal, because a deposit made only of this pool's own payouts pays nothing. So 330 sats is enough here; the faucet deposit needed 330 plus the fee. If the card does not appear, the payout went elsewhere or has not landed; that is not a failed exemption.
-7. If anything above fails, unset the variables and redeploy ([Turn the fee off](#turn-the-fee-off)).
+7. On the **Receive** tab, open **How Lightning receive works** on the Lightning card. Its minimum is the 330-sat minimum plus the fee: at the 100-sat fee it reads `Payouts of at least 430 sats, the 330-sat minimum plus the deposit fee, move into the pool while this page is open`.
+8. Check a tab that was already open before the turn-on. If it still runs the page from before the fee shipped, the pool refuses its next deposit with `A deposit of … sats owes a 100-sat deposit fee to this pool; this one carries 0. Reload the page to shield at the current fee.` After a reload the wallet already in that browser shows **Shielding is paused** with **Accept the new fee** (only a wallet the page has just created accepts the fee by itself), and its deposit shields once the fee is accepted. A tab that already runs the page with the fee needs no reload: the wallet reads the pool's status every 60 s, so the same banner appears within a minute.
+9. If anything above fails, unset the variables and redeploy ([Turn the fee off](#turn-the-fee-off)).
 
 ## If the keeper stops
 
@@ -121,7 +137,9 @@ Restart the keeper. Its wallet's watchdog recovers held notes on its own, and th
 
 The keeper has a ceiling. It merges one pair at a time and waits for each merge to land, so it removes about one note per batch, while every fee-paying deposit adds one. If fee-paying deposits come faster than about one per batch, the backlog grows until notes age out and fall to recovery. No setting raises this: `SHIELDED_FEE_KEEPER_INTERVAL_MS` only spaces passes, and within a pass the keeper already merges back to back. The levers are the fee level (a higher fee should bring fewer, larger deposits) and accepting some recoveries, which cost the pool a batch each and lose no fees.
 
-A keeper that is keeping up prints a line about every interval, a little later when a pass had merges to wait for. In those lines `merged` is small, `notes remaining` is 1 (0 before the first fee), and the newest line's `batch` is within a few of `pool.batches` in `/api/rollup/status`. One that is behind prints no bad number, because a pass prints only when it ends: a long silence, or a large `merged` on the next line, means a backlog (merges are not logged one by one). A `notes remaining` that stays above 1 means a merge failed (stderr says so) or notes are waiting for recovery.
+A keeper that is keeping up logs `merge n landed` as each merge settles and ends each pass with a pass line, about one interval after the last. In the pass lines `merged` is small, `notes remaining` is 1 (0 before the first fee), and the newest line's `batch` is within a few of `pool.batches` in `/api/rollup/status`. A backlog shows as a pass that keeps finding more to merge: `merge n landed` lines with n climbing, then a large `merged` in the pass line. A `notes remaining` that stays above 1 after a pass means a merge failed (stderr says so, and the wallet waits 60 s before the next try) or notes are waiting for recovery.
+
+Each merge waits for its batch, and the wallet gives up on a sent merge after `MERGE_WAIT_MS`, 10 minutes (`src/shielded/wallet.ts`), logging it as failed. So the longest a healthy keeper stays silent, stdout and stderr together, is the pass interval plus 10 minutes plus the time to prove one merge. If it is silent for longer, treat it as stuck: check that `/api/rollup/status` shows `"phase": "ready"`, then restart the keeper. Nothing is kept on disk and the notes are in the pool, so a restart loses nothing; the start reads the pool again.
 
 ## Spend the fees
 
@@ -132,6 +150,16 @@ Any wallet on the phrase can spend the fee notes. A withdrawal spends one note, 
 
 ## Turn the fee off
 
-Unset the four variables and redeploy. Setting SATS and BPS to 0 and keeping the address and view key also turns it off, and the pool logs a warning. Wallets return to fee-less deposits on their next `/api/rollup/status` read. Fee notes already minted stay spendable from the phrase.
+Unset the four variables and redeploy. Setting SATS and BPS to 0 and keeping the address and view key also turns it off, and the pool logs a warning. Do not unset only some of them. With SATS or BPS above 0, unsetting just the address or just the view key does not turn the fee off: it blocks the pool (`"phase": "blocked"`, and no deposits until you fix the variables and redeploy). So does an address or a view key on its own with SATS and BPS at 0.
+
+The redeploy restarts the pool, as turning the fee on does. When it is back, check that the fee is gone:
+
+```sh
+curl -s https://shielded.mutinynet.arkade.sh/api/rollup/status | jq .pool.depositFee
+```
+
+It prints `null`. Trust that only once the same command with `jq .phase` prints `"ready"`: a pool that is still restarting, or is blocked, has no `pool` object and prints `null` too.
+
+Wallets return to fee-less deposits on their next `/api/rollup/status` read. Fee notes already minted stay spendable from the phrase.
 
 Keep the keeper running until you have withdrawn the remaining balance. Notes that nobody renews fall to recovery, as described above.
