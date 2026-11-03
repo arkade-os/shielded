@@ -7,7 +7,16 @@ import {shieldedKeysOf} from '../src/shielded/wallet.ts';
 
 export interface FeeKeeperWallet {merge(asset?:bigint,above?:number):Promise<{settled():Promise<unknown>}|undefined>;shieldedNotes(asset?:bigint):{amount:bigint}[];batchCount():number}
 const log=(...parts:unknown[])=>console.log(new Date().toISOString(),...parts),warn=(...parts:unknown[])=>console.error(new Date().toISOString(),...parts);
-const reasonOf=(error:unknown)=>error instanceof Error?error.message:String(error);
+/** The message and each cause's, so an unreachable pool says why; a wrapper repeating its cause adds nothing, and an empty message (an AggregateError) gives its code. */
+export const reasonOf=(error:unknown):string=>{
+ if(!(error instanceof Error))return String(error);
+ const parts:string[]=[];
+ for(let e:unknown=error,depth=0;e!==undefined&&depth<8;e=(e as Error|null)?.cause,depth++){
+  const part=e instanceof Error?e.message||(e as {code?:string}).code:String(e);
+  if(part&&part!==parts.at(-1))parts.push(part);
+ }
+ return parts.join(': ');
+};
 
 /** Merges each asset down to one note, waiting for every merge to land. Above 1, not the wallet's own 8, which a busy pool outruns. */
 export const feeKeeperTick=async(wallet:FeeKeeperWallet,assets:bigint[],onMerged:(merged:number)=>void=()=>{}):Promise<{merged:number;notes:number}>=>{

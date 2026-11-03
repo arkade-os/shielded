@@ -11,7 +11,7 @@ import {parseRollupAddress} from '../packages/protocol/src/rollup/wallet.ts';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {rollupDepositFeeFromEnv} from '../src/rollup/service.ts';
 import {shieldedKeysOf} from '../src/shielded/wallet.ts';
-import {feeAddressProblem,feeKeeperTick,feeWalletKeysOf,type FeeKeeperWallet} from '../tools/shielded-fee-keeper.ts';
+import {feeAddressProblem,feeKeeperTick,feeWalletKeysOf,reasonOf,type FeeKeeperWallet} from '../tools/shielded-fee-keeper.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),phrase=recoveryPhraseOf('07'.repeat(32));
 const DEAD='http://127.0.0.1:1';
@@ -88,6 +88,15 @@ test('a pool that sends its fee to another wallet is a problem, and a pool with 
  assert.ok(problem?.includes(own)&&problem.includes(other),problem);
 });
 
+test('a failure\'s reason carries its causes, once each, and ends on a loop',()=>{
+ const refused=new Error('connect ECONNREFUSED 127.0.0.1:1'),fetchFailed=new TypeError('fetch failed',{cause:refused}),loop=new Error('loop');
+ loop.cause=loop;
+ assert.equal(reasonOf(new Error('fetch failed',{cause:fetchFailed})),'fetch failed: connect ECONNREFUSED 127.0.0.1:1');
+ assert.equal(reasonOf(new TypeError('fetch failed',{cause:Object.assign(new AggregateError([]),{code:'ECONNREFUSED'})})),'fetch failed: ECONNREFUSED');
+ assert.equal(reasonOf(new Error('a',{cause:new Error('b',{cause:'c'})})),'a: b: c');
+ assert.deepEqual([reasonOf(loop),reasonOf('plain')],['loop','plain']);
+});
+
 test('the derived address and view key are the pool\'s fee settings: they parse and name one wallet',()=>{
  const keys=feeWalletKeysOf(hash,phrase),to=parseRollupAddress(keys.address),view=parseViewKey(keys.viewKey),wallet=shieldedKeysOf(hash,phrase);
  assert.equal(view.owner,to.owner);
@@ -106,6 +115,12 @@ test('the keeper refuses to start without a phrase or with an interval that woul
  assert.match(await refusal([],{SHIELDED_POOL_ORIGIN:DEAD}),/SHIELDED_FEE_WALLET_PHRASE/);
  for(const bad of ['abc','0',String(2**31)])
   assert.match(await refusal([],{SHIELDED_POOL_ORIGIN:DEAD,SHIELDED_FEE_WALLET_PHRASE:phrase,SHIELDED_FEE_KEEPER_INTERVAL_MS:bad}),/SHIELDED_FEE_KEEPER_INTERVAL_MS/,bad);
+});
+
+test('a phrase with a word that is not a word is refused without repeating that word or the phrase',async()=>{
+ const wrong=phrase.split(' ').with(5,'zzzqx').join(' '),said=await refusal(['--derive'],{SHIELDED_FEE_WALLET_PHRASE:wrong});
+ assert.match(said,/not valid/);
+ assert.ok(!said.includes('zzzqx')&&!said.includes(wrong));
 });
 
 test('a phrase given as an argument is refused without being repeated',async()=>{
