@@ -23,7 +23,7 @@ import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
-import {sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
+import {feeRefused,sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
 import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
@@ -200,7 +200,7 @@ export class ShieldedWallet extends Wallet {
  /** Raises the accepted schedule to `shown`, the one the user saw, and saves it for this pool. Never the advertised one: a fee raised since stays paused. */
  async acceptDepositFee(shown:DepositFeeSchedule):Promise<void>{
   this.assertOpen();this.feeAccepted=maxDepositFeeOf(this.feeAccepted,validSchedule(shown,'The accepted schedule'));this.retryAt=0;
-  await this.persist();this.changed();void this.autoShield().catch(()=>{});
+  try{await this.persist(true);}finally{this.changed();void this.autoShield().catch(()=>{});}
  }
  depositFeeOnPlan(plan:ShieldPlan):bigint{return planFeeOf(plan,this.depositFee,c=>this.isPoolPayout(c));}
  private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw new Error(feePaused(paused));}
@@ -251,7 +251,7 @@ export class ShieldedWallet extends Wallet {
  onAction(cb:(handle:ShieldedPaymentHandle)=>void):()=>void{this.actionListeners.add(cb);if(this.latestAction)try{cb(this.latestAction);}catch{}return()=>{this.actionListeners.delete(cb);};}
  changed(){for(const cb of [...this.changeListeners])try{cb();}catch{/* a listener's fault is not the wallet's */}}
  private announce(handle:ShieldedPaymentHandle){this.latestAction=handle;for(const cb of [...this.actionListeners])try{cb(handle);}catch{}return handle;}
- async save():Promise<void>{
+ async save(strict=false):Promise<void>{
   if(!this.repository)return;
   const {token}=this;
   try{
@@ -266,10 +266,10 @@ export class ShieldedWallet extends Wallet {
    for(const link of stored?.links??[]){const mine=this.linkRecords.get(link.key);if(!mine){this.linkRecords.set(link.key,link);continue;}mine.open=mine.open.filter(nf=>link.open.includes(nf));if(link.tookBack)mine.tookBack=true;}
    this.feeAccepted=maxDepositFeeOf(this.feeAccepted,parseDepositFeeSchedule(stored?.feeAccepted));
    await this.repository.saveAccount(token,{v:2,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()],...(this.feeAccepted?{feeAccepted:this.feeAccepted}:{})});
-  }catch(error){this.repositoryError??=reasonOf(error);}
+  }catch(error){this.repositoryError??=reasonOf(error);if(strict)throw error;}
  }
  sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
- private persist(){return epochIdle(this.account,()=>{this.assertOpen();return this.save();});}
+ private persist(strict=false){return epochIdle(this.account,()=>{this.assertOpen();return this.save(strict);});}
  recordSent(entries:[bigint,SentRecord][]){for(const [nullifier,record] of entries)this.sent[String(nullifier)]=record;}
  /** Opens the account, checked when the pool answers. tick() runs it again after an offline open and swallows its throw, so a drift is reported here. */
  private async load(){
@@ -483,8 +483,11 @@ export class ShieldedWallet extends Wallet {
   if(landed===undefined||landed&&!/^[0-9a-f]{64}$/.test(landed))throw error;
   const final:SpendStatus=landed?{status:'included',txid:landed}:{status:'dropped',reason:`${reasonOf(error)} No batch of this pool carried it, so the funds never moved.`};
   await store.finish(record.owner,record.pool,record.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason,code}:{})});
+  // The next attempt is then built, or paused, at the fee charged now; a failed read leaves that to the next tick, and the drop stands.
+  if(!landed&&code==='fee-missing')await this.refreshStatus().catch(()=>{});
   return final;
  }
+ private async refreshStatus(){this.pool={...this.pool,status:await this.api('/status')};}
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
   const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
   const run=(async()=>{
@@ -521,8 +524,8 @@ export class ShieldedWallet extends Wallet {
   const key=hex.encode(await descriptorSigner.xOnlyPublicKey()),ops=Script.decode(hex.decode(coin.leaf));
   const signs=ops.some((op,i)=>op instanceof Uint8Array&&op.length===32&&hex.encode(op)===key&&(ops[i+1]==='CHECKSIG'||ops[i+1]==='CHECKSIGVERIFY'));
   if(hex.encode(tree.pkScript)!==input.script.toLowerCase()||!signs)throw new Error('The Lightning payout script does not match its child signer.');
-  // A saved attempt is resent whatever the fee is now, since only the pool's verdict frees its payout. After the pool refused an attempt for its fee, the payout pays even if exempt, so a refused exemption cannot loop.
-  const prior=await store.list(String(this.self.owner),this.token),charged=prior.some(r=>r.reference===request.reference&&r.state==='dropped'&&r.code==='fee-missing'),plan:ShieldPlan={kind:'btc',coins:[coin],amount:input.value};
+  // A saved attempt is resent whatever the fee is now, since only the pool's verdict frees its payout.
+  const prior=await store.list(String(this.self.owner),this.token),charged=feeRefused(prior,request.reference),plan:ShieldPlan={kind:'btc',coins:[coin],amount:input.value};
   if(!prior.some(r=>r.id===request.id))this.depositFeeTo(plan,charged);
   const handle=shieldedHandle({id:request.id,title:`Shielding ${sats(input.value)} Lightning sats`,steps:shieldedSteps.shield,railId:'shielded-lightning-deposit'},async step=>{
    step(0);
@@ -558,7 +561,7 @@ export class ShieldedWallet extends Wallet {
     const fee=rejected(error,'fee-missing');
     if(!rebuild||unresolved.size||!fee&&!rejected(error,'stale-anchor'))throw error;
     const again=rebuild;rebuild=undefined;
-    if(fee)this.pool={...this.pool,status:await this.api('/status')};
+    if(fee)await this.refreshStatus();
     await this.sync();members=await again(error);
    }
   }catch(error){throw new ReservationFailure(error,unresolved.size===0);}

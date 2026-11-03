@@ -550,6 +550,17 @@ test('a Lightning exit payout the pool paid out shields fee-free, and pays only 
  }finally{await wallet.dispose();}
 });
 
+test('a fee refusal on a Lightning shield reads the fee again, so the next attempt meets the one the pool charges now',async()=>{
+ const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout(),raised={fixedSats:200,bps:0,address:FEE.address},refused=refusedApi(pool,refusal('fee-missing',FEE_REFUSAL));
+ try{
+  sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
+  await chargeFee(wallet);
+  wallet.api=(async(path:string,body?:unknown)=>path==='/status'?{...status,pool:{...status.pool!,depositFee:raised}}:refused(path,body)) as PoolApi;
+  await assert.rejects((await wallet.shieldLightning(coin,child,store,{id:'stale-fee',reference})).settled(),/owes a 100-sat deposit fee/);
+  assert.deepEqual([store.rows.get('stale-fee')!.state,wallet.depositFee,wallet.depositFeePaused],['dropped',raised,raised],'200 is above the 100 accepted, so the next attempt waits for it');
+ }finally{await wallet.dispose();}
+});
+
 test('a stale-anchor refusal still drops at once, on the pool verdict alone and without reading a batch',async()=>{
  const store=new Store(),{wallet,pool}=await funded(store);const reason='The spend opens against another previous-epoch root than the next batch does; prove it again.';let batches=0;
  try{

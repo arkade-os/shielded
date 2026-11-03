@@ -6,6 +6,7 @@ import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {depositFeeOf} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {DUST} from './pool.ts';
 import type {LightningArtifact,LightningPayout,LightningRepository} from './lightning-repository.ts';
+import {feeRefused} from './lightning-spend.ts';
 import type {ShieldedWallet} from './wallet.ts';
 import {createLightningRecovery,recoveryLock,type LightningRecovery} from './lightning-recovery.ts';
 import {LightningSwapRepository,ReceiptStoreCompatibilityError,repairLightningReceipt} from './lightning-receipt.ts';
@@ -70,8 +71,8 @@ export const exitReservation=(owner:string,script:string)=>`shielded-exit-${owne
 const terminal=new Set(['paid','claimed','refunded','lapsed','failed','cancelled','filled']);
 const artifactEnded=(artifact:LightningArtifact)=>artifact.state==='ended';
 const biggestNote=(wallet:ShieldedWallet)=>{try{return Number(wallet.account.spendableNotes(BTC_ASSET,wallet.inFlight).reduce((max,n)=>n.amount>max?n.amount:max,0n));}catch{return 0;}};
-/** An exit's payout came from a pool batch, so it owes no fee. */
-const feeOn=(wallet:ShieldedWallet,sats:bigint,coin?:{txid:string})=>{const fee=wallet.depositFee;return fee&&!(coin&&wallet.isPoolPayout(coin))?depositFeeOf(fee,sats):0n;};
+/** An exit's payout came from a pool batch, so it owes no fee unless `charged` (see feeRefused). */
+const feeOn=(wallet:ShieldedWallet,sats:bigint,coin?:{txid:string},charged=false)=>{const fee=wallet.depositFee;return fee&&(charged||!(coin&&wallet.isPoolPayout(coin)))?depositFeeOf(fee,sats):0n;};
 export class LightningSessionBusy extends Error {constructor(){super('This Lightning payment is running in another tab. It continues there, and this tab takes it over if that tab closes.');}}
 export async function acquireLightningSession(name:string):Promise<()=>Promise<void>>{
  if(typeof navigator==='undefined'||!navigator.locks)throw new Error('Private Lightning requires browser locking to protect active payments');
@@ -132,7 +133,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     const recoveryState=await recovery.get(outpoint),source=artifacts.find(a=>a.script===contract.script);
     // A completed exit spent its payout on-chain and left no shield attempt behind; the SDK's own history carries that spend.
     if(source?.kind==='exit'&&isVtxoSpent(coin)&&!attempts.length&&!recoveryState)continue;
-    const outcome=recoveryState?.state==='complete'?'onchain-recovered':recoveryState?.state==='shielded'?'shielded':recoveryState?'onchain-recovery':attempts.some(r=>r.state==='included')?'shielded':BigInt(coin.value)-feeOn(wallet,BigInt(coin.value),coin)<BigInt(DUST)?'below-minimum':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':attempts.length?'retrying':'received';
+    const outcome=recoveryState?.state==='complete'?'onchain-recovered':recoveryState?.state==='shielded'?'shielded':recoveryState?'onchain-recovery':attempts.some(r=>r.state==='included')?'shielded':BigInt(coin.value)-feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint))<BigInt(DUST)?'below-minimum':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':attempts.length?'retrying':'received';
     const id=`shielded-lightning:receive:${outpoint}`,createdAt=coin.createdAt.getTime(),settled=!coin.isPreconfirmed;
     rows.set(id,{id,amount:coin.value,createdAt,settled,intent:{kind:'lightning-receive',label:source?.kind==='send'?'Lightning refund':source?.kind==='exit'?'On-chain exit payout':'Received via Lightning',outcome,metadata:{outpoint}},
      txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:coin.txid},type:TxType.TxReceived,amount:coin.value,createdAt,settled}]});
@@ -164,9 +165,10 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   for(const coin of await companion.getVtxos({withRecoverable:false})){
    const payout=payouts.get(coin.script),outpoint=`${coin.txid}:${coin.vout}`;
    if(!payout||coin.assets?.length||exiting.has(coin.script)||shielding.has(outpoint)||await recovery.held(outpoint))continue;
-   const fee=feeOn(wallet,BigInt(coin.value),coin),below=BigInt(coin.value)-fee<BigInt(DUST);
+   const attempts=(await journal.list(String(wallet.self.owner),pool)).filter(r=>r.kind==='shield'&&r.reference===outpoint);
+   const fee=feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint)),below=BigInt(coin.value)-fee<BigInt(DUST);
    // A saved attempt goes on regardless, since only the pool's verdict frees its payout. A new one waits out a pause unreported: the page's banner says why.
-   if((below||wallet.depositFeePaused)&&!(await journal.list(String(wallet.self.owner),pool)).some(r=>r.kind==='shield'&&r.reference===outpoint&&r.state==='prepared')){
+   if((below||wallet.depositFeePaused)&&!attempts.some(r=>r.state==='prepared')){
     if(below)report(new Error(`This individual Lightning payout is below the pool minimum of ${DUST} sats${fee?` after its ${fee}-sat deposit fee`:''} and cannot be shielded alone.`));
     continue;
    }

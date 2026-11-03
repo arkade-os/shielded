@@ -71,7 +71,7 @@ abstract class Journal implements LightningRepository {
   }
   state.spends.push(copy(record));return copy(record);
  });}
- finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string}){return this.run(owner,pool,true,(state,counter)=>{
+ finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string;code?:string}){return this.run(owner,pool,true,(state,counter)=>{
   const record=state.spends.find(r=>r.id===id);if(!record)throw new Error('Unknown Lightning spend');
   if(record.state!=='prepared'&&record.state!==result.state)throw new Error('Lightning spend already reconciled');
   if(record.txid&&record.txid!==result.txid)throw new Error('Lightning spend transaction changed');

@@ -74,7 +74,7 @@ A wallet without `maxDepositFee` still opens on a pool that charges a fee, shows
 
 `wallet.depositFeePaused` is the advertised `depositFee` while deposits are paused, and `undefined` otherwise. Show it to your user, or copy its `fixedSats` and `bps` into `maxDepositFee`. An app that asks its user can instead call `await wallet.acceptDepositFee({fixedSats,bps})` with the schedule it showed. Pass what the user saw, not a fresh read of `depositFeePaused`: a fee raised since then stays paused. The wallet saves what it accepted in `repository`, and on a later open accepts the larger of that and `maxDepositFee`, field by field.
 
-To show the fee before a deposit, pass the plan from `wallet.planFor(await wallet.coins())` to `wallet.depositFeeOnPlan(plan)`, which returns sats as a `bigint`. `depositFeeOf(schedule,sats)` gives it for any amount.
+To show the fee before a deposit, set `plan` to `wallet.planFor(await wallet.coins())`. `planFor` returns `undefined` when no coin is eligible, which includes coins the fee would leave under the minimum. If `plan` is defined, `wallet.depositFeeOnPlan(plan)` returns the fee in sats as a `bigint`. `depositFeeOf(schedule,sats)` gives it for any amount.
 
 ## Browser bundles
 

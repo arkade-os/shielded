@@ -707,6 +707,15 @@ test('accepting a lower schedule never lowers the one already accepted',async()=
  }finally{await wallet.dispose();}
 });
 
+test('accepting a fee rejects when its own save fails, though the acceptance holds for the session',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),fee=feeOf(500),wallet=await open({repository,depositFee:fee});let changes=0;
+ try{
+  repository.saveAccount=async()=>{throw new Error('disk full');};wallet.onShieldedChange(()=>{changes++;});
+  await assert.rejects(wallet.acceptDepositFee(fee),/disk full/);
+  assert.deepEqual([wallet.acceptedDepositFee,wallet.depositFeePaused,(await repository.getAccount(TOKEN))?.feeAccepted,changes],[{fixedSats:500,bps:0},undefined,undefined,1],'the page still hears of the acceptance it can use');
+ }finally{await wallet.dispose();}
+});
+
 test('start auto-shields coins already waiting and isolates action listeners',async()=>{
  const shield=ShieldedWallet.prototype.shield;let starts=0;
  ShieldedWallet.prototype.shield=async()=>{starts++;return undefined;};
