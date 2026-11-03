@@ -1,7 +1,7 @@
 // The fee wallet's keeper: merges the fee notes the pool mints for each deposit down to one per asset, so none misses its renewal epoch.
-// SHIELDED_POOL_ORIGIN=<pool> SHIELDED_FEE_WALLET_PHRASE=<24 words> npm run fee:keeper; add `-- --derive` to print the pool's fee address and view key.
+// Export SHIELDED_POOL_ORIGIN=<pool> and, from a secret store, SHIELDED_FEE_WALLET_PHRASE: never type it on a command line (shell history) or pass it as an argument.
+// Then npm run fee:keeper; with `-- --derive` it prints the pool's fee address and view key instead.
 import {setTimeout as sleep} from 'node:timers/promises';
-import {parseArgs} from 'node:util';
 import {createShieldedWallet,loadPoseidon,type Hash} from '../packages/shielded/src/index.ts';
 import {shieldedKeysOf} from '../src/shielded/wallet.ts';
 
@@ -21,7 +21,8 @@ export const feeKeeperTick=async(wallet:FeeKeeperWallet,assets:bigint[]):Promise
 export const feeWalletKeysOf=(hash:Hash,phrase:string)=>{const {address,viewKey}=shieldedKeysOf(hash,phrase);return {address,viewKey};};
 
 async function main(){
- const {values:{derive}}=parseArgs({options:{derive:{type:'boolean'}}}),{SHIELDED_POOL_ORIGIN:pool,SHIELDED_FEE_WALLET_PHRASE:secret,SHIELDED_FEE_KEEPER_INTERVAL_MS:every}=process.env;
+ const args=process.argv.slice(2),derive=args.includes('--derive'),{SHIELDED_POOL_ORIGIN:pool,SHIELDED_FEE_WALLET_PHRASE:secret,SHIELDED_FEE_KEEPER_INTERVAL_MS:every}=process.env;
+ if(args.some(arg=>arg!=='--derive'))throw new Error('Usage: npm run fee:keeper [-- --derive]; the phrase is read from SHIELDED_FEE_WALLET_PHRASE, never from an argument.');
  if(!secret)throw new Error('Set SHIELDED_FEE_WALLET_PHRASE to the fee wallet\'s 24-word recovery phrase.');
  if(derive){
   const {address,viewKey}=feeWalletKeysOf(await loadPoseidon(),secret);
@@ -30,7 +31,7 @@ async function main(){
  }
  if(!pool)throw new Error('Set SHIELDED_POOL_ORIGIN to the pool, for example https://shielded.mutinynet.arkade.sh.');
  const ms=Number(every||60_000);
- if(!Number.isSafeInteger(ms)||ms<1)throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a positive whole number of milliseconds.');
+ if(!Number.isSafeInteger(ms)||ms<1||ms>=2**31)throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a whole number of milliseconds from 1 to 2147483647; a longer timer would fire at once.');
  const wallet=await createShieldedWallet({pool,secret});
  log(`fee wallet ${wallet.shieldedAddress()} holds ${wallet.shieldedBalance()} sats; merging every ${ms} ms`);
  // snarkjs worker threads outlive the wallet, so the process is ended rather than waited on.

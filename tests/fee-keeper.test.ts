@@ -35,6 +35,13 @@ function stubWallet(held:Record<string,number>,fails:Record<string,'merge'|'sett
  return {wallet,asks,overlapped:()=>overlapped};
 }
 const run=(args:string[],env:Record<string,string>)=>promisify(execFile)(process.execPath,['--import','tsx','tools/shielded-fee-keeper.ts',...args],{timeout:60_000,env:{...Object.fromEntries(Object.entries(process.env).filter(([name])=>!name.startsWith('SHIELDED_'))),...env}});
+const refusal=async(args:string[],env:Record<string,string>)=>{
+ const failed=await run(args,env).then(()=>undefined,error=>error as {code:number;stdout:string;stderr:string});
+ assert.ok(failed,'the run should have been refused');
+ assert.equal(failed.code,1);
+ assert.ok(!(failed.stdout+failed.stderr).includes(phrase),'a refusal never repeats the phrase');
+ return failed.stderr;
+};
 
 test('the keeper merges while more than one note is held and stops when one is left',async()=>{
  const four=stubWallet({0:4}),one=stubWallet({0:1}),none=stubWallet({});
@@ -78,6 +85,11 @@ test('--derive prints the pool settings for the phrase with no pool in reach, an
 });
 
 test('the keeper refuses to start without a phrase or with an interval that would spin, before it reaches for the pool',async()=>{
- await assert.rejects(run([],{SHIELDED_POOL_ORIGIN:DEAD}),{code:1,stderr:/SHIELDED_FEE_WALLET_PHRASE/});
- await assert.rejects(run([],{SHIELDED_POOL_ORIGIN:DEAD,SHIELDED_FEE_WALLET_PHRASE:phrase,SHIELDED_FEE_KEEPER_INTERVAL_MS:'abc'}),{code:1,stderr:/SHIELDED_FEE_KEEPER_INTERVAL_MS/});
+ assert.match(await refusal([],{SHIELDED_POOL_ORIGIN:DEAD}),/SHIELDED_FEE_WALLET_PHRASE/);
+ for(const bad of ['abc','0',String(2**31)])
+  assert.match(await refusal([],{SHIELDED_POOL_ORIGIN:DEAD,SHIELDED_FEE_WALLET_PHRASE:phrase,SHIELDED_FEE_KEEPER_INTERVAL_MS:bad}),/SHIELDED_FEE_KEEPER_INTERVAL_MS/,bad);
+});
+
+test('a phrase given as an argument is refused without being repeated',async()=>{
+ for(const args of [['--derive',phrase],[phrase]])assert.match(await refusal(args,{SHIELDED_POOL_ORIGIN:DEAD}),/never from an argument/);
 });
