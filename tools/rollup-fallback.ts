@@ -174,7 +174,8 @@ async function check(dir:string){
  const pool=epochPoolOf(dir),indexer=new RestIndexerProvider(pool.network.indexerUrl??pool.network.arkUrl);
  if(!batchesIn(dir).length){log('the mirror holds no batch records yet; nothing to check');return;}
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
- const {batches,commitment}=await checkEpochMirror(dir,hash,pool.epochLen,async txid=>(await indexer.getVirtualTxs([txid])).txs.map(decodeStockIndexerTransaction).find(t=>t.id===txid));
+ const txOf=async(txid:string)=>(await indexer.getVirtualTxs([txid])).txs.map(decodeStockIndexerTransaction).find(t=>t.id===txid);
+ const {batches,commitment}=await checkEpochMirror(dir,hash,pool.epochLen,txid=>txOf(txid).catch(()=>txOf(txid)));
  log('checked',batches,'mirrored batches against the chain: commitment',String(commitment));
 }
 
