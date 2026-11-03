@@ -1,6 +1,8 @@
 import {DUST,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
+import {depositFeeOf,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
 export * from '../../src/shielded/pool.ts';
 export * from '../../src/shielded/epoch-pool.ts';
@@ -51,6 +53,27 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
  :railId==='lnurl-shielded'?{title:'Pay the Lightning address privately',detail:'Private inside the pool, to the shielded address its owner registered; the address service sees the amount you request, and also learns that you pay from the pool.'}
  :railId==='lnurl-arkade'?{title:'Pay the Lightning address on Arkade',detail:'Straight from the pool to the Arkade address its owner gave; the amount and destination become public.'}
  :{title:'Payment',detail:`Routed over ${railId}; treat the amount as public.`};
+
+const grouped=(n:number|bigint)=>n.toLocaleString('en-US');
+const charges=(fee:DepositFeeSchedule|undefined):fee is DepositFeeSchedule=>!!(fee&&(fee.fixedSats||fee.bps));
+const feeTerms=({fixedSats,bps}:DepositFeeSchedule)=>{
+ const fixed=`${grouped(fixedSats)} sats`,share=`${bps/100}% of each deposit`;
+ return fixedSats&&bps?`${fixed} or ${share}, whichever is more`:fixedSats?fixed:share;
+};
+const feeCharged=(fee:DepositFeeSchedule)=>fee.bps?`a deposit fee of ${feeTerms(fee)}`:`a ${grouped(fee.fixedSats)}-sat deposit fee`;
+export const depositFeeLine=(fee:DepositFeeSchedule|undefined)=>charges(fee)?`This pool charges ${feeCharged(fee)}.`:'';
+/** The fee by the schedule alone: pass undefined for a plan the wallet waives, such as a lone pool payout (see planFeeOf). */
+export const depositFeeAmountLine=(fee:DepositFeeSchedule|undefined,sats:number)=>{
+ const owed=depositFeeOf(fee,BigInt(sats));
+ return owed?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(owed)}-sat fee, so ${grouped(BigInt(sats)-owed)} sats reach the pool.`:'';
+};
+export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
+ `${charges(accepted)?`This pool raised its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Automatic shielding is paused until you accept it.`;
+/** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
+export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
+ const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
+ return entry.kind==='shield'?btc(entry.amounts)-btc(entry.created):undefined;
+};
 
 /** Why a token cannot be a claim link, read before any network call; '' when it can be. */
 export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};

@@ -5,9 +5,10 @@ import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {arkAssetHoldings,claimTokenError,claimUrl,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shortValue} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shieldFeeOf,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
+import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
@@ -243,6 +244,49 @@ test('the route preview names what each rail makes public, and never leaves a ra
  const shielded=routeCopy('lnurl-shielded');
  assert.equal(shielded.title,'Pay the Lightning address privately');
  for(const claim of [/private inside the pool/i,/shielded address its owner registered/,/address service sees the amount you request/,/also learns that you pay from the pool/])assert.match(shielded.detail,claim);
+});
+
+test('the deposit-fee line names a fixed fee, a share, or both, and says nothing when there is no fee',()=>{
+ assert.equal(depositFeeLine(undefined),'');
+ assert.equal(depositFeeLine({fixedSats:0,bps:0}),'');
+ assert.match(depositFeeLine({fixedSats:100,bps:0}),/100-sat deposit fee/);
+ assert.match(depositFeeLine({fixedSats:0,bps:50}),/0\.5% of each deposit/);
+ assert.match(depositFeeLine({fixedSats:100,bps:50}),/100 sats or 0\.5%.*whichever is more/);
+ assert.equal(depositFeeLine({fixedSats:2500,bps:0}),'This pool charges a 2,500-sat deposit fee.');
+ assert.equal(depositFeeLine({fixedSats:0,bps:1}),'This pool charges a deposit fee of 0.01% of each deposit.');
+ assert.equal(depositFeeLine({fixedSats:1500,bps:125}),'This pool charges a deposit fee of 1,500 sats or 1.25% of each deposit, whichever is more.');
+});
+
+test('the pause banner reads as a new fee when nothing was accepted, and as a rise when a lower fee was',()=>{
+ const tail=' Automatic shielding is paused until you accept it.',fixed={fixedSats:100,bps:0},both={fixedSats:100,bps:50};
+ for(const accepted of [undefined,{fixedSats:0,bps:0}])assert.equal(depositFeeBanner(fixed,accepted),'This pool now charges a 100-sat deposit fee.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:0,bps:50},undefined),'This pool now charges a deposit fee of 0.5% of each deposit.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:300,bps:0},fixed),'This pool raised its deposit fee to 300 sats.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:0,bps:100},{fixedSats:0,bps:50}),'This pool raised its deposit fee to 1% of each deposit.'+tail);
+ assert.equal(depositFeeBanner(both,fixed),'This pool raised its deposit fee to 100 sats or 0.5% of each deposit, whichever is more.'+tail);
+ assert.equal(depositFeeBanner({fixedSats:0,bps:0},undefined),'');
+ for(const text of [depositFeeLine(both),depositFeeBanner(both,undefined),depositFeeBanner(both,fixed)])assert.doesNotMatch(text,/bps|schedule|basis point/i);
+});
+
+test('the amount line shows what a deposit pays and what reaches the pool, the share rounded up',()=>{
+ assert.equal(depositFeeAmountLine({fixedSats:100,bps:0},5000),'Your next deposit of 5,000 sats pays a 100-sat fee, so 4,900 sats reach the pool.');
+ assert.match(depositFeeAmountLine({fixedSats:100,bps:50},10000),/pays a 100-sat fee, so 9,900 sats reach/);
+ assert.match(depositFeeAmountLine({fixedSats:100,bps:50},100001),/pays a 501-sat fee, so 99,500 sats reach/);
+ assert.equal(depositFeeAmountLine(undefined,5000),'');
+ assert.equal(depositFeeAmountLine({fixedSats:0,bps:0},5000),'');
+});
+
+test('a shield row\'s fee is the deposited amount less the notes it created',()=>{
+ const owned=(amount:bigint,asset=0n):EpochOwnedNote=>({amount,asset,rho:1n,epoch:0,index:0,nullifier:amount}),field=7n;
+ const entry=(kind:EpochHistoryEntry['kind'],amounts:EpochHistoryEntry['amounts'],created:EpochOwnedNote[]):EpochHistoryEntry=>({kind,batch:1,epoch:0,amounts,spent:[],created,slots:[0]});
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:1000n}],[owned(900n)])),100n);
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:1000n}],[owned(1000n)])),0n);
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:1000n}],[owned(500n),owned(400n)])),100n,'every BTC note it created counts');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:400n}],[owned(9n,field),owned(300n)])),100n,'an asset group reports its carrier\'s fee, not its units');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:330n}],[owned(9n,field),owned(330n)])),0n,'a dust-sized carrier is free');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:400n}],[owned(4n,field),owned(300n)])),100n,'asset units deposited do not count');
+ assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:400n}],[owned(5n,field),owned(300n)])),100n,'nor do asset notes created');
+ for(const kind of ['receive','send','withdraw','merge','renew','recover'] as const)assert.equal(shieldFeeOf(entry(kind,[{asset:0n,amount:1000n}],[owned(900n)])),undefined,kind);
 });
 
 test('the private-receive box follows the user\'s choice, and one notice follows what the service lists',()=>{
