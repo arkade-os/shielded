@@ -45,8 +45,8 @@ async function main(){
   return;
  }
  if(!pool)throw new Error('Set SHIELDED_POOL_ORIGIN to the pool, for example https://shielded.mutinynet.arkade.sh.');
- const ms=Number(every||60_000);
- if(!Number.isSafeInteger(ms)||ms<1||ms>=2**31)throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a whole number of milliseconds from 1 to 2147483647; a longer timer would fire at once.');
+ const ms=every?(/^\d+$/.test(every)?Number(every):NaN):60_000;
+ if(!(ms>=1000&&ms<2**31))throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a whole number of milliseconds from 1000 to 2147483647 (60000 is a minute); Node would fire a longer timer at once.');
  log(`syncing with ${new URL(pool).origin}`);
  const wallet=await createShieldedWallet({pool,secret}),refused=feeAddressProblem(wallet);
  if(refused){console.error(refused);await wallet.dispose().catch(()=>{});process.exit(1);}

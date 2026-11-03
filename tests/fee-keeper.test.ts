@@ -113,7 +113,7 @@ test('--derive prints the pool settings for the phrase with no pool in reach, an
 
 test('the keeper refuses to start without a phrase or with an interval that would spin, before it reaches for the pool',async()=>{
  assert.match(await refusal([],{SHIELDED_POOL_ORIGIN:DEAD}),/SHIELDED_FEE_WALLET_PHRASE/);
- for(const bad of ['abc','0',String(2**31)])
+ for(const bad of ['abc','0','999','1e3',' 5000 ',String(2**31)])
   assert.match(await refusal([],{SHIELDED_POOL_ORIGIN:DEAD,SHIELDED_FEE_WALLET_PHRASE:phrase,SHIELDED_FEE_KEEPER_INTERVAL_MS:bad}),/SHIELDED_FEE_KEEPER_INTERVAL_MS/,bad);
 });
 
