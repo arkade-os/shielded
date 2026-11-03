@@ -1,4 +1,5 @@
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,type Identity} from '@arkade-os/sdk';
+import type {DepositFeeSchedule} from '../../protocol/src/rollup/deposit-fee.ts';
 import type {Hash} from '../../protocol/src/rollup/notes.ts';
 import {MUTINYNET_KEY_NETWORK,deriveWalletKeyMaterial} from '../../protocol/src/wallet-keys.ts';
 import {poolApiOf,type RollupPoolStatus} from '../../../src/shielded/pool.ts';
@@ -13,6 +14,7 @@ export {IndexedDBShieldedNoteRepository,InMemoryShieldedNoteRepository,type Shie
 export {loadProvingFile,prefetchProvingKeys,releaseProver,snarkjsProver} from '../../../src/shielded/prover.ts';
 export {parseMasterSecret,recoveryPhraseOf} from '../../protocol/src/wallet-keys.ts';
 export type {Hash} from '../../protocol/src/rollup/notes.ts';
+export {depositFeeOf,type DepositFee,type DepositFeeSchedule} from '../../protocol/src/rollup/deposit-fee.ts';
 
 export interface CreateShieldedWalletOptions {
  /** The pool's origin, for example `https://shielded.mutinynet.arkade.sh`. */
@@ -25,6 +27,8 @@ export interface CreateShieldedWalletOptions {
  prover?:ShieldedProver;
  hash?:Hash;
  fetch?:typeof fetch;
+ /** The most deposit fee to accept; `fixedSats` and `bps` are each compared. Without it a pool that charges a fee still opens, but deposits wait for `acceptDepositFee`. */
+ maxDepositFee?:DepositFeeSchedule;
 }
 
 export async function loadPoseidon():Promise<Hash>{
@@ -51,7 +55,7 @@ export async function shieldedWalletConfig(o:CreateShieldedWalletOptions):Promis
   // Proving files are pinned per pool token, and a new token needs a new wallet, so the status at create is enough.
   prover:o.prover??snarkjsProver({status:()=>status,origin}),
   shieldedRepository:o.repository??(typeof indexedDB==='undefined'?new InMemoryShieldedNoteRepository():new IndexedDBShieldedNoteRepository()),
-  bornAt:o.bornAt??0,fetcher,
+  bornAt:o.bornAt??0,fetcher,maxDepositFee:o.maxDepositFee,
  };
 }
 
