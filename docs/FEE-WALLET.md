@@ -1,10 +1,10 @@
 # Fee wallet runbook
 
-A pool can charge a fee on each deposit (see [Deposit fee](../README.md#deposit-fee)). The fee goes to a separate wallet. This runbook covers creating that wallet, configuring the pool with it, running its keeper, and turning the fee on and off.
+A pool can charge a fee on each deposit ([README](../README.md#deposit-fee)). The fee goes to a separate wallet. This runbook covers creating it, configuring the pool, running its keeper, and turning the fee on and off.
 
 ## Why a separate wallet
 
-The pool server holds only the fee wallet's address (`shrol2…`) and view key (`shview2…`). The spend key never reaches the server, so a compromised pool cannot spend the fees. The server uses the view key to open each deposit's fee note and check that it pays this wallet what is owed.
+The pool server holds only the fee wallet's address (`shrol2…`) and view key (`shview2…`). The spend key never reaches the server, so a compromised pool cannot spend the fees. The server uses the view key to open each deposit's fee note and check what it pays.
 
 ## Create it
 
@@ -14,11 +14,12 @@ Generate a 24-word phrase on a machine that is not the pool host, and keep it in
 node --import tsx -e "import('./packages/protocol/src/wallet-keys.ts').then(m=>console.log(m.recoveryPhraseOf(crypto.getRandomValues(new Uint8Array(32)))))"
 ```
 
-Then print the address and view key the pool is configured with. The phrase goes only in the environment, never as an argument: an argument lands in shell history and the process list, and npm's own banner echoes the command line. `read -rs` takes the phrase from the terminal with no echo and no history entry:
+Then print the address and view key the pool is configured with. The phrase goes only in the environment, never as an argument: an argument lands in shell history and the process list, and npm's own banner echoes the command line. In bash or zsh (plain `sh` has no `-s`), `read -rs` takes the phrase with no echo and no history entry:
 
 ```sh
 read -rs SHIELDED_FEE_WALLET_PHRASE && export SHIELDED_FEE_WALLET_PHRASE
 npm run --silent fee:keeper -- --derive
+unset SHIELDED_FEE_WALLET_PHRASE
 ```
 
 ```
@@ -40,10 +41,10 @@ The address is public: the pool advertises it. The view key is not. It shows eve
 
 Turn the fee on only when both of these hold:
 
-- The wallet and page that pay the fee are deployed (PRs #107 and #108). A page or an `@arkade-os/shielded` version from before #107 cannot pay it: the pool refuses its deposits with `fee-missing` and a message to reload. A cached page recovers by reloading; an SDK app has to upgrade and pass `maxDepositFee`. A page with #107 but not #108 can neither show nor accept the fee, so its deposits stay paused.
+- The wallet and page that pay the fee are deployed (PRs #107 and #108). A page or `@arkade-os/shielded` from before #107 cannot pay it: the pool refuses its deposits with `fee-missing` and a message to reload. A cached page recovers by reloading, an SDK app by upgrading and passing `maxDepositFee`. A page with #107 but not #108 can neither show nor accept the fee, so its deposits stay paused.
 - The pool runs PR #106 (`6c927d7`) or later. Its fee refusal drops a whole asset group at once, which the wallet's rebuild of a refused deposit relies on.
 
-Set these in the pool's runtime environment ([DOKPLOY.md](DOKPLOY.md)) and redeploy:
+Set these in the pool's runtime environment ([DOKPLOY.md](DOKPLOY.md)) and redeploy, with a keeper ready to start. The [First turn-on checklist](#first-turn-on-checklist) gives the order:
 
 ```
 SHIELDED_DEPOSIT_FEE_ADDRESS=shrol2…
@@ -61,9 +62,9 @@ The fee on a deposit is `max(SATS, ceil(deposit × BPS / 10000))`.
 | Address, view key, and SATS or BPS above 0 | Fee on |
 | Anything else | Pool blocked |
 
-A malformed fee never runs the pool fee-free: the pool stays closed instead. `/health` answers 503, `/api/rollup/status` shows `"phase": "blocked"` with the reason in `message`, and the log repeats it. These block the pool: a missing, malformed or mismatched address or view key; a SATS or BPS that is not plain decimal digits; BPS above 10000; SATS or BPS above 0 without an address and view key; and any other variable starting with `SHIELDED_DEPOSIT_FEE_`, which is a misspelling. Fix the variable and redeploy.
+A malformed fee never runs the pool fee-free: the pool stays closed. `/api/rollup/status` shows `"phase": "blocked"` with the reason in `message`, and the log repeats it. Blocked: a missing, malformed or mismatched address or view key; SATS or BPS that is not plain decimal digits; BPS above 10000; SATS or BPS above 0 without an address and view key; any other variable starting `SHIELDED_DEPOSIT_FEE_` (a misspelling). Fix it and redeploy. `/health` answers 503 while blocked, so a rollout that starts the new instance first should keep the old one serving; this is not verified on Dokploy.
 
-**Turning the fee on restarts the pool.** Spends that were pending are re-admitted on the restart; any fee-less deposit among them is dropped with its reason, and its wallet rebuilds it with the fee. With a fee on, the operator also keeps `batch-txids.json` beside its batch records (`rollup4/operator/` under the data directory). It only caches those records, so it needs no backup: if it is missing or damaged, the operator rebuilds it by reading the records. It is missing on the first start with the fee on.
+**Turning the fee on restarts the pool.** Pending spends are re-admitted on the restart. A deposit made only of this pool's own payouts is exempt and is re-admitted; any other fee-less deposit is dropped with its reason, and its wallet rebuilds it with the fee once it has accepted the fee (last paragraph of this section). With a fee on, the operator also keeps `batch-txids.json` beside its batch records (`rollup4/operator/` under the data directory). It only caches those records, so it needs no backup: if it is missing or damaged, as on the first start with the fee on, the operator rebuilds it from them.
 
 The fee is live when `/api/rollup/status` shows it. Until it does, no wallet pays it:
 
@@ -71,13 +72,13 @@ The fee is live when `/api/rollup/status` shows it. Until it does, no wallet pay
 curl -s https://shielded.mutinynet.arkade.sh/api/rollup/status | jq .pool.depositFee
 ```
 
-A wallet pauses automatic shielding while the advertised fee is above what it has accepted, in either number. A wallet that has accepted nothing pauses when the fee is first turned on, and any wallet pauses again when you raise SATS or BPS past its ceiling. The page shows an **Accept the new fee** banner; an SDK wallet needs a higher `maxDepositFee`. A fee at or below what a wallet accepted, in both numbers, needs no new acceptance.
+A wallet pauses automatic shielding while the advertised fee is above what it has accepted, in either number: a wallet that accepted nothing when the fee is first turned on, any wallet when you raise SATS or BPS past its ceiling (a fee at or below it needs no new acceptance). The page then shows an **Accept the new fee** banner; an SDK wallet needs a higher `maxDepositFee`. A wallet the page creates after the fee is on accepts the fee its funding card showed, which is why checklist step 4 has no accept click. A wallet restored from a phrase accepts nothing and shows the banner, which withdrawing does not need.
 
 ## Run the keeper
 
-Every fee-paying deposit mints one fee note for the fee wallet. The keeper merges them down to one note per asset. That keeps the notes inside the window in which they can be spent (see [If the keeper stops](#if-the-keeper-stops)), and lets a withdrawal, which spends a single note, pay out the whole balance.
+Every fee-paying deposit mints one fee note. The keeper merges them down to one note, which keeps them inside the window in which they can be spent (see [If the keeper stops](#if-the-keeper-stops)) and lets a withdrawal, which spends a single note, pay out the whole balance.
 
-Run it on a different host from the pool or, at the least, as a separate process outside the pool's container. It holds the phrase, so it never runs inside that container. It needs a checkout after `npm ci` and Node 24.2 or later, because its direct-run check, `import.meta.main`, arrived in 24.2.
+Run it on a separate host. On the pool's own host, even outside the container, one compromise would reach the phrase as well as the view key, which undoes the point of a separate wallet. It never runs inside the pool's container. It needs a checkout after `npm ci` and Node 24.2 or later, because its direct-run check, `import.meta.main`, arrived in 24.2.
 
 | Variable | Meaning |
 | --- | --- |
@@ -98,35 +99,35 @@ It logs one line when it starts and one at the end of each pass:
 <time> merged 2, notes remaining 1, batch 412
 ```
 
-`merged` counts the merges in that pass. `notes remaining` is every note the wallet holds across the pool's assets, including notes awaiting recovery. `batch` is how far it has read the pool. A pass ends when nothing is left to merge, so a backlog means a long gap between lines. A merge that fails, or has not landed after 10 minutes, is logged to stderr as `merging asset … failed, trying again next pass: …` and retried on the next pass.
+`merged` counts the merges in that pass. `notes remaining` is every note the wallet holds, including notes awaiting recovery. `batch` is how far it has read the pool. A pass prints its line only when it ends: when nothing is left to merge, or after a failed merge. A merge that fails, or has not landed after 10 minutes, is logged to stderr as `merging asset … failed, trying again next pass: …`, and the wallet waits 60 s before merging again. Node's one-time `EventSource is experimental` warning on stderr at start is expected.
 
 ## First turn-on checklist
 
 Use a small fixed fee for the first run (`SHIELDED_DEPOSIT_FEE_SATS=100`, `SHIELDED_DEPOSIT_FEE_BPS=0`), once both conditions under [Configure the pool](#configure-the-pool) hold.
 
-1. Set the four variables and redeploy. When `/api/rollup/status` shows `"phase": "ready"`, start the keeper.
-2. `curl -s https://shielded.mutinynet.arkade.sh/api/rollup/status | jq .pool.depositFee` shows `{fixedSats, bps, address}`. The same URL piped to `grep -c shview` prints `0`: the view key is not served.
+1. Have the keeper's host ready, with the phrase in its secret store. Set the four variables and redeploy. When `/api/rollup/status` shows `"phase": "ready"`, start the keeper, before the first deposit.
+2. `curl -s https://shielded.mutinynet.arkade.sh/api/rollup/status | jq .pool.depositFee` shows `{fixedSats, bps, address}`, with the address the keeper's start line prints. The same URL piped to `grep -c shview` prints `0`: the view key is not served.
 3. In a fresh browser profile, open `/wallet`. The funding card names the fee.
-4. Fund the wallet with a small amount from the Mutinynet faucet, which the funding card links. One deposit lands, and its History row has a **Deposit fee** line equal to the configured fee.
-5. The keeper's next pass logs `notes remaining 1`. Fund again, and the first pass after that deposit lands logs `merged 1, notes remaining 1`.
-6. Withdraw a small amount to an Arkade address, then press **Shield again** on that single payout. It shields with no fee and no `fee-missing` refusal, because a deposit made only of this pool's own payouts pays nothing.
+4. Fund the wallet from the Mutinynet faucet (linked on the funding card) with at least 330 sats plus the fee; a smaller coin stays outside the pool, and the card says so. No accept click is needed. One deposit lands, and its History row has a **Deposit fee** line equal to the configured fee.
+5. The keeper logs `notes remaining 1` within a pass or two of the deposit (the wallet syncs on pool events and every 60 s). Restart it: the start line reads `holds N sats`, N being the fee. Fund again, and the first pass after that deposit lands logs `merged 1, notes remaining 1`.
+6. Withdraw at least 330 sats to this wallet's own Arkade address, the one on the funding card. When the payout lands, the **BACK ON ARKADE FROM THE POOL** card shows **Shield again**. Press it: the whole payout shields with no fee and no `fee-missing` refusal, because a deposit made only of this pool's own payouts pays nothing. So 330 sats is enough here; the faucet deposit needed 330 plus the fee. If the card does not appear, the payout went elsewhere or has not landed; that is not a failed exemption.
 7. If anything above fails, unset the variables and redeploy ([Turn the fee off](#turn-the-fee-off)).
 
 ## If the keeper stops
 
-A note spends directly only in the epoch it was made in and the next one, and an epoch is 128 batches. A fee note that has not been merged or renewed by then falls out of that window and can only be recovered. A recovery is a one-slot batch: one note takes a whole batch, so each missed note costs the pool a batch of capacity. The fees are not lost. The notes stay recoverable and the phrase still spends them.
+A note spends directly only in the epoch it was made in and the next one (an epoch is 128 batches). A fee note not merged or renewed by then falls out of that window and can only be recovered. A recovery is a one-slot batch, so each missed note costs the pool a whole batch of capacity. The fees are not lost: the notes stay recoverable and the phrase still spends them.
 
 Restart the keeper. Its wallet's watchdog recovers held notes on its own, and the keeper then merges what was recovered.
 
-The keeper has a ceiling. It merges one pair at a time and waits for each merge to land, so it removes about one note per batch, while every fee-paying deposit adds one. If fee-paying deposits arrive faster than about one per batch, the backlog grows until notes age out of the window and fall to recovery. `SHIELDED_FEE_KEEPER_INTERVAL_MS` does not raise the ceiling: it spaces passes, and within a pass the keeper merges back to back.
+The keeper has a ceiling. It merges one pair at a time and waits for each merge to land, so it removes about one note per batch, while every fee-paying deposit adds one. If fee-paying deposits come faster than about one per batch, the backlog grows until notes age out and fall to recovery. No setting raises this: `SHIELDED_FEE_KEEPER_INTERVAL_MS` only spaces passes, and within a pass the keeper already merges back to back. The levers are the fee level (a higher fee should bring fewer, larger deposits) and accepting some recoveries, which cost the pool a batch each and lose no fees.
 
-It is keeping up while `notes remaining` stays near one per asset the wallet holds and `batch` follows `pool.batches` in `/api/rollup/status`. If `notes remaining` climbs from pass to pass, it is falling behind.
+A keeper that is keeping up prints a line about every interval, a little later when a pass had merges to wait for. In those lines `merged` is small, `notes remaining` is 1 (0 before the first fee), and the newest line's `batch` is within a few of `pool.batches` in `/api/rollup/status`. One that is behind prints no bad number, because a pass prints only when it ends: a long silence, or a large `merged` on the next line, means a backlog (merges are not logged one by one). A `notes remaining` that stays above 1 means a merge failed (stderr says so) or notes are waiting for recovery.
 
 ## Spend the fees
 
-Any wallet on the phrase can spend the fee notes. A withdrawal spends one note, so it pays out at most your largest note, and at least 330 sats. The keeper's merging is what makes that one note the whole balance.
+Any wallet on the phrase can spend the fee notes. A withdrawal spends one note, so it pays out at most your largest note (which the keeper's merging makes the whole balance), and at least 330 sats.
 
-- **The web wallet.** Open `/wallet` in a fresh browser profile, because a restore replaces any wallet already in that browser. Expand **Recovery phrase and restore**, paste the phrase into **Restore from a recovery phrase**, and press **Restore wallet**. A **Created on** date makes the restore skip older pool history; use the day you turned the fee on, or any earlier day. The restore saves the wallet secret in that browser's local storage, so clear the site data when you are done.
+- **The web wallet.** Open `/wallet` in a fresh browser profile, because a restore replaces any wallet already in that browser. Expand **Recovery phrase and restore**, paste the phrase into **Restore from a recovery phrase**, and press **Restore wallet**. A **Created on** date skips older pool history; use the day you turned the fee on, or any earlier day. The restore saves the wallet secret in that browser's local storage, so clear the site data afterwards.
 - **Code.** Call `createShieldedWallet` from `@arkade-os/shielded` with the phrase as `secret`, then `wallet.withdraw(arkAddress, sats)` and await the handle's `settled()`. See [packages/shielded/README.md](../packages/shielded/README.md).
 
 ## Turn the fee off
