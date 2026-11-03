@@ -81,7 +81,7 @@ jobs:
             assets = JSON.parse(gh('release', 'view', RELEASE_TAG, '--json', 'assets')).assets;
           } catch (error) {
             if (!/release not found/.test(error.message)) throw error;
-            gh('release', 'create', RELEASE_TAG, '--latest=false', '--title', 'Rollup genesis-4 nullifier archives (Mutinynet, epoch pool)', '--notes', `Copies of the closed epochs' nullifier archives served at ${POOL_URL}/api/rollup/archives, each uploaded only after it rebuilt the root that pool records bound to the chain replay to. Each reader still checks a file against its own epoch root.`);
+            gh('release', 'create', RELEASE_TAG, '--latest=false', '--title', 'Rollup genesis-4 nullifier archives (Mutinynet, epoch pool)', '--notes', `Copies of the closed epochs' nullifier archives served at ${POOL_URL}/api/rollup/archives. Each was uploaded only after it rebuilt the root the pool's records replay to, and those records replayed to the commitment in the transaction their last record names, read from the pool's indexer; the upload did not check that this transaction spends the pool head. Each reader still checks a file against its own epoch root.`);
             assets = [];
           }
           for (const name of names) {
