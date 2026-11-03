@@ -64,7 +64,7 @@ A deposit is free unless the operator turns a fee on. The fee goes to a separate
 - `SHIELDED_DEPOSIT_FEE_VIEW_KEY`: its `shview2…` view key, which the pool uses to check each deposit's fee note.
 - `SHIELDED_DEPOSIT_FEE_SATS` and `SHIELDED_DEPOSIT_FEE_BPS`: the fee is the larger of the fixed sats and the bps share of the deposit, rounded up. Both default to 0.
 
-Without them the fee is off, and so it is when both numbers are 0 (the pool logs a warning). Once it is live, `/api/rollup/status` shows `pool.depositFee` as `{fixedSats, bps, address}`; the view key is never served. A fee that is set but wrong blocks the pool instead of running it fee-free, with the reason in `/api/rollup/status` and the log: an address or view key that does not parse (or only one of the two), a view key that is not the address's, a sats or bps value that is not a non-negative whole number, or bps above 10000.
+With none of these set the fee is off, and `SHIELDED_DEPOSIT_FEE_SATS=0` and `SHIELDED_DEPOSIT_FEE_BPS=0` alone change nothing. With an address and view key but both numbers 0 it is off too, and the pool logs a warning. Once it is live, `/api/rollup/status` shows `pool.depositFee` as `{fixedSats, bps, address}`; the view key is never served. A fee that is only partly set, or set wrong, blocks the pool instead of running it fee-free, with the reason in `/api/rollup/status` and the log: a SATS or BPS above 0 with no address and view key, an address without a view key or the reverse, an address or view key that does not parse, a view key that is not the address's, a sats or bps value that is not a non-negative whole number, or bps above 10000.
 
 ## Proving keys
 

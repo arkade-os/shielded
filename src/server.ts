@@ -7,12 +7,11 @@ import express from 'express';
 import {dropLegacyData} from './legacy.ts';
 import {createRollupRouter} from './rollup/http.ts';
 import {DEFAULT_VM_BINARY} from './rollup/leaves.ts';
-import {openRollupService,type RollupService} from './rollup/service.ts';
+import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url)),web=join(root,'app/dist');
 const data=resolve(process.env.SHIELDED_DATA_DIR??'/data'),port=Number(process.env.PORT??8792);
 const rapidsnark=join(root,'bin','rapidsnark');
-const feeAddress=process.env.SHIELDED_DEPOSIT_FEE_ADDRESS?.trim(),feeViewKey=process.env.SHIELDED_DEPOSIT_FEE_VIEW_KEY?.trim();
 let service:RollupService|undefined,stopping=false,timer:ReturnType<typeof setTimeout>|undefined;
 
 // Dokploy's proxy sits on a private network; only such a hop may name the client, so a direct caller cannot.
@@ -32,7 +31,7 @@ process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
 
 service=await openRollupService({directory:join(data,'rollup4'),epochLen:process.env.SHIELDED_ROLLUP_EPOCH_LEN??128,circuits:resolve(process.env.SHIELDED_ROLLUP_CIRCUITS??join(root,'rollup-circuits')),setupTool:join(root,'tools','rollup-setup.mjs'),
  ...(process.env.SHIELDED_ROLLUP_KEYS?{bundled:resolve(process.env.SHIELDED_ROLLUP_KEYS)}:{}),...(process.env.SHIELDED_ROLLUP_RENEW_HOURS?{renewBeforeMs:Number(process.env.SHIELDED_ROLLUP_RENEW_HOURS)*3600_000}:{}),vmBinary:DEFAULT_VM_BINARY,...(existsSync(rapidsnark)?{rapidsnark}:{}),
- ...(feeAddress||feeViewKey?{depositFee:{address:feeAddress??'',viewKey:feeViewKey??'',fixedSats:Number(process.env.SHIELDED_DEPOSIT_FEE_SATS??0),bps:Number(process.env.SHIELDED_DEPOSIT_FEE_BPS??0)}}:{}),
+ depositFee:rollupDepositFeeFromEnv(process.env),
  endpoints:{...(process.env.SHIELDED_ARK_URL?{arkUrl:process.env.SHIELDED_ARK_URL}:{}),...(process.env.SHIELDED_EMULATOR_URL?{emulatorUrl:process.env.SHIELDED_EMULATOR_URL}:{}),...(process.env.SHIELDED_INDEXER_URL?{indexerUrl:process.env.SHIELDED_INDEXER_URL}:{})}});
 const step=async()=>{
  await service!.step();

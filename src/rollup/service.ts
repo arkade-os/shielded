@@ -150,6 +150,11 @@ function rollupDepositFeeOf(config:RollupDepositFeeConfig|undefined,log:(message
  if(!fixedSats&&!bps){log('warning: the deposit fee is off, as both its fixed sats and its bps are 0.');return undefined;}
  return {advertised:{fixedSats,bps,address},operator:{schedule:{fixedSats,bps},owner:to.owner,viewSecret:view.viewSecret}};
 }
+/** The fee the environment asks for. Anything set to other than zero is handed on, even with no address or view key and even if it is not a number, so a half-set fee blocks the pool in validation instead of running it fee-free. */
+export function rollupDepositFeeFromEnv(env:Record<string,string|undefined>):RollupDepositFeeConfig|undefined {
+ const address=env.SHIELDED_DEPOSIT_FEE_ADDRESS?.trim()??'',viewKey=env.SHIELDED_DEPOSIT_FEE_VIEW_KEY?.trim()??'',fixedSats=Number(env.SHIELDED_DEPOSIT_FEE_SATS??0),bps=Number(env.SHIELDED_DEPOSIT_FEE_BPS??0);
+ return address||viewKey||fixedSats!==0||bps!==0?{address,viewKey,fixedSats,bps}:undefined;
+}
 
 /**
  * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
