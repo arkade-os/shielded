@@ -42,7 +42,7 @@ The pool accepts deposits of at least 330 sats. Direct receive invoices enforce 
 
 ## Run locally
 
-Requires Node 24 and Go 1.26.9.
+Requires Node 24.2 and Go 1.26.9.
 
 ```sh
 npm ci
@@ -69,6 +69,8 @@ A deposit whose coins are all payouts this pool made, the payout outputs of its 
 The fee can be turned on once this version of the wallet is deployed. Older pages and older versions of the `@arkade-os/shielded` package cannot pay it, so the pool refuses their deposits with a message to reload.
 
 With none of these set the fee is off, and `SHIELDED_DEPOSIT_FEE_SATS=0` and `SHIELDED_DEPOSIT_FEE_BPS=0` alone change nothing. With an address and view key but both numbers 0 it is off too, and the pool logs a warning. Once it is live, `/api/rollup/status` shows `pool.depositFee` as `{fixedSats, bps, address}`; the view key is never served. A fee that is only partly set, or set wrong, blocks the pool instead of running it fee-free, with the reason in `/api/rollup/status` and the log: a SATS or BPS above 0 with no address and view key, an address without a view key or the reverse, an address or view key that does not parse, a view key that is not the address's, a SATS or BPS that is not plain decimal digits, bps above 10000, or any other variable starting `SHIELDED_DEPOSIT_FEE_`, which is a misspelling.
+
+Read [docs/FEE-WALLET.md](docs/FEE-WALLET.md) before setting any of these: it covers creating the fee wallet, running the keeper that merges its fee notes, and turning the fee on and off.
 
 ## Proving keys
 

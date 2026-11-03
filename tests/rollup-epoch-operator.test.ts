@@ -834,7 +834,7 @@ test('an asset payout shares its carrier\'s output, so it adds no payout output'
 test('a record the fee check cannot read never keeps the pool from opening, and a coin its batch paid out pays the fee',async t=>{
  const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
  const reopen=(op:Operator,fee={})=>{op.close();return w.open(t,{snapshotEvery:1,...fee});};
- let op=await w.open(t,{snapshotEvery:1,...w.fee()});
+ let op=await w.open(t,{snapshotEvery:1});
  const payout=await paidOut(w,op);
  writeFileSync(join(w.dir,'batches','0.json'),'{not json');
  op=await reopen(op);
@@ -842,6 +842,149 @@ test('a record the fee check cannot read never keeps the pool from opening, and 
  op=await reopen(op,w.fee());
  assert.ok(warned.mock.calls.some(call=>/Batch 0's record is unreadable/.test(String(call.arguments[0]))));
  await assert.rejects(op.submit(spendOf(deposit(op.state,1000n),{coin:payout})),owes(1000n,100n,0n));
+});
+
+const txidIndex=(dir:string)=>join(dir,'batch-txids.json');
+const indexed=(dir:string)=>JSON.parse(readFileSync(txidIndex(dir),'utf8')) as string[];
+const redeposit=(op:Operator,coin:RollupCoin)=>spendOf(deposit(op.state,1000n),{coin});
+
+test('a fee-charging pool keeps its batch txids on disk, so a restart exempts a payout without reading its record',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{}),open=()=>w.open(t,{snapshotEvery:1,...w.fee()});
+ let op=await open();
+ assert.deepEqual(indexed(w.dir),[],'a first open writes the index');
+ const payout=await paidOut(w,op);
+ assert.deepEqual(indexed(w.dir),[payout.txid],'a landed batch is indexed');
+ op.close();rmSync(join(w.dir,'batches','0.json'));
+ op=await open();
+ await land(op,'spend',[redeposit(op,payout)]);
+ assert.equal(warned.mock.calls.length,0);
+});
+
+test('an index that cannot be read is rebuilt from the batch records at open',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
+ let op=await w.open(t,w.fee());
+ const payout=await paidOut(w,op);
+ for(const bad of ['{not json','{"0":"x"}','[7]']){
+  op.close();writeFileSync(txidIndex(w.dir),bad);
+  op=await w.open(t,w.fee());
+  assert.match(String(warned.mock.calls.at(-1)!.arguments[0]),/Rebuilding .*batch-txids\.json/,bad);
+  assert.deepEqual(indexed(w.dir),[payout.txid],bad);
+  await op.submit(redeposit(op,payout));
+ }
+});
+
+test('an index longer than the journal is cut back at open, so a batch that never landed keeps no exemption',async t=>{
+ const w=await world(64),open=()=>w.open(t,{snapshotEvery:1,...w.fee()});
+ let op=await open();
+ const payout=await paidOut(w,op),{tx}=forgedBatch(w,0);
+ op.close();writeFileSync(txidIndex(w.dir),JSON.stringify([payout.txid,tx.id]));
+ op=await open();
+ assert.deepEqual(indexed(w.dir),[payout.txid]);
+ await assert.rejects(op.submit(redeposit(op,w.coinOf(tx,1))),owes(1000n,100n,0n));
+ await op.submit(redeposit(op,payout));
+});
+
+test('an index behind the journal is filled in from the records it lacks only, and a fee-less run leaves it alone',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{}),off={snapshotEvery:1},on={...off,...w.fee()};
+ let op=await w.open(t,on);
+ const first=await paidOut(w,op);
+ op.close();op=await w.open(t,off);
+ const second=await paidOut(w,op);
+ op.close();
+ assert.deepEqual(indexed(w.dir),[first.txid],'a batch landed with no fee is not indexed');
+ rmSync(join(w.dir,'batches','0.json'));
+ op=await w.open(t,on);
+ assert.deepEqual(indexed(w.dir),[first.txid,second.txid]);
+ for(const coin of [first,second])await op.submit(redeposit(op,coin));
+ assert.equal(warned.mock.calls.length,0,'the record the index covers was not read');
+});
+
+test('a record that gives no txid string leaves an empty slot, so the later batches stay aligned, and a repaired record is picked up',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{}),open=()=>w.open(t,{snapshotEvery:1,...w.fee()}),path=join(w.dir,'batches','0.json');
+ let op=await w.open(t,{snapshotEvery:1});
+ const lost=await paidOut(w,op),kept=await paidOut(w,op),intact=readFileSync(path,'utf8');
+ op.close();writeFileSync(path,'{not json');
+ op=await open();
+ assert.match(String(warned.mock.calls[0]!.arguments[0]),/Batch 0's record is unreadable/);
+ assert.deepEqual(indexed(w.dir),['',kept.txid]);
+ await op.submit(redeposit(op,kept));
+ await assert.rejects(op.submit(redeposit(op,lost)),owes(1000n,100n,0n));
+ op.close();writeFileSync(path,intact);
+ op=await open();
+ assert.deepEqual(indexed(w.dir),[lost.txid,kept.txid]);
+ await op.submit(redeposit(op,lost));
+ for(const [label,damage] of [['a number',{txid:7}],['no txid field',{txid:undefined}]] as const){
+  op.close();rmSync(txidIndex(w.dir));writeFileSync(path,JSON.stringify({...JSON.parse(intact),...damage}));
+  warned.mock.resetCalls();
+  op=await open();
+  assert.deepEqual(indexed(w.dir),['',kept.txid],label);
+  op.close();op=await open();
+  assert.equal(warned.mock.calls.length,0,`${label}: the next open does not rebuild the index`);
+ }
+});
+
+test('a followed batch is indexed as it is recorded, so a restart still exempts its payout',async t=>{
+ const w=await world(64),a=await w.open(t),dir=mkdtempSync(join(tmpdir(),'rollup-epoch-fee-indexed-')),open=()=>w.open(t,{...w.fee(),snapshotEvery:1,directory:dir});
+ const payout=await paidOut(w,a),{tx,checkpoints}=landedTx(w,0);
+ let b=await open();
+ await b.follow({tx,checkpoints,at:1});
+ assert.deepEqual(indexed(dir),[tx.id]);
+ b.close();rmSync(join(dir,'batches','0.json'));
+ b=await open();
+ await land(b,'spend',[redeposit(b,payout)]);
+});
+
+test('a commit that fails leaves its index entry ahead of the journal, and the retried batch takes that place',async t=>{
+ const w=await world(64),a=await w.open(t);
+ await land(a,'spend',[fastSpend(a.state)]);
+ const dir=mkdtempSync(join(tmpdir(),'rollup-epoch-fee-unwritten-')),b=await w.open(t,{...w.fee(),directory:dir}),{archive}=b.status(),{tx}=landedTx(w,0);
+ const moving=b.relocate({head:archive.head,reserves:archive.reserves});
+ await assert.rejects(b.follow({...landedTx(w,0),at:1}),/in flight/);
+ assert.deepEqual(indexed(dir),[tx.id],'the entry is written before the commit');
+ await moving;
+ await b.follow({...landedTx(w,0),at:1});
+ assert.deepEqual(indexed(dir),[tx.id],'the retry replaces it, so later batches stay aligned');
+});
+
+const blockIndexWrites=(dir:string)=>{const tmp=`${txidIndex(dir)}.tmp`;mkdirSync(tmp);return ()=>rmSync(tmp,{recursive:true});};
+const unwritten=(warned:{mock:{calls:{arguments:unknown[]}[]}})=>warned.mock.calls.filter(call=>/Could not write .*batch-txids\.json/.test(String(call.arguments[0]))).length;
+
+test('an index write that throws neither stops a batch from landing nor costs its payout the exemption, and a reopen restores the entry',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
+ let op=await w.open(t,w.fee());
+ const first=await paidOut(w,op),unblock=blockIndexWrites(w.dir),second=await paidOut(w,op),third=await paidOut(w,op);
+ await op.submit(redeposit(op,second));
+ assert.deepEqual(indexed(w.dir),[first.txid],'the file keeps its last good write');
+ assert.equal(unwritten(warned),1,'one warning, not one per batch');
+ op.close();unblock();
+ op=await w.open(t,w.fee());
+ assert.deepEqual(indexed(w.dir),[first.txid,second.txid,third.txid]);
+ await op.submit(redeposit(op,third));
+});
+
+test('an index write that throws does not stop a follow either, and the followed payout is exempt at once',async t=>{
+ const w=await world(64),a=await w.open(t),dir=mkdtempSync(join(tmpdir(),'rollup-epoch-fee-unindexed-')),warned=t.mock.method(console,'warn',()=>{}),open=()=>w.open(t,{...w.fee(),directory:dir});
+ const payout=await paidOut(w,a),{tx,checkpoints}=landedTx(w,0);
+ let b=await open();
+ const unblock=blockIndexWrites(dir);
+ assert.deepEqual(await b.follow({tx,checkpoints,at:1}),{batch:0,txid:tx.id});
+ await b.submit(redeposit(b,payout));
+ assert.deepEqual([indexed(dir),unwritten(warned)],[[],1]);
+ b.close();unblock();
+ b=await open();
+ assert.deepEqual(indexed(dir),[tx.id]);
+});
+
+test('with no deposit fee the operator neither writes the batch txid index nor reads one',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
+ let op=await w.open(t,{snapshotEvery:1});
+ await paidOut(w,op);op.close();
+ assert.equal(readdirSync(w.dir).includes('batch-txids.json'),false);
+ writeFileSync(txidIndex(w.dir),'{not json');
+ op=await w.open(t,{snapshotEvery:1});
+ await paidOut(w,op);
+ assert.equal(readFileSync(txidIndex(w.dir),'utf8'),'{not json');
+ assert.equal(warned.mock.calls.length,0);
 });
 
 test('a group whose id does not commit to its members answers group-invalid before its missing fee',async t=>{

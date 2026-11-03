@@ -116,6 +116,11 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  // Followed batches whose record /external may still fill in, by txid, however far back they sit.
  const barePath=join(o.directory,'chain-only.json'),bare=new Map<string,number>(),saveBare=()=>writeSnapshot(barePath,new TextEncoder().encode(JSON.stringify(Object.fromEntries(bare))));
  const fillable=(r:RollupEpochRecord)=>chainOnly(r)||r.slots.some(s=>s.ctDigest!=='0'&&!s.ciphertext);
+ // The fee exemption's txids in batch order, '' where a record gave none. An entry is written before its batch's journal commit, so a failed commit leaves one extra, which the next open cuts.
+ const txidsPath=join(o.directory,'batch-txids.json'),txids:string[]=[];
+ let txidsWarned=false;
+ const saveTxids=()=>{try{writeSnapshot(txidsPath,new TextEncoder().encode(JSON.stringify(txids)));}catch(error){if(!txidsWarned)console.warn(`[rollup] Could not write ${txidsPath}; batches go on, and the next open reads the records it lacks: ${(error as Error).message}`);txidsWarned=true;}};
+ const indexTxid=(n:number,txid:string)=>{if(batchTxids){txids.length=n;txids.push(txid);saveTxids();}};
  const frozenDir=join(o.directory,'nullifiers');mkdirSync(frozenDir,{recursive:true});
  const frozenPath=(epoch:number)=>epochNfArchivePath(frozenDir,epoch);
  let state=EpochState.genesis(o.hash,o.epochLen,false);
@@ -146,7 +151,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    writeFileSync(keptPath(plan),JSON.stringify(plan));return true;
   },
   apply:(archive,plan,receipt)=>{
-   writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));batchTxids?.add(receipt.txid);
+   writeFileSync(bodyPath(archive.batches),JSON.stringify({...plan.record,txid:receipt.txid,at:now()}));indexTxid(archive.batches,receipt.txid);batchTxids?.add(receipt.txid);
    lastBatchAt[plan.record.kind]=now();
    if(state.batchCount===archive.batches)applyRecord(state,plan.record);
    const tx=Transaction.fromPSBT(base64.decode(receipt.signedArkTx)),coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
@@ -182,10 +187,21 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   if(committed!==undefined&&state.commitment()!==committed)throw new Error(`Replaying ${atOpen.batches} batches gives commitment ${state.commitment()}, but the pool head commits to ${committed}; a batch record is wrong, so the pool does not open.`);
  }catch(error){journal.close();throw error;}
  accepted=acceptedOf(state);
- // ponytail: every record's txid is read at open, and the set grows a txid per batch for the process's life; a persisted index, or keeping only batches within the VTXO lifetime, is the upgrade.
- if(batchTxids)for(let n=0;n<atOpen.batches;n++){
-  try{const {txid}=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord;if(txid)batchTxids.add(txid);}
-  catch(error){console.warn(`[rollup] Batch ${n}'s record is unreadable, so a coin it paid out pays the deposit fee: ${(error as Error).message}`);}
+ // ponytail: the set keeps every batch's txid for the process's life and each batch rewrites the whole index; an append-only file, or only batches within the VTXO lifetime, is the upgrade.
+ if(batchTxids){
+  let text='';
+  try{
+   const stored=JSON.parse(text=readFileSync(txidsPath,'utf8')) as unknown;
+   if(!Array.isArray(stored)||!stored.every(id=>typeof id==='string'))throw new Error('it is not a list of txids');
+   for(const id of stored.slice(0,atOpen.batches))txids.push(id);
+  }catch(error){if(existsSync(txidsPath))console.warn(`[rollup] Rebuilding ${txidsPath}: ${(error as Error).message}`);txids.length=0;}
+  // Only what the index lacks is read; a '' is a record that gave no txid, tried again at each open.
+  for(let n=0;n<atOpen.batches;n++)if(!txids[n]){
+   try{const {txid}=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord;txids[n]=typeof txid==='string'?txid:'';}
+   catch(error){txids[n]='';console.warn(`[rollup] Batch ${n}'s record is unreadable, so a coin it paid out pays the deposit fee: ${(error as Error).message}`);}
+  }
+  for(const txid of txids)if(txid)batchTxids.add(txid);
+  if(JSON.stringify(txids)!==text)saveTxids();
  }
  // A missing or damaged index is rebuilt from the committed records; it may then also name operator-landed batches, which only widens what can be filled in, never what is trusted.
  try{for(const [txid,n] of Object.entries(JSON.parse(readFileSync(barePath,'utf8')) as Record<string,number>))bare.set(txid,n);}
@@ -463,8 +479,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     // As the batch path's own undoLast does: a commit that does not land must leave no batch applied above the journal.
-    // The index is written first, so it never misses a committed batch; an entry for one that did not land is ignored by enrich.
-    try{if(fillable(record)){bare.set(tx.id,archive.batches);saveBare();}archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));}
+    // The indexes are written first; an entry for a batch that did not land is ignored by enrich, or cut at the next open.
+    try{if(fillable(record)){bare.set(tx.id,archive.batches);saveBare();}indexTxid(archive.batches,tx.id);archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));}
     catch(error){state.undoLast();throw error;}
     lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);batchTxids?.add(tx.id);
     persist(o.snapshotEvery??SNAPSHOT_EVERY);
