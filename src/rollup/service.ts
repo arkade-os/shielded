@@ -10,12 +10,14 @@ import {base64,hex} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
 import {BATCH_SLOTS,CHECKPOINT_EVERY,MAX_EPOCH_LEN,SUBTREE_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {randomField} from '../../packages/protocol/src/rollup/account.ts';
+import type {DepositFee} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import {parseViewKey} from '../../packages/protocol/src/rollup/disclosure.ts';
 import {EpochState} from '../../packages/protocol/src/rollup/epoch.ts';
 import {epochPaddingTransfer} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {encodeEpochScan,rotatesAt} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import {checkpointOf} from '../../packages/protocol/src/rollup/frontier.ts';
-import {rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
+import {parseRollupAddress,rollupRecipientOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openCustomerArkWallet,withArkWallet} from '../stock/ark-wallet.ts';
 import {validateStockCheckpoint} from '../stock/checkpoint.ts';
 import {decodeStockIndexerTransaction} from '../stock/indexer.ts';
@@ -26,7 +28,7 @@ import type {StockWireRequest} from '../stock/transport.ts';
 import {BATCH_WAIT_MS,type RollupSpend} from './batcher.ts';
 import {rollupEpochPoolTree,ROLLUP_STATE_PACKET,type RollupCoin,type RollupEpochLeaves} from './covenant.ts';
 import {epochNfArchivePath} from './epoch-archive-file.ts';
-import {openRollupEpochOperator,type RollupArchive,type RollupEpochOperator,type RollupEpochSpend,type RollupEpochStatus,type RollupPoolCoin,type RollupTimings,type RollupTransport} from './epoch-operator.ts';
+import {openRollupEpochOperator,type RollupArchive,type RollupEpochOperator,type RollupEpochOperatorOptions,type RollupEpochSpend,type RollupEpochStatus,type RollupPoolCoin,type RollupTimings,type RollupTransport} from './epoch-operator.ts';
 import {loadRollupEpochLeaves,type RollupLeavesSpec} from './leaves.ts';
 import {createRollupProver,type CircuitArtifacts,type RollupProver,type verifyRollupProof} from './prover.ts';
 import {carriedReserves,flushRollupIntent,leftoverRenewal,renewalChunks,renewedRollupPool,renewRollupPool,rollupPoolPoints,rollupRenewalDue} from './renewal.ts';
@@ -58,7 +60,7 @@ export type RollupPhase='starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';
 export type RollupStatusBatch={batch:number;at:number;rotated?:boolean}&RollupTimings;
 export interface RollupStatus {
  version:1;phase:RollupPhase;message:string;minimumFundingSats:number;fundingAddress?:string;fundingSats?:number;
- pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;lastBatch?:RollupStatusBatch;reserves:Record<string,string>;maxReserves:number;
+ pool?:{token:string;operator:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;lastBatch?:RollupStatusBatch;reserves:Record<string,string>;maxReserves:number;depositFee?:DepositFee;
   epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number};
  network?:StockNetworkInfo;
  proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};
@@ -135,13 +137,39 @@ export function rollupEpochLenOf(o:{genesis?:{version?:number;epochLen?:number};
  throw new Error(`The rollup genesis has version ${JSON.stringify(o.genesis.version)}, which this build cannot open; run the build that created it.`);
 }
 
+type RollupDepositFeeConfig={address:string;viewKey:string;fixedSats:number;bps:number;problem?:string};
+/** What a configured deposit fee makes of the pool, or undefined while it is off. A fee that is set but malformed throws, as reading it as none would run the pool fee-free. A parser's own message is never repeated: a bech32 error quotes its input, and a view key must not reach /status. */
+function rollupDepositFeeOf(config:RollupDepositFeeConfig|undefined,log:(message:string)=>void):{advertised:DepositFee;operator:NonNullable<RollupEpochOperatorOptions['depositFee']>}|undefined {
+ if(!config)return undefined;
+ if(config.problem)throw new Error(config.problem);
+ const {address,viewKey,fixedSats,bps}=config,parsed=<T>(read:()=>T,problem:string):T=>{try{return read();}catch{throw new Error(problem);}};
+ const to=parsed(()=>parseRollupAddress(address),'The deposit fee address is not a shielded rollup address (shrol2...).'),view=parsed(()=>parseViewKey(viewKey),'The deposit fee view key is not a shielded view key (shview2...).');
+ if(view.owner!==to.owner)throw new Error('The deposit fee view key belongs to another wallet than the deposit fee address: the owners differ.');
+ if(hex.encode(x25519.getPublicKey(view.viewSecret))!==hex.encode(to.viewPublic))throw new Error('The deposit fee view key belongs to another wallet than the deposit fee address: the view secret differs.');
+ if(!Number.isSafeInteger(fixedSats)||fixedSats<0)throw new Error(`The deposit fee sats must be a non-negative whole number; got ${fixedSats}.`);
+ if(!Number.isSafeInteger(bps)||bps<0||bps>10_000)throw new Error(`The deposit fee bps must be a whole number from 0 to 10000; got ${bps}.`);
+ if(!fixedSats&&!bps){log('warning: the deposit fee is off, as both its fixed sats and its bps are 0.');return undefined;}
+ return {advertised:{fixedSats,bps,address},operator:{schedule:{fixedSats,bps},owner:to.owner,viewSecret:view.viewSecret}};
+}
+const FEE_ENV=['ADDRESS','VIEW_KEY','SATS','BPS'].map(name=>'SHIELDED_DEPOSIT_FEE_'+name);
+/** The fee the environment asks for. Anything set to other than zero is handed on, even with no address or view key, so a half-set fee blocks the pool in validation instead of running it fee-free. A variable with the fee's prefix that is none of its four (a misspelling) and a number that is not plain decimal digits (Number() reads 0x64 and 1e2) are handed on as `problem`, which validation throws first. */
+export function rollupDepositFeeFromEnv(env:Record<string,string|undefined>):RollupDepositFeeConfig|undefined {
+ const [address,viewKey,satsText,bpsText]=FEE_ENV.map(name=>env[name]?.trim()??''),decimal=(text:string)=>/^\d*$/.test(text)?Number(text):NaN;
+ const fixedSats=decimal(satsText),bps=decimal(bpsText),strays=Object.keys(env).filter(name=>name.startsWith('SHIELDED_DEPOSIT_FEE_')&&!FEE_ENV.includes(name));
+ const undecimal=[[FEE_ENV[2],fixedSats],[FEE_ENV[3],bps]].filter(([,n])=>Number.isNaN(n)).map(([name])=>name);
+ const problem=strays.length?`The deposit fee has no variable ${strays.join(' or ')}; its variables are ${FEE_ENV.join(', ')}.`:undecimal.length?`${undecimal.join(' and ')} must be plain decimal digits.`:undefined;
+ return address||viewKey||fixedSats!==0||bps!==0||problem?{address,viewKey,fixedSats,bps,...(problem?{problem}:{})}:undefined;
+}
+
 /**
  * `circuits` holds the image's compiled spend and batch circuits; the one-time key setup runs from them unless
  * `bundled` already holds keys. Afterwards the volume's keys define the pool, whatever later images hold.
  */
-export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string;fetcher?:typeof fetch};renewBeforeMs?:number;epochLen:number|string;log?:(message:string)=>void;providers?:RollupServiceProviders}){
+export async function openRollupService(o:{directory:string;circuits:string;setupTool:string;bundled?:string;vmBinary:string;rapidsnark?:string;endpoints:{arkUrl?:string;emulatorUrl?:string;indexerUrl?:string;fetcher?:typeof fetch};renewBeforeMs?:number;epochLen:number|string;depositFee?:RollupDepositFeeConfig;log?:(message:string)=>void;providers?:RollupServiceProviders}){
  if(o.epochLen==null)throw new Error('The rollup service needs an epoch length.');
  const log=o.log??((message:string)=>console.log('[rollup] '+message)),keys=join(o.directory,'keys'),p=o.providers??{};
+ let fee:ReturnType<typeof rollupDepositFeeOf>,feeProblem:Error|undefined;
+ try{fee=rollupDepositFeeOf(o.depositFee,log);}catch(error){feeProblem=error as Error;}
  mkdirSync(o.directory,{recursive:true,mode:0o700});
  const secretsPath=join(o.directory,'secrets.json');
  if(!existsSync(secretsPath))writeFileSync(secretsPath,JSON.stringify({wallet:randomBytes(32).toString('hex'),operator:randomBytes(32).toString('hex')}),{flag:'wx',mode:0o600});
@@ -308,7 +336,7 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    // A recover slot carries the spend client proof, as the recover leaf does.
    clientKey:{spend:spendKey,join:readJson(join(keys,'epoch-join.vkey.json')),recover:spendKey},hash,
    prover:{spend:prover('epoch-batch-spend'),join:prover('epoch-batch-join'),recover:prover('epoch-batch-recover')},transport,signDeposits,depositFloorMs:DEPOSIT_FLOOR_MS,dustSats:network.dust,batchWaitMs:BATCH_WAIT_MS,joinWaitMs:BATCH_WAIT_MS,
-   onDrop,verify});
+   onDrop,verify,...(fee?{depositFee:fee.operator}:{})});
   const address=new ArkAddress(hex.decode(network.serverKey),pool.tree.pkScript.subarray(2),'tark').encode();
   live={operator,network,genesis:saved,address,pool,leaves,indexer};
   await restore(operator);
@@ -435,13 +463,14 @@ export async function openRollupService(o:{directory:string;circuits:string;setu
    if(!live)return status;
    const {operator,genesis,address,network,pool}=live,view=operator.status(),{archive}=view,{state}=operator;
    return {...status,network,pool:{token:genesis.token,operator:hex.encode(schnorr.getPublicKey(operatorSecret)),...noticeOf(),address,script:hex.encode(pool.tree.pkScript),batches:archive.batches,root:String(view.acceptedRoot),head:{txid:archive.head.txid,vout:archive.head.vout,value:archive.head.value},pending:operator.pending(),padding:operator.padding(),...(lastBatch?{lastBatch}:{}),
-    reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES,
+    reserves:Object.fromEntries(Object.entries(archive.reserves).map(([assetId,reserve])=>[assetId,reserve.amount])),maxReserves:MAX_RESERVES,...(fee?{depositFee:fee.advertised}:{}),
     ...epochFieldsOf(state.epochLen,archive.batches,view)}};
   },
   /** Advances setup by one step; once ready, the batch, padding and renewal loops run on their own. */
   step:async()=>{
    if(live||stopped)return;
    try{
+    if(feeProblem)throw feeProblem;
     const path=join(o.directory,'genesis.json'),known=existsSync(path)?readJson<Genesis>(path):undefined;
     const epochLen=rollupEpochLenOf({genesis:known,epochLen:o.epochLen});
     if(!ensureKeys())return;
