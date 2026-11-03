@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {CARRIER_FREE_SATS,acceptsDepositFee,carrierFeeOf,depositFeeOf,maxDepositFeeOf,parseDepositFee} from '../packages/protocol/src/rollup/deposit-fee.ts';
+import {CARRIER_FREE_SATS,acceptsDepositFee,carrierFeeOf,depositFeeOf,maxDepositFeeOf,parseDepositFee,parseDepositFeeSchedule} from '../packages/protocol/src/rollup/deposit-fee.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 
 const address=rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)});
@@ -31,9 +31,17 @@ test('a fee schedule is read only when both numbers are whole, non-negative and 
  for(const junk of [undefined,null,'fee'])assert.equal(parseDepositFee(junk),undefined);
 });
 
+test('a stored or configured ceiling is read by the same number rules, and a zero one is a ceiling of no fee',()=>{
+ assert.deepEqual(parseDepositFeeSchedule({fixedSats:0,bps:0,address:'never kept'}),{fixedSats:0,bps:0});
+ assert.deepEqual(parseDepositFeeSchedule({fixedSats:100,bps:10_000}),{fixedSats:100,bps:10_000});
+ for(const bad of [{fixedSats:1.5,bps:0},{fixedSats:-1,bps:0},{fixedSats:'5',bps:0},{fixedSats:2**53,bps:0},{fixedSats:0,bps:10_001},{fixedSats:0},null,'fee'])
+  assert.equal(parseDepositFeeSchedule(bad),undefined,JSON.stringify(bad));
+});
+
 test('a wallet accepts a schedule no higher than the one it accepted, field by field',()=>{
  assert.equal(acceptsDepositFee({fixedSats:100,bps:25},{fixedSats:100,bps:25}),true);
  assert.equal(acceptsDepositFee({fixedSats:101,bps:1},{fixedSats:100,bps:25}),false);
+ assert.equal(acceptsDepositFee({fixedSats:1,bps:26},{fixedSats:100,bps:25}),false);
  assert.equal(acceptsDepositFee(undefined,undefined),true);
  assert.equal(acceptsDepositFee({fixedSats:1,bps:0},undefined),false);
 });

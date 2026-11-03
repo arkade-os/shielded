@@ -301,10 +301,11 @@ export class EpochAccount {
   for (const note of chosen) { const part = note.amount < left ? note.amount : left; left -= part; legs.push(await this.spend({ asset, input: note, to: { recipient: payee, amount: part } }, self, randomField, group)); }
   return { kind: 'spend', spends: legs };
  }
- async depositAsset(asset: bigint, units: bigint, sats: bigint, self: RollupRecipient): Promise<[EpochBuiltSpend, EpochBuiltSpend]> {
+ /** `carrierTo` is the carrier's output 0, the pool's deposit fee: an asset leg cannot carry sats. */
+ async depositAsset(asset: bigint, units: bigint, sats: bigint, self: RollupRecipient, carrierTo?: SpendRequest['to']): Promise<[EpochBuiltSpend, EpochBuiltSpend]> {
   const dummies = [{ nk: randomField(), rho: randomField() }, { nk: randomField(), rho: randomField() }] as const;
   const group = { id: groupIdOf(this.hash, dummies.map(d => nullifierOf(this.hash, ROLLUP_DOMAIN, d.nk, d.rho, true))), size: 2 };
-  return [await this.spend({ asset, deposit: units, dummy: dummies[0] }, self, randomField, group), await this.spend({ deposit: sats, dummy: dummies[1] }, self, randomField, group)];
+  return [await this.spend({ asset, deposit: units, dummy: dummies[0] }, self, randomField, group), await this.spend({ deposit: sats, dummy: dummies[1], ...(carrierTo ? { to: carrierTo } : {}) }, self, randomField, group)];
  }
  async withdrawAsset(asset: bigint, units: bigint, program: Uint8Array, self: RollupRecipient, inFlight: ReadonlySet<bigint> = new Set(), sats = CARRIER_SATS): Promise<[EpochBuiltSpend, EpochBuiltSpend]> {
   if (sats < CARRIER_SATS) throw new Error(`An asset payout carries at least ${CARRIER_SATS} sats.`);

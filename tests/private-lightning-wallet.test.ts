@@ -10,6 +10,7 @@ import {schnorr} from '@noble/curves/secp256k1.js';
 import {base64,hex} from '@scure/base';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
+import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {IndexedDbLightningRepository,InMemoryLightningRepository,type LightningRepository} from '../src/shielded/lightning-repository.ts';
 import {LightningSessionBusy,artifactWallet,createPrivateLightning,lightningOwner,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
 import {ShieldedWallet} from '../src/shielded/wallet.ts';
@@ -934,6 +935,23 @@ test('a receive quote whose net payout falls below the pool minimum is never acc
   accept:async()=>{accepts++;throw new Error('must not accept');}};};
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
  try{await assert.rejects(service.receive({via:'lightning',amount:330n}),/quoted individual Lightning payout is below.*330 sats/);assert.equal(accepts,0);assert.equal(f.funded.length,0);}finally{await service[Symbol.asyncDispose]();}
+});
+
+test('a receive the deposit fee would leave under the pool minimum is refused before its invoice, and such a payout shows below the minimum',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository();let quotes=0,take:bigint|undefined;
+ Object.assign(f.wallet,{depositFee:{fixedSats:100,bps:0,address:rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)})},isPoolPayout:(c:{txid:string})=>c.txid==='cd'.repeat(32)});
+ const clientFactory=(config:SwapClientConfig)=>{const client=f.clientFactory(config),quote=client.quote;return {...client,
+  quote:async(input:Parameters<SwapClient['quote']>[0])=>{quotes++;const quoted=await quote(input);return take===undefined?quoted:{...quoted,take:{...quoted.take,amount:take}};}};};
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await assert.rejects(service.receive({via:'lightning',amount:400n}),/needs at least 330 sats to enter the shielded pool, plus the pool's 100-sat deposit fee/);assert.equal(quotes,0);
+  take=400n;await assert.rejects(service.receive({via:'lightning',amount:1000n}),/quoted individual Lightning payout is below the shielded pool minimum of 330 sats after the pool's 100-sat deposit fee/);
+  take=undefined;await service.receive({via:'lightning',amount:1000n});
+  const contract=f.contracts.at(-1)!,[ab,cd]=['ab'.repeat(32),'cd'.repeat(32)];
+  contract.vtxos=([[ab,0,400],[ab,1,431],[cd,0,400]] as const).map(([txid,vout,value])=>({txid,vout,value,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
+  const outcomes=Object.fromEntries((await service.getActivityHistory()).map(row=>[(row.intent?.metadata as {outpoint:string}).outpoint,row.intent?.outcome]));
+  assert.deepEqual(outcomes,{[`${ab}:0`]:'below-minimum',[`${ab}:1`]:'received',[`${cd}:0`]:'received'},'an exit\'s payout the pool paid out owes no fee');
+ }finally{await service[Symbol.asyncDispose]();}
 });
 
 test('stored HTLC funding rejects altered amount, assets, extra selection and wrong destination',async()=>{

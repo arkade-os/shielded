@@ -1,10 +1,11 @@
 import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,isVtxoSpent,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
-import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote,type EpochSpendRequest} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {decodeClaimToken,encodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
+import {acceptsDepositFee,maxDepositFeeOf,parseDepositFeeSchedule,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {fullViewKeyOf,sentNoteOf,viewKeyOf} from '../../packages/protocol/src/rollup/disclosure.ts';
 import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {akOf,assetFieldOfId,destinationFieldOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
@@ -23,14 +24,14 @@ import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
 import {sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
-import {DUST,pickNote,poolApiOf,shieldPlan,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;fetcher?:typeof fetch;
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;
  /** Called once with the Arkade address, synchronously and before the pool sync; a throw aborts create. */
  onArkAddress?:(address:string)=>void};
 
@@ -56,7 +57,7 @@ export class NoteReservation {
  release(nullifiers:readonly bigint[]){for(const n of nullifiers)this.inFlight.delete(n);}
 }
 
-export interface LoadedAccount {account:EpochAccount;sent:Record<string,SentRecord>;listings:string[];links:LinkRecord[];resumed:boolean;error?:string;offline?:true}
+export interface LoadedAccount {account:EpochAccount;sent:Record<string,SentRecord>;listings:string[];links:LinkRecord[];resumed:boolean;feeAccepted?:DepositFeeSchedule;error?:string;offline?:true}
 export type LinkState='unclaimed'|'claimed'|'taken-back';
 export interface ClaimLink extends LinkRecord {token:string;state:LinkState}
 const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
@@ -65,7 +66,7 @@ const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(err
  * names no epoch length to open with. `links` receives the saved links before the pool check replays batches through the hooks.
  */
 export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>}):Promise<LoadedAccount>{
- const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot,offline=false):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,...(error?{error}:{}),...(offline?{offline:true as const}:{})});
+ const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot,offline=false):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,feeAccepted:parseDepositFeeSchedule(kept?.feeAccepted),...(error?{error}:{}),...(offline?{offline:true as const}:{})});
  const unsynced=(cause:unknown)=>{if(!o.epochLen)throw cause;return EpochAccount.owning(hash,keys,{epochLen:o.epochLen,bornAt:o.bornAt});};
  const unchecked=(cause:unknown)=>`Opened without the pool, so the saved notes are unchecked: ${reasonOf(cause)}`;
  const fresh=async(error?:string):Promise<LoadedAccount>=>{
@@ -108,8 +109,9 @@ export const shieldedSteps={
 } as const;
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
-export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number})=>
- shieldPlan(coins.filter(c=>!o.skip(c)&&!o.used.has(`${c.txid}:${c.vout}`)),o.listed,o.now,o.floorMs);
+const feePaused=(fee:DepositFeeSchedule)=>`Deposits are paused: this pool now charges a deposit fee of ${sats(fee.fixedSats)} sats or ${fee.bps} bps of the deposit, whichever is more, which is above what this wallet has accepted. Accept it with acceptDepositFee(), or pass maxDepositFee of at least {fixedSats:${fee.fixedSats},bps:${fee.bps}}.`;
+export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number;fee?:Parameters<typeof shieldPlan>[4]})=>
+ shieldPlan(coins.filter(c=>!o.skip(c)&&!o.used.has(`${c.txid}:${c.vout}`)),o.listed,o.now,o.floorMs,o.fee);
 export const needsRenewal=(coins:readonly ArkCoin[],now:number,floorMs:number)=>coins.some(c=>c.expiresAt!==undefined&&c.expiresAt-now<=floorMs);
 export const mergeAssetFields=(reserves:Record<string,string>|undefined)=>[BTC_ASSET,...Object.keys(reserves??{}).map(assetFieldOfId)];
 export const programOf=(address:string)=>ArkAddress.decode(address).pkScript.subarray(2);
@@ -163,6 +165,8 @@ export class ShieldedWallet extends Wallet {
  private stopped=false;
  private offline=false;
  private bornAt=0;
+ private maxDepositFee?:DepositFeeSchedule;
+ private feeAccepted?:DepositFeeSchedule;
  private selfSending=false;
  private nativeOperations=0;
  private statusAt=Date.now();
@@ -170,12 +174,14 @@ export class ShieldedWallet extends Wallet {
  private headExpiry?:number|null;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
+  const maxDepositFee=parseDepositFeeSchedule(config.maxDepositFee);
+  if(config.maxDepositFee!==undefined&&!maxDepositFee)throw new Error('maxDepositFee must be {fixedSats,bps}: whole, non-negative numbers, with bps at most 10000.');
   const wallet=await super.create(config) as ShieldedWallet;
   try{
    config.onArkAddress?.(await wallet.getAddress());
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
-   wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;wallet.master=parseMasterSecret(config.secret);wallet.bornAt=config.bornAt??0;
+   wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;wallet.master=parseMasterSecret(config.secret);wallet.bornAt=config.bornAt??0;wallet.maxDepositFee=maxDepositFee;
    await wallet.load();
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())));
@@ -188,6 +194,24 @@ export class ShieldedWallet extends Wallet {
 
  get inFlight():ReadonlySet<bigint>{return this.notes.inFlight;}
  get poolAddress():string{return this.ownPoolAddress;}
+ get depositFee():DepositFee|undefined{return depositFeeFor(this.pool.status);}
+ get acceptedDepositFee():DepositFeeSchedule|undefined{return maxDepositFeeOf(this.maxDepositFee,this.feeAccepted);}
+ get depositFeePaused():DepositFee|undefined{const fee=this.depositFee;return acceptsDepositFee(fee,this.acceptedDepositFee)?undefined:fee;}
+ /** Raises the accepted schedule to the advertised one and saves it for this pool, then resumes auto-shield. */
+ async acceptDepositFee():Promise<void>{
+  this.assertOpen();this.feeAccepted=maxDepositFeeOf(this.feeAccepted,this.depositFee);
+  await this.persist();this.changed();void this.autoShield().catch(()=>{});
+ }
+ /** What `plan`'s deposit pays, for a plan planFor returned: its exemption is exact only for the planner's output. */
+ depositFeeOnPlan(plan:ShieldPlan):bigint{return planFeeOf(plan,this.depositFee,c=>this.isPoolPayout(c));}
+ private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw new Error(feePaused(paused));}
+ /** The fee note for depositing exactly `plan`, read as it is built, since the schedule moves; `charged` once the pool has refused the exemption. */
+ private depositFeeTo(plan:ShieldPlan,charged=false):EpochSpendRequest['to']{
+  this.assertFeeAccepted();
+  const fee=this.depositFee,exempt=charged?undefined:(c:ArkCoin)=>this.isPoolPayout(c),owed=planFeeOf(plan,fee,exempt);
+  if(!shieldableWithFee(plan,fee,exempt))throw new Error(`This deposit would keep less than the ${DUST}-sat minimum after its ${owed}-sat deposit fee, so it stays outside the pool.`);
+  return owed>0n?{recipient:parseRollupAddress(fee!.address),amount:owed}:undefined;
+ }
  router():PaymentRouter{
   const feeInfo=walletFeeSource(this);
   const router=new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
@@ -241,7 +265,9 @@ export class ShieldedWallet extends Wallet {
    for(const [key,record] of Object.entries(stored?.sent??{}))if(record.onchainTxid&&!this.sent[key]!.onchainTxid)this.sent[key]=record;
    // Spends are final, so what either tab has seen spent or taken back holds for both.
    for(const link of stored?.links??[]){const mine=this.linkRecords.get(link.key);if(!mine){this.linkRecords.set(link.key,link);continue;}mine.open=mine.open.filter(nf=>link.open.includes(nf));if(link.tookBack)mine.tookBack=true;}
-   await this.repository.saveAccount(token,{v:2,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()]});
+   // Merged upward, so a stale tab never lowers what another accepted.
+   this.feeAccepted=maxDepositFeeOf(this.feeAccepted,parseDepositFeeSchedule(stored?.feeAccepted));
+   await this.repository.saveAccount(token,{v:2,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()],...(this.feeAccepted?{feeAccepted:this.feeAccepted}:{})});
   }catch(error){this.repositoryError??=reasonOf(error);}
  }
  sentOf(nullifier:bigint):SentRecord|undefined{return this.sent[String(nullifier)];}
@@ -253,7 +279,7 @@ export class ShieldedWallet extends Wallet {
   // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
   try{loaded=await loadAccount(this.hash,this.derived.keys,{repository:this.repository,token:this.token,epochLen:this.pool.status.pool?.epochLen??this.account?.epochLen,bornAt:this.bornAt,api:this.api,onBatch:(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),watched:()=>this.openLinkNullifiers(),links:this.linkRecords});}
   catch(error){this.repositoryError=reasonOf(error);throw error;}
-  this.account=loaded.account;this.sent={...loaded.sent,...this.sent};this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;
+  this.account=loaded.account;this.sent={...loaded.sent,...this.sent};this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;this.feeAccepted=maxDepositFeeOf(this.feeAccepted,loaded.feeAccepted);
   for(const txid of loaded.listings)this.listings.add(txid);
   for(const link of loaded.links)this.linkRecords.set(link.key,link);
  }
@@ -445,12 +471,12 @@ export class ShieldedWallet extends Wallet {
   return one.arkTxId&&this.account.txids.has(one.arkTxId)?one.arkTxId:undefined;
  }
  /**
-  * A window-tag refusal or a lapsed deadline can never be submitted, so the pool decides it: a txid landed, false landed nothing, undefined cannot
+  * A window-tag or fee refusal, or a lapsed deadline, can never be submitted, so the pool decides it: a txid landed, false landed nothing, undefined cannot
   * tell and keeps the reservation. A deposit spends no note of ours, so only its coin answers; sync() is a silent no-op while the account is unchecked.
   */
  private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
-  if(this.offline||(!rejected(error,'window-tag')&&!rejected(error,'deadline-expired')))throw error;
-  // A POST sent just before the deadline can still be admitting, untracked by /spends; ten minutes on, a 404 is final. window-tag needs no wait: a queued copy answers double-spend first.
+  if(this.offline||(!rejected(error,'window-tag')&&!rejected(error,'fee-missing')&&!rejected(error,'deadline-expired')))throw error;
+  // A POST sent just before the deadline can still be admitting, untracked by /spends; ten minutes on, a 404 is final. window-tag and fee-missing need no wait: a queued copy answers double-spend first.
   if(rejected(error,'deadline-expired')&&Date.now()/1000<record.expiresAt!+600)throw error;
   try{await this.sync();}catch{throw error;}
   const landed=record.coin?await this.landedDeposit(record.coin):this.landedCopy(record);
@@ -496,27 +522,33 @@ export class ShieldedWallet extends Wallet {
   const key=hex.encode(await descriptorSigner.xOnlyPublicKey()),ops=Script.decode(hex.decode(coin.leaf));
   const signs=ops.some((op,i)=>op instanceof Uint8Array&&op.length===32&&hex.encode(op)===key&&(ops[i+1]==='CHECKSIG'||ops[i+1]==='CHECKSIGVERIFY'));
   if(hex.encode(tree.pkScript)!==input.script.toLowerCase()||!signs)throw new Error('The Lightning payout script does not match its child signer.');
+  // A saved attempt is resent whatever the fee is now, since only the pool's verdict frees its payout. After a dropped attempt the payout pays even if exempt, so a refused exemption cannot loop.
+  const prior=await store.list(String(this.self.owner),this.token),charged=prior.some(r=>r.reference===request.reference&&r.state==='dropped'),plan:ShieldPlan={kind:'btc',coins:[coin],amount:input.value};
+  if(!prior.some(r=>r.id===request.id))this.depositFeeTo(plan,charged);
   const handle=shieldedHandle({id:request.id,title:`Shielding ${sats(input.value)} Lightning sats`,steps:shieldedSteps.shield,railId:'shielded-lightning-deposit'},async step=>{
    step(0);
-   const record=await this.prepareLightning({id:request.id,reference:request.reference,kind:'shield',destination:input.script.toLowerCase(),amount:String(input.value),coin},store,async()=>({built:await this.account.spend({deposit:BigInt(input.value)},this.self),extra:{coin:{txid:coin.txid,vout:coin.vout,tapTree:coin.tapTree,leaf:coin.leaf}}}));
+   const record=await this.prepareLightning({id:request.id,reference:request.reference,kind:'shield',destination:input.script.toLowerCase(),amount:String(input.value),coin},store,async()=>{
+    const to=this.depositFeeTo(plan,charged);
+    return {built:await this.account.spend({deposit:BigInt(input.value),...(to?{to}:{})},this.self),extra:{coin:{txid:coin.txid,vout:coin.vout,tapTree:coin.tapTree,leaf:coin.leaf}}};
+   });
    return {txid:await this.runLightning(record,descriptorSigner,store,step,request.signal)};
   });
   return this.announce(handle);
  }
  /** `skipPayouts` is what auto-shield wants and the "Shield again" button does not: a payout is only shielded on request. */
  planFor(coins:readonly ArkCoin[],skipPayouts=true){
-  return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS});
+  return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS,fee:{schedule:this.depositFee,exempt:c=>this.isPoolPayout(c)}});
  }
  private deps():SubmitDeps{return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript};}
  /** Every held note of `assets` but `mine`, as an in-flight set: a rebuild can then choose only the notes its action already holds. */
  private others(mine:readonly bigint[],assets:readonly bigint[]){return new Set(assets.flatMap(asset=>this.account.notes(asset)).map(n=>n.nullifier).filter(nf=>!mine.includes(nf)));}
- private async submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs=30*60_000,rebuild?:()=>Promise<SubmitMember[]>){
+ private async submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs=30*60_000,rebuild?:(cause:unknown)=>Promise<SubmitMember[]>){
   const unresolved=new Set<string>();
   const api:PoolApi=async<T,>(path:string,body?:unknown)=>{
    const id=path==='/spends'?(body as {id:string}).id:undefined;
    if(id!==undefined){this.assertOpen();unresolved.add(id);}
-   // The pool refuses a stale anchor before admitting the spend, so it holds nothing.
-   const result=await this.api<T>(path,body).catch((error:unknown)=>{if(id!==undefined&&rejected(error,'stale-anchor'))unresolved.delete(id);throw error;});
+   // The pool refuses a stale anchor before admitting the spend, so it holds nothing; a fee refusal comes on a unit's last member and drops the whole unit.
+   const result=await this.api<T>(path,body).catch((error:unknown)=>{if(id!==undefined&&rejected(error,'stale-anchor'))unresolved.delete(id);if(id!==undefined&&rejected(error,'fee-missing'))unresolved.clear();throw error;});
    if(body===undefined&&path.startsWith('/spends/')&&(result as SpendStatus).status==='dropped')unresolved.delete(path.slice('/spends/'.length));
    return result;
   };
@@ -524,8 +556,11 @@ export class ShieldedWallet extends Wallet {
    for(;;)try{return await this.finish(await submitAll(members,{...this.deps(),api,step,first:1,deadlineMs}));}
    catch(error){
     // Nothing was admitted. Legs built across a sync hold two anchors, so all are rebuilt, once; re-signing one would loop.
-    if(!rebuild||unresolved.size||!rejected(error,'stale-anchor'))throw error;
-    const again=rebuild;rebuild=undefined;await this.sync();members=await again();
+    const fee=rejected(error,'fee-missing');
+    if(!rebuild||unresolved.size||!fee&&!rejected(error,'stale-anchor'))throw error;
+    const again=rebuild;rebuild=undefined;
+    if(fee)this.pool={...this.pool,status:await this.api('/status')};
+    await this.sync();members=await again(error);
    }
   }catch(error){throw new ReservationFailure(error,unresolved.size===0);}
  }
@@ -566,7 +601,7 @@ export class ShieldedWallet extends Wallet {
  }
 
  async shield(coins?:readonly ArkCoin[]):Promise<ShieldedPaymentHandle|undefined>{
-  this.assertOpen();
+  this.assertOpen();this.assertFeeAccepted();
   if(this.lightningStore){await this.restoreLightningSpends();this.assertOpen();}
   if(this.selfSending||this.nativeOperations)return undefined;
   const available=coins??await this.coins();
@@ -581,7 +616,7 @@ export class ShieldedWallet extends Wallet {
    step(0);
    if(plan.kind==='asset'){
     const coin=await this.depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units},plan.coin.vout);
-    const legs=async()=>{const [assetSlot,btcSlot]=await this.account.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),this.self);return [{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}];};
+    const legs=async(cause?:unknown)=>{const [assetSlot,btcSlot]=await this.account.depositAsset(assetFieldOfId(plan.assetId),plan.units,BigInt(coin.value),this.self,this.depositFeeTo(plan,rejected(cause,'fee-missing')));return [{built:assetSlot,extra:{coin,asset:plan.assetId},coin},{built:btcSlot}];};
     return this.submit(await legs(),step,undefined,legs);
    }
    const single=plan.coins.length===1?plan.coins[0]!:undefined;
@@ -601,7 +636,11 @@ export class ShieldedWallet extends Wallet {
    }
    const coin=await this.depositCoin(txid!,plan.amount,undefined,single?.vout);
    const outpoint=`${coin.txid}:${coin.vout}`;this.used.add(outpoint);taken.push(outpoint);
-   const deposit=async()=>[{built:await this.account.spend({deposit:BigInt(plan.amount)},this.self),extra:{coin},coin}];
+   // Charged on the coin deposited: a self-sent merge is a plain send, so it pays even when its inputs were payouts.
+   const deposit=async(cause?:unknown)=>{
+    const to=this.depositFeeTo({kind:'btc',coins:[coin],amount:plan.amount},rejected(cause,'fee-missing'));
+    return [{built:await this.account.spend({deposit:BigInt(plan.amount),...(to?{to}:{})},this.self),extra:{coin},coin}];
+   };
    return this.submit(await deposit(),step,undefined,deposit);
   });
   void handle.settled().catch(error=>{
@@ -613,14 +652,15 @@ export class ShieldedWallet extends Wallet {
  private async autoShield(){
   if(this.stopped||this.offline||Date.now()<this.retryAt)return;
   await this.sync();
-  if(this.stopped||Date.now()<this.retryAt)return;
+  if(this.stopped||Date.now()<this.retryAt||this.depositFeePaused)return;
   await this.shield();
  }
  mergeableAssets(){return mergeAssetFields(this.pool.status.pool?.reserves);}
- async merge(asset?:bigint):Promise<ShieldedPaymentHandle|undefined>{
+ /** `above` is how many notes of an asset may stay unmerged; a keeper passes 1 to merge down to a single note. */
+ async merge(asset?:bigint,above?:number):Promise<ShieldedPaymentHandle|undefined>{
   if(this.stopped||Date.now()<this.mergeRetryAt)return undefined;
   for(const field of asset===undefined?this.mergeableAssets():[asset]){
-   const plan=await this.notes.pick(()=>this.account.consolidate(this.self,field,this.notes.inFlight),chosen=>chosen?chosen.inputs.map(n=>n.nullifier):[]);
+   const plan=await this.notes.pick(()=>this.account.consolidate(this.self,field,this.notes.inFlight,above),chosen=>chosen?chosen.inputs.map(n=>n.nullifier):[]);
    if(!plan)continue;
    const nullifiers=plan.inputs.map(n=>n.nullifier);
    const handle=shieldedHandle({title:'Merging two notes',steps:shieldedSteps.merge,railId:'shielded-merge'},step=>this.submit([{built:plan.built}],step,MERGE_WAIT_MS));
