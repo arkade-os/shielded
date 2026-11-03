@@ -25,6 +25,7 @@ test('a fee schedule is read only when both numbers are whole, non-negative and 
  const fee={fixedSats:100,bps:25,address};
  assert.deepEqual(parseDepositFee({...fee,viewKey:'never advertised'}),fee);
  assert.ok(parseDepositFee({...fee,fixedSats:0,bps:10_000}));
+ assert.ok(parseDepositFee({...fee,bps:0}),'a flat fee is a fee');
  for(const bad of [{bps:10_001},{bps:-1},{bps:1.5},{bps:'25'},{fixedSats:-1},{fixedSats:2**53},{fixedSats:0,bps:0},{address:'shrol1xyz'},{address:7}])
   assert.equal(parseDepositFee({...fee,...bad}),undefined,JSON.stringify(bad));
  for(const junk of [undefined,null,'fee'])assert.equal(parseDepositFee(junk),undefined);
