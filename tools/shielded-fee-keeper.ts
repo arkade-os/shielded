@@ -17,6 +17,12 @@ export const feeKeeperTick=async(wallet:FeeKeeperWallet,assets:bigint[],onMerged
  return {merged,notes:assets.reduce((sum,asset)=>sum+wallet.shieldedNotes(asset).length,0)};
 };
 
+/** A wrong phrase otherwise reads as "holds 0 sats" for good, while the real fee notes miss their renewal. */
+export const feeAddressProblem=(wallet:{depositFee?:{address:string};shieldedAddress():string}):string|undefined=>{
+ const fee=wallet.depositFee,own=wallet.shieldedAddress();
+ return fee&&fee.address!==own?`The pool sends its deposit fee to ${fee.address}, not to this wallet ${own}; check SHIELDED_FEE_WALLET_PHRASE.`:undefined;
+};
+
 /** The two values the pool is configured with; the rest of shieldedKeysOf is spend and full-viewing material that stays here. */
 export const feeWalletKeysOf=(hash:Hash,phrase:string)=>{const {address,viewKey}=shieldedKeysOf(hash,phrase);return {address,viewKey};};
 
@@ -33,12 +39,14 @@ async function main(){
  const ms=Number(every||60_000);
  if(!Number.isSafeInteger(ms)||ms<1||ms>=2**31)throw new Error('SHIELDED_FEE_KEEPER_INTERVAL_MS wants a whole number of milliseconds from 1 to 2147483647; a longer timer would fire at once.');
  log(`syncing with ${new URL(pool).origin}`);
- const wallet=await createShieldedWallet({pool,secret});
+ const wallet=await createShieldedWallet({pool,secret}),refused=feeAddressProblem(wallet);
+ if(refused){console.error(refused);await wallet.dispose().catch(()=>{});process.exit(1);}
  log(`fee wallet ${wallet.shieldedAddress()} holds ${wallet.shieldedBalance()} sats; merging every ${ms} ms`);
  // snarkjs worker threads outlive the wallet, so the process is ended rather than waited on.
  const stop=()=>void wallet.dispose().catch(()=>{}).then(()=>process.exit(0));
  process.once('SIGTERM',stop).once('SIGINT',stop);
  for(;;){
+  const problem=feeAddressProblem(wallet);if(problem)warn(problem);
   await feeKeeperTick(wallet,wallet.mergeableAssets(),merged=>log(`merge ${merged} landed, batch ${wallet.batchCount()}`)).then(({merged,notes})=>log(`merged ${merged}, notes remaining ${notes}, batch ${wallet.batchCount()}`),error=>warn('pass failed:',reasonOf(error)));
   await sleep(ms);
  }

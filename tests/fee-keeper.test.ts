@@ -11,7 +11,7 @@ import {parseRollupAddress} from '../packages/protocol/src/rollup/wallet.ts';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {rollupDepositFeeFromEnv} from '../src/rollup/service.ts';
 import {shieldedKeysOf} from '../src/shielded/wallet.ts';
-import {feeKeeperTick,feeWalletKeysOf,type FeeKeeperWallet} from '../tools/shielded-fee-keeper.ts';
+import {feeAddressProblem,feeKeeperTick,feeWalletKeysOf,type FeeKeeperWallet} from '../tools/shielded-fee-keeper.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v))),phrase=recoveryPhraseOf('07'.repeat(32));
 const DEAD='http://127.0.0.1:1';
@@ -78,6 +78,14 @@ test('each merge is reported as it lands, counted within the pass, and a merge t
  landed.length=0;
  await feeKeeperTick(stubWallet({0:3,7:3},{0:'settle'}).wallet,[0n,7n],n=>landed.push(n));
  assert.deepEqual(landed,[1,2],'the failed merge of asset 0 is skipped, and asset 7 lands two');
+});
+
+test('a pool that sends its fee to another wallet is a problem, and a pool with no fee or this wallet\'s is not',()=>{
+ const own='shrol2-own',other='shrol2-other';
+ assert.equal(feeAddressProblem({shieldedAddress:()=>own}),undefined,'no fee is advertised, so there is nothing to check');
+ assert.equal(feeAddressProblem({depositFee:{address:own},shieldedAddress:()=>own}),undefined);
+ const problem=feeAddressProblem({depositFee:{address:other},shieldedAddress:()=>own});
+ assert.ok(problem?.includes(own)&&problem.includes(other),problem);
 });
 
 test('the derived address and view key are the pool\'s fee settings: they parse and name one wallet',()=>{
