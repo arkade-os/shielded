@@ -160,6 +160,10 @@ test('an epoch mirror resumes where it stopped instead of re-fetching every batc
  const mirrored=JSON.parse(readFileSync(join(mirror,'pool.json'),'utf8')),{network}=mirrored,leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(mirror,'spec.json'));
  assert.deepEqual([Object.keys(mirrored).sort(),mirrored.epochLen],[['epochLen','network','operator','script','token'],64]);
  assert.equal(hex.encode(rollupEpochPoolTree(hex.decode(network.serverKey),hex.decode(network.emulatorKey),leaves,network.exitDelay).tree.pkScript),mirrored.script,'the mirrored spec and keys rebuild the pool script');
+ const lean=scratch('rollup-epoch-mirror-lean-'),proving:string[]=[],{keyFile}=service;
+ service.keyFile=name=>{proving.push(name);return keyFile(name);};
+ await run(process.execPath,['--import','tsx','tools/rollup-fallback.ts','mirror','--no-keys',base,lean]);
+ assert.deepEqual([proving,readdirSync(join(lean,'keys')),readdirSync(join(lean,'nullifiers')).sort(),cachedBatchNumbers(lean).length],[[],[],['epoch-0.nf','epoch-1.nf'],130],'--no-keys asks for no proving file, the manifest included, and still mirrors the records and the checked archives');
 });
 
 test('a mirror fetches again only the placeholders its own chain walk wrote, never a chain-only record the pool served',t=>{

@@ -1,5 +1,6 @@
 // The liveness fallback (spec section 4): the pool's batch leaf checks proofs, not who submits, so anyone can move it.
 //   mirror  <pool-url> <dir>            save the pool's parameters, proving keys, batch records and checked nullifier archives while the operator is up
+//   check   <dir>                       check the mirrored records against the chain, through the commitment their last transaction carries
 //   withdraw <dir> <sats> <tark1…>       prove and submit a batch paying out from the wallet in SHIELDED_PHRASE
 //   recover <dir> <origin>              prove and submit a width-1 batch recovering the wallet's largest BTC note of that epoch
 //   publish <dir> <pool-url> <batch>     hand a batch this tool landed to the operator, so it can follow it
@@ -28,11 +29,11 @@ import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
 import {createRollupProver} from '../src/rollup/prover.ts';
 import {rollupKeyPath,rollupSpecOf} from '../src/rollup/service.ts';
 import {createRollupTransport} from '../src/rollup/transport.ts';
-import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,epochMirrorStart,replayEpochMirror} from './rollup-cache.ts';
+import {cacheBatch,cacheEpochArchive,cachedBatchNumbers as batchesIn,checkEpochMirror,epochMirrorStart,replayEpochMirror} from './rollup-cache.ts';
 
 interface Pool {token:string;operator:string;script:string;network:StockNetworkInfo;epochLen?:number}
 const CLASSIC='This tool no longer handles a classic (genesis-3) pool or mirror; check out commit a6aa085, a build that still handles classic pools, and run the fallback from there.';
-const {positionals:[command,...args],values:flags}=parseArgs({allowPositionals:true,options:{'max-batches':{type:'string'}}});
+const {positionals:[command,...args],values:flags}=parseArgs({allowPositionals:true,options:{'max-batches':{type:'string'},'no-keys':{type:'boolean'}}});
 const maxBatches=flags['max-batches']===undefined?undefined:Number(flags['max-batches']);
 if(maxBatches!==undefined&&(!Number.isSafeInteger(maxBatches)||maxBatches<1))throw new Error('--max-batches wants a positive whole number of batches.');
 const sha=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
@@ -49,8 +50,8 @@ async function mirror(url:string,dir:string){
  mkdirSync(join(dir,'keys'),{recursive:true});mkdirSync(join(dir,'batches'),{recursive:true});
  writeFileSync(join(dir,'pool.json'),JSON.stringify({token:status.pool.token,operator:status.pool.operator,script:status.pool.script,network:status.network,epochLen} satisfies Pool));
  writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(status.pool.token,status.pool.operator)));
- const manifest=await (await get('/proving/manifest.json')).json() as {circuits:Record<string,{files:Record<string,string>}>};
- writeFileSync(join(dir,'keys','manifest.json'),JSON.stringify(manifest));
+ const manifest=flags['no-keys']?{circuits:{}}:await (await get('/proving/manifest.json')).json() as {circuits:Record<string,{files:Record<string,string>}>};
+ if(!flags['no-keys'])writeFileSync(join(dir,'keys','manifest.json'),JSON.stringify(manifest));
  // The manifest comes from the pool, so its file names are untrusted: only the service's allowlisted key files are written.
  for(const {files} of Object.values(manifest.circuits))for(const [name,digest] of Object.entries(files)){
   const path=name==='manifest.json'?undefined:rollupKeyPath(join(dir,'keys'),name);
@@ -73,14 +74,15 @@ async function mirror(url:string,dir:string){
   if(typeof epoch!=='number'||!Number.isSafeInteger(epoch)||epoch<0)throw new Error(`The pool lists an archive for epoch ${JSON.stringify(epoch)}.`);
   if(epoch>=closed){warn('skipped archive',epoch,'- the mirrored records have not closed that epoch');continue;}
   if(existsSync(epochNfArchivePath(folder,epoch)))continue;
-  const bytes=new Uint8Array(await (await get(`/archives/epoch-${epoch}.nf`)).arrayBuffer());
-  state??=replayEpochMirror(dir,hash,epochLen);
-  try{cacheEpochArchive(dir,state,epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');}
-  catch(error){refused++;warn('refused archive',`${epoch}:`,(error as Error).message);}
+  try{
+   const bytes=new Uint8Array(await (await get(`/archives/epoch-${epoch}.nf`)).arrayBuffer());
+   state??=replayEpochMirror(dir,hash,epochLen);
+   cacheEpochArchive(dir,state,epoch,bytes,hash);log('archive',epoch,bytes.length,'bytes');
+  }catch(error){refused++;warn('refused archive',`${epoch}:`,(error as Error).message);}
  }
  for(let epoch=0;epoch<closed;epoch++)if(!existsSync(epochNfArchivePath(folder,epoch)))warn('no archive file for closed epoch',epoch);
  log('mirrored',batchesIn(dir).length,'batches into',dir);
- if(refused)throw new Error(`${refused} archive file(s) did not check against the mirrored records and were not written; mirror again.`);
+ if(refused)throw new Error(`${refused} archive file(s) could not be fetched or did not check against the mirrored records, and were not written; mirror again.`);
 }
 
 async function wallet(){
@@ -168,9 +170,19 @@ async function publish(dir:string,url:string,batch:number){
  log(r.status,await r.text());
 }
 
+async function check(dir:string){
+ const pool=epochPoolOf(dir),indexer=new RestIndexerProvider(pool.network.indexerUrl??pool.network.arkUrl);
+ if(!batchesIn(dir).length){log('the mirror holds no batch records yet; nothing to check');return;}
+ const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const txOf=async(txid:string)=>(await indexer.getVirtualTxs([txid])).txs.map(decodeStockIndexerTransaction).find(t=>t.id===txid);
+ const {batches,commitment}=await checkEpochMirror(dir,hash,pool.epochLen,txid=>txOf(txid).catch(()=>undefined).then(tx=>tx??txOf(txid)));
+ log('checked',batches,'mirrored batches against the chain: commitment',String(commitment));
+}
+
 if(command==='mirror')await mirror(args[0]!.replace(/\/+$/,''),args[1]!);
+else if(command==='check')await check(args[0]!);
 else if(command==='withdraw')await withdraw(args[0]!,BigInt(args[1]!),args[2]!);
 else if(command==='recover')await recover(args[0]!,Number(args[1]));
 else if(command==='publish')await publish(args[0]!,args[1]!.replace(/\/+$/,''),Number(args[2]));
-else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>; --max-batches=<n> caps the chain walk');
+else throw new Error('Usage: rollup-fallback.ts mirror <pool-url> <dir> | check <dir> | withdraw <dir> <sats> <tark1…> | recover <dir> <origin> (BTC notes) | publish <dir> <pool-url> <batch>; --max-batches=<n> caps the chain walk, --no-keys mirrors no proving key');
 await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();
