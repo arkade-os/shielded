@@ -1,4 +1,4 @@
-import {DUST,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
+import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import type {DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
@@ -70,6 +70,21 @@ export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
  const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
  return entry.kind==='shield'?btc(entry.amounts)-btc(entry.created):undefined;
 };
+/** Plain coins only the fee keeps out: asked without it, the planner would deposit them. */
+export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,now:number,floorMs:number){
+ const plan=shieldPlan(coins,new Set(),now,floorMs);
+ return plan?.kind==='btc'&&!shieldableWithFee(plan,fee)?`${grouped(plan.amount)} sats stay outside the pool: after the ${grouped(planFeeOf(plan,fee))}-sat deposit fee they would be below the ${DUST}-sat minimum.`:'';
+}
+const LIGHTNING_REST='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
+/** The deposit rule only grows with the amount, so bisection finds the least payout it lets in, exactly. */
+export function lightningMinimumLine(fee:DepositFeeSchedule|undefined){
+ if(!charges(fee))return `Payouts of at least ${DUST} sats ${LIGHTNING_REST}`;
+ const enters=(amount:number)=>shieldableWithFee({kind:'btc',coins:[],amount},fee);
+ if(!enters(Number.MAX_SAFE_INTEGER))return `Payouts stay outside the pool: the deposit fee would leave each one below the ${DUST}-sat minimum.`;
+ let low=DUST,high=Number.MAX_SAFE_INTEGER;
+ while(low<high){const mid=low+Math.floor((high-low)/2);if(enters(mid))high=mid;else low=mid+1;}
+ return `Payouts of at least ${grouped(low)} sats, the ${DUST}-sat minimum plus the deposit fee, ${LIGHTNING_REST}`;
+}
 
 /** Why a token cannot be a claim link, read before any network call; '' when it can be. */
 export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};

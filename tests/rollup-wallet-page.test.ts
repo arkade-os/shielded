@@ -5,7 +5,7 @@ import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shieldFeeOf,shortValue} from '../app/src/rollup-client.ts';
+import {arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceQr,isInvoice,lightningMinimumLine,listingBlocked,payTarget,privateReceiveView,routeCopy,sheetLine,shieldFeeOf,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -316,4 +316,26 @@ test('the claim card reads a link\'s token and holdings without the network',()=
  assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
  assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sats');
  assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
+});
+
+test('the keep-out line names the plain sats only the fee leaves under the minimum',()=>{
+ const now=1_000_000,floor=25*3600_000,at=(n:number,value:number,hours=100):ArkCoin=>({...coinOf(n,value),expiresAt:now+hours*3600_000}),out=(coins:ArkCoin[])=>depositFeeOutsideLine(coins,flat,now,floor);
+ assert.equal(out([at(1,400)]),'400 sats stay outside the pool: after the 100-sat deposit fee they would be below the 330-sat minimum.');
+ assert.equal(out([at(1,200),at(2,200)]),out([at(3,400)]),'the plain coins one deposit would take count together');
+ assert.match(depositFeeOutsideLine([at(1,659)],{fixedSats:0,bps:5_000},now,floor),/^659 sats .* after the 330-sat deposit fee/);
+ const quiet:[ArkCoin[],string][]=[[[at(1,430)],'the fee leaves the minimum'],[[at(1,329)],'under the minimum with no fee too'],[[at(1,400,1)],'expiring, which the renew line covers'],[[coinOf(1,400,[{assetId:'ee'.repeat(34),amount:9n}])],'an asset coin'],[[],'no coins']];
+ for(const [coins,why] of quiet)assert.equal(out(coins),'',why);
+ assert.equal(depositFeeOutsideLine([at(1,400)],undefined,now,floor),'','no fee, no line');
+});
+
+test('the Lightning minimum is the smallest payout that keeps 330 sats after its own fee',()=>{
+ const tail='move into the pool while this page is open; smaller payouts stay outside and are never combined automatically.';
+ assert.equal(lightningMinimumLine(undefined),`Payouts of at least 330 sats ${tail}`,'no fee: the sentence as before');
+ assert.equal(lightningMinimumLine(flat),`Payouts of at least 430 sats, the 330-sat minimum plus the deposit fee, ${tail}`);
+ const pinned:[typeof flat,number][]=[[flat,430],[{fixedSats:0,bps:303},341],[{fixedSats:0,bps:5_000},660],[{fixedSats:2500,bps:125},2830],[{fixedSats:1,bps:9_999},3_300_000]];
+ for(const [fee,least] of pinned){
+  assert.match(lightningMinimumLine(fee),new RegExp(`^Payouts of at least ${least.toLocaleString('en-US')} sats,`),JSON.stringify(fee));
+  assert.deepEqual([least-1,least].map(amount=>shieldableWithFee({kind:'btc',coins:[],amount},fee)),[false,true],`the wallet shields ${least} and not one sat less`);
+ }
+ assert.equal(lightningMinimumLine({fixedSats:0,bps:10_000}),'Payouts stay outside the pool: the deposit fee would leave each one below the 330-sat minimum.');
 });
