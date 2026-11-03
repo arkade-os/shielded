@@ -3,13 +3,14 @@ import {join} from 'node:path';
 import {Transaction,VtxoScript,type CSVMultisigTapscript} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_NULLIFIERS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type EpochBatchKind} from '../../packages/protocol/src/rollup/constants.ts';
+import {carrierFeeOf,depositFeeOf,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../../packages/protocol/src/rollup/epoch.ts';
 import {blockRootOf,chainOnly} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import {epochBatchInput} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
 import {recordSlotOf,type RollupEpochRecord,type RollupEpochRecordSlot} from '../../packages/protocol/src/rollup/epoch-record.ts';
-import {assetFieldOfId,destinationFieldOf,groupIdOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,noteOf,statementOf,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {RollupNullifiers} from '../../packages/protocol/src/rollup/nullifiers.ts';
-import {ctDigestOf,ROLLUP_RECORD_BYTES} from '../../packages/protocol/src/rollup/wallet.ts';
+import {ctDigestOf,openRollupNotes,ROLLUP_RECORD_BYTES,viewEcdh} from '../../packages/protocol/src/rollup/wallet.ts';
 import {openStockJournal,type StockReleasePin} from '../stock/journal.ts';
 import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../stock/transport.ts';
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,selectRollupBatch,type RollupSelection,type RollupSpend} from './batcher.ts';
@@ -52,6 +53,8 @@ export interface RollupEpochOperatorOptions {
  depositFloorMs?:number;
  /** The network's dust limit; arkd refuses a batch whose BTC payout is below it. */
  dustSats?:number;
+ /** Set only when the pool charges a deposit fee; the spend key never reaches the server. */
+ depositFee?:{schedule:DepositFeeSchedule;owner:bigint;viewSecret:Uint8Array};
  /** Told which admitted spends left without a batch, and why, so their owners can rebuild them. */
  onDrop?(ids:string[],reason:string):void;
  weightLimit?:number;
@@ -106,6 +109,7 @@ function checkUnit(unit:readonly RollupEpochSpend[]):void {
 
 export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const now=o.now??Date.now,verify=o.verify??verifyRollupProof,pool=rollupEpochPoolTree(o.serverKey,o.emulatorKey,o.leaves,o.exitDelay),serverKeyHex=hex.encode(o.serverKey);
+ const feeEcdh=o.depositFee&&await viewEcdh(o.depositFee.viewSecret);
  const bodies=join(o.directory,'batches');mkdirSync(bodies,{recursive:true});
  const kept=join(o.directory,'abandoned');mkdirSync(kept,{recursive:true});
  const bodyPath=(n:number)=>join(bodies,`${n}.json`);
@@ -232,6 +236,20 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  // selectRollupBatch reads only a slot's groupId and groupSize, which both slot shapes carry.
  const select=(list:RollupEpochSpend[],pad:(count:number)=>RollupEpochSpend[],maxCoins:number|undefined,waitMs:number,lastAt:number)=>
   selectRollupBatch(list as unknown as RollupSpend[],now(),pad as unknown as (count:number)=>RollupSpend[],maxCoins,waitMs,lastAt) as (Omit<RollupSelection,'spends'>&{spends:RollupEpochSpend[]})|undefined;
+ const poolPayout=(coin:RollupCoin)=>{try{readEpochBatchTx(Transaction.fromRaw(coin.sourceTx,{allowUnknownOutputs:true}),o.leaves);return true;}catch{return false;}};
+ /** Coins match deposit legs only in sum, so a unit is exempt only when every coin in it is this pool's payout. */
+ const checkDepositFee=async(unit:readonly RollupEpochSpend[])=>{
+  const {schedule,owner,viewSecret}=o.depositFee!,coins=unit.filter(s=>s.coin);
+  if(coins.length&&coins.every(s=>poolPayout(s.coin!)))return;
+  const assetUnit=unit.some(s=>s.publics[5]!==0n);
+  for(const s of unit){
+   const sats=s.publics[3];if(sats===0n||s.publics[5]!==0n)continue;
+   const owed=assetUnit?carrierFeeOf(schedule,sats):depositFeeOf(schedule,sats);if(owed===0n)continue;
+   const note=s.ciphertext?(await openRollupNotes(s.ciphertext,viewSecret,feeEcdh))[0]:undefined;
+   const paid=note&&note.asset===0n&&noteOf(o.hash,ROLLUP_DOMAIN,note.amount,0n,owner,note.rho)===s.slot.commitments[0]?note.amount:0n;
+   if(paid<owed)throw new RollupRejection('fee-missing',`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`);
+  }
+ };
 
  /** The only gate: a spend the batch, the builder or the network would reject must never reserve a nullifier. */
  const submit=async(spend:Omit<RollupEpochSpend,'receivedAt'>)=>{
@@ -286,7 +304,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
    proven.add(admitted);
    const unit=groupId===0n?[admitted]:pending.spend.filter(s=>s.slot.groupId===groupId);
    if(unit.length!==Math.max(groupSize,1))return;
-   checkUnit(unit);
+   // Guarded here rather than inside, so with the fee off admission awaits nothing new and interleaves as before.
+   checkUnit(unit);if(o.depositFee)await checkDepositFee(unit);
    if(groupId!==0n&&groupIdOf(o.hash,unit.map(s=>s.slot.nullifiers[0]!))!==groupId)throw new RollupRejection('group-invalid','The group id does not commit to its members.');
    for(const s of unit)checked.add(s);
   }catch(error){pending[kind]=pending[kind].filter(s=>s!==admitted);throw error;}

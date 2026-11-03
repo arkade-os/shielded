@@ -29,7 +29,7 @@ export const EPOCH_BINDING_VERSION = 4;
 export const EPOCH_SLOTS: Record<EpochBatchKind, number> = { spend: BATCH_SLOTS, join: BATCH_SLOTS, recover: 1 };
 export const EPOCH_NULLIFIERS: Record<EpochBatchKind, number> = { spend: 1, join: 2, recover: 1 };
 
-export type RejectionCode = 'slot-count' | 'slot-shape' | 'stale-root' | 'double-spend' | 'nullifier-range' | 'note-tree-full' | 'nullifier-tree-full' | 'group-invalid' | 'stale-anchor' | 'window-tag' | 'epoch-length' | 'recover-unarchived' | 'archive-full';
+export type RejectionCode = 'slot-count' | 'slot-shape' | 'stale-root' | 'double-spend' | 'nullifier-range' | 'note-tree-full' | 'nullifier-tree-full' | 'group-invalid' | 'stale-anchor' | 'window-tag' | 'epoch-length' | 'recover-unarchived' | 'archive-full' | 'fee-missing';
 export class RollupRejection extends Error {
  constructor(readonly code: RejectionCode, message: string) { super(message); }
 }

@@ -9,13 +9,15 @@ import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
+import {inputNullifierOf} from '../packages/protocol/src/rollup/client.ts';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,ROLLUP_DOMAIN,ROLLUP_FIELD,RollupRejection,type RejectionCode} from '../packages/protocol/src/rollup/constants.ts';
+import type {DepositFeeSchedule} from '../packages/protocol/src/rollup/deposit-fee.ts';
 import {anchorOf,EpochState,type EpochSlot} from '../packages/protocol/src/rollup/epoch.ts';
 import {chainOnly,EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {EPOCH_DERIVED_FIELDS,epochBatchInput,epochTransfer} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import type {RollupEpochRecord,RollupEpochRecordSlot} from '../packages/protocol/src/rollup/epoch-record.ts';
-import {assetFieldOfId,destinationFieldOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
-import {ROLLUP_RECORD_BYTES,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
+import {assetFieldOfId,destinationFieldOf,groupIdOf,noteOf,statementOf} from '../packages/protocol/src/rollup/notes.ts';
+import {ctDigestOf,openRollupNotes,ROLLUP_RECORD_BYTES,rollupRecipientOf,sealRollupNotes,type RollupNote,type RollupRecipient} from '../packages/protocol/src/rollup/wallet.ts';
 import {buildRollupBatchTx,rollupEpochPoolTree,rollupPublicItems,rollupWitness,ROLLUP_STATE_PACKET,type RollupCoin,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator,ROLLUP_QUICK_REFUSAL_MS,ROLLUP_RESEND_GRACE_MS,slotOf,type RollupEpochSpend,type RollupTransport} from '../src/rollup/epoch-operator.ts';
 import {headCommitment} from '../src/rollup/epoch-snapshot.ts';
@@ -71,7 +73,14 @@ async function world(epochLen:number){
  const userTree=new VtxoScript([userCollab,CSVMultisigTapscript.encode({timelock:{type:'seconds',value:2048n},pubkeys:[user]}).script]);
  const packet=Uint8Array.from([...le32(EpochState.genesis(hash,epochLen).commitment()),...le32(0n),...le32(0n)]);
  const parent=offlineNativeFixture([{script:pool.tree.pkScript,amount:100_330n},{script:userTree.pkScript,amount:1000n}],[tokenPacket,new UnknownPacket(ROLLUP_STATE_PACKET,packet)]);
- const coin=(vout:number):RollupCoin=>({txid:parent.id,vout,value:Number(parent.getOutput(vout).amount),sourceTx:parent.toBytes(),tapTree:userTree.encode(),leaf:userTree.findLeaf(hex.encode(userCollab))});
+ const coinOf=(tx:Transaction,vout:number,sourceTx=tx.toBytes(true,true)):RollupCoin=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTx,tapTree:userTree.encode(),leaf:userTree.findLeaf(hex.encode(userCollab))});
+ const coin=(vout:number)=>coinOf(parent,vout,parent.toBytes()),cash=(sats:bigint)=>coinOf(offlineNativeFixture([{script:userTree.pkScript,amount:sats}]),0);
+ const feeView=x25519.utils.randomSecretKey(),feeTo=rollupRecipientOf(hash,5n,6n,feeView),payer=rollupRecipientOf(hash,11n,13n,x25519.utils.randomSecretKey());
+ const fee=(schedule:DepositFeeSchedule={fixedSats:100,bps:0})=>({depositFee:{schedule,owner:feeTo.owner,viewSecret:feeView}});
+ const shield=async(s:EpochState,sats:bigint,o:{fee?:bigint;to?:RollupRecipient;dummy?:{nk:bigint;rho:bigint};group?:{id:bigint;size:number};coin?:RollupCoin}={})=>{
+  const built=await epochTransfer(hash,{rPrev:s.nextAnchorRoot(),rCur:{epoch:s.epoch,root:s.latestRoot()},sel:[],ask:0n,nk:0n,self:payer,group:o.group,request:{deposit:sats,dummy:o.dummy,to:o.fee===undefined?undefined:{recipient:o.to??feeTo,amount:o.fee}}});
+  return spendOf({slot:built.slot,publicSignals:built.witness.publicSignals},{ciphertext:built.ciphertext,coin:o.coin??cash(sats)});
+ };
  // Stub proofs cannot pass the covenant, so this network takes whatever it is sent; the real recover leaf has its own test.
  const transport:RollupTransport={
   submit:async request=>{landed.push(request);return {txid:Transaction.fromPSBT(base64.decode(request.arkTx)).id,checkpointTxids:request.checkpoints.map(c=>Transaction.fromPSBT(base64.decode(c)).id),signedArkTx:request.arkTx,signedCheckpointTxs:request.checkpoints,weights:{ark:0,checkpoints:[]},network:'mutinynet',finality:'operator-preconfirmed'};},
@@ -87,7 +96,7 @@ async function world(epochLen:number){
   pin:{version:1 as const,network:'local-stock' as const,descriptorProfileId:sha('rollup-epoch-test'),programsHash:sha(leaves.batchRecover),artifactsHash:sha('stub'),checkpointHash:sha(checkpoint.script),genesisTxid:parent.id,serverKey:hex.encode(server),emulatorKey:hex.encode(emulator)},
   genesis:{version:1 as const,head:{txid:parent.id,vout:0,value:100_330,sourceTxHex:hex.encode(parent.toBytes())},reserves:{},batches:0},
   clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},verify:async()=>true};
- return {dir,landed,coin,transport,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
+ return {dir,landed,coin,coinOf,cash,program:userTree.pkScript.subarray(2),feeTo,feeView,fee,shield,transport,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 type World=Awaited<ReturnType<typeof world>>;
 type Operator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
@@ -685,4 +694,86 @@ test('after a restart a batch left in flight is found landed, or re-sent at once
  clock+=ROLLUP_QUICK_REFUSAL_MS;assert.match(await blocked(op),/no known outcome/,'an unreachable network keeps the long grace');
  for(const reason of [/fetch failed/,/abandoned/]){clock+=ROLLUP_RESEND_GRACE_MS;assert.match(await blocked(op),reason);}
  assert.deepEqual(stateAt(op),headAt(op),'abandoning after a restart undoes nothing accepted');
+});
+
+const owes=(sats:bigint,owed:bigint,paid:bigint)=>(error:unknown)=>rejection('fee-missing')(error)&&(error as Error).message===`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`;
+const pairOf=()=>{const dummies=[dummyInput(),dummyInput()];return {dummies,group:{id:groupIdOf(hash,dummies.map(d=>inputNullifierOf(hash,ROLLUP_DOMAIN,d))),size:2}};};
+/** Lands a 1000-sat withdrawal to the depositor's own program and returns the coin it paid, as the service resolves it from the indexer. */
+const paidOut=async(w:World,op:Operator)=>{
+ await land(op,'spend',[spendOf(deposit(op.state,0n,{withdraw:1000n,destination:destinationFieldOf(w.program)}),{program:w.program})]);
+ return w.coinOf(landedTx(w,w.landed.length-1).tx,1);
+};
+const resealed=async(w:World,s:Spend,note:RollupNote):Promise<Spend>=>{
+ const ciphertext=await sealRollupNotes([w.feeTo,w.feeTo],[note,note]),slot={...s.slot,ctDigest:ctDigestOf(ciphertext)};
+ return {...s,slot,ciphertext,publics:[statementOf(hash,{domain:ROLLUP_DOMAIN,...slot,root:slot.anchor}),...s.publics.slice(1)] as unknown as Spend['publics']};
+};
+
+test('a deposit that pays the advertised fee to the pool\'s fee address is admitted',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee());
+ await land(op,'spend',[await w.shield(op.state,10_000n,{fee:100n})]);
+ const [slot]=recordAt(w,0).slots,[note]=await openRollupNotes(hex.decode(slot!.ciphertext!),w.feeView);
+ assert.equal(slot!.commitments[0],String(noteOf(hash,ROLLUP_DOMAIN,100n,0n,w.feeTo.owner,note!.rho)),'the fee wallet opens and owns output 0');
+ assert.equal(op.status().archive.head.value,110_330);
+});
+
+test('a deposit that carries no fee note is refused as fee-missing and reserves no nullifier',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee()),dummy=dummyInput();
+ const bare=await w.shield(op.state,10_000n,{dummy}),paid=await w.shield(op.state,10_000n,{dummy,fee:100n});
+ assert.deepEqual(paid.slot.nullifiers,bare.slot.nullifiers,'one note, proved twice');
+ await assert.rejects(op.submit(bare),owes(10_000n,100n,0n));
+ assert.equal(op.pending(),0);
+ await land(op,'spend',[paid]);
+});
+
+test('an underpaid fee note, and one sealed to another key, are both refused',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee({fixedSats:100,bps:50})),feeNote=async(s:Spend)=>(await openRollupNotes(s.ciphertext!,w.feeView))[0]!;
+ const fair=await w.shield(op.state,10_000n,{fee:100n}),cheap=await w.shield(op.state,10_000n,{fee:1n});
+ const refused:[string,Spend,bigint,bigint,bigint][]=[
+  ['one sat short',await w.shield(op.state,10_000n,{fee:99n}),10_000n,100n,99n],
+  ['the floor alone, where the bps share is higher',await w.shield(op.state,100_000n,{fee:100n}),100_000n,500n,100n],
+  ['sealed to another view key',await w.shield(op.state,10_000n,{fee:100n,to:{...w.feeTo,viewPublic:x25519.getPublicKey(x25519.utils.randomSecretKey())}}),10_000n,100n,0n],
+  ['owned by another key',await w.shield(op.state,10_000n,{fee:100n,to:rollupRecipientOf(hash,7n,6n,w.feeView)}),10_000n,100n,0n],
+  ['a record claiming more than its commitment',await resealed(w,cheap,{...await feeNote(cheap),amount:100n}),10_000n,100n,0n],
+  ['a record claiming an asset',await resealed(w,fair,{...await feeNote(fair),asset:1n}),10_000n,100n,0n],
+ ];
+ for(const [label,spend,sats,owed,paid] of refused)await assert.rejects(op.submit(spend),owes(sats,owed,paid),label);
+ assert.equal(op.pending(),0);
+ await land(op,'spend',[fair]);
+});
+
+test('a fee-less deposit of a coin this pool paid out is admitted',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee()),payout=await paidOut(w,op);
+ assert.equal(readEpochBatchTx(Transaction.fromRaw(payout.sourceTx,{allowUnknownOutputs:true}),leaves).kind,'spend','a batch read back from its indexer bytes is still this pool\'s');
+ await assert.rejects(op.submit(spendOf(deposit(op.state,1000n),{coin:w.coin(1)})),owes(1000n,100n,0n),'the same deposit of a coin the pool did not pay out');
+ await land(op,'spend',[spendOf(deposit(op.state,1000n),{coin:payout})]);
+});
+
+test('a payout exempts its unit only when every coin in the unit is one',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee()),payout=await paidOut(w,op),{dummies:[a,b],group}=pairOf();
+ await op.submit(spendOf(deposit(op.state,10_000n,{inputs:[a],groupId:group.id,groupSize:2}),{coin:payout}));
+ await assert.rejects(op.submit(await w.shield(op.state,1000n,{fee:100n,dummy:b,group,coin:w.cash(10_000n)})),owes(10_000n,100n,0n));
+});
+
+test('the fee check runs after the double-spend check, so a landed copy still answers double-spend',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee()),paid=await w.shield(op.state,10_000n,{fee:100n}),{ciphertext:_,...stripped}=paid;
+ await land(op,'spend',[paid]);
+ await assert.rejects(op.submit({...stripped,id:'stripped'}),rejection('double-spend'));
+});
+
+test('an asset deposit\'s carrier pays nothing at the free allowance and the fee above it',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee());
+ await op.relocate({head:op.status().archive.head,reserves:{[x]:{txid:'ee'.repeat(32),vout:0,value:330,sourceTxHex:'',amount:'0'}}});
+ const listed=(sats:bigint)=>{const {dummies:[a,b],group}=pairOf(),g={groupId:group.id,groupSize:2};
+  return [spendOf(deposit(op.state,5000n,{asset:assetFieldOfId(x),inputs:[a],...g}),{asset:x,coin:{...w.cash(sats),assetAmount:5000n}}),spendOf(deposit(op.state,sats,{inputs:[b],...g}))] as const;};
+ const [free,allowance]=listed(330n),[waiting,carrier]=listed(1000n);
+ for(const s of [free,allowance,waiting])await op.submit(s);
+ await assert.rejects(op.submit(carrier),owes(1000n,100n,0n));
+ await assert.rejects(op.submit(spendOf(deposit(op.state,330n),{coin:w.cash(330n)})),owes(330n,100n,0n),'a plain deposit of the allowance');
+ assert.deepEqual(op.pendingIds(),[free.id,allowance.id,waiting.id],'the refused carrier holds nothing; its asset leg waits out the group timeout');
+});
+
+test('a pool with no deposit fee configured admits a fee-less deposit unchanged',async t=>{
+ const w=await world(64),op=await w.open(t);
+ await land(op,'spend',[await w.shield(op.state,10_000n)]);
+ assert.equal(op.status().archive.head.value,110_330);
 });
