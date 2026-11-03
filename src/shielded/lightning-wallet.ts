@@ -70,7 +70,7 @@ export const exitReservation=(owner:string,script:string)=>`shielded-exit-${owne
 const terminal=new Set(['paid','claimed','refunded','lapsed','failed','cancelled','filled']);
 const artifactEnded=(artifact:LightningArtifact)=>artifact.state==='ended';
 const biggestNote=(wallet:ShieldedWallet)=>{try{return Number(wallet.account.spendableNotes(BTC_ASSET,wallet.inFlight).reduce((max,n)=>n.amount>max?n.amount:max,0n));}catch{return 0;}};
-/** The pool's deposit fee on a payout of `sats`; an exit's payout `coin`, which the pool paid out, owes none. */
+/** An exit's payout came from a pool batch, so it owes no fee. */
 const feeOn=(wallet:ShieldedWallet,sats:bigint,coin?:{txid:string})=>{const fee=wallet.depositFee;return fee&&!(coin&&wallet.isPoolPayout(coin))?depositFeeOf(fee,sats):0n;};
 export class LightningSessionBusy extends Error {constructor(){super('This Lightning payment is running in another tab. It continues there, and this tab takes it over if that tab closes.');}}
 export async function acquireLightningSession(name:string):Promise<()=>Promise<void>>{
@@ -164,7 +164,12 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   for(const coin of await companion.getVtxos({withRecoverable:false})){
    const payout=payouts.get(coin.script),outpoint=`${coin.txid}:${coin.vout}`;
    if(!payout||coin.assets?.length||exiting.has(coin.script)||shielding.has(outpoint)||await recovery.held(outpoint))continue;
-   if(coin.value<DUST){report(new Error(`This individual Lightning payout is below the pool minimum of ${DUST} sats and cannot be shielded alone.`));continue;}
+   const fee=feeOn(wallet,BigInt(coin.value),coin),below=BigInt(coin.value)-fee<BigInt(DUST);
+   // A saved attempt goes on regardless, since only the pool's verdict frees its payout. A new one waits out a pause unreported: the page's banner says why.
+   if((below||wallet.depositFeePaused)&&!(await journal.list(String(wallet.self.owner),pool)).some(r=>r.kind==='shield'&&r.reference===outpoint&&r.state==='prepared')){
+    if(below)report(new Error(`This individual Lightning payout is below the pool minimum of ${DUST} sats${fee?` after its ${fee}-sat deposit fee`:''} and cannot be shielded alone.`));
+    continue;
+   }
    const reserved=exitScripts.has(coin.script)?await acquireSession(exitReservation(owner,coin.script)).catch(()=>undefined):async()=>{};
    if(!reserved)continue;
    const controller=new AbortController();shieldingControllers.set(outpoint,controller);

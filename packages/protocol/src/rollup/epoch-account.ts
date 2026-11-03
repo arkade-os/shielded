@@ -258,7 +258,7 @@ export class EpochAccount {
  }
  async consolidate(self: RollupRecipient, asset = BTC_ASSET, inFlight: ReadonlySet<bigint> = new Set(), above = CONSOLIDATE_ABOVE): Promise<{ inputs: [EpochOwnedNote, EpochOwnedNote]; built: EpochBuiltSpend } | undefined> {
   const notes = this.smallestFirst(this.usable(asset, inFlight));
-  if (notes.length <= above) return undefined;
+  if (notes.length < 2 || notes.length <= above) return undefined;
   const inputs: [EpochOwnedNote, EpochOwnedNote] = [notes[0]!, notes[1]!];
   return { inputs, built: await this.join(inputs, self) };
  }

@@ -687,14 +687,23 @@ test('a stored or configured fee ceiling that is not a whole, in-range schedule 
  }
 });
 
-test('merge can be asked to consolidate down to a single note',async()=>{
- const wallet=await open();
+test('merge can be asked to consolidate down to a single note, and never past it',async()=>{
+ const wallet=await open(),lone=await open();
  try{
-  await fundPrivate(wallet,[{amount:400n},{amount:500n}]);
+  await fundPrivate(wallet,[{amount:400n},{amount:500n}]);await fundPrivate(lone,[{amount:400n}]);
   wallet.prover={prove:async()=>{throw new Error('not proving here');}};
   assert.equal(await wallet.merge(BTC_ASSET),undefined,'two notes are under the default threshold');
+  for(const above of [0,-1,Number.NaN])assert.equal(await lone.merge(BTC_ASSET,above),undefined,`one note has nothing to merge with (above ${above})`);
   const handle=await wallet.merge(BTC_ASSET,1);
   assert.equal(handle?.title,'Merging two notes');await assert.rejects(handle!.settled(),/not proving here/);
+ }finally{await wallet.dispose();await lone.dispose();}
+});
+
+test('accepting a lower schedule never lowers the one already accepted',async()=>{
+ const wallet=await open({depositFee:feeOf(500)});
+ try{
+  await wallet.acceptDepositFee(feeOf(500));await wallet.acceptDepositFee(feeOf(100));
+  assert.deepEqual([wallet.acceptedDepositFee,wallet.depositFeePaused],[{fixedSats:500,bps:0},undefined]);
  }finally{await wallet.dispose();}
 });
 

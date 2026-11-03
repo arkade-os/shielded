@@ -954,6 +954,22 @@ test('a receive the deposit fee would leave under the pool minimum is refused be
  }finally{await service[Symbol.asyncDispose]();}
 });
 
+test('the Lightning scan resends saved shields, but leaves a new payout waiting while paused, and outside when the fee would eat it',async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),errors:Error[]=[],fee={fixedSats:100,bps:0,address:rollupAddressOf({owner:1n,viewPublic:new Uint8Array(32).fill(7)})};
+ Object.assign(f.wallet,{depositFee:fee,depositFeePaused:fee,isPoolPayout:()=>false});
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
+ try{
+  await service.receive({via:'lightning',amount:1000n});
+  const contract=f.contracts[0]!,coins=([[0,1000],[1,400],[2,400]] as const).map(([vout,value])=>({txid:'ab'.repeat(32),vout,value,script:contract.script,createdAt:new Date(1000+vout)}));
+  await journal.create(shieldingRecord('saved',coins[2]));
+  f.base.getVtxos=async()=>coins as never;
+  for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:contract.script,vtxos:coins});
+  await flushTasks();
+  assert.deepEqual([...new Set(f.shielded.map(args=>(args[3] as {id:string}).id))],['saved'],'only the saved attempt is sent, though paused and under the floor');
+  assert.deepEqual(errors.map(error=>error.message),['This individual Lightning payout is below the pool minimum of 330 sats after its 100-sat deposit fee and cannot be shielded alone.'],'no pause message, only the payout the fee would eat');
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
 test('stored HTLC funding rejects altered amount, assets, extra selection and wrong destination',async()=>{
  for(const override of [{amount:1002},{assets:[]},{selectedVtxos:[]},{address:new ArkAddress(server,new Uint8Array(32).fill(9),'tark').encode()}]){
   const f=serviceFixture(),journal=new InMemoryLightningRepository();f.overrideSend(override);

@@ -26,7 +26,7 @@ const secret=crypto.getRandomValues(new Uint8Array(32)).reduce((hex,b)=>hex+b.to
 const wallet=await createShieldedWallet({pool:'https://shielded.mutinynet.arkade.sh',secret});
 
 wallet.shieldedAddress();   // shrol1… — share it to receive privately
-await wallet.getAddress();  // tark1… — Arkade funds sent here move into the pool while the wallet runs
+await wallet.getAddress();  // tark1… — Arkade funds sent here move into the pool while the wallet runs, once any deposit fee is accepted (see Deposit fee)
 wallet.shieldedBalance();   // bigint, in sats
 
 const payment=await wallet.pay('shrol1…',1_000n);

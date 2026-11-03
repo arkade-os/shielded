@@ -535,16 +535,18 @@ test('a Lightning payout the fee would leave under the minimum is refused before
  }finally{await wallet.dispose();}
 });
 
-test('a Lightning exit payout the pool paid out shields fee-free, and pays once the pool refuses that',async()=>{
+test('a Lightning exit payout the pool paid out shields fee-free, and pays only after the pool refuses it for the fee',async()=>{
  const store=new Store(),{wallet,pool}=await funded(store),{child,coin,reference}=await payout(),posted:EpochSpendBody[]=[];
  try{
   sees(wallet,coin,()=>({isSpent:false,spentBy:'',isSwept:false,isUnrolled:false}));
   await chargeFee(wallet);wallet.account.txids.add(coin.txid);
-  wallet.api=refusedApi(pool,refusal('fee-missing',FEE_REFUSAL),body=>posted.push(body as EpochSpendBody));
-  await assert.rejects((await wallet.shieldLightning(coin,child,store,{id:'exit-1',reference})).settled(),/deposit fee/);
+  for(const [id,code,message] of [['exit-1','window-tag',WINDOW_TAG],['exit-2','fee-missing',FEE_REFUSAL]] as const){
+   wallet.api=refusedApi(pool,refusal(code,message),body=>posted.push(body as EpochSpendBody));
+   await assert.rejects((await wallet.shieldLightning(coin,child,store,{id,reference})).settled(),code==='window-tag'?/window leaf/:/deposit fee/);
+  }
   wallet.api=includedApi(body=>posted.push(body as EpochSpendBody));
-  await (await wallet.shieldLightning(coin,child,store,{id:'exit-2',reference})).settled();
-  assert.deepEqual(await Promise.all(posted.map(feePaid)),[undefined,100n]);
+  await (await wallet.shieldLightning(coin,child,store,{id:'exit-3',reference})).settled();
+  assert.deepEqual(await Promise.all(posted.map(feePaid)),[undefined,undefined,100n],'a window-tag drop leaves it exempt, and only the fee refusal makes the next attempt pay');
  }finally{await wallet.dispose();}
 });
 

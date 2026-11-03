@@ -116,12 +116,11 @@ export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Pr
 export interface ArkCoin {txid:string;vout:number;value:number;expiresAt?:number;assets?:{assetId:string;amount:bigint}[]}
 export type ShieldPlan={kind:'btc';coins:ArkCoin[];amount:number}|{kind:'asset';coin:ArkCoin;assetId:string;units:bigint};
 export const depositFeeFor=(status:RollupPoolStatus|undefined)=>parseDepositFee(status?.pool?.depositFee);
-/** What a plan's deposit pays: nothing when every coin in it is exempt (a pool payout), else the schedule's fee on the amount, or on an asset coin's carrier. */
+/** Exact only for a plan shieldPlan returned: several payouts unreduced read 0, though the coin merging them would pay. */
 export const planFeeOf=(plan:ShieldPlan,fee:DepositFeeSchedule|undefined,exempt?:(coin:ArkCoin)=>boolean)=>{
  if(exempt&&(plan.kind==='btc'?plan.coins:[plan.coin]).every(exempt))return 0n;
  return plan.kind==='btc'?depositFeeOf(fee,BigInt(plan.amount)):carrierFeeOf(fee,BigInt(plan.coin.value));
 };
-/** Whether a deposit still lands as a coin worth having once the fee is paid: a BTC plan keeps the dust minimum, and an asset carrier is either free or keeps it. */
 export const shieldableWithFee=(plan:ShieldPlan,fee:DepositFeeSchedule|undefined,exempt?:(coin:ArkCoin)=>boolean)=>{
  const owed=planFeeOf(plan,fee,exempt);
  if(plan.kind==='btc')return BigInt(plan.amount)-owed>=BigInt(DUST);

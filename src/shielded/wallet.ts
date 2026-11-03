@@ -202,7 +202,6 @@ export class ShieldedWallet extends Wallet {
   this.assertOpen();this.feeAccepted=maxDepositFeeOf(this.feeAccepted,validSchedule(shown,'The accepted schedule'));this.retryAt=0;
   await this.persist();this.changed();void this.autoShield().catch(()=>{});
  }
- /** What `plan`'s deposit pays, for a plan planFor returned: its exemption is exact only for the planner's output. */
  depositFeeOnPlan(plan:ShieldPlan):bigint{return planFeeOf(plan,this.depositFee,c=>this.isPoolPayout(c));}
  private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw new Error(feePaused(paused));}
  /** The fee note for depositing exactly `plan`, read as it is built, since the schedule moves; `charged` once the pool has refused the exemption. */
@@ -265,7 +264,6 @@ export class ShieldedWallet extends Wallet {
    for(const [key,record] of Object.entries(stored?.sent??{}))if(record.onchainTxid&&!this.sent[key]!.onchainTxid)this.sent[key]=record;
    // Spends are final, so what either tab has seen spent or taken back holds for both.
    for(const link of stored?.links??[]){const mine=this.linkRecords.get(link.key);if(!mine){this.linkRecords.set(link.key,link);continue;}mine.open=mine.open.filter(nf=>link.open.includes(nf));if(link.tookBack)mine.tookBack=true;}
-   // Merged upward, so a stale tab never lowers what another accepted.
    this.feeAccepted=maxDepositFeeOf(this.feeAccepted,parseDepositFeeSchedule(stored?.feeAccepted));
    await this.repository.saveAccount(token,{v:2,token,account,sent:this.sent,listings:[...this.listings],links:[...this.linkRecords.values()],...(this.feeAccepted?{feeAccepted:this.feeAccepted}:{})});
   }catch(error){this.repositoryError??=reasonOf(error);}
@@ -475,15 +473,16 @@ export class ShieldedWallet extends Wallet {
   * tell and keeps the reservation. A deposit spends no note of ours, so only its coin answers; sync() is a silent no-op while the account is unchecked.
   */
  private async settleUnsubmittable(record:LightningSpendRecord,store:LightningSpendStore,error:unknown):Promise<SpendStatus>{
-  if(this.offline||(!rejected(error,'window-tag')&&!rejected(error,'fee-missing')&&!rejected(error,'deadline-expired')))throw error;
+  const code=(['window-tag','fee-missing','deadline-expired'] as const).find(c=>rejected(error,c));
+  if(this.offline||!code)throw error;
   // A POST sent just before the deadline can still be admitting, untracked by /spends; ten minutes on, a 404 is final. window-tag and fee-missing need no wait: a queued copy answers double-spend first.
-  if(rejected(error,'deadline-expired')&&Date.now()/1000<record.expiresAt!+600)throw error;
+  if(code==='deadline-expired'&&Date.now()/1000<record.expiresAt!+600)throw error;
   try{await this.sync();}catch{throw error;}
   const landed=record.coin?await this.landedDeposit(record.coin):this.landedCopy(record);
   // An unreadable txid would fail validateLightningSpend on the next open and block the wallet, so it stays reserved instead.
   if(landed===undefined||landed&&!/^[0-9a-f]{64}$/.test(landed))throw error;
   const final:SpendStatus=landed?{status:'included',txid:landed}:{status:'dropped',reason:`${reasonOf(error)} No batch of this pool carried it, so the funds never moved.`};
-  await store.finish(record.owner,record.pool,record.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason}:{})});
+  await store.finish(record.owner,record.pool,record.id,{state:final.status as 'included'|'dropped',...(final.txid?{txid:final.txid}:{}),...(final.reason?{reason:final.reason,code}:{})});
   return final;
  }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
@@ -522,8 +521,8 @@ export class ShieldedWallet extends Wallet {
   const key=hex.encode(await descriptorSigner.xOnlyPublicKey()),ops=Script.decode(hex.decode(coin.leaf));
   const signs=ops.some((op,i)=>op instanceof Uint8Array&&op.length===32&&hex.encode(op)===key&&(ops[i+1]==='CHECKSIG'||ops[i+1]==='CHECKSIGVERIFY'));
   if(hex.encode(tree.pkScript)!==input.script.toLowerCase()||!signs)throw new Error('The Lightning payout script does not match its child signer.');
-  // A saved attempt is resent whatever the fee is now, since only the pool's verdict frees its payout. After a dropped attempt the payout pays even if exempt, so a refused exemption cannot loop.
-  const prior=await store.list(String(this.self.owner),this.token),charged=prior.some(r=>r.reference===request.reference&&r.state==='dropped'),plan:ShieldPlan={kind:'btc',coins:[coin],amount:input.value};
+  // A saved attempt is resent whatever the fee is now, since only the pool's verdict frees its payout. After the pool refused an attempt for its fee, the payout pays even if exempt, so a refused exemption cannot loop.
+  const prior=await store.list(String(this.self.owner),this.token),charged=prior.some(r=>r.reference===request.reference&&r.state==='dropped'&&r.code==='fee-missing'),plan:ShieldPlan={kind:'btc',coins:[coin],amount:input.value};
   if(!prior.some(r=>r.id===request.id))this.depositFeeTo(plan,charged);
   const handle=shieldedHandle({id:request.id,title:`Shielding ${sats(input.value)} Lightning sats`,steps:shieldedSteps.shield,railId:'shielded-lightning-deposit'},async step=>{
    step(0);
@@ -636,7 +635,6 @@ export class ShieldedWallet extends Wallet {
    }
    const coin=await this.depositCoin(txid!,plan.amount,undefined,single?.vout);
    const outpoint=`${coin.txid}:${coin.vout}`;this.used.add(outpoint);taken.push(outpoint);
-   // Charged on the coin deposited: a self-sent merge is a plain send, so it pays even when its inputs were payouts.
    const deposit=async(cause?:unknown)=>{
     const to=this.depositFeeTo({kind:'btc',coins:[coin],amount:plan.amount},rejected(cause,'fee-missing'));
     return [{built:await this.account.spend({deposit:BigInt(plan.amount),...(to?{to}:{})},this.self),extra:{coin},coin}];
@@ -656,7 +654,6 @@ export class ShieldedWallet extends Wallet {
   await this.shield();
  }
  mergeableAssets(){return mergeAssetFields(this.pool.status.pool?.reserves);}
- /** `above` is how many notes of an asset may stay unmerged; a keeper passes 1 to merge down to a single note. */
  async merge(asset?:bigint,above?:number):Promise<ShieldedPaymentHandle|undefined>{
   if(this.stopped||Date.now()<this.mergeRetryAt)return undefined;
   for(const field of asset===undefined?this.mergeableAssets():[asset]){

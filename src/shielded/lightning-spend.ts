@@ -8,13 +8,13 @@ export type LightningTransferBody=ReturnType<typeof epochTransferBody>;
 export interface LightningSpendRecord {
  v:1;id:string;owner:string;pool:string;reference:string;kind:'fund'|'shield';paymentHash?:string;destination?:string;amount:string;expiresAt?:number;
  nullifiers:string[];coin?:{txid:string;vout:number;value:number;tapTree:string;leaf:string};body:LightningTransferBody;
- state:'prepared'|'included'|'dropped';txid?:string;reason?:string;
+ state:'prepared'|'included'|'dropped';txid?:string;reason?:string;code?:string;
 }
 export interface LightningSpendStore {
  get(owner:string,pool:string,id:string):Promise<LightningSpendRecord|undefined>;
  list(owner:string,pool:string):Promise<LightningSpendRecord[]>;
  create(record:LightningSpendRecord):Promise<LightningSpendRecord>;
- finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string}):Promise<void>;
+ finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string;code?:string}):Promise<void>;
 }
 export const sameLightningSpendRequest=(a:LightningSpendRecord,b:LightningSpendRecord)=>
  a.v===b.v&&a.id===b.id&&a.owner===b.owner&&a.pool===b.pool&&a.reference===b.reference&&a.kind===b.kind&&a.paymentHash===b.paymentHash&&a.destination===b.destination&&a.amount===b.amount&&a.expiresAt===b.expiresAt&&JSON.stringify(a.coin)===JSON.stringify(b.coin);

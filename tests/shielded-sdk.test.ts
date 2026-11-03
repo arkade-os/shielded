@@ -67,7 +67,7 @@ test('a pool that charges a deposit fee needs a maximum the caller accepts, and 
   await assert.rejects(wallet.shield(),/100 sats.*maxDepositFee/);
  }finally{await wallet.dispose();}
  const accepting=await createShieldedWallet({pool:origin,secret,fetch:chargingPool,maxDepositFee:{fixedSats:100,bps:0}});
- try{assert.equal(accepting.depositFeePaused,undefined);}finally{await accepting.dispose();}
+ try{assert.deepEqual([accepting.depositFee,accepting.depositFeePaused],[fee,undefined]);}finally{await accepting.dispose();}
 });
 
 test('a maximum the caller passes is carried into the wallet configuration',async()=>{
