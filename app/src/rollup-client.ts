@@ -1,7 +1,7 @@
 import {DUST,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
-import {depositFeeOf,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import type {DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 
 export * from '../../src/shielded/pool.ts';
@@ -62,11 +62,7 @@ const feeTerms=({fixedSats,bps}:DepositFeeSchedule)=>{
 };
 const feeCharged=(fee:DepositFeeSchedule)=>fee.bps?`a deposit fee of ${feeTerms(fee)}`:`a ${grouped(fee.fixedSats)}-sat deposit fee`;
 export const depositFeeLine=(fee:DepositFeeSchedule|undefined)=>charges(fee)?`This pool charges ${feeCharged(fee)}.`:'';
-/** The fee by the schedule alone: pass undefined for a plan the wallet waives, such as a lone pool payout (see planFeeOf). */
-export const depositFeeAmountLine=(fee:DepositFeeSchedule|undefined,sats:number)=>{
- const owed=depositFeeOf(fee,BigInt(sats));
- return owed?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(owed)}-sat fee, so ${grouped(BigInt(sats)-owed)} sats reach the pool.`:'';
-};
+export const depositFeeAmountLine=(feeSats:bigint,sats:number)=>feeSats?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(feeSats)}-sat fee, so ${grouped(BigInt(sats)-feeSats)} sats reach the pool.`:'';
 export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
  `${charges(accepted)?`This pool raised its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Automatic shielding is paused until you accept it.`;
 /** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */

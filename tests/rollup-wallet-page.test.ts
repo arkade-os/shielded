@@ -268,12 +268,10 @@ test('the pause banner reads as a new fee when nothing was accepted, and as a ri
  for(const text of [depositFeeLine(both),depositFeeBanner(both,undefined),depositFeeBanner(both,fixed)])assert.doesNotMatch(text,/bps|schedule|basis point/i);
 });
 
-test('the amount line shows what a deposit pays and what reaches the pool, the share rounded up',()=>{
- assert.equal(depositFeeAmountLine({fixedSats:100,bps:0},5000),'Your next deposit of 5,000 sats pays a 100-sat fee, so 4,900 sats reach the pool.');
- assert.match(depositFeeAmountLine({fixedSats:100,bps:50},10000),/pays a 100-sat fee, so 9,900 sats reach/);
- assert.match(depositFeeAmountLine({fixedSats:100,bps:50},100001),/pays a 501-sat fee, so 99,500 sats reach/);
- assert.equal(depositFeeAmountLine(undefined,5000),'');
- assert.equal(depositFeeAmountLine({fixedSats:0,bps:0},5000),'');
+test('the amount line states the fee a deposit pays and what reaches the pool, and nothing when it pays none',()=>{
+ assert.equal(depositFeeAmountLine(100n,5000),'Your next deposit of 5,000 sats pays a 100-sat fee, so 4,900 sats reach the pool.');
+ assert.equal(depositFeeAmountLine(12345n,123456789),'Your next deposit of 123,456,789 sats pays a 12,345-sat fee, so 123,444,444 sats reach the pool.');
+ assert.equal(depositFeeAmountLine(0n,5000),'');
 });
 
 test('a shield row\'s fee is the deposited amount less the notes it created',()=>{
