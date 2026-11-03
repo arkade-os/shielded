@@ -899,7 +899,7 @@ test('an index behind the journal is filled in from the records it lacks only, a
  assert.equal(warned.mock.calls.length,0,'the record the index covers was not read');
 });
 
-test('a record that gives no txid leaves an empty slot, so the later batches stay aligned, and a repaired record is picked up',async t=>{
+test('a record that gives no txid string leaves an empty slot, so the later batches stay aligned, and a repaired record is picked up',async t=>{
  const w=await world(64),warned=t.mock.method(console,'warn',()=>{}),open=()=>w.open(t,{snapshotEvery:1,...w.fee()}),path=join(w.dir,'batches','0.json');
  let op=await w.open(t,{snapshotEvery:1});
  const lost=await paidOut(w,op),kept=await paidOut(w,op),intact=readFileSync(path,'utf8');
@@ -913,6 +913,14 @@ test('a record that gives no txid leaves an empty slot, so the later batches sta
  op=await open();
  assert.deepEqual(indexed(w.dir),[lost.txid,kept.txid]);
  await op.submit(redeposit(op,lost));
+ for(const [label,damage] of [['a number',{txid:7}],['no txid field',{txid:undefined}]] as const){
+  op.close();rmSync(txidIndex(w.dir));writeFileSync(path,JSON.stringify({...JSON.parse(intact),...damage}));
+  warned.mock.resetCalls();
+  op=await open();
+  assert.deepEqual(indexed(w.dir),['',kept.txid],label);
+  op.close();op=await open();
+  assert.equal(warned.mock.calls.length,0,`${label}: the next open does not rebuild the index`);
+ }
 });
 
 test('a followed batch is indexed as it is recorded, so a restart still exempts its payout',async t=>{

@@ -117,7 +117,6 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
  const barePath=join(o.directory,'chain-only.json'),bare=new Map<string,number>(),saveBare=()=>writeSnapshot(barePath,new TextEncoder().encode(JSON.stringify(Object.fromEntries(bare))));
  const fillable=(r:RollupEpochRecord)=>chainOnly(r)||r.slots.some(s=>s.ctDigest!=='0'&&!s.ciphertext);
  // The fee exemption's txids in batch order, '' where a record gave none. An entry is written before its batch's journal commit, so a failed commit leaves one extra, which the next open cuts.
- // It only caches the records: a write that fails warns once and the batch goes on, and the next open reads what the file lacks.
  const txidsPath=join(o.directory,'batch-txids.json'),txids:string[]=[];
  let txidsWarned=false;
  const saveTxids=()=>{try{writeSnapshot(txidsPath,new TextEncoder().encode(JSON.stringify(txids)));}catch(error){if(!txidsWarned)console.warn(`[rollup] Could not write ${txidsPath}; batches go on, and the next open reads the records it lacks: ${(error as Error).message}`);txidsWarned=true;}};
@@ -198,7 +197,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   }catch(error){if(existsSync(txidsPath))console.warn(`[rollup] Rebuilding ${txidsPath}: ${(error as Error).message}`);txids.length=0;}
   // Only what the index lacks is read; a '' is a record that gave no txid, tried again at each open.
   for(let n=0;n<atOpen.batches;n++)if(!txids[n]){
-   try{txids[n]=(JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord).txid??'';}
+   try{const {txid}=JSON.parse(readFileSync(bodyPath(n),'utf8')) as RollupEpochRecord;txids[n]=typeof txid==='string'?txid:'';}
    catch(error){txids[n]='';console.warn(`[rollup] Batch ${n}'s record is unreadable, so a coin it paid out pays the deposit fee: ${(error as Error).message}`);}
   }
   for(const txid of txids)if(txid)batchTxids.add(txid);
@@ -480,7 +479,7 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
     if(state.rotatesNext())flushPadding();
     const coin=(vout:number)=>({txid:tx.id,vout,value:Number(tx.getOutput(vout).amount),sourceTxHex:hex.encode(tx.toBytes(true,true))});
     // As the batch path's own undoLast does: a commit that does not land must leave no batch applied above the journal.
-    // The indexes are written first, so a crash leaves none behind the journal; an entry for one that did not land is ignored by enrich, or cut at the next open.
+    // The indexes are written first; an entry for a batch that did not land is ignored by enrich, or cut at the next open.
     try{if(fillable(record)){bare.set(tx.id,archive.batches);saveBare();}indexTxid(archive.batches,tx.id);archive=await journal.updateArchive(a=>({...a,head:coin(0),reserves:reserveAsset?{...a.reserves,[reserveAsset]:{...coin(1),amount:external.reserveAmount!}}:a.reserves,batches:a.batches+1}));}
     catch(error){state.undoLast();throw error;}
     lastBatchAt[facts.kind]=now();accepted=acceptedOf(state);batchTxids?.add(tx.id);
