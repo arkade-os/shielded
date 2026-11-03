@@ -698,7 +698,6 @@ test('after a restart a batch left in flight is found landed, or re-sent at once
 
 const owes=(sats:bigint,owed:bigint,paid:bigint)=>(error:unknown)=>rejection('fee-missing')(error)&&(error as Error).message===`A deposit of ${sats} sats owes a ${owed}-sat deposit fee to this pool; this one carries ${paid}. Reload the page to shield at the current fee.`;
 const pairOf=()=>{const dummies=[dummyInput(),dummyInput()];return {dummies,group:{id:groupIdOf(hash,dummies.map(d=>inputNullifierOf(hash,ROLLUP_DOMAIN,d))),size:2}};};
-/** Lands a 1000-sat withdrawal to the depositor's own program and returns the coin it paid, as the service resolves it from the indexer. */
 const paidOut=async(w:World,op:Operator)=>{
  await land(op,'spend',[spendOf(deposit(op.state,0n,{withdraw:1000n,destination:destinationFieldOf(w.program)}),{program:w.program})]);
  return w.coinOf(landedTx(w,w.landed.length-1).tx,1);
@@ -741,11 +740,49 @@ test('an underpaid fee note, and one sealed to another key, are both refused',as
  await land(op,'spend',[fair]);
 });
 
-test('a fee-less deposit of a coin this pool paid out is admitted',async t=>{
- const w=await world(64),op=await w.open(t,w.fee()),payout=await paidOut(w,op);
- assert.equal(readEpochBatchTx(Transaction.fromRaw(payout.sourceTx,{allowUnknownOutputs:true}),leaves).kind,'spend','a batch read back from its indexer bytes is still this pool\'s');
+test('a fee-less deposit of a coin this pool paid out is admitted, and still is after a restart',async t=>{
+ const w=await world(64);
+ let op=await w.open(t,w.fee());
+ const payout=await paidOut(w,op);
  await assert.rejects(op.submit(spendOf(deposit(op.state,1000n),{coin:w.coin(1)})),owes(1000n,100n,0n),'the same deposit of a coin the pool did not pay out');
+ await op.submit(spendOf(deposit(op.state,1000n),{coin:payout}));
+ op.close();op=await w.open(t,w.fee());
  await land(op,'spend',[spendOf(deposit(op.state,1000n),{coin:payout})]);
+});
+
+test('a coin from a transaction that only copies a batch\'s packets owes the fee',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee());
+ await land(op,'spend',[fastSpend(op.state)]);
+ const decoy=offlineNativeFixture([{script:Uint8Array.of(0x51,0x20,...w.program),amount:5000n}],Extension.fromTx(landedTx(w,0).tx).getPackets());
+ assert.equal(readEpochBatchTx(decoy,leaves).kind,'spend','its packets alone read as this pool\'s batch');
+ await assert.rejects(op.submit(spendOf(deposit(op.state,5000n),{coin:w.coinOf(decoy,0)})),owes(5000n,100n,0n));
+});
+
+test('a coin paid out by a batch this operator followed is exempt too',async t=>{
+ const w=await world(64),a=await w.open(t),payout=await paidOut(w,a);
+ const b=await w.open(t,{...w.fee(),directory:mkdtempSync(join(tmpdir(),'rollup-epoch-fee-follower-'))});
+ await assert.rejects(b.submit(spendOf(deposit(b.state,1000n),{coin:payout})),owes(1000n,100n,0n),'before the follow');
+ await b.follow({...landedTx(w,0),at:1});
+ await land(b,'spend',[spendOf(deposit(b.state,1000n),{coin:payout})]);
+});
+
+test('a record the fee check cannot read never keeps the pool from opening, and a coin its batch paid out pays the fee',async t=>{
+ const w=await world(64),warned=t.mock.method(console,'warn',()=>{});
+ const reopen=(op:Operator,fee={})=>{op.close();return w.open(t,{snapshotEvery:1,...fee});};
+ let op=await w.open(t,{snapshotEvery:1,...w.fee()});
+ const payout=await paidOut(w,op);
+ writeFileSync(join(w.dir,'batches','0.json'),'{not json');
+ op=await reopen(op);
+ assert.equal(warned.mock.calls.length,0,'with no fee configured, open reads no record the snapshot covers');
+ op=await reopen(op,w.fee());
+ assert.ok(warned.mock.calls.some(call=>/Batch 0's record is unreadable/.test(String(call.arguments[0]))));
+ await assert.rejects(op.submit(spendOf(deposit(op.state,1000n),{coin:payout})),owes(1000n,100n,0n));
+});
+
+test('a group whose id does not commit to its members answers group-invalid before its missing fee',async t=>{
+ const w=await world(64),op=await w.open(t,w.fee()),{dummies:[a,b]}=pairOf(),g={groupId:pairOf().group.id,groupSize:2};
+ await op.submit(spendOf(deposit(op.state,1000n,{inputs:[a],...g}),{coin:w.cash(2000n)}));
+ await assert.rejects(op.submit(spendOf(deposit(op.state,1000n,{inputs:[b],...g}))),rejection('group-invalid'));
 });
 
 test('a payout exempts its unit only when every coin in the unit is one',async t=>{
