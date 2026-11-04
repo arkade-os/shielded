@@ -1108,6 +1108,13 @@ test('payout polling reports failures and keeps retrying after a failed read',as
  }finally{await service[Symbol.asyncDispose]();t.mock.timers.reset();}
 });
 
+test('an artifact wallet\'s balance is its payout: available and total agree, and every held bucket reads 0',async()=>{
+ const base=companion(),record=await materializeLightningArtifact(base,await new InMemoryLightningRepository().allocateArtifact(owner,pool,'receive'));
+ const balance=await (await artifactWallet(base,record,async()=>{throw new Error('not funded');},()=>1234)).getBalance();
+ assert.equal(balance.available,1234);assert.equal(balance.total,1234);
+ for(const held of ['settled','preconfirmed','contractLocked','deprecatedSignerLocked','pendingSettlement','gated','intentLocked','pendingRecovery','reserved','recoverable','unrolled'] as const)assert.equal(balance[held],0,held);
+});
+
 test('real SDK refund and claim provisioning use fresh recoverable child keys and destinations for unpaid artifacts',async()=>{
  const journal=new InMemoryLightningRepository(),base=companion();
  const allocations=await Promise.all([journal.allocateArtifact(owner,pool,'send'),journal.allocateArtifact(owner,pool,'receive')]);
