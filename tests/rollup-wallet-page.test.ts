@@ -7,7 +7,7 @@ import {marketOf,resolveRoute} from '@arkade-os/swap/advanced';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,noSwapErrorText,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -316,6 +316,24 @@ test('a shield row\'s fee sums every deposit its batch transaction carried, and 
  assert.equal(shieldFeeOfTx([entry('shield',b,5_000n,4_000n),entry('send',a,10_000n,9_000n)],a),undefined);
  assert.equal(shieldFeeOfTx([],a),undefined);
  for(const txid of [undefined,7,null])assert.equal(shieldFeeOfTx([entry('shield',undefined,10_000n,9_900n),paid],txid),undefined,'a row without a transaction id matches no entry, not the entries that have none');
+});
+
+test('a Lightning payout\'s fee is that of the one deposit in its batch transaction that took its sats, and is never guessed',()=>{
+ const [a,b]=['aa'.repeat(32),'bb'.repeat(32)];
+ const entry=(kind:EpochHistoryEntry['kind'],txid:string|undefined,deposited:bigint,kept:bigint):EpochHistoryEntry=>({kind,batch:1,epoch:0,...(txid?{txid}:{}),amounts:[{asset:0n,amount:deposited}],spent:[],created:[{amount:kept,asset:0n,rho:1n,epoch:0,index:0,nullifier:kept}],slots:[0]});
+ const payout=entry('shield',a,10_000n,9_900n),beside=entry('shield',a,5_000n,4_800n);
+ assert.equal(lightningShieldFeeOf([payout],a,10_000),100n);
+ assert.equal(lightningShieldFeeOf([beside,payout],a,10_000),100n,'a deposit of another amount in the same batch is not the payout');
+ assert.equal(lightningShieldFeeOf([payout,beside],a,10_000),100n);
+ assert.equal(lightningShieldFeeOf([payout,entry('shield',a,10_000n,9_000n)],a,10_000),undefined,'two deposits of the payout\'s amount cannot be told apart, even at different fees');
+ assert.equal(lightningShieldFeeOf([payout,entry('shield',a,10_000n,10_000n)],a,10_000),undefined);
+ assert.equal(lightningShieldFeeOf([entry('shield',b,10_000n,9_900n)],a,10_000),undefined,'no entry in that transaction');
+ assert.equal(lightningShieldFeeOf([payout],a,9_000),undefined,'no entry took that many sats');
+ assert.equal(lightningShieldFeeOf([],a,10_000),undefined);
+ assert.equal(lightningShieldFeeOf([entry('send',a,10_000n,9_000n),entry('receive',a,10_000n,9_000n),payout],a,10_000),100n,'other kinds are ignored');
+ assert.equal(lightningShieldFeeOf([entry('send',a,10_000n,9_000n),entry('receive',a,10_000n,9_000n)],a,10_000),undefined);
+ assert.equal(lightningShieldFeeOf([entry('shield',a,10_000n,10_000n),beside],a,10_000),0n,'an exempt payout paid nothing: a fee of zero, which the page leaves unshown');
+ for(const txid of [undefined,7,null])assert.equal(lightningShieldFeeOf([entry('shield',undefined,10_000n,9_900n),payout],txid,10_000),undefined,'a row without a transaction id matches no entry');
 });
 
 test('the private-receive box follows the user\'s choice, and one notice follows what the service lists',()=>{

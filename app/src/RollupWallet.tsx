@@ -16,7 +16,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
-import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
+import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
 import {CopyButton,Icon} from './components.tsx';
@@ -479,7 +479,7 @@ export default function RollupWallet(){
      const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
      const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='unshield'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
      const id=newest.key.arkTxid||newest.key.commitmentTxid,asset=newest.assets?.[0];
-     const feePaid=kind==='shield'&&wallet?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):undefined;
+     const feePaid=wallet&&kind==='shield'?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):wallet&&kind==='lightning-receive'?lightningShieldFeeOf(wallet.shieldedHistory(),item.intent?.metadata?.shieldTxid,item.amount):undefined;
      return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
        <b className={received?'in':'out'}>{received?'+':'−'}{asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}</b><time>{when(item.createdAt)}</time></summary>
       <dl>

@@ -553,17 +553,19 @@ test('an actual Lightning receipt survives failed shielding, retry, spent inclus
   let rows=await service.getActivityHistory();assert.equal(rows.length,1);const id=rows[0]!.id;
   assert.equal(rows[0]!.amount,987);assert.equal(rows[0]!.createdAt,coin.createdAt.getTime());assert.equal(rows[0]!.intent?.kind,'lightning-receive');assert.equal(rows[0]!.intent?.outcome,'received');
   assert.deepEqual(f.historyReads.at(-1),[undefined,undefined,{unspentOnly:false}]);
+  const outpoint=`${coin.txid}:${coin.vout}`,meta=async()=>(await service.getActivityHistory())[0]!.intent?.metadata;assert.deepEqual(await meta(),{outpoint});
   const first=shieldingRecord('receipt-shield',coin);await journal.create(first);
-  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');
+  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');assert.deepEqual(await meta(),{outpoint});
   await journal.finish(owner,pool,first.id,{state:'dropped',reason:'pool rejected'});
-  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'retrying');
+  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'retrying');assert.deepEqual(await meta(),{outpoint});
   const retry=shieldingRecord('receipt-shield-retry',coin);await journal.create(retry);
-  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');
+  assert.equal((await service.getActivityHistory())[0]!.intent?.outcome,'shielding');assert.deepEqual(await meta(),{outpoint});
   await journal.finish(owner,pool,retry.id,{state:'included',txid:'ef'.repeat(32)});coin.isSpent=true;f.base.getVtxos=async()=>[];
   for(const listener of f.receivers)listener({type:'vtxo_spent',contractScript:contract.script,vtxos:[coin]});
   rows=await service.getActivityHistory();assert.equal(rows.length,1);assert.equal(rows[0]!.id,id);assert.equal(rows[0]!.amount,987);assert.equal(rows[0]!.intent?.outcome,'shielded');
+  assert.deepEqual(rows[0]!.intent?.metadata,{outpoint,shieldTxid:'ef'.repeat(32)},'the included attempt names the batch that carried the deposit');
   await service[Symbol.asyncDispose]();await journal[Symbol.asyncDispose]();journal=new IndexedDbLightningRepository(name);options.journal=journal;service=await createPrivateLightning(options);
-  rows=await service.getActivityHistory();assert.equal(rows.length,1);assert.equal(rows[0]!.id,id);assert.equal(rows[0]!.intent?.outcome,'shielded');
+  rows=await service.getActivityHistory();assert.equal(rows.length,1);assert.equal(rows[0]!.id,id);assert.equal(rows[0]!.intent?.outcome,'shielded');assert.deepEqual(rows[0]!.intent?.metadata,{outpoint,shieldTxid:'ef'.repeat(32)});
  }finally{await service[Symbol.asyncDispose]();await journal[Symbol.asyncDispose]();}
 });
 
@@ -586,6 +588,7 @@ test('subdust Lightning receipts remain visible, distinct outpoints do not merge
   contract.vtxos=[0,1].map(vout=>({txid:'ab'.repeat(32),vout,value:329,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
   const rows=await service.getActivityHistory();assert.deepEqual(rows.map(row=>row.amount),[329,329]);assert.equal(new Set(rows.map(row=>row.id)).size,2);
   assert.ok(rows.every(row=>row.intent?.outcome==='below-minimum'));assert.equal(f.shielded.length,0);
+  assert.deepEqual(rows.map(row=>Object.keys(row.intent!.metadata!)),[['outpoint'],['outpoint']],'a payout below the minimum has no deposit');
   const before=f.changes.length;for(const listener of f.receivers)listener({type:'vtxo_received',contractScript:'unrelated',vtxos:[]});
   assert.equal(f.changes.length,before);
   for(const listener of f.receivers)listener({type:'connection_reset'});assert.equal(f.changes.length,before+1);
