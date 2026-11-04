@@ -134,8 +134,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     // A completed exit spent its payout on-chain and left no shield attempt behind; the SDK's own history carries that spend.
     if(source?.kind==='exit'&&isVtxoSpent(coin)&&!attempts.length&&!recoveryState)continue;
     const outcome=recoveryState?.state==='complete'?'onchain-recovered':recoveryState?.state==='shielded'?'shielded':recoveryState?'onchain-recovery':attempts.some(r=>r.state==='included')?'shielded':attempts.some(r=>r.state==='prepared')||shielding.has(outpoint)?'shielding':BigInt(coin.value)-feeOn(wallet,BigInt(coin.value),coin,feeRefused(attempts,outpoint))<BigInt(DUST)?'below-minimum':attempts.length?'retrying':'received';
-    const id=`shielded-lightning:receive:${outpoint}`,createdAt=coin.createdAt.getTime(),settled=!coin.isPreconfirmed;
-    rows.set(id,{id,amount:coin.value,createdAt,settled,intent:{kind:'lightning-receive',label:source?.kind==='send'?'Lightning refund':source?.kind==='exit'?'On-chain exit payout':'Received via Lightning',outcome,metadata:{outpoint}},
+    const id=`shielded-lightning:receive:${outpoint}`,createdAt=coin.createdAt.getTime(),settled=!coin.isPreconfirmed,shieldTxid=attempts.find(r=>r.state==='included'&&r.txid)?.txid;
+    rows.set(id,{id,amount:coin.value,createdAt,settled,intent:{kind:'lightning-receive',label:source?.kind==='send'?'Lightning refund':source?.kind==='exit'?'On-chain exit payout':'Received via Lightning',outcome,metadata:{outpoint,...(shieldTxid?{shieldTxid}:{})}},
      txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:coin.txid},type:TxType.TxReceived,amount:coin.value,createdAt,settled}]});
    }
   }

@@ -71,16 +71,19 @@ export const PAUSED_LINE='Nothing new moves into the pool until you accept the n
 export const PAUSED_ERROR=`The pool changed its deposit fee, so this deposit did not go through. ${PAUSED_LINE} Press ${ACCEPT_FEE} in the ${PAUSED_TITLE} notice.`;
 /** The wallet's fee-paused refusal is worded for SDK users; the sheet says this instead. */
 export const pausedErrorText=(error:unknown)=>rejected(error,'fee-paused')?PAUSED_ERROR:undefined;
+const btcOf=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
 /** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
-export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
- const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
- return entry.kind==='shield'?btc(entry.amounts)-btc(entry.created):undefined;
-};
+export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>entry.kind==='shield'?btcOf(entry.amounts)-btcOf(entry.created):undefined;
 /** A shield row is one per batch transaction, so its fee is that of every deposit this wallet made in it. */
 export const shieldFeeOfTx=(entries:readonly EpochHistoryEntry[],txid:unknown):bigint|undefined=>{
  let total:bigint|undefined;
  if(typeof txid==='string')for(const entry of entries){const fee=entry.txid===txid?shieldFeeOf(entry):undefined;if(fee!==undefined)total=(total??0n)+fee;}
  return total;
+};
+/** A payout is deposited whole, so its deposit is the one shield entry of its batch transaction that took its sats; with none or several, nothing is guessed. */
+export const lightningShieldFeeOf=(entries:readonly EpochHistoryEntry[],txid:unknown,sats:number):bigint|undefined=>{
+ const found=typeof txid==='string'?entries.filter(entry=>entry.kind==='shield'&&entry.txid===txid&&Number(btcOf(entry.amounts))===sats):[];
+ return found.length===1?shieldFeeOf(found[0]!):undefined;
 };
 /** Plain coins only the fee keeps out: asked without it, the planner would deposit them. */
 export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,now:number,floorMs:number){
