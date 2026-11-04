@@ -5,11 +5,12 @@ import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/reposit
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
-import {watchHandle,type StepState} from '../../src/shielded/handle.ts';
+import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
+import {pausedErrorText} from './rollup-client.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
-export const errorText=(error:unknown)=>error instanceof Error?error.message:typeof error==='string'?error:'The action failed.';
+export const errorText=(error:unknown)=>pausedErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
 export function pageActivityHistory(history:Activity[],lightning:Activity[]){
  const receipts=lightning.filter(row=>row.intent?.kind==='lightning-send'&&row.intent.outcome==='paid');
@@ -137,7 +138,10 @@ export function pageSheet(render:(state:StepState|undefined)=>void){
   watch(next:PaymentHandle,title:string){
    const previous=watched.get(next);if(previous)return previous;
    const selected=begin(title);watched.set(next,selected);
-   off=watchHandle(next,title,s=>selected.update(()=>s));return selected;
+   off=watchHandle(next,title,s=>selected.update(()=>s));
+   // StepState keeps only the message, and a handle the wallet started (auto-shield) has no run() to word its failure.
+   if(isShieldedHandle(next))void next.settled().catch(error=>{if(pausedErrorText(error))selected.fail(error);});
+   return selected;
   },
   clear(){generation++;off();off=()=>{};state=undefined;render(undefined);},
   stop(){generation++;off();off=()=>{};},

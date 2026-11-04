@@ -5,7 +5,7 @@ import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -266,6 +266,20 @@ test('the pause banner reads as a new fee when nothing was accepted, and as a ri
  assert.equal(depositFeeBanner(both,fixed),'This pool raised its deposit fee to 100 sats or 0.5% of each deposit, whichever is more.'+tail);
  assert.equal(depositFeeBanner({fixedSats:0,bps:0},undefined),'');
  for(const text of [depositFeeLine(both),depositFeeBanner(both,undefined),depositFeeBanner(both,fixed)])assert.doesNotMatch(text,/bps|schedule|basis point/i);
+});
+
+test('a paused deposit reads in the page\'s words wherever the pause sits in the error, and no other error does',()=>{
+ const paused=Object.assign(new Error('Deposits are paused: accept it with acceptDepositFee({fixedSats:500,bps:0}), or pass maxDepositFee of at least that.'),{code:'fee-paused'});
+ assert.equal(pausedErrorText(paused),PAUSED_ERROR);
+ assert.equal(pausedErrorText(new Error(paused.message,{cause:paused})),PAUSED_ERROR,'a reservation wraps it');
+ assert.equal(pausedErrorText(new Error('outer',{cause:new Error('middle',{cause:paused})})),PAUSED_ERROR);
+ for(const other of [new Error('plain'),Object.assign(new Error('owes a fee'),{code:'fee-missing'}),new Error('wrapped',{cause:new Error('other')}),'fee-paused',undefined,null,{code:'other'}])assert.equal(pausedErrorText(other),undefined);
+ assert.doesNotMatch(PAUSED_ERROR,/acceptDepositFee|maxDepositFee|bps|schedule/,'the SDK\'s wording stays out of the page');
+ assert.match(PAUSED_ERROR,/changed its deposit fee.*Accept the new fee.*Shielding is paused/);
+ assert.ok(PAUSED_ERROR.includes(PAUSED_LINE),'it says what the banner and the funding card say');
+ const idle={recovering:false,inFlight:false,syncing:false,recoveryLine:''},sheet={title:'Shielding 3,000 sats',steps:['Prepare the deposit coin'],current:0};
+ assert.equal(soundbarItem({...idle,sheet:{...sheet,error:PAUSED_ERROR}})?.line,PAUSED_ERROR,'a paused deposit waits for the user, not for a minute');
+ assert.equal(soundbarItem({...idle,sheet:{...sheet,error:'The pool dropped this spend.'}})?.line,'The pool dropped this spend. It tries again in a minute.');
 });
 
 test('the amount line states the fee a deposit pays and what reaches the pool, and nothing when it pays none',()=>{

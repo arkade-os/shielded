@@ -1,4 +1,4 @@
-import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
+import {DUST,planFeeOf,rejected,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
@@ -67,6 +67,9 @@ export const depositFeeAmountLine=(feeSats:bigint,sats:number)=>feeSats?`Your ne
 export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
  `${charges(accepted)?`This pool ${acceptsDepositFee(accepted,advertised)?'raised':'changed'} its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Nothing new moves into the pool until you accept it.`;
 export const PAUSED_LINE='Nothing new moves into the pool until you accept the new fee.';
+export const PAUSED_ERROR=`The pool changed its deposit fee, so this deposit did not go through. ${PAUSED_LINE} Press Accept the new fee in the Shielding is paused notice.`;
+/** The wallet's fee-paused refusal is worded for SDK users; the sheet says this instead. */
+export const pausedErrorText=(error:unknown)=>rejected(error,'fee-paused')?PAUSED_ERROR:undefined;
 /** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
 export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
  const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
