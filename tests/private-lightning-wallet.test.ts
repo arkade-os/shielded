@@ -959,11 +959,12 @@ test('a receive the deposit fee would leave under the pool minimum is refused be
  }finally{await service[Symbol.asyncDispose]();}
 });
 
-function routedClients(f:ReturnType<typeof serviceFixture>){
+function routedClients(f:ReturnType<typeof serviceFixture>,stale?:Record<string,string>){
  const info={name:'Bitcoin',ticker:'BTC',decimals:8},card={solver:'ln-solver-mutinynet',discovery_pubkey:'ab'.repeat(32),transports:{nostr:{relays:['wss://relay.test']}},base_asset:{id:btcOn('arkade','mutinynet'),...info},quote_asset:{id:btcOn('bolt11','mutinynet'),...info},fee_bps:500,min_base_amount:'1000',max_base_amount:'50000',min_quote_amount:'1000',max_quote_amount:'25000',source:'https://arkade-os.github.io/solver-registry/mutinynet.json',sourceType:'registry' as const};
- const snapshot={markets:[card],ref:{fetchedAt:1,live:true,source:'injected' as const}},discovery={peek:async()=>snapshot,load:async()=>snapshot},corridors={claim:()=>({corridor:'lightning',instrument:{kind:'invoice'}})} as never;
- return (config:SwapClientConfig)=>{const client=f.clientFactory(config);
-  return config.policy?.drive!=='readonly'?client:{...client,resolve:async(input:any)=>(await resolveRoute(input,{corridors,network:'mutinynet',discovery,mode:'resolve'})).resolution} as SwapClient;};
+ const corridors={claim:()=>({corridor:'lightning',instrument:{kind:'invoice'}})} as never;let readonly=0;
+ return (config:SwapClientConfig)=>{const client=f.clientFactory(config);if(config.policy?.drive!=='readonly')return client;
+  const snapshot={markets:[readonly++===0&&stale?{...card,...stale}:card],ref:{fetchedAt:1,live:true,source:'injected' as const}},discovery={peek:async()=>snapshot,load:async()=>snapshot};
+  return {...client,resolve:async(input:any)=>(await resolveRoute(input,{corridors,network:'mutinynet',discovery,mode:'resolve'})).resolution} as SwapClient;};
 }
 const noMarket=(give:string,take:string)=>(error:unknown)=>error instanceof UnsupportedRoute&&error.message===`unsupported route: no market serves ${give}:btc -> ${take}:btc on the active discovery snapshot`&&error.give===give&&error.take===take&&noSwapErrorText(error)===NO_SWAP_LINE;
 for(const [kind,give,take,unserved] of [['receive','lightning','arkade',[999n,50001n]],['send','arkade','lightning',[999n,25001n]]] as const)test(`a ${kind} no market serves is refused as swap's UnsupportedRoute before an artifact is allocated, watched or opened`,async()=>{
@@ -973,8 +974,18 @@ for(const [kind,give,take,unserved] of [['receive','lightning','arkade',[999n,50
  try{
   for(const amount of unserved)await assert.rejects(ask(amount),noMarket(give,take),`${amount} sats`);
   assert.deepEqual(await journal.artifacts(ownerKey,pool),[]);assert.deepEqual(await journal.payouts(ownerKey,pool),[]);
-  assert.equal(f.configs.length,1);assert.equal(f.contracts.length,0);assert.equal(f.live.size,0);
+  assert.deepEqual(f.configs.map(c=>c.policy?.drive),Array(1+unserved.length).fill('readonly'),'each refusal is confirmed on a fresh discovery client, and no session opens');
+  assert.equal(f.closed.length,unserved.length);assert.equal(f.contracts.length,0);assert.equal(f.live.size,0);
   await ask(1000n);assert.deepEqual((await journal.artifacts(ownerKey,pool)).map(a=>[a.index,a.kind]),[[0,kind]],'in range it allocates as before, and the refusals burned no HD index');
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+for(const [kind,stale] of [['receive',{max_base_amount:'1000'}],['send',{max_quote_amount:'1000'}]] as const)test(`a ${kind} missing only from the held discovery snapshot is quoted once a fresh snapshot serves it`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());f.wallet.canWithdraw=()=>true;
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:routedClients(f,stale),acquireSession:f.acquireSession,legacyRecovery:false});
+ try{
+  await (kind==='send'?service.quote({to:'invoice',amount:2000n,amountOn:'take'}):service.receive({via:'lightning',amount:2000n}));
+  assert.deepEqual((await journal.artifacts(ownerKey,pool)).map(a=>[a.index,a.kind]),[[0,kind]]);assert.deepEqual(f.closed,['client-1']);
  }finally{await service[Symbol.asyncDispose]();}
 });
 
