@@ -1,4 +1,4 @@
-import {DUST,planFeeOf,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
+import {DUST,planFeeOf,rejected,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
 import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
@@ -66,11 +66,20 @@ export const depositFeeLine=(fee:DepositFeeSchedule|undefined)=>charges(fee)?`Th
 export const depositFeeAmountLine=(feeSats:bigint,sats:number)=>feeSats?`Your next deposit of ${grouped(sats)} sats pays a ${grouped(feeSats)}-sat fee, so ${grouped(BigInt(sats)-feeSats)} sats reach the pool.`:'';
 export const depositFeeBanner=(advertised:DepositFeeSchedule,accepted:DepositFeeSchedule|undefined)=>!charges(advertised)?'':
  `${charges(accepted)?`This pool ${acceptsDepositFee(accepted,advertised)?'raised':'changed'} its deposit fee to ${feeTerms(advertised)}`:`This pool now charges ${feeCharged(advertised)}`}. Nothing new moves into the pool until you accept it.`;
-export const PAUSED_LINE='Nothing new moves into the pool until you accept the new fee.';
+export const PAUSED_LINE='Nothing new moves into the pool until you accept the new fee.',PAUSED_TITLE='Shielding is paused',ACCEPT_FEE='Accept the new fee';
+export const PAUSED_ERROR=`The pool changed its deposit fee, so this deposit did not go through. ${PAUSED_LINE} Press ${ACCEPT_FEE} in the ${PAUSED_TITLE} notice.`;
+/** The wallet's fee-paused refusal is worded for SDK users; the sheet says this instead. */
+export const pausedErrorText=(error:unknown)=>rejected(error,'fee-paused')?PAUSED_ERROR:undefined;
 /** A shield row lists only this wallet's notes, so the BTC it deposited less the BTC it kept is the fee; an asset group's is its carrier's. */
 export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
  const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
  return entry.kind==='shield'?btc(entry.amounts)-btc(entry.created):undefined;
+};
+/** A shield row is one per batch transaction, so its fee is that of every deposit this wallet made in it. */
+export const shieldFeeOfTx=(entries:readonly EpochHistoryEntry[],txid:unknown):bigint|undefined=>{
+ let total:bigint|undefined;
+ if(typeof txid==='string')for(const entry of entries){const fee=entry.txid===txid?shieldFeeOf(entry):undefined;if(fee!==undefined)total=(total??0n)+fee;}
+ return total;
 };
 /** Plain coins only the fee keeps out: asked without it, the planner would deposit them. */
 export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,now:number,floorMs:number){

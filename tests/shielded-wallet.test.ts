@@ -13,13 +13,15 @@ import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src
 import {openRollupNotes,parseRollupAddress} from '../packages/protocol/src/rollup/wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
-import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {ShieldedWallet,programOf,shieldedKeysOf,shieldedSteps,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
 import {epochTransferBody,type EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
+import {pageSheet} from '../app/src/shielded-page.ts';
+import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
@@ -554,6 +556,22 @@ test('a deposit of a coin the pool paid out carries no fee',async()=>{
  }finally{await wallet.dispose();}
 });
 
+test('the sheet of a deposit names the fee its plan pays, never the schedule, and reads as before when it pays none',async()=>{
+ const fee=feeOf(100),charging=await open({depositFee:fee,maxDepositFee:fee}),free=await open(),payout=coin('ab'.repeat(32),400),plain=coin('cd'.repeat(32),10_000);
+ const carried=(txid:string,value:number)=>({...coin(txid,value),assets:[{assetId:TOKEN,amount:5n}]});
+ for(const wallet of [charging,free]){readyDeposit(wallet);wallet.api=feePool(wallet===charging?fee:undefined).api;wallet.pool.status.pool!.reserves={[TOKEN]:'10'};}
+ charging.account.txids.add(payout.txid);
+ const sheet=async(wallet:ShieldedWallet,input:{txid:string;vout:number;value:number}):Promise<[string,readonly string[]]>=>{const handle=(await wallet.shield([input]))!;await handle.settled();return [handle.title,handle.steps];};
+ try{
+  assert.deepEqual(await sheet(charging,plain),['Shielding 10,000 sats with a 100-sat deposit fee',shieldedSteps.shield]);
+  assert.deepEqual(await sheet(charging,payout),['Shielding 400 sats',shieldedSteps.shield],'a pool payout pays none, so the sheet names none');
+  assert.deepEqual(await sheet(charging,carried('a1'.repeat(32),1000)),['Shielding 5 units of asset 2df7aa36…0000 with a 100-sat deposit fee',shieldedSteps.shield],'the carrier pays');
+  assert.deepEqual(await sheet(charging,carried('a2'.repeat(32),330)),['Shielding 5 units of asset 2df7aa36…0000',shieldedSteps.shield],'a dust carrier is free');
+  assert.deepEqual(await sheet(free,plain),['Shielding 10,000 sats',shieldedSteps.shield],'a pool with no fee');
+  assert.deepEqual(await sheet(free,carried('a3'.repeat(32),1000)),['Shielding 5 units of asset 2df7aa36…0000',shieldedSteps.shield]);
+ }finally{await charging.dispose();await free.dispose();}
+});
+
 test('an asset deposit pays the carrier fee on its BTC leg, and nothing on a dust carrier',async()=>{
  const fee=feeOf(100),wallet=await open({depositFee:fee,maxDepositFee:fee}),carriers:unknown[]=[];
  try{
@@ -638,6 +656,50 @@ test('a fee-missing rebuild submits nothing when the new fee is not accepted or 
    assert.equal((wallet as any).used.has(`${input.txid}:0`),false,'the coin is free again');
   }finally{await wallet.dispose();}
  }
+});
+
+const PAUSED_500='Deposits are paused: this pool now charges a deposit fee of 500 sats or 0 bps of the deposit, whichever is more, which is above what this wallet has accepted. Once it is shown, accept it with acceptDepositFee({fixedSats:500,bps:0}), or pass maxDepositFee of at least that.';
+
+test('the fee-paused refusal keeps its message, carries a stable code through a rebuild\'s wrapping, and the page hears of the pause',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),requests=readyDeposit(wallet),pool=feePool(feeOf(500),Infinity),input=coin('aa'.repeat(32),10_000),heard:(number|undefined)[]=[];
+ clearTimeout((wallet as any).timer);wallet.api=pool.api;wallet.onShieldedChange(()=>heard.push(wallet.depositFeePaused?.fixedSats));
+ try{
+  const failure:any=await (await wallet.shield([input]))!.settled().catch((error:unknown)=>error);await flush();
+  assert.equal(failure.message,PAUSED_500);
+  assert.equal(failure.cause.code,'fee-paused','the reservation wraps it; the code is on its cause');
+  assert.ok(heard.includes(500),'the refresh that left deposits paused told the page');
+  assert.equal(heard[0],500,'and it did so before anything else did');
+  assert.equal(requests.length,1,'the rebuild built nothing');
+  await assert.rejects(wallet.shield([input]),error=>(error as {code?:string}).code==='fee-paused'&&(error as Error).message===PAUSED_500);
+ }finally{await wallet.dispose();}
+});
+
+test('a status refresh tells the page only when the paused fee changes',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),heard:(number|undefined)[]=[];
+ clearTimeout((wallet as any).timer);wallet.onShieldedChange(()=>heard.push(wallet.depositFeePaused?.fixedSats));
+ const refresh=async(fee?:DepositFee)=>{wallet.api=feePool(fee).api;await (wallet as any).refreshStatus();};
+ try{
+  await refresh();await refresh(feeOf(100));
+  assert.deepEqual(heard,[],'no fee, then one already accepted: nothing paused before or after');
+  await refresh(feeOf(500));await refresh(feeOf(500));
+  assert.deepEqual(heard,[500],'newly paused once, not again for the same fee');
+  await refresh(feeOf(500,10));
+  assert.deepEqual(heard,[500,500],'a bps-only change reaches the page');
+  await refresh(feeOf(900));await refresh(feeOf(100));
+  assert.deepEqual(heard,[500,500,900,undefined],'a different fee to accept, then back within what was accepted');
+ }finally{await wallet.dispose();}
+});
+
+test('an auto-shield stopped by a raised fee reaches the sheet in the page\'s words, with the pause already in the wallet',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),input=coin('aa'.repeat(32),10_000),seen:[boolean,string|undefined][]=[],started=deferred<ShieldedPaymentHandle>();
+ readyDeposit(wallet);clearTimeout((wallet as any).timer);wallet.api=feePool(feeOf(500),Infinity).api;wallet.coins=async()=>[input];
+ const sheet=pageSheet(state=>seen.push([!!wallet.depositFeePaused,state?.error]));
+ wallet.onAction(handle=>{sheet.watch(handle,handle.title);started.resolve(handle);});
+ try{
+  await (wallet as any).autoShield();
+  await (await within(started.promise))!.settled().catch(()=>{});await flush();
+  assert.deepEqual(seen.slice(-2),[[true,PAUSED_500],[true,PAUSED_ERROR]],'the handle\'s own failure with the banner already due, then the page\'s words');
+ }finally{await wallet.dispose();}
 });
 
 test('accepting the fee a rebuild stopped on shields at once, without the retry wait',async()=>{

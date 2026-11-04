@@ -19,6 +19,8 @@ class PoolRequestError extends Error {
  constructor(message:string,readonly status?:number,options?:ErrorOptions){super(message,options);}
  get transient(){return this.status===undefined||this.status===429||this.status>=500;}
 }
+/** A failed unit wraps the error it failed on, so a code counts anywhere down the cause chain. */
+export const rejected=(error:unknown,code:string):boolean=>typeof error==='object'&&error!==null&&((error as {code?:unknown}).code===code||rejected((error as {cause?:unknown}).cause,code));
 
 /** Retries outages and rate limits; definitive refusals surface at once. */
 export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{

@@ -6,6 +6,8 @@ import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shiel
 import {epochCatchUp,epochIdle} from '../src/shielded/epoch-sync.ts';
 import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from '../app/src/shielded-page.ts';
 import * as page from '../app/src/shielded-page.ts';
+import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
+import {shieldedHandle} from '../src/shielded/handle.ts';
 
 const deferred=<T=void>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
@@ -188,6 +190,26 @@ test('replacing and dismissing a sheet unsubscribes and ignores obsolete handle 
  assert.equal(off,1);callbacks[0]!({status:'sent'});a.fail('old failure');assert.equal(states.length,2);
  assert.equal((states.at(-1) as {title:string}).title,'B');assert.equal(sheet.watch(first,'A'),a);assert.equal(states.length,2);
  sheet.clear();callbacks[1]!({status:'sent'});assert.equal(off,2);assert.equal(states.at(-1),undefined);
+});
+
+test('the page words a paused deposit wherever the pause sits in the error, and passes every other message through',()=>{
+ const paused=Object.assign(new Error('Deposits are paused: accept it with acceptDepositFee({fixedSats:500,bps:0}).'),{code:'fee-paused'});
+ assert.equal(page.errorText(paused),PAUSED_ERROR);
+ assert.equal(page.errorText(new Error(paused.message,{cause:paused})),PAUSED_ERROR,'a reservation wraps it');
+ assert.equal(page.errorText(new Error('The pool dropped this spend.')),'The pool dropped this spend.');
+ assert.equal(page.errorText(Object.assign(new Error('A deposit owes a fee.'),{code:'fee-missing'})),'A deposit owes a fee.');
+ assert.equal(page.errorText('pool refused'),'pool refused');
+ assert.equal(page.errorText({code:'fee-paused-not'}),'The action failed.');
+});
+
+test('a shielded handle that fails on a paused deposit shows the page\'s words on its sheet, and any other failure keeps its message',async()=>{
+ const paused=Object.assign(new Error('Deposits are paused: accept it with acceptDepositFee({fixedSats:500,bps:0}).'),{code:'fee-paused'});
+ for(const [failure,text,updates] of [[new Error(paused.message,{cause:paused}),PAUSED_ERROR,3],[paused,PAUSED_ERROR,3],[new Error('The pool dropped this spend.'),'The pool dropped this spend.',2]] as const){
+  const states:unknown[]=[],handle=shieldedHandle({title:'Shielding 500 sats',steps:['Prepare','Included'],railId:'shielded-deposit'},async()=>{throw failure;});
+  pageSheet(s=>states.push(s)).watch(handle,'Shielding 500 sats');
+  await handle.settled().catch(()=>{});await flush();
+  assert.equal((states.at(-1) as {error:string}).error,text);assert.equal(states.length,updates,'the start, the handle\'s own failure, and a rewording only when there is one');
+ }
 });
 
 test('a plain failed handle retains its string error when the page catches settlement',async()=>{

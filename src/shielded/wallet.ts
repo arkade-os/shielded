@@ -24,7 +24,7 @@ import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
 import {feeRefused,sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
-import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
@@ -108,7 +108,8 @@ export const shieldedSteps={
  claim:['Read the link','Prove the claim on this device','Submit to the pool','Wait for the next batch','Received'],
 } as const;
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
-export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
+/** `fee` is what the plan pays (depositFeeOnPlan), not the schedule, so an exempt payout names none. */
+export const shieldTitle=(plan:ShieldPlan,fee=0n)=>(plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`)+(fee>0n?` with a ${sats(fee)}-sat deposit fee`:'');
 const feePaused=(fee:DepositFeeSchedule)=>`Deposits are paused: this pool now charges a deposit fee of ${sats(fee.fixedSats)} sats or ${fee.bps} bps of the deposit, whichever is more, which is above what this wallet has accepted. Once it is shown, accept it with acceptDepositFee({fixedSats:${fee.fixedSats},bps:${fee.bps}}), or pass maxDepositFee of at least that.`;
 const validSchedule=(value:unknown,name:string)=>{const schedule=parseDepositFeeSchedule(value);if(!schedule)throw new Error(`${name} must be {fixedSats,bps}: whole, non-negative numbers, with bps at most 10000.`);return schedule;};
 export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number;fee?:Parameters<typeof shieldPlan>[4]})=>
@@ -126,7 +127,6 @@ class ReservationFailure extends Error {
  constructor(error:unknown,readonly release:boolean){super(reasonOf(error),{cause:error});}
 }
 const canRelease=(error:unknown)=>!(error instanceof ReservationFailure)||error.release;
-const rejected=(error:unknown,code:string):boolean=>typeof error==='object'&&error!==null&&((error as {code?:unknown}).code===code||rejected((error as {cause?:unknown}).cause,code));
 
 export class ShieldedWallet extends Wallet {
  pool!:ShieldedPoolConfig;
@@ -203,7 +203,7 @@ export class ShieldedWallet extends Wallet {
   try{await this.persist(true);}finally{this.changed();void this.autoShield().catch(()=>{});}
  }
  depositFeeOnPlan(plan:ShieldPlan):bigint{return planFeeOf(plan,this.depositFee,c=>this.isPoolPayout(c));}
- private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw new Error(feePaused(paused));}
+ private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw Object.assign(new Error(feePaused(paused)),{code:'fee-paused'});}
  /** The fee note for depositing exactly `plan`, read as it is built, since the schedule moves; `charged` once the pool has refused the exemption. */
  private depositFeeTo(plan:ShieldPlan,charged=false):EpochSpendRequest['to']{
   this.assertFeeAccepted();
@@ -487,7 +487,11 @@ export class ShieldedWallet extends Wallet {
   if(!landed&&code==='fee-missing')await this.refreshStatus().catch(()=>{});
   return final;
  }
- private async refreshStatus(){this.pool={...this.pool,status:await this.api('/status')};}
+ /** The page's pause banner reads depositFeePaused, so a refresh that moves it says so now rather than at the next tick. */
+ private async refreshStatus(){
+  const status=await this.api<RollupPoolStatus>('/status'),was=this.depositFeePaused;this.pool={...this.pool,status};
+  const now=this.depositFeePaused;if(was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps)this.changed();
+ }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
   const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
   const run=(async()=>{
@@ -614,7 +618,7 @@ export class ShieldedWallet extends Wallet {
   const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(c=>`${c.txid}:${c.vout}`);
   const sentTxids:string[]=[];
   for(const outpoint of taken)this.used.add(outpoint);
-  const handle=shieldedHandle({title:shieldTitle(plan),steps:shieldedSteps.shield,railId:'shielded-deposit'},async step=>{
+  const handle=shieldedHandle({title:shieldTitle(plan,this.depositFeeOnPlan(plan)),steps:shieldedSteps.shield,railId:'shielded-deposit'},async step=>{
    step(0);
    if(plan.kind==='asset'){
     const coin=await this.depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units},plan.coin.vout);

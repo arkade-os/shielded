@@ -5,7 +5,7 @@ import {Transaction} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shortValue} from '../app/src/rollup-client.ts';
+import {PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -268,6 +268,20 @@ test('the pause banner reads as a new fee when nothing was accepted, and as a ri
  for(const text of [depositFeeLine(both),depositFeeBanner(both,undefined),depositFeeBanner(both,fixed)])assert.doesNotMatch(text,/bps|schedule|basis point/i);
 });
 
+test('a paused deposit reads in the page\'s words wherever the pause sits in the error, and no other error does',()=>{
+ const paused=Object.assign(new Error('Deposits are paused: accept it with acceptDepositFee({fixedSats:500,bps:0}), or pass maxDepositFee of at least that.'),{code:'fee-paused'});
+ assert.equal(pausedErrorText(paused),PAUSED_ERROR);
+ assert.equal(pausedErrorText(new Error(paused.message,{cause:paused})),PAUSED_ERROR,'a reservation wraps it');
+ assert.equal(pausedErrorText(new Error('outer',{cause:new Error('middle',{cause:paused})})),PAUSED_ERROR);
+ for(const other of [new Error('plain'),Object.assign(new Error('owes a fee'),{code:'fee-missing'}),new Error('wrapped',{cause:new Error('other')}),'fee-paused',undefined,null,{code:'other'}])assert.equal(pausedErrorText(other),undefined);
+ assert.doesNotMatch(PAUSED_ERROR,/acceptDepositFee|maxDepositFee|bps|schedule/,'the SDK\'s wording stays out of the page');
+ assert.match(PAUSED_ERROR,/changed its deposit fee.*Accept the new fee.*Shielding is paused/);
+ assert.ok(PAUSED_ERROR.includes(PAUSED_LINE),'it says what the banner and the funding card say');
+ const idle={recovering:false,inFlight:false,syncing:false,recoveryLine:''},sheet={title:'Shielding 3,000 sats',steps:['Prepare the deposit coin'],current:0};
+ assert.equal(soundbarItem({...idle,sheet:{...sheet,error:PAUSED_ERROR}})?.line,PAUSED_ERROR,'a paused deposit waits for the user, not for a minute');
+ assert.equal(soundbarItem({...idle,sheet:{...sheet,error:'The pool dropped this spend.'}})?.line,'The pool dropped this spend. It tries again in a minute.');
+});
+
 test('the amount line states the fee a deposit pays and what reaches the pool, and nothing when it pays none',()=>{
  assert.equal(depositFeeAmountLine(100n,5000),'Your next deposit of 5,000 sats pays a 100-sat fee, so 4,900 sats reach the pool.');
  assert.equal(depositFeeAmountLine(12345n,123456789),'Your next deposit of 123,456,789 sats pays a 12,345-sat fee, so 123,444,444 sats reach the pool.');
@@ -285,6 +299,21 @@ test('a shield row\'s fee is the deposited amount less the notes it created',()=
  assert.equal(shieldFeeOf(entry('shield',[{asset:field,amount:9n},{asset:0n,amount:400n}],[owned(4n,field),owned(300n)])),100n,'asset units deposited do not count');
  assert.equal(shieldFeeOf(entry('shield',[{asset:0n,amount:400n}],[owned(5n,field),owned(300n)])),100n,'nor do asset notes created');
  for(const kind of ['receive','send','withdraw','merge','renew','recover'] as const)assert.equal(shieldFeeOf(entry(kind,[{asset:0n,amount:1000n}],[owned(900n)])),undefined,kind);
+});
+
+test('a shield row\'s fee sums every deposit its batch transaction carried, and nothing else',()=>{
+ const [a,b]=['aa'.repeat(32),'bb'.repeat(32)];
+ const entry=(kind:EpochHistoryEntry['kind'],txid:string|undefined,deposited:bigint,kept:bigint):EpochHistoryEntry=>({kind,batch:1,epoch:0,...(txid?{txid}:{}),amounts:[{asset:0n,amount:deposited}],spent:[],created:[{amount:kept,asset:0n,rho:1n,epoch:0,index:0,nullifier:kept}],slots:[0]});
+ const exempt=entry('shield',a,400n,400n),paid=entry('shield',a,10_000n,9_900n);
+ assert.equal(shieldFeeOfTx([exempt,paid],a),100n,'an exempt payout listed first does not hide the fee of the deposit beside it');
+ assert.equal(shieldFeeOfTx([paid,exempt],a),100n);
+ assert.equal(shieldFeeOfTx([paid,entry('shield',a,5_000n,4_800n)],a),300n,'two paid deposits add up');
+ assert.equal(shieldFeeOfTx([paid],a),100n);
+ assert.equal(shieldFeeOfTx([exempt],a),0n,'a deposit that paid nothing is a fee of zero, not a missing one');
+ assert.equal(shieldFeeOfTx([paid,entry('shield',b,5_000n,4_000n),entry('send',a,10_000n,9_000n),entry('receive',a,10_000n,9_000n)],a),100n,'other kinds and other transactions are ignored');
+ assert.equal(shieldFeeOfTx([entry('shield',b,5_000n,4_000n),entry('send',a,10_000n,9_000n)],a),undefined);
+ assert.equal(shieldFeeOfTx([],a),undefined);
+ for(const txid of [undefined,7,null])assert.equal(shieldFeeOfTx([entry('shield',undefined,10_000n,9_900n),paid],txid),undefined,'a row without a transaction id matches no entry, not the entries that have none');
 });
 
 test('the private-receive box follows the user\'s choice, and one notice follows what the service lists',()=>{
