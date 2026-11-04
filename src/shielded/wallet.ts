@@ -178,6 +178,8 @@ export class ShieldedWallet extends Wallet {
   const maxDepositFee=config.maxDepositFee===undefined?undefined:validSchedule(config.maxDepositFee,'maxDepositFee');
   const wallet=await super.create(config) as ShieldedWallet;
   try{
+   // The manager starts up against the indexer while load() reads the pool; start() awaits this same start-up.
+   void wallet.getContractManager().catch(()=>{});
    config.onArkAddress?.(await wallet.getAddress());
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
