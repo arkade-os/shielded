@@ -24,7 +24,7 @@ import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
 import {feeRefused,sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
-import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
+import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
@@ -126,7 +126,6 @@ class ReservationFailure extends Error {
  constructor(error:unknown,readonly release:boolean){super(reasonOf(error),{cause:error});}
 }
 const canRelease=(error:unknown)=>!(error instanceof ReservationFailure)||error.release;
-const rejected=(error:unknown,code:string):boolean=>typeof error==='object'&&error!==null&&((error as {code?:unknown}).code===code||rejected((error as {cause?:unknown}).cause,code));
 
 export class ShieldedWallet extends Wallet {
  pool!:ShieldedPoolConfig;
@@ -203,7 +202,7 @@ export class ShieldedWallet extends Wallet {
   try{await this.persist(true);}finally{this.changed();void this.autoShield().catch(()=>{});}
  }
  depositFeeOnPlan(plan:ShieldPlan):bigint{return planFeeOf(plan,this.depositFee,c=>this.isPoolPayout(c));}
- private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw new Error(feePaused(paused));}
+ private assertFeeAccepted(){const paused=this.depositFeePaused;if(paused)throw Object.assign(new Error(feePaused(paused)),{code:'fee-paused'});}
  /** The fee note for depositing exactly `plan`, read as it is built, since the schedule moves; `charged` once the pool has refused the exemption. */
  private depositFeeTo(plan:ShieldPlan,charged=false):EpochSpendRequest['to']{
   this.assertFeeAccepted();
@@ -487,7 +486,11 @@ export class ShieldedWallet extends Wallet {
   if(!landed&&code==='fee-missing')await this.refreshStatus().catch(()=>{});
   return final;
  }
- private async refreshStatus(){this.pool={...this.pool,status:await this.api('/status')};}
+ /** The page's pause banner reads depositFeePaused, so a refresh that moves it says so now rather than at the next tick. */
+ private async refreshStatus(){
+  const was=this.depositFeePaused;this.pool={...this.pool,status:await this.api('/status')};
+  const now=this.depositFeePaused;if(was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps)this.changed();
+ }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
   const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
   const run=(async()=>{

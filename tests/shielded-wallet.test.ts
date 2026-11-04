@@ -640,6 +640,36 @@ test('a fee-missing rebuild submits nothing when the new fee is not accepted or 
  }
 });
 
+const PAUSED_500='Deposits are paused: this pool now charges a deposit fee of 500 sats or 0 bps of the deposit, whichever is more, which is above what this wallet has accepted. Once it is shown, accept it with acceptDepositFee({fixedSats:500,bps:0}), or pass maxDepositFee of at least that.';
+
+test('the fee-paused refusal keeps its message, carries a stable code through a rebuild\'s wrapping, and the page hears of the pause',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),requests=readyDeposit(wallet),pool=feePool(feeOf(500),Infinity),input=coin('aa'.repeat(32),10_000),heard:(number|undefined)[]=[];
+ clearTimeout((wallet as any).timer);wallet.api=pool.api;wallet.onShieldedChange(()=>heard.push(wallet.depositFeePaused?.fixedSats));
+ try{
+  const failure:any=await (await wallet.shield([input]))!.settled().catch((error:unknown)=>error);await flush();
+  assert.equal(failure.message,PAUSED_500);
+  assert.equal(failure.cause.code,'fee-paused','the reservation wraps it; the code is on its cause');
+  assert.ok(heard.includes(500),'the refresh that left deposits paused told the page');
+  assert.equal(heard[0],500,'and it did so before anything else did');
+  assert.equal(requests.length,1,'the rebuild built nothing');
+  await assert.rejects(wallet.shield([input]),error=>(error as {code?:string}).code==='fee-paused'&&(error as Error).message===PAUSED_500);
+ }finally{await wallet.dispose();}
+});
+
+test('a status refresh tells the page only when the paused fee changes',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),heard:(number|undefined)[]=[];
+ clearTimeout((wallet as any).timer);wallet.onShieldedChange(()=>heard.push(wallet.depositFeePaused?.fixedSats));
+ const refresh=async(fee?:DepositFee)=>{wallet.api=feePool(fee).api;await (wallet as any).refreshStatus();};
+ try{
+  await refresh();await refresh(feeOf(100));
+  assert.deepEqual(heard,[],'no fee, then one already accepted: nothing paused before or after');
+  await refresh(feeOf(500));await refresh(feeOf(500));
+  assert.deepEqual(heard,[500],'newly paused once, not again for the same fee');
+  await refresh(feeOf(900));await refresh(feeOf(100));
+  assert.deepEqual(heard,[500,900,undefined],'a different fee to accept, then back within what was accepted');
+ }finally{await wallet.dispose();}
+});
+
 test('accepting the fee a rebuild stopped on shields at once, without the retry wait',async()=>{
  const wallet=await open({maxDepositFee:feeOf(100)}),requests=readyDeposit(wallet),pool=feePool(feeOf(500),1),input=coin('aa'.repeat(32),10_000),resumed=deferred<ShieldedPaymentHandle>();
  clearTimeout((wallet as any).timer);wallet.api=pool.api;wallet.coins=async()=>[input];
