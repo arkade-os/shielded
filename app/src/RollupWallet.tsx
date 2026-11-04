@@ -293,11 +293,11 @@ export default function RollupWallet(){
   void service.privateReceiveState().then(next=>{if(!stop)setPrivateState(next);},error=>{if(!stop)setLnError(errorText(error));});
   return()=>{stop=true;};
  },[wallet,tick,lnAddress,lnBusy]);
- useEffect(()=>{lnLimits.current=undefined;setLnBounds(undefined);},[wallet]);
- // On the amount field's first focus, not at open: markets() fetches the solver registry and its cards. markets() first: resolve() reads the snapshot it loads.
+ useEffect(()=>{lnLimits.current=wallet?.swaps;setLnBounds(undefined);},[wallet]);
+ // On focus, not at open: markets() fetches the solver registry and its cards, and the client caches them for their TTL. markets() first: resolve() reads the snapshot it loads.
  const readLnBounds=()=>{
-  const swaps=wallet?.swaps;if(!swaps||lnLimits.current===swaps)return;lnLimits.current=swaps;
-  void (async()=>{const markets=await swaps.markets(),route=await swaps.resolve({via:'lightning'});if(mounted.current&&lnLimits.current===swaps)setLnBounds(invoiceBounds(markets,route));})().catch(()=>{if(lnLimits.current===swaps)lnLimits.current=undefined;});
+  const swaps=wallet?.swaps;if(!swaps)return;
+  void (async()=>{const markets=await swaps.markets(),route=await swaps.resolve({via:'lightning'});if(mounted.current&&lnLimits.current===swaps)setLnBounds(invoiceBounds(markets,route));})().catch(()=>{});
  };
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
@@ -429,7 +429,7 @@ export default function RollupWallet(){
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{funding?<Copyable value={funding} qr={funding} label="QR code of your Arkade address"/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own while this page is open.{fundingFee&&` ${fundingFee}`}{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Test sats: the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a>, after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
      <div className="stock-address"><small>LIGHTNING</small>
       {lnAddress?<Copyable value={lnAddress} qr={lnAddress} label="QR code of your Lightning address"/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
-      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" onFocus={readLnBounds} aria-describedby={lnBounds?'stock-ln-limits':undefined} aria-invalid={lnOutside||undefined} placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount||lnOutside}>Create invoice</button></form>
+      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" onFocus={readLnBounds} aria-describedby={lnBounds?'stock-ln-limits':undefined} aria-invalid={lnOutside||undefined} placeholder="Sats" maxLength={10} value={lnAmount} onChange={e=>{setLnAmount(e.target.value.replace(/\D/g,''));if(!lnBounds)readLnBounds();}}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount||lnOutside}>Create invoice</button></form>
       {lnBounds&&<p id="stock-ln-limits" className={lnOutside?'stock-blocked':'stock-muted'}>{invoiceLimitsLine(lnBounds)}</p>}
       {invoice&&<><Copyable value={invoice.bolt11} qr={invoiceQr(invoice.bolt11)} label="QR code of the invoice"/><p className="stock-muted">{invoiceLine(invoice,fee)}</p></>}
       {lnAddress&&<>
