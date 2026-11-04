@@ -489,7 +489,7 @@ export class ShieldedWallet extends Wallet {
  }
  /** The page's pause banner reads depositFeePaused, so a refresh that moves it says so now rather than at the next tick. */
  private async refreshStatus(){
-  const was=this.depositFeePaused;this.pool={...this.pool,status:await this.api('/status')};
+  const status=await this.api<RollupPoolStatus>('/status'),was=this.depositFeePaused;this.pool={...this.pool,status};
   const now=this.depositFeePaused;if(was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps)this.changed();
  }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
