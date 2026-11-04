@@ -20,6 +20,8 @@ import {epochTransferBody,type EpochSpendBody} from '../src/shielded/epoch-pool.
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
+import {pageSheet} from '../app/src/shielded-page.ts';
+import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
@@ -683,6 +685,18 @@ test('a status refresh tells the page only when the paused fee changes',async()=
   assert.deepEqual(heard,[500],'newly paused once, not again for the same fee');
   await refresh(feeOf(900));await refresh(feeOf(100));
   assert.deepEqual(heard,[500,900,undefined],'a different fee to accept, then back within what was accepted');
+ }finally{await wallet.dispose();}
+});
+
+test('an auto-shield stopped by a raised fee reaches the sheet in the page\'s words, with the pause already in the wallet',async()=>{
+ const wallet=await open({maxDepositFee:feeOf(100)}),input=coin('aa'.repeat(32),10_000),seen:[boolean,string|undefined][]=[],started=deferred<ShieldedPaymentHandle>();
+ readyDeposit(wallet);clearTimeout((wallet as any).timer);wallet.api=feePool(feeOf(500),Infinity).api;wallet.coins=async()=>[input];
+ const sheet=pageSheet(state=>seen.push([!!wallet.depositFeePaused,state?.error]));
+ wallet.onAction(handle=>{sheet.watch(handle,handle.title);started.resolve(handle);});
+ try{
+  await (wallet as any).autoShield();
+  await (await within(started.promise))!.settled().catch(()=>{});await flush();
+  assert.deepEqual(seen.slice(-2),[[true,PAUSED_500],[true,PAUSED_ERROR]],'the handle\'s own failure with the banner already due, then the page\'s words');
  }finally{await wallet.dispose();}
 });
 
