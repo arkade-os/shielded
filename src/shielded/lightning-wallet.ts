@@ -63,7 +63,7 @@ export async function artifactWallet(companion:Wallet,artifact:LightningArtifact
  const signerForDescriptor=async(requested:string)=>{if(requested!==descriptor&&requested!==bare)throw new Error('Descriptor belongs to another Lightning artifact');return identity;};
  const overrides:Record<PropertyKey,unknown>={identity,getAddress:async()=>artifact.address,getNextSigningDescriptor:async()=>descriptor,
   advanceSigningDescriptorWatermark:async()=>{},signerForDescriptor,
-  getBalance:async():Promise<WalletBalance>=>({available:available(),availableAssets:[],assets:[],total:0,settled:0,preconfirmed:0,contractLocked:0,gated:0,pendingSettlement:0,intentLocked:0,reserved:0,recoverable:0,deprecatedSignerLocked:0,pendingRecovery:0,unrolled:0,boarding:{confirmed:0,unconfirmed:0,total:0}}),send};
+  getBalance:async():Promise<WalletBalance>=>{const sats=available();return {available:sats,availableAssets:[],assets:[],total:sats,settled:0,preconfirmed:0,contractLocked:0,gated:0,pendingSettlement:0,intentLocked:0,reserved:0,recoverable:0,deprecatedSignerLocked:0,pendingRecovery:0,unrolled:0,boarding:{confirmed:0,unconfirmed:0,total:0}};},send};
  return new Proxy(companion,{get(target,key){if(key in overrides)return overrides[key];const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}}) as IWallet&Pick<Wallet,'signerForDescriptor'>;
 }
 /** Held by the one tab running an exit, so another tab's payout scan leaves that script alone. Never persisted. */
