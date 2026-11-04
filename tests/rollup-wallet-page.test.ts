@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import {Transaction} from '@arkade-os/sdk';
+import {AmbiguousDestination,UnsupportedRoute,btcOn,type Market} from '@arkade-os/swap';
+import {marketOf,resolveRoute} from '@arkade-os/swap/advanced';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceCarriesAmount,invoiceFeeClause,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,listedAssetLine,listingBlocked,noSwapErrorText,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -407,4 +409,59 @@ test('a count of one reads as 1 sat',()=>{
  assert.equal(depositFeeLine({fixedSats:1,bps:50}),'This pool charges a deposit fee of 1 sat or 0.5% of each deposit, whichever is more.');
  assert.equal(depositFeeBanner({fixedSats:1,bps:50},{fixedSats:0,bps:50}),'This pool raised its deposit fee to 1 sat or 0.5% of each deposit, whichever is more. Nothing new moves into the pool until you accept it.');
  assert.equal(holdingsText([{asset:0n,amount:1n}],()=>undefined),'1 sat');
+});
+
+type Leg=Market['legs'][0];
+const LN=btcOn('bolt11','mutinynet'),ARK=btcOn('arkade','mutinynet'),route={give:{asset:LN},take:{asset:ARK}};
+const span=(min:number,max:number)=>({min:BigInt(min),max:BigInt(max)}),leg=(asset:Leg['asset'],limits:Leg['limits']):Leg=>({asset,decimals:8,limits});
+const card=(...legs:[Leg,Leg]):Market=>({kind:'card',key:`${ARK}/${LN}`,backend:'rfq',source:'https://arkade-os.github.io/solver-registry/mutinynet.json',sourceType:'registry',solver:'ln-solver-mutinynet',pair:'BTC/lightning:BTC',snapshot:{fetchedAt:1,live:true,source:'live'},legs});
+const lnMarket=(ark:Leg['limits'],ln:Leg['limits'])=>card(leg(ARK,ark),leg(LN,ln));
+
+test('a Lightning receive may ask for the Arkade leg\'s range, whichever leg comes first, and the Lightning leg\'s limits do not narrow it',()=>{
+ assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),span(1000,25000))],route),span(1000,50000),'Mutinynet: 1,000 to 50,000 on Arkade, 1,000 to 25,000 on Lightning');
+ assert.deepEqual(invoiceBounds([card(leg(LN,span(1000,25000)),leg(ARK,span(1000,50000)))],route),span(1000,50000),'a leg is found by its asset, not its position');
+ assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),span(2000,500))],route),span(1000,50000),'the Lightning leg\'s min and max set nothing');
+ assert.equal(invoiceLimitsLine(span(1000,50000)),'Invoices from 1,000 to 50,000 sats.');
+});
+
+test('markets that carry no Lightning receive give no bounds',()=>{
+ const onchain=btcOn('bitcoin','mutinynet'),token=`arkade:mutinynet/asset:${'11'.repeat(34)}` as Leg['asset'];
+ assert.equal(invoiceBounds([],route),undefined);
+ assert.equal(invoiceBounds([card(leg(ARK,span(1000,50000)),leg(onchain,span(1000,50000))),card(leg(token,span(1,9)),leg(LN,span(1000,25000))),card(leg(ARK,span(1000,50000)),{decimals:6,limits:span(1,9)})],route),undefined,'on-chain, an Arkade asset, a leg with no public id');
+});
+
+test('an Arkade leg the solver does not pay out sets no bound, and hides no live market',()=>{
+ assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),null)],route),span(1000,50000),'a Lightning leg with null limits');
+ assert.equal(invoiceBounds([lnMarket(null,span(1000,25000))],route),undefined,'an Arkade leg with null limits cannot pay the receiver');
+ assert.deepEqual(invoiceBounds([lnMarket(null,null),lnMarket(span(1000,50000),span(1000,25000))],route),span(1000,50000),'a dead market hides no live one');
+});
+
+test('several markets on the route give the widest min and the widest max',()=>{
+ const a=lnMarket(span(1000,50000),span(1000,25000)),b=lnMarket(span(500,10000),span(500,10000));
+ assert.deepEqual(invoiceBounds([a,b],route),span(500,50000));
+ assert.deepEqual(invoiceBounds([b,a],route),span(500,50000),'order does not matter');
+ assert.deepEqual(invoiceBounds([a,lnMarket(span(100,200000),span(100,100000))],route),span(100,200000));
+});
+
+test('an invoice amount is in range from the min to the max and not a sat either side',()=>{
+ assert.deepEqual([999n,1000n,50000n,50001n].map(amount=>invoiceInRange(span(1000,50000),amount)),[false,true,true,false]);
+ assert.deepEqual([0n,1n,10n**30n].map(amount=>invoiceInRange(undefined,amount)),[true,true,true],'no bounds known: every amount, as before');
+});
+
+test('a receive that finds no market reads in the page\'s words, and no other error does',()=>{
+ const sdk=new UnsupportedRoute('no market serves lightning:btc -> arkade:btc on the active discovery snapshot',{give:'lightning',take:'arkade'});
+ assert.equal(sdk.message,'unsupported route: no market serves lightning:btc -> arkade:btc on the active discovery snapshot','what the page showed');
+ assert.equal(noSwapErrorText(sdk),NO_SWAP_LINE);
+ assert.equal(NO_SWAP_LINE,'No Lightning swap is taking this amount right now.');
+ assert.doesNotMatch(NO_SWAP_LINE,/route|snapshot|market/i);
+ for(const other of [new AmbiguousDestination('x','no corridor'),new Error('unsupported route: no market serves it'),new Error('plain'),{name:'UnsupportedRoute'},'UnsupportedRoute',undefined,null])assert.equal(noSwapErrorText(other),undefined);
+});
+
+test('the bounds are the amounts swap\'s own route resolution takes: the Arkade min and max, and 500 sats finds no market',async()=>{
+ const info={name:'Bitcoin',ticker:'BTC',decimals:8},source='https://arkade-os.github.io/solver-registry/mutinynet.json';
+ const solver={solver:'ln-solver-mutinynet',discovery_pubkey:'ab'.repeat(32),transports:{nostr:{relays:['wss://relay.test']}},base_asset:{id:ARK,...info},quote_asset:{id:LN,...info},fee_bps:500,min_base_amount:'1000',max_base_amount:'50000',min_quote_amount:'1000',max_quote_amount:'25000',source,sourceType:'registry' as const};
+ const snapshot={markets:[solver],ref:{fetchedAt:1,live:true,source:'injected' as const}},discovery={peek:async()=>snapshot,load:async()=>snapshot};
+ const resolve=(amount?:bigint)=>resolveRoute({via:'lightning',...amount?{amount,amountOn:'take' as const}:{}},{corridors:{} as never,network:'mutinynet',discovery,mode:'quote'});
+ assert.deepEqual(invoiceBounds([marketOf(solver,snapshot.ref,'mutinynet')],(await resolve()).resolution),span(1000,50000));
+ for(const [amount,eligible] of [[500n,0],[999n,0],[1000n,1],[50000n,1],[50001n,0]] as const)assert.equal((await resolve(amount)).resolution.eligible,eligible,`${amount} sats`);
 });
