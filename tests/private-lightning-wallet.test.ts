@@ -5,7 +5,8 @@ import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,DefaultVtxo,InMem
 import {Script} from '@scure/btc-signer';
 import {sha256} from '@noble/hashes/sha2.js';
 import {ripemd160} from '@noble/hashes/legacy.js';
-import {InMemoryAssetSwapRepository,type Quote,type SwapClient,type SwapClientConfig,type SwapRecord,type SwapUpdate} from '@arkade-os/swap';
+import {InMemoryAssetSwapRepository,UnsupportedRoute,btcOn,type Quote,type SwapClient,type SwapClientConfig,type SwapRecord,type SwapUpdate} from '@arkade-os/swap';
+import {resolveRoute} from '@arkade-os/swap/advanced';
 import {schnorr} from '@noble/curves/secp256k1.js';
 import {base64,hex} from '@scure/base';
 import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
@@ -18,6 +19,7 @@ import {checkRecoveryWitnessRepair,completeRecoveryWitnesses} from '../src/shiel
 import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
 import {LightningSwapRepository} from '../src/shielded/lightning-receipt.ts';
 import {pageActivityHistory} from '../app/src/shielded-page.ts';
+import {NO_SWAP_LINE,noSwapErrorText} from '../app/src/rollup-client.ts';
 
 globalThis.indexedDB=indexedDB;
 const owner='owner',pool='pool',secret='11'.repeat(32);
@@ -98,7 +100,7 @@ function serviceFixture(){
  const clientFactory=(config:SwapClientConfig)=>{
   configs.push(config);
   const id=`client-${sequence++}`,listeners=new Set<(u:SwapUpdate)=>void>(),store=config.repository!;
-  const resolution=(input:any)=>({give:{corridor:input.via?'lightning':'arkade'},take:{corridor:input.via?'arkade':'lightning'},eligible:1,amount:{value:input.amount??1000n}});
+  const resolution=(input:any)=>({give:{corridor:input.via?'lightning':'arkade'},take:{corridor:input.via?'arkade':'lightning'},market:{kind:'card',key:'test'},eligible:1,amount:{value:input.amount??1000n}});
   const getRecords=async()=>{const page=await store.getSwapRecordsPage({limit:100});return page.items;};
   const client={ready:Promise.resolve(),start:async()=>{starts.push(id);},stop:async()=>{},markets:async()=>[],resolve:async(input:any)=>resolution(input),
    quote:async(input:any)=>{
@@ -954,6 +956,25 @@ test('a receive the deposit fee would leave under the pool minimum is refused be
   contract.vtxos=([[ab,0,429],[ab,1,430],[cd,0,400]] as const).map(([txid,vout,value])=>({txid,vout,value,script:contract.script,createdAt:new Date(1000+vout),isPreconfirmed:false}));
   const outcomes=Object.fromEntries((await service.getActivityHistory()).map(row=>[(row.intent?.metadata as {outpoint:string}).outpoint,row.intent?.outcome]));
   assert.deepEqual(outcomes,{[`${ab}:0`]:'below-minimum',[`${ab}:1`]:'received',[`${cd}:0`]:'received'},'an exit\'s payout the pool paid out owes no fee');
+ }finally{await service[Symbol.asyncDispose]();}
+});
+
+function routedClients(f:ReturnType<typeof serviceFixture>){
+ const info={name:'Bitcoin',ticker:'BTC',decimals:8},card={solver:'ln-solver-mutinynet',discovery_pubkey:'ab'.repeat(32),transports:{nostr:{relays:['wss://relay.test']}},base_asset:{id:btcOn('arkade','mutinynet'),...info},quote_asset:{id:btcOn('bolt11','mutinynet'),...info},fee_bps:500,min_base_amount:'1000',max_base_amount:'50000',min_quote_amount:'1000',max_quote_amount:'25000',source:'https://arkade-os.github.io/solver-registry/mutinynet.json',sourceType:'registry' as const};
+ const snapshot={markets:[card],ref:{fetchedAt:1,live:true,source:'injected' as const}},discovery={peek:async()=>snapshot,load:async()=>snapshot},corridors={claim:()=>({corridor:'lightning',instrument:{kind:'invoice'}})} as never;
+ return (config:SwapClientConfig)=>{const client=f.clientFactory(config);
+  return config.policy?.drive!=='readonly'?client:{...client,resolve:async(input:any)=>(await resolveRoute(input,{corridors,network:'mutinynet',discovery,mode:'resolve'})).resolution} as SwapClient;};
+}
+const noMarket=(give:string,take:string)=>(error:unknown)=>error instanceof UnsupportedRoute&&error.message===`unsupported route: no market serves ${give}:btc -> ${take}:btc on the active discovery snapshot`&&error.give===give&&error.take===take&&noSwapErrorText(error)===NO_SWAP_LINE;
+for(const [kind,give,take,unserved] of [['receive','lightning','arkade',[999n,50001n]],['send','arkade','lightning',[999n,25001n]]] as const)test(`a ${kind} no market serves is refused as swap's UnsupportedRoute before an artifact is allocated, watched or opened`,async()=>{
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());f.wallet.canWithdraw=()=>true;
+ const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:routedClients(f),acquireSession:f.acquireSession,legacyRecovery:false});
+ const ask=(amount:bigint)=>kind==='send'?service.quote({to:'invoice',amount,amountOn:'take'}):service.receive({via:'lightning',amount});
+ try{
+  for(const amount of unserved)await assert.rejects(ask(amount),noMarket(give,take),`${amount} sats`);
+  assert.deepEqual(await journal.artifacts(ownerKey,pool),[]);assert.deepEqual(await journal.payouts(ownerKey,pool),[]);
+  assert.equal(f.configs.length,1);assert.equal(f.contracts.length,0);assert.equal(f.live.size,0);
+  await ask(1000n);assert.deepEqual((await journal.artifacts(ownerKey,pool)).map(a=>[a.index,a.kind]),[[0,kind]],'in range it allocates as before, and the refusals burned no HD index');
  }finally{await service[Symbol.asyncDispose]();}
 });
 
