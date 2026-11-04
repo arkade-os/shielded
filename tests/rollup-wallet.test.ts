@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {bech32m} from '@scure/base';
 import {test} from 'node:test';
 import {buildPoseidon} from 'circomlibjs';
-import {ROLLUP_DOMAIN} from '../packages/protocol/src/rollup/constants.ts';
+import {ROLLUP_DOMAIN,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 import {noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {ctDigestOf,openRollupNotes,parseRollupAddress,rollupAddressOf,rollupRecipientOf,sealRollupNotes,viewEcdh,ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
@@ -22,6 +22,14 @@ test('rollup keys are stable per secret and network, and addresses round-trip',(
  assert.equal(back.owner,bobTo.owner);
  assert.deepEqual([...back.viewPublic],[...bobTo.viewPublic]);
  assert.throws(()=>parseRollupAddress(address.slice(0,-1)+(address.endsWith('q')?'p':'q')));
+});
+
+test('an address whose owner is past the field is refused, though it names the same note owner mod q',()=>{
+ const alias=rollupAddressOf({...bobTo,owner:bobTo.owner+ROLLUP_FIELD});
+ assert.notEqual(alias,rollupAddressOf(bobTo));
+ assert.throws(()=>parseRollupAddress(alias),/Not a shielded rollup address/);
+ assert.throws(()=>parseRollupAddress(rollupAddressOf({...bobTo,owner:ROLLUP_FIELD})),/Not a shielded rollup address/);
+ assert.equal(parseRollupAddress(rollupAddressOf({...bobTo,owner:ROLLUP_FIELD-1n})).owner,ROLLUP_FIELD-1n);
 });
 
 test('each recipient opens only its own output, and the commitment checks out',async()=>{
