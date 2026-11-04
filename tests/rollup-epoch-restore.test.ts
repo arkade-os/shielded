@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { buildPoseidon } from 'circomlibjs';
 import type { RollupEpochRecord } from '../packages/protocol/src/rollup/epoch-record.ts';
-import { epochBirthCheckpoint, epochFreshAccount, epochMatchesPool, loadEpochAccount } from '../src/shielded/epoch-checkpoint.ts';
+import { epochBirthCheckpoint, epochConfirmed, epochFreshAccount, epochMatchesPool, loadEpochAccount } from '../src/shielded/epoch-checkpoint.ts';
 import { epochCatchUp, epochIdle } from '../src/shielded/epoch-sync.ts';
 import type { PoolApi, RollupPoolStatus } from '../src/shielded/pool.ts';
 import { NoteFrontier, type FrontierCheckpoint } from '../packages/protocol/src/rollup/frontier.ts';
@@ -110,7 +110,7 @@ test('a cold wallet born in the current epoch starts at the (epoch, blocks) chec
  assert.deepEqual([status.batches, status.epoch, status.batchesInEpoch], [3 * LONG, 2, LONG], 'the epoch of the last accepted batch, not of the next');
  const bornAt = await epochBirthCheckpoint(api, pool.records[5 * 64]!.at! + 86_400_000), held: boolean[] = [];
  const account = await epochFreshAccount(hash, aliceKeys, bornAt, api, (cursor, _, at) => { if (cursor === 326) held.push(at.spendable(at.notes()[0]!)); });
- assert.deepEqual(asked, ['/times', '/status', '/checkpoints/2/64', '/batches?from=320&limit=50', '/batches?from=370&limit=50', '/status']);
+ assert.deepEqual(asked, ['/times', '/status', '/checkpoints/2/64', '/batches?from=320&limit=50', '/batches?from=370&limit=50']);
  assert.deepEqual([bornAt, held], [320, [true]], 'mid-epoch, spendable() reads the prevNoteRoot the checkpoint start was seeded with');
  assert.deepEqual([account.batchCount, account.epoch, account.latestRoot(), account.prevNoteRoot()], [3 * LONG, 2, pool.state.latestRoot(), BigInt(status.prevNoteRoot!)]);
  const [note] = account.notes(), built = await account.spend({ input: note!, ...pays(100n) }, aliceTo);
@@ -127,7 +127,7 @@ test('a cold wallet born in the current epoch starts at the (epoch, blocks) chec
 test('a birthday past a checkpoint starts from the one below it, as the classic floor does, and one before the first asks for none', async () => {
  const pool = await longPool(), { asked, api } = logged(pool.api), early = logged(pool.api), status = (await pool.api<RollupPoolStatus>('/status')).pool!;
  const account = await epochFreshAccount(hash, aliceKeys, 2 * LONG + 70, api), young = await epochFreshAccount(hash, aliceKeys, 2 * LONG + 63, early.api);
- assert.deepEqual(asked, ['/status', '/checkpoints/2/64', '/batches?from=320&limit=50', '/batches?from=370&limit=50', '/status']);
+ assert.deepEqual(asked, ['/status', '/checkpoints/2/64', '/batches?from=320&limit=50', '/batches?from=370&limit=50']);
  assert.deepEqual([account.batchCount, account.epoch, account.latestRoot(), account.prevNoteRoot(), account.notes()], [3 * LONG, 2, pool.state.latestRoot(), BigInt(status.prevNoteRoot!), []], 'Alice\'s payment at 325 is the batch before this birthday');
  assert.deepEqual([early.asked, young.batchCount, young.epoch], [['/status'], LONG, 1]);
 });
@@ -183,6 +183,22 @@ test('a batch landing between the catch-up and the status read gets another try'
  }) as PoolApi);
  assert.equal(await epochMatchesPool(account, api), true);
  assert.deepEqual([account.batchCount, account.latestRoot(), asked.filter(p => p === '/status').length], [2, pool.state.latestRoot(), 2]);
+});
+
+test('a status the caller already read answers the first check only at the caught-up count', async () => {
+ const pool = epochPool(hash, 4), account = alice(4);
+ pool.land();
+ const known = (await pool.api<RollupPoolStatus>('/status')).pool!, { asked, api } = logged(pool.api), statuses = () => asked.filter(p => p === '/status').length;
+ assert.equal(await epochMatchesPool(account, api, undefined, undefined, undefined, known), true);
+ assert.deepEqual([statuses(), epochConfirmed(account)], [0, true]);
+ pool.land();
+ assert.equal(await epochMatchesPool(account, api, undefined, undefined, undefined, known), true);
+ assert.deepEqual([account.batchCount, statuses()], [2, 1], 'a count the pool has moved past is read again');
+ assert.equal(await epochMatchesPool(account, api, undefined, undefined, undefined, { ...known, batches: 2, root: '1' }), false, 'a known root still has to match');
+ assert.equal(statuses(), 1);
+ pool.land();
+ await epochCatchUp(account, pool.api);
+ assert.equal(epochConfirmed(account), false, 'past its confirmed count, an account is no longer confirmed');
 });
 
 test('a v1 snapshot, another owner\'s, and another epochLen are each refused', async () => {

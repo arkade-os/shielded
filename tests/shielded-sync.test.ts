@@ -79,7 +79,7 @@ const rotated=async()=>{
 test('online, a snapshot the pool confirms resumes, and one whose root it refutes syncs from the pool',async()=>{
  const {pool,account,saving}=await rotated(),asked:string[]=[],api=((path:string)=>{asked.push(path);return pool.api(path);}) as PoolApi;
  const resumed=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',epochLen:4,bornAt:0,api});
- assert.deepEqual([resumed.resumed,resumed.error,resumed.account.batchCount,resumed.sent['7']?.to,asked],[true,undefined,6,'shrol21abc',['/status','/batches?from=6&limit=50','/status']]);
+ assert.deepEqual([resumed.resumed,resumed.error,resumed.account.batchCount,resumed.sent['7']?.to,asked],[true,undefined,6,'shrol21abc',['/status','/batches?from=6&limit=50']]);
  const refuted=await loadAccount(hash,aliceKeys,{repository:await saving({...account.snapshot(),frontier:{...account.snapshot().frontier,top:'1'}}),token:'g2',epochLen:4,bornAt:0,api:pool.api});
  assert.deepEqual([refuted.resumed,refuted.error,refuted.sent],[false,'The saved wallet does not match the pool; syncing from the pool.',{}]);
 });

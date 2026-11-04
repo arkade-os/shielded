@@ -215,7 +215,7 @@ test('a fresh account starts from the real service\'s in-epoch checkpoint, born 
  for(const bornAt of [192,200]){
   const asked:string[]=[],logged=((path:string,...rest:[unknown?,(()=>void)?])=>{asked.push(path);return api(path,...rest);}) as PoolApi;
   const account=await epochFreshAccount(hash,aliceKeys,bornAt,logged);
-  assert.deepEqual(asked,['/status','/checkpoints/1/64','/batches?from=192&limit=50','/status'],`born at ${bornAt}: no replay from the epoch before`);
+  assert.deepEqual(asked,['/status','/checkpoints/1/64','/batches?from=192&limit=50'],`born at ${bornAt}: no replay from the epoch before`);
   assert.deepEqual([account.batchCount,account.epoch,account.latestRoot(),account.prevNoteRoot()],[pool.batches,pool.epoch,BigInt(pool.root),BigInt(pool.prevNoteRoot!)],`born at ${bornAt}`);
  }
 });
