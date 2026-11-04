@@ -1,5 +1,5 @@
 import {ArkAddress,DefaultVtxo,DescriptorIdentity,IndexedDBContractRepository,IndexedDBWalletRepository,MnemonicIdentity,OnchainWallet,TxType,UnilateralExit,Wallet,deriveDescriptorLeafPubKey,identityDescriptor,isVtxoSpent,parseHDDescriptor,sequenceToTimelock,timelockToSequence,type Activity,type ExitQuote,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type SendParams,type WalletBalance,type WalletConfig} from '@arkade-os/sdk';
-import {createSwapClient,isBtcAssetLenient,type AssetSwapRepository,type CorridorSwapRecord,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
+import {UnsupportedRoute,createSwapClient,isBtcAssetLenient,type AssetSwapRepository,type CorridorSwapRecord,type Quote,type ReceiveOptions,type ReceiveRequest,type SwapClient,type SwapClientConfig,type SwapRailClient,type SwapUpdate} from '@arkade-os/swap';
 import {hex} from '@scure/base';
 import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
@@ -104,6 +104,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const receipts=new Map<string,CorridorSwapRecord>();
  let stopped=false,timer:ReturnType<typeof setTimeout>|undefined,legacy:SwapClient|undefined,legacyRepository:AssetSwapRepository|undefined,releaseLegacy:(()=>Promise<void>)|undefined,offLegacy:(()=>void)|undefined;
  const discoveryRepository=repositoryFor(`${namespace}-markets`),discovery=clientFactory({...config,wallet:companion,repository:discoveryRepository,policy:{drive:'readonly'}});
+ const freshResolve=async(input:Parameters<SwapClient['resolve']>[0])=>{const client=clientFactory({...config,wallet:companion,repository:discoveryRepository,policy:{drive:'readonly'}});try{await client.markets();return await client.resolve(input);}finally{await client[Symbol.asyncDispose]();}};
  const forward=(update:SwapUpdate)=>{updates.set(update.swap.id,update);for(const listener of listeners)try{listener(update);}catch{}};
  const report=(error:unknown)=>{try{onError?.(error instanceof Error?error:new Error(String(error)));}catch{}};
  const repairReceipt=async(artifact:LightningArtifact,repository:AssetSwapRepository)=>{
@@ -318,6 +319,9 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const fee=receive?feeOn(wallet,amount):0n;
   if(receive&&amount-fee<BigInt(DUST))throw new Error(`Each individual Lightning payout needs at least ${DUST} sats to enter the shielded pool${fee?`, plus the pool's ${fee}-sat deposit fee`:''}.`);
   if(send&&!wallet.canWithdraw(amount))throw new Error('No single unreserved pool note covers this Lightning payment');
+  // Swap refuses an unserved route only in the session quote below, after the artifact is allocated and watched, and nothing ends it.
+  // Discovery keeps its snapshot up to 10 minutes while a session quote loads afresh, so a miss is confirmed on a fresh client first.
+  if(resolution.market===undefined&&(await freshResolve(input)).market===undefined){const [from,to]=[resolution.give,resolution.take].map(e=>`${e.corridor}:${isBtcAssetLenient(e.asset)?'btc':e.asset}`);throw new UnsupportedRoute(`no market serves ${from} -> ${to} on the active discovery snapshot`,{give:resolution.give.corridor,take:resolution.take.corridor});}
   const artifact=await materializeLightningArtifact(companion,await journal.allocateArtifact(owner,pool,send?'send':'receive'));
   await journal.updateArtifact(owner,pool,artifact);await registerPayouts([await watchArtifact(artifact)]);
   const session=await open(artifact);
