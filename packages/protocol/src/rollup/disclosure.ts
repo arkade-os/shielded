@@ -50,14 +50,16 @@ function decodeKey(key: string, prefix: string, size: number, what: string): Uin
 /** Sees every note sent to the owner. Telling which are spent needs the full viewing key; spending needs the spend key. */
 export const viewKeyOf = (owner: bigint, viewSecret: Uint8Array) => bech32m.encode(VIEW_PREFIX, bech32m.toWords(Uint8Array.from([...le(owner, 32), ...viewSecret])), false);
 export function parseViewKey(key: string): { owner: bigint; viewSecret: Uint8Array } {
- const bytes = decodeKey(key, VIEW_PREFIX, 64, 'view key');
- return { owner: fromLe(bytes.subarray(0, 32)), viewSecret: bytes.slice(32) };
+ const bytes = decodeKey(key, VIEW_PREFIX, 64, 'view key'), owner = fromLe(bytes.subarray(0, 32));
+ if (owner >= ROLLUP_FIELD) throw new Error('Not a shielded view key.');
+ return { owner, viewSecret: bytes.slice(32) };
 }
 /** Adds nk, so the holder also sees spends; it carries ak, not the owner, so a forged nk derives another address. */
 export const fullViewKeyOf = (ak: bigint, nk: bigint, viewSecret: Uint8Array) =>
  bech32m.encode(FULL_VIEW_PREFIX, bech32m.toWords(Uint8Array.from([...le(ak, 32), ...le(nk, 32), ...viewSecret])), false);
 export function parseFullViewKey(hash: Hash, key: string): { owner: bigint; ak: bigint; nk: bigint; viewSecret: Uint8Array } {
  const bytes = decodeKey(key, FULL_VIEW_PREFIX, 96, 'full viewing key'), ak = fromLe(bytes.subarray(0, 32)), nk = fromLe(bytes.subarray(32, 64));
+ if (ak >= ROLLUP_FIELD || nk >= ROLLUP_FIELD) throw new Error('Not a shielded full viewing key.');
  return { owner: ownerOf(hash, ROLLUP_DOMAIN, ak, nk), ak, nk, viewSecret: bytes.slice(64) };
 }
 export interface IncomingNote { batch: number; txid?: string; at?: number; index: number; amount: bigint; asset: bigint; deposit: boolean }

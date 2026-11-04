@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {bech32m} from '@scure/base';
 import {buildPoseidon} from 'circomlibjs';
+import {ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 import {fullViewKeyOf,parseFullViewKey,parseViewKey,viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
 import {akOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
@@ -25,4 +26,12 @@ test('a full viewing key binds its nullifier key: a swapped nk derives another o
  const ak=akOf(hash,aliceKeys.ask);
  assert.equal(parseFullViewKey(hash,fullViewKeyOf(ak,aliceKeys.nk,aliceKeys.viewSecret)).owner,aliceTo.owner);
  assert.notEqual(parseFullViewKey(hash,fullViewKeyOf(ak,aliceKeys.nk+1n,aliceKeys.viewSecret)).owner,aliceTo.owner);
+});
+
+test('a view key or full viewing key carrying a value past the field is refused, as an address is',()=>{
+ const ak=akOf(hash,aliceKeys.ask);
+ assert.throws(()=>parseViewKey(viewKeyOf(aliceTo.owner+ROLLUP_FIELD,aliceKeys.viewSecret)),/Not a shielded view key/);
+ assert.throws(()=>parseFullViewKey(hash,fullViewKeyOf(ak+ROLLUP_FIELD,aliceKeys.nk,aliceKeys.viewSecret)),/Not a shielded full viewing key/);
+ assert.throws(()=>parseFullViewKey(hash,fullViewKeyOf(ak,aliceKeys.nk+ROLLUP_FIELD,aliceKeys.viewSecret)),/Not a shielded full viewing key/);
+ assert.equal(parseViewKey(viewKeyOf(aliceTo.owner,aliceKeys.viewSecret)).owner,aliceTo.owner);
 });
