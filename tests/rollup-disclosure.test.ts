@@ -33,5 +33,8 @@ test('a view key or full viewing key carrying a value past the field is refused,
  assert.throws(()=>parseViewKey(viewKeyOf(aliceTo.owner+ROLLUP_FIELD,aliceKeys.viewSecret)),/Not a shielded view key/);
  assert.throws(()=>parseFullViewKey(hash,fullViewKeyOf(ak+ROLLUP_FIELD,aliceKeys.nk,aliceKeys.viewSecret)),/Not a shielded full viewing key/);
  assert.throws(()=>parseFullViewKey(hash,fullViewKeyOf(ak,aliceKeys.nk+ROLLUP_FIELD,aliceKeys.viewSecret)),/Not a shielded full viewing key/);
+ assert.throws(()=>parseViewKey(viewKeyOf(ROLLUP_FIELD,aliceKeys.viewSecret)),/Not a shielded view key/);
+ assert.throws(()=>parseFullViewKey(hash,fullViewKeyOf(ROLLUP_FIELD,aliceKeys.nk,aliceKeys.viewSecret)),/Not a shielded full viewing key/);
+ assert.throws(()=>parseFullViewKey(hash,fullViewKeyOf(ak,ROLLUP_FIELD,aliceKeys.viewSecret)),/Not a shielded full viewing key/);
  assert.equal(parseViewKey(viewKeyOf(aliceTo.owner,aliceKeys.viewSecret)).owner,aliceTo.owner);
 });
