@@ -72,6 +72,12 @@ export const shieldFeeOf=(entry:EpochHistoryEntry):bigint|undefined=>{
  const btc=(items:readonly {asset:bigint;amount:bigint}[])=>items.reduce((sum,i)=>i.asset===0n?sum+i.amount:sum,0n);
  return entry.kind==='shield'?btc(entry.amounts)-btc(entry.created):undefined;
 };
+/** A shield row is one per batch transaction, so its fee is that of every deposit this wallet made in it. */
+export const shieldFeeOfTx=(entries:readonly EpochHistoryEntry[],txid:unknown):bigint|undefined=>{
+ let total:bigint|undefined;
+ if(typeof txid==='string')for(const entry of entries){const fee=entry.txid===txid?shieldFeeOf(entry):undefined;if(fee!==undefined)total=(total??0n)+fee;}
+ return total;
+};
 /** Plain coins only the fee keeps out: asked without it, the planner would deposit them. */
 export function depositFeeOutsideLine(coins:readonly ArkCoin[],fee:DepositFeeSchedule|undefined,now:number,floorMs:number){
  const plan=shieldPlan(coins,new Set(),now,floorMs);
