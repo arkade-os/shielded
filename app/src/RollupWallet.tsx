@@ -77,7 +77,7 @@ export default function RollupWallet(){
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
- const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined);
+ const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),lnLimits=useRef<unknown>(undefined);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
@@ -293,13 +293,12 @@ export default function RollupWallet(){
   void service.privateReceiveState().then(next=>{if(!stop)setPrivateState(next);},error=>{if(!stop)setLnError(errorText(error));});
   return()=>{stop=true;};
  },[wallet,tick,lnAddress,lnBusy]);
- useEffect(()=>{
-  const swaps=wallet?.swaps;if(!swaps)return;
-  let stop=false;
-  // markets() first: resolve() reads the snapshot it loads.
-  void (async()=>{const markets=await swaps.markets(),route=await swaps.resolve({via:'lightning'});if(!stop)setLnBounds(invoiceBounds(markets,route));})().catch(()=>{});
-  return()=>{stop=true;};
- },[wallet]);
+ useEffect(()=>{lnLimits.current=undefined;setLnBounds(undefined);},[wallet]);
+ // On the amount field's first focus, not at open: markets() fetches the solver registry and its cards. markets() first: resolve() reads the snapshot it loads.
+ const readLnBounds=()=>{
+  const swaps=wallet?.swaps;if(!swaps||lnLimits.current===swaps)return;lnLimits.current=swaps;
+  void (async()=>{const markets=await swaps.markets(),route=await swaps.resolve({via:'lightning'});if(mounted.current&&lnLimits.current===swaps)setLnBounds(invoiceBounds(markets,route));})().catch(()=>{if(lnLimits.current===swaps)lnLimits.current=undefined;});
+ };
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
  useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!narrow||!panel)return;
@@ -430,7 +429,7 @@ export default function RollupWallet(){
      <div className="stock-address"><small>ARKADE ADDRESS · FUNDING</small>{funding?<Copyable value={funding} qr={funding} label="QR code of your Arkade address"/>:<code>Loading…</code>}<p className="stock-muted">Sats sent here move into the pool on their own while this page is open.{fundingFee&&` ${fundingFee}`}{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`} Test sats: the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a>, after a GitHub sign-in.</p>{expiring>0&&<button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew</button>}</div>
      <div className="stock-address"><small>LIGHTNING</small>
       {lnAddress?<Copyable value={lnAddress} qr={lnAddress} label="QR code of your Lightning address"/>:<div className="stock-actions"><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Get a Lightning address</button><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover a Lightning address</button></div>}
-      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" aria-describedby={lnBounds?'stock-ln-limits':undefined} aria-invalid={lnOutside||undefined} placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount||lnOutside}>Create invoice</button></form>
+      <form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" onFocus={readLnBounds} aria-describedby={lnBounds?'stock-ln-limits':undefined} aria-invalid={lnOutside||undefined} placeholder="Sats" value={lnAmount} onChange={e=>setLnAmount(e.target.value.replace(/\D/g,''))}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount||lnOutside}>Create invoice</button></form>
       {lnBounds&&<p id="stock-ln-limits" className={lnOutside?'stock-blocked':'stock-muted'}>{invoiceLimitsLine(lnBounds)}</p>}
       {invoice&&<><Copyable value={invoice.bolt11} qr={invoiceQr(invoice.bolt11)} label="QR code of the invoice"/><p className="stock-muted">{invoiceLine(invoice,fee)}</p></>}
       {lnAddress&&<>

@@ -417,12 +417,11 @@ const span=(min:number,max:number)=>({min:BigInt(min),max:BigInt(max)}),leg=(ass
 const card=(...legs:[Leg,Leg]):Market=>({kind:'card',key:`${ARK}/${LN}`,backend:'rfq',source:'https://arkade-os.github.io/solver-registry/mutinynet.json',sourceType:'registry',solver:'ln-solver-mutinynet',pair:'BTC/lightning:BTC',snapshot:{fetchedAt:1,live:true,source:'live'},legs});
 const lnMarket=(ark:Leg['limits'],ln:Leg['limits'])=>card(leg(ARK,ark),leg(LN,ln));
 
-test('a Lightning receive may ask for the Arkade leg\'s range, capped at the Lightning leg\'s max, whichever leg comes first',()=>{
- assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),span(1000,25000))],route),span(1000,25000),'Mutinynet: 1,000 to 50,000 on Arkade, 1,000 to 25,000 on Lightning');
- assert.deepEqual(invoiceBounds([card(leg(LN,span(1000,25000)),leg(ARK,span(1000,50000)))],route),span(1000,25000),'a leg is found by its asset, not its position');
- assert.deepEqual(invoiceBounds([lnMarket(span(1000,20000),span(1000,25000))],route),span(1000,20000),'the lower of the two maxes');
- assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),span(2000,25000))],route),span(1000,25000),'the min is the Arkade leg\'s alone');
- assert.equal(invoiceLimitsLine(span(1000,25000)),'Invoices from 1,000 to 25,000 sats.');
+test('a Lightning receive may ask for the Arkade leg\'s range, whichever leg comes first, and the Lightning leg\'s limits do not narrow it',()=>{
+ assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),span(1000,25000))],route),span(1000,50000),'Mutinynet: 1,000 to 50,000 on Arkade, 1,000 to 25,000 on Lightning');
+ assert.deepEqual(invoiceBounds([card(leg(LN,span(1000,25000)),leg(ARK,span(1000,50000)))],route),span(1000,50000),'a leg is found by its asset, not its position');
+ assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),span(2000,500))],route),span(1000,50000),'the Lightning leg\'s min and max set nothing');
+ assert.equal(invoiceLimitsLine(span(1000,50000)),'Invoices from 1,000 to 50,000 sats.');
 });
 
 test('markets that carry no Lightning receive give no bounds',()=>{
@@ -431,22 +430,21 @@ test('markets that carry no Lightning receive give no bounds',()=>{
  assert.equal(invoiceBounds([card(leg(ARK,span(1000,50000)),leg(onchain,span(1000,50000))),card(leg(token,span(1,9)),leg(LN,span(1000,25000))),card(leg(ARK,span(1000,50000)),{decimals:6,limits:span(1,9)})],route),undefined,'on-chain, an Arkade asset, a leg with no public id');
 });
 
-test('a leg the solver does not pay out sets no bound, and a ceiling under the floor leaves no range',()=>{
- assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),null)],route),span(1000,50000),'a Lightning leg with null limits adds no ceiling');
+test('an Arkade leg the solver does not pay out sets no bound, and hides no live market',()=>{
+ assert.deepEqual(invoiceBounds([lnMarket(span(1000,50000),null)],route),span(1000,50000),'a Lightning leg with null limits');
  assert.equal(invoiceBounds([lnMarket(null,span(1000,25000))],route),undefined,'an Arkade leg with null limits cannot pay the receiver');
- assert.equal(invoiceBounds([lnMarket(span(1000,50000),span(100,500))],route),undefined,'a Lightning max under the Arkade min');
- assert.deepEqual(invoiceBounds([lnMarket(null,null),lnMarket(span(1000,50000),span(1000,25000))],route),span(1000,25000),'a dead market hides no live one');
+ assert.deepEqual(invoiceBounds([lnMarket(null,null),lnMarket(span(1000,50000),span(1000,25000))],route),span(1000,50000),'a dead market hides no live one');
 });
 
 test('several markets on the route give the widest min and the widest max',()=>{
  const a=lnMarket(span(1000,50000),span(1000,25000)),b=lnMarket(span(500,10000),span(500,10000));
- assert.deepEqual(invoiceBounds([a,b],route),span(500,25000));
- assert.deepEqual(invoiceBounds([b,a],route),span(500,25000),'order does not matter');
- assert.deepEqual(invoiceBounds([a,lnMarket(span(100,200000),span(100,100000))],route),span(100,100000));
+ assert.deepEqual(invoiceBounds([a,b],route),span(500,50000));
+ assert.deepEqual(invoiceBounds([b,a],route),span(500,50000),'order does not matter');
+ assert.deepEqual(invoiceBounds([a,lnMarket(span(100,200000),span(100,100000))],route),span(100,200000));
 });
 
 test('an invoice amount is in range from the min to the max and not a sat either side',()=>{
- assert.deepEqual([999n,1000n,25000n,25001n].map(amount=>invoiceInRange(span(1000,25000),amount)),[false,true,true,false]);
+ assert.deepEqual([999n,1000n,50000n,50001n].map(amount=>invoiceInRange(span(1000,50000),amount)),[false,true,true,false]);
  assert.deepEqual([0n,1n,10n**30n].map(amount=>invoiceInRange(undefined,amount)),[true,true,true],'no bounds known: every amount, as before');
 });
 
@@ -464,6 +462,6 @@ test('the bounds are the amounts swap\'s own route resolution takes: the Arkade 
  const solver={solver:'ln-solver-mutinynet',discovery_pubkey:'ab'.repeat(32),transports:{nostr:{relays:['wss://relay.test']}},base_asset:{id:ARK,...info},quote_asset:{id:LN,...info},fee_bps:500,min_base_amount:'1000',max_base_amount:'50000',min_quote_amount:'1000',max_quote_amount:'25000',source,sourceType:'registry' as const};
  const snapshot={markets:[solver],ref:{fetchedAt:1,live:true,source:'injected' as const}},discovery={peek:async()=>snapshot,load:async()=>snapshot};
  const resolve=(amount?:bigint)=>resolveRoute({via:'lightning',...amount?{amount,amountOn:'take' as const}:{}},{corridors:{} as never,network:'mutinynet',discovery,mode:'quote'});
- assert.deepEqual(invoiceBounds([marketOf(solver,snapshot.ref,'mutinynet')],(await resolve()).resolution),span(1000,25000));
+ assert.deepEqual(invoiceBounds([marketOf(solver,snapshot.ref,'mutinynet')],(await resolve()).resolution),span(1000,50000));
  for(const [amount,eligible] of [[500n,0],[999n,0],[1000n,1],[50000n,1],[50001n,0]] as const)assert.equal((await resolve(amount)).resolution.eligible,eligible,`${amount} sats`);
 });

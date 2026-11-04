@@ -109,14 +109,12 @@ export function lightningMinimumLine(fee:DepositFeeSchedule|undefined){
 }
 
 export type InvoiceBounds={min:bigint;max:bigint};
-/** The take leg's limits bound what a receiver asks for, and the give leg's max caps it, as the invoice is that amount plus the swap fee. Several markets: the widest min and max. */
+/** The take leg's limits, the only ones swap's route resolution applies to a receive; the solver quoted past the give leg's advertised max. Several markets: the widest min and max. */
 export function invoiceBounds(markets:readonly Market[],{give,take}:{give:{asset:string};take:{asset:string}}):InvoiceBounds|undefined{
  let found:InvoiceBounds|undefined;
  for(const {legs} of markets){
-  const pays=legs.find(leg=>leg.asset===give.asset),gets=legs.find(leg=>leg.asset===take.asset)?.limits;
-  if(!pays||!gets)continue;
-  const max=pays.limits&&pays.limits.max<gets.max?pays.limits.max:gets.max;
-  if(max>=gets.min)found={min:found&&found.min<gets.min?found.min:gets.min,max:found&&found.max>max?found.max:max};
+  const gets=legs.some(leg=>leg.asset===give.asset)?legs.find(leg=>leg.asset===take.asset)?.limits:undefined;
+  if(gets)found={min:found&&found.min<gets.min?found.min:gets.min,max:found&&found.max>gets.max?found.max:gets.max};
  }
  return found;
 }
