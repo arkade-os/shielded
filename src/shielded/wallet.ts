@@ -14,7 +14,7 @@ import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2,parseMasterSecret} from '../../p
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {entryForActivity,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
 import {bearerAccount,bearerKeysOf,bearerOf,linkOf,type LinkRecord} from './bearer.ts';
-import {epochFreshAccount,epochMatchesPool} from './epoch-checkpoint.ts';
+import {epochConfirmed,epochFreshAccount,epochMatchesPool} from './epoch-checkpoint.ts';
 import {epochRevealLinkOf} from './epoch-disclosure.ts';
 import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
@@ -75,7 +75,7 @@ export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecre
   catch(cause){return opened(unsynced(cause),`Opened without the pool, so the wallet is empty until it syncs: ${reasonOf(cause)}`,undefined,true);}
  };
  if(!o.repository)return fresh();
- let stored:ShieldedSnapshot,account:EpochAccount,offline:string|undefined;
+ let stored:ShieldedSnapshot,account:EpochAccount,offline:string|undefined,pool:RollupPoolStatus['pool'];
  try{
   const found=await o.repository.getAccount(o.token);
   if(!found)return await fresh();
@@ -84,14 +84,14 @@ export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecre
   // An older client saves no `links`, and its cursor is past the mints; replaying finds them again.
   if(found.links===undefined&&found.account.history.some(e=>e.kind==='send'))return await fresh();
   let epochLen=o.epochLen;
-  if(o.api)try{epochLen=(await o.api<RollupPoolStatus>('/status')).pool?.epochLen;if(!epochLen)throw new Error('That pool is not an open epoch pool.');}
+  if(o.api)try{pool=(await o.api<RollupPoolStatus>('/status')).pool;epochLen=pool?.epochLen;if(!epochLen)throw new Error('That pool is not an open epoch pool.');}
   catch(cause){epochLen=found.account.epochLen;offline=unchecked(cause);}
   account=EpochAccount.fromSnapshot(hash,keys,found.account,epochLen??0);stored=found;
  }catch(error){return fresh(reasonOf(error));}
  for(const link of stored.links??[])o.links?.set(link.key,link);
  // loadEpochAccount's check: a previous-epoch root the pool contradicts throws, where a quiet replay would hide the drift.
  let matches=true;
- if(o.api&&!offline)try{matches=await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched);}
+ if(o.api&&!offline)try{matches=await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched,pool);}
  catch(cause){if(rejected(cause,'root-drift'))throw cause;offline=unchecked(cause);}
  if(!matches){o.links?.clear();return fresh('The saved wallet does not match the pool; syncing from the pool.');}
  return opened(account,offline,stored,!!offline);
@@ -282,7 +282,8 @@ export class ShieldedWallet extends Wallet {
   for(const link of loaded.links)this.linkRecords.set(link.key,link);
  }
  async start():Promise<void>{
-  await this.sync();
+  // A confirmed account is already at the pool's count; autoShield's sync below runs once the watches are up, so nothing lands unseen.
+  if(!epochConfirmed(this.account))await this.sync();
   const manager=await this.getContractManager();
   await manager.watchScript?.(this.poolScript,{label:'shielded pool'});
   this.unwatch.push(manager.onContractEvent(event=>{

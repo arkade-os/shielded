@@ -19,15 +19,21 @@ export const epochPoolOf=async(api:PoolApi)=>{
  return {...pool,epochLen:pool.epochLen};
 };
 
+const confirmed=new WeakMap<EpochAccount,number>();
+export const epochConfirmed=(account:EpochAccount)=>confirmed.get(account)===account.batchCount;
+
 /** Caught up, an account must have the pool's accepted root. A previous-epoch root that contradicts the account's throws: a quiet replay would hide the drift. */
-export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>):Promise<boolean>{
+export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>,known?:RollupPoolStatus['pool']):Promise<boolean>{
  for(let i=0;i<tries;i++){
   await epochCatchUp(account,api,onBatch,undefined,watched);
-  const pool=(await api<RollupPoolStatus>('/status')).pool;
+  // A count's root never changes, so a status the caller just read answers for its own count.
+  const pool=i===0&&known?.batches===account.batchCount?known:(await api<RollupPoolStatus>('/status')).pool;
   if(pool?.batches!==account.batchCount)continue;
   const prev=account.prevNoteRoot();
   if(pool.prevNoteRoot!==undefined&&prev!==undefined&&BigInt(pool.prevNoteRoot)!==prev)throw Object.assign(new Error(`The pool says epoch ${account.epoch-1} closed on another root than this wallet holds; its saved state drifted across a rotation.`),{code:'root-drift'});
-  return BigInt(pool.root)===account.latestRoot();
+  const matches=BigInt(pool.root)===account.latestRoot();
+  if(matches)confirmed.set(account,account.batchCount);
+  return matches;
  }
  return false;
 }
@@ -42,7 +48,7 @@ export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:Po
  if(epoch===pool.epoch&&blocks>0&&pool.prevNoteRoot!==undefined)try{
   const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
   const account=checkpoint.epoch===epoch&&checkpoint.blocks===blocks?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt}):undefined;
-  if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched))return account;
+  if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched,pool))return account;
  }catch{/* the checkpoint start is only a shortcut, so any failure confirming it (a 404, a checkpoint that does not parse, a 429, an onBatch that threw) falls back instead of rejecting: the replay start below needs none of it and is always right */}
  const start=Math.max(epoch-1,0);
  return start?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint:{epoch:start,blocks:0,filled:Array<string>(NOTE_DEPTH-SUBTREE_DEPTH).fill('0')},bornAt}):EpochAccount.owning(hash,keys,{epochLen,bornAt});
@@ -52,8 +58,8 @@ export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:Po
 export async function loadEpochAccount(hash:Hash,keys:Keys,o:{snapshot?:EpochAccountSnapshot;bornAt:number;api:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>}):Promise<{account:EpochAccount;resumed:boolean;error?:string}>{
  const fresh=async(error?:string)=>({account:await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched),resumed:false,...(error?{error}:{})});
  if(!o.snapshot)return fresh();
- let account:EpochAccount;
- try{account=EpochAccount.fromSnapshot(hash,keys,o.snapshot,(await epochPoolOf(o.api)).epochLen);}
+ let account:EpochAccount,pool:Awaited<ReturnType<typeof epochPoolOf>>;
+ try{pool=await epochPoolOf(o.api);account=EpochAccount.fromSnapshot(hash,keys,o.snapshot,pool.epochLen);}
  catch(error){return fresh(error instanceof Error?error.message:String(error));}
- return await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched)?{account,resumed:true}:fresh('The saved wallet does not match the pool; syncing from the pool.');
+ return await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched,pool)?{account,resumed:true}:fresh('The saved wallet does not match the pool; syncing from the pool.');
 }

@@ -241,8 +241,7 @@ test('a second open resumes from the repository and does not re-read the publish
   assert.equal(second.resumed,true);
   assert.equal(second.repositoryError,undefined);
   assert.equal(second.batchCount(),1,'the stored cursor, not a replay from zero');
-  assert.ok(paths.filter(p=>p.startsWith('/batches')).every(p=>p==='/batches?from=1&limit=50'));
-  assert.ok(paths.some(p=>p==='/batches?from=1&limit=50'),'checks the stored head');
+  assert.deepEqual(paths,['/status','/batches?from=1&limit=50','/batches?from=1&limit=50'],'one status read checks the stored head, and only the sync after the watches follows');
  }finally{await second.dispose();}
 });
 
@@ -279,7 +278,7 @@ test('a wallet created while its pool is unreachable opens with the reason, and 
   assert.deepEqual([wallet.repositoryError,wallet.resumed,wallet.batchCount(),wallet.maxPrivatePayment()],['Opened without the pool, so the saved notes are unchecked: fetch failed',true,4,0n]);
   wallet.recordSent([[7n,{to:'shrol21offline'}]]);
   down=false;await (wallet as any).tick();await wallet.notes.pick(async()=>undefined,()=>[]);
-  assert.deepEqual(asked.slice(0,4),['/status','/status','/batches?from=4&limit=50','/status'],'the tick, then the resume check');
+  assert.deepEqual(asked.slice(0,4),['/status','/status','/batches?from=4&limit=50','/batches?from=9&limit=50'],'the tick, the resume check, then the tick\'s sync');
   assert.deepEqual([wallet.repositoryError,wallet.batchCount(),wallet.shieldedBalance(),wallet.maxPrivatePayment(),wallet.sentOf(7n)?.to],[undefined,9,700n,700n,'shrol21offline']);
  }finally{await wallet.dispose();}
 });
@@ -326,7 +325,7 @@ test('a wallet closed while its reconnect check runs sends nothing more once the
  const {wallet,pool}=await offlineWallet(false,path=>{asked.push(path);if(path.startsWith('/batches'))closing??=wallet.dispose();});
  try{
   pool.down=false;await (wallet as any).tick();
-  assert.deepEqual(asked,['/status','/status','/batches?from=6&limit=50','/status']);
+  assert.deepEqual(asked,['/status','/status','/batches?from=6&limit=50']);
  }finally{await (closing??wallet.dispose());}
 });
 
