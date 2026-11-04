@@ -2,7 +2,7 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bech32m } from '@scure/base';
-import { ROLLUP_DOMAIN } from './constants.ts';
+import { ROLLUP_DOMAIN, ROLLUP_FIELD } from './constants.ts';
 import { akOf, ownerOf, sha256le248, type Hash } from './notes.ts';
 
 export interface RollupNote { amount: bigint; asset: bigint; rho: bigint }
@@ -19,8 +19,10 @@ export function parseRollupAddress(address: string): RollupRecipient {
  const { prefix, words } = bech32m.decode(address as `${string}1${string}`, false);
  const bytes = bech32m.fromWords(words);
  if (prefix === 'shrol') throw new Error('That is a genesis-1 address; this pool takes shrol2 addresses.');
- if (prefix !== ADDRESS_PREFIX || bytes.length !== 64) throw new Error('Not a shielded rollup address.');
- return { owner: fromLe(bytes.subarray(0, 32)), viewPublic: bytes.subarray(32) };
+ const owner = fromLe(bytes.subarray(0, 32));
+ // owner and owner + q make the same note, so only the canonical encoding is an address.
+ if (prefix !== ADDRESS_PREFIX || bytes.length !== 64 || owner >= ROLLUP_FIELD) throw new Error('Not a shielded rollup address.');
+ return { owner, viewPublic: bytes.subarray(32) };
 }
 
 // A spend's record: ephemeral X25519 key, then per output a view tag and AES-GCM(amount 8 || asset 32 || rho 32) with its tag.

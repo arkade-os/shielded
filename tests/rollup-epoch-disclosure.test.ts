@@ -10,7 +10,7 @@ import type { SentRecord } from '../src/shielded/repository.ts';
 import { ROLLUP_DOMAIN, ROLLUP_FIELD } from '../packages/protocol/src/rollup/constants.ts';
 import { decodeDisclosure, encodeDisclosure, fullViewKeyOf, parseFullViewKey, parseViewKey, sentNoteOf, verifyDisclosure, viewKeyOf, type DisclosedNote, type Disclosure, type IncomingNote } from '../packages/protocol/src/rollup/disclosure.ts';
 import { EpochAccount, type EpochHistoryEntry } from '../packages/protocol/src/rollup/epoch-account.ts';
-import { akOf } from '../packages/protocol/src/rollup/notes.ts';
+import { akOf, noteOf } from '../packages/protocol/src/rollup/notes.ts';
 import { parseRollupAddress, rollupAddressOf, rollupRecipientOf, type RollupRecipient } from '../packages/protocol/src/rollup/wallet.ts';
 import { deriveRollupKeys2 } from '../packages/protocol/src/wallet-keys.ts';
 import { epochPool, posted } from './fixtures/epoch-pool.ts';
@@ -99,6 +99,9 @@ test('a disclosure that repeats a note, or names a value past what a note holds,
   assert.ok((await verifyOnPool(pool.api, { ...disclosure, notes })).every(Boolean), `${what} still matches the published commitment`);
   assert.throws(() => decodeDisclosure(encodeDisclosure({ ...disclosure, notes })), /Not a shielded payment disclosure/, what);
  }
+ const { owner, viewPublic } = parseRollupAddress(disclosure.to), alias = rollupAddressOf({ owner: owner + ROLLUP_FIELD, viewPublic });
+ assert.equal(String(noteOf(hash, ROLLUP_DOMAIN, note.amount, note.asset, owner + ROLLUP_FIELD, note.rho)), String(noteOf(hash, ROLLUP_DOMAIN, note.amount, note.asset, owner, note.rho)), 'a recipient past the field still opens the same commitment');
+ assert.throws(() => decodeDisclosure(encodeDisclosure({ ...disclosure, to: alias })), /Not a shielded rollup address/);
 });
 
 test('a view key lists every note it received across three epochs, at the right batches', async () => {
