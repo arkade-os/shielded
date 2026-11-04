@@ -108,7 +108,8 @@ export const shieldedSteps={
  claim:['Read the link','Prove the claim on this device','Submit to the pool','Wait for the next batch','Received'],
 } as const;
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
-export const shieldTitle=(plan:ShieldPlan)=>plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`;
+/** `fee` is what the plan pays (depositFeeOnPlan), not the schedule, so an exempt payout names none. */
+export const shieldTitle=(plan:ShieldPlan,fee=0n)=>(plan.kind==='btc'?`Shielding ${sats(plan.amount)} sats`:`Shielding ${sats(plan.units)} units of asset ${short(plan.assetId)}`)+(fee>0n?` with a ${sats(fee)}-sat deposit fee`:'');
 const feePaused=(fee:DepositFeeSchedule)=>`Deposits are paused: this pool now charges a deposit fee of ${sats(fee.fixedSats)} sats or ${fee.bps} bps of the deposit, whichever is more, which is above what this wallet has accepted. Once it is shown, accept it with acceptDepositFee({fixedSats:${fee.fixedSats},bps:${fee.bps}}), or pass maxDepositFee of at least that.`;
 const validSchedule=(value:unknown,name:string)=>{const schedule=parseDepositFeeSchedule(value);if(!schedule)throw new Error(`${name} must be {fixedSats,bps}: whole, non-negative numbers, with bps at most 10000.`);return schedule;};
 export const nextShieldPlan=(coins:readonly ArkCoin[],o:{skip:(c:ArkCoin)=>boolean;used:ReadonlySet<string>;listed:ReadonlySet<string>;now:number;floorMs:number;fee?:Parameters<typeof shieldPlan>[4]})=>
@@ -617,7 +618,7 @@ export class ShieldedWallet extends Wallet {
   const taken=(plan.kind==='btc'?plan.coins:[plan.coin]).map(c=>`${c.txid}:${c.vout}`);
   const sentTxids:string[]=[];
   for(const outpoint of taken)this.used.add(outpoint);
-  const handle=shieldedHandle({title:shieldTitle(plan),steps:shieldedSteps.shield,railId:'shielded-deposit'},async step=>{
+  const handle=shieldedHandle({title:shieldTitle(plan,this.depositFeeOnPlan(plan)),steps:shieldedSteps.shield,railId:'shielded-deposit'},async step=>{
    step(0);
    if(plan.kind==='asset'){
     const coin=await this.depositCoin(plan.coin.txid,plan.coin.value,{assetId:plan.assetId,amount:plan.units},plan.coin.vout);

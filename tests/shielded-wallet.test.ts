@@ -13,7 +13,7 @@ import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src
 import {openRollupNotes,parseRollupAddress} from '../packages/protocol/src/rollup/wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
-import {ShieldedWallet,programOf,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {ShieldedWallet,programOf,shieldedKeysOf,shieldedSteps,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
 import {epochTransferBody,type EpochSpendBody} from '../src/shielded/epoch-pool.ts';
@@ -552,6 +552,22 @@ test('a deposit of a coin the pool paid out carries no fee',async()=>{
   await (await wallet.shield([payout]))!.settled();
   assert.deepEqual(requests,[{deposit:400n}],'charged, 400 sats would net under the minimum');
  }finally{await wallet.dispose();}
+});
+
+test('the sheet of a deposit names the fee its plan pays, never the schedule, and reads as before when it pays none',async()=>{
+ const fee=feeOf(100),charging=await open({depositFee:fee,maxDepositFee:fee}),free=await open(),payout=coin('ab'.repeat(32),400),plain=coin('cd'.repeat(32),10_000);
+ const carried=(txid:string,value:number)=>({...coin(txid,value),assets:[{assetId:TOKEN,amount:5n}]});
+ for(const wallet of [charging,free]){readyDeposit(wallet);wallet.api=feePool(wallet===charging?fee:undefined).api;wallet.pool.status.pool!.reserves={[TOKEN]:'10'};}
+ charging.account.txids.add(payout.txid);
+ const sheet=async(wallet:ShieldedWallet,input:{txid:string;vout:number;value:number}):Promise<[string,readonly string[]]>=>{const handle=(await wallet.shield([input]))!;await handle.settled();return [handle.title,handle.steps];};
+ try{
+  assert.deepEqual(await sheet(charging,plain),['Shielding 10,000 sats with a 100-sat deposit fee',shieldedSteps.shield]);
+  assert.deepEqual(await sheet(charging,payout),['Shielding 400 sats',shieldedSteps.shield],'a pool payout pays none, so the sheet names none');
+  assert.deepEqual(await sheet(charging,carried('a1'.repeat(32),1000)),['Shielding 5 units of asset 2df7aa36…0000 with a 100-sat deposit fee',shieldedSteps.shield],'the carrier pays');
+  assert.deepEqual(await sheet(charging,carried('a2'.repeat(32),330)),['Shielding 5 units of asset 2df7aa36…0000',shieldedSteps.shield],'a dust carrier is free');
+  assert.deepEqual(await sheet(free,plain),['Shielding 10,000 sats',shieldedSteps.shield],'a pool with no fee');
+  assert.deepEqual(await sheet(free,carried('a3'.repeat(32),1000)),['Shielding 5 units of asset 2df7aa36…0000',shieldedSteps.shield]);
+ }finally{await charging.dispose();await free.dispose();}
 });
 
 test('an asset deposit pays the carrier fee on its BTC leg, and nothing on a dust carrier',async()=>{

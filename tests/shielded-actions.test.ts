@@ -8,6 +8,7 @@ import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circuit.ts';
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
+import type {ShieldPlan} from '../src/shielded/pool.ts';
 import {submitAll} from '../src/shielded/submit.ts';
 import {NoteReservation,coversWithdrawal,mergeAssetFields,needsRenewal,nextShieldPlan,programOf,shieldTitle,shieldedSteps,topThree} from '../src/shielded/wallet.ts';
 import {batchWitnessOutput} from './fixtures/batch-witness.ts';
@@ -106,6 +107,16 @@ test('auto-shield leaves pool payouts and in-flight coins alone, and names what 
  const asset=coin('4',330,100,[{assetId:x,amount:9n}]);
  assert.match(shieldTitle(nextShieldPlan([asset],{skip:()=>false,used:new Set(),listed,now,floorMs:25*3600_000})!),/^Shielding 9 units of asset ee/);
  assert.equal(shieldedSteps.shield.length,6);
+});
+
+test('a shield title names the fee its plan pays, and reads as before when there is none',()=>{
+ const btc:ShieldPlan={kind:'btc',coins:[],amount:10_000},asset:ShieldPlan={kind:'asset',coin:{txid:'a'.repeat(64),vout:0,value:1000},assetId:'ee'.repeat(34),units:9n};
+ for(const plan of [btc,asset])assert.equal(shieldTitle(plan,0n),shieldTitle(plan),'a fee of zero adds nothing');
+ assert.equal(shieldTitle(btc),'Shielding 10,000 sats');
+ assert.equal(shieldTitle(btc,100n),'Shielding 10,000 sats with a 100-sat deposit fee');
+ assert.equal(shieldTitle(btc,12_345n),'Shielding 10,000 sats with a 12,345-sat deposit fee');
+ assert.equal(shieldTitle(asset),'Shielding 9 units of asset eeeeeeee…eeee');
+ assert.equal(shieldTitle(asset,100n),'Shielding 9 units of asset eeeeeeee…eeee with a 100-sat deposit fee');
 });
 
 test('renewal is offered only for coins the pool would refuse as near expiry',()=>{
