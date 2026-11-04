@@ -683,8 +683,10 @@ test('a status refresh tells the page only when the paused fee changes',async()=
   assert.deepEqual(heard,[],'no fee, then one already accepted: nothing paused before or after');
   await refresh(feeOf(500));await refresh(feeOf(500));
   assert.deepEqual(heard,[500],'newly paused once, not again for the same fee');
+  await refresh(feeOf(500,10));
+  assert.deepEqual(heard,[500,500],'a bps-only change reaches the page');
   await refresh(feeOf(900));await refresh(feeOf(100));
-  assert.deepEqual(heard,[500,900,undefined],'a different fee to accept, then back within what was accepted');
+  assert.deepEqual(heard,[500,500,900,undefined],'a different fee to accept, then back within what was accepted');
  }finally{await wallet.dispose();}
 });
 
