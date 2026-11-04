@@ -3,6 +3,7 @@ import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import type {Market} from '@arkade-os/swap';
 
 export * from '../../src/shielded/pool.ts';
 export * from '../../src/shielded/epoch-pool.ts';
@@ -106,6 +107,24 @@ export function lightningMinimumLine(fee:DepositFeeSchedule|undefined){
  while(low<high){const mid=low+Math.floor((high-low)/2);if(enters(mid))high=mid;else low=mid+1;}
  return `Payouts of at least ${grouped(low)} sats, the ${DUST}-sat minimum plus the deposit fee, ${LIGHTNING_REST}`;
 }
+
+export type InvoiceBounds={min:bigint;max:bigint};
+/** The take leg's limits bound what a receiver asks for, and the give leg's max caps it, as the invoice is that amount plus the swap fee. Several markets: the widest min and max. */
+export function invoiceBounds(markets:readonly Market[],{give,take}:{give:{asset:string};take:{asset:string}}):InvoiceBounds|undefined{
+ let found:InvoiceBounds|undefined;
+ for(const {legs} of markets){
+  const pays=legs.find(leg=>leg.asset===give.asset),gets=legs.find(leg=>leg.asset===take.asset)?.limits;
+  if(!pays||!gets)continue;
+  const max=pays.limits&&pays.limits.max<gets.max?pays.limits.max:gets.max;
+  if(max>=gets.min)found={min:found&&found.min<gets.min?found.min:gets.min,max:found&&found.max>max?found.max:max};
+ }
+ return found;
+}
+export const invoiceLimitsLine=({min,max}:InvoiceBounds)=>`Invoices from ${grouped(min)} to ${satsText(max)}.`;
+export const invoiceInRange=(bounds:InvoiceBounds|undefined,amount:bigint)=>!bounds||amount>=bounds.min&&amount<=bounds.max;
+export const NO_SWAP_LINE='No Lightning swap is taking this amount right now.';
+/** A receive no market serves reads in the page's words, not the SDK's route text; swap names the class, as its own isSwapError does. */
+export const noSwapErrorText=(error:unknown)=>error instanceof Error&&error.name==='UnsupportedRoute'?NO_SWAP_LINE:undefined;
 
 /** Why a token cannot be a claim link, read before any network call; '' when it can be. */
 export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};
