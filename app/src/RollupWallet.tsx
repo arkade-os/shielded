@@ -420,7 +420,7 @@ export default function RollupWallet(){
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};
  const openSecurity=(view:'phrase'|'viewing'|'restore')=>{setReveal(false);setShowView(false);setShowFull(false);setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
- const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,syncing:!synced,recoveryLine:RECOVERY_LINE});
+ const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,recoveryLine:RECOVERY_LINE});
  const {checked:privateChecked,notice:privateNotice}=privateReceiveView(privateState);
  const privateListed=privateState.on&&privateState.listed==='own'&&!privateState.pending&&!privateState.refused&&!privateState.withdrawing;
  const privateDescription=privateListed?'This QR also offers private pool payments.'
@@ -460,10 +460,11 @@ export default function RollupWallet(){
    </dl></details></li>;
  });
  const historyContent=(items:typeof historyItems)=>!rows.length?<p className="stock-muted">{synced?'No activity yet.':'Reading the pool…'}</p>:<ul>{items}</ul>;
+  const shownAssets=reserves.filter(id=>assetUnits(id)>0n),unshielded=arkAvailable??0;
   const balanceCard=()=> <section className="stock-card stock-balance">
    <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong>{!synced&&<span className="stock-balance-state">Syncing your wallet…</span>}</div>
-   <div className="stock-balance-side"><div><small>On Arkade</small><b>{arkAvailable===undefined?'Loading…':`${sats(arkAvailable)} sats`}</b></div>
-   {reserves.filter(id=>assetUnits(id)>0n).map(id=><div key={id}><small>ASSET {short(id)}</small><b>{sats(assetUnits(id))} units</b></div>)}</div>
+   {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
+   {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{sats(assetUnits(id))} units</b></div>)}</div>}
   </section>;
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
