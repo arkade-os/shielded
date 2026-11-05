@@ -4,7 +4,7 @@ import {ActivityRegistry,makeHandle,ProviderUnavailableError,TxType,Wallet,type 
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {epochCatchUp,epochIdle} from '../src/shielded/epoch-sync.ts';
-import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuotes,pageSheet,renewPageCoins,restorePageWallet} from '../app/src/shielded-page.ts';
+import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,startPageLightning} from '../app/src/shielded-page.ts';
 import * as page from '../app/src/shielded-page.ts';
 import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
 import {shieldedHandle} from '../src/shielded/handle.ts';
@@ -357,4 +357,67 @@ test('renewal shows its own completed step or string error when it still owns th
  assert.equal(await renewPageCoins(async()=>'tx',sheet),'tx');assert.equal(states.at(-1).done,true);assert.equal(states.at(-1).current,1);
  await assert.rejects(renewPageCoins(async()=>{throw 'renew refused';},sheet),error=>error==='renew refused');
  assert.equal(states.at(-1).error,'renew refused');assert.equal(states.at(-1).done,undefined);
+});
+
+const lightningFakes=()=>{
+ const events:string[]=[];
+ return {events,companion:{dispose:async()=>{events.push('companion');}},swaps:{[Symbol.asyncDispose]:async()=>{events.push('swaps');}},lnurl:{dispose:async()=>{events.push('lnurl');}}};
+};
+const reasons=(errors:unknown[])=>errors.map(error=>(error as Error).message);
+
+test('a Lightning start pairing after the page closed disposes the companion nobody took',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),paired=deferred<typeof companion>(),errors:unknown[]=[];let starts=0,active=true;
+ const start=startPageLightning({pairing:paired.promise,swaps:async()=>{starts++;return swaps;},lnurl:async()=>lnurl,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error)});
+ active=false;paired.resolve(companion);
+ assert.equal(await start,undefined);assert.deepEqual(events,['companion']);assert.equal(starts,0);assert.deepEqual(errors,[]);
+});
+
+test('a Lightning start finishing after the page closed disposes everything it made, newest first, and reports nothing',async()=>{
+ for(const [during,disposed] of [['swaps',['swaps','companion']],['failing swaps',['companion']],['address',['lnurl','swaps','companion']]] as const){
+  const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),errors:unknown[]=[];let active=true,addresses=0;
+  const start=startPageLightning({
+   pairing:Promise.resolve(companion),
+   swaps:async()=>{if(during!=='address')await gate.promise;if(during==='failing swaps')throw new Error('the journal was disposed');return swaps;},
+   lnurl:async()=>{addresses++;if(during==='address')await gate.promise;return lnurl;},
+   active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
+  });
+  await flush();active=false;gate.resolve();
+  assert.equal(await start,undefined);assert.deepEqual(events,[...disposed]);
+  assert.equal(addresses,during==='address'?1:0);assert.deepEqual(errors,[]);
+ }
+});
+
+test('a Lightning start that fails while the page is open reports once and disposes what it made',async()=>{
+ for(const failing of ['swaps','lnurl','pairing'] as const){
+  const {events,companion,swaps,lnurl}=lightningFakes(),errors:unknown[]=[],refused=new Error(`${failing} refused`);
+  const start=startPageLightning({
+   pairing:failing==='pairing'?Promise.reject<typeof companion>(refused):Promise.resolve(companion),
+   swaps:failing==='swaps'?()=>Promise.reject<typeof swaps>(refused):async()=>swaps,
+   lnurl:failing==='lnurl'?()=>Promise.reject<typeof lnurl>(refused):async()=>lnurl,
+   active:()=>true,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
+  });
+  assert.equal(await start,undefined);
+  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['companion']:['swaps','companion']);
+  assert.deepEqual(reasons(errors),[`Lightning could not start: ${failing} refused`]);
+ }
+});
+
+test('a Lightning start that lands hands the page its companion, swaps and address service',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),taken:unknown[]=[],errors:unknown[]=[];
+ const start=startPageLightning({pairing:Promise.resolve(companion),swaps:async()=>swaps,lnurl:async()=>lnurl,active:()=>true,handOver:parts=>taken.push(parts),report:error=>errors.push(error)});
+ const parts=await start;
+ assert.equal(parts?.companion,companion);assert.equal(parts?.swaps,swaps);assert.equal(parts?.lnurl,lnurl);
+ assert.equal(taken.length,1);assert.equal(taken[0],parts);assert.deepEqual(events,[]);assert.deepEqual(errors,[]);
+});
+
+test('a quote refused without a Lightning rail routes once more after the start settles',async()=>{
+ const settled=deferred();let attempts=0;
+ const quote=pageQuoteRoute(async()=>{if(++attempts===1)throw new Error('no rail for: lnbc1');return 'quoted';},()=>settled.promise);
+ await flush();assert.equal(attempts,1);
+ settled.resolve();assert.equal(await quote,'quoted');
+ attempts=0;
+ await assert.rejects(pageQuoteRoute(async()=>{attempts++;throw new Error('no rail for: lnbc1');},()=>undefined),/no rail for/);
+ assert.equal(attempts,1);
+ await assert.rejects(pageQuoteRoute(async()=>{attempts++;throw new Error('still no rail');},()=>Promise.resolve()),/still no rail/);
+ assert.equal(attempts,3);
 });
