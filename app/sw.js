@@ -23,6 +23,6 @@ self.addEventListener('fetch',event=>{
   const response=await fetch(request);if(response.ok)event.waitUntil(cache.put(request,response.clone()));return response;
  },()=>fetch(request)));
  if(url.pathname.startsWith('/api/'))return;
- if(request.mode==='navigate'&&ROUTES.includes(url.pathname))return event.respondWith(cacheFirst(request,'/index.html'));
+ if(request.mode==='navigate'&&ROUTES.includes(url.pathname.replace(/\/+$/,'')||'/'))return event.respondWith(cacheFirst(request,'/index.html'));
  if(APP_CACHE.files.includes(url.pathname))event.respondWith(cacheFirst(request));
 });

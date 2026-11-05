@@ -69,9 +69,9 @@ test('an install whose index.html is not the one this build hashed fails and cac
 
 test('a navigation to any app route is answered with the cached index.html',async()=>{
  const sw=worker();await sw.dispatch('install');
- for(const path of ['/','/wallet','/claim#token','/verify','/watch'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'cached /index.html',intercepted:true},path);
+ for(const path of ['/','/wallet','/wallet/','/claim#token','/claim/#token','/verify','/watch'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'cached /index.html',intercepted:true},path);
  assert.equal(sw.fetch.mock.callCount(),0);
- assert.deepEqual(await sw.get('/stock-wallet',{navigate:true}),{body:'net',intercepted:false},'the server still redirects legacy paths');
+ for(const path of ['/stock-wallet','/stock-wallet/'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'net',intercepted:false},`${path}: the server still redirects legacy paths`);
  await sw.caches.delete(shell);
  assert.deepEqual(await sw.get('/claim',{navigate:true}),{body:'net',intercepted:true},'a cache miss goes to the network');
 });
