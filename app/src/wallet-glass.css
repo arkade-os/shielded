@@ -161,7 +161,7 @@
 .stock-page .stock-soundbar .stock-steps li.active i{border-color:var(--or);border-top-color:var(--navy)}
 .stock-page .stock-soundbar .stock-steps li.error{color:var(--gules)}
 .stock-page .stock-soundbar-track{background:rgba(16,53,84,.09)}
-.stock-page .stock-soundbar-track span{background:linear-gradient(90deg,var(--or),var(--or-light),var(--or));background-size:200% 100%}
+.stock-page .stock-soundbar-track span{background:linear-gradient(90deg,var(--or),var(--or-light),var(--or))}
 .stock-page .stock-soundbar .stock-eq i{background:var(--soundbar-accent)}
 .stock-page .stock-soundbar .stock-eq i:nth-child(2),.stock-page .stock-soundbar .stock-eq i:nth-child(4){opacity:.6}
 .stock-page .stock-soundbar.is-done{--soundbar-accent:var(--vert);border-color:rgba(31,107,82,.28)}
