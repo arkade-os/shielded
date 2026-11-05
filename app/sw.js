@@ -7,7 +7,12 @@ const cacheFirst=(request,key=request)=>caches.open(SHELL).then(cache=>cache.mat
 // index.html is the one file not named for its content: an HTTP-cached or other build's copy fails the hash, so the install fails and is retried later.
 const precache=file=>file==='/index.html'?new Request(file,{cache:'no-cache',integrity:APP_CACHE.integrity}):file;
 self.addEventListener('install',event=>{event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(APP_CACHE.files.map(precache))));if(APP_CACHE.force)self.skipWaiting();});
-self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(names=>Promise.all(names.filter(name=>name.startsWith('shielded-shell-')&&name!==SHELL).map(name=>caches.delete(name))))));
+// A page that crashed early never attached its controllerchange listener, so a forced build reloads its tabs itself; the query is there because a fragment URL navigated to itself can be a same-document scroll, not a reload.
+// Not awaited: the new page's fetch waits for this activation to finish, so awaiting navigate() here stalls it.
+self.addEventListener('activate',event=>event.waitUntil(caches.keys()
+ .then(names=>Promise.all(names.filter(name=>name.startsWith('shielded-shell-')&&name!==SHELL).map(name=>caches.delete(name))))
+ .then(()=>APP_CACHE.force?self.clients.matchAll({type:'window'}):[])
+ .then(tabs=>{for(const tab of tabs){const url=new URL(tab.url);url.searchParams.set('sw',APP_CACHE.version);tab.navigate(url.href).catch(()=>{});}})));
 self.addEventListener('message',event=>{if(event.data?.type==='skip-waiting')self.skipWaiting();});
 self.addEventListener('fetch',event=>{
  const {request}=event,url=new URL(request.url);

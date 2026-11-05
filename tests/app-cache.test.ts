@@ -12,7 +12,7 @@ const sri=(body:string)=>`sha256-${createHash('sha256').update(body).digest('bas
 type Entry={headers:Headers;response:Response};
 
 // app/sw.js over Map-backed caches; `fetch` is the network, which also answers every request the worker leaves alone.
-function worker({force=false,off=false,integrity=sri('cached /index.html')}={}){
+function worker({force=false,off=false,integrity=sri('cached /index.html'),tabs:paths=['/wallet']}={}){
  const listeners=new Map<string,(event:object)=>void>(),stores=new Map<string,Map<string,Entry>>(),added:(Request|string)[]=[];
  const key=(request:Request|string)=>new URL(typeof request==='string'?request:request.url,origin).href;
  const headers=(request:Request|string)=>typeof request==='string'?new Headers():request.headers;
@@ -34,7 +34,7 @@ function worker({force=false,off=false,integrity=sri('cached /index.html')}={}){
   };
  }};
  const fetch=mock.fn(async(_request:Request)=>new Response('net')),skipWaiting=mock.fn(async()=>{}),unregister=mock.fn(async()=>true);
- const tab={url:origin+'/wallet',navigate:mock.fn(async(_url:string)=>null)},matchAll=mock.fn(async(_options:{type?:string})=>[tab]);
+ const tabs=paths.map(path=>({url:origin+path,navigate:mock.fn(async(_url:string)=>null)})),matchAll=mock.fn(async(_options:{type?:string})=>tabs);
  const self={addEventListener:(type:string,listener:(event:object)=>void)=>listeners.set(type,listener),skipWaiting,location:{origin},registration:{unregister},clients:{matchAll}};
  class WorkerRequest extends Request{constructor(input:RequestInfo|URL,init?:RequestInit){super(typeof input==='string'?new URL(input,origin):input,init);}}
  runInNewContext(readFileSync(off?'app/sw-off.js':'app/sw.js','utf8').replace(/^const APP_CACHE=__APP_CACHE__;/,`const APP_CACHE=${JSON.stringify({version,files,force,integrity})};`),{self,caches,fetch,Request:WorkerRequest,Response,URL});
@@ -48,7 +48,7 @@ function worker({force=false,off=false,integrity=sri('cached /index.html')}={}){
   const answer=await dispatch('fetch',{request});
   return {body:await (answer??await fetch(request)).text(),intercepted:!!answer};
  };
- return {stores,caches,added,fetch,skipWaiting,unregister,matchAll,tab,dispatch,get};
+ return {stores,caches,added,fetch,skipWaiting,unregister,matchAll,tabs,dispatch,get};
 }
 
 test('install puts index.html and every built file into one cache named for the build',async()=>{
@@ -135,6 +135,31 @@ test('a forced build activates without waiting',async()=>{
  assert.equal(sw.skipWaiting.mock.callCount(),1);
 });
 
+test('a forced build reloads the tabs it controls once the older caches are gone, a normal build leaves them alone',async()=>{
+ const sw=worker({force:true,tabs:['/wallet','/verify#abc']}),seen:string[][]=[];
+ await sw.caches.open('shielded-shell-old');
+ for(const tab of sw.tabs)tab.navigate.mock.mockImplementation(async()=>{seen.push([...sw.stores.keys()]);return null;});
+ await sw.dispatch('install');await sw.dispatch('activate');
+ assert.deepEqual(sw.matchAll.mock.calls.map(call=>call.arguments[0].type),['window']);
+ assert.deepEqual(seen,[[shell],[shell]],'each tab navigates once, after the old shell is removed');
+ const normal=worker();await normal.dispatch('install');await normal.dispatch('activate');
+ assert.deepEqual([normal.matchAll.mock.callCount(),normal.tabs[0].navigate.mock.callCount()],[0,0]);
+});
+
+test('a reload sets one query parameter on the tab URL, so a fragment cannot turn it into a same-document navigation',async()=>{
+ const tabs=['/claim#token','/watch?x=1#a%20b'];
+ for(const [build,sw,param] of [['forced',worker({force:true,tabs}),version],['kill switch',worker({off:true,tabs}),'off']] as const){
+  await sw.dispatch('install');await sw.dispatch('activate');
+  for(const tab of sw.tabs){
+   assert.equal(tab.navigate.mock.callCount(),1,build);
+   const from=new URL(tab.url),to=new URL(tab.navigate.mock.calls[0].arguments[0]);
+   assert.deepEqual([to.origin,to.pathname,to.hash,to.searchParams.get('sw')],[from.origin,from.pathname,from.hash,param],build);
+   assert.equal(to.searchParams.get('x'),from.searchParams.get('x'),`${build} keeps the query the tab had`);
+   assert.notEqual(to.href.split('#')[0],from.href.split('#')[0],`${build} reaches a different document URL`);
+  }
+ }
+});
+
 test('the manifest lists every emitted file once and its version follows the file names',()=>{
  const names=['assets/index-a1.js','index.html','sw.js','assets/geist-b2.woff2','assets/plex-c3.woff'],html='<!doctype html><title>a</title>';
  const manifest=appCacheManifest(names,false,html);
@@ -219,7 +244,7 @@ test('an OFF build takes over on install, then removes the app caches, itself an
  assert.deepEqual(await sw.caches.keys(),['other']);
  assert.equal(sw.unregister.mock.callCount(),1);
  assert.deepEqual(sw.matchAll.mock.calls.map(call=>call.arguments[0].type),['window']);
- assert.deepEqual(sw.tab.navigate.mock.calls.map(call=>call.arguments[0]),[sw.tab.url]);
+ assert.deepEqual(sw.tabs[0].navigate.mock.calls.map(call=>call.arguments[0]),[origin+'/wallet?sw=off']);
  assert.deepEqual(await sw.get('/wallet',{navigate:true}),{body:'net',intercepted:false});
  const page=browser({});registerAppCache(()=>{},{prod:true,off:true,navigator:page.navigator});await tick();
  assert.equal(page.container.register.mock.callCount(),0,'the page of an OFF build registers nothing');

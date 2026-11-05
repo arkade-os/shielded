@@ -4,4 +4,4 @@ self.addEventListener('activate',event=>event.waitUntil(caches.keys()
  .then(names=>Promise.all(names.filter(name=>name.startsWith('shielded-')).map(name=>caches.delete(name))))
  .then(()=>self.registration.unregister())
  .then(()=>self.clients.matchAll({type:'window'}))
- .then(tabs=>{for(const tab of tabs)tab.navigate(tab.url).catch(()=>{});})));
+ .then(tabs=>{for(const tab of tabs){const url=new URL(tab.url);url.searchParams.set('sw','off');tab.navigate(url.href).catch(()=>{});}})));
