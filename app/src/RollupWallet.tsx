@@ -270,7 +270,7 @@ export default function RollupWallet(){
    lnurlRef.current=parts.lnurl;
    void parts.lnurl.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
    parts.lnurl.start(error=>{if(current())lnFail(error);});
-   quotes.clear();setTick(t=>t+1);
+   setTick(t=>t+1);
   }).catch(error=>{if(current())setStartupError(errorText(error));});
   return()=>{void close().catch(()=>{});};
  },[initialPool,secret]);
