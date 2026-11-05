@@ -123,7 +123,7 @@ test('activate removes caches of older builds and keeps the proving cache',async
  assert.deepEqual((await sw.caches.keys()).sort(),['other','shielded-proving',shell]);
 });
 
-test('only the skip-waiting message activates a waiting version',async()=>{
+test('a waiting version activates on the skip-waiting message, not on install',async()=>{
  const sw=worker();await sw.dispatch('install');await sw.dispatch('message',{data:{type:'other'}});
  assert.equal(sw.skipWaiting.mock.callCount(),0);
  await sw.dispatch('message',{data:{type:'skip-waiting'}});

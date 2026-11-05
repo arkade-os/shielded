@@ -1,6 +1,6 @@
 type Env={prod:boolean;off?:boolean;navigator?:Navigator;reload?:()=>void};
 
-// A waiting version is offered through onUpdate and only activates when the tap runs `apply`; every tab then reloads once, because activation drops the old shell cache.
+// A waiting version is offered through onUpdate; an open tab switches only when the tap runs `apply` (closing every tab also activates it), and every tab then reloads once, because activation drops the old shell cache.
 export function registerAppCache(onUpdate:(apply:()=>void)=>void,{prod,off,navigator:nav=globalThis.navigator,reload=()=>location.reload()}:Env={prod:import.meta.env.PROD,off:__APP_CACHE_OFF__}):void{
  // The getter throws a SecurityError where service workers are denied, and an effect that throws unmounts the whole app.
  let container:ServiceWorkerContainer|undefined;
