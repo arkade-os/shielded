@@ -462,9 +462,9 @@ export default function RollupWallet(){
  const historyContent=(items:typeof historyItems)=>!rows.length?<p className="stock-muted">{synced?'No activity yet.':'Reading the pool…'}</p>:<ul>{items}</ul>;
   const shownAssets=reserves.filter(id=>assetUnits(id)>0n),unshielded=arkAvailable??0;
   const balanceCard=()=> <section className="stock-card stock-balance">
-   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong>{!synced&&<span className="stock-balance-state">Syncing your wallet…</span>}</div>
+   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong>{(!synced||arkAvailable===undefined)&&<span className="stock-balance-state">Syncing your wallet…</span>}</div>
    {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
-   {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{sats(assetUnits(id))} units</b></div>)}</div>}
+   {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
   </section>;
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
@@ -535,7 +535,7 @@ export default function RollupWallet(){
      {codeError&&<p className="stock-blocked" role="alert">{codeError}</p>}
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {arkAssetRecipient&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-      <p className="stock-muted">Up to {sats(maxSend)} {unit} available privately.</p>
+      <p className="stock-muted">{synced?`Up to ${sats(maxSend)} ${unit} available privately.`:'Syncing your wallet…'}</p>
      <details className="stock-more"><summary>Where each kind of payment goes</summary><p className="stock-muted">A shielded address pays privately inside the pool. An Arkade address leaves the pool, and the amount and destination become public. A Bitcoin address leaves the pool through a fresh key used only for that payment, so it is not linked to your deposit address. Lightning funds its swap directly from one pool note. A claim link pays whoever opens it first.</p>{to.trim()&&<p className="stock-muted">Get quote contacts the payment service for Lightning invoices and addresses. It shares the invoice or address and amount; payment happens after you confirm the quote.</p>}</details>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
