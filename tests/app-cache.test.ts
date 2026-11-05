@@ -260,7 +260,7 @@ test('an OFF build takes over on install, then removes the app caches, itself an
  assert.equal(page.container.register.mock.callCount(),0,'the page of an OFF build registers nothing');
 });
 
-test('an OFF build removes what it can, then still unregisters and reloads its tabs when cache storage fails',async()=>{
+test('an OFF build removes what it can, then still unregisters and reloads its tabs when cache storage fails, and never rejects its activation',async()=>{
  const broken=new DOMException('The operation is insecure.','SecurityError');
  for(const [fails,left] of [['keys',['other','shielded-proving',shell]],['delete',['other',shell]]] as const){
   const sw=worker({off:true});for(const name of [shell,'shielded-proving','other'])await sw.caches.open(name);
@@ -270,4 +270,7 @@ test('an OFF build removes what it can, then still unregisters and reloads its t
   assert.deepEqual([...sw.stores.keys()].sort(),left,`${fails} fails`);
   assert.deepEqual([sw.unregister.mock.callCount(),sw.tabs[0].navigate.mock.callCount()],[1,1],`${fails} fails`);
  }
+ const sw=worker({off:true});sw.unregister.mock.mockImplementation(async()=>{throw broken;});
+ await sw.dispatch('activate');
+ assert.equal(sw.unregister.mock.callCount(),1,'a failing unregister does not reject the activation either');
 });

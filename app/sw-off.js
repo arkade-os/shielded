@@ -6,4 +6,5 @@ self.addEventListener('activate',event=>event.waitUntil(caches.keys()
  .catch(()=>{})
  .then(()=>self.registration.unregister())
  .then(()=>self.clients.matchAll({type:'window'}))
- .then(tabs=>{for(const tab of tabs){const url=new URL(tab.url);url.searchParams.set('sw','off');tab.navigate(url.href).catch(()=>{});}})));
+ .then(tabs=>{for(const tab of tabs){const url=new URL(tab.url);url.searchParams.set('sw','off');tab.navigate(url.href).catch(()=>{});}})
+ .catch(()=>{})));
