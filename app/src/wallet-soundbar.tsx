@@ -1,6 +1,7 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import type {StepState} from '../../src/shielded/handle.ts';
 import {PAUSED_ERROR,sheetLine} from './rollup-client.ts';
+import {refractionMap,supportsBackdropRefraction} from './wallet-refraction.ts';
 
 export interface SoundbarItem {title:string;line:string;state:'active'|'done'|'failed';steps?:StepState}
 
@@ -21,9 +22,42 @@ export function useMedia(query:string){
 
 export function Soundbar({item,onDismiss}:{item?:SoundbarItem;onDismiss:()=>void}){
  const [open,setOpen]=useState(false),steps=item?.steps;
+ const bar=useRef<HTMLElement>(null),visible=Boolean(item);
+ const [map,setMap]=useState<{width:number;height:number;href:string}>();
  useEffect(()=>{if(!steps)setOpen(false);},[steps]);
+ useEffect(()=>{
+  if(!visible||!supportsBackdropRefraction()){setMap(undefined);return;}
+  const node=bar.current;
+  if(!node)return;
+  let frame=0,lastWidth=0,lastHeight=0,revision=0;
+  const measure=()=>{
+   cancelAnimationFrame(frame);
+   frame=requestAnimationFrame(()=>{
+    const rect=node.getBoundingClientRect(),width=Math.round(rect.width),height=Math.round(rect.height);
+    if(width<2||height<2){lastWidth=0;lastHeight=0;revision++;setMap(undefined);return;}
+    if(width===lastWidth&&height===lastHeight)return;
+    lastWidth=width;lastHeight=height;
+    const current=++revision;
+    let href:string|undefined;
+    try{href=refractionMap(width,height);}catch{href=undefined;}
+    setMap(undefined);
+    if(!href){lastWidth=0;lastHeight=0;return;}
+    const image=new Image();
+    image.onload=()=>{if(current===revision)setMap({width,height,href});};
+    image.onerror=()=>{if(current===revision){lastWidth=0;lastHeight=0;setMap(undefined);}};
+    image.src=href;
+   });
+  };
+  const observer=typeof ResizeObserver==='undefined'?undefined:new ResizeObserver(measure);
+  observer?.observe(node);
+  window.addEventListener('resize',measure);
+  measure();
+  return()=>{revision++;observer?.disconnect();window.removeEventListener('resize',measure);cancelAnimationFrame(frame);};
+ },[visible]);
  const pct=steps&&!steps.done&&!steps.error?Math.round(100*(steps.current+1)/steps.steps.length):undefined;
- return <aside className={'stock-soundbar'+(item?` is-${item.state}`:' is-idle')+(open?' is-open':'')} aria-label="Wallet activity">
+ return <>
+  {map&&<svg width="0" height="0" aria-hidden="true" focusable="false" style={{position:'absolute',pointerEvents:'none'}}><defs><filter id="wallet-liquid-glass" x="0" y="0" width={map.width} height={map.height} filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse" colorInterpolationFilters="sRGB"><feImage href={map.href} x="0" y="0" width={map.width} height={map.height} preserveAspectRatio="none" result="displacement"/><feDisplacementMap in="SourceGraphic" in2="displacement" scale="24" xChannelSelector="R" yChannelSelector="G"/></filter></defs></svg>}
+  <aside ref={bar} className={'stock-soundbar'+(item?` is-${item.state}`:' is-idle')+(open?' is-open':'')+(map?' has-refraction':'')} aria-label="Wallet activity">
   {steps&&<ol className="stock-steps" id="stock-soundbar-steps">{steps.steps.map((label,i)=><li key={i} className={steps.error&&i===steps.current?'error':i<steps.current||steps.done?'done':i===steps.current?'active':''}><i/>{label}</li>)}</ol>}
   <div className="stock-soundbar-bar">
    <span className="stock-eq" aria-hidden="true"><i/><i/><i/><i/><i/></span>
@@ -33,5 +67,6 @@ export function Soundbar({item,onDismiss}:{item?:SoundbarItem;onDismiss:()=>void
    {item&&item.state!=='active'&&<button type="button" className="stock-soundbar-dismiss" onClick={onDismiss}>Dismiss</button>}
   </div>
   {pct!==undefined&&<span className="stock-soundbar-track" aria-hidden="true"><span style={{width:`${pct}%`}}/></span>}
- </aside>;
+  </aside>
+ </>;
 }
