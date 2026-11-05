@@ -12,10 +12,19 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 mkdirSync(out, { recursive: true });
 for (const { files } of Object.values(manifest.circuits)) for (const [name, digest] of Object.entries(files)) {
   if (!/^[a-z-]+\.(zkey|wasm|vkey\.json)$/.test(name)) throw new Error(`Unexpected file name in the manifest: ${JSON.stringify(name)}`);
-  const response = await fetch(`${base.replace(/\/+$/, '')}/${name}`);
-  if (!response.ok || !response.body) throw new Error(`${name}: HTTP ${response.status}`);
-  const hash = createHash('sha256'), partial = join(out, name + '.partial');
-  await pipeline(Readable.fromWeb(response.body), new Transform({ transform(chunk, _encoding, callback) { hash.update(chunk); callback(null, chunk); } }), createWriteStream(partial));
+  const partial = join(out, name + '.partial');
+  let hash;
+  // Only the download retries, since a release CDN drops the odd request; a digest mismatch below fails at once.
+  for (let attempt = 1; ; attempt++) try {
+    const response = await fetch(`${base.replace(/\/+$/, '')}/${name}`);
+    if (!response.ok || !response.body) throw new Error(`${name}: HTTP ${response.status}`);
+    hash = createHash('sha256');
+    await pipeline(Readable.fromWeb(response.body), new Transform({ transform(chunk, _encoding, callback) { hash.update(chunk); callback(null, chunk); } }), createWriteStream(partial));
+    break;
+  } catch (error) {
+    if (attempt === 5) throw error;
+    await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+  }
   if (hash.digest('hex') !== digest) { rmSync(partial); throw new Error(`${name} does not match the pinned manifest.`); }
   renameSync(partial, join(out, name));
 }

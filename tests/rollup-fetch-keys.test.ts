@@ -28,3 +28,18 @@ test('published keys are installed only when each matches the manifest pinned in
  await assert.rejects(fetchKeys(manifest,base,again),/epoch-join\.zkey does not match/);
  assert.equal(existsSync(join(again,'epoch-join.zkey')),false,'a file that fails its digest is not left behind');
 });
+
+test('a download the host drops is fetched again',async(t)=>{
+ const files:Record<string,string>={},hits=new Map<string,number>();
+ for(const name of EPOCH_KEY_FILES.filter(n=>n!=='manifest.json'))files[name]=sha(name);
+ const server=createServer((req,res)=>{
+  const name=(req.url??'').slice(1),seen=(hits.get(name)??0)+1;hits.set(name,seen);
+  if(name==='epoch-spend.vkey.json'&&seen===1)res.writeHead(504).end();else res.writeHead(name in files?200:404).end(name);
+ });
+ await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>server.close());
+ const dir=mkdtempSync(join(tmpdir(),'rollup-fetch-')),manifest=join(dir,'pinned.json'),out=join(dir,'keys');
+ writeFileSync(manifest,JSON.stringify({circuits:{all:{files}}}));
+ await fetchKeys(manifest,`http://127.0.0.1:${(server.address() as {port:number}).port}`,out);
+ assert.doesNotThrow(()=>verifyRollupKeys(out));
+ assert.equal(hits.get('epoch-spend.vkey.json'),2);
+});
