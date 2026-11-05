@@ -11,6 +11,7 @@ import '@fontsource/space-mono/latin-400.css';
 import '@fontsource/space-mono/latin-700.css';
 import './style.css';
 import './stock-wallet.css';
+import './wallet-glass.css';
 
 const path=location.pathname.replace(/\/+$/,'')||'/';
 const loading=<div className="stock-page"><main className="stock-shell"><section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><h2>Loading wallet</h2></section></main></div>;
