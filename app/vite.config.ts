@@ -11,7 +11,8 @@ const appCache = (): Plugin => ({
   generateBundle(_options, bundle) {
     if (off || force) this.warn(off ? 'SHIELDED_APP_CACHE_OFF=1: sw.js removes the app cache and the page no longer registers one' : 'SHIELDED_APP_CACHE_FORCE=1: sw.js takes over on install, without waiting for Update');
     const html = bundle['index.html'];
-    const manifest = appCacheManifest(Object.keys(bundle), force, html?.type === 'asset' ? html.source : '');
+    if (html?.type !== 'asset') this.error('app/sw.js: index.html is missing from the Vite bundle; the app cache cannot be built');
+    const manifest = appCacheManifest(Object.keys(bundle), force, html.source);
     this.emitFile({ type: 'asset', fileName: 'sw.js', source: readFileSync(new URL(off ? './sw-off.js' : './sw.js', import.meta.url), 'utf8').replace('__APP_CACHE__', () => JSON.stringify(manifest)) });
   },
 });

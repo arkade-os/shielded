@@ -177,6 +177,16 @@ test('a deploy that changes only index.html gets a new version',()=>{
  assert.equal(version('<title>a</title>'),version('<title>a</title>'));
 });
 
+test('the build fails when the bundle has no index.html asset, instead of hashing an empty page',async()=>{
+ const {default:config}=await import('../app/vite.config.ts');
+ const plugin=(config.plugins as unknown[]).flat(Infinity).find(found=>(found as {name?:string})?.name==='app-cache') as {generateBundle:(this:object,options:object,bundle:object)=>void};
+ const emitFile=mock.fn(),context={warn(){},emitFile,error:(message:string):never=>{throw new Error(message);}};
+ for(const bundle of [{'assets/a-1.js':{type:'chunk'}},{'index.html':{type:'chunk'}}])assert.throws(()=>plugin.generateBundle.call(context,{},bundle),/index.html is missing/);
+ assert.equal(emitFile.mock.callCount(),0);
+ plugin.generateBundle.call(context,{},{'index.html':{type:'asset',source:'<title>a</title>'}});
+ assert.deepEqual(emitFile.mock.calls.map(call=>(call.arguments[0] as {fileName:string}).fileName),['sw.js'],'a bundle with its page still gets its worker');
+});
+
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const fakeWorker=(state:string)=>Object.assign(new EventTarget(),{state,postMessage:mock.fn()});
 type Fake=ReturnType<typeof fakeWorker>;
