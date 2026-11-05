@@ -2,7 +2,7 @@
 FROM --platform=linux/amd64 debian:trixie-slim AS rapidsnark
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN curl -fsSL --retry 4 --retry-all-errors -o rapidsnark.zip https://github.com/iden3/rapidsnark/releases/download/v0.0.8/rapidsnark-linux-x86_64-v0.0.8.zip \
+RUN curl -fsSL --retry 4 --retry-all-errors --max-time 120 -o rapidsnark.zip https://github.com/iden3/rapidsnark/releases/download/v0.0.8/rapidsnark-linux-x86_64-v0.0.8.zip \
  && echo '2ec59e3aa5ff498e862d60b3b7abdcd094ea484271750ec1ea14fb7c1305e423  rapidsnark.zip' | sha256sum -c - \
  && unzip -q rapidsnark.zip && mkdir -p /out && install -m 0755 rapidsnark-linux-x86_64-v0.0.8/bin/prover /out/rapidsnark
 

@@ -17,7 +17,7 @@ for (const { files } of Object.values(manifest.circuits)) for (const [name, dige
   // Only the download retries, since a release CDN drops the odd request; a digest mismatch below fails at once.
   for (let attempt = 1; ; attempt++) try {
     const response = await fetch(`${base.replace(/\/+$/, '')}/${name}`);
-    if (!response.ok || !response.body) throw new Error(`${name}: HTTP ${response.status}`);
+    if (!response.ok || !response.body) { await response.body?.cancel().catch(() => {}); throw new Error(`${name}: HTTP ${response.status}`); }
     hash = createHash('sha256');
     await pipeline(Readable.fromWeb(response.body), new Transform({ transform(chunk, _encoding, callback) { hash.update(chunk); callback(null, chunk); } }), createWriteStream(partial));
     break;
