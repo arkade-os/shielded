@@ -1,9 +1,11 @@
 const APP_CACHE=__APP_CACHE__;
-// appCache() in vite.config.ts fills in line 1 with this build's files, version and force flag.
+// appCache() in vite.config.ts fills in line 1 with this build's files, version, force flag and index.html hash.
 const SHELL=`shielded-shell-${APP_CACHE.version}`,PROVING='shielded-proving',ROUTES=['/','/wallet','/claim','/verify','/watch'];
 // Built files have one copy each; crossorigin scripts send Origin, so a Vary: Origin answer would never match the precache.
 const cacheFirst=(request,key=request)=>caches.open(SHELL).then(cache=>cache.match(key,{ignoreVary:true})).then(hit=>hit??fetch(request));
-self.addEventListener('install',event=>{event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(APP_CACHE.files)));if(APP_CACHE.force)self.skipWaiting();});
+// index.html is the one file not named for its content: an HTTP-cached or other build's copy fails the hash, so the install fails and is retried later.
+const precache=file=>file==='/index.html'?new Request(file,{cache:'no-cache',integrity:APP_CACHE.integrity}):file;
+self.addEventListener('install',event=>{event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(APP_CACHE.files.map(precache))));if(APP_CACHE.force)self.skipWaiting();});
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(names=>Promise.all(names.filter(name=>name.startsWith('shielded-shell-')&&name!==SHELL).map(name=>caches.delete(name))))));
 self.addEventListener('message',event=>{if(event.data?.type==='skip-waiting')self.skipWaiting();});
 self.addEventListener('fetch',event=>{

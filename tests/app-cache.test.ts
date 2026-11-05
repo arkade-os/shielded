@@ -8,11 +8,12 @@ import {registerAppCache} from '../app/src/app-cache.ts';
 
 const origin='https://shielded.example',version='0123456789ab',shell=`shielded-shell-${version}`;
 const files=['/assets/geist-b2.woff2','/assets/index-a1.js','/index.html'];
+const sri=(body:string)=>`sha256-${createHash('sha256').update(body).digest('base64')}`;
 type Entry={headers:Headers;response:Response};
 
 // app/sw.js over Map-backed caches; `fetch` is the network, which also answers every request the worker leaves alone.
-function worker({force=false,off=false}={}){
- const listeners=new Map<string,(event:object)=>void>(),stores=new Map<string,Map<string,Entry>>();
+function worker({force=false,off=false,integrity=sri('cached /index.html')}={}){
+ const listeners=new Map<string,(event:object)=>void>(),stores=new Map<string,Map<string,Entry>>(),added:(Request|string)[]=[];
  const key=(request:Request|string)=>new URL(typeof request==='string'?request:request.url,origin).href;
  const headers=(request:Request|string)=>typeof request==='string'?new Headers():request.headers;
  const caches={keys:async()=>[...stores.keys()],delete:async(name:string)=>stores.delete(name),open:async(name:string)=>{
@@ -23,13 +24,20 @@ function worker({force=false,off=false}={}){
     return vary.every(name=>headers(request).get(name)===entry!.headers.get(name))?entry?.response.clone():undefined;
    },
    put:async(request:Request|string,response:Response)=>{entries.set(key(request),{headers:headers(request),response});},
-   addAll:async(urls:string[])=>{for(const url of urls)entries.set(key(url),{headers:new Headers(),response:new Response(`cached ${url}`,{headers:{vary:'Origin'}})});},
+   addAll:async(requests:(Request|string)[])=>{
+    added.push(...requests);
+    const answers=requests.map(request=>{const body=`cached ${new URL(key(request)).pathname}`;
+     if(typeof request!=='string'&&request.integrity&&request.integrity!==sri(body))throw new TypeError(`${request.url} fails its integrity check`);
+     return [key(request),{headers:new Headers(),response:new Response(body,{headers:{vary:'Origin'}})}] as const;});
+    for(const [url,entry] of answers)entries.set(url,entry);
+   },
   };
  }};
  const fetch=mock.fn(async(_request:Request)=>new Response('net')),skipWaiting=mock.fn(async()=>{}),unregister=mock.fn(async()=>true);
  const tab={url:origin+'/wallet',navigate:mock.fn(async(_url:string)=>null)},matchAll=mock.fn(async(_options:{type?:string})=>[tab]);
  const self={addEventListener:(type:string,listener:(event:object)=>void)=>listeners.set(type,listener),skipWaiting,location:{origin},registration:{unregister},clients:{matchAll}};
- runInNewContext(readFileSync(off?'app/sw-off.js':'app/sw.js','utf8').replace(/^const APP_CACHE=__APP_CACHE__;/,`const APP_CACHE=${JSON.stringify({version,files,force})};`),{self,caches,fetch,Request,Response,URL});
+ class WorkerRequest extends Request{constructor(input:RequestInfo|URL,init?:RequestInit){super(typeof input==='string'?new URL(input,origin):input,init);}}
+ runInNewContext(readFileSync(off?'app/sw-off.js':'app/sw.js','utf8').replace(/^const APP_CACHE=__APP_CACHE__;/,`const APP_CACHE=${JSON.stringify({version,files,force,integrity})};`),{self,caches,fetch,Request:WorkerRequest,Response,URL});
  const dispatch=async(type:string,event:object={})=>{
   const pending:Promise<unknown>[]=[];let answer=undefined as Promise<Response>|undefined;
   listeners.get(type)?.({...event,respondWith:(response:Promise<Response>)=>{answer=response;},waitUntil:(promise:Promise<unknown>)=>pending.push(promise)});
@@ -40,7 +48,7 @@ function worker({force=false,off=false}={}){
   const answer=await dispatch('fetch',{request});
   return {body:await (answer??await fetch(request)).text(),intercepted:!!answer};
  };
- return {stores,caches,fetch,skipWaiting,unregister,matchAll,tab,dispatch,get};
+ return {stores,caches,added,fetch,skipWaiting,unregister,matchAll,tab,dispatch,get};
 }
 
 test('install puts index.html and every built file into one cache named for the build',async()=>{
@@ -49,6 +57,14 @@ test('install puts index.html and every built file into one cache named for the 
  assert.deepEqual([...sw.stores.get(shell)!.keys()].sort(),files.map(file=>origin+file));
  assert.deepEqual(await sw.get('/assets/index-a1.js',{headers:{origin}}),{body:'cached /assets/index-a1.js',intercepted:true},'a crossorigin script sends Origin');
  assert.equal(sw.fetch.mock.callCount(),0);
+ assert.deepEqual(sw.added.map(request=>typeof request==='string'?request:`${request.url} ${request.cache} ${request.integrity}`),
+  [files[0],files[1],`${origin}/index.html no-cache ${sri('cached /index.html')}`],'hashed files keep the default mode');
+});
+
+test('an install whose index.html is not the one this build hashed fails and caches nothing',async()=>{
+ const sw=worker({integrity:sri('cached /index.html of another build')});
+ await assert.rejects(sw.dispatch('install'));
+ assert.deepEqual([...sw.stores.get(shell)!.keys()],[]);
 });
 
 test('a navigation to /wallet or /claim is answered with the cached index.html',async()=>{
@@ -105,6 +121,7 @@ test('the manifest lists every emitted file once and its version follows the fil
  const manifest=appCacheManifest(names,false,html);
  assert.deepEqual(manifest.files,['/assets/geist-b2.woff2','/assets/index-a1.js','/index.html'],'sorted, without sw.js or a woff fallback');
  assert.equal(manifest.version,createHash('sha256').update(manifest.files.join('\n')).update('\0').update(html).digest('hex').slice(0,12));
+ assert.equal(manifest.integrity,sri(html));
  assert.equal(manifest.force,false);
  assert.deepEqual(appCacheManifest(names.filter(name=>name!=='index.html').reverse(),true,html),{...manifest,force:true},'index.html is added when missing, and order does not matter');
  assert.notEqual(appCacheManifest(names.map(name=>name.replace('a1','a2')),false,html).version,manifest.version);
