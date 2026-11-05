@@ -4,6 +4,6 @@
 .seal-outer{animation:seal-spin 80s linear infinite}
 .seal-middle{animation:seal-spin 60s linear infinite reverse}
 .seal-inner{animation:seal-spin 40s linear infinite}
-.seal-mark{position:absolute;inset:0;display:grid;place-items:center;font-family:'Fraunces Variable',Georgia,serif;font-style:italic;line-height:1}
+.seal-mark{position:absolute;inset:0;display:grid;place-items:center;font-family:'Fraunces',Georgia,serif;font-style:italic;line-height:1}
 @keyframes seal-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.seal svg{animation:none}}
