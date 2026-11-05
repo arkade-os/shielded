@@ -53,8 +53,8 @@ async function main(){
  let ending:Promise<never>|undefined;
  const end=(code:number)=>ending??=wallet.dispose().catch(()=>{}).then(()=>process.exit(code));
  process.once('SIGTERM',()=>void end(0)).once('SIGINT',()=>void end(0));
+ void wallet.started.catch(error=>{console.error(reasonOf(error));void end(1);});
  try{
-  await wallet.started;
   const refused=feeAddressProblem(wallet);
   if(refused){console.error(refused);return await end(1);}
   log(`fee wallet ${wallet.shieldedAddress()} holds ${wallet.shieldedBalance()} sats; merging every ${ms} ms`);
