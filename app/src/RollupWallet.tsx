@@ -239,7 +239,7 @@ export default function RollupWallet(){
     startingRef.current=starting;void starting.then(()=>{if(startingRef.current===starting)startingRef.current=undefined;});
     return created;
    }catch(error){
-    if(!companion)void pairing.then(c=>c.dispose()).catch(()=>{});
+    void pairing.then(c=>c.dispose()).catch(()=>{});
     try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;

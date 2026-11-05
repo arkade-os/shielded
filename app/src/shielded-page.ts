@@ -202,6 +202,7 @@ export function pageQuotes(render:()=>void){
  };
 }
 export async function pageQuoteRoute<T>(route:()=>Promise<T>,pending:()=>Promise<unknown>|undefined){
+ // Any error, not only "no rail": a Bitcoin address fails differently before Lightning attaches, and route() only reads.
  try{return await route();}
  catch(error){const start=pending();if(!start)throw error;await start.catch(()=>{});return route();}
 }
