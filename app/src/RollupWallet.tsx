@@ -76,6 +76,7 @@ export default function RollupWallet(){
  const [tab,setTab]=useState<'home'|'receive'|'send'|'activity'>('home'),[receiveMode,setReceiveMode]=useState<ReceiveMode>('unified'),[requestOpen,setRequestOpen]=useState(false),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<'phrase'|'viewing'|'restore'|null>(null),[restoreDate,setRestoreDate]=useState(''),[restoreStarted,setRestoreStarted]=useState(false);
+ const [listingError,setListingError]=useState<{id:string;message:string}>();
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -125,9 +126,9 @@ export default function RollupWallet(){
 
  const listAsset=async(id:string)=>{
   if(busyRef.current||restoring.current||!wallet)return;
-  busyRef.current=true;setBusy(true);
+  busyRef.current=true;setBusy(true);setListingError(undefined);
   try{await wallet.listAsset(id);if(mounted.current&&!restoring.current)setListed(id);}
-  catch(error){if(mounted.current&&!restoring.current)setPoolError(errorText(error));}
+  catch(error){if(mounted.current&&!restoring.current)setListingError({id,message:errorText(error)});}
   finally{if(mounted.current&&!restoring.current){busyRef.current=false;setBusy(false);setTick(t=>t+1);}}
  };
 
@@ -209,7 +210,7 @@ export default function RollupWallet(){
 
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
-  setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setInvoice(undefined);setRequestOpen(false);
+  setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setInvoice(undefined);setRequestOpen(false);setListingError(undefined);
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
@@ -323,7 +324,9 @@ export default function RollupWallet(){
  };
 
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
- useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!narrow||!panel)return;
+ const docked=narrow&&pool?.phase==='ready';
+ useEffect(()=>{if(!docked)setSheetOpen(false);},[docked]);
+ useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!docked||!panel)return;
   // Everything behind the open sheet goes inert, for Tab and for a screen reader's cursor; the backdrop still closes it and the bar keeps reporting.
   const behind:Element[]=[];let el:Element=panel;
    const skip=tab==='activity'?'.stock-backdrop,.stock-soundbar,.stock-scan,.stock-dock,[inert]':'.stock-backdrop,.stock-soundbar,.stock-scan,[inert]';
@@ -331,7 +334,7 @@ export default function RollupWallet(){
   for(const other of behind)other.setAttribute('inert','');
   const key=(e:KeyboardEvent)=>{if(e.key==='Escape')setSheetOpen(false);};
   addEventListener('keydown',key);const root=document.documentElement,was=root.style.overflow,back=document.activeElement as HTMLElement|null;root.style.overflow='hidden';panel.querySelector<HTMLElement>('.stock-panel-head button')?.focus();
-   return()=>{removeEventListener('keydown',key);root.style.overflow=was;for(const other of behind)other.removeAttribute('inert');if(!document.activeElement?.closest('.stock-dock'))back?.focus();};},[sheetOpen,narrow,tab]);
+   return()=>{removeEventListener('keydown',key);root.style.overflow=was;for(const other of behind)other.removeAttribute('inert');if(!document.activeElement?.closest('.stock-dock'))back?.focus();};},[sheetOpen,docked,tab]);
  useEffect(()=>{if(!securityRef.current?.open)return;securityRef.current.querySelector<HTMLElement>(securityView?'.stock-security-subview h3':'.stock-security-menu button')?.focus();},[securityView]);
  // A finished action leaves the bar after a moment; a failure stays until it is dismissed.
  useEffect(()=>{if(!sheet?.done)return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet]);
@@ -418,7 +421,6 @@ export default function RollupWallet(){
  const openSecurity=(view:'phrase'|'viewing'|'restore')=>{setReveal(false);setShowView(false);setShowFull(false);setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,syncing:!synced,recoveryLine:RECOVERY_LINE});
- const docked=narrow&&ready;
  const {checked:privateChecked,notice:privateNotice}=privateReceiveView(privateState);
  const privateListed=privateState.on&&privateState.listed==='own'&&!privateState.pending&&!privateState.refused&&!privateState.withdrawing;
  const privateDescription=privateListed?'This QR also offers private pool payments.'
@@ -524,7 +526,7 @@ export default function RollupWallet(){
        :reserves.includes(a.assetId)?<p className="stock-muted">{(fee&&listedAssetLine(a.coins,fee,new Set(reserves),Date.now(),SHIELD_FLOOR_MS,!!feePaused))||'Listed in the pool, so it moves in on its own.'}</p>
        :listingFull?<p className="stock-blocked">{listingFull}</p>
        :listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>
-       :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}</div>)}
+       :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}{!a.payout&&listingError?.id===a.assetId&&<p className="stock-blocked" role="alert">{listingError.message}</p>}</div>)}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
      <div className="stock-to"><label>To<input id="stock-to" value={to} onChange={e=>{setTo(e.target.value);setCodeError('');}} placeholder="shrol21…, tark1…, a Lightning invoice or address" autoComplete="off" spellCheck={false}/></label>
@@ -548,8 +550,8 @@ export default function RollupWallet(){
      {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
     </div></section></div>}</div>
   </>}
-    {(docked||tab==='home')&&settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds.</p><details className="stock-more"><summary>Before you switch devices</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished. The phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
-    {(docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
+    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds.</p><details className="stock-more"><summary>Before you switch devices</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished. The phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+    {(!ready||docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
     {!securityView?<div className="stock-security-menu">
      {(backedUp||!secret)&&<button type="button" className="stock-security-choice" onClick={()=>openSecurity('phrase')}><strong>Recovery phrase</strong><small>Back up or reveal your words</small><span aria-hidden="true">›</span></button>}
      <button type="button" className="stock-security-choice" onClick={()=>openSecurity('viewing')}><strong>Viewing access</strong><small>Share read-only wallet history</small><span aria-hidden="true">›</span></button>
