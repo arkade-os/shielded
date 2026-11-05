@@ -76,6 +76,24 @@ export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()
  }};
 }
 
+export type PageLightning<C,S,L>={companion:C;swaps:S;lnurl:L};
+export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C)=>Promise<S>;lnurl:(companion:C,swaps:S)=>Promise<L>;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
+ let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined;
+ try{
+  companion=await o.pairing;
+  if(o.active()){
+   swaps=await o.swaps(companion);
+   if(o.active()){
+    lnurl=await o.lnurl(companion,swaps);
+    if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
+   }
+  }
+ }catch(error){if(o.active())o.report(new Error(`Lightning could not start: ${errorText(error)}`));}
+ // No hand-over, so this start still owns them; swaps and the address service both run on the companion, so it goes last.
+ try{await lnurl?.dispose();}catch{}try{await swaps?.[Symbol.asyncDispose]();}catch{}try{await companion?.dispose();}catch{}
+ return;
+}
+
 export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void){
  let closed=false;
  const values:Partial<T>={},errors:Partial<Record<keyof T,string>>={};
@@ -183,6 +201,11 @@ export function pageQuotes(render:()=>void){
    clear();return quote.send();
   },
  };
+}
+export async function pageQuoteRoute<T>(route:()=>Promise<T>,pending:()=>Promise<unknown>|undefined){
+ // Any error, not only "no rail": a Bitcoin address fails differently before Lightning attaches, and route() only reads.
+ try{return await route();}
+ catch(error){const start=pending();if(!start)throw error;await start.catch(()=>{});return route();}
 }
 
 export async function renewPageCoins(renew:()=>Promise<string|undefined>,sheet:ReturnType<typeof pageSheet>){

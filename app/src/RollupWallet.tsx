@@ -18,7 +18,7 @@ import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type Rollu
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
 import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
@@ -77,7 +77,7 @@ export default function RollupWallet(){
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
- const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),lnLimits=useRef<unknown>(undefined);
+ const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),lnLimits=useRef<unknown>(undefined),startingRef=useRef<Promise<unknown>|undefined>(undefined);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
@@ -200,6 +200,7 @@ export default function RollupWallet(){
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createLnurlReceive>|undefined;
+  let starting:Promise<PageLightning<Wallet,Awaited<ReturnType<typeof createPrivateLightning>>,ReturnType<typeof createLnurlReceive>>|undefined>|undefined;
   const dispose=(created:ShieldedWallet)=>disposeAfterPageReads(created,refreshes.current,async()=>{
    try{await lnurl?.dispose();}finally{
     if(lnurlRef.current===lnurl)lnurlRef.current=undefined;
@@ -229,14 +230,16 @@ export default function RollupWallet(){
     nativeOpened=true;
     void created.started.catch(error=>{if(session.active()&&!restoring.current&&mounted.current)setPoolError(errorText(error));});
     const reportLightning=(error:unknown)=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));};
-    try{
-     companion=await pairing;
-     const swaps=await createPrivateLightning({wallet:created,companion,journal,onError:reportLightning});created.swaps=swaps;
-     lnurl=createLnurlReceive({identity:created.identity,companion,journal,owner:await lightningOwner(companion),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()});
-    }catch(error){reportLightning(new Error(`Lightning could not start: ${errorText(error)}`));}
+    starting=startPageLightning({
+     pairing,
+     swaps:paired=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning}),
+     lnurl:async(paired,swaps)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()}),
+     active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
+    });
+    startingRef.current=starting;void starting.then(()=>{if(startingRef.current===starting)startingRef.current=undefined;});
     return created;
    }catch(error){
-    if(!companion)void pairing.then(c=>c.dispose()).catch(()=>{});
+    void pairing.then(c=>c.dispose()).catch(()=>{});
     try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;
@@ -249,7 +252,7 @@ export default function RollupWallet(){
    return closing??=(async()=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);})();
   };
   sessions.current.add(close);
-  void session.ready.then(created=>{
+  void session.ready.then(async created=>{
    if(!created||!current())return;
    setStartupError('');
    // A wallet made here was only ever shown with this status's fee, so it accepts that one, never a newer one. A failed save shows as the saved-notes error.
@@ -260,13 +263,14 @@ export default function RollupWallet(){
    unwatch.push(created.onAction(handle=>{if(current()){funds.update();quotes.clear();sheetOwner.watch(handle,handle.title);}}));
    legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes: ${created.repositoryError}`);
-   if(created.swaps)unwatch.push(created.swaps.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
-   lnurlRef.current=lnurl;
-   if(lnurl){
-    void lnurl.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
-    lnurl.start(error=>{if(current())lnFail(error);});
-   }
    setWallet(created);
+   const parts=await starting;
+   if(!parts||!current())return;
+   unwatch.push(parts.swaps.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
+   lnurlRef.current=parts.lnurl;
+   void parts.lnurl.current().then(owned=>{if(owned&&current())setLnAddress(owned.lightningAddress??owned.lnurl);}).catch(error=>{if(current())setLnError(errorText(error));});
+   parts.lnurl.start(error=>{if(current())lnFail(error);});
+   setTick(t=>t+1);
   }).catch(error=>{if(current())setStartupError(errorText(error));});
   return()=>{void close().catch(()=>{});};
  },[initialPool,secret]);
@@ -294,7 +298,7 @@ export default function RollupWallet(){
   void service.privateReceiveState().then(next=>{if(!stop)setPrivateState(next);},error=>{if(!stop)setLnError(errorText(error));});
   return()=>{stop=true;};
  },[wallet,tick,lnAddress,lnBusy]);
- useEffect(()=>{lnLimits.current=wallet?.swaps;setLnBounds(undefined);},[wallet]);
+ useEffect(()=>{lnLimits.current=wallet?.swaps;setLnBounds(undefined);},[wallet,wallet?.swaps]);
  // On focus, not at open: markets() fetches the solver registry and its cards, and the client caches them for their TTL. markets() first: resolve() reads the snapshot it loads.
  const readLnBounds=()=>{
   const swaps=wallet?.swaps;if(!swaps)return;
@@ -324,7 +328,7 @@ export default function RollupWallet(){
   const funds=fundsRef.current;if(funds?.wallet!==wallet)return;
   quotes.load({...quoteContext,revision:funds.watch.update()},()=>{
    const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(carrier||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
-   return wallet.router().route(request);
+   return pageQuoteRoute(()=>wallet.router().route(request),()=>startingRef.current);
   });
  };
  // Each read builds the bearer key's account, so it runs when the link or wallet changes, not on every tick.
