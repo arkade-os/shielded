@@ -249,3 +249,15 @@ test('an OFF build takes over on install, then removes the app caches, itself an
  const page=browser({});registerAppCache(()=>{},{prod:true,off:true,navigator:page.navigator});await tick();
  assert.equal(page.container.register.mock.callCount(),0,'the page of an OFF build registers nothing');
 });
+
+test('an OFF build removes what it can, then still unregisters and reloads its tabs when cache storage fails',async()=>{
+ const broken=new DOMException('The operation is insecure.','SecurityError');
+ for(const [fails,left] of [['keys',['other','shielded-proving',shell]],['delete',['other',shell]]] as const){
+  const sw=worker({off:true});for(const name of [shell,'shielded-proving','other'])await sw.caches.open(name);
+  if(fails==='keys')sw.caches.keys=async()=>{throw broken;};
+  else{const remove=sw.caches.delete;sw.caches.delete=async name=>{if(name===shell)throw broken;return remove(name);};}
+  await sw.dispatch('activate');
+  assert.deepEqual([...sw.stores.keys()].sort(),left,`${fails} fails`);
+  assert.deepEqual([sw.unregister.mock.callCount(),sw.tabs[0].navigate.mock.callCount()],[1,1],`${fails} fails`);
+ }
+});
