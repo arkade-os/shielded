@@ -29,23 +29,30 @@ export function Soundbar({item,onDismiss}:{item?:SoundbarItem;onDismiss:()=>void
   if(!visible||!supportsBackdropRefraction()){setMap(undefined);return;}
   const node=bar.current;
   if(!node)return;
-  let frame=0,lastWidth=0,lastHeight=0;
+  let frame=0,lastWidth=0,lastHeight=0,revision=0;
   const measure=()=>{
    cancelAnimationFrame(frame);
    frame=requestAnimationFrame(()=>{
     const rect=node.getBoundingClientRect(),width=Math.round(rect.width),height=Math.round(rect.height);
-    if(width<2||height<2){setMap(undefined);return;}
+    if(width<2||height<2){lastWidth=0;lastHeight=0;revision++;setMap(undefined);return;}
     if(width===lastWidth&&height===lastHeight)return;
     lastWidth=width;lastHeight=height;
-    const href=refractionMap(width,height);
-    setMap(href?{width,height,href}:undefined);
+    const current=++revision;
+    let href:string|undefined;
+    try{href=refractionMap(width,height);}catch{href=undefined;}
+    setMap(undefined);
+    if(!href){lastWidth=0;lastHeight=0;return;}
+    const image=new Image();
+    image.onload=()=>{if(current===revision)setMap({width,height,href});};
+    image.onerror=()=>{if(current===revision){lastWidth=0;lastHeight=0;setMap(undefined);}};
+    image.src=href;
    });
   };
   const observer=typeof ResizeObserver==='undefined'?undefined:new ResizeObserver(measure);
   observer?.observe(node);
   window.addEventListener('resize',measure);
   measure();
-  return()=>{observer?.disconnect();window.removeEventListener('resize',measure);cancelAnimationFrame(frame);};
+  return()=>{revision++;observer?.disconnect();window.removeEventListener('resize',measure);cancelAnimationFrame(frame);};
  },[visible]);
  const pct=steps&&!steps.done&&!steps.error?Math.round(100*(steps.current+1)/steps.steps.length):undefined;
  return <>
