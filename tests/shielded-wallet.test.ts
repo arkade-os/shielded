@@ -55,8 +55,8 @@ const fetcherOf=(api:PoolApi)=>(async(url:string)=>{
  try{return new Response(JSON.stringify(await api(String(url).replace('/api/rollup',''))),{status:200});}
  catch(error){return new Response(JSON.stringify({error:(error as Error).message}),{status:(error as {status?:number}).status??404});}
 }) as unknown as typeof fetch;
-const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule}={})=>
- ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:indexer,onchainProvider:onchain,
+const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule;indexer?:object}={})=>
+ ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:(o.indexer??indexer) as never,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
   pool:{origin:'',status:status(o.batches??0,undefined,o.depositFee)},secret:o.secret??'11'.repeat(32),hash,prover,
   fetcher:o.fetcher??poolFetcher(o.batches??0,undefined,o.depositFee).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{}),...(o.maxDepositFee?{maxDepositFee:o.maxDepositFee}:{})});
@@ -83,6 +83,14 @@ test('ShieldedWallet.create announces its Arkade address once, before it reads t
  const {fetcher,paths}=poolFetcher(0),announced:{address:string;reads:number}[]=[];
  const wallet=await open({fetcher,onArkAddress:address=>announced.push({address,reads:paths.length})});
  try{assert.deepEqual(announced,[{address:await wallet.getAddress(),reads:0}]);}
+ finally{await wallet.dispose();}
+});
+
+test('ShieldedWallet.create starts its contract manager while it reads the pool',async()=>{
+ let subscribed=()=>{},first=true,waited=false;const started=new Promise<void>(resolve=>{subscribed=resolve;});
+ const {fetcher:pool}=poolFetcher(0),fetcher=(async(url:string)=>{if(first){first=false;waited=await Promise.race([started.then(()=>false),new Promise<boolean>(r=>setTimeout(()=>r(true),2000))]);}return pool(url);}) as unknown as typeof fetch;
+ const wallet=await open({fetcher,indexer:{...indexer as object,subscribeForScripts:async()=>{subscribed();return 'sub';}}});
+ try{assert.equal(waited,false,'the first pool read found the manager already subscribing');}
  finally{await wallet.dispose();}
 });
 
