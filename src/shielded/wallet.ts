@@ -159,6 +159,7 @@ export class ShieldedWallet extends Wallet {
  private readonly actionListeners=new Set<(h:ShieldedPaymentHandle)=>void>();
  private latestAction?:ShieldedPaymentHandle;
  private unwatch:(()=>void)[]=[];
+ private startup=Promise.resolve();
  private timer?:ReturnType<typeof setTimeout>;
  private retryAt=0;
  private mergeRetryAt=0;
@@ -283,18 +284,31 @@ export class ShieldedWallet extends Wallet {
   for(const txid of loaded.listings)this.listings.add(txid);
   for(const link of loaded.links)this.linkRecords.set(link.key,link);
  }
+ /** The watch registration, the incoming-funds watch and the first auto-shield, which run behind `create()`; rejects with the watch setup's first error. */
+ get started():Promise<void>{return this.startup;}
  async start():Promise<void>{
   // A confirmed account is already at the pool's count; autoShield's sync below runs once the watches are up, so nothing lands unseen.
   if(!epochConfirmed(this.account))await this.sync();
+  // Armed before the watch setup, so the tick runs even when that setup fails or stalls on a POST with no deadline.
+  this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
+  this.startup=this.finishStart();
+  // A caller that never reads `started` must not turn its rejection into an unhandled one.
+  this.startup.catch(()=>{});
+ }
+ private async finishStart():Promise<void>{
   const manager=await this.getContractManager();
+  if(this.stopped)return;
   await manager.watchScript?.(this.poolScript,{label:'shielded pool'});
+  if(this.stopped)return;
   this.unwatch.push(manager.onContractEvent(event=>{
    // A watch-only event carries no contract, which is the point: the pool script is not ours. Any movement on it
    // means the head moved, and `connection_reset` means an event may have been missed.
    if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void catchUpAfterEvent(()=>this.sync(),()=>this.stopped).catch(()=>{});
   }));
-  this.unwatch.push(await this.notifyIncomingFunds(()=>{this.changed();void this.autoShield().catch(()=>{});}));
-  this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
+  const off=await this.notifyIncomingFunds(()=>{this.changed();void this.autoShield().catch(()=>{});});
+  // dispose() has already drained `unwatch`, so a watch that arrives after it is stopped here rather than kept.
+  if(this.stopped){off();return;}
+  this.unwatch.push(off);
   await this.autoShield().catch(()=>{});
  }
  /** Set once the pool has missed two refreshes. Only the operator renews the head, so its expiry is the deadline to exit. */

@@ -227,6 +227,7 @@ export default function RollupWallet(){
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });
     nativeOpened=true;
+    void created.started.catch(error=>{if(session.active()&&!restoring.current&&mounted.current)setPoolError(errorText(error));});
     const reportLightning=(error:unknown)=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));};
     try{
      companion=await pairing;

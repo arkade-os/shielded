@@ -35,6 +35,8 @@ await payment.settled();
 await wallet.dispose();
 ```
 
+`createShieldedWallet` resolves once the shielded account is loaded, so the balance is ready to show. If the pool did not answer, the saved notes stay unchecked (`repositoryError` says so) until a later check reaches it. The incoming-funds watch and the first auto-shield go on in the background: `await wallet.started` waits for those, and rejects if the watch setup failed.
+
 `secret` is 32 bytes as 64 hex characters, or the same bytes as a 24-word phrase. `recoveryPhraseOf(secret)` gives that phrase. The same secret always opens the same wallet, with the same Arkade address and shielded address as the reference wallet at `https://shielded.mutinynet.arkade.sh/wallet`.
 
 The wallet also has:
