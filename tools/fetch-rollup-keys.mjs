@@ -22,7 +22,7 @@ for (const { files } of Object.values(manifest.circuits)) for (const [name, dige
     await pipeline(Readable.fromWeb(response.body), new Transform({ transform(chunk, _encoding, callback) { hash.update(chunk); callback(null, chunk); } }), createWriteStream(partial));
     break;
   } catch (error) {
-    if (attempt === 5) throw error;
+    if (attempt === 5) { rmSync(partial, { force: true }); throw error; }
     await new Promise(resolve => setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
   }
   if (hash.digest('hex') !== digest) { rmSync(partial); throw new Error(`${name} does not match the pinned manifest.`); }
