@@ -420,4 +420,10 @@ test('a quote refused without a Lightning rail routes once more after the start 
  assert.equal(attempts,1);
  await assert.rejects(pageQuoteRoute(async()=>{attempts++;throw new Error('still no rail');},()=>Promise.resolve()),/still no rail/);
  assert.equal(attempts,3);
+ attempts=0;
+ assert.equal(await pageQuoteRoute(async()=>{if(++attempts===1)throw new Error('A private on-chain exit needs the recoverable companion wallet');return 'quoted';},()=>Promise.resolve()),'quoted');
+ assert.equal(attempts,2);
+ attempts=0;
+ assert.equal(await pageQuoteRoute(async()=>{if(++attempts===1)throw new Error('no rail for: lnbc1');return 'quoted';},()=>Promise.reject(new Error('Lightning could not start'))),'quoted');
+ assert.equal(attempts,2);
 });
