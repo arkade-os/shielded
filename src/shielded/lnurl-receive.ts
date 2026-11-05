@@ -8,7 +8,7 @@ import {LNURL_BASE} from './lightning.ts';
 interface ReceiveBranch {descriptor:string;serverPubKey:string;hrp:'ark'|'tark';exitDelay:{type:'seconds'|'blocks';value:number}}
 export interface LnurlPayout {id:string;descriptor:string;address:string;script:string}
 export interface PaymentMethod {type:string;destination:string}
-export interface LnurlReceiver {handle:string;domain:string;lightningAddress:string|undefined;lnurl:string;status:string;paymentMethods?:PaymentMethod[]}
+export interface LnurlReceiver {handle:string;domain:string;lightningAddress:string|undefined;lnurl:string;status:string;nameless?:boolean;sessionLnurl?:string;paymentMethods?:PaymentMethod[]}
 export interface PrivateReceiveState {on:boolean;pending:boolean;refused:boolean;withdrawing:boolean;listed:'own'|'foreign'|null}
 export interface LnurlReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
@@ -101,10 +101,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const delay=info.unilateralExitDelay;
   return receiveBranch(account(),{serverPubKey:info.signerPubkey.slice(-64),hrp,exitDelay:{type:delay<512n?'blocks':'seconds',value:Number(delay)}});
  };
- const fromAddress=(row:{handle:string;domain:string;lightningAddress:string|null;lnurl:string;status:string;paymentMethods?:unknown}):LnurlReceiver=>{
-  if(typeof row.handle!=='string'||!row.handle||typeof row.domain!=='string'||row.domain.toLowerCase()!==domain||typeof row.lnurl!=='string'||typeof row.status!=='string'||(row.lightningAddress!==null&&typeof row.lightningAddress!=='string'))throw new Error('Invalid Lightning address registration');
+ const fromAddress=(row:{handle:string;domain:string;lightningAddress:string|null;lnurl:string;status:string;nameless?:boolean;sessionLnurl?:string|null;paymentMethods?:unknown}):LnurlReceiver=>{
+  if(typeof row.handle!=='string'||!row.handle||typeof row.domain!=='string'||row.domain.toLowerCase()!==domain||typeof row.lnurl!=='string'||typeof row.status!=='string'||(row.lightningAddress!==null&&typeof row.lightningAddress!=='string')||(row.nameless!==undefined&&typeof row.nameless!=='boolean')||(row.sessionLnurl!==undefined&&row.sessionLnurl!==null&&typeof row.sessionLnurl!=='string'))throw new Error('Invalid Lightning address registration');
   const paymentMethods=Array.isArray(row.paymentMethods)?row.paymentMethods.filter(method=>typeof method?.type==='string').map(({type,destination}):PaymentMethod=>({type,destination:typeof destination==='string'?destination:''})):undefined;
-  return {handle:row.handle,domain,lightningAddress:row.lightningAddress??undefined,lnurl:row.lnurl,status:row.status,...(paymentMethods?{paymentMethods}:{})};
+  return {handle:row.handle,domain,lightningAddress:row.lightningAddress??undefined,lnurl:row.lnurl,status:row.status,...(row.nameless!==undefined?{nameless:row.nameless}:{}),...(row.sessionLnurl?{sessionLnurl:row.sessionLnurl}:{}),...(paymentMethods?{paymentMethods}:{})};
  };
  const registeredReceivers=async()=>(await client.listAddresses(await token())).filter(row=>row.domain.toLowerCase()===domain).map(fromAddress);
  const advertised=()=>{const address=config.shieldedAddress?.();if(!address)throw new Error('Private receive requires a shielded address');return address;};
@@ -205,9 +205,43 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   // Off, the listing is still read so another device's registration shows here; the read sends no methods and no address.
   if(off&&server.receivers.some(row=>row.status==='active'))await relist(state,server);
  });
+ const sameReceiver=(a:LnurlReceiver,b:LnurlReceiver)=>a.handle===b.handle||!!a.sessionLnurl&&a.sessionLnurl===b.sessionLnurl;
+ const ensureUnifiedLocked=async()=>{
+  const state=await load(),server=state.servers[serverKey]??={receivers:[]};
+  const owned=(await registeredReceivers()).filter(row=>row.status==='active');
+  const tracked=server.receivers.find(row=>row.status==='active');
+  let receiver=tracked&&owned.find(row=>sameReceiver(row,tracked));
+  receiver??=owned.find(row=>row.handle===server.pending);
+  // A session LNURL belongs to this identity even after its handle is upgraded. A legacy named alias still needs explicit recovery.
+  receiver??=owned.find(row=>!!row.sessionLnurl);
+  if(!receiver&&owned.length)throw new Error('A Lightning address already exists. Use Recover a Lightning address to enable it here explicitly.');
+  if(!state.servers[serverKey]){state.servers[serverKey]=server;await save(state);}
+  if(!receiver){
+   const registered=fromAddress(await client.registerAddress({token:await token(),domain,nameless:true}));
+   if(!registered.sessionLnurl||registered.lnurl!==registered.sessionLnurl)throw new Error('This Lightning address service did not register a unified address.');
+   receiver=registered;server.pending=registered.handle;await save(state);
+  }
+  const receivers=[receiver,...server.receivers.filter(row=>!sameReceiver(row,receiver))];
+  if(JSON.stringify(server.receivers)!==JSON.stringify(receivers)||server.pending){server.receivers=receivers;delete server.pending;await save(state);}
+  await settle(state,server);
+  return receiver;
+ };
  return {
   enabled:async()=>Boolean((await load()).servers[serverKey]),
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
+  ensureUnified:()=>serial(ensureUnifiedLocked),
+  claimName:()=>serial(async()=>{
+   const receiver=await ensureUnifiedLocked();
+   if(receiver.lightningAddress)return receiver;
+   if(!receiver.sessionLnurl)throw new Error('This unified address cannot be named.');
+   const named=fromAddress(await client.upgradeAddress({token:await token(),handle:receiver.handle,domain}));
+   if(!named.lightningAddress||named.sessionLnurl!==receiver.sessionLnurl||named.lnurl!==receiver.lnurl)throw new Error('The Lightning address service did not keep the unified address during the claim.');
+   const state=await load(),server=state.servers[serverKey];
+   if(!server)throw new Error('The unified address is not enabled on this device.');
+   server.receivers=[{...named,...(receiver.paymentMethods?{paymentMethods:receiver.paymentMethods}:{})},...server.receivers.filter(row=>!sameReceiver(row,receiver))];
+   await save(state);
+   return named;
+  }),
   payouts:async()=>(await load()).payouts,
   privateReceiveState:async():Promise<PrivateReceiveState>=>{
    const server=(await load()).servers[serverKey],listed=server?shieldedListed(server):[],own=listed.length?config.shieldedAddress?.():undefined;

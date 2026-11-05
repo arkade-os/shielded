@@ -9,7 +9,10 @@ const hdIdentity=MnemonicIdentity.fromMnemonic(mnemonic,{isMainnet:false});
 const server=await SingleKey.fromHex('02'.repeat(32)).compressedPublicKey();
 const branch=receiveBranch(hdIdentity.descriptor,{serverPubKey:hex.encode(server).slice(-64),hrp:'tark',exitDelay:{type:'seconds',value:2048}});
 const at=(index:number)=>receiveDestination(branch,index);
-const domain='lnurl.example',baseUrl=`https://${domain}`,receiver={handle:'alice',username:'alice',lightningAddress:`alice@${domain}`,domain,status:'active',lnurl:'LNURL',nameless:false,sessionLnurl:null};
+type TestReceiver={handle:string;username:string|null;lightningAddress:string|null;domain:string;status:string;lnurl:string;nameless:boolean;sessionLnurl:string|null;paymentMethods?:{type:string;destination?:string}[]};
+const domain='lnurl.example',baseUrl=`https://${domain}`;
+const receiver:TestReceiver={handle:'alice',username:'alice',lightningAddress:`alice@${domain}`,domain,status:'active',lnurl:'LNURL',nameless:false,sessionLnurl:null};
+const sessionLnurl='LNURL1SESSION',nameless:TestReceiver={handle:'ab'.repeat(32),username:null,lightningAddress:null,domain,status:'active',lnurl:sessionLnurl,nameless:true,sessionLnurl};
 const legacyKey=`lnurl-hd-v1:${JSON.stringify([baseUrl,domain])}`;
 const SHROL=bech32m.encode('shrol2',bech32m.toWords(new Uint8Array(64).fill(7)),false),shielded={type:'shielded',destination:SHROL};
 interface Bind {arkadeAddress:string;claimPublicKey:string;domain:string;methods?:{type:string;destination:string}[]}
@@ -29,7 +32,21 @@ function setup({aliases=[] as typeof receiver[],exitDelay=2048n}={}){
   saveReceiveState:async(_owner:string,pool:string,name:string,value:unknown)=>{if(saveFailure)throw new Error('save failed');state.set(key(pool,name),structuredClone(value));}};
  const fetch=async(url:string,init?:RequestInit)=>{
   requests.push({url,init});
-  if(url.endsWith('/lnurl/address'))return init?.method==='POST'?(aliases.push(receiver),json(receiver)):json(aliases.map(row=>kept.has(row.handle)?{...row,paymentMethods:kept.get(row.handle)}:row));
+  if(url.endsWith('/lnurl/address')){
+   if(init?.method==='POST'){
+    const body=JSON.parse(String(init.body)) as {nameless?:boolean};
+    if(body.nameless){const owned=aliases.find(row=>!!row.sessionLnurl)??nameless;if(!aliases.includes(owned))aliases.push(owned);return json(owned);}
+    aliases.push(receiver);return json(receiver);
+   }
+   return json(aliases.map(row=>kept.has(row.handle)?{...row,paymentMethods:kept.get(row.handle)}:row));
+  }
+  if(init?.method==='PATCH'&&new URL(url).pathname.startsWith('/lnurl/address/')){
+   const handle=decodeURIComponent(new URL(url).pathname.split('/').at(-1)!),index=aliases.findIndex(row=>row.handle===handle);
+   if(index<0||!aliases[index]!.sessionLnurl)return json({error:'not a nameless receiver'},404);
+   const upgraded={...aliases[index]!,handle:receiver.handle,username:receiver.username,lightningAddress:receiver.lightningAddress,nameless:false};
+   if(kept.has(handle)){kept.set(upgraded.handle,kept.get(handle)!);kept.delete(handle);}
+   aliases[index]=upgraded;return json(upgraded);
+  }
   if(url.endsWith('/arkade')){
    const body=JSON.parse(String(init?.body)) as Bind,answer=await bindReply(body);
    if(answer.ok&&keeps&&body.methods)kept.set(decodeURIComponent(url.split('/').at(-2)!),body.methods);
@@ -49,6 +66,86 @@ test('no signing, network or watch before the alias is enabled, including the ba
  const f=setup();assert.equal(await f.service.current(),undefined);assert.equal(await f.service.enabled(),false);
  f.service.start();await new Promise(resolve=>setTimeout(resolve,5));await f.service.dispose();
  assert.equal(f.signed(),0);assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
+});
+
+test('a unified receiver registers without a name or shielded method and binds before its QR is ready',async()=>{
+ const f=setup(),result=await f.service.ensureUnified();
+ assert.deepEqual([result.lnurl,result.lightningAddress,result.nameless],[sessionLnurl,undefined,true]);
+ assert.equal((await f.service.current())?.lnurl,sessionLnurl);
+ assert.equal(f.requests.filter(r=>r.url.endsWith('/lnurl/address')&&r.init?.method==='POST').length,1);
+ const registered=f.requests.find(r=>r.url.endsWith('/lnurl/address')&&r.init?.method==='POST')!;
+ assert.equal(JSON.parse(String(registered.init?.body)).nameless,true);
+ assert.deepEqual(Object.keys(f.bound()[0]!).sort(),['arkadeAddress','claimPublicKey','domain']);
+ assert.equal(f.reads(),0);
+ assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
+});
+
+test('a unified QR stays the same after its receiver claims a Lightning address',async()=>{
+ const f=setup(),before=await f.service.ensureUnified(),payouts=f.saved()!.next;
+ const named=await f.service.claimName();
+ assert.deepEqual([named.lightningAddress,named.lnurl,named.sessionLnurl],[receiver.lightningAddress,before.lnurl,before.lnurl]);
+ assert.equal(f.requests.filter(r=>r.init?.method==='PATCH').length,1);
+ assert.equal(f.saved()!.next,payouts);
+ assert.equal((await createLnurlReceive(f.config).ensureUnified()).lnurl,before.lnurl);
+ assert.equal((await f.service.current())?.handle,'alice');
+});
+
+test('naming a unified receiver keeps its confirmed shielded method and the same QR',async()=>{
+ const f=setup(),before=await f.service.ensureUnified();
+ await f.service.setPrivateReceive(true);
+ assert.deepEqual(await f.service.privateReceiveState(),{on:true,pending:false,refused:false,withdrawing:false,listed:'own'});
+ const named=await f.service.claimName();
+ assert.equal(named.lnurl,before.lnurl);
+ assert.deepEqual(await f.service.privateReceiveState(),{on:true,pending:false,refused:false,withdrawing:false,listed:'own'});
+ assert.equal((await f.service.current())?.paymentMethods?.[0]?.destination,SHROL);
+});
+
+test('a nameless registration survives a failed local write and binds on retry',async()=>{
+ const f=setup();let writes=0;
+ const service=createLnurlReceive({...f.config,journal:{...f.config.journal,saveReceiveState:async(...args)=>{if(++writes===2)throw new Error('save failed');return f.config.journal.saveReceiveState(...args);}}});
+ await assert.rejects(service.ensureUnified(),/save failed/);
+ assert.equal(f.bound().length,0);
+ assert.equal(f.aliases.filter(row=>row.sessionLnurl===sessionLnurl).length,1);
+ assert.equal((await createLnurlReceive(f.config).ensureUnified()).lnurl,sessionLnurl);
+ assert.equal(f.bound().length,1);
+});
+
+test('a failed payout bind does not resolve a unified QR, and retry finishes the same receiver',async()=>{
+ const f=setup();f.reply(()=>{throw new TypeError('connection closed');});
+ await assert.rejects(f.service.ensureUnified(),/Request failed/);
+ assert.equal(f.aliases.length,1);
+ f.reply(()=>json({ok:true}));
+ assert.equal((await createLnurlReceive(f.config).ensureUnified()).lnurl,sessionLnurl);
+ assert.equal(f.saved()!.next,1);
+});
+
+test('a failed local save after naming is repaired from the stable session LNURL',async()=>{
+ const f=setup();await f.service.ensureUnified();let fail=true;
+ const journal={...f.config.journal,saveReceiveState:async(...args:Parameters<typeof f.config.journal.saveReceiveState>)=>{
+  const state=args[3] as {servers:Record<string,{receivers:{lightningAddress?:string}[]}>};
+  if(fail&&Object.values(state.servers).some(server=>server.receivers.some(row=>!!row.lightningAddress)))throw new Error('save failed');
+  return f.config.journal.saveReceiveState(...args);
+ }};
+ await assert.rejects(createLnurlReceive({...f.config,journal}).claimName(),/save failed/);
+ fail=false;
+ const restored=await createLnurlReceive(f.config).ensureUnified();
+ assert.deepEqual([restored.lightningAddress,restored.lnurl],[receiver.lightningAddress,sessionLnurl]);
+ assert.equal(f.requests.filter(r=>r.init?.method==='PATCH').length,1);
+});
+
+test('an already tracked named receiver keeps its existing LNURL without a nameless registration',async()=>{
+ const f=setup(),claimed=await f.service.claim(),requests=f.requests.length;
+ const result=await f.service.ensureUnified();
+ assert.equal(result.lnurl,claimed.lnurl);
+ assert.equal((await f.service.claimName()).lightningAddress,receiver.lightningAddress);
+ assert.equal(f.requests.slice(requests).filter(r=>r.init?.method==='PATCH'||r.init?.method==='POST'&&r.url.endsWith('/lnurl/address')).length,0);
+});
+
+test('an untracked legacy named receiver still needs explicit recovery',async()=>{
+ const f=setup({aliases:[receiver]});
+ await assert.rejects(f.service.ensureUnified(),/Recover a Lightning address/);
+ assert.equal(f.bound().length,0);
+ assert.equal(f.requests.some(r=>r.init?.method==='POST'&&r.url.endsWith('/lnurl/address')),false);
 });
 
 test('claim binds the first locally derived /2/7 child with its compressed claim key',async()=>{
