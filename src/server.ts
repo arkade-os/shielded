@@ -8,6 +8,7 @@ import {dropLegacyData} from './legacy.ts';
 import {createRollupRouter} from './rollup/http.ts';
 import {DEFAULT_VM_BINARY} from './rollup/leaves.ts';
 import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
+import {serveWeb} from './web.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url)),web=join(root,'app/dist');
 const data=resolve(process.env.SHIELDED_DATA_DIR??'/data'),port=Number(process.env.PORT??8792);
@@ -21,9 +22,7 @@ app.get('/health',(_req,res)=>{const phase=service?.status().phase??'starting';r
 app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!!service?.ready()}));
 app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean)}));
 for(const old of ['/stock-wallet','/rollup','/lab'])app.get(old,(_req,res)=>res.redirect(301,'/wallet'));
-app.get(['/','/wallet','/claim','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web}));
-app.use('/assets',express.static(join(web,'assets'),{immutable:true,maxAge:'365d'}));
-app.use(express.static(web));
+serveWeb(app,web);
 const listener=app.listen(port,process.env.HOST??'0.0.0.0',()=>console.log(`Shielded listening on port ${port}.`));
 
 const stop=async()=>{if(stopping)return;stopping=true;if(timer)clearTimeout(timer);service?.close();listener.close();await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();process.exit(0);};

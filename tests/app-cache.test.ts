@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {mock,test} from 'node:test';
 import {runInNewContext} from 'node:vm';
 import {appCacheManifest} from '../app/app-cache-manifest.ts';
+import {registerAppCache} from '../app/src/app-cache.ts';
 
 const origin='https://shielded.example',version='0123456789ab',shell=`shielded-shell-${version}`;
 const files=['/assets/geist-b2.woff2','/assets/index-a1.js','/index.html'];
@@ -112,4 +113,48 @@ test('a deploy that changes only index.html gets a new version',()=>{
  const names=['assets/index-a1.js','index.html'],version=(html:string)=>appCacheManifest(names,false,html).version;
  assert.notEqual(version('<title>a</title>'),version('<title>b</title>'));
  assert.equal(version('<title>a</title>'),version('<title>a</title>'));
+});
+
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+const fakeWorker=(state:string)=>Object.assign(new EventTarget(),{state,postMessage:mock.fn()});
+type Fake=ReturnType<typeof fakeWorker>;
+// The page's service worker container: `controller` controls the page and `waiting` is installed behind it.
+function browser(controller:object|null,waiting:Fake|null=null){
+ const registration=Object.assign(new EventTarget(),{waiting,installing:null as Fake|null});
+ const container=Object.assign(new EventTarget(),{controller,register:mock.fn(async(_url:string,_options:object)=>registration)});
+ return {registration,container,navigator:{serviceWorker:container} as unknown as Navigator};
+}
+
+test('registerAppCache does nothing without service workers',async()=>{
+ const onUpdate=mock.fn(),reload=mock.fn(),dev=browser({});
+ assert.doesNotThrow(()=>registerAppCache(onUpdate,{prod:true,navigator:{} as Navigator,reload}));
+ const denied=Object.defineProperty({},'serviceWorker',{get:()=>{throw new DOMException('Access is denied','SecurityError');}}) as Navigator;
+ assert.doesNotThrow(()=>registerAppCache(onUpdate,{prod:true,navigator:denied,reload}),'a browser that denies access to service workers must not take the page down');
+ registerAppCache(onUpdate,{prod:false,navigator:dev.navigator,reload});await tick();
+ assert.equal(dev.container.register.mock.callCount(),0,'vite dev serves the unfilled template at /sw.js');
+ assert.equal(onUpdate.mock.callCount(),0);
+});
+
+test('a waiting version is offered once and applying it reloads once',async()=>{
+ const waiting=fakeWorker('installed'),page=browser({},waiting),offers:(()=>void)[]=[],reload=mock.fn();
+ registerAppCache(apply=>offers.push(apply),{prod:true,navigator:page.navigator,reload});await tick();
+ assert.deepEqual(page.container.register.mock.calls.map(call=>call.arguments),[['/sw.js',{updateViaCache:'all'}]]);
+ assert.equal(offers.length,1);assert.equal(waiting.postMessage.mock.callCount(),0,'the version waits for the tap');
+ offers[0]();
+ assert.deepEqual(waiting.postMessage.mock.calls.map(call=>call.arguments),[[{type:'skip-waiting'}]]);
+ const newer=fakeWorker('installed');page.registration.waiting=newer;offers[0]();
+ assert.equal(newer.postMessage.mock.callCount(),1,'apply reaches whichever version waits when it is tapped');
+ page.container.dispatchEvent(new Event('controllerchange'));page.container.dispatchEvent(new Event('controllerchange'));
+ assert.equal(reload.mock.callCount(),1);
+ const offered=async(tab:ReturnType<typeof browser>,...states:string[])=>{
+  const seen:(()=>void)[]=[],installing=fakeWorker('installing');
+  registerAppCache(apply=>seen.push(apply),{prod:true,navigator:tab.navigator,reload});await tick();
+  if(states.length){tab.registration.installing=installing;tab.registration.dispatchEvent(new Event('updatefound'));}
+  for(const state of states){installing.state=state;if(state==='installed')tab.registration.waiting=installing;installing.dispatchEvent(new Event('statechange'));}
+  return seen.length;
+ };
+ assert.equal(await offered(browser({}),'installed'),1,'a version that finishes installing under a controlling worker is offered');
+ assert.equal(await offered(browser({}),'redundant'),0,'a failed install is not');
+ assert.equal(await offered(browser(null),'installed'),0,'the first install is not an update');
+ assert.equal(await offered(browser(null,fakeWorker('installed'))),0,'a page no worker controls has nothing to replace');
 });

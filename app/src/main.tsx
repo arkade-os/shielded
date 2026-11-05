@@ -1,5 +1,6 @@
-import React,{lazy,Suspense} from 'react';
+import React,{lazy,Suspense,useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
+import {registerAppCache} from './app-cache';
 import ShieldedHome from './ShieldedHome';
 const RollupWallet=lazy(()=>import('./RollupWallet'));
 const Disclose=lazy(()=>import('./Disclose'));
@@ -13,4 +14,10 @@ import './stock-wallet.css';
 
 const path=location.pathname.replace(/\/+$/,'')||'/';
 const loading=<div className="stock-page"><main className="stock-shell"><section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><h2>Loading wallet</h2></section></main></div>;
-createRoot(document.getElementById('root')!).render(<React.StrictMode>{path==='/wallet'||path==='/rollup'||path==='/claim'?<Suspense fallback={loading}><RollupWallet/></Suspense>:path==='/verify'||path==='/watch'?<Suspense fallback={loading}><Disclose/></Suspense>:<ShieldedHome/>}</React.StrictMode>);
+// Above every route, so each tab offers the update; the palette variables live on the route roots, hence .stock-update.
+function UpdateBar(){
+ const [apply,setApply]=useState<()=>void>();
+ useEffect(()=>registerAppCache(next=>setApply(()=>next)),[]);
+ return apply?<section className="stock-warning stock-update" role="status"><span>A new version of the app is ready.</span><button type="button" onClick={apply}>Update</button></section>:null;
+}
+createRoot(document.getElementById('root')!).render(<React.StrictMode><UpdateBar/>{path==='/wallet'||path==='/rollup'||path==='/claim'?<Suspense fallback={loading}><RollupWallet/></Suspense>:path==='/verify'||path==='/watch'?<Suspense fallback={loading}><Disclose/></Suspense>:<ShieldedHome/>}</React.StrictMode>);
