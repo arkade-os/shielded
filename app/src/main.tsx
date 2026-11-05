@@ -21,4 +21,10 @@ function UpdateBar(){
  useEffect(()=>registerAppCache(next=>setApply(()=>next)),[]);
  return apply?<section className="stock-warning stock-update" role="status"><span>A new version of the app is ready.</span><button type="button" onClick={apply}>Update</button></section>:null;
 }
-createRoot(document.getElementById('root')!).render(<React.StrictMode><UpdateBar/>{path==='/wallet'||path==='/rollup'||path==='/claim'?<Suspense fallback={loading}><RollupWallet/></Suspense>:path==='/verify'||path==='/watch'?<Suspense fallback={loading}><Disclose/></Suspense>:<ShieldedHome/>}</React.StrictMode>);
+// A route that throws would otherwise unmount UpdateBar too, and the next version is how a crashing release gets fixed.
+class RouteBoundary extends React.Component<{children:React.ReactNode},{failed:boolean}>{
+ state={failed:false};
+ static getDerivedStateFromError(){return {failed:true};}
+ render(){return this.state.failed?<p>Something went wrong. Reload the page.</p>:this.props.children;}
+}
+createRoot(document.getElementById('root')!).render(<React.StrictMode><UpdateBar/><RouteBoundary>{path==='/wallet'||path==='/rollup'||path==='/claim'?<Suspense fallback={loading}><RollupWallet/></Suspense>:path==='/verify'||path==='/watch'?<Suspense fallback={loading}><Disclose/></Suspense>:<ShieldedHome/>}</RouteBoundary></React.StrictMode>);
