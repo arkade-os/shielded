@@ -10,7 +10,11 @@ export function registerAppCache(onUpdate:(apply:()=>void)=>void,{prod,navigator
  container.addEventListener('controllerchange',()=>{if(!reloaded){reloaded=true;reload();}});
  container.register('/sw.js',{updateViaCache:'all'}).then(registration=>{
   const offer=()=>{if(container.controller)onUpdate(()=>registration.waiting?.postMessage({type:'skip-waiting'}));};
+  // One shared listener: DOM ignores a listener added twice, so a worker reached by this check and by a later updatefound is offered once.
+  const installed=(event:Event)=>{if((event.target as ServiceWorker).state==='installed')offer();};
+  const watch=()=>registration.installing?.addEventListener('statechange',installed);
   if(registration.waiting)offer();
-  registration.addEventListener('updatefound',()=>{const worker=registration.installing;worker?.addEventListener('statechange',()=>{if(worker.state==='installed')offer();});});
+  watch();
+  registration.addEventListener('updatefound',watch);
  }).catch(()=>{});
 }

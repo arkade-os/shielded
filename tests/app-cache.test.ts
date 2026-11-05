@@ -158,3 +158,18 @@ test('a waiting version is offered once and applying it reloads once',async()=>{
  assert.equal(await offered(browser(null),'installed'),0,'the first install is not an update');
  assert.equal(await offered(browser(null,fakeWorker('installed'))),0,'a page no worker controls has nothing to replace');
 });
+
+test('a version already installing when the page registers is offered once it has installed',async()=>{
+ const run=async(controller:object|null,replay=false)=>{
+  const tab=browser(controller),installing=fakeWorker('installing'),seen:(()=>void)[]=[];
+  tab.registration.installing=installing;
+  registerAppCache(apply=>seen.push(apply),{prod:true,navigator:tab.navigator});await tick();
+  assert.equal(seen.length,0,'nothing is offered while it is still installing');
+  if(replay)tab.registration.dispatchEvent(new Event('updatefound'));
+  installing.state='installed';tab.registration.installing=null;tab.registration.waiting=installing;installing.dispatchEvent(new Event('statechange'));
+  return seen.length;
+ };
+ assert.equal(await run({}),1,'updatefound had already fired before the page could listen for it');
+ assert.equal(await run({},true),1,'the same worker reported again by updatefound is not offered twice');
+ assert.equal(await run(null),0,'the first install is not an update');
+});
