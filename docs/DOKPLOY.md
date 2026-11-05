@@ -11,3 +11,15 @@ On first start the service copies those keys onto the volume and verifies them. 
 For the domain, point an A record at the Dokploy server. In the application's **Domains** settings, route the hostname to port `8792` over HTTP and enable HTTPS. The wallet is at `https://HOSTNAME/wallet` and the health check at `/health`. Do not expose port `8792` directly; Dokploy's proxy handles public traffic.
 
 Pushes to `main` deploy automatically and do not wait for GitHub Actions. Confirm a deploy by the bundle hash the site serves, not by Dokploy's status.
+
+## App cache
+
+The web app runs from a service worker cache. A browser checks `/sw.js` about once a day, installs a new version in the background and switches to it when the user taps **Update** or when every tab using the old version has closed. Two build arguments change that. Set them in **Environment → Build Time Arguments**, not in the runtime environment, and redeploy. While either is on, the build log prints a `[plugin app-cache]` line naming it.
+
+**Forcing.** `SHIELDED_APP_CACHE_FORCE=1` is only for a release that crashes before the Update bar can show: a browser installs the forced build and reloads its tabs without asking. Set it as a build argument, deploy, then purge `/sw.js` in Cloudflare. Unset it before the next push to `main` deploys, or every later deploy skips consent too.
+
+**Rollback.** A forced build of the last good commit. If that commit predates the app cache, its build has no worker and answers `/sw.js` with a 404, which leaves the old worker in control. Deploy a cache-enabled build with `SHIELDED_APP_CACHE_OFF=1` first, keep it deployed until affected browsers have fetched it (at least a day, plus however long their users take to visit), and only then roll back to the older commit.
+
+**Removal.** `SHIELDED_APP_CACHE_OFF=1` ships a worker that deletes the app's caches, unregisters itself and reloads the tabs it controlled, and the page stops registering one. A browser removes its copy the next time it checks `/sw.js`, so keep the argument set for as long as the cache should stay off.
+
+**Reloading no longer fetches new code.** An open or returning tab keeps the version it has until the user taps Update or every tab using it has closed. A server change that breaks old clients needs about a day of compatibility, plus however long users wait to tap Update, or a forced build.
