@@ -5,12 +5,11 @@ import {PAUSED_ERROR,sheetLine} from './rollup-client.ts';
 export interface SoundbarItem {title:string;line:string;state:'active'|'done'|'failed';steps?:StepState}
 
 /** The one thing the wallet is doing that the bar shows: a running action first, then the wallet's own upkeep. */
-export function soundbarItem(o:{sheet?:StepState;recovering:boolean;inFlight:boolean;syncing:boolean;recoveryLine:string}):SoundbarItem|undefined{
+export function soundbarItem(o:{sheet?:StepState;recovering:boolean;inFlight:boolean;recoveryLine:string}):SoundbarItem|undefined{
  const s=o.sheet;
  if(s)return {title:s.title,line:sheetLine(s)+(s.error&&s.error!==PAUSED_ERROR&&s.title.startsWith('Shielding')?' It tries again in a minute.':''),state:s.error?'failed':s.done?'done':'active',steps:s};
  if(o.recovering)return {title:'Recovering',line:o.recoveryLine,state:'active'};
  if(o.inFlight)return {title:'Notes in flight',line:'They come back as spendable notes once the batch lands.',state:'active'};
- if(o.syncing)return {title:'Syncing',line:'Reading the pool.',state:'active'};
  return undefined;
 }
 

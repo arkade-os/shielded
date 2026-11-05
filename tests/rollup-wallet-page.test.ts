@@ -191,16 +191,15 @@ test('the status sheet renders a step state the handle produced, title and all',
  assert.equal(sheetLine({...state,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
 });
 
-test('the soundbar shows a running action before the wallet\'s own upkeep, and nothing when idle',()=>{
+test('the soundbar shows actions and recovery, leaving passive sync in the wallet view',()=>{
  const sheet={title:shieldTitle({kind:'btc',coins:[],amount:3000}),steps:['Prepare the deposit coin','Prove the deposit on this device'],current:1};
- const idle={recovering:false,inFlight:false,syncing:false,recoveryLine:'Recovering notes.'};
+ const idle={recovering:false,inFlight:false,recoveryLine:'Recovering notes.'};
  assert.equal(soundbarItem(idle),undefined);
- assert.deepEqual(soundbarItem({...idle,sheet,recovering:true,inFlight:true,syncing:true}),{title:'Shielding 3,000 sats',line:'Step 2 of 2: Prove the deposit on this device',state:'active',steps:sheet});
+ assert.deepEqual(soundbarItem({...idle,sheet,recovering:true,inFlight:true}),{title:'Shielding 3,000 sats',line:'Step 2 of 2: Prove the deposit on this device',state:'active',steps:sheet});
  assert.equal(soundbarItem({...idle,sheet:{...sheet,done:true}})?.state,'done');
  assert.deepEqual(soundbarItem({...idle,sheet:{...sheet,done:true,error:'The pool dropped this spend.'}}),{title:'Shielding 3,000 sats',line:'The pool dropped this spend. It tries again in a minute.',state:'failed',steps:{...sheet,done:true,error:'The pool dropped this spend.'}});
- assert.deepEqual(soundbarItem({...idle,recovering:true,inFlight:true,syncing:true}),{title:'Recovering',line:'Recovering notes.',state:'active'});
- assert.equal(soundbarItem({...idle,inFlight:true,syncing:true})?.title,'Notes in flight');
- assert.equal(soundbarItem({...idle,syncing:true})?.title,'Syncing');
+ assert.deepEqual(soundbarItem({...idle,recovering:true,inFlight:true}),{title:'Recovering',line:'Recovering notes.',state:'active'});
+ assert.equal(soundbarItem({...idle,inFlight:true})?.title,'Notes in flight');
 });
 
 test('a scanned or pasted payment code becomes a destination, and a payment link\'s amount comes with it',()=>{
