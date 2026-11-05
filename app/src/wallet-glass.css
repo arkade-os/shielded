@@ -88,6 +88,10 @@
 .stock-page .stock-address,.stock-page .stock-row>div{border:1px solid var(--rule);border-radius:16px;background:#fffaf1}
 .stock-page .stock-address small,.stock-page .stock-row small{font-size:11px;letter-spacing:0;text-transform:none}
 .stock-page .stock-copy code{color:var(--navy)}
+.stock-page .stock-invoice-result{display:grid;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--rule);min-width:0}
+.stock-page .stock-invoice-result>strong{font-size:13px;font-weight:620}
+.stock-page .stock-invoice-result>.stock-qr{justify-self:center;width:min(100%,218px);border-radius:14px}
+.stock-page .stock-invoice-result>p{margin:0}
 .stock-page .stock-code{color:var(--navy)}
 .stock-page .stock-history{padding:0 3px;border:0;border-radius:0;background:none;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
 .stock-page .stock-history h2{font-size:17px}

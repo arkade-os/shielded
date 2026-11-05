@@ -55,6 +55,7 @@ const WHERE:Record<string,string>={
 };
 const whereOf=(kind:string|undefined,received:boolean)=>(kind?WHERE[kind]:undefined)??(received?'Into your Arkade address, outside the pool.':'From your Arkade address, outside the pool.');
 type Invoice={id:string;bolt11:string;outcome:Outcome;pays:bigint;fee:bigint;failure?:string};
+type LnurlService=ReturnType<typeof createLnurlReceive>;
 const INVOICE:Partial<Record<Outcome,string>>={funding:'Paid. Claiming the sats.',funded:'Paid. Claiming the sats.',claimed:'Received. The sats move into the pool shortly.',lapsed:'It expired unpaid.'};
 const invoiceLine=(i:Invoice,fee:DepositFeeSchedule|undefined)=>i.outcome==='accepted'||i.outcome==='open'?`Waiting for a payment of ${sats(i.pays)} sats, of which the swap keeps ${sats(i.fee)}${invoiceFeeClause(fee,i.pays,i.fee)}.`
  :INVOICE[i.outcome]??`The swap ${i.outcome==='needs_recovery'?'needs recovery':'failed'}${i.failure?`: ${i.failure}`:'.'}`;
@@ -72,7 +73,7 @@ export default function RollupWallet(){
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
- const [tab,setTab]=useState<'home'|'receive'|'send'|'activity'>('home'),[receiveMode,setReceiveMode]=useState<ReceiveMode>('unified'),[invoiceShown,setInvoiceShown]=useState(false),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
+ const [tab,setTab]=useState<'home'|'receive'|'send'|'activity'>('home'),[receiveMode,setReceiveMode]=useState<ReceiveMode>('unified'),[requestOpen,setRequestOpen]=useState(false),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<'phrase'|'viewing'|'restore'|null>(null),[restoreDate,setRestoreDate]=useState(''),[restoreStarted,setRestoreStarted]=useState(false);
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
@@ -85,7 +86,7 @@ export default function RollupWallet(){
  if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
  const quotes=quoteRef.current;
  const poolRef=useRef<RollupPoolStatus|undefined>(undefined);
- const busyRef=useRef(false),restoring=useRef(false),mounted=useRef(false),createdHere=useRef(false);
+ const busyRef=useRef(false),restoreRequested=useRef(false),restoring=useRef(false),mounted=useRef(false),createdHere=useRef(false);
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
  const refreshRef=useRef<{request:()=>void}|undefined>(undefined);
@@ -148,46 +149,46 @@ export default function RollupWallet(){
   // A method failure shows from the service's saved state; the tick makes the effect below read it.
   if(methodsFailure(error))setTick(t=>t+1);else setLnError(noSwapErrorText(error)??errorText(error));
  };
- const lightning=async(action:()=>Promise<void>)=>{
-  if(!wallet?.swaps)return;
+ const receiveCurrent=(service:LnurlService|undefined)=>mounted.current&&!restoreRequested.current&&!restoring.current&&lnurlRef.current===service;
+ const lightning=async(action:(service:LnurlService|undefined)=>Promise<void>)=>{
+  if(!wallet?.swaps||restoreRequested.current||restoring.current)return;
+  const service=lnurlRef.current;
   setLnBusy(true);setLnError('');
-  try{await action();}catch(error){if(mounted.current)lnFail(error);}
-  finally{if(mounted.current)setLnBusy(false);}
+  try{await action(service);}catch(error){if(receiveCurrent(service))lnFail(error);}
+  finally{if(mounted.current&&lnurlRef.current===service)setLnBusy(false);}
  };
- const createInvoice=()=>lightning(async()=>{
+ const createInvoice=()=>lightning(async service=>{
   const r=await wallet!.swaps!.receive({via:'lightning',amount:BigInt(lnAmount)});
-  if(mounted.current){setInvoice({id:r.id,bolt11:r.artifact.bolt11,outcome:r.outcome,pays:r.give.amount,fee:r.fee.amount});setInvoiceShown(true);}
+  if(mounted.current&&!restoring.current&&lnurlRef.current===service){setInvoice({id:r.id,bolt11:r.artifact.bolt11,outcome:r.outcome,pays:r.give.amount,fee:r.fee.amount});setRequestOpen(true);}
  });
- const showReceiver=(receiver:LnurlReceiver)=>{if(mounted.current){setUnifiedAddress(receiver.lnurl);setLnAddress(receiver.lightningAddress??'');}};
+ const showReceiver=(service:LnurlService,receiver:LnurlReceiver)=>{if(receiveCurrent(service)){setUnifiedAddress(receiver.lnurl);setLnAddress(receiver.lightningAddress??'');}};
  // claim and recover reject with a method error only after their bind has landed, so the address exists and is shown.
- const bound=async(action:()=>Promise<void>)=>{
-  try{await action();}
+ const bound=async(service:LnurlService|undefined,action:(service:LnurlService)=>Promise<void>)=>{
+  if(!service)throw new Error('The wallet is still loading.');
+  try{await action(service);}
   catch(error){
-   if(methodsFailure(error)){const owned=await lnurlRef.current?.current();if(owned)showReceiver(owned);}
+   if(methodsFailure(error)&&receiveCurrent(service)){const owned=await service.current();if(owned)showReceiver(service,owned);}
    throw error;
   }
  };
- const claimAddress=()=>lightning(()=>bound(async()=>{
-  if(!lnurlRef.current)throw new Error('The wallet is still loading.');
-  showReceiver(await lnurlRef.current.claimName());
+ const claimAddress=()=>lightning(service=>bound(service,async service=>{
+  showReceiver(service,await service.claimName());
  }));
- const retryUnified=()=>lightning(()=>bound(async()=>{
-  if(!lnurlRef.current)throw new Error('The wallet is still loading.');
-  showReceiver(await lnurlRef.current.ensureUnified());
+ const retryUnified=()=>lightning(service=>bound(service,async service=>{
+  showReceiver(service,await service.ensureUnified());
  }));
- const recoverAddress=()=>lightning(()=>bound(async()=>{
-  if(!lnurlRef.current)throw new Error('The wallet is still loading.');
-  const receivers=await lnurlRef.current.recover(),receiver=receivers[0];
-  if(receiver)showReceiver(receiver);else if(mounted.current)setLnError('No Lightning address was found for this recovery phrase.');
+ const recoverAddress=()=>lightning(service=>bound(service,async service=>{
+  const receivers=await service.recover(),receiver=receivers[0];
+  if(receiver)showReceiver(service,receiver);else if(receiveCurrent(service))setLnError('No Lightning address was found for this recovery phrase.');
  }));
- const setPrivate=(on:boolean)=>lightning(async()=>{
-  if(!lnurlRef.current)throw new Error('The wallet is still loading.');
-  await lnurlRef.current.setPrivateReceive(on);
+ const setPrivate=(on:boolean)=>lightning(async service=>{
+  if(!service)throw new Error('The wallet is still loading.');
+  await service.setPrivateReceive(on);
  });
 
  const restoreWallet=async()=>{
-  if(busyRef.current)return;
-  setRestoreStarted(true);
+  if(busyRef.current||restoreRequested.current||restoring.current)return;
+  restoreRequested.current=true;setRestoreStarted(true);
   try{
    const at=restoreDate?Date.parse(restoreDate):NaN,token=poolRef.current?.pool?.token;
    const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(''),at)}:undefined;
@@ -196,12 +197,19 @@ export default function RollupWallet(){
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
    }});
   }catch(error){if(mounted.current)setRestoreError(errorText(error));}
-  finally{if(mounted.current){busyRef.current=false;setBusy(false);setRestoreStarted(false);}}
+  finally{
+   if(!restoring.current){
+    restoreRequested.current=false;
+    const service=lnurlRef.current;
+    if(service)void service.current().then(owned=>{if(owned)showReceiver(service,owned);}).catch(error=>{if(receiveCurrent(service))lnFail(error);});
+   }
+   if(mounted.current){busyRef.current=false;setBusy(false);setRestoreStarted(false);}
+  }
  };
 
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
-  setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');
+  setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setInvoice(undefined);setRequestOpen(false);
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
@@ -272,13 +280,13 @@ export default function RollupWallet(){
    setWallet(created);
    const parts=await starting;
    if(!parts||!current())return;
-   unwatch.push(parts.swaps.onUpdate(({swap,outcome})=>{if(current())setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
+   unwatch.push(parts.swaps.onUpdate(({swap,outcome})=>{if(current()&&lnurlRef.current===parts.lnurl)setInvoice(i=>i?.id===swap.id?{...i,outcome,...(swap.failure?{failure:swap.failure}:{})}:i);}));
    lnurlRef.current=parts.lnurl;
-   void parts.lnurl.ensureUnified().then(owned=>{if(current())showReceiver(owned);}).catch(async error=>{
-    if(methodsFailure(error)){const owned=await parts.lnurl.current().catch(()=>undefined);if(owned&&current())showReceiver(owned);}
-    if(current())lnFail(error);
+   void parts.lnurl.ensureUnified().then(owned=>{if(current())showReceiver(parts.lnurl,owned);}).catch(async error=>{
+    if(methodsFailure(error)&&receiveCurrent(parts.lnurl)){const owned=await parts.lnurl.current().catch(()=>undefined);if(owned&&current())showReceiver(parts.lnurl,owned);}
+    if(current()&&receiveCurrent(parts.lnurl))lnFail(error);
    });
-   parts.lnurl.start(error=>{if(current())lnFail(error);});
+   parts.lnurl.start(error=>{if(current()&&receiveCurrent(parts.lnurl))lnFail(error);});
    setTick(t=>t+1);
   }).catch(error=>{if(current())setStartupError(errorText(error));});
   return()=>{void close().catch(()=>{});};
@@ -302,11 +310,11 @@ export default function RollupWallet(){
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  // Local reads of the receive state: after every Lightning action, on a new receiver, and on each tick.
  useEffect(()=>{
-  const service=lnurlRef.current;if(!wallet||!unifiedAddress||lnBusy||!service)return;
+  const service=lnurlRef.current;if(!wallet||!unifiedAddress||lnBusy||!service||!receiveCurrent(service))return;
   let stop=false;
-  void service.privateReceiveState().then(next=>{if(!stop)setPrivateState(next);},error=>{if(!stop)setLnError(errorText(error));});
+  void service.privateReceiveState().then(next=>{if(!stop&&receiveCurrent(service))setPrivateState(next);},error=>{if(!stop&&receiveCurrent(service))setLnError(errorText(error));});
   return()=>{stop=true;};
- },[wallet,tick,unifiedAddress,lnBusy]);
+ },[wallet,tick,unifiedAddress,lnBusy,restoreStarted]);
  useEffect(()=>{lnLimits.current=wallet?.swaps;setLnBounds(undefined);},[wallet,wallet?.swaps]);
  // On focus, not at open: markets() fetches the solver registry and its cards, and the client caches them for their TTL. markets() first: resolve() reads the snapshot it loads.
  const readLnBounds=()=>{
@@ -363,7 +371,8 @@ export default function RollupWallet(){
  };
  const links=wallet?.links()??[],mintedLink=links.find(l=>l.token===minted),claimProblem=claim?claimTokenError(claim):'';
 
- const reserves=Object.keys(pool?.pool?.reserves??{}),address=restoring.current||restoreStarted?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),funding=restoring.current||restoreStarted?'':arkAddress||(early?.secret===secret?early.ark??'':''),listingFull=listingBlocked(pool?.pool);
+ const receiveBlocked=restoreRequested.current||restoring.current||restoreStarted;
+ const reserves=Object.keys(pool?.pool?.reserves??{}),address=receiveBlocked?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),funding=receiveBlocked?'':arkAddress||(early?.secret===secret?early.ark??'':''),listingFull=listingBlocked(pool?.pool);
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
  const assetUnits=(id:string)=>wallet?.shieldedBalance(assetFieldOfId(id))??0n;
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
@@ -420,14 +429,13 @@ export default function RollupWallet(){
   :privateNotice==='refused'?'Receive with this QR. Private receive is unavailable.'
   :'One QR for supported ways to pay you. Add private payments below.';
  const turnOff=(label='Turn off')=><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void setPrivate(false)}>{label}</button>;
- const liveInvoice=invoiceShown&&invoice&&(invoice.outcome==='open'||invoice.outcome==='accepted')?invoice:undefined;
- const receivePayload=receiveMode==='arkade'?'arkade':receiveMode==='shielded'?'shielded':liveInvoice?'invoice':'unified';
- const receiveValue=receivePayload==='arkade'?funding:receivePayload==='shielded'?address:receivePayload==='invoice'?liveInvoice!.bolt11:unifiedAddress;
- const receiveDescription=receivePayload==='arkade'?feePaused?'New deposits are paused until you accept the updated fee.':'Eligible deposits move into your private balance while this wallet is open.'
-  :receivePayload==='invoice'?`Invoice for ${sats(liveInvoice!.pays)} sats.`
+ const liveInvoice=invoice&&(invoice.outcome==='open'||invoice.outcome==='accepted')?invoice:undefined;
+ const receivePayload=receiveMode;
+ const receiveValue=receiveBlocked?'':receivePayload==='arkade'?funding:receivePayload==='shielded'?address:unifiedAddress;
+ const receiveDescription=receiveBlocked?'Receive is unavailable while the wallet is being restored.':receivePayload==='arkade'?feePaused?'New deposits are paused until you accept the updated fee.':'Eligible deposits move into your private balance while this wallet is open.'
   :receivePayload==='unified'?privateDescription
   :'Share this for direct private payments inside the pool.';
- const receiveLoading=receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…':'Activating your unified address…';
+ const receiveLoading=receiveBlocked?'Restoring wallet…':receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…':'Activating your unified address…';
  const historyItems=rows.map(item=>{
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
@@ -487,11 +495,10 @@ export default function RollupWallet(){
      {docked&&(tab==='receive'||tab==='send')&&<div className="stock-tabs" role="tablist">{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>}
      {tab==='home'?(!docked?<div className="stock-home-view">{balanceCard()}{recentPreview}</div>:null):tab==='activity'?<section className="stock-card stock-history stock-history-full"><h2>Activity</h2>{historyContent(historyItems)}{synced&&!rows.length&&<button type="button" className="stock-primary" onClick={()=>docked?openPanel('receive'):selectTab('receive')}>Receive your first payment</button>}</section>:<>
      {tab==='receive'?<div className="stock-receive">
-       <ReceivePortal mode={receiveMode} payload={receivePayload} onModeChange={mode=>{setReceiveMode(mode);setInvoiceShown(false);}} value={receiveValue} qrValue={receivePayload==='invoice'?invoiceQr(liveInvoice!.bolt11):undefined} loading={receiveLoading} description={receiveDescription} action={receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
-        {receiveMode==='unified'&&<>
+       <ReceivePortal mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receiveValue} loading={receiveLoading} description={receiveDescription} action={!receiveBlocked&&receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
+        {!receiveBlocked&&receiveMode==='unified'&&<>
          {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void retryUnified()}>Retry unified address</button>}
          <details className="stock-more"><summary>Had an address before?</summary><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover it</button></details>
-         {invoice&&<p className="stock-muted" role="status">{invoiceLine(invoice,fee)}</p>}
          {unifiedAddress&&<><label className="stock-check">Include private payments<input type="checkbox" role="switch" checked={privateChecked} disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>void setPrivate(e.target.checked)}/></label>
           <p id="stock-private-hint" className="stock-muted">Turning this on asks the service to add your shielded address. Anyone looking up your unified address can see that you use the pool.</p>
          <div role="status">
@@ -504,13 +511,15 @@ export default function RollupWallet(){
          {(privateNotice==='foreign'||privateNotice==='own'||privateNotice==='refused')&&<div className="stock-actions">{privateNotice==='own'&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet} onClick={()=>void setPrivate(true)}>Keep it on</button>}{turnOff(privateNotice==='refused'?'Dismiss':'Turn off')}</div>}
          <details className="stock-more"><summary>How private receive works</summary><p className="stock-muted">Payments to your shielded address stay private inside the pool. Turning this on lists that address on your unified receiver: anyone who looks it up learns that you use the pool and gets your shielded address, the same one every payer gets, and it never changes. The address service learns it too. Turning it off asks the service to remove it; if the service keeps it, this wallet says so and asks again while this page is open. The choice is saved on this device only: another device with your recovery phrase decides for itself, and one that has it on lists the address again.</p></details></>}
         {lnError&&<p className="stock-blocked" role="alert">{lnError}</p>}
-         <details className="stock-more stock-request"><summary>Request an exact amount</summary><form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" onFocus={readLnBounds} aria-describedby={lnBounds?'stock-ln-limits':undefined} aria-invalid={lnOutside||undefined} placeholder="Amount in sats" maxLength={10} value={lnAmount} onChange={e=>{setLnAmount(e.target.value.replace(/\D/g,''));if(!lnBounds)readLnBounds();}}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount||lnOutside}>Create invoice</button></form>{lnBounds&&<p id="stock-ln-limits" className={lnOutside?'stock-blocked':'stock-muted'}>{invoiceLimitsLine(lnBounds)}</p>}</details>
+         <details className="stock-more stock-request" open={requestOpen} onToggle={e=>setRequestOpen(e.currentTarget.open)}><summary>Request an exact amount</summary><form className="stock-amount" onSubmit={e=>{e.preventDefault();void createInvoice();}}><input inputMode="numeric" aria-label="Invoice amount in sats" onFocus={readLnBounds} aria-describedby={lnBounds?'stock-ln-limits':undefined} aria-invalid={lnOutside||undefined} placeholder="Amount in sats" maxLength={10} value={lnAmount} onChange={e=>{setLnAmount(e.target.value.replace(/\D/g,''));if(!lnBounds)readLnBounds();}}/><button className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnAmount||lnOutside}>Create invoice</button></form>{lnBounds&&<p id="stock-ln-limits" className={lnOutside?'stock-blocked':'stock-muted'}>{invoiceLimitsLine(lnBounds)}</p>}
+          {invoice&&<div className="stock-invoice-result"><strong>Lightning invoice · {sats(invoice.pays)} sats</strong>{liveInvoice&&<Copyable key={invoice.id} value={invoice.bolt11} qr={invoiceQr(invoice.bolt11)} label="QR code for this Lightning invoice"/>}<p className="stock-muted" role="status">{invoiceLine(invoice,fee)}</p></div>}
+         </details>
         <details className="stock-more"><summary>Receive details</summary>{feeLine&&<p className="stock-muted">{feeLine}{feePaused&&` ${PAUSED_LINE}`}</p>}<p className="stock-muted">This unified address pays one Arkade payout address at a time, which this wallet derives and replaces after a payment or once a day. {lightningMinimumLine(fee)} The unified address stays the same and accepts payments while closed. Its service sees each payout address it serves and can link them to this receiver; payers before the next replacement share one address.</p></details>
        </>}
-        {receiveMode==='arkade'&&<><details className="stock-more"><summary>Fees & test funds</summary><p className="stock-muted">{fundingFee||'Sats sent here move into the pool while this wallet is open.'}{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`}</p><p className="stock-muted">Need test sats? Use the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> after a GitHub sign-in.</p></details>{expiring>0&&<button type="button" className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew expiring sats</button>}</>}
+        {!receiveBlocked&&receiveMode==='arkade'&&<><details className="stock-more"><summary>Fees & test funds</summary><p className="stock-muted">{fundingFee||'Sats sent here move into the pool while this wallet is open.'}{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`}</p><p className="stock-muted">Need test sats? Use the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> after a GitHub sign-in.</p></details>{expiring>0&&<button type="button" className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew expiring sats</button>}</>}
       </ReceivePortal>
-     {paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
-     {arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
+     {!receiveBlocked&&paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
+     {!receiveBlocked&&arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(a.coins),'Shielding again')}>Shield again</button></>
        :reserves.includes(a.assetId)?<p className="stock-muted">{(fee&&listedAssetLine(a.coins,fee,new Set(reserves),Date.now(),SHIELD_FLOOR_MS,!!feePaused))||'Listed in the pool, so it moves in on its own.'}</p>
        :listingFull?<p className="stock-blocked">{listingFull}</p>
@@ -542,7 +551,7 @@ export default function RollupWallet(){
     {(docked||tab==='home')&&settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds.</p><details className="stock-more"><summary>Before you switch devices</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished. The phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
     {(docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
     {!securityView?<div className="stock-security-menu">
-     <button type="button" className="stock-security-choice" onClick={()=>openSecurity('phrase')}><strong>Recovery phrase</strong><small>Back up or reveal your words</small><span aria-hidden="true">›</span></button>
+     {(backedUp||!secret)&&<button type="button" className="stock-security-choice" onClick={()=>openSecurity('phrase')}><strong>Recovery phrase</strong><small>Back up or reveal your words</small><span aria-hidden="true">›</span></button>}
      <button type="button" className="stock-security-choice" onClick={()=>openSecurity('viewing')}><strong>Viewing access</strong><small>Share read-only wallet history</small><span aria-hidden="true">›</span></button>
      <button type="button" className="stock-security-choice" onClick={()=>openSecurity('restore')}><strong>Restore wallet</strong><small>Use a phrase from another device</small><span aria-hidden="true">›</span></button>
     </div>:<div className="stock-security-subview"><button type="button" className="stock-security-back" onClick={leaveSecurity}>← Back</button><h3 tabIndex={-1}>{securityView==='phrase'?'Recovery phrase':securityView==='viewing'?'Viewing access':'Restore wallet'}</h3>
@@ -554,7 +563,7 @@ export default function RollupWallet(){
      {securityView==='restore'&&<><p className="stock-muted">Keep this browser&apos;s data while Lightning swaps or payouts are pending. A fresh browser recovers a Lightning alias through Recover a Lightning address; direct swaps also need their stored recovery records. The phrase alone does not restore every outstanding swap.</p>
       <label>Restore from a recovery phrase<textarea rows={3} value={restore} onChange={e=>setRestore(e.target.value)} autoComplete="off" spellCheck={false} placeholder="24 words (older wallets: 64 hex characters)"/></label>
       <label>Created on, if you know it (any earlier date also works)<input type="date" value={restoreDate} onChange={e=>setRestoreDate(e.target.value)}/></label>
-      <button disabled={busy||!restore.trim()} onClick={()=>void restoreWallet()}>Restore wallet</button>
+      <button disabled={busy||receiveBlocked||!restore.trim()} onClick={()=>void restoreWallet()}>Restore wallet</button>
       {restoreError&&<p className="stock-blocked">{restoreError}</p>}
       {restoreError&&restoring.current&&<button type="button" className="stock-ghost stock-mini" onClick={()=>location.reload()}>Reload wallet</button>}</>}
     </div>}
