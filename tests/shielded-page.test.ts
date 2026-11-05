@@ -229,6 +229,11 @@ test('zero-sat asset activities preserve the actual SDK sent and received direct
  }
 });
 
+test('a shield or merge row keeps the sats in the wallet, so History shows it neither in nor out',()=>{
+ const row=(kind:string|undefined,amount:number,type:TxType)=>({id:kind??'arkade',amount,createdAt:1,settled:true,...(kind?{intent:{kind,label:kind}}:{}),txs:[{key:{arkTxid:'aa'.repeat(32),boardingTxid:'',commitmentTxid:''},type,amount:Math.abs(amount),settled:true,createdAt:1}]}) as Activity;
+ assert.deepEqual([row('shield',-50_000,TxType.TxSent),row(undefined,50_000,TxType.TxReceived),row('unshield',-1_000,TxType.TxSent),row('merge',0,TxType.TxSent)].map(page.historyDirection),['own','in','out','own']);
+});
+
 const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({railId,amount:500,fee:0,total:500,send}) as RouteQuote;
 
 test('a paid Lightning receipt enriches exactly one matching withdrawal without duplicating its debit',()=>{
