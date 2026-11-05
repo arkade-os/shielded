@@ -251,6 +251,7 @@ export default function RollupWallet(){
   void session.ready.then(created=>{
    if(!created||!current())return;
    setStartupError('');
+   void created.started.catch(error=>{if(current())setPoolError(errorText(error));});
    // A wallet made here was only ever shown with this status's fee, so it accepts that one, never a newer one. A failed save shows as the saved-notes error.
    const shown=createdHere.current&&created.depositFeePaused?depositFeeFor(status):undefined;if(shown)void created.acceptDepositFee(shown).catch(()=>{});
    const funds=pageQuoteFunds(()=>({token:created.pool.status.pool?.token,notes:created.mergeableAssets().flatMap(asset=>created.shieldedNotes(asset)),inFlight:created.inFlight}),()=>{quotes.clear();setQuoteRevision(v=>v+1);});

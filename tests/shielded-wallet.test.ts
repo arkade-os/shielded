@@ -55,11 +55,13 @@ const fetcherOf=(api:PoolApi)=>(async(url:string)=>{
  try{return new Response(JSON.stringify(await api(String(url).replace('/api/rollup',''))),{status:200});}
  catch(error){return new Response(JSON.stringify({error:(error as Error).message}),{status:(error as {status?:number}).status??404});}
 }) as unknown as typeof fetch;
-const open=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule;indexer?:object}={})=>
+const opening=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule;indexer?:object}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:(o.indexer??indexer) as never,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
   pool:{origin:'',status:status(o.batches??0,undefined,o.depositFee)},secret:o.secret??'11'.repeat(32),hash,prover,
   fetcher:o.fetcher??poolFetcher(o.batches??0,undefined,o.depositFee).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{}),...(o.maxDepositFee?{maxDepositFee:o.maxDepositFee}:{})});
+/** Start-up finished, which is what most tests assume; `opening` is for the few that watch it run. */
+const open=async(o:Parameters<typeof opening>[0]={})=>{const wallet=await opening(o);await wallet.started;return wallet;};
 
 // The spec's written-first test: the inherited factory must produce the subclass against the patched SDK.
 test('ShieldedWallet.create returns a ShieldedWallet, which is also a Wallet',async()=>{
@@ -92,6 +94,38 @@ test('ShieldedWallet.create starts its contract manager while it reads the pool'
  const wallet=await open({fetcher,indexer:{...indexer as object,subscribeForScripts:async()=>{subscribed();return 'sub';}}});
  try{assert.equal(waited,false,'the first pool read found the manager already subscribing');}
  finally{await wallet.dispose();}
+});
+
+test('ShieldedWallet.create resolves before a stalled watch setup finishes',async()=>{
+ const gate=deferred<void>();let done=false;
+ const wallet=await opening({indexer:{...indexer as object,subscribeForScripts:async()=>{await gate.promise;return 'sub';}}});
+ const settled=wallet.started.then(()=>{done=true;});
+ try{
+  assert.deepEqual([wallet.batchCount(),wallet.shieldedBalance(),wallet.resumed],[0,0n,false],'the account is loaded and usable');
+  await flush();assert.equal(done,false,'the watch setup is still waiting on the indexer');
+  gate.resolve();await settled;assert.equal(done,true,'and `started` resolves once it is through');
+ }finally{gate.resolve();await wallet.dispose();}
+});
+
+test('a watch setup that fails rejects started, not create, and leaves the watchdog armed',async t=>{
+ const unhandled:unknown[]=[],note=(error:unknown)=>{unhandled.push(error);};process.on('unhandledRejection',note);
+ t.mock.method(Wallet.prototype,'notifyIncomingFunds',async()=>{throw new Error('the indexer refused the funds watch');});
+ const wallet=await opening();
+ try{
+  assert.ok((wallet as any).timer,'armed before the watch setup, so a failed setup still leaves a tick to retry');
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(unhandled,[],'a caller that never reads `started` must not raise an unhandled rejection');
+  await assert.rejects(wallet.started,/refused the funds watch/);
+ }finally{process.off('unhandledRejection',note);await wallet.dispose();}
+});
+
+test('a wallet closed while its watch setup waits registers nothing once that setup resumes',async t=>{
+ const entered=deferred<void>(),gate=deferred<void>();let off=0;
+ t.mock.method(Wallet.prototype,'notifyIncomingFunds',async()=>{entered.resolve();await gate.promise;return ()=>{off++;};});
+ const wallet=await opening();
+ await entered.promise;await wallet.dispose();
+ gate.resolve();await wallet.started;await flush();
+ assert.deepEqual([off,(wallet as any).unwatch.length],[1,0],'the late incoming-funds watch was stopped, never kept');
 });
 
 test('self-native withdrawal keeps its SDK receipt while external withdrawals in the same batch remain visible',async t=>{
