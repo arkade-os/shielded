@@ -44,7 +44,7 @@ function worker({force=false,off=false,integrity=sri('cached /index.html')}={}){
   const response=await answer;await Promise.all(pending);return response;
  };
  const get=async(path:string,{navigate,...init}:RequestInit&{navigate?:boolean}={})=>{
-  const request=new Request(origin+path,init);if(navigate)Object.defineProperty(request,'mode',{value:'navigate'});
+  const request=new Request(new URL(path,origin),init);if(navigate)Object.defineProperty(request,'mode',{value:'navigate'});
   const answer=await dispatch('fetch',{request});
   return {body:await (answer??await fetch(request)).text(),intercepted:!!answer};
  };
@@ -67,13 +67,29 @@ test('an install whose index.html is not the one this build hashed fails and cac
  assert.deepEqual([...sw.stores.get(shell)!.keys()],[]);
 });
 
-test('a navigation to /wallet or /claim is answered with the cached index.html',async()=>{
+test('a navigation to any app route is answered with the cached index.html',async()=>{
  const sw=worker();await sw.dispatch('install');
- for(const path of ['/wallet','/claim#token'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'cached /index.html',intercepted:true},path);
+ for(const path of ['/','/wallet','/claim#token','/verify','/watch'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'cached /index.html',intercepted:true},path);
  assert.equal(sw.fetch.mock.callCount(),0);
  assert.deepEqual(await sw.get('/stock-wallet',{navigate:true}),{body:'net',intercepted:false},'the server still redirects legacy paths');
  await sw.caches.delete(shell);
  assert.deepEqual(await sw.get('/claim',{navigate:true}),{body:'net',intercepted:true},'a cache miss goes to the network');
+});
+
+test('anything but a same-origin GET reaches the network untouched',async()=>{
+ const sw=worker();await sw.dispatch('install');
+ assert.deepEqual(await sw.get('/wallet',{navigate:true,method:'POST'}),{body:'net',intercepted:false},'a POST navigation');
+ for(const url of ['https://cdn.example/index.html','https://cdn.example/api/rollup/proving/x'])assert.deepEqual(await sw.get(url),{body:'net',intercepted:false},url);
+});
+
+test('when cache storage fails, the app and the proving keys still load from the network',async()=>{
+ const sw=worker();await sw.dispatch('install');
+ const cache=await sw.caches.open(shell),failing=async()=>{throw new DOMException('The operation is insecure.','SecurityError');};
+ for(const fail of [()=>{sw.caches.open=failing;},()=>{cache.match=failing;sw.caches.open=async()=>cache;}]){
+  fail();
+  for(const [path,navigate] of [['/wallet',true],['/assets/index-a1.js',false],['/api/rollup/proving/epoch-spend.zkey?v=aa',false]] as const)
+   assert.deepEqual(await sw.get(path,{navigate}),{body:'net',intercepted:true},path);
+ }
 });
 
 test('pool API calls are never answered from the cache',async()=>{
@@ -93,8 +109,11 @@ test('proving keys come from the cache after the first fetch',async()=>{
  sw.fetch.mock.mockImplementationOnce(async()=>new Response('gone',{status:404}));
  await sw.get('/api/rollup/proving/epoch-join.zkey?v=cc');await sw.get('/api/rollup/proving/epoch-join.zkey?v=cc');
  assert.equal(calls(),4,'a failed download is not kept');
- await sw.get(file,{cache:'reload'});
+ sw.fetch.mock.mockImplementationOnce(async()=>new Response('fresh'));
+ assert.deepEqual(await sw.get(file,{cache:'reload'}),{body:'fresh',intercepted:true});
  assert.equal(calls(),5,'the digest-mismatch retry in loadProvingFile gets past the cached copy');
+ assert.deepEqual(await sw.get(file),{body:'fresh',intercepted:true},'and replaces it');
+ assert.equal(calls(),5);
  assert.deepEqual([...sw.stores.keys()],['shielded-proving']);
 });
 
