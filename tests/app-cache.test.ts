@@ -11,7 +11,7 @@ const files=['/assets/geist-b2.woff2','/assets/index-a1.js','/index.html'];
 type Entry={headers:Headers;response:Response};
 
 // app/sw.js over Map-backed caches; `fetch` is the network, which also answers every request the worker leaves alone.
-function worker(force=false){
+function worker({force=false,off=false}={}){
  const listeners=new Map<string,(event:object)=>void>(),stores=new Map<string,Map<string,Entry>>();
  const key=(request:Request|string)=>new URL(typeof request==='string'?request:request.url,origin).href;
  const headers=(request:Request|string)=>typeof request==='string'?new Headers():request.headers;
@@ -26,12 +26,13 @@ function worker(force=false){
    addAll:async(urls:string[])=>{for(const url of urls)entries.set(key(url),{headers:new Headers(),response:new Response(`cached ${url}`,{headers:{vary:'Origin'}})});},
   };
  }};
- const fetch=mock.fn(async(_request:Request)=>new Response('net')),skipWaiting=mock.fn(async()=>{});
- const self={addEventListener:(type:string,listener:(event:object)=>void)=>listeners.set(type,listener),skipWaiting,location:{origin}};
- runInNewContext(readFileSync('app/sw.js','utf8').replace(/^const APP_CACHE=__APP_CACHE__;/,`const APP_CACHE=${JSON.stringify({version,files,force})};`),{self,caches,fetch,Request,Response,URL});
+ const fetch=mock.fn(async(_request:Request)=>new Response('net')),skipWaiting=mock.fn(async()=>{}),unregister=mock.fn(async()=>true);
+ const tab={url:origin+'/wallet',navigate:mock.fn(async(_url:string)=>null)},matchAll=mock.fn(async(_options:{type?:string})=>[tab]);
+ const self={addEventListener:(type:string,listener:(event:object)=>void)=>listeners.set(type,listener),skipWaiting,location:{origin},registration:{unregister},clients:{matchAll}};
+ runInNewContext(readFileSync(off?'app/sw-off.js':'app/sw.js','utf8').replace(/^const APP_CACHE=__APP_CACHE__;/,`const APP_CACHE=${JSON.stringify({version,files,force})};`),{self,caches,fetch,Request,Response,URL});
  const dispatch=async(type:string,event:object={})=>{
   const pending:Promise<unknown>[]=[];let answer=undefined as Promise<Response>|undefined;
-  listeners.get(type)!({...event,respondWith:(response:Promise<Response>)=>{answer=response;},waitUntil:(promise:Promise<unknown>)=>pending.push(promise)});
+  listeners.get(type)?.({...event,respondWith:(response:Promise<Response>)=>{answer=response;},waitUntil:(promise:Promise<unknown>)=>pending.push(promise)});
   const response=await answer;await Promise.all(pending);return response;
  };
  const get=async(path:string,{navigate,...init}:RequestInit&{navigate?:boolean}={})=>{
@@ -39,7 +40,7 @@ function worker(force=false){
   const answer=await dispatch('fetch',{request});
   return {body:await (answer??await fetch(request)).text(),intercepted:!!answer};
  };
- return {stores,caches,fetch,skipWaiting,dispatch,get};
+ return {stores,caches,fetch,skipWaiting,unregister,matchAll,tab,dispatch,get};
 }
 
 test('install puts index.html and every built file into one cache named for the build',async()=>{
@@ -95,7 +96,7 @@ test('only the skip-waiting message activates a waiting version',async()=>{
 });
 
 test('a forced build activates without waiting',async()=>{
- const sw=worker(true);await sw.dispatch('install');
+ const sw=worker({force:true});await sw.dispatch('install');
  assert.equal(sw.skipWaiting.mock.callCount(),1);
 });
 
@@ -172,4 +173,18 @@ test('a version already installing when the page registers is offered once it ha
  assert.equal(await run({}),1,'updatefound had already fired before the page could listen for it');
  assert.equal(await run({},true),1,'the same worker reported again by updatefound is not offered twice');
  assert.equal(await run(null),0,'the first install is not an update');
+});
+
+test('an OFF build takes over on install, then removes the app caches, itself and the pages it ran',async()=>{
+ const sw=worker({off:true});for(const name of [shell,'shielded-proving','other'])await sw.caches.open(name);
+ await sw.dispatch('install');
+ assert.equal(sw.skipWaiting.mock.callCount(),1);
+ await sw.dispatch('activate');
+ assert.deepEqual(await sw.caches.keys(),['other']);
+ assert.equal(sw.unregister.mock.callCount(),1);
+ assert.deepEqual(sw.matchAll.mock.calls.map(call=>call.arguments[0].type),['window']);
+ assert.deepEqual(sw.tab.navigate.mock.calls.map(call=>call.arguments[0]),[sw.tab.url]);
+ assert.deepEqual(await sw.get('/wallet',{navigate:true}),{body:'net',intercepted:false});
+ const page=browser({});registerAppCache(()=>{},{prod:true,off:true,navigator:page.navigator});await tick();
+ assert.equal(page.container.register.mock.callCount(),0,'the page of an OFF build registers nothing');
 });

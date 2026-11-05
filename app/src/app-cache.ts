@@ -1,11 +1,11 @@
-type Env={prod:boolean;navigator?:Navigator;reload?:()=>void};
+type Env={prod:boolean;off?:boolean;navigator?:Navigator;reload?:()=>void};
 
 // A waiting version is offered through onUpdate and only activates when the tap runs `apply`; every tab then reloads once, because activation drops the old shell cache.
-export function registerAppCache(onUpdate:(apply:()=>void)=>void,{prod,navigator:nav=globalThis.navigator,reload=()=>location.reload()}:Env={prod:import.meta.env.PROD}):void{
+export function registerAppCache(onUpdate:(apply:()=>void)=>void,{prod,off,navigator:nav=globalThis.navigator,reload=()=>location.reload()}:Env={prod:import.meta.env.PROD,off:__APP_CACHE_OFF__}):void{
  // The getter throws a SecurityError where service workers are denied, and an effect that throws unmounts the whole app.
  let container:ServiceWorkerContainer|undefined;
  try{container=nav.serviceWorker;}catch{}
- if(!prod||!container)return;
+ if(!prod||off||!container)return;
  let reloaded=false;
  container.addEventListener('controllerchange',()=>{if(!reloaded){reloaded=true;reload();}});
  container.register('/sw.js',{updateViaCache:'all'}).then(registration=>{
