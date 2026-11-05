@@ -7,7 +7,8 @@ import { appCacheManifest } from './app-cache-manifest.ts';
 const appCache = (): Plugin => ({
   name: 'app-cache', apply: 'build', enforce: 'post',
   generateBundle(_options, bundle) {
-    const manifest = appCacheManifest(Object.keys(bundle), process.env.SHIELDED_APP_CACHE_FORCE === '1');
+    const html = bundle['index.html'];
+    const manifest = appCacheManifest(Object.keys(bundle), process.env.SHIELDED_APP_CACHE_FORCE === '1', html?.type === 'asset' ? html.source : '');
     this.emitFile({ type: 'asset', fileName: 'sw.js', source: readFileSync(new URL('./sw.js', import.meta.url), 'utf8').replace('__APP_CACHE__', () => JSON.stringify(manifest)) });
   },
 });

@@ -99,11 +99,17 @@ test('a forced build activates without waiting',async()=>{
 });
 
 test('the manifest lists every emitted file once and its version follows the file names',()=>{
- const names=['assets/index-a1.js','index.html','sw.js','assets/geist-b2.woff2','assets/plex-c3.woff'];
- const manifest=appCacheManifest(names);
+ const names=['assets/index-a1.js','index.html','sw.js','assets/geist-b2.woff2','assets/plex-c3.woff'],html='<!doctype html><title>a</title>';
+ const manifest=appCacheManifest(names,false,html);
  assert.deepEqual(manifest.files,['/assets/geist-b2.woff2','/assets/index-a1.js','/index.html'],'sorted, without sw.js or a woff fallback');
- assert.equal(manifest.version,createHash('sha256').update(manifest.files.join('\n')).digest('hex').slice(0,12));
+ assert.equal(manifest.version,createHash('sha256').update(manifest.files.join('\n')).update('\0').update(html).digest('hex').slice(0,12));
  assert.equal(manifest.force,false);
- assert.deepEqual(appCacheManifest(names.filter(name=>name!=='index.html').reverse(),true),{...manifest,force:true},'index.html is added when missing, and order does not matter');
- assert.notEqual(appCacheManifest(names.map(name=>name.replace('a1','a2'))).version,manifest.version);
+ assert.deepEqual(appCacheManifest(names.filter(name=>name!=='index.html').reverse(),true,html),{...manifest,force:true},'index.html is added when missing, and order does not matter');
+ assert.notEqual(appCacheManifest(names.map(name=>name.replace('a1','a2')),false,html).version,manifest.version);
+});
+
+test('a deploy that changes only index.html gets a new version',()=>{
+ const names=['assets/index-a1.js','index.html'],version=(html:string)=>appCacheManifest(names,false,html).version;
+ assert.notEqual(version('<title>a</title>'),version('<title>b</title>'));
+ assert.equal(version('<title>a</title>'),version('<title>a</title>'));
 });
