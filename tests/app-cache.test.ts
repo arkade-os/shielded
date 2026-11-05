@@ -146,6 +146,17 @@ test('a forced build reloads the tabs it controls once the older caches are gone
  assert.deepEqual([normal.matchAll.mock.callCount(),normal.tabs[0].navigate.mock.callCount()],[0,0]);
 });
 
+test('a forced build whose cache cleanup fails still reloads the tabs it controls, and a normal one still does not',async()=>{
+ const broken=new DOMException('The operation is insecure.','SecurityError');
+ for(const [force,fails] of [[true,'keys'],[true,'delete'],[false,'keys']] as const){
+  const sw=worker({force,tabs:['/wallet','/claim#token']});await sw.dispatch('install');await sw.caches.open('shielded-shell-old');
+  if(fails==='keys')sw.caches.keys=async()=>{throw broken;};
+  else{const remove=sw.caches.delete;sw.caches.delete=async name=>{if(name==='shielded-shell-old')throw broken;return remove(name);};}
+  await sw.dispatch('activate');
+  assert.deepEqual(sw.tabs.map(tab=>tab.navigate.mock.callCount()),force?[1,1]:[0,0],`${force?'forced':'normal'} build, ${fails} fails`);
+ }
+});
+
 test('a reload sets one query parameter on the tab URL, so a fragment cannot turn it into a same-document navigation',async()=>{
  const tabs=['/claim#token','/watch?x=1#a%20b'];
  for(const [build,sw,param] of [['forced',worker({force:true,tabs}),version],['kill switch',worker({off:true,tabs}),'off']] as const){
@@ -271,7 +282,7 @@ test('an OFF build takes over on install, then removes the app caches, itself an
  assert.equal(page.container.register.mock.callCount(),0,'the page of an OFF build registers nothing');
 });
 
-test('an OFF build removes what it can, then still unregisters and reloads its tabs when cache storage fails, and never rejects its activation',async()=>{
+test('an OFF build removes what it can, then still unregisters and reloads its tabs when cache storage fails, and still reloads them, without rejecting its activation, when unregistering fails',async()=>{
  const broken=new DOMException('The operation is insecure.','SecurityError');
  for(const [fails,left] of [['keys',['other','shielded-proving',shell]],['delete',['other',shell]]] as const){
   const sw=worker({off:true});for(const name of [shell,'shielded-proving','other'])await sw.caches.open(name);
@@ -283,5 +294,5 @@ test('an OFF build removes what it can, then still unregisters and reloads its t
  }
  const sw=worker({off:true});sw.unregister.mock.mockImplementation(async()=>{throw broken;});
  await sw.dispatch('activate');
- assert.equal(sw.unregister.mock.callCount(),1,'a failing unregister does not reject the activation either');
+ assert.deepEqual([sw.unregister.mock.callCount(),sw.tabs[0].navigate.mock.callCount()],[1,1],'a failing unregister neither rejects the activation nor keeps the tabs on the old page');
 });

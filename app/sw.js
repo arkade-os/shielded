@@ -11,6 +11,7 @@ self.addEventListener('install',event=>{event.waitUntil(caches.open(SHELL).then(
 // Not awaited: the new page's fetch waits for this activation to finish, so awaiting navigate() here stalls it.
 self.addEventListener('activate',event=>event.waitUntil(caches.keys()
  .then(names=>Promise.all(names.filter(name=>name.startsWith('shielded-shell-')&&name!==SHELL).map(name=>caches.delete(name))))
+ .catch(()=>{})
  .then(()=>APP_CACHE.force?self.clients.matchAll({type:'window'}):[])
  .then(tabs=>{for(const tab of tabs){const url=new URL(tab.url);url.searchParams.set('sw',APP_CACHE.version);tab.navigate(url.href).catch(()=>{});}})));
 self.addEventListener('message',event=>{if(event.data?.type==='skip-waiting')self.skipWaiting();});
