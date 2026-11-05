@@ -12,6 +12,7 @@ export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sen
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 export const errorText=(error:unknown)=>pausedErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
+export const historyDirection=(item:Activity):'in'|'out'|'own'=>item.intent?.kind==='shield'?'own':activityReceived(item)?'in':'out';
 export function pageActivityHistory(history:Activity[],lightning:Activity[]){
  const receipts=lightning.filter(row=>row.intent?.kind==='lightning-send'&&row.intent.outcome==='paid');
  const matches=(row:Activity,receipt:Activity)=>row.intent?.kind==='unshield'&&!activityReceived(row)&&row.amount===receipt.amount&&typeof receipt.intent?.metadata?.fundingTxid==='string'&&row.txs.some(tx=>tx.key.arkTxid===receipt.intent!.metadata!.fundingTxid);
