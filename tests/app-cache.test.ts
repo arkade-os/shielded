@@ -231,6 +231,17 @@ test('a waiting version is offered once and applying it reloads once',async()=>{
  assert.equal(await offered(browser(null,fakeWorker('installed'))),0,'a page no worker controls has nothing to replace');
 });
 
+test('tapping Update when no version waits any more reloads once, sharing the once-only reload with controllerchange',async()=>{
+ const waiting=fakeWorker('installed'),page=browser({},waiting),offers:(()=>void)[]=[],reload=mock.fn();
+ registerAppCache(apply=>offers.push(apply),{prod:true,navigator:page.navigator,reload});await tick();
+ page.registration.waiting=null;
+ offers[0]();offers[0]();
+ assert.equal(reload.mock.callCount(),1,'the version already activated, so the tap reloads, once');
+ assert.equal(waiting.postMessage.mock.callCount(),0);
+ page.container.dispatchEvent(new Event('controllerchange'));
+ assert.equal(reload.mock.callCount(),1,'and a later controllerchange does not reload again');
+});
+
 test('a version already installing when the page registers is offered once it has installed',async()=>{
  const run=async(controller:object|null,replay=false)=>{
   const tab=browser(controller),installing=fakeWorker('installing'),seen:(()=>void)[]=[];

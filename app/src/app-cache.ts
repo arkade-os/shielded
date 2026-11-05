@@ -7,9 +7,12 @@ export function registerAppCache(onUpdate:(apply:()=>void)=>void,{prod,off,navig
  try{container=nav.serviceWorker;}catch{}
  if(!prod||off||!container)return;
  let reloaded=false;
- container.addEventListener('controllerchange',()=>{if(!reloaded){reloaded=true;reload();}});
+ const reloadOnce=()=>{if(!reloaded){reloaded=true;reload();}};
+ container.addEventListener('controllerchange',reloadOnce);
  container.register('/sw.js',{updateViaCache:'all'}).then(registration=>{
-  const offer=()=>{if(container.controller)onUpdate(()=>registration.waiting?.postMessage({type:'skip-waiting'}));};
+  // Nothing waits once the version has activated, and this tab still runs the old code, so it reloads instead.
+  const apply=()=>{if(registration.waiting)registration.waiting.postMessage({type:'skip-waiting'});else reloadOnce();};
+  const offer=()=>{if(container.controller)onUpdate(apply);};
   // One shared listener: DOM ignores a listener added twice, so a worker reached by this check and by a later updatefound is offered once.
   const installed=(event:Event)=>{if((event.target as ServiceWorker).state==='installed')offer();};
   const watch=()=>registration.installing?.addEventListener('statechange',installed);
