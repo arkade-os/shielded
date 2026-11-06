@@ -248,6 +248,19 @@ test('open() refuses garbage and replays, sharing the register with the HTTP rou
  assert.equal(g.calls.length,2,'one upstream call for each sealed request');
 });
 
+test('open() refuses a copy of a request it already opened, at the cap and over the rate, instead of telling it busy',async t=>{
+ let release=()=>{};const held=new Promise<void>(resolve=>{release=resolve;});
+ const g=await gateway(t,{maxInFlight:1,rate:2,now:()=>0,reply:async()=>{await held;return Response.json({ok:true});}});
+ const first=await g.seal(ARK),running=through(g.router,first);await until(()=>g.calls.length===1);
+ assert.deepEqual(await g.router.open(bytesOf(first)),{kind:'refused'},'a copy of the running request is refused, not shed');
+ assert.deepEqual(await g.router.open(bytesOf(await g.seal(ARK))),{kind:'busy',status:503,retryAfter:1},'fresh bytes at the cap are still shed');
+ release();assert.equal((await running).status,200);
+ assert.equal((await through(g.router,await g.seal(ARK))).status,200);
+ assert.deepEqual(await g.router.open(bytesOf(await g.seal(ARK))),{kind:'busy',status:429,retryAfter:1},'fresh bytes over the rate are still counted');
+ assert.deepEqual(await g.router.open(bytesOf(first)),{kind:'refused'},'a copy of a finished request is refused, not rate-limited');
+ assert.equal(g.calls.length,2,'no copy reached the upstream');
+});
+
 test('open() caps the inner answer at maxAnswer',async t=>{
  const g=await gateway(t,{reply:()=>new Response(new Uint8Array(600<<10))});
  assert.equal((await through(g.router,await g.seal(ARK),{maxAnswer:512<<10})).status,502);

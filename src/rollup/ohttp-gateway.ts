@@ -41,17 +41,20 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   const at=now();if(at-second>=1000){second=at;used=0;} // ponytail: fixed window, so a burst across a boundary reaches twice the rate; a token bucket if that matters
   if(++used>rate){note('busy');return {status:429,retryAfter:1};}
  };
+ // ohttp-ts keeps no replay state (RFC 9458 section 6.5). Each sealing draws a fresh HPKE enc: the 32 bytes after the key id and suite.
+ const encOf=(body:Uint8Array)=>Buffer.from(body.subarray(7,39)).toString('hex');
  const unseal=async(body:Uint8Array,type:string,gone:AbortSignal,cap:number)=>{
   const opened=await key.server.decapsulateRequest(new Request('http://gateway.invalid/',{method:'POST',headers:{'content-type':type},body:body as Uint8Array<ArrayBuffer>})).catch(()=>undefined);
   if(!opened){note('unopened');return;}
-  // ohttp-ts keeps no replay state (RFC 9458 section 6.5). Each sealing draws a fresh HPKE enc: the 32 bytes after the key id and suite.
-  const enc=Buffer.from(body.subarray(7,39)).toString('hex');
+  const enc=encOf(body);
   if(seen.has(enc)){note('replayed');return;}
   seen.add(enc);if(seen.size>REMEMBERED)seen.delete(seen.values().next().value!); // ponytail: in memory, so a restart or 100 000 newer requests forget a value; an inner Date check (RFC 9458 section 6.5.1) bounds replays for good
   return new Uint8Array(await (await opened.context.encapsulateResponse(await forward(opened.request,gone,cap))).arrayBuffer());
  };
  // No upload and no late reader here, so the upstream deadline alone bounds the slot.
  const open:OhttpOpen=async(sealed,{maxAnswer=MAX_RESPONSE,signal=new AbortController().signal}={})=>{
+  // seen holds only requests that opened, so nothing can plant a value: a copy is refused before a full gateway sheds it, which a client reads as "never ran".
+  if(seen.has(encOf(sealed))){note('replayed');return {kind:'refused'};}
   const busy=admit();if(busy)return {kind:'busy',...busy};
   inFlight++;
   try{const bytes=await unseal(sealed,'message/ohttp-req',signal,maxAnswer<MAX_RESPONSE?maxAnswer:MAX_RESPONSE);return bytes?{kind:'sealed',bytes}:{kind:'refused'};}
