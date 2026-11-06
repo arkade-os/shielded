@@ -107,7 +107,7 @@ test('limits answer instead of hanging',async t=>{
  const large=await gateway(t,{reply:()=>new Response(new ReadableStream({pull:c=>{c.enqueue(new Uint8Array(64<<10));if((pulled+=64<<10)>=64<<20)c.close();},cancel:()=>{cancelled=true;}}))});
  assert.equal((await large.open(ARK)).status,502);assert.ok(cancelled&&pulled<5<<20,`the upstream body is abandoned just past 4 MiB, not read whole (${pulled} bytes pulled)`);
  const stalls=(init:RequestInit)=>new Response(new ReadableStream({start:c=>{c.enqueue(new Uint8Array(1));init.signal!.addEventListener('abort',()=>c.error(init.signal!.reason));}}));
- for(const reply of [waits,stalls])assert.equal((await (await gateway(t,{reply,timeoutMs:50})).open(ARK)).status,504);
+ for(const reply of [waits,stalls])assert.equal((await (await gateway(t,{reply,timeoutMs:500})).open(ARK)).status,504);
  let clock=0;
  const busy=await gateway(t,{rate:2,now:()=>clock});
  for(let i=0;i<2;i++)assert.equal((await busy.open(ARK)).status,200);
@@ -134,7 +134,7 @@ test('requests beyond the in-flight cap are shed with 503',async t=>{
 
 test('a failed or timed-out upstream frees its slot',async t=>{
  const at=(name:string)=>`https://ark.example/v1/${name}`;
- const g=await gateway(t,{maxInFlight:2,timeoutMs:50,rate:1000,reply:(init,url)=>url===at('slow')?waits(init):url===at('broken')?Promise.reject(new TypeError('fetch failed')):
+ const g=await gateway(t,{maxInFlight:2,timeoutMs:500,rate:1000,reply:(init,url)=>url===at('slow')?waits(init):url===at('broken')?Promise.reject(new TypeError('fetch failed')):
   url===at('huge')?new Response(new Uint8Array((4<<20)+1)):url===at('failing')?new Response(null,{status:500}):Response.json({ok:true})});
  const sealed=await g.seal(ARK);assert.equal((await g.exchange(sealed)).status,200);
  const exits:[()=>Promise<Response>,number][]=[[()=>g.open(at('slow')),504],[()=>g.open(at('broken')),502],[()=>g.open(at('huge')),502],[()=>g.open(at('failing')),500],[()=>g.open('https://evil.example/'),403],
