@@ -104,3 +104,8 @@ test('an unset environment still yields epoch 128, and a set one overrides it',(
  assert.deepEqual([given(''),given('x')],['','x']);
  for(const value of ['','x'])assert.throws(()=>rollupEpochLenOf({epochLen:given(value)}),/epoch length/,`'${value}' must fail closed`);
 });
+
+test('server.ts mounts the gateway ahead of the pool router',()=>{
+ const source=readFileSync('src/server.ts','utf8'),gateway=source.indexOf('createOhttpGateway('),router=source.indexOf('createRollupRouter(');
+ assert.ok(gateway>0&&router>gateway,"the relay's POST /ohttp must never meet the per-address limit, the starting 503 or the cross-origin check");
+});

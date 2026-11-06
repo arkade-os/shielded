@@ -49,10 +49,16 @@ test('a target outside the allowlist, or with a disallowed path, is refused 403 
  const g=await gateway(t);
  for(const url of ['https://evil.example/v1/info','http://ark.example/v1/info','https://ark.example:8443/v1/info','https://pool.example/api/rollup/ohttp','https://pool.example/api/rollup/OHTTP-keys/',
   'https://pool.example/api/rollup/..%2Fohttp','https://pool.example/api/other','https://ark.example/admin','https://esplora.example/v1/info',
-  'https://ark.example/v1/%zz','https://pool.example/api/rollup/%6Fhttp'])assert.equal((await g.open(url)).status,403,url);
+  'https://ark.example/v1/%zz','https://pool.example/api/rollup/%6Fhttp','https://pool.example/api/rollup//ohttp','https://ark.example/v1//txs'])assert.equal((await g.open(url)).status,403,url);
  assert.equal((await g.open(ARK,{method:'DELETE'})).status,403,'only GET and POST pass');
  assert.equal(g.calls.length,0);
  assert.throws(()=>createOhttpGateway(optionsOf(g.key,{upstreams:[{origin:'http://ark.example',prefix:'/v1/'}]})),/https/);
+});
+
+test('an empty path segment is refused, but a // in the query is not',async t=>{
+ const g=await gateway(t),url='https://esplora.example/api/blocks?next=//y';
+ assert.equal((await g.open(url)).status,200);
+ assert.deepEqual(g.calls.map(call=>call.url),[url]);
 });
 
 test('only content-type and accept reach the upstream',async t=>{
@@ -71,7 +77,7 @@ test('only content-type and accept reach the upstream',async t=>{
 test('streaming requests are refused 400',async t=>{
  const g=await gateway(t);
  assert.equal((await g.open(ARK,{headers:{accept:'text/event-stream'}})).status,400);
- for(const path of ['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription/x','/v1/Batch/Events','/v1/tx%73','/v1/%74xs','/v1/batch/event%73','/v1/indexer/script/%73ubscription/x'])assert.equal((await g.open('https://ark.example'+path)).status,400,path);
+ for(const path of ['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription/x','/v1/Batch/Events','/v1/tx%73','/v1/%74xs','/v1/batch/event%73','/v1/indexer/script/%73ubscription/x','/v1/indexer/subscription','/v1/indexer/subscription?filter.expressions=x'])assert.equal((await g.open('https://ark.example'+path)).status,400,path);
  assert.equal(g.calls.length,0);
  assert.equal((await g.open('https://ark.example/v1/%74x/abc')).status,200);
  assert.deepEqual(g.calls.map(call=>call.url),['https://ark.example/v1/%74x/abc'],'the path goes up as sealed, for the upstream to decode once');

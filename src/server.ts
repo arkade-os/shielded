@@ -25,9 +25,10 @@ const app=express();app.disable('x-powered-by');app.set('trust proxy','loopback,
 // Health stays green while waiting for a previous instance's volume lock, or the rollout would never finish.
 app.get('/health',(_req,res)=>{const phase=service?.status().phase??'starting';res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
 app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!!service?.ready()}));
-// Off without a key; a malformed key, rate or upstream stops startup instead. The token is minted per process and never logged: it is the loopback header the pool's per-address limit exempts.
+// Off without a key; a malformed key, rate or upstream, or a PORT that is not a fixed number, stops startup instead. The token is minted per process and never logged: it is the loopback header the pool's per-address limit exempts.
 const ohttpKey=await loadOhttpKey(process.env.SHIELDED_OHTTP_KEY),gatewayToken=ohttpKey?randomBytes(32).toString('hex'):undefined;
 if(ohttpKey&&gatewayToken){
+ if(!port)throw new Error('PORT must be a fixed port number while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
  // Each prefix starts at the base URL's own path, so it matches what the SDK clients request: ${base}/v1/, ${base}/v1/indexer/ and, for Esplora, ${base}/.
  const upstream=(base:string,api:string)=>{const url=new URL(base);return {origin:url.origin,prefix:url.pathname.replace(/\/?$/,'/')+api};};
  const ark=process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL;

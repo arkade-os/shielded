@@ -163,5 +163,10 @@ export function createRollupRouter(service:()=>RollupService|undefined,{allowedO
    res.json({id:req.params.id,status:'signed'});
   }catch(error){res.status(409).json({error:(error as Error).message});}
  });
+ // body-parser's message quotes the body and Express's last handler logs it, so a parse failure is answered here unlogged; any other error goes on as it was.
+ router.use((error:{type?:string},_req:express.Request,res:express.Response,next:express.NextFunction)=>{
+  if(error.type!=='entity.parse.failed')return next(error);
+  res.status(400).json({error:'The request body is not valid JSON.'});
+ });
  return router;
 }

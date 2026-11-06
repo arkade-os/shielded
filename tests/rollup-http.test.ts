@@ -15,9 +15,9 @@ import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import type {RollupService} from '../src/rollup/service.ts';
 
-/** `remote` replaces the socket address of every request this server sees; the test socket itself is always loopback. */
-async function serve(service:Partial<RollupService>|undefined,options?:Parameters<typeof createRollupRouter>[1],remote?:string){
- const app=express();app.set('env','test');
+/** `remote` replaces the socket address of every request this server sees (the test socket is always loopback); Express logs unhandled errors in any `env` but 'test'. */
+async function serve(service:Partial<RollupService>|undefined,options?:Parameters<typeof createRollupRouter>[1],remote?:string,env='test'){
+ const app=express();app.set('env',env);
  if(remote)app.use((req,_res,next)=>{Object.defineProperty(req.socket,'remoteAddress',{value:remote,configurable:true});next();});
  app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined,options));
  const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
@@ -25,6 +25,7 @@ async function serve(service:Partial<RollupService>|undefined,options?:Parameter
  return {base,close:()=>new Promise(resolve=>server.close(resolve))};
 }
 const post=(url:string,body:unknown,origin?:string,headers?:Record<string,string>)=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...(origin?{origin}:{}),...headers},body:JSON.stringify(body)});
+const settled=()=>new Promise(resolve=>setTimeout(resolve,20));
 const proof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']};
 const spend={id:'ab'.repeat(16),slot:{anchor:'7',rCur:{epoch:0,root:'8'},nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0','0','0'],proof,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
 
@@ -176,6 +177,25 @@ test('what the gateway forwards to the pool is admitted past the per-address lim
   const {init,context}=await client.encapsulateRequest(new Request('https://pool.example/api/rollup/spends',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(spend)}));
   assert.equal((await context.decapsulateResponse(await fetch(origin+'/api/rollup/ohttp',init))).status,202,`sealed POST ${i+1}`);
  }
+});
+
+test('a malformed JSON body gets a JSON 400, and none of its text is logged',async t=>{
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true},undefined,undefined,'production');t.after(api.close);
+ const answers=[];
+ for(const body of ['"tb1qwatchedaddress"','{bad']){
+  const answer=await fetch(api.base+'/spends',{method:'POST',headers:{'content-type':'application/json'},body});
+  answers.push([answer.status,answer.headers.get('content-type')?.split(';')[0],await answer.text()]);
+ }
+ await settled();
+ assert.deepEqual(log.mock.calls.map(call=>String(call.arguments[0])),[],'nothing of a body is logged');
+ assert.deepEqual(answers,Array(2).fill([400,'application/json','{"error":"The request body is not valid JSON."}']));
+});
+
+test('any other error still reaches Express and is logged',async t=>{
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,status:()=>{throw new Error('boom');}},undefined,undefined,'production');t.after(api.close);
+ assert.equal((await fetch(api.base+'/status')).status,500);
+ await settled();
+ assert.deepEqual(log.mock.calls.map(call=>/boom/.test(String(call.arguments[0]))),[true]);
 });
 
 test('without the gateway mounted, its two paths answer 404',async t=>{

@@ -4,7 +4,7 @@ import type {OhttpGatewayKey} from './ohttp-keys.ts';
 export interface OhttpUpstream{origin:string;prefix:string}
 
 const MAX_RESPONSE=4<<20,REMEMBERED=100_000;
-const STREAMS=['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription'];
+const STREAMS=['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription','/v1/indexer/subscription'];
 const copied=(from:Headers,names:string[])=>{const kept=new Headers();for(const name of names){const value=from.get(name);if(value!==null)kept.set(name,value);}return kept;};
 
 export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,fetch:send=fetch,now=()=>performance.now()}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;fetch?:typeof fetch;now?:()=>number}){
@@ -16,11 +16,11 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
  const answer=(status:number,kind:string)=>{note(kind);return new Response(null,{status});};
  const forward=async(request:Request,gone:AbortSignal)=>{
   const url=new URL(request.url),path=url.pathname,toPool=url.origin===pool;
-  // The checks read the path decoded once, as the upstream routes it (arkd serves /v1/tx%73 as its stream); an encoded slash is refused raw.
+  // The checks read the path decoded once, as the upstream routes it (arkd serves /v1/tx%73 as its stream); an encoded slash or an empty segment is refused raw.
   // Express routes ignore case and a trailing slash, so /OHTTP/ would reach this gateway again.
   let routed:string;try{routed=decodeURIComponent(path);}catch{return answer(403,'refused');}
   const lower=routed.toLowerCase(),listed=toPool?routed.startsWith('/api/rollup/')&&!lower.startsWith('/api/rollup/ohttp'):allowed.some(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix));
-  if(!listed||!['GET','POST'].includes(request.method)||/%2f|%5c/i.test(path))return answer(403,'refused');
+  if(!listed||!['GET','POST'].includes(request.method)||/%2f|%5c/i.test(path)||path.includes('//'))return answer(403,'refused');
   if(/text\/event-stream/i.test(request.headers.get('accept')??'')||STREAMS.some(stream=>lower.startsWith(stream)))return answer(400,'stream');
   const headers=copied(request.headers,['content-type','accept']),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);
   if(toPool)headers.set('x-shielded-gateway',gatewayToken);
