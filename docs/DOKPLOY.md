@@ -46,7 +46,7 @@ This proves the key and the config. It does not prove the gateway's hop to the p
 - `SHIELDED_ESPLORA_URL`: the Esplora base URL. Default `https://mempool.mutinynet.arkade.sh/api`.
 - `SHIELDED_ARK_URL` and `SHIELDED_INDEXER_URL`: already used by the pool, and the gateway forwards to the same servers. The indexer defaults to the arkd URL. Both are bare origins, with no path, as the pool already requires.
 
-A malformed key, a rate that is not a whole number of at least 1, an upstream URL that is not `https` (or an arkd or indexer URL that is not a bare origin), a `PORT` that is not a fixed number, or a `HOST` other than `0.0.0.0`, `::` or `127.0.0.1` stops the server at start, like any other bad setting. The error never prints the key. While there is no key, the other checks do not run, and the rate, the public origin and the Esplora URL are ignored.
+A malformed key, a rate that is not a whole number of at least 1, an upstream URL that is not `https` (or an arkd or indexer URL that is not a bare origin), a `PORT` that is not a fixed number, or a `HOST` other than `0.0.0.0` or `127.0.0.1` stops the server at start, like any other bad setting. The error never prints the key. While there is no key, the other checks do not run, and the rate, the public origin and the Esplora URL are ignored.
 
 **What it forwards.** Only `GET` and `POST`, and only to these:
 

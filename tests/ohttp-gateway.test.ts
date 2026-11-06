@@ -68,9 +68,9 @@ test('an empty path segment is refused, but a // in the query is not',async t=>{
 });
 
 test('a pool and an upstream on one origin are told apart by path',async t=>{
- const g=await gateway(t,{poolOrigin:'https://shared.example',upstreams:[{origin:'https://shared.example',prefix:'/v1/'}]});
- for(const [path,status] of [['/v1/info',200],['/api/rollup/status',200],['/api/rollup/ohttp',403]] as const)assert.equal((await g.open('https://shared.example'+path)).status,status,path);
- assert.deepEqual(g.calls.map(({url,init})=>[url,new Headers(init.headers).get('x-shielded-gateway')]),[['https://shared.example/v1/info',null],[LOOPBACK+'/api/rollup/status',TOKEN]],'the token goes to the pool alone');
+ const g=await gateway(t,{poolOrigin:'https://shared.example',upstreams:[{origin:'https://shared.example',prefix:'/v1/'},{origin:'https://shared.example',prefix:'/api/'}]});
+ for(const [path,status] of [['/v1/info',200],['/api/rollup/status',200],['/api/ROLLUP/status',200],['/api/blocks/tip/height',200],['/api/rollup/ohttp',403],['/api/ROLLUP/ohttp',403],['/api/Rollup/OHTTP-keys',403]] as const)assert.equal((await g.open('https://shared.example'+path)).status,status,path);
+ assert.deepEqual(g.calls.map(({url,init})=>[url,new Headers(init.headers).get('x-shielded-gateway')]),[['https://shared.example/v1/info',null],[LOOPBACK+'/api/rollup/status',TOKEN],[LOOPBACK+'/api/ROLLUP/status',TOKEN],['https://shared.example/api/blocks/tip/height',null]],'the token goes to the pool alone, and no spelling of the gateway path leaves');
 });
 
 test('only content-type and accept reach the upstream',async t=>{

@@ -29,7 +29,7 @@ app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!
 const ohttpKey=await loadOhttpKey(process.env.SHIELDED_OHTTP_KEY),gatewayToken=ohttpKey?randomBytes(32).toString('hex'):undefined;
 if(ohttpKey&&gatewayToken){
  if(!port)throw new Error('PORT must be a fixed port number while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
- if(!['0.0.0.0','::','127.0.0.1'].includes(host))throw new Error('HOST must be 0.0.0.0, :: or 127.0.0.1 while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
+ if(!['0.0.0.0','127.0.0.1'].includes(host))throw new Error('HOST must be 0.0.0.0 or 127.0.0.1 while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
  // arkd and the indexer are bare origins, as the pool requires, so their prefixes are fixed; Esplora keeps the path of its base URL.
  const ark=parseStockEndpoint(process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL,'Arkade URL'),indexer=parseStockEndpoint(process.env.SHIELDED_INDEXER_URL||ark,'indexer URL'),esplora=new URL(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet);
  app.use('/api/rollup',createOhttpGateway({key:ohttpKey,gatewayToken,poolOrigin:process.env.SHIELDED_PUBLIC_ORIGIN||'https://shielded.mutinynet.arkade.sh',poolLoopback:`http://127.0.0.1:${port}`,
