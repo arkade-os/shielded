@@ -30,7 +30,7 @@ jobs:
             bundle: nsis
           - os: ubuntu-24.04
             bundle: deb
-          - os: macos-15
+          - os: macos-15-intel
             bundle: app
     runs-on: ${{ matrix.os }}
     steps:
@@ -41,6 +41,9 @@ jobs:
         with:
           node-version: '24'
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install universal macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install Linux native prerequisites
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -54,7 +57,14 @@ jobs:
       - run: node tools/native-build.mjs icons
       - run: npm run native:frontend
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
-      - run: node tools/native-build.mjs desktop build --debug --bundles ${{ matrix.bundle }}
+      - run: node tools/native-build.mjs desktop build --debug --bundles ${{ matrix.bundle }} ${{ runner.os == 'macOS' && '--target universal-apple-darwin' || '' }}
+      - name: Verify universal macOS bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bundle_path='src-tauri/target/universal-apple-darwin/debug/bundle/macos/Shielded.app'
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$bundle_path/Contents/Info.plist")
+          lipo "$bundle_path/Contents/MacOS/$executable" -verify_arch arm64 x86_64
 
   android:
     runs-on: ubuntu-24.04
@@ -105,3 +115,8 @@ jobs:
       - run: npm ci
       - run: npm run native:ios -- init --ci --skip-targets-install
       - run: npm run native:ios -- build --debug --target "$IOS_TARGET" --no-sign --ci
+      - name: Run macOS ARM workspace tests
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked --target aarch64-apple-darwin
