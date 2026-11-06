@@ -6,9 +6,9 @@ import {NOSTR_ANSWER_KIND,NOSTR_CHUNK_BYTES,NOSTR_RELAYS,readAnswer,requestEvent
 import type {CarrierPool} from '../rollup/nostr-carrier.ts';
 
 const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
-// nostr-tools fulfils "connection failure: …" for a relay it never reached, and otherwise with the relay's own OK text, which may be absent. It rejects an OK false with NIP-01's reason; a timeout or a dropped connection rejects though the event may be out, and "duplicate:" means the relay has it.
+// nostr-tools fulfils "connection failure: …" for a relay it never reached, and otherwise with whatever JSON the relay sent as its OK text. It rejects an OK false with NIP-01's reason; a timeout or a dropped connection rejects though the event may be out, and "duplicate:" means the relay has it.
 const REFUSED=/^(pow|blocked|rate-limited|invalid|restricted|mute|error|auth-required):/;
-const accepted=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'?!String(result.value).startsWith('connection failure'):!(result.reason instanceof Error&&REFUSED.test(result.reason.message));
+const accepted=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'?typeof result.value!=='string'||!result.value.startsWith('connection failure'):!(result.reason instanceof Error&&REFUSED.test(result.reason.message));
 
 export class SealedFetchError extends Error {
  constructor(readonly code:'unavailable'|'outcome-unknown'|'too-large',message:string){super(message);}

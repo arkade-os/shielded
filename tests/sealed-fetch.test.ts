@@ -120,10 +120,12 @@ test('a status event cannot hold the client past its attempt deadline',{timeout:
  assert.equal((await pending).status,200);assert.ok(performance.now()-started<2000,'the hour the status asked for was cut to the deadline');
 });
 
-test('a relay\'s OK with no message has taken the event, and nothing throws',async t=>{
- const g=await rig(t),publish=g.bus.pool.publish;
- t.mock.method(g.bus.pool,'publish',(urls:string[],event:Event)=>publish(urls,event).map(sent=>sent.then(()=>undefined as unknown as string)));
- assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo(),[[A,B]],'no second attempt');
+test('a relay\'s OK with no message, or with any JSON for one, has taken the event, and nothing throws',async t=>{
+ for(const value of [undefined,JSON.parse('{"toString":1}'),['connection failure: x']]){
+  const g=await rig(t),publish=g.bus.pool.publish;
+  t.mock.method(g.bus.pool,'publish',(urls:string[],event:Event)=>publish(urls,event).map(sent=>sent.then(()=>value as string)));
+  assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo(),[[A,B]],`${JSON.stringify(value)}: no second attempt`);
+ }
 });
 
 test('a request too large for one event is refused before publishing',async t=>{
