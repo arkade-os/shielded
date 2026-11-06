@@ -6,6 +6,7 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import {base64} from '@scure/base';
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
+import {useWebSocketImplementation} from 'nostr-tools/pool';
 import {finalizeEvent,generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import {NOSTR_REQUEST_KIND,readAnswer} from '../packages/protocol/src/nostr-carrier.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
@@ -28,7 +29,7 @@ function network(){
   hear(frame:unknown){queueMicrotask(()=>this.onmessage?.({data:JSON.stringify(frame)}));}
   hangUp(clean:boolean){this.readyState=3;net.sockets.delete(this);if(clean)this.onclose?.({});else this.onerror?.();}
  }
- return {net,pool:new AbstractSimplePool({verifyEvent,websocketImplementation:Socket as never,maxWaitForConnection:3000})};
+ return {net,Socket,pool:new AbstractSimplePool({verifyEvent,websocketImplementation:Socket as never,maxWaitForConnection:3000})};
 }
 const A='wss://a.example';
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
@@ -76,4 +77,15 @@ for(const clean of [false,true])test(`a connection the relay ${clean?'closes':'d
  t.mock.timers.tick(29_999);await settle();assert.equal(net.reqs.length,1,'not before 30 s');
  t.mock.timers.tick(1);await eventually(()=>net.reqs.length===2);
  net.push(request(gateway));await eventually(()=>opened===1);
+});
+
+test('the default pool verifies each request once, so the carrier finds the verdict cached',async t=>{
+ const {net,Socket}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret),parsed:Event[]=[];let opened=0;
+ const real=globalThis.WebSocket;useWebSocketImplementation(Socket);globalThis.WebSocket=Socket as never;
+ t.after(()=>{useWebSocketImplementation(real);globalThis.WebSocket=real;});
+ const parse=JSON.parse;t.mock.method(JSON,'parse',(text:string)=>{const value=parse(text);if(Array.isArray(value)&&value[0]==='EVENT'&&value.length===3)parsed.push(value[2]);return value;});
+ const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A]});t.after(()=>carrier.close());
+ await eventually(()=>net.reqs.length===1);
+ net.push(request(gateway));await eventually(()=>opened===1);
+ assert.equal(Object.getOwnPropertySymbols(parsed[0]!).length,1,'verifyEvent caches its verdict under a symbol of its own module: two symbols mean two checks');
 });

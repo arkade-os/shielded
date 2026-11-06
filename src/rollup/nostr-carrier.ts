@@ -1,6 +1,7 @@
+import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import type {Filter} from 'nostr-tools/filter';
-import {SimplePool} from 'nostr-tools/pool';
-import {getPublicKey,type Event} from 'nostr-tools/pure';
+import type {SimplePool} from 'nostr-tools/pool';
+import {getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import {answerEvents,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {OhttpOpen} from './ohttp-gateway.ts';
 
@@ -21,7 +22,8 @@ export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
 }
 
 // The pool's own reconnect is left off: it reopens at since=lastEmitted+1, so one future-dated event deafens a relay, and it never retries a connection that failed first.
-export function startNostrCarrier({open,secret,relays,pool=new SimplePool(),now=Date.now,maxAnswer=ANSWER_BYTES}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number}):{close():void} {
+// The pool takes pure's verifyEvent: SimplePool bundles a copy that caches its verdict under another symbol, so readRequest would check every signature again.
+export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),now=Date.now,maxAnswer=ANSWER_BYTES}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number}):{close():void} {
  const gateway=getPublicKey(secret),tally=new Map<string,number>(),handled=new Map<string,Set<string>>(),live=new Map<string,{close():void}>(),waiting=new Map<string,ReturnType<typeof setTimeout>>();
  let since=now(),closed=false;
  const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[nostr] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
