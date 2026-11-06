@@ -15,7 +15,7 @@ export function createNostrBus(){
   for(const [at,link] of [...links])if(url===undefined||at===url){link.alive=false;links.delete(at);}
   for(const sub of [...live])if(url===undefined||sub.url===url){live.delete(sub);sub.onclose(reason);}
  };
- /** A relay taking an event: it throws where the library's publish rejects, a timed-out OK still delivers, and a lying relay delivers what it refuses or calls unreachable. */
+ /** A relay taking an event: it throws where the library's publish rejects, and a timed-out OK still delivers. */
  const take=(url:string,event:Event)=>{
   const {accept,deliver,delayMs,unfiltered,timesOut,refusesButDelivers,claimsUnreachable}=relay(url);
   if(!accept)throw new Error('blocked: this relay takes nothing');
