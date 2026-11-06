@@ -5,9 +5,9 @@ import type {CarrierPool,RelayPool} from '../../src/rollup/nostr-carrier.ts';
 /** An in-memory relay network shaped like nostr-tools' pool: each URL is a channel, and a relay misbehaves as its options say. `unfiltered` makes it deliver everything. */
 export function createNostrBus(){
  type Sub={url:string;filters:Filter[];onevent:(event:Event)=>void;onclose:(reason:string)=>void};
- const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[];
+ const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[];
  const relay=(url:string)=>{
-  if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,unfiltered:false,unreachable:false,timesOut:false});
+  if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,unfiltered:false,unreachable:false,timesOut:false,refusesButDelivers:false,claimsUnreachable:false});
   return relays.get(url)!;
  };
  /** Closes subscriptions and the connection the way a relay does when it restarts or refuses them: the owners hear of it. */
@@ -15,9 +15,9 @@ export function createNostrBus(){
   for(const [at,link] of [...links])if(url===undefined||at===url){link.alive=false;links.delete(at);}
   for(const sub of [...live])if(url===undefined||sub.url===url){live.delete(sub);sub.onclose(reason);}
  };
- /** A relay taking an event: it throws where the library's publish rejects, and a timed-out OK still delivers. */
+ /** A relay taking an event: it throws where the library's publish rejects, a timed-out OK still delivers, and a lying relay delivers what it refuses or calls unreachable. */
  const take=(url:string,event:Event)=>{
-  const {accept,deliver,delayMs,unfiltered,timesOut}=relay(url);
+  const {accept,deliver,delayMs,unfiltered,timesOut,refusesButDelivers,claimsUnreachable}=relay(url);
   if(!accept)throw new Error('blocked: this relay takes nothing');
   if(!verifyEvent(event))throw new Error('invalid: bad signature');
   if(!published.some(sent=>sent.id===event.id))published.push(event);
@@ -26,6 +26,8 @@ export function createNostrBus(){
    setTimeout(()=>{for(const sub of to)if(live.has(sub))sub.onevent(JSON.parse(JSON.stringify(event)));},delayMs);
   }
   if(timesOut)throw new Error('publish timed out');
+  if(refusesButDelivers)throw new Error('blocked: but delivered anyway');
+  return claimsUnreachable?'connection failure: but delivered anyway':'';
  };
  const pool:CarrierPool&RelayPool={
   subscribeMany:(urls,filter,params)=>{
@@ -38,7 +40,7 @@ export function createNostrBus(){
   },
   publish:(urls,event)=>urls.map(async url=>{
    if(relay(url).unreachable)return 'connection failure: connection failed';
-   take(url,event);return '';
+   return take(url,event);
   }),
   ensureRelay:async url=>{
    if(!links.has(url)){if(relay(url).unreachable)throw 'connection failed';links.set(url,{alive:true});}
@@ -50,7 +52,7 @@ export function createNostrBus(){
      const sub:Sub={url,filters,onevent:params.onevent,onclose:params.onclose};live.add(sub);
      return {close:(reason='closed by caller')=>{if(live.delete(sub))sub.onclose(reason);}};
     },
-    publish:async event=>{if(!link.alive)throw stale();take(url,event);return '';},
+    publish:async event=>{if(!link.alive)throw stale();return take(url,event);},
    };
   },
   destroy:()=>drop(undefined,'relay connection closed by us'),

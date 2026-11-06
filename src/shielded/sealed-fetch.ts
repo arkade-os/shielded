@@ -35,9 +35,15 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    }
    return chosen;
   };
-  const attempt=async():Promise<Ending>=>{
+  const seal=async()=>{
    const {init:sealed,context}=await client.encapsulateRequest(new Request(url,{method,headers,body})),bytes=sealed.body as Uint8Array;
    if(bytes.length>NOSTR_CHUNK_BYTES)throw new SealedFetchError('too-large','The sealed request is larger than one Nostr event carries.');
+   return {bytes,context};
+  };
+  let once:ReturnType<typeof seal>|undefined;
+  const attempt=async():Promise<Ending>=>{
+   // Every copy of a POST carries one sealing: the gateway opens an enc at most once and never records a shed one, so the POST runs once whatever the relays claim.
+   const {bytes,context}=await (method==='GET'?seal():(once??=seal()));
    // An answer or an abort can end the fetch while this attempt seals; it must not publish after that.
    if(done)return {kind:'refused'};
    const event=requestEvent(bytes,gateway,Date.now()),to=choose(),events:Event[]=[],deadline=Date.now()+timeoutMs;

@@ -27,7 +27,7 @@ async function rig(t:TestContext,{relays=[A,B],reply=()=>Response.json({ok:true}
  const sends=t.mock.method(bus.pool,'publish'),sealedFetch=createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,relays,pool:bus.pool,random:()=>0,...options});t.after(()=>sealedFetch.close());
  const answers=()=>bus.published.filter(event=>event.kind===NOSTR_ANSWER_KIND&&event.pubkey===key.nostrPublic);
  return {key,calls,bus,fetch:sealedFetch,answers,statuses:()=>answers().filter(event=>event.tags.some(tag=>tag[0]==='status')),
-  requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND),sentTo:()=>sends.mock.calls.map(call=>call.arguments[0])};
+  requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND),sentTo:()=>sends.mock.calls.map(call=>call.arguments[0]),sent:()=>sends.mock.calls.map(call=>call.arguments[1])};
 }
 
 test('a GET goes out sealed and comes back as a Response',async t=>{
@@ -59,17 +59,19 @@ test('a large answer is reassembled, from chunks in any order, past a chunk anot
 test('a status event delays the retry',async t=>{
  let replies=0;const {held,release}=holding(),g=await rig(t,{gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
  const first=g.fetch(ARK);await until(()=>g.calls.length===1);
- const started=performance.now(),second=g.fetch(ARK);
+ const started=performance.now(),second=g.fetch('/api/rollup/spends',SPEND);
  await until(()=>g.statuses().length===1);release();
  assert.deepEqual(g.statuses()[0]!.tags.find(tag=>tag[0]==='status'),['status','503']);
  assert.equal((await second).status,200);assert.ok(performance.now()-started>=1000,'the retry waited the second the status asked for');
- assert.equal((await first).status,200);assert.equal(g.requests().length,3,'the shed request was sealed and sent again');assert.equal(g.calls.length,2);
+ assert.equal((await first).status,200);assert.equal(g.calls.length,2);assert.equal(g.requests().length,3);
+ const [,shed,retry]=g.sent();assert.equal(shed!.content,retry!.content,'the shed POST went out again with the same sealing, which the gateway had never recorded');
 });
 
 test('a GET whose relay never delivers is retried on another relay',async t=>{
  const g=await rig(t,{pick:1,timeoutMs:100});g.bus.relay(A).deliver=false;
  assert.equal((await g.fetch(ARK)).status,200);
  assert.deepEqual(g.sentTo(),[[A],[B]]);assert.equal(g.requests().length,2);
+ assert.notEqual(g.sent()[0]!.content,g.sent()[1]!.content,'each GET attempt is sealed afresh');
 });
 
 test('a late answer to an earlier attempt counts',async t=>{
@@ -94,6 +96,15 @@ test('a POST that no relay accepted is retried',async t=>{
  assert.equal((await g.fetch('/api/rollup/spends',SPEND)).status,200);
  assert.deepEqual(g.sentTo(),[[A,B],[C,D]]);assert.equal(g.requests().length,1,'one accepted request event in total');
  assert.deepEqual(g.calls.map(({url,init})=>[url,new TextDecoder().decode(init.body as ArrayBuffer)]),[[LOOPBACK+'/api/rollup/spends','{"id":"ab"}']]);
+ const [first,second]=g.sent();assert.equal(first!.content,second!.content,'both attempts carry the one sealed request');assert.notEqual(first!.id,second!.id);
+});
+
+test('a POST through a relay that delivers what it says it never took runs once, and its answer comes back',async t=>{
+ for(const mode of ['refusesButDelivers','claimsUnreachable'] as const){
+  const g=await rig(t,{pick:1});g.bus.relay(A)[mode]=true;
+  assert.equal((await g.fetch('/api/rollup/spends',SPEND)).status,200,mode);await sleep(100);
+  assert.deepEqual(g.sentTo(),[[A],[B]],mode);assert.equal(g.calls.length,1,`${mode}: the gateway refused the copy on B`);
+ }
 });
 
 test('attempts run out as unavailable',async t=>{
