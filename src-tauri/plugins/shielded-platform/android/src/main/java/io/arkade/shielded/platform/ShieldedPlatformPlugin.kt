@@ -13,6 +13,8 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
 import org.json.JSONObject
 
 @InvokeArg
@@ -24,8 +26,11 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     private val worker = Executors.newSingleThreadExecutor()
     private val vault = AndroidSeedVault(activity)
     private var webview: WebView? = null
+    @Volatile private var generation = 0L
+    private var destroyed = false
+    private var activeActivity: Activity? = activity
 
-    override fun load(webView: WebView) { webview = webView }
+    override fun load(webView: WebView) { webview = webView; generation++; destroyed = false }
 
     private fun trusted(): Boolean {
         val url = webview?.url?.let { Uri.parse(it) } ?: return false
@@ -36,16 +41,25 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
 
     private fun secret(invoke: Invoke, operation: () -> JSObject?) {
         main.post {
-            if (!trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
-            worker.execute {
-                try {
-                    val result = operation()
-                    main.post {
-                        if (!trusted()) invoke.reject("Secure wallet storage unavailable")
-                        else if (result == null) invoke.resolve() else invoke.resolve(result)
+            if (destroyed || !trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
+            val ticket = generation
+            val source = webview
+            try {
+                worker.execute {
+                    try {
+                        val authorization = FutureTask { generation == ticket && !destroyed && webview === source && trusted() }
+                        check(main.post(authorization) && authorization.get(10, TimeUnit.SECONDS))
+                        check(generation == ticket)
+                        val result = operation()
+                        main.post {
+                            if (generation != ticket || destroyed || webview !== source || !trusted()) invoke.reject("Secure wallet storage unavailable")
+                            else if (result == null) invoke.resolve() else invoke.resolve(result)
+                        }
+                    } catch (_: Exception) {
+                        main.post { invoke.reject("Secure wallet storage unavailable") }
                     }
-                } catch (_: Exception) { invoke.reject("Secure wallet storage unavailable") }
-            }
+                }
+            } catch (_: Exception) { invoke.reject("Secure wallet storage unavailable") }
         }
     }
 
@@ -61,5 +75,16 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         null
     }
 
-    override fun onDestroy(activity: AppCompatActivity) { worker.shutdown() }
+    override fun onResume(activity: AppCompatActivity) {
+        if (activeActivity !== activity) generation++
+        activeActivity = activity
+        destroyed = false
+    }
+
+    override fun onDestroy(activity: AppCompatActivity) {
+        if (activeActivity !== activity) return
+        generation++
+        destroyed = true
+        activeActivity = null
+    }
 }

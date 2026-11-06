@@ -60,6 +60,8 @@ pub struct NativeStreamEvent {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -220,6 +222,18 @@ pub fn native_socket_send(
 ) -> Result<(), String> {
     crate::ensure_local(&window)?;
     state.inner.socket_send(generation, &id, data)
+}
+
+#[tauri::command]
+pub fn native_stream_ack(
+    window: WebviewWindow,
+    state: State<'_, PrivacyTransport>,
+    generation: u64,
+    id: String,
+    sequence: u64,
+) -> Result<(), String> {
+    crate::ensure_local(&window)?;
+    state.inner.stream_ack(generation, &id, sequence)
 }
 
 #[tauri::command]

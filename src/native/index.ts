@@ -46,6 +46,7 @@ export function installNativeTransport():void {
  Object.defineProperty(globalThis,'EventSource',{value:class extends NativeEventSource {constructor(url:string|URL){super(String(url),b);}},writable:false,configurable:false});
  Object.defineProperty(globalThis,'WebSocket',{value:class extends NativeWebSocket {constructor(url:string|URL,protocols?:string|string[]){super(String(url),b,undefined,protocols);}},writable:false,configurable:false});
  Object.defineProperty(globalThis,'XMLHttpRequest',{value:class {constructor(){throw new Error('Native networking does not permit XMLHttpRequest');}},writable:false,configurable:false});
+  for(const name of ['RTCPeerConnection','webkitRTCPeerConnection'])if(name in globalThis)Object.defineProperty(globalThis,name,{value:class {constructor(){throw new Error('Native networking does not permit WebRTC');}},writable:false,configurable:false});
 }
 export function nativeWalletProviders(arkUrl:string,indexerUrl:string){
  const b=connection(),check=b.sessionGuard();b.policy.registerArk(arkUrl,indexerUrl);

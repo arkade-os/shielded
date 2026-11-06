@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {Wallet} from '@arkade-os/sdk';
+import {DefaultVtxo,SingleKey,Wallet} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
@@ -131,6 +131,29 @@ test('a restarted native wallet reserves uncertain deposit outpoints for every s
  journal.observeNativeResponse({url:origin+'/api/rollup/spends/'+id,method:'GET',status:200,body:JSON.stringify({status:'included',txid:'ab'.repeat(32)})});
  assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:true}),[input,other]);
  assert.equal(await wallet.send({recipients:[{address:'unused',amount:330}],selectedVtxos:[input] as never}),'sent');
+});
+
+test('real SDK automatic send and settlement exclude restarted uncertain deposits',async t=>{
+ const rows=new Map<string,string>(),storage={getItem:(key:string)=>rows.get(key)??null,setItem:(key:string,value:string)=>{rows.set(key,value);},removeItem:(key:string)=>{rows.delete(key);}};
+ const origin='https://pool.test',id='a'.repeat(32),identity=SingleKey.fromHex('11'.repeat(32)),server=await SingleKey.fromHex('22'.repeat(32)).xOnlyPublicKey();
+ const tree=new DefaultVtxo.Script({pubKey:await identity.xOnlyPublicKey(),serverPubKey:server,csvTimelock:{type:'seconds',value:1024n}}),address=tree.address('tark',server).encode();
+ const input={txid:'c'.repeat(64),vout:1,value:2000,script:Buffer.from(tree.pkScript).toString('hex'),createdAt:new Date(),status:{confirmed:true}},other={...input,txid:'d'.repeat(64),value:330};
+ makeNativeMutationJournal(storage).beforeNativeMutation({url:origin+'/api/rollup/spends',method:'POST',body:JSON.stringify({id,slot:{nullifiers:['17']},coin:input})});
+ const journal=makeNativeMutationJournal(storage),sent:string[][]=[],settled:string[][]=[],selected=new Error('selection inspected');let available=[input];
+ const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  used:new Set<string>(),usedTxids:new Set<string>(),pendingOutpoints:()=>new Set(journal.pendingPoolOutpoints(origin)),stopped:false,selfSending:false,nativeOperations:0,
+  restoreLightningSpends:async()=>{},identity,network:{hrp:'tark'},dustAmount:330n,_txLock:Promise.resolve(),_offchainTapscript:tree,_boardingTapscript:tree,_arkServerPublicKey:server,_deprecatedSigners:[],
+  getAddress:async()=>address,getSelectableBoardingUtxos:async()=>[],
+  arkProvider:{getInfo:async()=>({vtxoMinAmount:330n,vtxoMaxAmount:-1n,fees:{intentFee:{offchainInput:'0.0',offchainOutput:'0.0',onchainInput:'0.0',onchainOutput:'0.0'}}})},
+  _submitOffchainSpend:async(inputs:typeof available)=>{sent.push(inputs.map(coin=>coin.txid));return 'sent';},
+  makeRegisterIntentSignature:async(inputs:typeof available)=>{settled.push(inputs.map(coin=>coin.txid));throw selected;},makeDeleteIntentSignature:async()=>({}),
+ }) as ShieldedWallet;
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async()=>available as never);
+ await assert.rejects(wallet.send({recipients:[{address,amount:330}]}),/Insufficient funds/);
+ await assert.rejects(wallet.settle(),/No inputs found/);assert.deepEqual(sent,[]);assert.deepEqual(settled,[]);
+ available=[input,other];assert.equal(await wallet.send({recipients:[{address,amount:330}]}),'sent');
+ await assert.rejects(wallet.settle(),error=>error===selected);
+ assert.deepEqual(sent,[[other.txid]]);assert.deepEqual(settled,[[other.txid]]);
 });
 
 test('native Lightning-address resolution uses its explicit fetch capability',async()=>{

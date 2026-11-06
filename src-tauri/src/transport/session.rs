@@ -5,13 +5,13 @@ use super::{
 use arti_client::{BootstrapBehavior, DormantMode, TorClient, config::TorClientConfigBuilder};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, Weak},
     time::Duration,
 };
 use tauri::ipc::Channel;
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 use tor_rtcompat::PreferredRuntime;
 
@@ -41,6 +41,8 @@ pub(super) struct Session {
     pub scopes: HashMap<String, Scope>,
     operations: HashMap<String, Operation>,
     cancelled: HashSet<String>,
+    completed: HashSet<String>,
+    completion_order: VecDeque<String>,
     subscriptions: HashMap<String, String>,
 }
 
@@ -48,6 +50,27 @@ struct Operation {
     scope: String,
     cancel: CancellationToken,
     socket: Option<mpsc::Sender<String>>,
+    delivery: Arc<Delivery>,
+}
+
+#[derive(Default)]
+struct DeliveryState {
+    next: u64,
+    pending: Option<(u64, OwnedSemaphorePermit)>,
+}
+
+struct Delivery {
+    slot: Arc<Semaphore>,
+    state: Mutex<DeliveryState>,
+}
+
+impl Default for Delivery {
+    fn default() -> Self {
+        Self {
+            slot: Arc::new(Semaphore::new(1)),
+            state: Mutex::new(DeliveryState::default()),
+        }
+    }
 }
 
 pub(super) struct Scope {
@@ -70,6 +93,7 @@ pub(super) struct Lease {
     pub generation: u64,
     pub client: Client,
     pub cancel: CancellationToken,
+    delivery: Arc<Delivery>,
 }
 
 impl Inner {
@@ -97,6 +121,8 @@ impl Inner {
                 scopes: HashMap::new(),
                 operations: HashMap::new(),
                 cancelled: HashSet::new(),
+                completed: HashSet::new(),
+                completion_order: VecDeque::new(),
                 subscriptions: HashMap::new(),
             }),
         }
@@ -253,8 +279,12 @@ impl Inner {
         }
         let mut session = self.lock()?;
         session.check(request.generation)?;
-        if session.cancelled.contains(&request.request_id) {
+        if session.cancelled.remove(&request.request_id) {
+            session.complete(&request.request_id);
             return Err("private request cancelled".into());
+        }
+        if session.completed.contains(&request.request_id) {
+            return Err("private request identifier already completed".into());
         }
         if session.operations.len() >= MAX_OPERATIONS
             || session.operations.contains_key(&request.request_id)
@@ -283,12 +313,14 @@ impl Inner {
         }
         let client = scope.client.clone();
         let cancel = CancellationToken::new();
+        let delivery = Arc::new(Delivery::default());
         session.operations.insert(
             request.request_id.clone(),
             Operation {
                 scope: request.scope.clone(),
                 cancel: cancel.clone(),
                 socket,
+                delivery: delivery.clone(),
             },
         );
         Ok(Lease {
@@ -298,6 +330,7 @@ impl Inner {
             generation: request.generation,
             client,
             cancel,
+            delivery,
         })
     }
 
@@ -309,6 +342,10 @@ impl Inner {
         session.check(generation)?;
         if let Some(operation) = session.operations.get(id) {
             operation.cancel.cancel();
+            return Ok(());
+        }
+        if session.completed.contains(id) {
+            return Ok(());
         }
         if session.cancelled.len() >= MAX_CANCELLED && !session.cancelled.contains(id) {
             session.invalidate()?;
@@ -347,11 +384,27 @@ impl Inner {
         let mut session = self.lock()?;
         session.check(request.generation)?;
         if url.path().ends_with("/unsubscribe") {
-            session
+            let bytes = STANDARD
+                .decode(
+                    request
+                        .body_base64
+                        .as_deref()
+                        .ok_or("missing private unsubscribe body")?,
+                )
+                .map_err(|_| "invalid private unsubscribe encoding")?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| "invalid private unsubscribe body")?;
+            let id = value
+                .get("subscriptionId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("missing private subscription identifier")?;
+            let scope = session
                 .scopes
                 .get_mut(&request.scope)
-                .ok_or("private subscription scope closed")?
-                .subscription = None;
+                .ok_or("private subscription scope closed")?;
+            if scope.subscription.as_deref() == Some(id) {
+                scope.subscription = None;
+            }
             return Ok(());
         }
         if response.body_base64.len() > 64 * 1024 {
@@ -416,9 +469,47 @@ impl Inner {
             .try_send(data)
             .map_err(|_| "private socket send queue full or closed".into())
     }
+
+    pub fn stream_ack(&self, generation: u64, id: &str, sequence: u64) -> Result<(), String> {
+        let session = self.lock()?;
+        session.check(generation)?;
+        let Some(operation) = session.operations.get(id) else {
+            return if session.completed.contains(id) {
+                Ok(())
+            } else {
+                Err("private stream closed".into())
+            };
+        };
+        let mut delivery = operation
+            .delivery
+            .state
+            .lock()
+            .map_err(|_| "private delivery unavailable")?;
+        if delivery
+            .pending
+            .as_ref()
+            .is_some_and(|(pending, _)| *pending == sequence)
+        {
+            delivery.pending.take();
+            Ok(())
+        } else {
+            Err("private stream acknowledgement mismatch".into())
+        }
+    }
 }
 
 impl Session {
+    fn complete(&mut self, id: &str) {
+        self.cancelled.remove(id);
+        if self.completed.insert(id.into()) {
+            self.completion_order.push_back(id.into());
+        }
+        while self.completion_order.len() > MAX_CANCELLED {
+            if let Some(id) = self.completion_order.pop_front() {
+                self.completed.remove(&id);
+            }
+        }
+    }
     fn status(&self) -> NativeStatus {
         NativeStatus {
             phase: self.phase.into(),
@@ -454,12 +545,44 @@ impl Session {
         }
         self.scopes.clear();
         self.cancelled.clear();
+        self.completed.clear();
+        self.completion_order.clear();
         self.subscriptions.clear();
         Ok(())
     }
 }
 
 impl Lease {
+    pub async fn emit_data(
+        &self,
+        channel: &Channel<NativeStreamEvent>,
+        data: String,
+    ) -> Result<(), String> {
+        if data.len() > super::policy::MAX_CHUNK.div_ceil(3) * 4 {
+            return Err("private delivery chunk too large".into());
+        }
+        let permit = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => return Err("private request cancelled".into()),
+            slot = self.delivery.slot.clone().acquire_owned() => slot.map_err(|_| "private delivery closed")?,
+        };
+        self.check()?;
+        let sequence = {
+            let mut state = self
+                .delivery
+                .state
+                .lock()
+                .map_err(|_| "private delivery unavailable")?;
+            state.next = state
+                .next
+                .checked_add(1)
+                .ok_or("private stream sequence exhausted")?;
+            let sequence = state.next;
+            state.pending = Some((sequence, permit));
+            sequence
+        };
+        self.emit_event(channel, "data", Some(data), None, None, Some(sequence))
+    }
     pub fn check(&self) -> Result<(), String> {
         let inner = self.inner.upgrade().ok_or("private transport closed")?;
         let session = inner.lock()?;
@@ -478,6 +601,18 @@ impl Lease {
         error: Option<String>,
         status: Option<u16>,
     ) -> Result<(), String> {
+        self.emit_event(channel, kind, data, error, status, None)
+    }
+
+    fn emit_event(
+        &self,
+        channel: &Channel<NativeStreamEvent>,
+        kind: &str,
+        data: Option<String>,
+        error: Option<String>,
+        status: Option<u16>,
+        sequence: Option<u64>,
+    ) -> Result<(), String> {
         let inner = self.inner.upgrade().ok_or("private transport closed")?;
         let session = inner.lock()?;
         session.check(self.generation)?;
@@ -492,6 +627,7 @@ impl Lease {
                 data,
                 error,
                 status,
+                sequence,
             })
             .map_err(|_| "private channel closed".into())
     }
@@ -504,6 +640,7 @@ impl Drop for Lease {
             if let Ok(mut session) = inner.session.lock() {
                 if session.generation == self.generation {
                     session.operations.remove(&self.id);
+                    session.complete(&self.id);
                 }
             }
         }
@@ -577,8 +714,10 @@ mod tests {
         let inner = ready();
         let scope = inner.scope(1, "indexer").unwrap();
         inner.cancel(1, "early").unwrap();
-        assert!(register(&inner, &request(1, scope.id, "early")).is_err());
+        assert!(register(&inner, &request(1, scope.id.clone(), "early")).is_err());
         assert!(inner.lock().unwrap().operations.is_empty());
+        assert!(inner.lock().unwrap().cancelled.is_empty());
+        assert!(register(&inner, &request(1, scope.id, "early")).is_err());
     }
 
     #[tokio::test]
@@ -632,6 +771,119 @@ mod tests {
         let session = inner.lock().unwrap();
         assert_eq!(session.phase, "error");
         assert_eq!(session.generation, 2);
+    }
+
+    #[tokio::test]
+    async fn completed_cancellations_retire_without_cancelling_unrelated_work() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let unrelated = register(&inner, &request(1, scope.id.clone(), "still-running")).unwrap();
+        for n in 0..MAX_CANCELLED + 2 {
+            let id = format!("cancel-{n}");
+            let lease = register(&inner, &request(1, scope.id.clone(), &id)).unwrap();
+            inner.cancel(1, &id).unwrap();
+            assert!(lease.check().is_err());
+            drop(lease);
+            inner.cancel(1, &id).unwrap();
+        }
+        unrelated.check().unwrap();
+        let session = inner.lock().unwrap();
+        assert_eq!(session.phase, "ready");
+        assert!(session.cancelled.is_empty());
+        assert_eq!(session.completed.len(), MAX_CANCELLED);
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_completion_preserves_a_newer_subscription() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        inner
+            .lock()
+            .unwrap()
+            .scopes
+            .get_mut(&scope.id)
+            .unwrap()
+            .subscription = Some("newer".into());
+        let mut unsubscribe = request(1, scope.id.clone(), "unsubscribe-old");
+        unsubscribe.method = "POST".into();
+        unsubscribe.url = "https://mutinynet.arkade.sh/v1/indexer/script/unsubscribe".into();
+        unsubscribe.body_base64 = Some(STANDARD.encode(r#"{"subscriptionId":"older"}"#));
+        let response = NativeResponse {
+            generation: 1,
+            status: 200,
+            headers: vec![],
+            body_base64: String::new(),
+        };
+        inner
+            .subscription_response(&unsubscribe, &response)
+            .unwrap();
+        assert_eq!(
+            inner
+                .lock()
+                .unwrap()
+                .scopes
+                .get(&scope.id)
+                .unwrap()
+                .subscription
+                .as_deref(),
+            Some("newer")
+        );
+        unsubscribe.body_base64 = Some(STANDARD.encode(r#"{"subscriptionId":"newer"}"#));
+        inner
+            .subscription_response(&unsubscribe, &response)
+            .unwrap();
+        assert!(
+            inner
+                .lock()
+                .unwrap()
+                .scopes
+                .get(&scope.id)
+                .unwrap()
+                .subscription
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_delivery_waits_for_matching_ack_and_exceeds_old_lifetime_budget() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "stream")).unwrap();
+        let received = Arc::new(AtomicUsize::new(0));
+        let count = received.clone();
+        let channel = Channel::new(move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        let chunk = STANDARD.encode(vec![0; super::super::policy::MAX_CHUNK]);
+        lease.emit_data(&channel, chunk.clone()).await.unwrap();
+        let next = lease.emit_data(&channel, chunk.clone());
+        tokio::pin!(next);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut next)
+                .await
+                .is_err()
+        );
+        assert_eq!(received.load(Ordering::SeqCst), 1);
+        assert!(inner.stream_ack(1, "stream", 2).is_err());
+        inner.stream_ack(1, "stream", 1).unwrap();
+        next.await.unwrap();
+        inner.stream_ack(1, "stream", 2).unwrap();
+        for sequence in 3..=144 {
+            lease.emit_data(&channel, chunk.clone()).await.unwrap();
+            inner.stream_ack(1, "stream", sequence).unwrap();
+        }
+        assert_eq!(received.load(Ordering::SeqCst), 144);
+        lease.emit_data(&channel, chunk.clone()).await.unwrap();
+        let blocked = lease.emit_data(&channel, chunk);
+        inner.pause().unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), blocked)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(inner.stream_ack(1, "stream", 145).is_err());
     }
 
     #[tokio::test]

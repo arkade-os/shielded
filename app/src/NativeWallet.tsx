@@ -4,18 +4,20 @@ import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {installNativeTransport,nativeNetwork} from '../../src/native/index.ts';
 import {createNativeStorage} from './native-storage.ts';
+import {createNativeCleanup} from './native-cleanup.ts';
 
 installNativeTransport();
 const Wallet=lazy(()=>import('./RollupWallet'));
 const getSecret=()=>invoke<string|null>('plugin:shielded-platform|secret_get');
 const putSecret=(value:string)=>invoke<void>('plugin:shielded-platform|secret_set',{value});
+const pauseNetwork=async()=>{await nativeNetwork.pause();};
 type Session={generation:number;cache:ReturnType<typeof createNativeStorage>};
 
 export default function NativeWallet(){
  const [session,setSession]=useState<Session>(),[phase,setPhase]=useState('Opening the native vault'),[error,setError]=useState('');
  const [setup,setSetup]=useState(false),[phrase,setPhrase]=useState(''),[busy,setBusy]=useState(false);
  const [externalLink,setExternalLink]=useState('');
- const active=useRef<Session|undefined>(undefined),attempt=useRef(0),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
+ const active=useRef<Session|undefined>(undefined),attempt=useRef(0),cleanup=useRef(createNativeCleanup()),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
  const opening=useRef<Promise<void>|undefined>(undefined);
  const stop=useRef<(()=>Promise<void>)|undefined>(undefined);
  const onShutdown=useCallback((shutdown:(()=>Promise<void>)|undefined)=>{stop.current=shutdown;},[]);
@@ -24,18 +26,24 @@ export default function NativeWallet(){
   ++attempt.current;
   const previous=active.current;active.current=undefined;
   const shutdown=stop.current;stop.current=undefined;
+  const writing=previous?.cache.flush(),pending=opening.current;
   setSession(undefined);setBusy(false);setPhase('Private connection paused');previous?.cache.clearMemory();
-  closed.current=Promise.all([closed.current,nativeNetwork.pause(),shutdown?.(),opening.current]).then(()=>{});
+  // An ambiguous vault write must settle before a new open reconciles its metadata.
+  const closing=cleanup.current.add(pauseNetwork,...(shutdown?[shutdown]:[]),...(writing?[()=>writing.catch(()=>{})]:[]));
+  closed.current=Promise.all([closed.current.catch(()=>{}),closing,pending]).then(()=>{});
   void closed.current.catch(fail);return closed.current;
  },[]);
  const open=useCallback(()=>{
   if(opening.current)return opening.current;
   if(document.hidden||manualLock.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
+  const previousClose=closed.current;
   const run=(async()=>{
   const mine=++attempt.current;setBusy(true);setError('');
   try{
-   await closed.current;
-   const secret=await getSecret();if(mine!==attempt.current)return;
+   await cleanup.current.drain();
+   await previousClose.catch(()=>{});
+   if(mine!==attempt.current||document.hidden||manualLock.current)return;
+   const secret=await getSecret();if(mine!==attempt.current||document.hidden||manualLock.current)return;
    if(secret===null){
     if(localStorage.getItem('shielded-native-wallet')==='1')throw new Error('The native wallet secret is unavailable. Keep the app data and restore access to its vault.');
     setSetup(true);setPhase('Create or restore your wallet');return;
@@ -63,7 +71,7 @@ export default function NativeWallet(){
   let live=true;void open();
   const visibility=()=>{
    if(document.hidden){if(active.current||opening.current)void pause();}
-   else if(!manualLock.current&&!active.current)void closed.current.then(()=>{if(!manualLock.current&&!document.hidden)void open();}).catch(fail);
+   else if(!manualLock.current&&!active.current)void closed.current.catch(()=>{}).then(()=>{if(!manualLock.current&&!document.hidden)void open();});
   };
   document.addEventListener('visibilitychange',visibility);
   const external=(event:MouseEvent)=>{

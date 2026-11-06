@@ -19,15 +19,16 @@ final class ShieldedPlatformPlugin: Plugin {
 
     private func secret(_ invoke: Invoke, operation: @escaping () throws -> JsonObject?) {
         DispatchQueue.main.async {
-            guard self.trusted() else { invoke.reject("Native access is restricted to the bundled wallet"); return }
+            guard self.trusted(), let identity = self.webview.map(ObjectIdentifier.init) else { invoke.reject("Native access is restricted to the bundled wallet"); return }
             self.worker.async {
                 do {
+                    guard DispatchQueue.main.sync(execute: { self.webview.map(ObjectIdentifier.init) == identity && self.trusted() }) else { throw SeedVaultError.unavailable }
                     let result = try operation()
                     DispatchQueue.main.async {
-                        guard self.trusted() else { invoke.reject("Secure wallet storage unavailable"); return }
+                        guard self.webview.map(ObjectIdentifier.init) == identity, self.trusted() else { invoke.reject("Secure wallet storage unavailable"); return }
                         if let result = result { invoke.resolve(result) } else { invoke.resolve() }
                     }
-                } catch { invoke.reject("Secure wallet storage unavailable") }
+                } catch { DispatchQueue.main.async { invoke.reject("Secure wallet storage unavailable") } }
             }
         }
     }

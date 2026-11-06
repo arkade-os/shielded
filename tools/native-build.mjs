@@ -15,14 +15,14 @@ export function nativeArguments(platform, action, args = [], host = process.plat
 }
 
 export function protectAndroidManifest(source) {
-  const matches = [...source.matchAll(/<application\b[^>]*>/g)];
+  const matches = [...source.matchAll(/<application\b(?:[^"'>]|"[^"]*"|'[^']*')*>/g)];
   if (matches.length !== 1) throw new Error('Expected one generated Android application');
-  let application = matches[0][0];
-  for (const [name, value] of Object.entries({ allowBackup: 'false', fullBackupContent: 'false', dataExtractionRules: '@xml/shielded_data_extraction_rules' })) {
-    const attribute = new RegExp(`\\s+android:${name}\\s*=\\s*("[^"]*"|'[^']*')`, 'g');
-    application = application.replace(attribute, '').replace(/\s*\/?>(?=$)/, end => ` android:${name}="${value}"${end.trimStart()}`);
-  }
-  return source.replace(matches[0][0], application);
+  const protectedAttributes = { 'android:allowBackup': 'false', 'android:fullBackupContent': 'false', 'android:dataExtractionRules': '@xml/shielded_data_extraction_rules' };
+  const attributes = Object.entries(protectedAttributes).map(([name, value]) => `${name}="${value}"`).join(' ');
+  const application = matches[0][0]
+    .replace(/\s+([^\s=/>]+)\s*=\s*("[^"]*"|'[^']*')/g, (attribute, name) => Object.hasOwn(protectedAttributes, name) ? '' : attribute)
+    .replace(/\s*\/?>(?=$)/, end => ` ${attributes}${end.trimStart()}`);
+  return source.replace(matches[0][0], () => application);
 }
 
 function run(args) {
@@ -30,9 +30,17 @@ function run(args) {
   if (result.error || result.status !== 0) throw new Error(`Tauri command failed (exit ${result.status ?? 'unavailable'})`);
 }
 
-function prepareAndroid() {
-  const manifest = resolve(root, 'src-tauri/gen/android/app/src/main/AndroidManifest.xml');
+export function prepareAndroid(projectRoot = root) {
+  const app = resolve(projectRoot, 'src-tauri/gen/android/app');
+  const manifest = resolve(app, 'src/main/AndroidManifest.xml');
   if (!existsSync(manifest) || lstatSync(manifest).isSymbolicLink()) throw new Error('Initialize the local Android project first');
+  const identifier = JSON.parse(readFileSync(resolve(projectRoot, 'src-tauri/tauri.conf.json'), 'utf8')).identifier;
+  const gradle = resolve(app, 'build.gradle.kts');
+  if (!existsSync(gradle) || lstatSync(gradle).isSymbolicLink()) throw new Error('Regenerate the Android project for the configured identifier');
+  const settings = readFileSync(gradle, 'utf8');
+  if (['namespace', 'applicationId'].some(name => settings.match(new RegExp(`^\\s*${name}\\s*=\\s*"([^"]+)"`, 'm'))?.[1] !== identifier)) {
+    throw new Error('Generated Android project has a different identifier; preserve native edits and regenerate src-tauri/gen/android');
+  }
   const source = readFileSync(manifest, 'utf8');
   const prepared = protectAndroidManifest(source);
   if (prepared !== source) writeFileSync(manifest, prepared);

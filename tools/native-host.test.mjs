@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { nativeArguments, protectAndroidManifest } from './native-build.mjs';
+import { nativeArguments, prepareAndroid, protectAndroidManifest } from './native-build.mjs';
 
 const root = new URL('../src-tauri/', import.meta.url);
 const json = name => JSON.parse(readFileSync(new URL(name, root), 'utf8'));
@@ -77,4 +77,33 @@ test('Android preparation disables all generated-app backup paths without losing
   assert.ok(prepared.includes('android:label="Shielded"'));
   assert.equal(protectAndroidManifest(prepared), prepared);
   assert.throws(() => protectAndroidManifest('<manifest/>'), /application/);
+});
+
+test('Android backup protection preserves quoted tag characters and merge markers', () => {
+  const manifest = `<manifest><application android:label="A > B $& android:allowBackup='label'" tools:replace="android:allowBackup" android:allowBackup="true" /></manifest>`;
+  const prepared = protectAndroidManifest(manifest);
+  assert.ok(prepared.includes(`android:label="A > B $& android:allowBackup='label'"`));
+  assert.ok(prepared.includes('tools:replace="android:allowBackup"'));
+  assert.ok(prepared.includes('android:allowBackup="false"'));
+  assert.ok(prepared.includes('android:fullBackupContent="false"'));
+  assert.ok(prepared.includes('android:dataExtractionRules="@xml/shielded_data_extraction_rules"'));
+  assert.equal(protectAndroidManifest(prepared), prepared);
+});
+
+test('Android preparation refuses a stale generated identifier before changing its manifest', t => {
+  const workspace = mkdtempSync(fileURLToPath(new URL('./.native-project-', import.meta.url)));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  const app = resolve(workspace, 'src-tauri/gen/android/app');
+  const manifest = resolve(app, 'src/main/AndroidManifest.xml');
+  mkdirSync(resolve(app, 'src/main'), { recursive: true });
+  writeFileSync(resolve(workspace, 'src-tauri/tauri.conf.json'), JSON.stringify({ identifier: 'io.arkade.shielded' }));
+  writeFileSync(manifest, '<manifest><application android:allowBackup="true" /></manifest>');
+  for (const [namespace, applicationId] of [['io.old.wallet', 'io.arkade.shielded'], ['io.arkade.shielded', 'io.old.wallet']]) {
+    writeFileSync(resolve(app, 'build.gradle.kts'), `android {\n namespace = "${namespace}"\n defaultConfig {\n applicationId = "${applicationId}"\n }\n}`);
+    assert.throws(() => prepareAndroid(workspace), /different identifier/);
+    assert.equal(readFileSync(manifest, 'utf8'), '<manifest><application android:allowBackup="true" /></manifest>');
+  }
+  writeFileSync(resolve(app, 'build.gradle.kts'), 'android {\n namespace = "io.arkade.shielded"\n defaultConfig {\n applicationId = "io.arkade.shielded"\n }\n}');
+  prepareAndroid(workspace);
+  assert.ok(readFileSync(manifest, 'utf8').includes('android:allowBackup="false"'));
 });

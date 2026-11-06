@@ -86,12 +86,17 @@ export function makeNativeMutationJournal(storage:JournalStorage){
   if(remaining.length!==entries.length)save(remaining);
  };
  const reconcileNativeMutations=async(fetcher:typeof fetch,poolOrigin:string)=>{
-  const origin=new URL(poolOrigin).origin,entries=load().filter(row=>row.origin===origin);
-  for(const row of entries){
-   const url=origin+'/api/rollup/spends/'+row.id;
-   let response:Response,body:string;try{response=await fetcher(url,{cache:'no-store',credentials:'omit',redirect:'error'});body=await response.text();}catch{continue;}
-   observeNativeResponse({url,method:'GET',status:response.status,body});
-  }
+  const origin=new URL(poolOrigin).origin,entries=load().filter(row=>row.origin===origin),controller=new AbortController();let next=0;
+  const expired=new Promise<void>(resolve=>{controller.signal.addEventListener('abort',()=>resolve(),{once:true});}),deadline=setTimeout(()=>controller.abort(),10_000);
+  try{await Promise.race([expired,Promise.all(Array.from({length:Math.min(4,entries.length)},async()=>{
+   while(!controller.signal.aborted){
+    const row=entries[next++];if(!row)return;
+    const url=origin+'/api/rollup/spends/'+row.id;
+    let response:Response,body:string;try{response=await fetcher(url,{cache:'no-store',credentials:'omit',redirect:'error',signal:controller.signal});if(controller.signal.aborted)return;body=await response.text();}catch{continue;}
+    if(controller.signal.aborted)return;
+    observeNativeResponse({url,method:'GET',status:response.status,body});
+   }
+  }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
  return {beforeNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations};

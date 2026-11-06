@@ -22,6 +22,25 @@ test('closing before native stream opens cancels the request and fences late del
  b.emit({id:'remote',generation:1,type:'data',data:'late'});
  assert.equal(events.length,0);assert.ok(b.calls.some(c=>c.command==='native_cancel'&&c.args.id===stream.id));assert.ok(b.calls.some(c=>c.command==='native_cancel'&&c.args.id==='remote'));
 });
+
+test('stream data is acknowledged after delivery and retired generations never acknowledge',async()=>{
+ const b=backend(),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ let delivered=false;const original=b.api.invoke;
+ b.api.invoke=async(command,args)=>{if(command==='native_stream_ack')assert.equal(delivered,true);return original(command,args);};
+ const stream=bridge.open('native_stream','https://pool.example/api/rollup/status',()=>{delivered=true;});
+ await new Promise(r=>setTimeout(r,0));b.opened.resolve({id:'remote',generation:1});await stream.ready;
+ b.emit({id:'remote',generation:1,type:'data',data:'eA==',sequence:1});
+ assert.deepEqual(b.calls.filter(call=>call.command==='native_stream_ack').map(call=>call.args),[{generation:1,id:'remote',sequence:1}]);
+ bridge.acceptStatus({phase:'paused',generation:2});
+ b.emit({id:'remote',generation:1,type:'data',data:'eA==',sequence:2});
+ assert.equal(b.calls.filter(call=>call.command==='native_stream_ack').length,1);
+});
+
+test('SSE decoding permits long streams while retaining the per-event bound',()=>{
+ const decoder=new SseDecoder(),bytes=new TextEncoder().encode('data: '+ 'x'.repeat(64*1024)+'\n\n');
+ for(let n=0;n<144;n++){const messages=decoder.push(bytes);assert.equal(messages.length,1);assert.equal(messages[0].data.length,64*1024);}
+ assert.throws(()=>decoder.push(new Uint8Array(4*1024*1024+1).fill(120)),/limit/);
+});
 test('generation changes fence pending HTTP responses',async()=>{
  const answer=deferred<any>(),b=backend(),original=b.api.invoke;
  b.api.invoke=async(command,args)=>command==='native_http'?answer.promise:original(command,args);
@@ -61,6 +80,41 @@ test('HTTP abort rejects promptly even if the native reply is delayed',async()=>
  const b=backend(),original=b.api.invoke;b.api.invoke=(command,args)=>command==='native_http'?new Promise(()=>{}):original(command,args);
  const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();const abort=new AbortController(),request=bridge.fetch('https://pool.example/api/rollup/status',{signal:abort.signal});
  await new Promise(r=>setTimeout(r,0));abort.abort();await assert.rejects(request,/abort/i);assert.ok(b.calls.some(c=>c.command==='native_cancel'));
+});
+
+test('HTTP abort rejects during scope acquisition and closes the late unused lease',async()=>{
+ const pending=deferred<{id:string;generation:number}>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_scope'?(b.calls.push({command,args}),pending.promise):original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();let journaled=0;
+ bridge.beforeMutation=()=>{journaled++;};
+ const controller=new AbortController(),reason=new Error('cancelled before scope'),request=bridge.fetch('https://pool.example/api/rollup/spends',{method:'POST',body:JSON.stringify({id:'b'.repeat(32)}),signal:controller.signal});
+ let outcome:unknown='pending';void request.then(()=>{outcome='resolved';},error=>{outcome=error;});
+ await new Promise(r=>setTimeout(r,0));assert.equal(b.calls.filter(c=>c.command==='native_scope').length,1);
+ controller.abort(reason);await new Promise(r=>setTimeout(r,0));assert.equal(outcome,reason);
+ pending.resolve({id:'late-unused-scope',generation:1});await new Promise(r=>setTimeout(r,0));
+ assert.equal(journaled,0);assert.equal(b.calls.filter(c=>c.command==='native_http').length,0);
+ assert.equal(b.calls.filter(c=>c.command==='native_cancel').length,0);
+ assert.ok(b.calls.some(c=>c.command==='native_scope_close'&&c.args.id==='late-unused-scope'));
+});
+
+test('closing before scope acquisition does not create an unmatched native cancellation',async()=>{
+ const pending=deferred<{id:string;generation:number}>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_scope'?pending.promise:original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ const stream=bridge.open('native_stream','https://pool.example/api/rollup/status',()=>{});stream.close();
+ pending.resolve({id:'late-scope',generation:1});await stream.ready;
+ assert.equal(b.calls.filter(c=>c.command==='native_cancel'||c.command==='native_stream').length,0);
+});
+
+test('aborting one scope waiter preserves another request using the same item',async()=>{
+ const pending=deferred<{id:string;generation:number}>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_scope'?(b.calls.push({command,args}),pending.promise):command==='native_http'?(b.calls.push({command,args}),Promise.resolve({generation:1,status:200,headers:[],bodyBase64:'e30='})):original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ const controller=new AbortController(),aborted=bridge.fetch('https://pool.example/api/rollup/status',{signal:controller.signal}),survivor=bridge.fetch('https://pool.example/api/rollup/status');
+ const stopped=assert.rejects(aborted,/abort/i);await new Promise(r=>setTimeout(r,0));controller.abort();
+ pending.resolve({id:'shared-scope',generation:1});await stopped;assert.equal((await survivor).status,200);
+ assert.equal(b.calls.filter(c=>c.command==='native_scope').length,1);assert.equal(b.calls.filter(c=>c.command==='native_http').length,1);
+ assert.ok(!b.calls.some(c=>c.command==='native_scope_close'&&c.args.id==='shared-scope'));
 });
 test('a failed durable mutation guard prevents native dispatch',async()=>{
  const b=backend(),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();bridge.beforeMutation=()=>{throw new Error('journal unavailable');};

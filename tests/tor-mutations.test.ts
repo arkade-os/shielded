@@ -84,6 +84,29 @@ test('only a matching definitive status response retires a reservation durably',
  }
 });
 
+test('journal reconciliation caps concurrent reads and preserves failed outcomes',async()=>{
+ const journal=makeNativeMutationJournal(storage());let active=0,maximum=0;
+ for(let n=1;n<=9;n++)journal.beforeNativeMutation(mutation(n.toString(16).padStart(32,'0'),[String(n)]));
+ const result=await journal.reconcileNativeMutations((async input=>{
+  active++;maximum=Math.max(maximum,active);await new Promise(resolve=>setTimeout(resolve,1));active--;
+  if(String(input).endsWith('9'))throw new Error('unknown');
+  return Response.json({status:'included',txid:'d'.repeat(64)});
+ }) as typeof fetch,origin);
+ assert.equal(maximum,4);assert.deepEqual(result,{pending:1});assert.deepEqual(journal.pendingPoolNullifiers(origin),[9n]);
+});
+
+test('startup reconciliation expires hung reads and leaves every unresolved input reserved',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const journal=makeNativeMutationJournal(storage()),signals:AbortSignal[]=[],releases:((response:Response)=>void)[]=[];
+ for(let n=1;n<=9;n++)journal.beforeNativeMutation(mutation(n.toString(16).padStart(32,'0'),[String(n)]));
+ const pending=journal.reconcileNativeMutations((async(_input,init)=>{signals.push(init!.signal!);return new Promise<Response>(resolve=>{releases.push(resolve);});}) as typeof fetch,origin);
+ try{assert.equal(signals.length,4);}finally{t.mock.timers.tick(10_000);}
+ assert.deepEqual(await pending,{pending:9});assert.ok(signals.every(signal=>signal.aborted));
+ for(const release of releases)release(Response.json({status:'included',txid:'d'.repeat(64)}));await Promise.resolve();await Promise.resolve();
+ assert.equal(signals.length,4);
+ assert.deepEqual(journal.pendingPoolNullifiers(origin),[1n,2n,3n,4n,5n,6n,7n,8n,9n]);
+});
+
 test('a dropped deposit remains reserved across restart until its abandoned batch is included',async()=>{
  const persisted=storage(),coin={txid:'c'.repeat(64),vout:1},request={...mutation(),body:body(id,['17'],coin)};
  const journal=makeNativeMutationJournal(persisted);journal.beforeNativeMutation(request);

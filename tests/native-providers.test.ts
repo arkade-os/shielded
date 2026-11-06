@@ -39,7 +39,25 @@ test('isolated indexer drains each item and paginates the merged unique result',
  base.getVtxos=async opts=>{calls.push(opts);return {vtxos:opts?.scripts?.[0]==='a'?[coin('a'),coin('b')]:[coin('b'),coin('c')]};};
  const p=new IsolatedIndexerProvider('https://ark.example',undefined,base);
  assert.deepEqual((await p.getVtxos({scripts:['a','b'],pageIndex:1,pageSize:2})).vtxos.map(c=>c.txid),['c']);
- assert.equal(calls.length,2);assert.ok(calls.every(c=>c.scripts.length===1&&c.pageIndex===undefined&&c.pageSize===undefined));
+ assert.equal(calls.length,2);assert.ok(calls.every(c=>c.scripts.length===1&&c.pageIndex===0&&c.pageSize===100));
+});
+
+test('isolated reads follow short server pages for single and multiple selectors',async()=>{
+ for(const scripts of [['a'],['a','b']]){
+  const calls:any[]=[],base=new RestIndexerProvider('https://ark.example'),all=Array.from({length:106},(_,n)=>coin('a'+String(n).padStart(3,'0')));
+  base.getVtxos=async opts=>{calls.push(opts);const index=opts?.pageIndex??0;return opts?.scripts?.[0]==='a'?{vtxos:all.slice(index*100,(index+1)*100),page:{current:index,next:1,total:1}}:{vtxos:[coin('b')]};};
+  const p=new IsolatedIndexerProvider('https://ark.example',undefined,base),result=await p.getVtxos({scripts});
+  assert.deepEqual(result.vtxos.map(v=>v.txid),[...all.map(v=>v.txid),...(scripts.length===2?['b']:[])]);
+  assert.ok(calls.every(call=>call.scripts.length===1&&call.pageSize===100));
+  assert.deepEqual(calls.filter(call=>call.scripts[0]==='a').map(call=>call.pageIndex),[0,1]);
+ }
+});
+
+test('isolated reads reject pagination that cannot advance without repeating a request',async()=>{
+ for(const page of [{current:1,next:2,total:2},{current:0,next:0,total:1},{current:0,next:3,total:1},{current:0,next:1,total:-1}]){
+  let calls=0;const base=new RestIndexerProvider('https://ark.example');base.getVtxos=async()=>{calls++;return {vtxos:[coin('a')],page};};
+  await assert.rejects(new IsolatedIndexerProvider('https://ark.example',undefined,base).getVtxos({scripts:['a']}),/page/i);assert.equal(calls,1);
+ }
 });
 test('a live logical subscription receives scripts added later on separate server ids',async()=>{
  const subscribed:any[]=[],removed:string[]=[],sources=new Map<string,AsyncQueue<SubscriptionResponse>>(),base=new RestIndexerProvider('https://ark.example');

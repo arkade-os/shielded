@@ -24,7 +24,6 @@ use tokio_tungstenite::{
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 const STREAM_IDLE: Duration = Duration::from_secs(180);
-const STREAM_BUDGET: usize = 8 * 1024 * 1024;
 
 struct ConnectionTask(JoinHandle<()>);
 impl Drop for ConnectionTask {
@@ -164,21 +163,19 @@ async fn stream_inner(
         Some(response.status().as_u16()),
     )?;
     let mut body = response.into_body();
-    let mut received = 0usize;
     while let Some(frame) = tokio::time::timeout(STREAM_IDLE, body.frame())
         .await
         .map_err(|_| "private stream idle timeout")?
     {
         let frame = frame.map_err(|_| "private stream interrupted")?;
         if let Ok(bytes) = frame.into_data() {
-            received = received
-                .checked_add(bytes.len())
-                .ok_or("private stream size overflow")?;
-            if received > STREAM_BUDGET {
-                return Err("private stream lease exhausted; reconnect required".into());
-            }
             for chunk in bytes.chunks(MAX_CHUNK) {
-                lease.emit(channel, "data", Some(STANDARD.encode(chunk)), None, None)?;
+                tokio::time::timeout(
+                    STREAM_IDLE,
+                    lease.emit_data(channel, STANDARD.encode(chunk)),
+                )
+                .await
+                .map_err(|_| "private stream consumer timed out")??;
             }
         }
     }
@@ -248,24 +245,28 @@ async fn socket_inner(
     .await
     .map_err(|_| "private socket connection timed out")??;
     lease.emit(channel, "open", None, None, Some(101))?;
-    let mut received = 0usize;
     loop {
         tokio::select! {
             biased;
             _ = lease.cancel.cancelled() => return Ok(()),
-            message = outgoing.recv() => {
+            event = async {
+                tokio::select! {
+                    message = outgoing.recv() => SocketEvent::Outgoing(message),
+                    message = tokio::time::timeout(STREAM_IDLE, socket.next()) => SocketEvent::Incoming(message),
+                }
+            } => match event {
+            SocketEvent::Outgoing(message) => {
                 let Some(message) = message else { return Ok(()); };
                 lease.check()?;
                 tokio::time::timeout(CONNECT_TIMEOUT, socket.send(Message::Text(message.into())))
                     .await.map_err(|_| "private socket send timed out")?.map_err(|_| "private socket send failed; outcome may be unknown")?;
             }
-            message = tokio::time::timeout(STREAM_IDLE, socket.next()) => {
+            SocketEvent::Incoming(message) => {
                 match message.map_err(|_| "private socket idle timeout")? {
                     None | Some(Ok(Message::Close(_))) => return Ok(()),
                     Some(Ok(Message::Text(message))) => {
-                        received = received.checked_add(message.len()).ok_or("private socket size overflow")?;
-                        if received > STREAM_BUDGET { return Err("private socket lease exhausted; reconnect required".into()); }
-                        lease.emit(channel, "data", Some(message.to_string()), None, None)?;
+                        tokio::time::timeout(STREAM_IDLE, lease.emit_data(channel, message.to_string()))
+                            .await.map_err(|_| "private socket consumer timed out")??;
                     }
                     Some(Ok(Message::Binary(_))) => return Err("private socket binary messages are unsupported".into()),
                     Some(Ok(Message::Ping(_))) => {
@@ -275,8 +276,19 @@ async fn socket_inner(
                     Some(Err(_)) => return Err("private socket interrupted".into()),
                 }
             }
+            }
         }
     }
+}
+
+enum SocketEvent {
+    Outgoing(Option<String>),
+    Incoming(
+        Result<
+            Option<Result<Message, tokio_tungstenite::tungstenite::Error>>,
+            tokio::time::error::Elapsed,
+        >,
+    ),
 }
 
 #[cfg(test)]

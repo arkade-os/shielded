@@ -7,6 +7,7 @@ import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
 import {pausedErrorText} from './rollup-client.ts';
+import {restoreNativeStorage} from './native-storage.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
@@ -135,7 +136,10 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
 
 export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number}}){
  const parsed=bytesToHex(parseMasterSecret(phrase));
- o.cache.close();await o.stop();await o.cache.drain();await o.cache.repository.clear();
+ o.cache.close();await o.stop();await o.cache.drain();
+ const nativeRestore=restoreNativeStorage(o.storage,parsed,o.born);
+ if(nativeRestore){await nativeRestore;await o.cache.repository.clear();o.reload();return;}
+ await o.cache.repository.clear();
  o.storage.setItem(SECRET,parsed);
  for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
  if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);

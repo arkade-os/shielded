@@ -1,7 +1,7 @@
 import {nativeUrl,NativePolicy,type NativeRoute} from './policy.ts';
 
 export interface NativeStatus {phase:string;generation:number;progress?:number;error?:string}
-export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number}
+export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number;sequence?:number}
 export interface NativeBackend {invoke:(command:string,args?:Record<string,unknown>)=>Promise<any>;channel:(receive:(event:NativeEvent)=>void)=>unknown}
 interface NativeRequest {generation:number;requestId:string;scope:string;url:string;method:string;headers:[string,string][];bodyBase64?:string}
 interface ScopeEntry {generation:number;users:number;pending:Promise<{id:string;generation:number}>;dispose?:boolean}
@@ -11,6 +11,15 @@ export const encode64=(bytes:Uint8Array)=>{let result='';for(let i=0;i<bytes.len
 export const decode64=(value:string)=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
 const cancelled=()=>new DOMException('Native request was cancelled','AbortError');
 const SESSION_PATH='/.shielded-native-session/';
+
+function abortable<T>(pending:Promise<T>,signal:AbortSignal):Promise<T>{
+ return new Promise((resolve,reject)=>{
+  const cleanup=()=>signal.removeEventListener('abort',abort),abort=()=>{cleanup();reject(signal.reason??cancelled());};
+  signal.addEventListener('abort',abort,{once:true});
+  void pending.then(value=>{cleanup();resolve(value);},error=>{cleanup();reject(error);});
+  if(signal.aborted)abort();
+ });
+}
 
 export function bindNativeProvider<T extends object>(provider:T,check:()=>void):T {
  const cleanup=(value:any)=>{try{void Promise.resolve(typeof value==='function'?value():value?.return?.()).catch(()=>{});}catch{}};
@@ -68,7 +77,8 @@ export class NativeBridge {
   }
   return url.href;
  }
- private async scope(route:NativeRoute,generation:number){
+ private async scope(route:NativeRoute,generation:number,signal?:AbortSignal){
+  if(signal?.aborted)throw signal.reason??cancelled();
   this.check(generation);let entry=this.scopes.get(route.key);
   if(!entry){
    const pending=this.backend.invoke('native_scope',{generation,purpose:route.purpose}).then(scope=>{
@@ -80,13 +90,14 @@ export class NativeBridge {
   this.scopes.delete(route.key);this.scopes.set(route.key,entry);entry.users++;
   const owned=entry;let released=false;
   const release=()=>{if(released)return;released=true;owned.users--;if(owned.dispose&&!owned.users)this.closeScope(route.key,owned);this.trimScopes();};
-  try{return {scope:await entry.pending,release};}catch(error){release();throw error;}
+  try{return {scope:await (signal?abortable(entry.pending,signal):entry.pending),release};}
+  catch(error){release();if(signal?.aborted&&!owned.users)this.closeScope(route.key,owned);throw error;}
  }
  private closeScope(key:string,entry:ScopeEntry){if(this.scopes.get(key)===entry)this.scopes.delete(key);void entry.pending.then(scope=>this.backend.invoke('native_scope_close',{generation:scope.generation,id:scope.id})).catch(()=>{});}
  private trimScopes(){for(const [key,entry] of this.scopes){if(this.scopes.size<=512)break;if(!entry.users)this.closeScope(key,entry);}}
- private async request(url:string,method:string,headers:[string,string][],body:Uint8Array|undefined,requestId:string,explicit?:NativeRoute):Promise<{request:NativeRequest;release:()=>void}>{
+ private async request(url:string,method:string,headers:[string,string][],body:Uint8Array|undefined,requestId:string,explicit?:NativeRoute,signal?:AbortSignal):Promise<{request:NativeRequest;release:()=>void}>{
   const generation=this.current.generation,bodyText=body&&new TextDecoder('utf-8',{fatal:true}).decode(body);
-  const route=explicit??this.policy.classify(url,method,bodyText),lease=await this.scope(route,generation);
+  const route=explicit??this.policy.classify(url,method,bodyText),lease=await this.scope(route,generation,signal);
   try{this.check(generation);return {request:{generation,requestId,scope:lease.scope.id,url,method,headers,...(body?.length?{bodyBase64:encode64(body)}:{})},release:lease.release};}catch(error){lease.release();throw error;}
  }
  private cancel(generation:number,id:string){void this.backend.invoke('native_cancel',{generation,id}).catch(()=>{});}
@@ -95,17 +106,17 @@ export class NativeBridge {
   const url=this.target(input instanceof Request?input.url:String(input));
   const request=new Request(url,input instanceof Request?new Request(input,init):init),id=crypto.randomUUID(),generation=this.current.generation;
   if(request.signal.aborted)throw request.signal.reason??cancelled();
-  const abort=()=>this.cancel(generation,id);request.signal.addEventListener('abort',abort,{once:true});let release:(()=>void)|undefined;
+  let dispatched=false;const abort=()=>{if(dispatched)this.cancel(generation,id);};request.signal.addEventListener('abort',abort,{once:true});let release:(()=>void)|undefined;
   try{
    const bytes=request.body?new Uint8Array(await request.arrayBuffer()):undefined,body=bytes&&new TextDecoder('utf-8',{fatal:true}).decode(bytes);
-   const prepared=await this.request(url,request.method,[...request.headers],bytes,id,explicit),native=prepared.request;release=prepared.release;
+   const prepared=await this.request(url,request.method,[...request.headers],bytes,id,explicit,request.signal),native=prepared.request;release=prepared.release;
    if(request.signal.aborted)throw request.signal.reason??cancelled();
    if(request.method!=='GET'&&request.method!=='HEAD')await this.beforeMutation?.({url,method:request.method,body});
    this.check(generation);if(request.signal.aborted)throw request.signal.reason??cancelled();
    const response=await new Promise<any>((resolve,reject)=>{
     const stopped=()=>reject(request.signal.reason??cancelled());request.signal.addEventListener('abort',stopped,{once:true});
     if(request.signal.aborted){stopped();return;}
-    void this.backend.invoke('native_http',{request:native}).then(resolve,reject).finally(()=>request.signal.removeEventListener('abort',stopped));
+    dispatched=true;void this.backend.invoke('native_http',{request:native}).then(resolve,reject).finally(()=>request.signal.removeEventListener('abort',stopped));
    });
    this.check(generation);if(response.generation!==generation)throw new Error('Native response generation mismatch');
    if(request.signal.aborted)throw request.signal.reason??cancelled();
@@ -120,11 +131,14 @@ export class NativeBridge {
  }
  open(command:'native_stream'|'native_socket',input:string,receive:(event:NativeEvent)=>void,explicit?:NativeRoute):NativeHandle {
   const url=this.target(input),id=crypto.randomUUID(),generation=this.current.generation;
-  let closed=false,remote:string|undefined,release:(()=>void)|undefined;
-  const finish=()=>{if(closed)return;closed=true;this.handles.delete(handle);this.cancel(generation,id);if(remote&&remote!==id)this.cancel(generation,remote);release?.();};
+  let closed=false,dispatched=false,remote:string|undefined,release:(()=>void)|undefined;
+  const finish=()=>{if(closed)return;closed=true;this.handles.delete(handle);if(dispatched){this.cancel(generation,id);if(remote&&remote!==id)this.cancel(generation,remote);}release?.();};
   const channel=this.backend.channel(event=>{
    if(closed||event.generation!==generation||this.current.phase!=='ready'||this.current.generation!==generation||remote&&event.id!==remote)return;
-   remote??=event.id;try{receive(event);}catch{finish();}finally{if(event.type==='close'||event.type==='error')finish();}
+   remote??=event.id;try{receive(event);}catch{finish();}finally{
+    if(!closed&&event.type==='data'&&Number.isSafeInteger(event.sequence)&&event.sequence!>0)void this.backend.invoke('native_stream_ack',{generation,id:event.id,sequence:event.sequence}).catch(()=>{if(!closed){receive({id:event.id,generation,type:'error',error:'Native stream acknowledgement failed'});finish();}});
+    if(event.type==='close'||event.type==='error')finish();
+   }
   });
   const handle:NativeHandle={id,ready:Promise.resolve(),close:finish,send:data=>{
    this.check(generation);if(closed||!remote)throw new Error('Native socket is not open');
@@ -134,7 +148,7 @@ export class NativeBridge {
   handle.ready=(async()=>{
    try{
     const prepared=await this.request(url,'GET',command==='native_stream'?[['Accept','text/event-stream']]:[],undefined,id,explicit);release=prepared.release;if(closed){release();return;}
-    const opened=await this.backend.invoke(command,{request:prepared.request,channel});
+    dispatched=true;const opened=await this.backend.invoke(command,{request:prepared.request,channel});
     if(closed||this.current.generation!==generation||this.current.phase!=='ready'){this.cancel(generation,opened.id);return;}
     if(opened.generation!==generation||remote&&remote!==opened.id)throw new Error('Native stream generation or identifier mismatch');remote=opened.id;
    }catch(error){if(!closed){receive({id:remote??id,generation,type:'error',error:error instanceof Error?error.message:String(error)});finish();}}

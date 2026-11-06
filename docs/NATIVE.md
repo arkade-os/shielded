@@ -2,6 +2,8 @@
 
 The Tauri application bundles the existing wallet frontend. Rust owns its embedded Arti client, private network requests, streams and sockets. The bundled renderer has no permission to connect to remote hosts directly. Remote navigation and additional windows are denied.
 
+The native renderer also disables WebRTC peer connections, which could otherwise introduce ICE/STUN traffic outside the HTTP and WebSocket transport. Workers and remote assets remain subject to the bundled CSP.
+
 The native build targets Windows, Linux, macOS, Android and iOS. Source support and the CI definitions do not establish that each target has been built or tested on a physical device. Record matching build and runtime evidence before distributing a release.
 
 ## Build
@@ -49,6 +51,8 @@ The vault protects the seed at rest. The frontend still receives it while the wa
 ## Isolation and lifecycle
 
 Tor is required for native wallet networking. Bootstrap failure does not fall back to a direct connection. Privacy scopes bind connection ownership to the wallet operation or watched item; unrelated scopes must not share HTTP pools or private subscriptions. DNS names are resolved through Tor. Renewing a Tor circuit cannot remove identifiers already shared in request content or guarantee different exit addresses.
+
+HTTP responses are bounded to 64 MiB. The pinned [genesis-4 proving keys](https://github.com/arkade-os/shielded/releases/tag/rollup-genesis-4-keys) fit this limit (join: 14,042,110 bytes; spend: 8,225,922 bytes). A future key release above that limit requires a bounded download path and mobile memory validation before adoption; increasing the limit alone would multiply buffering through IPC and the prover.
 
 On Android pause and iOS resignation of active status, Tauri emits a native suspension event. The Rust host immediately pauses the transport, invalidates active scopes and cancels network work without depending on JavaScript running. The renderer must bootstrap and recreate its scopes after resumption. Window destruction also pauses the transport.
 

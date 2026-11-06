@@ -27,8 +27,19 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
  override async getVtxos(opts?:GetVtxosOptions):ReturnType<IndexerProvider['getVtxos']>{
   if(opts?.scripts&&opts?.outpoints)throw new Error('scripts and outpoints are mutually exclusive options');
   const items=opts?.scripts??opts?.outpoints;
-  if(!items||items.length<=1)return this.base.getVtxos(opts);
-  const rows=(await mapItems(items as (string|{txid:string;vout:number})[],item=>this.base.getVtxos({...opts,pageIndex:undefined,pageSize:undefined,...(typeof item==='string'?{scripts:[item]}:{outpoints:[item]})} as GetVtxosOptions))).flatMap(result=>result.vtxos);
+  if(!items?.length)return this.base.getVtxos(opts);
+  const rows=(await mapItems(items as (string|{txid:string;vout:number})[],async item=>{
+   const vtxos:VirtualCoin[]=[];let pageIndex=0;
+   for(;;){
+    const result=await this.base.getVtxos({...opts,pageIndex,pageSize:100,...(typeof item==='string'?{scripts:[item]}:{outpoints:[item]})} as GetVtxosOptions);
+    vtxos.push(...result.vtxos);const page=result.page;
+    if(!page)return vtxos;
+    if(page.current!==pageIndex||!Number.isSafeInteger(page.total)||page.total<pageIndex)throw new Error('Invalid isolated indexer page');
+    if(page.current>=page.total)return vtxos;
+    if(!Number.isSafeInteger(page.next)||page.next<=pageIndex||page.next>page.total)throw new Error('Invalid isolated indexer page');
+    pageIndex=page.next;
+   }
+  })).flat();
   const unique=[...new Map(rows.map(coin=>[coin.txid+':'+coin.vout,coin])).values()].sort((a,b)=>a.txid.localeCompare(b.txid)||a.vout-b.vout),result=pageOf(unique,opts);
   return {vtxos:result.items,...(result.page?{page:result.page}:{})};
  }
@@ -92,7 +103,7 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
  private async* pollScript(script:string,signal:AbortSignal):AsyncIterableIterator<SubscriptionResponse>{
   let previous=new Map<string,VirtualCoin>();
   while(!signal.aborted){
-   const result=await pollRead(signal,()=>this.base.getVtxos({scripts:[script]}));if(signal.aborted||!result)return;
+   const result=await pollRead(signal,()=>this.getVtxos({scripts:[script]}));if(signal.aborted||!result)return;
    const current=new Map(result.vtxos.map(coin=>[coin.txid+':'+coin.vout,coin]));
    if([...previous.keys()].some(key=>!current.has(key)))throw new Error('An isolated polling snapshot lost a coin; catch up before reconnecting');
    const fingerprint=(coin:VirtualCoin)=>JSON.stringify(coin,(_key,value)=>typeof value==='bigint'?String(value):value);

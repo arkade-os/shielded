@@ -8,6 +8,7 @@ fn main() {
             "native_scope_close",
             "native_http",
             "native_stream",
+            "native_stream_ack",
             "native_socket",
             "native_socket_send",
             "native_cancel",

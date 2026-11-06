@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let body = STANDARD.decode(response.body_base64)?;
         let status: serde_json::Value = serde_json::from_slice(&body)?;
         println!(
-            "Isolated pool read {id}: HTTP {}, {} bytes, phase {}",
+            "Pool read on scope {id}: HTTP {}, {} bytes, phase {}",
             response.status,
             body.len(),
             status["phase"].as_str().unwrap_or("unknown")

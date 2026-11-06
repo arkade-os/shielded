@@ -25,6 +25,7 @@ pub fn run() {
             transport::native_scope_close,
             transport::native_http,
             transport::native_stream,
+            transport::native_stream_ack,
             transport::native_socket,
             transport::native_socket_send,
             transport::native_cancel
