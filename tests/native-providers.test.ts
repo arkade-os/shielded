@@ -38,26 +38,58 @@ test('isolated indexer drains each item and paginates the merged unique result',
  const calls:any[]=[],base=new RestIndexerProvider('https://ark.example');
  base.getVtxos=async opts=>{calls.push(opts);return {vtxos:opts?.scripts?.[0]==='a'?[coin('a'),coin('b')]:[coin('b'),coin('c')]};};
  const p=new IsolatedIndexerProvider('https://ark.example',undefined,base);
- assert.deepEqual((await p.getVtxos({scripts:['a','b'],pageIndex:1,pageSize:2})).vtxos.map(c=>c.txid),['c']);
- assert.equal(calls.length,2);assert.ok(calls.every(c=>c.scripts.length===1&&c.pageIndex===0&&c.pageSize===100));
+ assert.deepEqual(await p.getVtxos({scripts:['a','b'],pageIndex:2,pageSize:2}),{vtxos:[coin('c')],page:{current:2,next:2,total:2}});
+ assert.equal(calls.length,2);assert.ok(calls.every(c=>c.scripts.length===1&&c.pageIndex===1&&c.pageSize===100));
+ for(const pageIndex of [0,1])assert.deepEqual(await p.getVtxos({scripts:['a','b'],pageIndex,pageSize:2}),{vtxos:[coin('a'),coin('b')],page:{current:1,next:2,total:2}});
+ assert.deepEqual(await p.getVtxos({scripts:['a','b'],pageIndex:3,pageSize:2}),{vtxos:[],page:{current:3,next:2,total:2}});
+});
+
+test('isolated reads accept Arkd empty pages through the installed SDK',async()=>{
+ const original=globalThis.fetch,calls:URL[]=[],p=new IsolatedIndexerProvider('https://ark.example');
+ globalThis.fetch=async input=>{calls.push(new URL(String(input)));return Response.json({vtxos:[],page:{current:1,next:0,total:0}});};
+ try{
+  for(const selector of [{scripts:['empty']},{outpoints:[{txid:'a'.repeat(64),vout:0}]}]){
+   assert.deepEqual(await p.getVtxos(selector),{vtxos:[]});
+   assert.deepEqual(await p.getVtxos({...selector,pageIndex:0,pageSize:2}),{vtxos:[],page:{current:1,next:0,total:0}});
+  }
+  assert.equal(calls.length,4);assert.ok(calls.every(url=>url.searchParams.get('page.index')==='1'&&url.searchParams.get('page.size')==='100'));
+ }finally{globalThis.fetch=original;}
+});
+
+test('isolated reads drain Arkd page counts through the installed SDK',async()=>{
+ const original=globalThis.fetch,all=Array.from({length:106},(_,n)=>({outpoint:{txid:n.toString(16).padStart(64,'0'),vout:0},createdAt:'1',expiresAt:null,amount:'1',script:'aa',isPreconfirmed:false,isSwept:false,isUnrolled:false,isSpent:false,commitmentTxids:[]}));
+ try{
+  for(const selector of [{scripts:['aa']},{outpoints:[{txid:'a'.repeat(64),vout:0}]}]){
+   const calls:URL[]=[];globalThis.fetch=async input=>{const url=new URL(String(input)),index=Math.max(1,Number(url.searchParams.get('page.index')));calls.push(url);return Response.json({vtxos:all.slice((index-1)*100,index*100),page:{current:index,next:Math.min(index+1,2),total:2}});};
+   const result=await new IsolatedIndexerProvider('https://ark.example').getVtxos({...selector,spendableOnly:true});
+   assert.deepEqual(result.vtxos.map(v=>v.txid),all.map(v=>v.outpoint.txid));
+   assert.deepEqual(calls.map(url=>url.searchParams.get('page.index')),['1','2']);
+   assert.ok(calls.every(url=>url.searchParams.getAll('scripts').length+url.searchParams.getAll('outpoints').length===1&&url.searchParams.get('page.size')==='100'&&url.searchParams.get('spendableOnly')==='true'));
+  }
+ }finally{globalThis.fetch=original;}
 });
 
 test('isolated reads follow short server pages for single and multiple selectors',async()=>{
  for(const scripts of [['a'],['a','b']]){
   const calls:any[]=[],base=new RestIndexerProvider('https://ark.example'),all=Array.from({length:106},(_,n)=>coin('a'+String(n).padStart(3,'0')));
-  base.getVtxos=async opts=>{calls.push(opts);const index=opts?.pageIndex??0;return opts?.scripts?.[0]==='a'?{vtxos:all.slice(index*100,(index+1)*100),page:{current:index,next:1,total:1}}:{vtxos:[coin('b')]};};
+  base.getVtxos=async opts=>{calls.push(opts);const index=opts?.pageIndex??1;return opts?.scripts?.[0]==='a'?{vtxos:all.slice((index-1)*100,index*100),page:{current:index,next:Math.min(index+1,2),total:2}}:{vtxos:[coin('b')]};};
   const p=new IsolatedIndexerProvider('https://ark.example',undefined,base),result=await p.getVtxos({scripts});
   assert.deepEqual(result.vtxos.map(v=>v.txid),[...all.map(v=>v.txid),...(scripts.length===2?['b']:[])]);
   assert.ok(calls.every(call=>call.scripts.length===1&&call.pageSize===100));
-  assert.deepEqual(calls.filter(call=>call.scripts[0]==='a').map(call=>call.pageIndex),[0,1]);
+  assert.deepEqual(calls.filter(call=>call.scripts[0]==='a').map(call=>call.pageIndex),[1,2]);
  }
 });
 
 test('isolated reads reject pagination that cannot advance without repeating a request',async()=>{
- for(const page of [{current:1,next:2,total:2},{current:0,next:0,total:1},{current:0,next:3,total:1},{current:0,next:1,total:-1}]){
+ for(const page of [{current:2,next:3,total:3},{current:1,next:1,total:2},{current:1,next:3,total:2},{current:1,next:3,total:3},{current:1,next:0,total:-1},{current:1,next:0,total:0},{current:1,next:2,total:1},{current:1,next:0.5,total:1},{current:1,next:1,total:1.5}]){
   let calls=0;const base=new RestIndexerProvider('https://ark.example');base.getVtxos=async()=>{calls++;return {vtxos:[coin('a')],page};};
   await assert.rejects(new IsolatedIndexerProvider('https://ark.example',undefined,base).getVtxos({scripts:['a']}),/page/i);assert.equal(calls,1);
  }
+});
+test('isolated reads accept an empty terminal page after the server result shrinks',async()=>{
+ const calls:number[]=[],base=new RestIndexerProvider('https://ark.example');
+ base.getVtxos=async opts=>{calls.push(opts!.pageIndex!);return opts!.pageIndex===1?{vtxos:[coin('a')],page:{current:1,next:2,total:2}}:{vtxos:[],page:{current:2,next:1,total:1}};};
+ assert.deepEqual((await new IsolatedIndexerProvider('https://ark.example',undefined,base).getVtxos({scripts:['a']})).vtxos,[coin('a')]);assert.deepEqual(calls,[1,2]);
 });
 test('a live logical subscription receives scripts added later on separate server ids',async()=>{
  const subscribed:any[]=[],removed:string[]=[],sources=new Map<string,AsyncQueue<SubscriptionResponse>>(),base=new RestIndexerProvider('https://ark.example');

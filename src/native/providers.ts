@@ -12,8 +12,9 @@ export class AsyncQueue<T> implements AsyncIterableIterator<T> {
 }
 const pageOf=<T>(items:T[],opts?:PaginationOptions)=>{
  if(opts?.pageIndex===undefined&&opts?.pageSize===undefined)return {items};
- const index=opts?.pageIndex??0,size=opts?.pageSize??500;if(!Number.isSafeInteger(index)||index<0||!Number.isSafeInteger(size)||size<=0)throw new Error('Invalid native pagination');
- return {items:items.slice(index*size,(index+1)*size),page:{current:index,next:index+1,total:Math.max(0,Math.ceil(items.length/size)-1)}};
+ const requested=opts?.pageIndex??1,size=opts?.pageSize??500;if(!Number.isSafeInteger(requested)||requested<0||!Number.isSafeInteger(size)||size<=0)throw new Error('Invalid native pagination');
+ const index=Math.max(1,requested),total=Math.ceil(items.length/size);
+ return {items:items.slice((index-1)*size,index*size),page:{current:index,next:Math.min(index+1,total),total}};
 };
 const mapItems=async<T,R>(items:T[],read:(item:T)=>Promise<R>)=>{const results:R[]=new Array(items.length);let next=0;await Promise.all(Array.from({length:Math.min(4,items.length)},async()=>{for(;;){const index=next++;if(index>=items.length)return;results[index]=await read(items[index]!);}}));return results;};
 let streamReservations=0,polling=0;const pollWaiters:(()=>void)[]=[];
@@ -29,14 +30,14 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
   const items=opts?.scripts??opts?.outpoints;
   if(!items?.length)return this.base.getVtxos(opts);
   const rows=(await mapItems(items as (string|{txid:string;vout:number})[],async item=>{
-   const vtxos:VirtualCoin[]=[];let pageIndex=0;
+   const vtxos:VirtualCoin[]=[];let pageIndex=1;
    for(;;){
     const result=await this.base.getVtxos({...opts,pageIndex,pageSize:100,...(typeof item==='string'?{scripts:[item]}:{outpoints:[item]})} as GetVtxosOptions);
     vtxos.push(...result.vtxos);const page=result.page;
     if(!page)return vtxos;
-    if(page.current!==pageIndex||!Number.isSafeInteger(page.total)||page.total<pageIndex)throw new Error('Invalid isolated indexer page');
-    if(page.current>=page.total)return vtxos;
-    if(!Number.isSafeInteger(page.next)||page.next<=pageIndex||page.next>page.total)throw new Error('Invalid isolated indexer page');
+    if(page.current!==pageIndex||!Number.isSafeInteger(page.total)||page.total<0||!Number.isSafeInteger(page.next)||page.next<0)throw new Error('Invalid isolated indexer page');
+    if(page.current>=page.total){if(page.next!==page.total||(page.current>page.total&&result.vtxos.length))throw new Error('Invalid isolated indexer page');return vtxos;}
+    if(page.next!==pageIndex+1)throw new Error('Invalid isolated indexer page');
     pageIndex=page.next;
    }
   })).flat();
