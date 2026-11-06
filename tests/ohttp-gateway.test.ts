@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import type {AddressInfo} from 'node:net';
 import {test,type TestContext} from 'node:test';
+import {setTimeout as sleep} from 'node:timers/promises';
 import express from 'express';
 import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA256} from 'hpke';
 import {KeyConfig,OHTTPClient} from 'ohttp-ts';
@@ -12,13 +13,15 @@ const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AE
 const LOOPBACK='http://127.0.0.1:9',TOKEN='per-process-token',ARK='https://ark.example/v1/info';
 const UPSTREAMS=[{origin:'https://ark.example',prefix:'/v1/'},{origin:'https://esplora.example',prefix:'/api/'}];
 const clientOf=(config:Uint8Array)=>new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20});
-type Options=Partial<Parameters<typeof createOhttpGateway>[0]>&{reply?:(init:RequestInit)=>Response|Promise<Response>};
+type Options=Partial<Parameters<typeof createOhttpGateway>[0]>&{reply?:(init:RequestInit,url:string)=>Response|Promise<Response>;before?:express.RequestHandler};
 const optionsOf=(key:OhttpGatewayKey,options:Options={})=>({key,upstreams:UPSTREAMS,poolOrigin:'https://pool.example',poolLoopback:LOOPBACK,gatewayToken:TOKEN,...options});
+const waits=(init:RequestInit)=>new Promise<Response>((_,reject)=>init.signal!.addEventListener('abort',()=>reject(init.signal!.reason)));
+const until=async(ok:()=>boolean)=>{for(let i=0;i<500&&!ok();i++)await sleep(10);assert.ok(ok(),'the condition never held');};
 
-async function gateway(t:TestContext,{reply=()=>Response.json({ok:true}),...options}:Options={}){
+async function gateway(t:TestContext,{reply=()=>Response.json({ok:true}),before,...options}:Options={}){
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:{url:string;init:RequestInit}[]=[];
- const upstream=(async(url:string,init:RequestInit)=>{calls.push({url,init});return reply(init);}) as unknown as typeof fetch;
- const app=express();app.use('/api/rollup',createOhttpGateway(optionsOf(key,{fetch:upstream,...options})));
+ const upstream=(async(url:string,init:RequestInit)=>{calls.push({url,init});return reply(init,url);}) as unknown as typeof fetch;
+ const app=express();if(before)app.use(before);app.use('/api/rollup',createOhttpGateway(optionsOf(key,{fetch:upstream,...options})));
  const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/rollup`,keys=await fetch(base+'/ohttp-keys'),config=new Uint8Array(await keys.arrayBuffer()),client=clientOf(config);
  const post=(body:BodyInit,type='message/ohttp-req')=>fetch(base+'/ohttp',{method:'POST',headers:{'content-type':type},body});
@@ -28,7 +31,7 @@ async function gateway(t:TestContext,{reply=()=>Response.json({ok:true}),...opti
   assert.equal(outer.status,200);assert.equal(outer.headers.get('content-type'),'message/ohttp-res');assert.equal(outer.headers.get('cache-control'),'no-store');
   return context.decapsulateResponse(outer);
  };
- return {key,keys,config,calls,post,seal,exchange,open:async(url:string,init?:RequestInit)=>exchange(await seal(url,init))};
+ return {key,keys,config,calls,base,post,seal,exchange,open:async(url:string,init?:RequestInit)=>exchange(await seal(url,init))};
 }
 
 test('a sealed GET to an allowed upstream comes back sealed with the upstream status and body',async t=>{
@@ -81,7 +84,6 @@ test('limits answer instead of hanging',async t=>{
  let pulled=0,cancelled=false;
  const large=await gateway(t,{reply:()=>new Response(new ReadableStream({pull:c=>{c.enqueue(new Uint8Array(64<<10));if((pulled+=64<<10)>=64<<20)c.close();},cancel:()=>{cancelled=true;}}))});
  assert.equal((await large.open(ARK)).status,502);assert.ok(cancelled&&pulled<5<<20,`the upstream body is abandoned just past 4 MiB, not read whole (${pulled} bytes pulled)`);
- const waits=(init:RequestInit)=>new Promise<Response>((_,reject)=>init.signal!.addEventListener('abort',()=>reject(init.signal!.reason)));
  const stalls=(init:RequestInit)=>new Response(new ReadableStream({start:c=>{c.enqueue(new Uint8Array(1));init.signal!.addEventListener('abort',()=>c.error(init.signal!.reason));}}));
  for(const reply of [waits,stalls])assert.equal((await (await gateway(t,{reply,timeoutMs:50})).open(ARK)).status,504);
  let clock=0;
@@ -91,6 +93,40 @@ test('limits answer instead of hanging',async t=>{
  assert.equal(refused.status,429);assert.equal(refused.headers.get('retry-after'),'1');assert.equal(busy.calls.length,2);
  clock+=1000;assert.equal((await busy.open(ARK)).status,200,'the next second admits again');
  for(const rate of [0,1.5,Number('twenty')])assert.throws(()=>createOhttpGateway(optionsOf(busy.key,{rate})),/rate/,`${rate} is not a whole number of requests per second`);
+});
+
+test('requests beyond the in-flight cap are shed with 503',async t=>{
+ let clock=0,hold=true;const gates:(()=>void)[]=[];
+ const g=await gateway(t,{rate:33,now:()=>clock,reply:()=>hold&&gates.length<32?new Promise<Response>(resolve=>gates.push(()=>resolve(Response.json({ok:true})))):Response.json({ok:true})});
+ const held=Array.from({length:32},()=>g.open(ARK));await until(()=>gates.length===32);
+ const shed=await g.seal(ARK),refused=await g.post(shed.init.body!);
+ assert.equal(refused.status,503);assert.equal(refused.headers.get('retry-after'),'1');assert.equal(g.calls.length,32,'a shed request is never opened');
+ gates.shift()!();assert.equal((await Promise.race(held)).status,200);
+ hold=false;assert.equal((await g.exchange(shed)).status,200,'the same bytes retried are neither a replay nor over the rate');
+ clock+=1000;hold=true;held.push(g.open(ARK));await until(()=>gates.length===32);
+ assert.equal((await g.post((await g.seal(ARK)).init.body!)).status,503,'the count is exact once slots come back');
+ hold=false;for(const open of gates.splice(0))open();
+ for(const response of await Promise.all(held))assert.equal(response.status,200);
+});
+
+test('a failed or timed-out upstream frees its slot',async t=>{
+ const at=(name:string)=>`https://ark.example/v1/${name}`;
+ const g=await gateway(t,{maxInFlight:2,timeoutMs:50,rate:1000,reply:(init,url)=>url===at('slow')?waits(init):url===at('broken')?Promise.reject(new TypeError('fetch failed')):
+  url===at('huge')?new Response(new Uint8Array((4<<20)+1)):url===at('failing')?new Response(null,{status:500}):Response.json({ok:true})});
+ const sealed=await g.seal(ARK);assert.equal((await g.exchange(sealed)).status,200);
+ const exits:[()=>Promise<Response>,number][]=[[()=>g.open(at('slow')),504],[()=>g.open(at('broken')),502],[()=>g.open(at('huge')),502],[()=>g.open(at('failing')),500],[()=>g.open('https://evil.example/'),403],
+  [()=>g.open(at('txs')),400],[()=>g.post(new Uint8Array(64)),400],[()=>g.post(sealed.init.body!),400],[()=>g.post(new Uint8Array((1<<20)+1)),413]];
+ for(const [exit,status] of exits)for(let i=0;i<2;i++)assert.equal((await exit()).status,status);
+ assert.equal((await g.open(ARK)).status,200,'every exit path gave its slot back');
+ const dropped=await gateway(t,{maxInFlight:1,reply:(init,url)=>url===at('slow')?waits(init):Response.json({ok:true})});
+ const client=new AbortController(),pending=fetch(dropped.base+'/ohttp',{...(await dropped.seal(at('slow'))).init,signal:client.signal});
+ await until(()=>dropped.calls.length===1);client.abort();await assert.rejects(pending);
+ await until(()=>dropped.calls[0]!.init.signal!.aborted);
+ assert.equal((await dropped.open(ARK)).status,200,'a dropped client gives its slot back and stops its upstream fetch');
+ const late=await gateway(t,{maxInFlight:1,before:(_req,_res,next)=>void setTimeout(next,100)}),early=new AbortController();
+ const abandoned=fetch(late.base+'/ohttp',{...(await late.seal(ARK)).init,signal:early.signal});
+ await sleep(20);early.abort();await assert.rejects(abandoned);await sleep(150);
+ assert.equal((await late.open(ARK)).status,200,'a request dropped before it reached the gateway takes no slot');
 });
 
 test('a request sealed to another key id is refused 400',async t=>{
