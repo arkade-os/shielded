@@ -22,7 +22,8 @@
     "test:rollup:epoch-prove": "node --max-old-space-size=16384 --import tsx tools/rollup-epoch-prove-smoke.ts",
     "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
     "fallback": "node --max-old-space-size=8192 --experimental-eventsource --import tsx tools/rollup-fallback.ts",
-    "fee:keeper": "node --experimental-eventsource --import tsx tools/shielded-fee-keeper.ts"
+    "fee:keeper": "node --experimental-eventsource --import tsx tools/shielded-fee-keeper.ts",
+    "ohttp:keygen": "node --import tsx tools/ohttp-keygen.ts"
   },
   "dependencies": {
     "@arkade-os/lnurl-client": "0.9.2",
@@ -39,7 +40,9 @@
     "compression": "1.8.2",
     "express": "5.3.0",
     "ffjavascript": "^0.3.1",
+    "hpke": "1.1.8",
     "nostr-tools": "2.24.1",
+    "ohttp-ts": "0.6.2",
     "qr": "0.7.2",
     "react": "19.3.1",
     "react-dom": "19.3.1",

@@ -76,7 +76,7 @@ const bundledKeys=()=>{const dir=keySet('epoch');writeFileSync(join(dir,'spend.z
 async function runServer(){
  const data=scratch('rollup-launch-data-'),unreachable='http://127.0.0.1:1';
  const child=spawn(process.execPath,['--experimental-eventsource','--import','tsx','src/server.ts'],{stdio:['ignore','pipe','pipe'],
-  env:{...process.env,SHIELDED_DATA_DIR:data,SHIELDED_ROLLUP_KEYS:bundledKeys(),SHIELDED_ROLLUP_EPOCH_LEN:undefined,SHIELDED_INDEXER_URL:undefined,SHIELDED_ARK_URL:unreachable,SHIELDED_EMULATOR_URL:unreachable,HOST:'127.0.0.1',PORT:'0'}});
+  env:{...process.env,SHIELDED_DATA_DIR:data,SHIELDED_ROLLUP_KEYS:bundledKeys(),SHIELDED_ROLLUP_EPOCH_LEN:undefined,SHIELDED_INDEXER_URL:undefined,SHIELDED_OHTTP_KEY:undefined,SHIELDED_ARK_URL:unreachable,SHIELDED_EMULATOR_URL:unreachable,HOST:'127.0.0.1',PORT:'0'}});
  let output='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{output+=chunk;});
  const closed=new Promise(resolve=>child.once('close',resolve));
  try{
@@ -103,4 +103,9 @@ test('an unset environment still yields epoch 128, and a set one overrides it',(
  assert.equal(rollupEpochLenOf({epochLen:given('64')}),64);
  assert.deepEqual([given(''),given('x')],['','x']);
  for(const value of ['','x'])assert.throws(()=>rollupEpochLenOf({epochLen:given(value)}),/epoch length/,`'${value}' must fail closed`);
+});
+
+test('server.ts mounts the gateway ahead of the pool router',()=>{
+ const source=readFileSync('src/server.ts','utf8'),gateway=source.indexOf("app.use('/api/rollup',createOhttpGateway("),router=source.indexOf("app.use('/api/rollup',createRollupRouter(");
+ assert.ok(gateway>0&&router>gateway,"the relay's POST /ohttp must never meet the per-address limit, the starting 503 or the cross-origin check");
 });

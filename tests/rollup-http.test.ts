@@ -1,22 +1,31 @@
 import assert from 'node:assert/strict';
+import {once} from 'node:events';
 import {mkdirSync,mkdtempSync,writeFileSync} from 'node:fs';
 import type {AddressInfo} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import express from 'express';
+import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA256} from 'hpke';
+import {KeyConfig,OHTTPClient} from 'ohttp-ts';
 import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import type {RollupEpochSpend} from '../src/rollup/epoch-operator.ts';
 import {createRollupRouter} from '../src/rollup/http.ts';
+import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
+import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import type {RollupService} from '../src/rollup/service.ts';
 
-async function serve(service:Partial<RollupService>|undefined,options?:Parameters<typeof createRollupRouter>[1]){
- const app=express();app.set('env','test');app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined,options));
+/** `remote` replaces the socket address of every request this server sees (the test socket is always loopback); Express logs unhandled errors in any `env` but 'test'. */
+async function serve(service:Partial<RollupService>|undefined,options?:Parameters<typeof createRollupRouter>[1],remote?:string,env='test'){
+ const app=express();app.set('env',env);
+ if(remote)app.use((req,_res,next)=>{Object.defineProperty(req.socket,'remoteAddress',{value:remote,configurable:true});next();});
+ app.use('/api/rollup',createRollupRouter(()=>service as RollupService|undefined,options));
  const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/rollup`;
  return {base,close:()=>new Promise(resolve=>server.close(resolve))};
 }
-const post=(url:string,body:unknown,origin?:string)=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...(origin?{origin}:{})},body:JSON.stringify(body)});
+const post=(url:string,body:unknown,origin?:string,headers?:Record<string,string>)=>fetch(url,{method:'POST',headers:{'content-type':'application/json',...(origin?{origin}:{}),...headers},body:JSON.stringify(body)});
+const settled=()=>new Promise(resolve=>setTimeout(resolve,20));
 const proof={pi_a:['1','2','1'],pi_b:[['1','2'],['3','4'],['1','0']],pi_c:['5','6','1']};
 const spend={id:'ab'.repeat(16),slot:{anchor:'7',rCur:{epoch:0,root:'8'},nullifiers:['11'],commitments:['12','13'],ctDigest:'14',groupId:'0',groupSize:0},publics:['1','2','0','0','0','0','0'],proof,ciphertext:'00'.repeat(ROLLUP_RECORD_BYTES)};
 
@@ -120,6 +129,79 @@ test('each address gets a budget of submissions per minute; reads and deposit si
  assert.equal(boundary.status,429);assert.equal(boundary.headers.get('Retry-After'),'1');
  t.mock.timers.tick(1);
  assert.equal((await post(api.base+'/spends',spend)).status,202);
+});
+
+const TOKEN='per-process-token',claim={'x-shielded-gateway':TOKEN};
+
+test('gateway traffic on loopback skips the per-address POST limit',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:1_000_000});
+ for(const remote of [undefined,'::1','::ffff:127.0.0.1']){
+  let submitted=0;
+  const api=await serve({ready:()=>true,submit:async()=>{submitted++;}},{gatewayToken:TOKEN},remote);t.after(api.close);
+  for(let i=0;i<61;i++)assert.equal((await post(api.base+'/spends',spend,undefined,claim)).status,202,`${remote??'127.0.0.1'} POST ${i+1}`);
+  assert.equal(submitted,61);
+  assert.equal((await post(api.base+'/spends',{...spend,id:'short'},undefined,claim)).status,400,'the route still validates');
+  assert.equal((await post(api.base+'/spends',spend,'https://evil.example',claim)).status,403,'the origin check still applies');
+ }
+ const starting=await serve(undefined,{gatewayToken:TOKEN});t.after(starting.close);
+ assert.equal((await post(starting.base+'/spends',spend,undefined,claim)).status,503,'the starting check still applies');
+});
+
+test('a wrong or forwarded gateway claim is limited like any other address',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:1_000_000});
+ const cases:[string,Record<string,string>,Parameters<typeof createRollupRouter>[1],string?][]=[
+  ['a wrong token of the right length',{'x-shielded-gateway':'x'.repeat(TOKEN.length)},{gatewayToken:TOKEN}],
+  ['a wrong token of another length',{'x-shielded-gateway':'x'},{gatewayToken:TOKEN}],
+  ['no token',{},{gatewayToken:TOKEN}],
+  ['the right token, forwarded',{...claim,'x-forwarded-for':'198.51.100.7'},{gatewayToken:TOKEN}],
+  ['the right token, from a non-loopback address',claim,{gatewayToken:TOKEN},'203.0.113.9'],
+  ['a router with no token set',claim,{}],
+  ['a router with an empty token',{'x-shielded-gateway':''},{gatewayToken:''}],
+ ];
+ for(const [name,headers,options,remote] of cases){
+  const api=await serve({ready:()=>true,submit:async()=>{}},options,remote);t.after(api.close);
+  const codes:number[]=[];for(let i=0;i<61;i++)codes.push((await post(api.base+'/spends',spend,undefined,headers)).status);
+  assert.deepEqual([codes.slice(0,60).every(code=>code===202),codes[60]],[true,429],name);
+ }
+});
+
+test('what the gateway forwards to the pool is admitted past the per-address limit',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:1_000_000});
+ const key=(await loadOhttpKey((await generateOhttpKey()).env))!,app=express(),server=app.listen(0,'127.0.0.1');
+ await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`,suite=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
+ app.use('/api/rollup',createOhttpGateway({key,upstreams:[],poolOrigin:'https://pool.example',poolLoopback:origin,gatewayToken:TOKEN,rate:1000}));
+ app.use('/api/rollup',createRollupRouter(()=>({ready:()=>true,submit:async()=>{}}) as unknown as RollupService,{gatewayToken:TOKEN}));
+ const client=new OHTTPClient(suite,KeyConfig.select(suite,KeyConfig.parseMultiple(key.config)),{maxMessageSize:5<<20});
+ for(let i=0;i<61;i++){
+  const {init,context}=await client.encapsulateRequest(new Request('https://pool.example/api/rollup/spends',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(spend)}));
+  assert.equal((await context.decapsulateResponse(await fetch(origin+'/api/rollup/ohttp',init))).status,202,`sealed POST ${i+1}`);
+ }
+});
+
+test('a malformed JSON body gets a JSON 400, and none of its text is logged',async t=>{
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true},undefined,undefined,'production');t.after(api.close);
+ const answers=[];
+ for(const body of ['"tb1qwatchedaddress"','{bad']){
+  const answer=await fetch(api.base+'/spends',{method:'POST',headers:{'content-type':'application/json'},body});
+  answers.push([answer.status,answer.headers.get('content-type')?.split(';')[0],await answer.text()]);
+ }
+ await settled();
+ assert.deepEqual(log.mock.calls.map(call=>String(call.arguments[0])),[],'nothing of a body is logged');
+ assert.deepEqual(answers,Array(2).fill([400,'application/json','{"error":"The request body is not valid JSON."}']));
+});
+
+test('any other error still reaches Express and is logged',async t=>{
+ const log=t.mock.method(console,'error',()=>{}),api=await serve({ready:()=>true,status:()=>{throw new Error('boom');}},undefined,undefined,'production');t.after(api.close);
+ assert.equal((await fetch(api.base+'/status')).status,500);
+ await settled();
+ assert.deepEqual(log.mock.calls.map(call=>/boom/.test(String(call.arguments[0]))),[true]);
+});
+
+test('without the gateway mounted, its two paths answer 404',async t=>{
+ const api=await serve({ready:()=>true});t.after(api.close);
+ assert.equal((await fetch(api.base+'/ohttp-keys')).status,404);
+ assert.equal((await fetch(api.base+'/ohttp',{method:'POST',headers:{'content-type':'message/ohttp-req'},body:new Uint8Array(8)})).status,404);
 });
 
 test('a one-segment /checkpoints/:blocks answers 404 for every count, and reaches no service method',async(t)=>{
