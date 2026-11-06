@@ -1,9 +1,9 @@
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import type {Filter} from 'nostr-tools/filter';
 import type {SimplePool} from 'nostr-tools/pool';
-import {getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
+import {getPublicKey,type Event} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
-import {answerEvents,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
+import {answerEvents,idMatches,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {OhttpOpen} from './ohttp-gateway.ts';
 
 export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
@@ -23,8 +23,8 @@ export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
 }
 
 // The pool's own reconnect is left off: it reopens at since=lastEmitted+1, so one future-dated event deafens a relay, and it never retries a connection that failed first.
-// The pool takes pure's verifyEvent: SimplePool bundles a copy that caches its verdict under another symbol, so readRequest would check every signature again.
-export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),now=Date.now,maxAnswer=ANSWER_BYTES}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number}):{close():void} {
+// The pool checks a request's id as readRequest does, never its signature: receive() dedupes by id before readRequest runs.
+export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePool({verifyEvent:idMatches,maxWaitForConnection:3000}),now=Date.now,maxAnswer=ANSWER_BYTES}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number}):{close():void} {
  const gateway=getPublicKey(secret),tally=new Map<string,number>(),handled=new Map<string,Set<string>>(),live=new Map<string,{close():void}>(),waiting=new Map<string,ReturnType<typeof setTimeout>>();
  let since=now(),closed=false,statusAt=0,statuses=0;
  // A throw into the library makes it print the event being handled, so neither counting nor a handler may throw.

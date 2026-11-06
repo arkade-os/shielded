@@ -6,7 +6,6 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import {base64} from '@scure/base';
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
-import {useWebSocketImplementation} from 'nostr-tools/pool';
 import {finalizeEvent,generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import {NOSTR_REQUEST_KIND,readAnswer} from '../packages/protocol/src/nostr-carrier.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
@@ -79,15 +78,14 @@ for(const clean of [false,true])test(`a connection the relay ${clean?'closes':'d
  net.push(request(gateway));await eventually(()=>opened===1);
 });
 
-test('the default pool verifies each request once, so the carrier finds the verdict cached',async t=>{
- const {net,Socket}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret),parsed:Event[]=[];let opened=0;
- const real=globalThis.WebSocket;useWebSocketImplementation(Socket);globalThis.WebSocket=Socket as never;
- t.after(()=>{useWebSocketImplementation(real);globalThis.WebSocket=real;});
- const parse=JSON.parse;t.mock.method(JSON,'parse',(text:string)=>{const value=parse(text);if(Array.isArray(value)&&value[0]==='EVENT'&&value.length===3)parsed.push(value[2]);return value;});
- const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A]});t.after(()=>carrier.close());
+test('the default pool checks a request by its id alone, so a bad signature reaches open() and a bad id does not',async t=>{
+ const {net,Socket}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret),opened:Uint8Array[]=[];
+ const real=globalThis.WebSocket;globalThis.WebSocket=Socket as never;t.after(()=>{globalThis.WebSocket=real;});
+ const carrier=startNostrCarrier({open:async sealed=>{opened.push(sealed);return {kind:'refused'};},secret,relays:[A]});t.after(()=>carrier.close());
  await eventually(()=>net.reqs.length===1);
- net.push(request(gateway));await eventually(()=>opened===1);
- assert.equal(Object.getOwnPropertySymbols(parsed[0]!).length,1,'verifyEvent caches its verdict under a symbol of its own module: two symbols mean two checks');
+ const unsigned={...request(gateway),sig:'00'.repeat(64)};
+ net.push({...request(gateway),id:'00'.repeat(32)});net.push(unsigned);await eventually(()=>opened.length===1);await settle();
+ assert.deepEqual(opened,[base64.decode(unsigned.content)]);
 });
 
 test('a relay NOTICE is not printed',async t=>{
