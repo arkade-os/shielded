@@ -31,8 +31,8 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
  const note=(kind:string)=>{try{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[nostr] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();}catch{}};
  const safely=<A extends unknown[]>(fn:(...args:A)=>void)=>(...args:A)=>{try{fn(...args);}catch{note('failed');}};
  const relayOf=async(url:string)=>{const relay=await pool.ensureRelay(url);relay.onnotice=()=>{};return relay;};
- // A flood of shed requests would make the gateway sign and publish a status for each, so they are capped per second (a fixed window, like admit()).
- const statusRoom=()=>{const at=now();if(at-statusAt>=1000){statusAt=at;statuses=0;}return ++statuses<=STATUSES_PER_SECOND;};
+ // A flood of shed requests would make the gateway sign and publish a status for each, so they are capped per second (a fixed window on the monotonic clock, like admit()).
+ const statusRoom=()=>{const at=performance.now();if(at-statusAt>=1000){statusAt=at;statuses=0;}return ++statuses<=STATUSES_PER_SECOND;};
  // A throw can follow the upstream call, so it never becomes a status: a client reads one as "never ran" and may resend a POST.
  const run=async(event:Event,sealed:Uint8Array,targets:Set<string>)=>{
   try{
