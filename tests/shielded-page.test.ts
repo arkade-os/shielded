@@ -4,7 +4,7 @@ import {ActivityRegistry,FetchError,makeHandle,ProviderUnavailableError,TxType,W
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {epochCatchUp,epochIdle} from '../src/shielded/epoch-sync.ts';
-import {BORN,SENT,SECRET,activityReceived,importLegacySent,openPageWallet,pageCache,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,startPageLightning} from '../app/src/shielded-page.ts';
+import {BORN,CREATED,SENT,SECRET,activityReceived,createPageWallet,importLegacySent,openPageWallet,pageCache,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,startPageLightning} from '../app/src/shielded-page.ts';
 import * as page from '../app/src/shielded-page.ts';
 import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
 import {shieldedHandle} from '../src/shielded/handle.ts';
@@ -16,6 +16,21 @@ const storageOf=()=>{
  return {get length(){return rows.size;},key:(i:number)=>[...rows.keys()][i]??null,getItem:(k:string)=>rows.get(k)??null,setItem:(k:string,v:string)=>{rows.set(k,v);},removeItem:(k:string)=>{rows.delete(k);}};
 };
 const snapshot={v:2,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
+
+test('first-run creation persists one wallet only after explicit creation',()=>{
+ const storage=storageOf();assert.equal(storage.length,0);
+ const before=Date.now(),secret=createPageWallet(storage);
+ assert.match(secret,/^[a-f0-9]{64}$/);assert.equal(storage.getItem(SECRET),secret);
+ assert.equal(storage.getItem(BORN),'new');assert.ok(Number(storage.getItem(CREATED))>=before);
+ assert.throws(()=>createPageWallet(storage),/already exists/);assert.equal(storage.getItem(SECRET),secret);
+});
+
+test('creation failure cannot persist a wallet before its birth metadata',()=>{
+ const storage=storageOf();const write=storage.setItem;
+ storage.setItem=(key,value)=>{if(key===CREATED)throw new Error('storage full');write(key,value);};
+ assert.throws(()=>createPageWallet(storage),/storage full/);assert.equal(storage.getItem(SECRET),null);
+ storage.setItem=write;assert.match(createPageWallet(storage),/^[a-f0-9]{64}$/);
+});
 
 test('startup retries transient creation without repeating preparation and closes the one successful wallet',async()=>{
  let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');

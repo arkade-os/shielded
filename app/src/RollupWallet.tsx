@@ -1,7 +1,6 @@
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useRef,useState,type CSSProperties} from 'react';
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
-import {bytesToHex} from '@noble/hashes/utils.js';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
@@ -18,12 +17,15 @@ import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type Rollu
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
 import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
+import WalletOnboarding from './WalletOnboarding.tsx';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
+import {GlassRefraction} from './wallet-glass-surface.tsx';
+import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
 import {isNativeHost,nativeClaimFetch,nativeLnurlFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
 
@@ -81,7 +83,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'home'|'receive'|'send'|'activity'>('home'),[receiveMode,setReceiveMode]=useState<ReceiveMode>('unified'),[requestOpen,setRequestOpen]=useState(false),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
- const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),dragFrom=useRef(Infinity),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
+ const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
+ const panelNode=useRef<HTMLElement>(null),panelGrip=useRef<HTMLDivElement>(null),dockNode=useRef<HTMLElement>(null),mainTabsNode=useRef<HTMLElement>(null),panelTabsNode=useRef<HTMLDivElement>(null);
+ const dockLens=useRef<HTMLSpanElement>(null),mainLens=useRef<HTMLSpanElement>(null),panelLens=useRef<HTMLSpanElement>(null);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<'phrase'|'viewing'|'restore'|null>(null),[restoreDate,setRestoreDate]=useState(''),[restoreStarted,setRestoreStarted]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
@@ -109,7 +113,13 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   return()=>onShutdown?.(undefined);
  },[onShutdown]);
 
- useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));storage.setItem(SECRET,fresh);storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));createdHere.current=true;setSecret(fresh);}},[secret]);
+ const createWallet=()=>{
+  if(busyRef.current||secret)return;
+  busyRef.current=true;setBusy(true);setRestoreError('');
+  try{const fresh=createPageWallet(storage);createdHere.current=true;setSecret(fresh);}
+  catch(error){setRestoreError(errorText(error));}
+  finally{busyRef.current=false;setBusy(false);}
+ };
  // The wallet needs the pool phase, network and token before creation.
  useEffect(()=>{
   const controller=new AbortController();
@@ -406,7 +416,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const feePaused=wallet?.depositFeePaused,payoutFee=fee?` A single payout moves back into the pool without the deposit fee, and two or more together would pay it, so Shield again moves one payout at a time.${feePaused?' Accept the new fee above to move payouts back.':''}`:'';
  const fundingFee=fee?[feeLine,feePaused&&PAUSED_LINE,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' '):'';
  useEffect(()=>{if(feePaused)setFeeConfirmed(false);},[!!feePaused]);
- const ready=pool?.phase==='ready',unit=assetId?'units':'sats',lnOutside=!!lnAmount&&!invoiceInRange(lnBounds,BigInt(lnAmount));
+ const ready=pool?.phase==='ready'&&!!secret,unit=assetId?'units':'sats',lnOutside=!!lnAmount&&!invoiceInRange(lnBounds,BigInt(lnAmount));
  const settled=!!pool||!!startupError||!!poolError;
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
  const needsRecovery=new Set(wallet?.recovering.map(note=>note.nullifier)),recovering=new Set(wallet?.recoveryInFlight.map(note=>note.nullifier));
@@ -438,6 +448,27 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const paste=async()=>{try{fill(await navigator.clipboard.readText());}catch{document.getElementById('stock-to')?.focus();}};
  const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};
+ const navigation=useRef({tab,sheetOpen,selectTab,openPanel});navigation.current={tab,sheetOpen,selectTab,openPanel};
+ const paymentTabs=docked&&(tab==='receive'||tab==='send');
+ useEffect(()=>{
+  if(!ready)return;
+  const node=docked?dockNode.current:mainTabsNode.current;if(!node)return;
+  return bindSwipeGesture(node,direction=>{
+   const view=navigation.current,names=['home','activity','receive','send'] as const,index=names.indexOf(docked&&!view.sheetOpen?'home':view.tab),next=names[index+(direction==='next'?1:-1)];
+   if(!next)return;
+   if(docked){if(next==='home')setSheetOpen(false);else view.openPanel(next);}else view.selectTab(next);
+  },{allowButtons:true});
+ },[ready,docked]);
+ useEffect(()=>{
+  if(!ready||!docked||!sheetOpen||!panelGrip.current||!panelNode.current)return;
+  return bindSheetGesture(panelGrip.current,panelNode.current,()=>setSheetOpen(false));
+ },[ready,docked,sheetOpen]);
+ useEffect(()=>{
+  if(!ready||!paymentTabs||!panelTabsNode.current)return;
+  return bindSwipeGesture(panelTabsNode.current,direction=>{
+   const view=navigation.current;if(direction==='next'&&view.tab==='receive')view.selectTab('send');else if(direction==='previous'&&view.tab==='send')view.selectTab('receive');
+  },{allowButtons:true});
+ },[ready,paymentTabs]);
  const openSecurity=(view:'phrase'|'viewing'|'restore')=>{setReveal(false);setShowView(false);setShowFull(false);setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,recoveryLine:RECOVERY_LINE});
@@ -488,7 +519,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   </section>;
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
-  return <div className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>wallet</span></a><a className="stock-home" href="/">About</a></header>
+  if(!secret)return <WalletOnboarding transport="browser" setup={!restoring.current} busy={busy||restoreStarted} phase={restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload}/>;
+
+  return <div className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>wallet</span></a><a className="stock-home" href="/">About</a></header>
    {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs remain reserved; a dropped status alone does not prove that they cannot be included later.</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
@@ -510,16 +543,16 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
       <p className="stock-muted">{claimView.mine?'You created this link and nobody has claimed it yet. Taking it back returns it to your shielded balance.':'Claiming moves it privately into this wallet. Onlookers see neither the amount nor who claimed it; whoever made the link sees only that it was claimed.'}</p>
       <button className="stock-primary" disabled={busy||restoring.current||!wallet} onClick={()=>void claimNow()}>{claimView.mine?'Take back':'Claim'}</button></>}
     <button className="stock-ghost stock-mini" onClick={leaveClaim}>Dismiss</button></section>}
-    {!docked&&<nav className="stock-tabs stock-main-tabs" role="tablist" aria-label="Wallet sections">{(['home','activity','receive','send'] as const).map(name=><button key={name} type="button" role="tab" aria-selected={tab===name} aria-controls="stock-panel" className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav>}
+    {!docked&&<nav ref={mainTabsNode} className="stock-tabs stock-main-tabs wallet-glass-track" style={{'--glass-index':['home','activity','receive','send'].indexOf(tab),'--glass-count':4} as CSSProperties} role="tablist" aria-label="Wallet sections"><span ref={mainLens} className="wallet-glass-lens" aria-hidden="true"/>{(['home','activity','receive','send'] as const).map(name=><button key={name} type="button" role="tab" aria-selected={tab===name} aria-controls="stock-panel" className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav>}
     <div className="stock-grid"><div className="stock-col">
      {docked&&<>{balanceCard()}{recentPreview}</>}
-    <section id="stock-panel" className={'stock-card stock-panel'+(docked&&sheetOpen?' is-open':'')+(docked&&tab==='activity'?' is-activity':'')} {...(docked?{role:'dialog','aria-modal':sheetOpen&&tab!=='activity','aria-label':tab==='activity'?'Activity':tab==='receive'?'Receive':tab==='send'?'Send':'Home',inert:!sheetOpen}:{})}>
-    {docked&&<div className="stock-panel-head" onTouchStart={e=>{dragFrom.current=e.touches[0]!.clientY;}} onTouchEnd={e=>{if(e.changedTouches[0]!.clientY-dragFrom.current>48)setSheetOpen(false);dragFrom.current=Infinity;}}><span className="stock-grabber" aria-hidden="true"/><button type="button" className="stock-ghost stock-mini" onClick={()=>setSheetOpen(false)}>Close</button></div>}
+    <section ref={panelNode} id="stock-panel" className={'stock-card stock-panel'+(docked&&sheetOpen?' is-open':'')+(docked&&tab==='activity'?' is-activity':'')} {...(docked?{role:'dialog','aria-modal':sheetOpen&&tab!=='activity','aria-label':tab==='activity'?'Activity':tab==='receive'?'Receive':tab==='send'?'Send':'Home',inert:!sheetOpen}:{})}>
+    {docked&&<div ref={panelGrip} className="stock-panel-head"><span className="stock-grabber" aria-hidden="true"/><button type="button" className="stock-ghost stock-mini" onClick={()=>setSheetOpen(false)}>Close</button></div>}
     {docked&&sheetOpen&&activity&&<div className="stock-sheet-status" role="status" aria-live="polite"><span className={'stock-sheet-status-dot is-'+activity.state} aria-hidden="true"/><span><b>{activity.title}</b>{activity.line&&<> · {activity.line}</>}</span>{activity.state!=='active'&&<button type="button" onClick={()=>sheetOwner.clear()} aria-label="Dismiss wallet status">×</button>}</div>}
-     {docked&&(tab==='receive'||tab==='send')&&<div className="stock-tabs" role="tablist">{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>}
+     {paymentTabs&&<div ref={panelTabsNode} className="stock-tabs wallet-glass-track" style={{'--glass-index':tab==='send'?1:0,'--glass-count':2} as CSSProperties} role="tablist" aria-label="Payment direction"><span ref={panelLens} className="wallet-glass-lens" aria-hidden="true"/>{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>}
      {tab==='home'?(!docked?<div className="stock-home-view">{balanceCard()}{recentPreview}</div>:null):tab==='activity'?<section className="stock-card stock-history stock-history-full"><h2>Activity</h2>{historyContent(historyItems)}{synced&&!rows.length&&<button type="button" className="stock-primary" onClick={()=>docked?openPanel('receive'):selectTab('receive')}>Receive your first payment</button>}</section>:<>
      {tab==='receive'?<div className="stock-receive">
-       <ReceivePortal mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receiveValue} loading={receiveLoading} description={receiveDescription} action={!receiveBlocked&&receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
+       <ReceivePortal active={!docked||sheetOpen} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receiveValue} loading={receiveLoading} description={receiveDescription} action={!receiveBlocked&&receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
         {!receiveBlocked&&receiveMode==='unified'&&<>
          {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void retryUnified()}>Retry unified address</button>}
          <details className="stock-more"><summary>Had an address before?</summary><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover it</button></details>
@@ -600,7 +633,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    </details>}
  </main>
  {docked&&<>{sheetOpen&&<div className="stock-backdrop" aria-hidden="true" onClick={()=>setSheetOpen(false)}/>}
-   <nav className="stock-dock" aria-label="Wallet navigation">{(['home','activity','receive','send'] as const).map(name=><button key={name} type="button" aria-current={name==='home'&&!sheetOpen?'page':undefined} aria-controls={name==='home'?undefined:'stock-panel'} aria-expanded={name==='home'?undefined:sheetOpen&&tab===name} className={(sheetOpen?tab===name:name==='home')?'selected':''} onClick={()=>name==='home'?setSheetOpen(false):openPanel(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav></>}
+   <nav ref={dockNode} className="stock-dock wallet-glass-track" style={{'--glass-index':['home','activity','receive','send'].indexOf(sheetOpen?tab:'home'),'--glass-count':4} as CSSProperties} aria-label="Wallet navigation"><span ref={dockLens} className="wallet-glass-lens" aria-hidden="true"/>{(['home','activity','receive','send'] as const).map(name=><button key={name} type="button" aria-current={name==='home'&&!sheetOpen?'page':undefined} aria-controls={name==='home'?undefined:'stock-panel'} aria-expanded={name==='home'?undefined:sheetOpen&&tab===name} className={(sheetOpen?tab===name:name==='home')?'selected':''} onClick={()=>name==='home'?setSheetOpen(false):openPanel(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav></>}
+ {ready&&<><GlassRefraction target={panelNode} active={docked&&sheetOpen} radius={30} bezel={24} strength={36}/><GlassRefraction target={dockLens} active={docked&&(!sheetOpen||tab==='activity')} radius={999} bezel={10} strength={18}/><GlassRefraction target={mainLens} active={!docked} radius={999} bezel={10} strength={18}/><GlassRefraction target={panelLens} active={sheetOpen&&paymentTabs} radius={999} bezel={9} strength={14}/></>}
  {ready&&<Soundbar item={activity} onDismiss={()=>sheetOwner.clear()}/>}
  {scanning&&<Scanner onResult={code=>{setScanning(false);fill(code);}} onClose={()=>setScanning(false)}/>}
  </div>;

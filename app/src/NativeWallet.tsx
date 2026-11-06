@@ -7,7 +7,7 @@ import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
 import {openNativeVault} from './native-open.ts';
 import {createNativeTorMonitor,type NativeTorHealthState} from './native-tor-monitor.ts';
-import NativeOnboarding from './NativeOnboarding.tsx';
+import WalletOnboarding from './WalletOnboarding.tsx';
 import NativeTorHealth from './NativeTorHealth.tsx';
 
 installNativeTransport();
@@ -104,6 +104,6 @@ export default function NativeWallet(){
   {session&&<div className="native-wallet-topbar"><NativeTorHealth health={torHealth}/><button className="native-wallet-lock" type="button" onClick={()=>{manualLock.current=true;void pause();}}>Lock wallet</button></div>}
   {externalLink&&<section className="stock-warning" role="dialog" aria-label="External link"><p>Copy this link to open it outside Shielded. Your browser uses its own network connection.</p><input aria-label="Link to copy" readOnly value={externalLink} onFocus={event=>event.target.select()}/><button type="button" onClick={()=>setExternalLink('')}>Close</button></section>}
   {session?<Suspense fallback={<p role="status">Opening wallet</p>}><Wallet key={session.generation} storage={session.cache.storage} reload={reload} onShutdown={onShutdown}/></Suspense>
-   :<NativeOnboarding setup={setup} busy={busy} phase={phase} error={error} phrase={phrase} torHealth={torHealth} onPhraseChange={setPhrase} onCreate={()=>void create(false)} onRestore={()=>void create(true)} onReconnect={()=>{manualLock.current=false;void open();}}/>}
+   :<WalletOnboarding transport="tor" setup={setup} busy={busy} phase={phase} error={error} phrase={phrase} torHealth={torHealth} onPhraseChange={setPhrase} onCreate={()=>void create(false)} onRestore={()=>void create(true)} onReconnect={()=>{manualLock.current=false;void open();}}/>}
  </>;
 }

@@ -160,6 +160,13 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
  if(!wallet.repositoryError&&current()&&storage.getItem(SENT)===raw)storage.removeItem(SENT);
 }
 
+export function createPageWallet(storage:PageStorage){
+ if(storage.getItem(SECRET))throw new Error('A wallet already exists in this browser. Reload to open it.');
+ const secret=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+ storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));storage.setItem(SECRET,secret);
+ return secret;
+}
+
 export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number}}){
  const parsed=bytesToHex(parseMasterSecret(phrase));
  o.cache.close();await o.stop();await o.cache.drain();
