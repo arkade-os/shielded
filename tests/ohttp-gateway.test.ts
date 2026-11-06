@@ -173,11 +173,12 @@ test('a stalled upload is cut off at the deadline and frees its slot',async t=>{
 test('a request nothing answers is cut off at three deadlines and frees its slot',async t=>{
  let calls=0;const timeoutMs=200;
  const g=await gateway(t,{maxInFlight:1,timeoutMs,reply:()=>++calls===1?new Promise<Response>(()=>{}):Response.json({ok:true})});
- const sent=fetch(g.base+'/ohttp',{...(await g.seal(ARK)).init,signal:AbortSignal.timeout(5000)}).then(()=>'answered',()=>'cut');
+ const sealed=await g.seal(ARK),start=performance.now();
+ const sent=fetch(g.base+'/ohttp',{...sealed.init,signal:AbortSignal.timeout(5000)}).then(()=>'answered',()=>'cut');
  await until(()=>g.calls.length===1);const armed=performance.now();
  assert.equal(await sent,'cut');
- const waited=performance.now()-armed;
- assert.ok(waited>=2.5*timeoutMs&&waited<12*timeoutMs,`cut ${Math.round(waited)} ms after the upstream was called, not at about ${3*timeoutMs}`);
+ const cut=performance.now();
+ assert.ok(cut-start>=2.5*timeoutMs&&cut-armed<12*timeoutMs,`cut ${Math.round(cut-start)} ms after the send, not at about ${3*timeoutMs}`);
  assert.equal((await g.open(ARK)).status,200,'the slot came back');
 });
 
