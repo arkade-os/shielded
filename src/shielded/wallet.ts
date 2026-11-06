@@ -163,6 +163,9 @@ export class ShieldedWallet extends Wallet {
  private unwatch:(()=>void)[]=[];
  private startup=Promise.resolve();
  private timer?:ReturnType<typeof setTimeout>;
+ private statusTimer?:ReturnType<typeof setTimeout>;
+ private statusRead?:Promise<boolean>;
+ private statusRevision=0;
  private retryAt=0;
  private mergeRetryAt=0;
  private renewing=false;
@@ -305,8 +308,10 @@ export class ShieldedWallet extends Wallet {
  async start():Promise<void>{
   // A confirmed account is already at the pool's count; autoShield's sync below runs once the watches are up, so nothing lands unseen.
   if(!epochConfirmed(this.account))await this.sync();
+  if(this.stopped)return;
   // Armed before the watch setup, so the tick runs even when that setup fails or stalls on a POST with no deadline.
   this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
+  this.statusTimer=setTimeout(()=>void this.statusTick(),WATCHDOG_MS);
   this.startup=this.finishStart();
   // A caller that never reads `started` must not turn its rejection into an unhandled one.
   this.startup.catch(()=>{});
@@ -335,13 +340,38 @@ export class ShieldedWallet extends Wallet {
   const {vtxos}=await this.indexerProvider.getVtxos({scripts:[this.poolScript],spendableOnly:true});
   return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
  }
+ private refreshPoolStatus():Promise<boolean>{
+  if(this.stopped)return Promise.resolve(false);
+  if(this.statusRead)return this.statusRead;
+  const run:Promise<boolean>=(async()=>{
+   const status=await this.api<RollupPoolStatus>('/status');
+   if(this.stopped)return false;
+   const recovered=!!this.operatorDown,was=this.depositFeePaused;
+   this.pool={...this.pool,status};this.statusAt=Date.now();this.headExpiry=undefined;this.statusRevision++;
+   const now=this.depositFeePaused;
+   return recovered||was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps;
+  })().finally(()=>{if(this.statusRead===run)this.statusRead=undefined;});
+  this.statusRead=run;
+  return run;
+ }
+ private async statusTick():Promise<void>{
+  if(this.stopped)return;
+  try{await this.refreshPoolStatus();}catch{}
+  if(this.stopped)return;
+  this.changed();
+  if(!this.stopped)this.statusTimer=setTimeout(()=>void this.statusTick(),WATCHDOG_MS);
+ }
  /** The safety net behind the stream: refresh the pool, catch up, then start anything waiting. Never awaits a batch. */
  private async tick():Promise<void>{
   if(this.stopped)return;
   let atHead=false;
-  try{this.pool={...this.pool,status:await this.api('/status')};this.statusAt=Date.now();this.headExpiry=undefined;if(this.offline){await this.load();this.assertOpen();}await this.sync();atHead=!this.offline;}
+  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}await this.sync();if(this.stopped)return;atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
-  catch{if(this.operatorDown&&this.headExpiry===undefined)this.headExpiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;}
+  catch{if(!this.stopped&&this.operatorDown&&this.headExpiry===undefined){
+   const revision=this.statusRevision,expiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;
+   if(!this.stopped&&revision===this.statusRevision)this.headExpiry=expiry;
+  }}
+  if(this.stopped)return;
   void this.autoShield().catch(()=>{});
   void this.merge().catch(()=>{});
   // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
@@ -522,8 +552,13 @@ export class ShieldedWallet extends Wallet {
  }
  /** The page's pause banner reads depositFeePaused, so a refresh that moves it says so now rather than at the next tick. */
  private async refreshStatus(){
-  const status=await this.api<RollupPoolStatus>('/status'),was=this.depositFeePaused;this.pool={...this.pool,status};
-  const now=this.depositFeePaused;if(was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps)this.changed();
+  this.assertOpen();
+  // A read begun before the fee refusal cannot refresh that refusal's fee schedule.
+  await this.statusRead?.catch(()=>{});
+  this.assertOpen();
+  const changed=await this.refreshPoolStatus();
+  this.assertOpen();
+  if(changed)this.changed();
  }
  private async runLightning(record:LightningSpendRecord,identity:Identity,store:LightningSpendStore,step?:(n:number)=>void,signal?:AbortSignal){
   const existing=this.lightningSubmissions.get(record.id);if(existing)return existing;
@@ -825,6 +860,8 @@ export class ShieldedWallet extends Wallet {
   this.stopped=true;
   if(this.timer)clearTimeout(this.timer);
   this.timer=undefined;
+  if(this.statusTimer)clearTimeout(this.statusTimer);
+  this.statusTimer=undefined;
   const swaps=this.swaps;this.swaps=undefined;
   await swaps?.[Symbol.asyncDispose]().catch(()=>{});
   for(const off of this.unwatch)try{off();}catch{/* a torn-down manager is already stopped */}

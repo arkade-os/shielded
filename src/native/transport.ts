@@ -129,10 +129,12 @@ export class NativeBridge {
   const url=this.target(input instanceof Request?input.url:String(input));
   const request=new Request(url,input instanceof Request?new Request(input,init):init),id=crypto.randomUUID(),generation=this.current.generation;
   if(request.signal.aborted)throw request.signal.reason??cancelled();
-  let dispatched=false;const abort=()=>{if(dispatched)this.cancel(generation,id);};request.signal.addEventListener('abort',abort,{once:true});let release:(()=>void)|undefined;
+  let dispatched=false;const abort=()=>{if(dispatched)this.cancel(generation,id);};request.signal.addEventListener('abort',abort,{once:true});let release:(()=>void)|undefined,oneShot:NativeRoute|undefined;
   try{
    const bytes=request.body?new Uint8Array(await request.arrayBuffer()):undefined,body=bytes&&new TextDecoder('utf-8',{fatal:true}).decode(bytes);
-   const prepared=await this.request(url,request.method,[...request.headers],bytes,id,explicit,request.signal),native=prepared.request;release=prepared.release;
+   const target=new URL(url);
+   if(!explicit&&request.method==='GET'&&target.origin===this.policy.poolOrigin&&target.pathname==='/api/rollup/status')oneShot={...this.policy.classify(url,request.method),key:'pool-status:'+id};
+   const prepared=await this.request(url,request.method,[...request.headers],bytes,id,explicit??oneShot,request.signal),native=prepared.request;release=prepared.release;
    if(request.signal.aborted)throw request.signal.reason??cancelled();
    if(request.method!=='GET'&&request.method!=='HEAD')await this.beforeMutation?.({url,method:request.method,body});
    this.check(generation);if(request.signal.aborted)throw request.signal.reason??cancelled();
@@ -150,7 +152,7 @@ export class NativeBridge {
    if(response.status>=200&&response.status<300&&request.method==='POST'&&new URL(url).pathname==='/v1/indexer/script/unsubscribe')this.policy.forgetSubscription(JSON.parse(body!).subscriptionId,new URL(url).origin);
    this.observeResponse?.({url,method:request.method,status:response.status,body:responseBody,requestBody:body});
    return new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,headers:response.headers});
-  }finally{request.signal.removeEventListener('abort',abort);release?.();}
+  }finally{request.signal.removeEventListener('abort',abort);release?.();if(oneShot)await this.release(oneShot);}
  }
  open(command:'native_stream'|'native_socket',input:string,receive:(event:NativeEvent)=>void,explicit?:NativeRoute):NativeHandle {
   const url=this.target(input),id=crypto.randomUUID(),generation=this.current.generation;

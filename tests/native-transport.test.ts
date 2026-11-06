@@ -9,6 +9,15 @@ function backend(){
  const api:NativeBackend={invoke:async(command,args)=>{calls.push({command,args});if(command==='native_status'||command==='native_start')return {phase:'ready',generation:1};if(command==='native_scope')return {id:'scope',generation:1};if(command==='native_stream')return opened.promise;return undefined;},channel:handler=>{receive=handler;return {};}};
  return {api,calls,opened,emit:(event:NativeEvent)=>receive(event)};
 }
+function httpBackend(answer=async(_request:any)=>({generation:1,status:200,headers:[],bodyBase64:'e30='})){
+ const b=backend(),invoke=b.api.invoke;let scopes=0;
+ b.api.invoke=async(command,args)=>{
+  if(command==='native_scope'){b.calls.push({command,args});return {id:'scope-'+(++scopes),generation:1};}
+  if(command==='native_http'){b.calls.push({command,args});return answer(args?.request);}
+  return invoke(command,args);
+ };
+ return b;
+}
 test('SSE decoder retains split UTF8, CRLF framing and multiline data',()=>{
  const decoder=new SseDecoder(),bytes=new TextEncoder().encode('event: payment\r\ndata: café\r\ndata: next\r\n\r\n');
  assert.deepEqual(decoder.push(bytes.subarray(0,24)),[]);
@@ -82,6 +91,65 @@ test('HTTP abort rejects promptly even if the native reply is delayed',async()=>
  await new Promise(r=>setTimeout(r,0));abort.abort();await assert.rejects(request,/abort/i);assert.ok(b.calls.some(c=>c.command==='native_cancel'));
 });
 
+test('successive pool status reads use separate public scopes and close each after its response',async()=>{
+ const b=httpBackend(),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ for(let i=0;i<2;i++)assert.equal((await bridge.fetch('https://pool.example/api/rollup/status')).status,200);
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_scope').map(c=>c.args.purpose),['public','public']);
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_http').map(c=>c.args.request.scope),['scope-1','scope-2']);
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_scope_close').map(c=>c.args.id),['scope-1','scope-2']);
+});
+
+test('a timed out status read releases its scope before retry without waiting for the native reply',async()=>{
+ const delayed=deferred<{generation:number;status:number;headers:never[];bodyBase64:string}>();let requests=0;
+ const b=httpBackend(async()=>++requests===1?delayed.promise:{generation:1,status:200,headers:[],bodyBase64:'e30='}),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ const abort=new AbortController(),first=bridge.fetch('https://pool.example/api/rollup/status',{signal:abort.signal}),stopped=assert.rejects(first,/status timed out/);
+ await new Promise(r=>setTimeout(r,0));abort.abort(new Error('status timed out'));await stopped;
+ assert.ok(b.calls.some(c=>c.command==='native_scope_close'&&c.args.id==='scope-1'));
+ assert.equal((await bridge.fetch('https://pool.example/api/rollup/status')).status,200);
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_http').map(c=>c.args.request.scope),['scope-1','scope-2']);
+ assert.equal(b.calls.filter(c=>c.command==='native_cancel').length,1);
+ delayed.resolve({generation:1,status:200,headers:[],bodyBase64:'e30='});await new Promise(r=>setTimeout(r,0));
+ assert.equal(requests,2);assert.equal(b.calls.filter(c=>c.command==='native_scope_close').length,2);
+});
+
+test('aborting a concurrent status read never closes the other status scope',async()=>{
+ const firstReply=deferred<{generation:number;status:number;headers:never[];bodyBase64:string}>(),secondReply=deferred<{generation:number;status:number;headers:never[];bodyBase64:string}>();
+ const b=httpBackend(async request=>request.scope==='scope-1'?firstReply.promise:secondReply.promise),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ const abort=new AbortController(),first=bridge.fetch('https://pool.example/api/rollup/status',{signal:abort.signal}),stopped=assert.rejects(first,/abort/i),second=bridge.fetch('https://pool.example/api/rollup/status');
+ await new Promise(r=>setTimeout(r,0));abort.abort();await stopped;
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_scope_close').map(c=>c.args.id),['scope-1']);
+ secondReply.resolve({generation:1,status:200,headers:[],bodyBase64:'e30='});assert.equal((await second).status,200);
+ firstReply.resolve({generation:1,status:200,headers:[],bodyBase64:'e30='});await new Promise(r=>setTimeout(r,0));
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_scope_close').map(c=>c.args.id),['scope-1','scope-2']);
+ assert.equal(b.calls.filter(c=>c.command==='native_http').length,2);
+});
+
+test('failed status transport closes its scope without replaying the request',async()=>{
+ const b=httpBackend(async()=>{throw new Error('exit stream failed');}),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ await assert.rejects(bridge.fetch('https://pool.example/api/rollup/status'),/exit stream failed/);
+ assert.equal(b.calls.filter(c=>c.command==='native_http').length,1);
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_scope_close').map(c=>c.args.id),['scope-1']);
+});
+
+test('status isolation leaves other public reads and durable operation scopes reusable',async()=>{
+ const b=httpBackend(),bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
+ for(let i=0;i<2;i++)await bridge.fetch('https://pool.example/api/rollup/assets?next=/api/rollup/status');
+ for(let i=0;i<2;i++)await bridge.fetch('https://pool.example/api/rollup/spends',{method:'POST',body:JSON.stringify({id:'same-payment'})});
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_http').map(c=>c.args.request.scope),['scope-1','scope-1','scope-2','scope-2']);
+ assert.equal(b.calls.filter(c=>c.command==='native_scope_close').length,0);
+ await assert.rejects(bridge.fetch('https://other.example/api/rollup/status'),/not approved/);
+ assert.equal(b.calls.filter(c=>c.command==='native_http').length,4);
+});
+
+test('explicit status scopes keep their caller-owned lifetime',async()=>{
+ const b=httpBackend(),policy=new NativePolicy('https://pool.example'),bridge=new NativeBridge(b.api,policy);await bridge.status();
+ const url='https://pool.example/api/rollup/status',route={...policy.classify(url),key:'explicit-health-check'};
+ await bridge.fetch(url,undefined,route);await bridge.fetch(url,undefined,route);
+ assert.deepEqual(b.calls.filter(c=>c.command==='native_http').map(c=>c.args.request.scope),['scope-1','scope-1']);
+ assert.equal(b.calls.filter(c=>c.command==='native_scope_close').length,0);
+ await bridge.release(route);assert.deepEqual(b.calls.filter(c=>c.command==='native_scope_close').map(c=>c.args.id),['scope-1']);
+});
+
 test('HTTP abort rejects during scope acquisition and closes the late unused lease',async()=>{
  const pending=deferred<{id:string;generation:number}>(),b=backend(),original=b.api.invoke;
  b.api.invoke=(command,args)=>command==='native_scope'?(b.calls.push({command,args}),pending.promise):original(command,args);
@@ -110,7 +178,7 @@ test('aborting one scope waiter preserves another request using the same item',a
  const pending=deferred<{id:string;generation:number}>(),b=backend(),original=b.api.invoke;
  b.api.invoke=(command,args)=>command==='native_scope'?(b.calls.push({command,args}),pending.promise):command==='native_http'?(b.calls.push({command,args}),Promise.resolve({generation:1,status:200,headers:[],bodyBase64:'e30='})):original(command,args);
  const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();
- const controller=new AbortController(),aborted=bridge.fetch('https://pool.example/api/rollup/status',{signal:controller.signal}),survivor=bridge.fetch('https://pool.example/api/rollup/status');
+ const controller=new AbortController(),aborted=bridge.fetch('https://pool.example/api/rollup/assets',{signal:controller.signal}),survivor=bridge.fetch('https://pool.example/api/rollup/assets');
  const stopped=assert.rejects(aborted,/abort/i);await new Promise(r=>setTimeout(r,0));controller.abort();
  pending.resolve({id:'shared-scope',generation:1});await stopped;assert.equal((await survivor).status,200);
  assert.equal(b.calls.filter(c=>c.command==='native_scope').length,1);assert.equal(b.calls.filter(c=>c.command==='native_http').length,1);

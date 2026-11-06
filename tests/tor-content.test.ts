@@ -96,9 +96,9 @@ test('private wallet startup keeps the public pool script out of the wallet watc
 });
 
 test('private wallet watchdog reads public status independently of private item watches',async()=>{
- const asked:string[]=[],wallet={stopped:false,offline:false,pool:{origin:'https://pool.test',status:{}},statusAt:0,headExpiry:undefined,
+ const asked:string[]=[],wallet=Object.assign(Object.create(ShieldedWallet.prototype),{stopped:false,offline:false,pool:{origin:'https://pool.test',status:{}},statusAt:0,statusRevision:0,headExpiry:undefined,
   api:async(path:string)=>{asked.push(path);return {phase:'ready'};},async sync(){return 0;},async autoShield(){},async merge(){},async renewNotes(){},async recoverNotes(){},changed(){this.stopped=true;},
- };
+ });
  await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);
  assert.deepEqual(asked,['/status']);
 });

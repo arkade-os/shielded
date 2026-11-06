@@ -15,7 +15,7 @@ import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,shieldedSteps,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
-import {epochFreshAccount} from '../src/shielded/epoch-checkpoint.ts';
+import {epochFreshAccount,epochMatchesPool} from '../src/shielded/epoch-checkpoint.ts';
 import {epochTransferBody,type EpochSpendBody} from '../src/shielded/epoch-pool.ts';
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
@@ -373,12 +373,14 @@ test('a wallet closed while its reconnect check runs sends nothing more once the
 
 test('disposal stops the watchdog, so the process can exit',async()=>{
  const wallet=await open();
- const timer=(wallet as any).timer;
- assert.ok(timer);
+ const timer=(wallet as any).timer,statusTimer=(wallet as any).statusTimer;
+ assert.ok(timer);assert.ok(statusTimer);
  await wallet.dispose();
  await wallet.dispose();
  assert.equal(timer._destroyed,true,'the watchdog was cancelled, not merely made inert');
+ assert.equal(statusTimer._destroyed,true);
  assert.equal((wallet as any).timer,undefined);
+ assert.equal((wallet as any).statusTimer,undefined);
  assert.equal(wallet.batchCount(),0);
 });
 
@@ -1427,4 +1429,87 @@ test('an outage whose head expiry cannot be found is still looked up only once, 
   await (wallet as any).tick();await (wallet as any).tick();
   assert.equal(lookups,1,'an unavailable expiry is not retried every tick');
  }finally{t.mock.timers.reset();await wallet.dispose();}
+});
+
+test('public status stays fresh while the watchdog waits for private catch-up',async t=>{
+ const wallet=await open(),pending=deferred<number>();let reads=0,syncs=0,upkeep=0,notifications=0;
+ assert.equal(await epochMatchesPool(wallet.account,wallet.api),true);
+ clearTimeout((wallet as any).timer);clearTimeout((wallet as any).statusTimer);
+ wallet.api=(async()=>{reads++;return status(0);}) as PoolApi;
+ wallet.onShieldedChange(()=>{notifications++;});
+ t.mock.method(wallet,'sync',()=>{syncs++;return pending.promise;});
+ t.mock.method(wallet as any,'finishStart',async()=>{});
+ for(const method of ['autoShield','merge','renewNotes','recoverNotes'])t.mock.method(wallet as any,method,async()=>{upkeep++;});
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:Date.now()});
+ try{
+  await wallet.start();
+  for(let i=0;i<4;i++){t.mock.timers.tick(WATCHDOG_MS);await flush();}
+  assert.equal(wallet.operatorDown,undefined,'a responsive pool is not reported stale');
+  assert.ok(reads>=3,'public status checks continue during the same private sync');
+  assert.ok(notifications>=3,'the page receives heartbeat updates before catch-up finishes');
+  assert.equal(syncs,1,'history work does not accumulate behind the blocked sync');
+  assert.equal(upkeep,0,'financial upkeep still waits for the existing sync');
+ }finally{pending.resolve(0);await flush();await wallet.dispose();t.mock.timers.reset();}
+});
+
+test('maintenance and heartbeat share a status read whose late result cannot revive a disposed wallet',async t=>{
+ const wallet=await open(),pending=deferred<RollupPoolStatus>(),before=wallet.pool.status,since=(wallet as any).statusAt;let reads=0,changes=0,upkeep=0;
+ clearTimeout((wallet as any).timer);clearTimeout((wallet as any).statusTimer);
+ (wallet as any).headExpiry=123;
+ wallet.api=(async()=>{reads++;return pending.promise;}) as PoolApi;
+ t.mock.method(wallet,'changed',()=>{changes++;});
+ for(const method of ['autoShield','merge','renewNotes','recoverNotes'])t.mock.method(wallet as any,method,async()=>{upkeep++;});
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:Date.now()});
+ const maintenance=(wallet as any).tick(),heartbeat=(wallet as any).statusTick();
+ try{
+  await flush();assert.equal(reads,1);
+  await wallet.dispose();pending.resolve(status(1));await Promise.all([maintenance,heartbeat]);
+  assert.equal(wallet.pool.status,before);assert.equal((wallet as any).statusAt,since);
+  assert.equal((wallet as any).headExpiry,123);assert.equal(changes,0);assert.equal(upkeep,0);
+  assert.equal((wallet as any).timer,undefined);assert.equal((wallet as any).statusTimer,undefined);
+  t.mock.timers.tick(4*WATCHDOG_MS);await flush();assert.equal(reads,1);
+ }finally{pending.resolve(status(0));await Promise.allSettled([maintenance,heartbeat]);await wallet.dispose();t.mock.timers.reset();}
+});
+
+test('a fee refresh prevents a late expiry lookup from replacing newer status',async t=>{
+ const wallet=await open(),pending=deferred<number>();let up=false,notifications=0;
+ clearTimeout((wallet as any).timer);clearTimeout((wallet as any).statusTimer);
+ wallet.api=(async(path:string)=>{if(!up)throw new Error('fetch failed');return path==='/status'?status(0):{total:0,batches:[]};}) as PoolApi;
+ t.mock.method(wallet as any,'fetchHeadExpiry',()=>pending.promise);
+ wallet.onShieldedChange(()=>{notifications++;});
+ t.mock.timers.enable({apis:['Date'],now:Date.now()});
+ try{
+  t.mock.timers.tick(2*WATCHDOG_MS);
+  const maintenance=(wallet as any).tick();await flush();
+  up=true;await (wallet as any).refreshStatus();
+  assert.equal(notifications,1,'recovering stale status notifies before the older lookup finishes');
+  pending.resolve(123);await maintenance;
+  assert.equal(wallet.operatorDown,undefined);assert.equal((wallet as any).headExpiry,undefined);
+ }finally{pending.resolve(123);await wallet.dispose();t.mock.timers.reset();}
+});
+
+test('a fee refresh waits for an older heartbeat then reads the post-refusal status',async()=>{
+ const wallet=await open(),older=deferred<RollupPoolStatus>(),fresh=deferred<RollupPoolStatus>();let reads=0,finished=false;
+ clearTimeout((wallet as any).timer);clearTimeout((wallet as any).statusTimer);
+ wallet.api=(async()=>++reads===1?older.promise:fresh.promise) as PoolApi;
+ const heartbeat=(wallet as any).refreshPoolStatus(),fee=(wallet as any).refreshStatus().then(()=>{finished=true;});
+ try{
+  await flush();assert.equal(reads,1,'the fee refresh waits for the pre-refusal read');
+  older.resolve(status(0,undefined,feeOf(100)));await heartbeat;await flush();
+  assert.equal(reads,2);assert.equal(finished,false);assert.equal(wallet.depositFee?.fixedSats,100);
+  fresh.resolve(status(0,undefined,feeOf(500)));await fee;
+  assert.equal(wallet.depositFee?.fixedSats,500);
+ }finally{older.resolve(status(0));fresh.resolve(status(0));await Promise.allSettled([heartbeat,fee]);await wallet.dispose();}
+});
+
+test('a fee refresh waiting for an older heartbeat rejects when the wallet closes',async()=>{
+ const wallet=await open(),older=deferred<RollupPoolStatus>(),before=wallet.pool.status;let reads=0;
+ clearTimeout((wallet as any).timer);clearTimeout((wallet as any).statusTimer);
+ wallet.api=(async()=>{reads++;return older.promise;}) as PoolApi;
+ const heartbeat=(wallet as any).refreshPoolStatus(),fee=(wallet as any).refreshStatus().then(()=>undefined,(error:Error)=>error);
+ try{
+  await flush();await wallet.dispose();older.resolve(status(0,undefined,feeOf(500)));await heartbeat;
+  assert.match((await fee)?.message??'resolved',/wallet was closed/);
+  assert.equal(reads,1);assert.equal(wallet.pool.status,before);
+ }finally{older.resolve(status(0));await Promise.allSettled([heartbeat,fee]);await wallet.dispose();}
 });
