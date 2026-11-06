@@ -157,7 +157,7 @@ test('a failed or timed-out upstream frees its slot',async t=>{
 });
 
 test('a stalled upload is cut off at the deadline and frees its slot',async t=>{
- const g=await gateway(t,{maxInFlight:1,timeoutMs:50}),port=Number(new URL(g.base).port);
+ const g=await gateway(t,{maxInFlight:1,timeoutMs:500}),port=Number(new URL(g.base).port);
  for(const length of [1000,(1<<20)+1]){
   const socket=connect(port,'127.0.0.1').on('error',()=>{});
   socket.write(`POST /api/rollup/ohttp HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: message/ohttp-req\r\ncontent-length: ${length}\r\n\r\n0123456789`);
