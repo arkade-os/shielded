@@ -7,7 +7,7 @@ import type {OhttpOpen} from './ohttp-gateway.ts';
 
 export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
 // The listener works a relay at a time: subscribeMany remembers every event id it sees, and each id pins the whole relay message it was cut from.
-type Relay={subscribe(filters:Filter[],params:{onevent:(event:Event)=>void;onclose:(reason:string)=>void}):{close(reason?:string):void};publish(event:Event):Promise<string>};
+type Relay={onnotice:(message:string)=>void;subscribe(filters:Filter[],params:{onevent:(event:Event)=>void;onclose:(reason:string)=>void}):{close(reason?:string):void};publish(event:Event):Promise<string>};
 export type RelayPool={ensureRelay(url:string):Promise<Relay>;destroy():void};
 
 // 960 KiB of answer plus the HTTP framing and the sealing overhead still fits 32 chunks of 32 KiB.
@@ -26,7 +26,10 @@ export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
 export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),now=Date.now,maxAnswer=ANSWER_BYTES}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number}):{close():void} {
  const gateway=getPublicKey(secret),tally=new Map<string,number>(),handled=new Map<string,Set<string>>(),live=new Map<string,{close():void}>(),waiting=new Map<string,ReturnType<typeof setTimeout>>();
  let since=now(),closed=false;
- const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[nostr] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
+ // A throw into the library makes it print the event being handled, so neither counting nor a handler may throw.
+ const note=(kind:string)=>{try{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[nostr] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();}catch{}};
+ const safely=<A extends unknown[]>(fn:(...args:A)=>void)=>(...args:A)=>{try{fn(...args);}catch{note('failed');}};
+ const relayOf=async(url:string)=>{const relay=await pool.ensureRelay(url);relay.onnotice=()=>{};return relay;};
  // A throw can follow the upstream call, so it never becomes a status: a client reads one as "never ran" and may resend a POST.
  const run=async(event:Event,sealed:Uint8Array,targets:Set<string>)=>{
   try{
@@ -36,7 +39,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
    const request={id:event.id,pubkey:event.pubkey},at=now(),answers=outcome.kind==='sealed'?answerEvents(outcome.bytes,request,secret,at):[statusEvent(outcome.status,outcome.retryAfter,request,secret,at)];
    note(outcome.kind==='sealed'?'answered':'busy');
    await Promise.all([...targets].map(async url=>{
-    const relay=await pool.ensureRelay(url).catch(()=>undefined);
+    const relay=await relayOf(url).catch(()=>undefined);
     await Promise.all(answers.map(answer=>(relay?.publish(answer)??Promise.reject()).catch(()=>note('unpublished'))));
    }));
   }catch{note('failed');}
@@ -56,8 +59,8 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   waiting.delete(url);
   try{
    // No connect timeout on purpose: the pool's own leaves the half-open socket behind, and undici bounds a connect itself.
-   const relay=await pool.ensureRelay(url);
-   if(!closed)live.set(url,relay.subscribe([{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway]}],{onevent:event=>{try{receive(url,event);}catch{note('failed');}},onclose:()=>lost(url)}));
+   const relay=await relayOf(url);
+   if(!closed)live.set(url,relay.subscribe([{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway]}],{onevent:safely(event=>receive(url,event)),onclose:safely(()=>lost(url))}));
   }catch{lost(url);}
  };
  for(const url of new Set(relays))void listen(url);

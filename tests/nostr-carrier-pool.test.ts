@@ -89,3 +89,19 @@ test('the default pool verifies each request once, so the carrier finds the verd
  net.push(request(gateway));await eventually(()=>opened===1);
  assert.equal(Object.getOwnPropertySymbols(parsed[0]!).length,1,'verifyEvent caches its verdict under a symbol of its own module: two symbols mean two checks');
 });
+
+test('a relay NOTICE is not printed',async t=>{
+ const {net,pool}=network(),debug=t.mock.method(console,'debug',()=>{});
+ const carrier=startNostrCarrier({open:async()=>({kind:'refused'}),secret:generateSecretKey(),relays:[A],pool});t.after(()=>carrier.close());
+ await eventually(()=>net.reqs.length===1);
+ [...net.sockets][0]!.onmessage!({data:JSON.stringify(['NOTICE','rate-limited: slow down'])});await settle();
+ assert.equal(debug.mock.callCount(),0);
+});
+
+test('a failing clock never makes a handler throw into the library, which would print the event',async t=>{
+ const {net,pool}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret),warn=t.mock.method(console,'warn',()=>{});let broken=false;
+ const carrier=startNostrCarrier({open:async()=>({kind:'refused'}),secret,relays:[A],pool,now:()=>{if(broken)throw new Error('clock');return 0;}});t.after(()=>carrier.close());
+ await eventually(()=>net.reqs.length===1);
+ broken=true;net.push(finalizeEvent({kind:NOSTR_REQUEST_KIND,tags:[['p',gateway]],content:'not base64!',created_at:0},generateSecretKey()));net.push(request(gateway));await settle();await settle();
+ assert.equal(warn.mock.callCount(),0);
+});

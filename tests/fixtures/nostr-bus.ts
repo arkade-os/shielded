@@ -44,6 +44,7 @@ export function createNostrBus(){
    if(!links.has(url)){if(relay(url).unreachable)throw 'connection failed';links.set(url,{alive:true});}
    const link=links.get(url)!,stale=()=>new Error(`Tried to send message on a closed connection to ${url}.`);
    return {
+    onnotice:()=>{},
     subscribe:(filters,params)=>{
      if(!link.alive)throw stale();
      const sub:Sub={url,filters,onevent:params.onevent,onclose:params.onclose};live.add(sub);
