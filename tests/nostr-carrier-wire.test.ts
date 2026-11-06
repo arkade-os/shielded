@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import {randomBytes as nodeRandomBytes} from 'node:crypto';
 import {test} from 'node:test';
 import {base64} from '@scure/base';
-import {generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
+import {finalizeEvent,generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import {answerEvents,NOSTR_RELAYS,readAnswer,readRequest,requestEvent,statusEvent} from '../packages/protocol/src/nostr-carrier.ts';
 
 // A plain Uint8Array: strict deepEqual compares prototypes, and node's randomBytes returns a Buffer.
 const randomBytes=(size:number)=>new Uint8Array(nodeRandomBytes(size));
 const wire=(event:Event):Event=>JSON.parse(JSON.stringify(event));
 const gwSecret=generateSecretKey(),GW=getPublicKey(gwSecret),other=getPublicKey(generateSecretKey()),request={id:'ab'.repeat(32),pubkey:other};
+const signed=(tags:string[][],content='',kind=21471)=>finalizeEvent({kind,tags:[['e',request.id],['p',request.pubkey],...tags],content,created_at:0},gwSecret);
 
 test('a request event carries the sealed bytes, one p tag and a time rounded down to 30 s',()=>{
  const sealed=randomBytes(1000),event=requestEvent(sealed,GW,Date.UTC(2026,10,6,8,0,59,500));
@@ -39,6 +40,7 @@ test('readAnswer waits for every chunk and ignores strangers',()=>{
 });
 test('a status event is read with its retry delay',()=>{
  const event=statusEvent(503,2,request,gwSecret,0);assert.equal(event.content,'');
+ assert.deepEqual(event.tags,[['e',request.id],['p',request.pubkey],['status','503'],['retry-after','2']]);
  assert.deepEqual(readAnswer([event],request.id,GW),{kind:'status',status:503,retryAfter:2});
 });
 test('the default relays are the six probed relays without Cloudflare in front',()=>assert.deepEqual(NOSTR_RELAYS,['wss://nos.lol','wss://relay.snort.social','wss://offchain.pub','wss://nostr.mom','wss://nostr.oxtr.dev','wss://nostr-pub.wellorder.net']));
@@ -55,3 +57,34 @@ test('a status event beats the chunks, and answers that disagree never complete'
  assert.equal(readAnswer([pair[0],events[1],events[2]],request.id,GW),undefined);
  assert.equal(readAnswer([...single(),...single()],request.id,GW),undefined);
 });
+test('readAnswer ignores a gateway event that breaks the format, alone and beside a good answer',()=>{
+ const bytes=randomBytes(10),good=signed([['chunk','0','1']],base64.encode(bytes)),body=base64.encode(randomBytes(10));
+ const bad={
+  'a request-kind event with answer tags':signed([['chunk','0','1']],body,21470),
+  'a count over the cap':signed([['chunk','0','33']],body),
+  'an index at the count':signed([['chunk','2','2']],body),
+  'an empty index':signed([['chunk','','2']],body),
+  'a hex index':signed([['chunk','0x0','2']],body),
+  'a negative index':signed([['chunk','-1','2']],body),
+  'a fractional count':signed([['chunk','0','1.5']],body),
+  'status 500':signed([['status','500'],['retry-after','1']]),
+  'a negative retry-after':signed([['status','503'],['retry-after','-1']]),
+  'an empty retry-after':signed([['status','503'],['retry-after','']]),
+  'no retry-after':signed([['status','503']]),
+ };
+ for(const [why,event] of Object.entries(bad)){
+  assert.equal(readAnswer([event],request.id,GW),undefined,why);
+  assert.deepEqual(readAnswer([event,good],request.id,GW),{kind:'sealed',bytes},why);
+ }
+});
+test('an entry that makes verifyEvent throw is dropped, and the rest of the batch is still read',()=>{
+ const bytes=randomBytes(10),[chunk]=answerEvents(bytes,request,gwSecret,0),hostile=[null,undefined,'text',5,Object.freeze({})] as never[];
+ assert.deepEqual(readAnswer([...hostile,chunk],request.id,GW),{kind:'sealed',bytes});
+ for(const entry of hostile)assert.equal(readRequest(entry,GW),undefined);
+});
+test('an empty payload is no request, no chunk and no answer',()=>{
+ assert.throws(()=>answerEvents(new Uint8Array(0),request,gwSecret,0),RangeError);
+ assert.equal(readRequest(requestEvent(new Uint8Array(0),GW,0),GW),undefined);
+ assert.equal(readAnswer([signed([['chunk','0','1']])],request.id,GW),undefined);
+});
+test('the default relay list is frozen, so a caller cannot reorder it',()=>assert.ok(Object.isFrozen(NOSTR_RELAYS)));
