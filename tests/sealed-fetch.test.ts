@@ -159,6 +159,11 @@ test('close() ends a POST that went out as outcome-unknown, and one that never d
  await assert.rejects(sealing,failsWith('unavailable'));assert.equal(fresh.sentTo().length,0,'closed while it sealed, it never went out');
 });
 
+test('a sealed fetch with no relay, or a pick, attempt count or timeout under one, is refused when it is made',async()=>{
+ const key=(await loadOhttpKey((await generateOhttpKey()).env))!;
+ for(const options of [{relays:[]},{pick:0},{attempts:0},{timeoutMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
+});
+
 test('abort closes the attempt',async t=>{
  const {held,release}=holding(),g=await rig(t,{reply:()=>held}),before=g.bus.openSubscriptions(),reason=new Error('stopped');
  const waiting=new AbortController(),pending=g.fetch(ARK,{signal:waiting.signal});await until(()=>g.calls.length===1);

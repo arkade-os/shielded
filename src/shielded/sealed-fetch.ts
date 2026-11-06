@@ -16,11 +16,12 @@ export class SealedFetchError extends Error {
 }
 type Ending={kind:'refused'|'timeout'}|{kind:'status';wait:number};
 const tooLarge=()=>new SealedFetchError('too-large','The sealed request is larger than one Nostr event carries.');
-const unknown=()=>new SealedFetchError('outcome-unknown','The request went out and no answer came back, so it may have run.');
+const outcomeUnknown=()=>new SealedFetchError('outcome-unknown','The request went out and no answer came back, so it may have run.');
 
 // No enableReconnect: it resubscribes at since=lastEmitted+1, and the next attempt covers a dropped relay. Pure's verifyEvent caches the verdict readAnswer reads.
 export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)];
+ if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and a positive timeout.');
  const shut=()=>new SealedFetchError('unavailable','The sealed fetch is closed.');
  let closed=false;
  const sealedFetch=async(input:string|URL|Request,init?:RequestInit):Promise<Response>=>{
@@ -32,7 +33,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
   if((body?.byteLength??0)>NOSTR_CHUNK_BYTES)throw tooLarge();
   signal?.throwIfAborted();
   let done=false,sent=false,found:(open:()=>Promise<Response>)=>void=()=>{};
-  const noAnswer=(otherwise:SealedFetchError)=>method!=='GET'&&sent?unknown():otherwise;
+  const noAnswer=(otherwise:SealedFetchError)=>method!=='GET'&&sent?outcomeUnknown():otherwise;
   const answered=new Promise<{kind:'sealed';open:()=>Promise<Response>}>(resolve=>{found=open=>resolve({kind:'sealed',open});});
   const aborted=new Promise<never>((_,reject)=>{const stop=()=>reject(signal!.reason);signal?.addEventListener('abort',stop);cleanup.push(()=>signal?.removeEventListener('abort',stop));});
   const after=<T>(ms:number,value:T)=>new Promise<T>(resolve=>{const timer=setTimeout(resolve,ms,value);cleanup.push(()=>clearTimeout(timer));});
@@ -73,7 +74,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    for(let n=1;n<=attempts;n++){
     const end=await Promise.race([answered,aborted,attempt()]);
     if(end.kind==='sealed')return end.open();
-    if(end.kind==='timeout'&&method!=='GET')throw unknown();
+    if(end.kind==='timeout'&&method!=='GET')throw outcomeUnknown();
     if(end.kind==='status'&&n<attempts){const slept=await Promise.race([answered,aborted,after(end.wait,undefined)]);if(slept)return slept.open();}
    }
    throw noAnswer(new SealedFetchError('unavailable','No relay brought an answer in time.'));
