@@ -61,19 +61,25 @@ export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,op
  }
 }
 
+export function pageClose<A extends unknown[],T>(close:(...args:A)=>Promise<T>){
+ let completed:Promise<T>|undefined;
+ return(...args:A)=>completed??=Promise.resolve().then(()=>close(...args)).catch(error=>{completed=undefined;throw error;});
+}
+
 export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose(),retry:PageRetry={}){
- let cancelled=false,wallet:W|undefined,disposal:Promise<void>|undefined,closing:Promise<W|undefined>|undefined;
+ let cancelled=false,wallet:W|undefined;
  const controller=new AbortController();
- const dispose=()=>disposal??=disposeWallet(wallet!);
+ const dispose=pageClose(()=>disposeWallet(wallet!));
  const ready=(async()=>{
   const prepared=await prepare();if(cancelled)return;
   await retryPageRead(async()=>{wallet=await create(prepared);return wallet;},controller.signal,retry);
   if(cancelled){if(wallet)await dispose();return;}
   return wallet;
  })();
+ const close=pageClose(async()=>{await ready.catch(()=>{});if(wallet)await dispose();return wallet;});
  return {ready,active:()=>!cancelled,close(){
   cancelled=true;controller.abort();
-  return closing??=(async()=>{await ready.catch(()=>{});if(wallet)await dispose();return wallet;})();
+  return close();
  }};
 }
 

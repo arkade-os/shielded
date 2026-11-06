@@ -18,7 +18,7 @@ import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type Rollu
 import {epochBirthCheckpoint} from '../../src/shielded/epoch-checkpoint.ts';
 import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,type ReceiveMode} from './wallet-receive.tsx';
@@ -274,11 +274,12 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     throw error;
    }
   },dispose,{shouldRetry:()=>!nativeOpened,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupError(errorText(error));}});
-  let legacy=Promise.resolve(),closing:Promise<void>|undefined;
+  let legacy=Promise.resolve();
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
+  const finishClose=pageClose(async(closed:ReturnType<typeof session.close>)=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);});
   const close=()=>{
    const closed=session.close();for(const off of unwatch.splice(0))off();sheetOwner.stop();
-   return closing??=(async()=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);})();
+   return finishClose(closed);
   };
   sessions.current.add(close);
   void session.ready.then(async created=>{
