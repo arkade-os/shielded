@@ -105,3 +105,15 @@ test('a failing clock never makes a handler throw into the library, which would 
  broken=true;net.push(finalizeEvent({kind:NOSTR_REQUEST_KIND,tags:[['p',gateway]],content:'not base64!',created_at:0},generateSecretKey()));net.push(request(gateway));await settle();await settle();
  assert.equal(warn.mock.callCount(),0);
 });
+
+test('a relay that refuses only the subscription (CLOSED) is subscribed again after 30 s',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const {net,pool}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret);let opened=0;
+ const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A],pool});t.after(()=>carrier.close());
+ await eventually(()=>net.reqs.length===1);
+ [...net.sockets][0]!.onmessage!({data:JSON.stringify(['CLOSED',net.reqs[0]!.id,'rate-limited: slow down'])});
+ await settle();assert.equal(net.reqs.length,1);
+ t.mock.timers.tick(29_999);await settle();assert.equal(net.reqs.length,1,'not before 30 s');
+ t.mock.timers.tick(1);await eventually(()=>net.reqs.length===2);
+ net.push(request(gateway));await eventually(()=>opened===1);
+});
