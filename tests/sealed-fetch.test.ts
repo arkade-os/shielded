@@ -128,7 +128,7 @@ test('a relay\'s OK with no message has taken the event, and nothing throws',asy
 
 test('a request too large for one event is refused before publishing',async t=>{
  const g=await rig(t),before=g.bus.openSubscriptions();
- await assert.rejects(g.fetch('/api/rollup/spends',{method:'POST',body:new Uint8Array(40<<10)}),failsWith('too-large'));
+ for(const size of [32<<10,40<<10,6<<20])await assert.rejects(g.fetch('/api/rollup/spends',{method:'POST',body:new Uint8Array(size)}),failsWith('too-large'),`${size} bytes`);
  assert.deepEqual([g.sentTo().length,g.requests().length,g.bus.openSubscriptions()],[0,0,before]);
 });
 

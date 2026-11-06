@@ -14,6 +14,7 @@ export class SealedFetchError extends Error {
  constructor(readonly code:'unavailable'|'outcome-unknown'|'too-large',message:string){super(message);}
 }
 type Ending={kind:'refused'|'timeout'}|{kind:'status';wait:number};
+const tooLarge=()=>new SealedFetchError('too-large','The sealed request is larger than one Nostr event carries.');
 
 // No enableReconnect: it resubscribes at since=lastEmitted+1, and the next attempt covers a dropped relay. Pure's verifyEvent caches the verdict readAnswer reads.
 export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
@@ -22,6 +23,8 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
   const signal=init?.signal??(input instanceof Request?input.signal:undefined),source=new Request(input instanceof Request?input:new URL(input,origin),init),headers=new Headers();
   for(const name of ['content-type','accept']){const value=source.headers.get(name);if(value!==null)headers.set(name,value);}
   const {url,method}=source,body=source.body?await source.arrayBuffer():undefined,tried=new Set<string>(),cleanup:(()=>void)[]=[];
+  // Sealing only adds bytes, so a body over one event never fits; past 5 MiB ohttp-ts would throw its own error instead.
+  if((body?.byteLength??0)>NOSTR_CHUNK_BYTES)throw tooLarge();
   signal?.throwIfAborted();
   let done=false,found:(open:()=>Promise<Response>)=>void=()=>{};
   const answered=new Promise<{kind:'sealed';open:()=>Promise<Response>}>(resolve=>{found=open=>resolve({kind:'sealed',open});});
@@ -37,7 +40,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
   };
   const seal=async()=>{
    const {init:sealed,context}=await client.encapsulateRequest(new Request(url,{method,headers,body})),bytes=sealed.body as Uint8Array;
-   if(bytes.length>NOSTR_CHUNK_BYTES)throw new SealedFetchError('too-large','The sealed request is larger than one Nostr event carries.');
+   if(bytes.length>NOSTR_CHUNK_BYTES)throw tooLarge();
    return {bytes,context};
   };
   let once:ReturnType<typeof seal>|undefined;
