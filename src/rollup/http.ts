@@ -1,3 +1,4 @@
+import {timingSafeEqual} from 'node:crypto';
 import {basename,dirname} from 'node:path';
 import express from 'express';
 import {hex} from '@scure/base';
@@ -35,7 +36,8 @@ const logged=(route:string,error:unknown)=>console.error(`[rollup] ${route}: ${(
 const POSTS_PER_MINUTE=60;
 /** Each admission checks a Groth16 proof in this process; past this many at once, a flood from many addresses would stall batching. */
 const ADMITTING_AT_ONCE=8;
-export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[]}:{allowedOrigins?:readonly string[]}={}){
+const LOOPBACK=new Set(['127.0.0.1','::1','::ffff:127.0.0.1']);
+export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[],gatewayToken}:{allowedOrigins?:readonly string[];gatewayToken?:string}={}){
  // A file:, data: or other opaque entry normalises to "null", which sandboxed and local pages send as their Origin.
  const allowed=new Set(allowedOrigins.map(entry=>{const origin=new URL(entry).origin;if(origin==='null')throw new Error(`${entry} is not an http(s) origin.`);return origin;}));
  const router=express.Router();
@@ -54,8 +56,15 @@ export function createRollupRouter(service:()=>RollupService|undefined,{allowedO
  });
  // Every submission costs a proof check, so each address gets a budget; reads and signatures, which an admitted deposit owes within its round, stay open.
  const writes=new Map<string,{count:number;since:number}>();
+ // The gateway's loopback hop is every sealed caller at once and limits itself, so it skips this budget. It reads the raw socket, not req.ip, which trust proxy lets a header set.
+ const token=gatewayToken?Buffer.from(gatewayToken):undefined;
+ const fromGateway=(req:express.Request)=>{
+  if(!token||!LOOPBACK.has(req.socket.remoteAddress??'')||req.headers['x-forwarded-for']!==undefined)return false;
+  const claimed=Buffer.from(req.get('x-shielded-gateway')??'');
+  return claimed.length===token.length&&timingSafeEqual(claimed,token);
+ };
  router.use((req,res,next)=>{
-  if(req.method!=='POST'||/^\/spends\/[^/]+\/sign$/.test(req.path))return next();
+  if(req.method!=='POST'||/^\/spends\/[^/]+\/sign$/.test(req.path)||fromGateway(req))return next();
   const now=Date.now(),key=req.ip??'',seen=writes.get(key);
   if(!seen||now-seen.since>60_000){if(writes.size>10_000)writes.clear();writes.set(key,{count:1,since:now});return next();} // ponytail: crude reset, an LRU if the map ever matters
   if(++seen.count>POSTS_PER_MINUTE){res.setHeader('Retry-After',Math.floor((60_000-(now-seen.since))/1000)+1);res.status(429).json({error:'Too many requests from this address; try again in a minute.',code:'admission-rate-limit'});return;}
