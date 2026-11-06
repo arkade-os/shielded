@@ -2,6 +2,7 @@ import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import type {Filter} from 'nostr-tools/filter';
 import type {SimplePool} from 'nostr-tools/pool';
 import {getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
+import {normalizeURL} from 'nostr-tools/utils';
 import {answerEvents,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {OhttpOpen} from './ohttp-gateway.ts';
 
@@ -18,7 +19,7 @@ export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
  if(!value?.trim())return NOSTR_RELAYS;
  const relays=value.split(',').map(relay=>relay.trim());
  if(!relays.every(relay=>URL.canParse(relay)&&new URL(relay).protocol==='wss:'))throw new Error('SHIELDED_NOSTR_RELAYS is a comma-separated list of wss:// relay URLs.');
- return relays;
+ return [...new Set(relays.map(normalizeURL))];
 }
 
 // The pool's own reconnect is left off: it reopens at since=lastEmitted+1, so one future-dated event deafens a relay, and it never retries a connection that failed first.

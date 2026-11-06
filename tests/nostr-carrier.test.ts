@@ -129,7 +129,8 @@ test('an answer that finishes after close() is not published',async t=>{
 
 test('nostrRelaysFromEnv',()=>{
  for(const value of [undefined,'  '])assert.deepEqual(nostrRelaysFromEnv(value),NOSTR_RELAYS);
- assert.deepEqual(nostrRelaysFromEnv('wss://a.example, wss://b.example'),[A,B]);
+ assert.deepEqual(nostrRelaysFromEnv('wss://a.example, wss://b.example'),['wss://a.example/','wss://b.example/']);
+ assert.deepEqual(nostrRelaysFromEnv('wss://a.example,wss://a.example/, WSS://A.Example:443,wss://b.example'),['wss://a.example/','wss://b.example/'],'one connection each, however a URL is spelled');
  for(const value of ['https://a.example','ws://a.example',',','wss://a.example,','not a url'])assert.throws(()=>nostrRelaysFromEnv(value),/wss/,value);
 });
 
