@@ -75,6 +75,7 @@ test('readAnswer ignores a gateway event that breaks the format, alone and besid
   'a negative retry-after':signed([['status','503'],['retry-after','-1']]),
   'an empty retry-after':signed([['status','503'],['retry-after','']]),
   'no retry-after':signed([['status','503']]),
+  'the old merged status layout':signed([['status','503','2']]),
  };
  for(const [why,event] of Object.entries(bad)){
   assert.equal(readAnswer([event],request.id,GW),undefined,why);
