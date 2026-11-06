@@ -48,7 +48,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
    }));
   }catch{note('failed');}
  };
- // Copies are dropped before open(), which sheds at its cap before it looks for a replay: a copy of a running request would be told busy.
+ // A copy stops here, not at open()'s replay check: it adds its relay to the answer's targets, and open() records an enc only once it has opened, so a copy before that would be admitted again.
  const receive=(url:string,event:Event)=>{
   if(closed)return;
   if(handled.has(event.id)){handled.get(event.id)!.add(url);note('duplicate');return;}
