@@ -136,7 +136,9 @@ test('close() refuses new fetches and stops one in flight before its next attemp
  const g=await rig(t,{pick:1,timeoutMs:100});g.bus.relay(A).deliver=false;
  const pending=g.fetch(ARK);await until(()=>g.sentTo().length===1);
  g.fetch.close();assert.equal(g.bus.openSubscriptions(),0,'the pool is destroyed');
- await assert.rejects(pending,failsWith('unavailable'));await assert.rejects(g.fetch(ARK),failsWith('unavailable'));
+ let refused=false;const late=g.fetch(ARK).catch(error=>{refused=true;throw error;});await null;
+ assert.ok(refused,'a fetch after close() is refused at once, before it seals');
+ await assert.rejects(late,failsWith('unavailable'));await assert.rejects(pending,failsWith('unavailable'));
  assert.deepEqual(g.sentTo(),[[A]],'nothing went out after close()');
 });
 
