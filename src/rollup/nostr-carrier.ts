@@ -3,7 +3,7 @@ import type {Filter} from 'nostr-tools/filter';
 import type {SimplePool} from 'nostr-tools/pool';
 import {getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
-import {answerEvents,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
+import {answerEvents,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {OhttpOpen} from './ohttp-gateway.ts';
 
 export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
@@ -64,7 +64,8 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   try{
    // No connect timeout on purpose: the pool's own leaves the half-open socket behind, and undici bounds a connect itself.
    const relay=await relayOf(url);
-   if(!closed)live.set(url,relay.subscribe([{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway]}],{onevent:safely(event=>receive(url,event)),onclose:safely(()=>lost(url))}));
+   // limit:0 asks for new events only, so a restart reruns none a relay stored (strfry keeps ephemeral events 300 s); since bounds a relay that ignores it.
+   if(!closed)live.set(url,relay.subscribe([{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway],limit:0,since:roundedSeconds(now())-60}],{onevent:safely(event=>receive(url,event)),onclose:safely(()=>lost(url))}));
   }catch{lost(url);}
  };
  for(const url of new Set(relays))void listen(url);

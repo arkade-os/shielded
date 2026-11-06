@@ -8,7 +8,7 @@ import {finalizeEvent,generateSecretKey,getPublicKey,type Event} from 'nostr-too
 import {KeyConfig,OHTTPClient} from 'ohttp-ts';
 import {NOSTR_ANSWER_KIND,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readAnswer,requestEvent} from '../packages/protocol/src/nostr-carrier.ts';
 import {createOhttpGateway,type OhttpOpen} from '../src/rollup/ohttp-gateway.ts';
-import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
+import {generateOhttpKey,loadOhttpKey,type OhttpGatewayKey} from '../src/rollup/ohttp-keys.ts';
 import {nostrRelaysFromEnv,startNostrCarrier,type RelayPool} from '../src/rollup/nostr-carrier.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
@@ -19,8 +19,8 @@ const quiet=()=>sleep(100);
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const holding=()=>{let release=()=>{};const held=new Promise<Response>(resolve=>{release=()=>resolve(Response.json({ok:true}));});return {held,release};};
 
-async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),gateway={},now,open}:{relays?:string[];reply?:(url:string)=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;now?:()=>number;open?:OhttpOpen}={}){
- const key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:string[]=[],outcomes:string[]=[],bus=createNostrBus();
+async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),gateway={},now,open,restarting}:{relays?:string[];reply?:(url:string)=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;now?:()=>number;open?:OhttpOpen;restarting?:{key:OhttpGatewayKey;bus:ReturnType<typeof createNostrBus>}}={}){
+ const key=restarting?.key??(await loadOhttpKey((await generateOhttpKey()).env))!,calls:string[]=[],outcomes:string[]=[],bus=restarting?.bus??createNostrBus();
  const upstream=(async(url:string)=>{calls.push(url);return reply(url);}) as unknown as typeof fetch;
  const router=createOhttpGateway({key,upstreams:[{origin:'https://ark.example',prefix:'/v1/'}],poolOrigin:'https://pool.example',poolLoopback:'http://127.0.0.1:9',gatewayToken:'token',fetch:upstream,...gateway});
  const opener:OhttpOpen=async(sealed,options)=>{const outcome=await (open??router.open)(sealed,options);outcomes.push(outcome.kind);return outcome;};
@@ -106,6 +106,23 @@ test('garbage, replays and hostile events get nothing',async t=>{
  assert.deepEqual(g.outcomes,['sealed','refused','refused'],'only the unopenable bytes and the replay got as far as open()');
  assert.equal(g.calls.length,1,'no hostile event reached the upstream');
  assert.equal(g.answers().length,1,'the only answer is the first request\'s');
+});
+
+test('a restarted listener is not handed the requests a storing relay kept, so none runs again',async t=>{
+ const first=await rig(t);first.bus.relay(A).stores=true;
+ const sent=await first.ask(ARK);await until(()=>sent.answer()?.kind==='sealed');
+ first.carrier.close();const second=await rig(t,{restarting:first});await quiet();
+ assert.deepEqual([first.calls.length,second.calls.length,second.outcomes],[1,0,[]]);
+});
+
+test('a relay that ignores limit:0 hands back only what is dated from since, a minute before now',async t=>{
+ const at=Date.UTC(2026,10,6,8,0,0),since=at/1000-60,bus=createNostrBus(),secret=generateSecretKey(),gateway=getPublicKey(secret),opened:string[]=[];
+ Object.assign(bus.relay(A),{stores:true,ignoresLimit:true});
+ const kept=[since-1,since,since+30].map(created_at=>finalizeEvent({kind:NOSTR_REQUEST_KIND,tags:[['p',gateway]],content:base64.encode(randomBytes(40)),created_at},generateSecretKey()));
+ for(const event of kept)await Promise.all(bus.pool.publish([A],event));
+ const carrier=startNostrCarrier({open:async sealed=>{opened.push(base64.encode(sealed));return {kind:'refused'};},secret,relays:[A],pool:bus.pool,now:()=>at});t.after(()=>carrier.close());
+ await quiet();
+ assert.deepEqual(opened,kept.slice(1).map(event=>event.content));
 });
 
 test('close() stops listening',async t=>{
