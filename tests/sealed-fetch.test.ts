@@ -144,6 +144,19 @@ test('close() refuses new fetches and stops one in flight before its next attemp
  assert.deepEqual(g.sentTo(),[[A]],'nothing went out after close()');
 });
 
+test('a POST that went out ends outcome-unknown when its attempts run out, where a GET ends unavailable',async t=>{
+ const g=await rig(t);for(const url of [A,B])g.bus.relay(url).unreachable=true;
+ await assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown'));await assert.rejects(g.fetch(ARK),failsWith('unavailable'));
+ assert.equal(g.sentTo().length,6,'each used its three attempts');
+});
+
+test('close() ends a POST that went out as outcome-unknown, and refuses a new one as unavailable',async t=>{
+ const g=await rig(t,{pick:1}),publish=g.bus.pool.publish;g.bus.relay(A).accept=false;
+ t.mock.method(g.bus.pool,'publish',(urls:string[],event:Event)=>{const sent=publish(urls,event);g.fetch.close();return sent;});
+ await assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown'));await assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('unavailable'));
+ assert.equal(g.sentTo().length,1,'neither its second attempt nor the second POST went out');
+});
+
 test('abort closes the attempt',async t=>{
  const {held,release}=holding(),g=await rig(t,{reply:()=>held}),before=g.bus.openSubscriptions(),reason=new Error('stopped');
  const waiting=new AbortController(),pending=g.fetch(ARK,{signal:waiting.signal});await until(()=>g.calls.length===1);
