@@ -61,8 +61,8 @@ jobs:
           test -n "$ndk"
           echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
       - run: npm ci
-      - run: node tools/native-build.mjs android init --ci --skip-targets-install
-      - run: node tools/native-build.mjs android build --debug --apk --target aarch64 --ci
+      - run: npm run native:android -- init --ci --skip-targets-install
+      - run: npm run native:android -- build --debug --apk --target aarch64 --ci
 
   ios:
     runs-on: macos-15
@@ -85,5 +85,5 @@ jobs:
             rustup target add x86_64-apple-ios
           fi
       - run: npm ci
-      - run: node tools/native-build.mjs ios init --ci --skip-targets-install
-      - run: node tools/native-build.mjs ios build --debug --target "$IOS_TARGET" --no-sign --ci
+      - run: npm run native:ios -- init --ci --skip-targets-install
+      - run: npm run native:ios -- build --debug --target "$IOS_TARGET" --no-sign --ci

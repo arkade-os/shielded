@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { nativeArguments, protectAndroidManifest } from './native-build.mjs';
 
 const root = new URL('../src-tauri/', import.meta.url);
 const json = name => JSON.parse(readFileSync(new URL(name, root), 'utf8'));
+
+test('Windows setup bundles WebView2 without a first-run download', () => {
+  assert.deepEqual(json('tauri.conf.json').bundle.windows.webviewInstallMode, { type: 'offlineInstaller', silent: true });
+});
 
 test('bundled renderer has no direct network or remote asset capability', () => {
   const config = json('tauri.conf.json');
@@ -38,6 +45,27 @@ test('build commands reject incompatible hosts and forward Tauri arguments witho
   assert.deepEqual(nativeArguments('ios', 'build', ['--no-sign'], 'darwin'), ['ios', 'build', '--no-sign']);
   assert.throws(() => nativeArguments('ios', 'build', [], 'win32'), /macOS/);
   assert.throws(() => nativeArguments('desktop', 'init', [], 'linux'), /action/);
+});
+
+test('mobile initialization requires a package-manager runner for generated IDE callbacks', () => {
+  for (const platform of ['android', 'ios']) {
+    assert.throws(() => nativeArguments(platform, 'init', [], 'darwin', {}), /npm run native:/);
+    assert.deepEqual(nativeArguments(platform, 'init', [], 'darwin', { npm_execpath: '/node/npm-cli.js' }), [platform, 'init']);
+  }
+});
+
+test('generated mobile callbacks resolve the local CLI from the IDE working directory', t => {
+  const workspace = mkdtempSync(fileURLToPath(new URL('./.native-cli-', import.meta.url)));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  for (const directory of ['src-tauri', 'src-tauri/gen/apple']) {
+    const cwd = resolve(workspace, directory);
+    mkdirSync(cwd, { recursive: true });
+    const result = process.platform === 'win32'
+      ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npm run -- tauri --version'], { cwd, encoding: 'utf8', shell: false })
+      : spawnSync('npm', ['run', '--', 'tauri', '--version'], { cwd, encoding: 'utf8', shell: false });
+    assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
+    assert.match(result.stdout, /tauri-cli 2\.12\.4/);
+  }
 });
 
 test('Android preparation disables all generated-app backup paths without losing unrelated attributes', () => {

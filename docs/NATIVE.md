@@ -16,21 +16,25 @@ node tools/native-build.mjs desktop build
 
 The wrapper generates the platform icons from `src-tauri/icon.svg` when needed. The Tauri build invokes `npm run native:frontend`; generated assets, icons, platform projects and binaries are ignored.
 
+Windows packages bundle the offline WebView2 installer. Setup does not download the browser runtime directly before Tor is available. This increases the package size; build-time dependency downloads and Tor's own relay/bootstrap connections are outside the wallet request tunnel.
+
 For Android, install the Android SDK/NDK, set `ANDROID_HOME`, `NDK_HOME` and `JAVA_HOME`, and install the Rust Android target. The initializer retains an existing generated project and disables app backup and device transfer before each build.
 
 ```sh
-node tools/native-build.mjs android init --ci
-node tools/native-build.mjs android build --debug --apk --target aarch64
+npm run native:android -- init --ci
+npm run native:android -- build --debug --apk --target aarch64
 ```
 
 For iOS, run on macOS with Xcode and the appropriate Rust target:
 
 ```sh
-node tools/native-build.mjs ios init --ci
-node tools/native-build.mjs ios build --debug --target aarch64-sim --no-sign --ci
+npm run native:ios -- init --ci
+npm run native:ios -- build --debug --target aarch64-sim --no-sign --ci
 ```
 
 The simulator example targets an Apple Silicon Mac. Intel Macs use `x86_64`. Device distribution requires the usual Apple signing setup; no signing credentials or release publication are configured here.
+
+Use the npm scripts for mobile initialization. Tauri uses that package-manager context and the canonical `tauri` script to generate the Rust callbacks invoked from Xcode and Gradle.
 
 ## Native boundary and storage
 

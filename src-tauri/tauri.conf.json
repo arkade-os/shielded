@@ -19,6 +19,7 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
+    "windows": { "webviewInstallMode": { "type": "offlineInstaller", "silent": true } },
     "macOS": { "minimumSystemVersion": "11.0", "hardenedRuntime": true },
     "iOS": { "minimumSystemVersion": "14.0", "infoPlist": "ios/Info.plist" }
   }

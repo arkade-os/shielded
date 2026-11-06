@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
 
-export function nativeArguments(platform, action, args = [], host = process.platform) {
+export function nativeArguments(platform, action, args = [], host = process.platform, env = process.env) {
   if (!['desktop', 'android', 'ios'].includes(platform)) throw new Error('Use desktop, android or ios');
   if (platform === 'ios' && host !== 'darwin') throw new Error('Build iOS on macOS with Xcode');
   if (!['dev', 'build', 'init', 'prepare'].includes(action) || (platform === 'desktop' && !['dev', 'build'].includes(action))) throw new Error('Unsupported native action');
+  if (action === 'init' && !env.npm_execpath && !env.PNPM_PACKAGE_NAME) throw new Error(`Initialize through npm run native:${platform} -- init so generated IDE callbacks can resolve Tauri`);
   return [...(platform === 'desktop' ? [] : [platform]), action, ...args];
 }
 

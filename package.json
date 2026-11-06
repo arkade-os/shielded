@@ -24,6 +24,7 @@
     "fallback": "node --max-old-space-size=8192 --experimental-eventsource --import tsx tools/rollup-fallback.ts",
     "fee:keeper": "node --experimental-eventsource --import tsx tools/shielded-fee-keeper.ts",
     "ohttp:keygen": "node --import tsx tools/ohttp-keygen.ts",
+    "tauri": "tauri",
     "native:frontend": "node tools/native-frontend.mjs",
     "native:dev": "node tools/native-build.mjs desktop dev",
     "native:build": "node tools/native-build.mjs desktop build",
