@@ -36,6 +36,8 @@ The simulator example targets an Apple Silicon Mac. Intel Macs use `x86_64`. Dev
 
 Use the npm scripts for mobile initialization. Tauri uses that package-manager context and the canonical `tauri` script to generate the Rust callbacks invoked from Xcode and Gradle.
 
+Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iOS. `src-tauri/vendor/sysinfo` backports the upstream iOS fix while retaining the pinned release and real memory metrics. Its `README.shielded.md` records the source and patch; remove this override when Arti accepts a fixed release.
+
 ## Native boundary and storage
 
 Only the bundled top-level `main` window can call the private transport and seed commands. Both the Tauri capability list and command-side origin checks enforce that boundary. The native marker is immutable and carries the fixed pool origin. The native host does not load a remote wallet website with native permissions.

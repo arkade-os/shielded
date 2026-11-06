@@ -10,7 +10,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
 members = ["plugins/shielded-platform"]
+exclude = ["vendor/sysinfo"]
 resolver = "3"
+
+[patch.crates-io]
+sysinfo = { path = "vendor/sysinfo" }
 
 [build-dependencies]
 tauri-build = { version = "=2.7.4", features = [] }
