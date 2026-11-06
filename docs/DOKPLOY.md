@@ -36,7 +36,7 @@ The pool server can open Oblivious HTTP (RFC 9458) requests, so a wallet reaches
 node -e "fetch(process.argv[1]).then(async r=>console.log(r.headers.get('content-type'),Buffer.from(await r.arrayBuffer()).toString('base64url')))" https://HOSTNAME/api/rollup/ohttp-keys
 ```
 
-This proves the key and the config. It does not prove the gateway's hop to the pool or to the upstreams; only a sealed request through a relay does. The response is cacheable for an hour, so a cache in front can show the old config for that long after a rotation.
+This proves the key and the config. It does not prove the gateway's hop to the pool or to the upstreams; only a sealed request does. The response is cacheable for an hour, so a cache in front can show the old config for that long after a rotation.
 
 **Settings.** Runtime environment variables:
 

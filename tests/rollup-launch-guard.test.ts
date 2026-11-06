@@ -76,7 +76,7 @@ const bundledKeys=()=>{const dir=keySet('epoch');writeFileSync(join(dir,'spend.z
 async function runServer(){
  const data=scratch('rollup-launch-data-'),unreachable='http://127.0.0.1:1';
  const child=spawn(process.execPath,['--experimental-eventsource','--import','tsx','src/server.ts'],{stdio:['ignore','pipe','pipe'],
-  env:{...process.env,SHIELDED_DATA_DIR:data,SHIELDED_ROLLUP_KEYS:bundledKeys(),SHIELDED_ROLLUP_EPOCH_LEN:undefined,SHIELDED_INDEXER_URL:undefined,SHIELDED_ARK_URL:unreachable,SHIELDED_EMULATOR_URL:unreachable,HOST:'127.0.0.1',PORT:'0'}});
+  env:{...process.env,SHIELDED_DATA_DIR:data,SHIELDED_ROLLUP_KEYS:bundledKeys(),SHIELDED_ROLLUP_EPOCH_LEN:undefined,SHIELDED_INDEXER_URL:undefined,SHIELDED_OHTTP_KEY:undefined,SHIELDED_ARK_URL:unreachable,SHIELDED_EMULATOR_URL:unreachable,HOST:'127.0.0.1',PORT:'0'}});
  let output='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{output+=chunk;});
  const closed=new Promise(resolve=>child.once('close',resolve));
  try{
