@@ -106,6 +106,6 @@ test('an unset environment still yields epoch 128, and a set one overrides it',(
 });
 
 test('server.ts mounts the gateway ahead of the pool router',()=>{
- const source=readFileSync('src/server.ts','utf8'),gateway=source.indexOf("app.use('/api/rollup',createOhttpGateway("),router=source.indexOf("app.use('/api/rollup',createRollupRouter(");
+ const source=readFileSync('src/server.ts','utf8'),gateway=source.indexOf("app.use('/api/rollup',gateway)"),router=source.indexOf("app.use('/api/rollup',createRollupRouter(");
  assert.ok(gateway>0&&router>gateway,"the relay's POST /ohttp must never meet the per-address limit, the starting 503 or the cross-origin check");
 });
