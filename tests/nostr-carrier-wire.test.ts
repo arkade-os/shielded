@@ -11,9 +11,10 @@ const wire=(event:Event):Event=>JSON.parse(JSON.stringify(event));
 const gwSecret=generateSecretKey(),GW=getPublicKey(gwSecret),other=getPublicKey(generateSecretKey()),request={id:'ab'.repeat(32),pubkey:other};
 const signed=(tags:string[][],content='',kind=21471)=>finalizeEvent({kind,tags:[['e',request.id],['p',request.pubkey],...tags],content,created_at:0},gwSecret);
 
-test('a request event carries the sealed bytes, one p tag and a time rounded down to 30 s',()=>{
+test('a request event carries the sealed bytes, one p tag and a time rounded to the nearest 30 s',()=>{
  const sealed=randomBytes(1000),event=requestEvent(sealed,GW,Date.UTC(2026,10,6,8,0,59,500));
- assert.equal(event.kind,21470);assert.deepEqual(event.tags,[['p',GW]]);assert.equal(event.created_at,Date.UTC(2026,10,6,8,0,30)/1000);
+ assert.equal(event.kind,21470);assert.deepEqual(event.tags,[['p',GW]]);assert.equal(event.created_at,Date.UTC(2026,10,6,8,1,0)/1000);
+ assert.equal(requestEvent(sealed,GW,Date.UTC(2026,10,6,8,0,44,900)).created_at,Date.UTC(2026,10,6,8,0,30)/1000);
  assert.ok(verifyEvent(event));assert.deepEqual(readRequest(event,GW),sealed);
  assert.notEqual(requestEvent(sealed,GW,0).pubkey,requestEvent(sealed,GW,0).pubkey,'a fresh key per event');
 });

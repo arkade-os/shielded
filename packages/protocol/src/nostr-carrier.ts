@@ -10,8 +10,8 @@ export const NOSTR_MAX_CHUNKS=32;
 export const NOSTR_RELAYS:readonly string[]=Object.freeze(['wss://nos.lol','wss://relay.snort.social','wss://offchain.pub','wss://nostr.mom','wss://nostr.oxtr.dev','wss://nostr-pub.wellorder.net']);
 type RequestRef={id:string;pubkey:string};
 
-/** Rounded down to a 30 s bucket so created_at is not the exact send time. */
-export const roundedSeconds=(nowMs:number)=>Math.floor(nowMs/30_000)*30;
+/** Rounded to the nearest 30 s, so created_at is not the exact send time and a clock 45 s slow still passes strfry's 60 s age limit. */
+export const roundedSeconds=(nowMs:number)=>Math.round(nowMs/30_000)*30;
 const tag=(event:Event,name:string,value?:string)=>event.tags.find(t=>t[0]===name&&(value===undefined||t[1]===value));
 const whole=(text?:string)=>/^\d+$/.test(text??'')?Number(text):NaN;
 const decode=(text:string)=>{try{const bytes=base64.decode(text);return bytes.length>0&&bytes.length<=NOSTR_CHUNK_BYTES?bytes:undefined;}catch{return undefined;}};
