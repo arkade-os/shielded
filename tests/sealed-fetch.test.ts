@@ -75,8 +75,8 @@ test('a GET whose relay never delivers is retried on another relay',async t=>{
 });
 
 test('a late answer to an earlier attempt counts',async t=>{
- // Through A the request and its answer each wait 150 ms, so the answer lands near 300 ms, when a third attempt's deadline would end the fetch.
- let replies=0;const g=await rig(t,{pick:1,timeoutMs:100,attempts:4,reply:()=>Response.json({reply:++replies})});
+ // Through A the request and its answer each wait 150 ms, so the answer lands near 300 ms; five attempts keep the fetch open to 500 ms.
+ let replies=0;const g=await rig(t,{pick:1,timeoutMs:100,attempts:5,reply:()=>Response.json({reply:++replies})});
  g.bus.relay(A).delayMs=150;g.bus.relay(B).deliver=false;
  assert.deepEqual(await (await g.fetch(ARK)).json(),{reply:1},'the first attempt\'s answer, the first the gateway gave');
  assert.deepEqual(g.sentTo().slice(0,2),[[A],[B]]);
@@ -95,7 +95,7 @@ test('a POST that no relay accepted is retried',async t=>{
  const g=await rig(t,{relays:[A,B,C,D]});g.bus.relay(A).accept=false;g.bus.relay(B).unreachable=true;
  assert.equal((await g.fetch('/api/rollup/spends',SPEND)).status,200);
  assert.deepEqual(g.sentTo(),[[A,B],[C,D]]);assert.equal(g.requests().length,1,'one accepted request event in total');
- assert.deepEqual(g.calls.map(({url,init})=>[url,new TextDecoder().decode(init.body as ArrayBuffer)]),[[LOOPBACK+'/api/rollup/spends','{"id":"ab"}']]);
+ assert.deepEqual(g.calls.map(({url,init})=>[url,new TextDecoder().decode(init.body as ArrayBuffer),new Headers(init.headers).get('content-type')]),[[LOOPBACK+'/api/rollup/spends','{"id":"ab"}','application/json']]);
  const [first,second]=g.sent();assert.equal(first!.content,second!.content,'both attempts carry the one sealed request');assert.notEqual(first!.id,second!.id);
 });
 
