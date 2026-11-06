@@ -2,19 +2,21 @@ import express from 'express';
 import type {OhttpGatewayKey} from './ohttp-keys.ts';
 
 export interface OhttpUpstream{origin:string;prefix:string}
+export type OhttpOutcome={kind:'sealed';bytes:Uint8Array}|{kind:'busy';status:429|503;retryAfter:number}|{kind:'refused'};
+export type OhttpOpen=(sealed:Uint8Array,options?:{maxAnswer?:number;signal?:AbortSignal})=>Promise<OhttpOutcome>;
 
 const MAX_RESPONSE=4<<20,REMEMBERED=100_000;
 const STREAMS=['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription','/v1/indexer/subscription'];
 const copied=(from:Headers,names:string[])=>{const kept=new Headers();for(const name of names){const value=from.get(name);if(value!==null)kept.set(name,value);}return kept;};
 
-export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,fetch:send=fetch,now=()=>performance.now()}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;fetch?:typeof fetch;now?:()=>number}){
+export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,http=true,fetch:send=fetch,now=()=>performance.now()}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;http?:boolean;fetch?:typeof fetch;now?:()=>number}){
  if(![rate,maxInFlight].every(count=>Number.isSafeInteger(count)&&count>=1))throw new Error('The Oblivious HTTP rate and in-flight cap are whole numbers of at least 1.');
  const allowed=upstreams.map(({origin,prefix})=>{const url=new URL(origin);if(url.protocol!=='https:'||!prefix.startsWith('/')||!prefix.endsWith('/'))throw new Error(`An Oblivious HTTP upstream is https with a path prefix that starts and ends with /, not ${origin} ${prefix}.`);return {origin:url.origin,prefix};});
  const pool=new URL(poolOrigin).origin,loopback=new URL(poolLoopback).origin,tally=new Map<string,number>(),seen=new Set<string>();
  let since=now(),second=0,used=0,inFlight=0;
  const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[ohttp] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
  const answer=(status:number,kind:string)=>{note(kind);return new Response(null,{status});};
- const forward=async(request:Request,gone:AbortSignal)=>{
+ const forward=async(request:Request,gone:AbortSignal,cap:number)=>{
   const url=new URL(request.url),path=url.pathname;
   // The checks read the path decoded once, as the upstream routes it (arkd serves /v1/tx%73 as its stream); an encoded slash or an empty segment is refused raw.
   // Express routes ignore case and a trailing slash, so the pool route matches any case: /OHTTP/ or /api/ROLLUP/ohttp would reach this gateway again.
@@ -27,19 +29,38 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   try{
    const upstream=await send((toPool?loopback:url.origin)+path+url.search,{method:request.method,headers,redirect:'error',signal,...(request.method==='POST'?{body:await request.arrayBuffer()}:{})});
    const reader=upstream.body?.getReader(),chunks:Uint8Array[]=[];let size=0;
-   if(reader)for(;;){const {done,value}=await reader.read();if(done)break;if((size+=value.length)>MAX_RESPONSE){await reader.cancel();return answer(502,'oversize');}chunks.push(value);}
+   if(reader)for(;;){const {done,value}=await reader.read();if(done)break;if((size+=value.length)>cap){await reader.cancel();return answer(502,'oversize');}chunks.push(value);}
    const response=new Response(size?Buffer.concat(chunks):null,{status:upstream.status,headers:copied(upstream.headers,['content-type','cache-control','retry-after'])});
    note('forwarded');return response;
   }catch{return timeout.aborted?answer(504,'timeout'):answer(502,gone.aborted?'abandoned':'unreachable');}
  };
- const router=express.Router();
- router.get('/ohttp-keys',(_req,res)=>{res.setHeader('Content-Type','application/ohttp-keys').setHeader('Cache-Control','public, max-age=3600').end(key.config);});
- router.post('/ohttp',(req,res,next)=>{
-  // Shed before the rate check and before opening, so the retry is neither over the rate nor a replay.
-  if(inFlight>=maxInFlight){note('shed');res.setHeader('Retry-After','1');res.sendStatus(503);return;}
+ // Shed before the rate check and before opening, so the retry is neither over the rate nor a replay.
+ const admit=():{status:429|503;retryAfter:number}|undefined=>{
+  if(inFlight>=maxInFlight){note('shed');return {status:503,retryAfter:1};}
   // One budget for everyone: every request arrives from a relay, so an address says nothing.
   const at=now();if(at-second>=1000){second=at;used=0;} // ponytail: fixed window, so a burst across a boundary reaches twice the rate; a token bucket if that matters
-  if(++used>rate){note('busy');res.setHeader('Retry-After','1');res.sendStatus(429);return;}
+  if(++used>rate){note('busy');return {status:429,retryAfter:1};}
+ };
+ const unseal=async(body:Uint8Array,type:string,gone:AbortSignal,cap:number)=>{
+  const opened=await key.server.decapsulateRequest(new Request('http://gateway.invalid/',{method:'POST',headers:{'content-type':type},body:body as Uint8Array<ArrayBuffer>})).catch(()=>undefined);
+  if(!opened){note('unopened');return;}
+  // ohttp-ts keeps no replay state (RFC 9458 section 6.5). Each sealing draws a fresh HPKE enc: the 32 bytes after the key id and suite.
+  const enc=Buffer.from(body.subarray(7,39)).toString('hex');
+  if(seen.has(enc)){note('replayed');return;}
+  seen.add(enc);if(seen.size>REMEMBERED)seen.delete(seen.values().next().value!); // ponytail: in memory, so a restart or 100 000 newer requests forget a value; an inner Date check (RFC 9458 section 6.5.1) bounds replays for good
+  return new Uint8Array(await (await opened.context.encapsulateResponse(await forward(opened.request,gone,cap))).arrayBuffer());
+ };
+ // No upload and no late reader here, so the upstream deadline alone bounds the slot.
+ const open:OhttpOpen=async(sealed,{maxAnswer=MAX_RESPONSE,signal=new AbortController().signal}={})=>{
+  const busy=admit();if(busy)return {kind:'busy',...busy};
+  inFlight++;
+  try{const bytes=await unseal(sealed,'message/ohttp-req',signal,maxAnswer);return bytes?{kind:'sealed',bytes}:{kind:'refused'};}
+  finally{inFlight--;}
+ };
+ const router=express.Router();
+ router.get('/ohttp-keys',(_req,res)=>{res.setHeader('Content-Type','application/ohttp-keys').setHeader('Cache-Control','public, max-age=3600').end(key.config);});
+ if(http)router.post('/ohttp',(req,res,next)=>{
+  const busy=admit();if(busy){res.setHeader('Retry-After',String(busy.retryAfter));res.sendStatus(busy.status);return;}
   // A response closes exactly once, finished or dropped, so no exit path keeps its slot (one closed already takes none); closing also stops its upstream fetch.
   // No request holds a slot past three deadlines (upload, upstream, the client reading the answer): an unfinished upload is destroyed at the first, the response itself at the third.
   if(res.destroyed)return;
@@ -47,15 +68,10 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   inFlight++;res.once('close',()=>{inFlight--;gone.abort();clearTimeout(late);clearTimeout(backstop);});res.locals.gone=gone.signal;
   next();
  },express.raw({type:'message/ohttp-req',limit:'1mb'}),async(req,res)=>{
-  const opened=await key.server.decapsulateRequest(new Request('http://gateway.invalid/',{method:'POST',headers:{'content-type':req.get('content-type')??''},body:req.body})).catch(()=>undefined);
-  if(!opened){note('unopened');res.sendStatus(400);return;}
-  // ohttp-ts keeps no replay state (RFC 9458 section 6.5). Each sealing draws a fresh HPKE enc: the 32 bytes after the key id and suite.
-  const enc=req.body.toString('hex',7,39);
-  if(seen.has(enc)){note('replayed');res.sendStatus(400);return;}
-  seen.add(enc);if(seen.size>REMEMBERED)seen.delete(seen.values().next().value!); // ponytail: in memory, so a restart or 100 000 newer requests forget a value; an inner Date check (RFC 9458 section 6.5.1) bounds replays for good
-  const sealed=await opened.context.encapsulateResponse(await forward(opened.request,res.locals.gone));
-  res.status(200).setHeader('Content-Type','message/ohttp-res').setHeader('Cache-Control','no-store').end(Buffer.from(await sealed.arrayBuffer()));
+  const sealed=await unseal(req.body,req.get('content-type')??'',res.locals.gone,MAX_RESPONSE);
+  if(!sealed){res.sendStatus(400);return;}
+  res.status(200).setHeader('Content-Type','message/ohttp-res').setHeader('Cache-Control','no-store').end(sealed);
  });
  router.use((error:{status?:number},_req:express.Request,res:express.Response,_next:express.NextFunction)=>{note(error.status===413?'too-large':'failed');res.sendStatus(error.status??500);});
- return router;
+ return Object.assign(router,{open});
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {randomBytes} from 'node:crypto';
 import {once} from 'node:events';
 import {connect,type AddressInfo} from 'node:net';
 import {test,type TestContext} from 'node:test';
@@ -6,7 +7,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import express from 'express';
 import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA256} from 'hpke';
 import {KeyConfig,OHTTPClient} from 'ohttp-ts';
-import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
+import {createOhttpGateway,type OhttpOpen} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey,type OhttpGatewayKey} from '../src/rollup/ohttp-keys.ts';
 
 const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
@@ -21,7 +22,7 @@ const until=async(ok:()=>boolean)=>{for(let i=0;i<500&&!ok();i++)await sleep(10)
 async function gateway(t:TestContext,{reply=()=>Response.json({ok:true}),before,...options}:Options={}){
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:{url:string;init:RequestInit}[]=[];
  const upstream=(async(url:string,init:RequestInit)=>{calls.push({url,init});return reply(init,url);}) as unknown as typeof fetch;
- const app=express();if(before)app.use(before);app.use('/api/rollup',createOhttpGateway(optionsOf(key,{fetch:upstream,...options})));
+ const app=express(),router=createOhttpGateway(optionsOf(key,{fetch:upstream,...options}));if(before)app.use(before);app.use('/api/rollup',router);
  const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/rollup`,keys=await fetch(base+'/ohttp-keys'),config=new Uint8Array(await keys.arrayBuffer()),client=clientOf(config);
  const post=(body:BodyInit,type='message/ohttp-req')=>fetch(base+'/ohttp',{method:'POST',headers:{'content-type':type},body});
@@ -31,7 +32,7 @@ async function gateway(t:TestContext,{reply=()=>Response.json({ok:true}),before,
   assert.equal(outer.status,200);assert.equal(outer.headers.get('content-type'),'message/ohttp-res');assert.equal(outer.headers.get('cache-control'),'no-store');
   return context.decapsulateResponse(outer);
  };
- return {key,keys,config,calls,base,post,seal,exchange,open:async(url:string,init?:RequestInit)=>exchange(await seal(url,init))};
+ return {key,keys,config,calls,base,post,seal,exchange,router,open:async(url:string,init?:RequestInit)=>exchange(await seal(url,init))};
 }
 
 test('a sealed GET to an allowed upstream comes back sealed with the upstream status and body',async t=>{
@@ -207,4 +208,65 @@ test('the gateway logs counts by kind, never a target or a body',async t=>{
  assert.deepEqual(lines,[],'nothing is logged per request');
  clock=60_000;await g.open('https://esplora.example/api/address/tb1qwatched/txs');
  assert.deepEqual(lines,['[ohttp] forwarded 2, refused 1']);
+});
+
+type Sealed=Awaited<ReturnType<OHTTPClient['encapsulateRequest']>>;
+const bytesOf=(sealed:Sealed)=>sealed.init.body as Uint8Array;
+const through=async(router:{open:OhttpOpen},sealed:Sealed,options?:Parameters<OhttpOpen>[1])=>{
+ const outcome=await router.open(bytesOf(sealed),options);assert.ok(outcome.kind==='sealed',outcome.kind);
+ return sealed.context.decapsulateResponse(new Response(Buffer.from(outcome.bytes),{headers:{'content-type':'message/ohttp-res'}}));
+};
+
+test('open() answers a sealed request like the HTTP route',async t=>{
+ const g=await gateway(t,{reply:()=>new Response('{"height":7}',{status:202,headers:{'content-type':'application/json','set-cookie':'id=1'}})});
+ const posted=await g.seal(ARK),viaHttp=await posted.context.decapsulateResponse(await g.post(posted.init.body!)),viaOpen=await through(g.router,await g.seal(ARK));
+ for(const inner of [viaHttp,viaOpen])assert.deepEqual([inner.status,Object.fromEntries(inner.headers),await inner.text()],[202,{'content-type':'application/json'},'{"height":7}']);
+ assert.equal(g.calls.length,2);
+});
+
+test('open() sheds and rate-limits before opening',async t=>{
+ let release=()=>{};const held=new Promise<void>(resolve=>{release=resolve;});
+ const shed=await gateway(t,{maxInFlight:1,rate:2,now:()=>0,reply:async()=>{await held;return Response.json({ok:true});}});
+ const first=through(shed.router,await shed.seal(ARK)),again=await shed.seal(ARK);await until(()=>shed.calls.length===1);
+ assert.deepEqual(await shed.router.open(bytesOf(again)),{kind:'busy',status:503,retryAfter:1});assert.equal(shed.calls.length,1);
+ release();assert.equal((await first).status,200);
+ assert.equal((await through(shed.router,again)).status,200,'the shed bytes were neither opened nor counted against the rate');
+ let clock=0;const rated=await gateway(t,{rate:1,now:()=>clock});
+ assert.equal((await through(rated.router,await rated.seal(ARK))).status,200);
+ const over=await rated.seal(ARK);
+ assert.deepEqual(await rated.router.open(bytesOf(over)),{kind:'busy',status:429,retryAfter:1});assert.equal(rated.calls.length,1);
+ clock+=1000;assert.equal((await through(rated.router,over)).status,200,'the refused bytes were never opened, so they are no replay');
+});
+
+test('open() refuses garbage and replays, sharing the register with the HTTP route',async t=>{
+ const g=await gateway(t),opened=await g.seal(ARK),posted=await g.seal(ARK);
+ assert.deepEqual(await g.router.open(randomBytes(64)),{kind:'refused'});
+ assert.equal((await through(g.router,opened)).status,200);
+ assert.deepEqual(await g.router.open(bytesOf(opened)),{kind:'refused'});assert.equal((await g.post(opened.init.body!)).status,400);
+ assert.equal((await g.exchange(posted)).status,200);assert.deepEqual(await g.router.open(bytesOf(posted)),{kind:'refused'});
+ assert.equal(g.calls.length,2,'one upstream call for each sealed request');
+});
+
+test('open() caps the inner answer at maxAnswer',async t=>{
+ const g=await gateway(t,{reply:()=>new Response(new Uint8Array(600<<10))});
+ assert.equal((await through(g.router,await g.seal(ARK),{maxAnswer:512<<10})).status,502);
+ assert.equal((await (await through(g.router,await g.seal(ARK))).arrayBuffer()).byteLength,600<<10,'the default cap stays 4 MiB');
+});
+
+test('open() gives its slot back on every path',async t=>{
+ const at=(name:string)=>`https://ark.example/v1/${name}`;let release=()=>{};
+ const g=await gateway(t,{maxInFlight:1,timeoutMs:50,reply:(init,url)=>url===at('slow')?waits(init):url===at('held')?new Promise<Response>(resolve=>{release=()=>resolve(Response.json({ok:true}));}):Response.json({ok:true})});
+ const held=through(g.router,await g.seal(at('held'))),spare=await g.seal(ARK);await until(()=>g.calls.length===1);
+ assert.deepEqual(await g.router.open(bytesOf(spare)),{kind:'busy',status:503,retryAfter:1});
+ release();assert.equal((await held).status,200);
+ assert.equal((await through(g.router,await g.seal(at('slow')))).status,504);
+ assert.deepEqual(await g.router.open(randomBytes(64)),{kind:'refused'});
+ assert.equal((await through(g.router,spare)).status,200,'every path gave its slot back');
+});
+
+test('http:false omits POST /ohttp and keeps the key config',async t=>{
+ const g=await gateway(t,{http:false});
+ assert.deepEqual([g.keys.status,g.keys.headers.get('content-type')],[200,'application/ohttp-keys']);
+ assert.equal((await g.post((await g.seal(ARK)).init.body!)).status,404);
+ assert.equal((await through(g.router,await g.seal(ARK))).status,200,'open() still answers');
 });
