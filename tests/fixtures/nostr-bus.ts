@@ -1,17 +1,20 @@
 import {matchFilters,type Filter} from 'nostr-tools/filter';
 import {verifyEvent,type Event} from 'nostr-tools/pure';
-import type {CarrierPool} from '../../src/rollup/nostr-carrier.ts';
+import type {CarrierPool,RelayPool} from '../../src/rollup/nostr-carrier.ts';
 
 /** An in-memory relay network shaped like nostr-tools' pool: each URL is a channel, and a relay misbehaves as its options say. `unfiltered` makes it deliver everything. */
 export function createNostrBus(){
  type Sub={url:string;filters:Filter[];onevent:(event:Event)=>void;onclose:(reason:string)=>void};
- const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean}>(),live=new Set<Sub>(),published:Event[]=[];
+ const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[];
  const relay=(url:string)=>{
   if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,unfiltered:false,unreachable:false,timesOut:false});
   return relays.get(url)!;
  };
- /** Closes subscriptions the way a relay does when it restarts or refuses them: the owner hears of it. */
- const drop=(url?:string,reason='relay connection closed')=>{for(const sub of [...live])if(url===undefined||sub.url===url){live.delete(sub);sub.onclose(reason);}};
+ /** Closes subscriptions and the connection the way a relay does when it restarts or refuses them: the owners hear of it. */
+ const drop=(url?:string,reason='relay connection closed')=>{
+  for(const [at,link] of [...links])if(url===undefined||at===url){link.alive=false;links.delete(at);}
+  for(const sub of [...live])if(url===undefined||sub.url===url){live.delete(sub);sub.onclose(reason);}
+ };
  /** A relay taking an event: it throws where the library's publish rejects, and a timed-out OK still delivers. */
  const take=(url:string,event:Event)=>{
   const {accept,deliver,delayMs,unfiltered,timesOut}=relay(url);
@@ -24,11 +27,11 @@ export function createNostrBus(){
   }
   if(timesOut)throw new Error('publish timed out');
  };
- const pool:CarrierPool={
+ const pool:CarrierPool&RelayPool={
   subscribeMany:(urls,filter,params)=>{
-   const slots=[...new Set(urls)],reasons:{url:string;reason:string}[]=[];let closed=0;
+   const slots=[...new Set(urls)],reasons:{url:string;reason:string}[]=[],seen=new Set<string>();let closed=0;
    const subs:Sub[]=slots.map((url,i)=>({url,filters:[filter],
-    onevent:event=>params.onevent?.(event),
+    onevent:event=>{if(!seen.has(event.id)){seen.add(event.id);params.onevent?.(event);}},
     onclose:reason=>{if(reasons[i])return;reasons[i]={url,reason};if(++closed===slots.length)params.onclose?.(reasons);}}));
    for(const sub of subs){if(relay(sub.url).unreachable)queueMicrotask(()=>sub.onclose('connection failed'));else live.add(sub);}
    return {close:()=>{for(const sub of subs)if(live.delete(sub))sub.onclose('closed by caller');}};
@@ -37,6 +40,18 @@ export function createNostrBus(){
    if(relay(url).unreachable)return 'connection failure: connection failed';
    take(url,event);return '';
   }),
+  ensureRelay:async url=>{
+   if(!links.has(url)){if(relay(url).unreachable)throw 'connection failed';links.set(url,{alive:true});}
+   const link=links.get(url)!,stale=()=>new Error(`Tried to send message on a closed connection to ${url}.`);
+   return {
+    subscribe:(filters,params)=>{
+     if(!link.alive)throw stale();
+     const sub:Sub={url,filters,onevent:params.onevent,onclose:params.onclose};live.add(sub);
+     return {close:(reason='closed by caller')=>{if(live.delete(sub))sub.onclose(reason);}};
+    },
+    publish:async event=>{if(!link.alive)throw stale();take(url,event);return '';},
+   };
+  },
   destroy:()=>drop(undefined,'relay connection closed by us'),
  };
  return {pool,relay,drop,published,openSubscriptions:()=>live.size};

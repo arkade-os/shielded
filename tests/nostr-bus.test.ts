@@ -16,6 +16,25 @@ test('subscribeMany reports its close once, after every relay has closed, with e
  assert.deepEqual(closes[1],[{url:A,reason:'closed by caller'},{url:B,reason:'closed by caller'}]);
 });
 
+test('an event two relays carry reaches a subscribeMany once, and a relay-level subscription on each twice',async()=>{
+ const bus=createNostrBus(),many:Event[]=[],apart:Event[]=[];
+ bus.pool.subscribeMany([A,B],{kinds:[1]},{onevent:event=>many.push(event)});
+ for(const url of [A,B])(await bus.pool.ensureRelay(url)).subscribe([{kinds:[1]}],{onevent:event=>apart.push(event),onclose:()=>{}});
+ await Promise.all(bus.pool.publish([A,B],fresh()));await sleep(10);
+ assert.equal(many.length,1);assert.equal(apart.length,2);
+});
+
+test('a relay dies with its connection, ensureRelay opens a fresh one, and an unreachable relay rejects with a string',async()=>{
+ const bus=createNostrBus(),old=await bus.pool.ensureRelay(A),closes:string[]=[];
+ old.subscribe([{kinds:[1]}],{onevent:()=>{},onclose:reason=>closes.push(reason)});
+ bus.drop(A);assert.deepEqual(closes,['relay connection closed']);
+ await assert.rejects(old.publish(fresh()),/closed connection/);
+ assert.throws(()=>old.subscribe([{kinds:[1]}],{onevent:()=>{},onclose:()=>{}}),/closed connection/);
+ assert.equal(await (await bus.pool.ensureRelay(A)).publish(fresh()),'');
+ bus.pool.destroy();bus.relay(A).unreachable=true;
+ await assert.rejects(bus.pool.ensureRelay(A),(reason:unknown)=>reason==='connection failed');
+});
+
 test('an unreachable relay fulfils a publish with a connection failure, takes nothing and closes its slot',async()=>{
  const bus=createNostrBus(),closes:unknown[]=[],event=fresh();bus.relay(A).unreachable=true;
  assert.deepEqual(await Promise.allSettled(bus.pool.publish([A,B],event)),[{status:'fulfilled',value:'connection failure: connection failed'},{status:'fulfilled',value:''}]);

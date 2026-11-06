@@ -9,13 +9,14 @@ import {KeyConfig,OHTTPClient} from 'ohttp-ts';
 import {NOSTR_ANSWER_KIND,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readAnswer,requestEvent} from '../packages/protocol/src/nostr-carrier.ts';
 import {createOhttpGateway,type OhttpOpen} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
-import {nostrRelaysFromEnv,startNostrCarrier,type CarrierPool} from '../src/rollup/nostr-carrier.ts';
+import {nostrRelaysFromEnv,startNostrCarrier,type RelayPool} from '../src/rollup/nostr-carrier.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
 const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
 const A='wss://a.example',B='wss://b.example',ARK='https://ark.example/v1/info';
 const until=async(ok:()=>boolean)=>{for(let i=0;i<500&&!ok();i++)await sleep(10);assert.ok(ok(),'the condition never held');};
 const quiet=()=>sleep(100);
+const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const holding=()=>{let release=()=>{};const held=new Promise<Response>(resolve=>{release=()=>resolve(Response.json({ok:true}));});return {held,release};};
 
 async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),gateway={},now,open}:{relays?:string[];reply?:(url:string)=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;now?:()=>number;open?:OhttpOpen}={}){
@@ -23,7 +24,7 @@ async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),
  const upstream=(async(url:string)=>{calls.push(url);return reply(url);}) as unknown as typeof fetch;
  const router=createOhttpGateway({key,upstreams:[{origin:'https://ark.example',prefix:'/v1/'}],poolOrigin:'https://pool.example',poolLoopback:'http://127.0.0.1:9',gatewayToken:'token',fetch:upstream,...gateway});
  const opener:OhttpOpen=async(sealed,options)=>{const outcome=await (open??router.open)(sealed,options);outcomes.push(outcome.kind);return outcome;};
- const carrier=startNostrCarrier({open:opener,secret:key.nostrSecret,relays,pool:bus.pool,...(now?{now}:{})});t.after(()=>carrier.close());
+ const carrier=startNostrCarrier({open:opener,secret:key.nostrSecret,relays,pool:bus.pool,...(now?{now}:{})});t.after(()=>carrier.close());await settle();
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(key.config)),{maxMessageSize:5<<20});
  const ask=async(url:string,{to=[A],listen=to}:{to?:string[];listen?:string[]}={})=>{
   const sealed=await client.encapsulateRequest(new Request(url)),bytes=sealed.init.body as Uint8Array,event=requestEvent(bytes,key.nostrPublic,Date.now()),heard=new Map<string,Event[]>();
@@ -142,8 +143,8 @@ test('an answer a relay refuses is counted, not thrown',async t=>{
  const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
  let clock=0;const {held,release}=holding(),g=await rig(t,{now:()=>clock,reply:()=>held});
  const sent=await g.ask(ARK);await until(()=>g.calls.length===1);
- const publishes=t.mock.method(g.bus.pool,'publish'),before=publishes.mock.callCount();
- g.bus.relay(A).accept=false;release();await until(()=>publishes.mock.callCount()>before);await sleep(10);
+ const lookups=t.mock.method(g.bus.pool,'ensureRelay'),before=lookups.mock.callCount();
+ g.bus.relay(A).accept=false;release();await until(()=>lookups.mock.callCount()>before);await sleep(10);
  assert.equal(sent.answer(),undefined);
  g.bus.relay(A).accept=true;clock=60_000;await Promise.all(g.bus.pool.publish([A],g.forged('not base64!')));await quiet();
  assert.deepEqual(lines,['[nostr] answered 1, unpublished 1, dropped 1']);
@@ -164,24 +165,26 @@ test('a subscription the relay closes is opened again after a delay, and close()
  const g=await rig(t,{relays:[A,B]});
  t.mock.timers.enable({apis:['setTimeout']});
  g.bus.drop(A);assert.equal(g.bus.openSubscriptions(),1);
- t.mock.timers.tick(29_999);assert.equal(g.bus.openSubscriptions(),1);
- t.mock.timers.tick(1);assert.equal(g.bus.openSubscriptions(),2);
- g.bus.drop(B);g.carrier.close();t.mock.timers.tick(60_000);
- assert.equal(g.bus.openSubscriptions(),0,'a closed carrier does not subscribe again');
+ t.mock.timers.tick(29_999);await settle();assert.equal(g.bus.openSubscriptions(),1);
+ t.mock.timers.tick(1);await settle();assert.equal(g.bus.openSubscriptions(),2);
+ g.bus.drop(B);const lookups=t.mock.method(g.bus.pool,'ensureRelay');g.carrier.close();t.mock.timers.tick(60_000);await settle();
+ assert.equal(lookups.mock.callCount(),0,'a closed carrier does not reach for a relay again');assert.equal(g.bus.openSubscriptions(),0);
 });
 
 test('a resubscribed relay still delivers requests',async t=>{
  const g=await rig(t,{relays:[A]});
  t.mock.timers.enable({apis:['setTimeout']});
- g.bus.drop(A);t.mock.timers.tick(30_000);t.mock.timers.reset();
+ g.bus.drop(A);t.mock.timers.tick(30_000);t.mock.timers.reset();await settle();
  const sent=await g.ask(ARK);await until(()=>sent.answer()?.kind==='sealed');
  assert.equal((await sent.inner()).status,200);
 });
 
 test('close() closes every subscription and destroys the pool, and a late event is not opened',async()=>{
  const secret=generateSecretKey(),gateway=getPublicKey(secret),taps:((event:Event)=>void)[]=[];let opened=0,closes=0,destroys=0;
- const pool={subscribeMany:(_urls:string[],_filter:unknown,params:{onevent?:(event:Event)=>void})=>{taps.push(params.onevent!);return {close(){closes++;}};},publish:()=>[],destroy(){destroys++;}} as unknown as CarrierPool;
+ const relay={subscribe:(_filters:unknown,params:{onevent:(event:Event)=>void})=>{taps.push(params.onevent);return {close(){closes++;}};},publish:async()=>''};
+ const pool={ensureRelay:async()=>relay,destroy(){destroys++;}} as unknown as RelayPool;
  const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A,B],pool});
+ await until(()=>taps.length===2);
  taps[0]!(requestEvent(randomBytes(40),gateway,Date.now()));await until(()=>opened===1);
  carrier.close();assert.deepEqual([closes,destroys],[2,1]);
  taps[0]!(requestEvent(randomBytes(40),gateway,Date.now()));await quiet();
@@ -192,8 +195,29 @@ test('open() is told the answer cap: 960 KiB unless the caller sets one',async()
  const secret=generateSecretKey(),gateway=getPublicKey(secret),seen:(number|undefined)[]=[],bus=createNostrBus();
  const open:OhttpOpen=async(_sealed,options)=>{seen.push(options?.maxAnswer);return {kind:'refused'};};
  for(const maxAnswer of [undefined,1234]){
-  const carrier=startNostrCarrier({open,secret,relays:[A],pool:bus.pool,...(maxAnswer?{maxAnswer}:{})}),before=seen.length;
+  const carrier=startNostrCarrier({open,secret,relays:[A],pool:bus.pool,...(maxAnswer?{maxAnswer}:{})}),before=seen.length;await settle();
   await Promise.all(bus.pool.publish([A],requestEvent(randomBytes(40),gateway,Date.now())));await until(()=>seen.length>before);carrier.close();
  }
  assert.deepEqual(seen,[960<<10,1234]);
+});
+
+test('an answer for a relay that cannot be reached is counted unpublished, and the other relay still gets it',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ let clock=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B],now:()=>clock,reply:()=>held});
+ const sent=await g.ask(ARK,{to:[A,B],listen:[A,B]});await until(()=>g.calls.length===1);await quiet();
+ g.bus.drop(B);g.bus.relay(B).unreachable=true;
+ release();await until(()=>sent.answer(A)?.kind==='sealed');
+ assert.equal(sent.heard.get(B)!.length,0);
+ clock=60_000;await Promise.all(g.bus.pool.publish([A],g.forged('not base64!')));await quiet();
+ assert.deepEqual(lines,['[nostr] duplicate 1, lost 1, answered 1, unpublished 1, dropped 1']);
+});
+
+test('after many requests there is still one subscription per relay, and none was lost',async t=>{
+ const g=await rig(t,{relays:[A,B],gateway:{rate:1000}}),count=150;
+ assert.equal(g.bus.openSubscriptions(),2);
+ for(let i=0;i<count;i++)await g.ask(ARK,{to:[i%2?A:B],listen:[]});
+ await until(()=>g.answers().length===count);
+ assert.equal(g.bus.openSubscriptions(),2);assert.equal(g.calls.length,count);
+ const last=await g.ask(ARK,{to:[A]});await until(()=>last.answer()?.kind==='sealed');
+ assert.equal((await last.inner()).status,200);
 });
