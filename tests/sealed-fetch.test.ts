@@ -132,6 +132,14 @@ test('a request too large for one event is refused before publishing',async t=>{
  assert.deepEqual([g.sentTo().length,g.requests().length,g.bus.openSubscriptions()],[0,0,before]);
 });
 
+test('close() refuses new fetches and stops one in flight before its next attempt goes out',async t=>{
+ const g=await rig(t,{pick:1,timeoutMs:100});g.bus.relay(A).deliver=false;
+ const pending=g.fetch(ARK);await until(()=>g.sentTo().length===1);
+ g.fetch.close();assert.equal(g.bus.openSubscriptions(),0,'the pool is destroyed');
+ await assert.rejects(pending,failsWith('unavailable'));await assert.rejects(g.fetch(ARK),failsWith('unavailable'));
+ assert.deepEqual(g.sentTo(),[[A]],'nothing went out after close()');
+});
+
 test('abort closes the attempt',async t=>{
  const {held,release}=holding(),g=await rig(t,{reply:()=>held}),before=g.bus.openSubscriptions(),reason=new Error('stopped');
  const waiting=new AbortController(),pending=g.fetch(ARK,{signal:waiting.signal});await until(()=>g.calls.length===1);

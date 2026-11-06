@@ -19,7 +19,10 @@ const tooLarge=()=>new SealedFetchError('too-large','The sealed request is large
 // No enableReconnect: it resubscribes at since=lastEmitted+1, and the next attempt covers a dropped relay. Pure's verifyEvent caches the verdict readAnswer reads.
 export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)];
+ const shut=()=>new SealedFetchError('unavailable','The sealed fetch is closed.');
+ let closed=false;
  const sealedFetch=async(input:string|URL|Request,init?:RequestInit):Promise<Response>=>{
+  if(closed)throw shut();
   const signal=init?.signal??(input instanceof Request?input.signal:undefined),source=new Request(input instanceof Request?input:new URL(input,origin),init),headers=new Headers();
   for(const name of ['content-type','accept']){const value=source.headers.get(name);if(value!==null)headers.set(name,value);}
   const {url,method}=source,body=source.body?await source.arrayBuffer():undefined,tried=new Set<string>(),cleanup:(()=>void)[]=[];
@@ -49,6 +52,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    const {bytes,context}=await (method==='GET'?seal():(once??=seal()));
    // An answer or an abort can end the fetch while this attempt seals; it must not publish after that.
    if(done)return {kind:'refused'};
+   if(closed)throw shut();
    const event=requestEvent(bytes,gateway,Date.now()),to=choose(),events:Event[]=[],deadline=Date.now()+timeoutMs;
    return new Promise(resolve=>{
     const sub=pool.subscribeMany(to,{kinds:[NOSTR_ANSWER_KIND],authors:[gateway],'#e':[event.id]},{onevent:answer=>{
@@ -71,5 +75,6 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    throw new SealedFetchError('unavailable','No relay brought an answer in time.');
   }finally{done=true;for(const clean of cleanup)clean();}
  };
- return Object.assign(sealedFetch,{close:()=>pool.destroy()});
+ // close() refuses new fetches and ends one in flight before its next attempt publishes; a POST already out still ends at its deadline.
+ return Object.assign(sealedFetch,{close:()=>{closed=true;pool.destroy();}});
 }
