@@ -43,9 +43,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux native prerequisites
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential pkg-config libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources
+          apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y libwebkit2gtk-4.1-dev build-essential pkg-config libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
       - run: npm ci
       - run: node --test tools/native-host.test.mjs
       - run: node tools/native-build.mjs icons
