@@ -45,9 +45,12 @@ test('a status event is read with its retry delay',()=>{
  assert.deepEqual(readAnswer([event],request.id,GW),{kind:'status',status:503,retryAfter:2});
 });
 test('the default relays are the six probed relays without Cloudflare in front',()=>assert.deepEqual(NOSTR_RELAYS,['wss://nos.lol','wss://relay.snort.social','wss://offchain.pub','wss://nostr.mom','wss://nostr.oxtr.dev','wss://nostr-pub.wellorder.net']));
-test('readers check the signature, which a spread copy of an event would hide',()=>{
+test('a request is checked by its id alone, and an answer by its signature',()=>{
  const bytes=randomBytes(10),sent=requestEvent(bytes,GW,0),[chunk]=answerEvents(bytes,request,gwSecret,0),[foreign]=answerEvents(bytes,request,generateSecretKey(),0);
  assert.deepEqual(readRequest(wire(sent),GW),bytes);assert.deepEqual(readAnswer([wire(chunk)],request.id,GW),{kind:'sealed',bytes});
+ assert.deepEqual(readRequest({...wire(sent),sig:'00'.repeat(64)},GW),bytes,'a one-time key carries no authority');
+ assert.equal(readRequest({...wire(sent),id:'00'.repeat(32)},GW),undefined);
+ assert.equal(readAnswer([{...wire(chunk),sig:'00'.repeat(64)}],request.id,GW),undefined);
  assert.equal(readRequest({...wire(sent),content:base64.encode(randomBytes(10))},GW),undefined);
  assert.equal(readAnswer([{...wire(chunk),content:base64.encode(randomBytes(10))}],request.id,GW),undefined);
  assert.equal(readAnswer([{...wire(foreign),pubkey:GW}],request.id,GW),undefined);
