@@ -12,11 +12,11 @@ import {DEFAULT_VM_BINARY} from './rollup/leaves.ts';
 import {createOhttpGateway} from './rollup/ohttp-gateway.ts';
 import {loadOhttpKey} from './rollup/ohttp-keys.ts';
 import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
-import {MUTINY_ARK_URL} from './stock/network.ts';
+import {MUTINY_ARK_URL,parseStockEndpoint} from './stock/network.ts';
 import {serveWeb} from './web.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url)),web=join(root,'app/dist');
-const data=resolve(process.env.SHIELDED_DATA_DIR??'/data'),port=Number(process.env.PORT??8792);
+const data=resolve(process.env.SHIELDED_DATA_DIR??'/data'),port=Number(process.env.PORT??8792),host=process.env.HOST??'0.0.0.0';
 const rapidsnark=join(root,'bin','rapidsnark');
 let service:RollupService|undefined,stopping=false,timer:ReturnType<typeof setTimeout>|undefined;
 
@@ -25,22 +25,22 @@ const app=express();app.disable('x-powered-by');app.set('trust proxy','loopback,
 // Health stays green while waiting for a previous instance's volume lock, or the rollout would never finish.
 app.get('/health',(_req,res)=>{const phase=service?.status().phase??'starting';res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
 app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!!service?.ready()}));
-// Off without a key; a malformed key, rate or upstream, or a PORT that is not a fixed number, stops startup instead. The token is minted per process and never logged: it is the loopback header the pool's per-address limit exempts.
+// Off without a key; a malformed key, rate or upstream, or a PORT or HOST the gateway cannot reach the pool through, stops startup instead. The token is minted per process and never logged: it is the loopback header the pool's per-address limit exempts.
 const ohttpKey=await loadOhttpKey(process.env.SHIELDED_OHTTP_KEY),gatewayToken=ohttpKey?randomBytes(32).toString('hex'):undefined;
 if(ohttpKey&&gatewayToken){
  if(!port)throw new Error('PORT must be a fixed port number while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
- // Each prefix starts at the base URL's own path, so it matches what the SDK clients request: ${base}/v1/, ${base}/v1/indexer/ and, for Esplora, ${base}/.
- const upstream=(base:string,api:string)=>{const url=new URL(base);return {origin:url.origin,prefix:url.pathname.replace(/\/?$/,'/')+api};};
- const ark=process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL;
+ if(!['0.0.0.0','::','127.0.0.1'].includes(host))throw new Error('HOST must be 0.0.0.0, :: or 127.0.0.1 while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
+ // arkd and the indexer are bare origins, as the pool requires, so their prefixes are fixed; Esplora keeps the path of its base URL.
+ const ark=parseStockEndpoint(process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL,'Arkade URL'),indexer=parseStockEndpoint(process.env.SHIELDED_INDEXER_URL||ark,'indexer URL'),esplora=new URL(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet);
  app.use('/api/rollup',createOhttpGateway({key:ohttpKey,gatewayToken,poolOrigin:process.env.SHIELDED_PUBLIC_ORIGIN||'https://shielded.mutinynet.arkade.sh',poolLoopback:`http://127.0.0.1:${port}`,
-  upstreams:[upstream(ark,'v1/'),upstream(process.env.SHIELDED_INDEXER_URL||ark,'v1/indexer/'),upstream(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet,'')],
+  upstreams:[{origin:ark,prefix:'/v1/'},{origin:indexer,prefix:'/v1/indexer/'},{origin:esplora.origin,prefix:esplora.pathname.replace(/\/?$/,'/')}],
   ...(process.env.SHIELDED_OHTTP_RATE?{rate:Number(process.env.SHIELDED_OHTTP_RATE)}:{})}));
 }
 console.log(ohttpKey?`Oblivious HTTP gateway on (key id ${ohttpKey.keyId}).`:'Oblivious HTTP gateway off.');
 app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean),gatewayToken}));
 for(const old of ['/stock-wallet','/rollup','/lab'])app.get(old,(_req,res)=>res.redirect(301,'/wallet'));
 serveWeb(app,web);
-const listener=app.listen(port,process.env.HOST??'0.0.0.0',()=>console.log(`Shielded listening on port ${port}.`));
+const listener=app.listen(port,host,()=>console.log(`Shielded listening on port ${port}.`));
 
 const stop=async()=>{if(stopping)return;stopping=true;if(timer)clearTimeout(timer);service?.close();listener.close();await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();process.exit(0);};
 process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());

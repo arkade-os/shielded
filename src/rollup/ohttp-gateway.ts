@@ -15,11 +15,11 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
  const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[ohttp] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
  const answer=(status:number,kind:string)=>{note(kind);return new Response(null,{status});};
  const forward=async(request:Request,gone:AbortSignal)=>{
-  const url=new URL(request.url),path=url.pathname,toPool=url.origin===pool;
+  const url=new URL(request.url),path=url.pathname;
   // The checks read the path decoded once, as the upstream routes it (arkd serves /v1/tx%73 as its stream); an encoded slash or an empty segment is refused raw.
   // Express routes ignore case and a trailing slash, so /OHTTP/ would reach this gateway again.
   let routed:string;try{routed=decodeURIComponent(path);}catch{return answer(403,'refused');}
-  const lower=routed.toLowerCase(),listed=toPool?routed.startsWith('/api/rollup/')&&!lower.startsWith('/api/rollup/ohttp'):allowed.some(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix));
+  const lower=routed.toLowerCase(),toPool=url.origin===pool&&routed.startsWith('/api/rollup/'),listed=toPool?!lower.startsWith('/api/rollup/ohttp'):allowed.some(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix));
   if(!listed||!['GET','POST'].includes(request.method)||/%2f|%5c/i.test(path)||path.includes('//'))return answer(403,'refused');
   if(/text\/event-stream/i.test(request.headers.get('accept')??'')||STREAMS.some(stream=>lower.startsWith(stream)))return answer(400,'stream');
   const headers=copied(request.headers,['content-type','accept']),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);
@@ -28,7 +28,7 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
    const upstream=await send((toPool?loopback:url.origin)+path+url.search,{method:request.method,headers,redirect:'error',signal,...(request.method==='POST'?{body:await request.arrayBuffer()}:{})});
    const reader=upstream.body?.getReader(),chunks:Uint8Array[]=[];let size=0;
    if(reader)for(;;){const {done,value}=await reader.read();if(done)break;if((size+=value.length)>MAX_RESPONSE){await reader.cancel();return answer(502,'oversize');}chunks.push(value);}
-   const response=new Response(size?Buffer.concat(chunks):null,{status:upstream.status,headers:copied(upstream.headers,['content-type','cache-control'])});
+   const response=new Response(size?Buffer.concat(chunks):null,{status:upstream.status,headers:copied(upstream.headers,['content-type','cache-control','retry-after'])});
    note('forwarded');return response;
   }catch{return timeout.aborted?answer(504,'timeout'):answer(502,gone.aborted?'abandoned':'unreachable');}
  };
@@ -41,10 +41,10 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   const at=now();if(at-second>=1000){second=at;used=0;} // ponytail: fixed window, so a burst across a boundary reaches twice the rate; a token bucket if that matters
   if(++used>rate){note('busy');res.setHeader('Retry-After','1');res.sendStatus(429);return;}
   // A response closes exactly once, finished or dropped, so no exit path keeps its slot (one closed already takes none); closing also stops its upstream fetch.
-  // An upload still unfinished at the deadline is destroyed, which closes its response too.
+  // No request holds a slot past three deadlines (upload, upstream, the client reading the answer): an unfinished upload is destroyed at the first, the response itself at the third.
   if(res.destroyed)return;
-  const gone=new AbortController(),late=setTimeout(()=>{if(!req.complete)req.destroy();},timeoutMs);
-  inFlight++;res.once('close',()=>{inFlight--;gone.abort();clearTimeout(late);});res.locals.gone=gone.signal;
+  const gone=new AbortController(),late=setTimeout(()=>{if(!req.complete)req.destroy();},timeoutMs),backstop=setTimeout(()=>res.destroy(),3*timeoutMs);
+  inFlight++;res.once('close',()=>{inFlight--;gone.abort();clearTimeout(late);clearTimeout(backstop);});res.locals.gone=gone.signal;
   next();
  },express.raw({type:'message/ohttp-req',limit:'1mb'}),async(req,res)=>{
   const opened=await key.server.decapsulateRequest(new Request('http://gateway.invalid/',{method:'POST',headers:{'content-type':req.get('content-type')??''},body:req.body})).catch(()=>undefined);

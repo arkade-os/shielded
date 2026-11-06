@@ -39,10 +39,16 @@ test('a sealed GET to an allowed upstream comes back sealed with the upstream st
  assert.equal(g.keys.headers.get('content-type'),'application/ohttp-keys');assert.equal(g.keys.headers.get('cache-control'),'public, max-age=3600');assert.deepEqual(g.config,g.key.config);
  const inner=await g.open('https://esplora.example/api/blocks/tip/height',{headers:{accept:'application/json'}});
  assert.equal(inner.status,202);assert.equal(await inner.text(),'{"height":7}');
- assert.deepEqual(Object.fromEntries(inner.headers),{'cache-control':'max-age=5','content-type':'application/json'},'only the status, content-type and cache-control come back');
+ assert.deepEqual(Object.fromEntries(inner.headers),{'cache-control':'max-age=5','content-type':'application/json'},'only the status, content-type, cache-control and retry-after come back');
  assert.deepEqual(g.calls.map(({url,init})=>[url,init.method,init.redirect]),[['https://esplora.example/api/blocks/tip/height','GET','error']],'an upstream redirect is never followed');
  const empty=await gateway(t,{reply:()=>new Response(null,{status:204})});
  assert.equal((await empty.open(ARK)).status,204);
+});
+
+test('an upstream Retry-After reaches the sealed client',async t=>{
+ const g=await gateway(t,{reply:()=>new Response(null,{status:429,headers:{'retry-after':'7','set-cookie':'id=1'}})});
+ const inner=await g.open(ARK);
+ assert.deepEqual([inner.status,inner.headers.get('retry-after'),inner.headers.has('set-cookie')],[429,'7',false]);
 });
 
 test('a target outside the allowlist, or with a disallowed path, is refused 403 and nothing is fetched',async t=>{
@@ -59,6 +65,12 @@ test('an empty path segment is refused, but a // in the query is not',async t=>{
  const g=await gateway(t),url='https://esplora.example/api/blocks?next=//y';
  assert.equal((await g.open(url)).status,200);
  assert.deepEqual(g.calls.map(call=>call.url),[url]);
+});
+
+test('a pool and an upstream on one origin are told apart by path',async t=>{
+ const g=await gateway(t,{poolOrigin:'https://shared.example',upstreams:[{origin:'https://shared.example',prefix:'/v1/'}]});
+ for(const [path,status] of [['/v1/info',200],['/api/rollup/status',200],['/api/rollup/ohttp',403]] as const)assert.equal((await g.open('https://shared.example'+path)).status,status,path);
+ assert.deepEqual(g.calls.map(({url,init})=>[url,new Headers(init.headers).get('x-shielded-gateway')]),[['https://shared.example/v1/info',null],[LOOPBACK+'/api/rollup/status',TOKEN]],'the token goes to the pool alone');
 });
 
 test('only content-type and accept reach the upstream',async t=>{
@@ -155,6 +167,17 @@ test('a stalled upload is cut off at the deadline and frees its slot',async t=>{
  await quick.open(ARK);const before=timers();
  for(let i=0;i<10;i++)await quick.open(ARK);
  assert.ok(timers()<=before,'no deadline outlives its response');
+});
+
+test('a request nothing answers is cut off at three deadlines and frees its slot',async t=>{
+ let calls=0;const timeoutMs=200;
+ const g=await gateway(t,{maxInFlight:1,timeoutMs,reply:()=>++calls===1?new Promise<Response>(()=>{}):Response.json({ok:true})});
+ const sent=fetch(g.base+'/ohttp',{...(await g.seal(ARK)).init,signal:AbortSignal.timeout(5000)}).then(()=>'answered',()=>'cut');
+ await until(()=>g.calls.length===1);const armed=performance.now();
+ assert.equal(await sent,'cut');
+ const waited=performance.now()-armed;
+ assert.ok(waited>=2.5*timeoutMs&&waited<12*timeoutMs,`cut ${Math.round(waited)} ms after the upstream was called, not at about ${3*timeoutMs}`);
+ assert.equal((await g.open(ARK)).status,200,'the slot came back');
 });
 
 test('a request sealed to another key id is refused 400',async t=>{
