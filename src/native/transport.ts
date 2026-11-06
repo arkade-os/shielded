@@ -1,6 +1,6 @@
 import {nativeUrl,NativePolicy,type NativeRoute} from './policy.ts';
 
-export interface NativeStatus {phase:string;generation:number;progress?:number;error?:string}
+export interface NativeStatus {phase:string;generation:number;progress?:string;error?:string}
 export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number;sequence?:number}
 export interface NativeBackend {invoke:(command:string,args?:Record<string,unknown>)=>Promise<any>;channel:(receive:(event:NativeEvent)=>void)=>unknown}
 interface NativeRequest {generation:number;requestId:string;scope:string;url:string;method:string;headers:[string,string][];bodyBase64?:string}
@@ -51,6 +51,9 @@ export class NativeBridge {
  private scopes=new Map<string,ScopeEntry>();
  private handles=new Set<NativeHandle>();
  private listeners=new Set<(status:NativeStatus)=>void>();
+ private statusRevision=0;
+ private pausePending=0;
+ private pauseIntent=false;
  constructor(readonly backend:NativeBackend,readonly policy:NativePolicy){}
  acceptStatus(status:NativeStatus){
   if(!Number.isSafeInteger(status.generation)||status.generation<this.current.generation)return this.current;
@@ -61,9 +64,29 @@ export class NativeBridge {
   this.current=status;for(const fn of this.listeners)try{fn(status);}catch{}return status;
  }
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
- async status(){return this.acceptStatus(await this.backend.invoke('native_status'));}
- async start(){return this.acceptStatus(await this.backend.invoke('native_start'));}
- async pause(){this.acceptStatus({...this.current,phase:'paused'});return this.acceptStatus(await this.backend.invoke('native_pause'));}
+ async status(){
+  const revision=this.statusRevision,status:NativeStatus=await this.backend.invoke('native_status');
+  if(revision!==this.statusRevision||this.pausePending||this.pauseIntent)return this.current;
+  if(status.phase==='ready'&&Number.isSafeInteger(status.generation)&&status.generation>=this.current.generation&&(this.current.phase!=='ready'||status.generation!==this.current.generation))++this.statusRevision;
+  return this.acceptStatus(status);
+ }
+ async start(){
+  if(this.pausePending)return this.current;
+  const revision=++this.statusRevision;this.pauseIntent=false;
+  try{
+   const status=await this.backend.invoke('native_start');
+   if(revision!==this.statusRevision||this.pausePending||this.pauseIntent)return this.current;
+   ++this.statusRevision;return this.acceptStatus(status);
+  }finally{if(revision===this.statusRevision)++this.statusRevision;}
+ }
+ async pause(){
+  const revision=++this.statusRevision;this.pauseIntent=true;this.pausePending++;
+  this.acceptStatus({...this.current,phase:'paused'});
+  try{
+   const status=await this.backend.invoke('native_pause');
+   return revision===this.statusRevision?this.acceptStatus({...status,phase:'paused'}):this.current;
+  }finally{if(revision===this.statusRevision)++this.statusRevision;this.pausePending--;}
+ }
  private check(generation:number){if(this.current.phase!=='ready'||generation!==this.current.generation)throw new Error('Native network generation is retired or paused');}
  sessionGuard(){const generation=this.current.generation;this.check(generation);return ()=>this.check(generation);}
  bindFetch(fetcher:typeof fetch):typeof fetch {const check=this.sessionGuard();return async(input,init)=>{check();const response=await fetcher(input,init);check();return response;};}

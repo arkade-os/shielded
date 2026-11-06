@@ -39,6 +39,11 @@ export const nativeClaimFetch:typeof fetch=scopedFetch('pool-sync');
 export const nativeNetwork={
  status:():Promise<NativeStatus>=>connection().status(),start:():Promise<NativeStatus>=>connection().start(),pause:():Promise<NativeStatus>=>connection().pause(),
  subscribe:(fn:(status:NativeStatus)=>void)=>connection().subscribe(fn),
+ async check(signal:AbortSignal):Promise<void>{
+  const b=connection(),current=b.sessionGuard(),url=b.policy.poolOrigin+'/api/rollup/status',route={...b.policy.classify(url,'GET'),key:'tor-health:'+crypto.randomUUID()};
+  try{await b.fetch(url,{cache:'no-store',credentials:'omit',redirect:'error',signal},route);current();}
+  finally{await b.release(route);}
+ },
 };
 export function installNativeTransport():void {
  if(installed)return;const b=connection();installed=true;

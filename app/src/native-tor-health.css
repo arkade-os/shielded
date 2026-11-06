@@ -1,0 +1,32 @@
+.native-tor-health{position:relative;color:#25445b;font-family:'DM Sans',sans-serif;font-size:12px;text-align:left;line-height:1.5;z-index:35}
+.native-tor-health>summary{display:flex;align-items:center;gap:8px;min-height:30px;padding:4px 0;list-style:none;cursor:pointer;white-space:nowrap;font-weight:550}
+.native-tor-health>summary::-webkit-details-marker{display:none}
+.native-tor-health>summary>svg{width:13px;height:13px;opacity:.65;transition:transform .16s}
+.native-tor-health[open]>summary>svg{transform:rotate(180deg)}
+.native-tor-health>summary:focus-visible{outline:2px solid #b8862b;outline-offset:4px;border-radius:4px}
+.native-tor-dot{width:7px;height:7px;border-radius:50%;background:#b49459;box-shadow:0 0 0 3px #b4945918;flex:none}
+.native-tor-health[data-health=connected] .native-tor-dot{background:#287859;box-shadow:0 0 0 3px #28785919}
+.native-tor-health[data-health=error] .native-tor-dot{background:#b36c30;box-shadow:0 0 0 3px #b36c301a}
+.native-tor-health[data-health=paused] .native-tor-dot{background:#7d8790;box-shadow:none}
+.native-tor-percent{font-variant-numeric:tabular-nums;opacity:.75}
+.native-tor-panel{position:absolute;left:0;top:calc(100% + 10px);width:300px;max-width:calc(100vw - 40px);padding:19px 20px;border:1px solid #d6dce1;border-radius:15px;background:#fcfbf7;box-shadow:0 12px 36px #0c21352b;white-space:normal;color:#244258;font-size:13px}
+.native-tor-panel>strong{display:block;font-family:'Manrope',sans-serif;font-size:15px;font-weight:650}
+.native-tor-panel>p{margin:9px 0 0;line-height:1.6}
+.native-tor-panel>progress{width:100%;height:5px;margin-top:14px;accent-color:#b8862b}
+.native-tor-panel .native-tor-checked{font-size:11px;color:#6b7d88;font-variant-numeric:tabular-nums}
+.native-tor-panel .native-tor-privacy{padding-top:12px;margin-top:14px;border-top:1px solid #dce2e5;font-size:11px;color:#6b7d88}
+.native-tor-panel .native-tor-problem{font-size:12px;color:#a15a25;overflow-wrap:anywhere}
+.native-wallet-topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:47px;padding:6px 22px;border-bottom:1px solid #1035541a;background:#f9f6ee;color:#244258}
+.native-wallet-topbar .native-wallet-lock{padding:7px 11px;border:1px solid #10355426;border-radius:8px;font:550 12px 'DM Sans',sans-serif;background:transparent;color:#244258;cursor:pointer}
+.native-wallet-lock:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
+.native-tor-health[data-tone=dark]{color:#bdcbd6;font-size:11px}
+.native-tor-health[data-tone=dark] .native-tor-dot{background:#d2ae75;box-shadow:0 0 0 3px #d2ae7518}
+.native-tor-health[data-tone=dark][data-health=connected] .native-tor-dot{background:#8fc5ad;box-shadow:0 0 0 3px #8fc5ad18}
+.native-tor-health[data-tone=dark][data-health=error] .native-tor-dot{background:#e0a29d;box-shadow:0 0 0 3px #e0a29d18}
+.native-tor-health[data-tone=dark][data-health=paused] .native-tor-dot{background:#899baa;box-shadow:none}
+.native-tor-health[data-tone=dark] .native-tor-panel{top:auto;bottom:calc(100% + 12px);border-color:#516171;background:#172a3c;color:#e8edf0;box-shadow:0 12px 35px #0006}
+.native-tor-health[data-tone=dark] .native-tor-checked,.native-tor-health[data-tone=dark] .native-tor-privacy{color:#afc4d4}
+.native-tor-health[data-tone=dark] .native-tor-privacy{border-color:#afc4d433}
+.native-tor-health[data-tone=dark] .native-tor-problem{color:#edc5a6}
+@media(max-width:359px){.native-tor-health[data-tone=dark]{font-size:10px}.native-tor-health>summary{gap:6px}.native-wallet-topbar{padding-right:16px;padding-left:16px}}
+@media(prefers-reduced-motion:reduce){.native-tor-health>summary>svg{transition:none}}

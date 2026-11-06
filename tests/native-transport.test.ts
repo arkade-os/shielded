@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {NativeBridge,SseDecoder,type NativeBackend,type NativeEvent} from '../src/native/transport.ts';
+import {NativeBridge,SseDecoder,type NativeBackend,type NativeEvent,type NativeStatus} from '../src/native/transport.ts';
 import {NativePolicy} from '../src/native/policy.ts';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
@@ -136,4 +136,68 @@ test('colliding server subscription responses fail without unsubscribing a legit
  await subscribe('a');await assert.rejects(subscribe('b'),/reused|another/i);
  assert.equal(policy.classify('https://ark.example/v1/indexer/script/subscription/shared','GET').key,policy.classify('https://ark.example/v1/indexer/vtxos?scripts=a','GET').key);
  assert.ok(!b.calls.some(c=>(JSON.stringify(c.args)??'').includes('unsubscribe')));
+});
+
+test('a bootstrap poll cannot retire the session completed by a later start',async()=>{
+ const polled=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_status'?polled.promise:command==='native_http'?Promise.resolve({generation:1,status:200,headers:[],bodyBase64:'e30='}):original(command,args);
+ const policy=new NativePolicy('https://pool.example'),bridge=new NativeBridge(b.api,policy),poll=bridge.status();
+ await bridge.start();policy.registerArk('https://ark.example','https://ark.example');
+ await bridge.fetch('https://ark.example/v1/indexer/vtxos?scripts=a');
+ polled.resolve({phase:'bootstrapping',generation:1,progress:'50%'});
+ assert.equal((await poll).phase,'ready');assert.equal(bridge.current.phase,'ready');
+ await bridge.fetch('https://ark.example/v1/indexer/vtxos?scripts=a');
+ assert.equal(b.calls.filter(call=>call.command==='native_scope').length,1);
+});
+test('a newer ready poll retires an outstanding bootstrap snapshot',async()=>{
+ const old=deferred<NativeStatus>(),fresh=deferred<NativeStatus>();let polls=0;
+ const api:NativeBackend={invoke:async()=>++polls===1?old.promise:fresh.promise,channel:()=>({})};
+ const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));bridge.acceptStatus({phase:'bootstrapping',generation:1});
+ const previous=bridge.status(),next=bridge.status();fresh.resolve({phase:'ready',generation:1});await next;
+ old.resolve({phase:'bootstrapping',generation:1});assert.equal((await previous).phase,'ready');
+});
+test('a ready poll cannot unpause while native pause is pending',async()=>{
+ const polled=deferred<NativeStatus>(),paused=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_status'?polled.promise:command==='native_pause'?paused.promise:original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));bridge.acceptStatus({phase:'ready',generation:1});
+ const poll=bridge.status(),pause=bridge.pause();polled.resolve({phase:'ready',generation:1});
+ assert.equal((await poll).phase,'paused');assert.equal(bridge.current.phase,'paused');
+ paused.resolve({phase:'paused',generation:2});await pause;
+});
+test('a poll started during pause stays retired after pause completes',async()=>{
+ const polled=deferred<NativeStatus>(),paused=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_status'?polled.promise:command==='native_pause'?paused.promise:original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));bridge.acceptStatus({phase:'ready',generation:1});
+ const pause=bridge.pause(),poll=bridge.status();paused.resolve({phase:'paused',generation:1});await pause;
+ polled.resolve({phase:'ready',generation:1});assert.equal((await poll).phase,'paused');assert.equal(bridge.current.phase,'paused');
+});
+test('an old start cannot restore a locally paused session',async()=>{
+ const started=deferred<NativeStatus>(),paused=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_start'?started.promise:command==='native_pause'?paused.promise:original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example')),start=bridge.start(),pause=bridge.pause();
+ started.resolve({phase:'ready',generation:1});assert.equal((await start).phase,'paused');assert.equal(bridge.current.phase,'paused');
+ paused.resolve({phase:'paused',generation:2});await pause;
+});
+test('a failed pause leaves stale ready polls unable to restore a session',async()=>{
+ const polled=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_status'?polled.promise:command==='native_pause'?Promise.reject(new Error('pause unavailable')):original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));bridge.acceptStatus({phase:'ready',generation:1});
+ const poll=bridge.status();await assert.rejects(bridge.pause(),/pause unavailable/);
+ polled.resolve({phase:'ready',generation:1});assert.equal((await poll).phase,'paused');assert.equal(bridge.current.phase,'paused');
+});
+test('a failed pause keeps its local intent until an explicit start',async()=>{
+ const b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_pause'?Promise.reject(new Error('pause unavailable')):original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.start();
+ await assert.rejects(bridge.pause(),/pause unavailable/);
+ assert.equal((await bridge.status()).phase,'paused');assert.throws(()=>bridge.sessionGuard(),/paused|retired/);
+ assert.equal((await bridge.start()).phase,'ready');
+});
+test('start during a pending pause cannot release its barrier',async()=>{
+ const paused=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_pause'?paused.promise:original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.start();const before=b.calls.filter(call=>call.command==='native_start').length;
+ const pause=bridge.pause();assert.equal((await bridge.start()).phase,'paused');
+ assert.equal(b.calls.filter(call=>call.command==='native_start').length,before);
+ paused.resolve({phase:'paused',generation:2});await pause;assert.equal(bridge.current.phase,'paused');
 });

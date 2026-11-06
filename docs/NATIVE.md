@@ -52,6 +52,8 @@ The vault protects the seed at rest. The frontend still receives it while the wa
 
 Tor is required for native wallet networking. Bootstrap failure does not fall back to a direct connection. Privacy scopes bind connection ownership to the wallet operation or watched item; unrelated scopes must not share HTTP pools or private subscriptions. DNS names are resolved through Tor. Renewing a Tor circuit cannot remove identifiers already shared in request content or guarantee different exit addresses.
 
+Tor starts on every foreground load, before the vault is read, including before a wallet exists. The connection indicator appears on onboarding and above the wallet. Its details show bootstrap progress or the last connection check. Foreground checks use a fresh isolated Tor scope every 30–45 seconds and stop on pause, lock or suspension. “Tor connected” means a recent HTTPS response arrived through Tor; it does not establish that every wallet service is healthy.
+
 HTTP responses are bounded to 64 MiB. The pinned [genesis-4 proving keys](https://github.com/arkade-os/shielded/releases/tag/rollup-genesis-4-keys) fit this limit (join: 14,042,110 bytes; spend: 8,225,922 bytes). A future key release above that limit requires a bounded download path and mobile memory validation before adoption; increasing the limit alone would multiply buffering through IPC and the prover.
 
 On Android pause and iOS resignation of active status, Tauri emits a native suspension event. The Rust host immediately pauses the transport, invalidates active scopes and cancels network work without depending on JavaScript running. The renderer must bootstrap and recreate its scopes after resumption. Window destruction also pauses the transport.
@@ -66,8 +68,8 @@ Private providers, proof downloads, pool calls, LNURL and swap transports are bo
 
 - Windows debug NSIS packaging succeeded. The bundled app reached the create/restore screen with no seed created; a second launch exited successfully with one native process remaining.
 - A live Rust smoke test bootstrapped Tor, read the pool through two isolated handles, received `IsTor=true` from the Tor Project and exercised cancellation, pause and stale-generation rejection.
-- The full Node suite passed 1,187/1,187 tests, native Rust passed 21/21, and TypeScript, browser/SDK builds and four host/build-policy checks passed. The bounded TLA model passed and six guard mutations produced their intended counterexamples.
-- Android/iOS source and CI targets are present. Android SDK/device, macOS/Xcode, physical mobile runtime, funded wallet flows and a complete packaged-process packet-capture audit remain unverified here. The setup-screen check does not establish those gates.
+- The full Node suite passed 1,239/1,239 tests, native Rust passed 24/24, and TypeScript and nine host/build-policy checks passed. Ten TLA configurations cover session safety and status ordering, including eight deliberately weakened guards with their expected invariant violations.
+- PR #128 CI built Windows, Linux, macOS, Android APK and unsigned iOS simulator artifacts. Physical mobile runtime, funded wallet flows and a complete packaged-process packet-capture audit remain unverified. Build success does not establish those runtime gates.
 
 ## Checks and release gates
 

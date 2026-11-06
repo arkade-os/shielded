@@ -1,0 +1,100 @@
+.native-onboarding {
+ --onboarding-ink:#101e30;
+ --onboarding-ivory:#f4f1e8;
+ --onboarding-brass:#d2ae75;
+ --onboarding-muted:#afc4d4;
+ min-height:100dvh;
+ display:grid;
+ grid-template-rows:auto 1fr auto;
+ padding:max(24px,env(safe-area-inset-top)) clamp(22px,6vw,36px) max(20px,env(safe-area-inset-bottom));
+ background:var(--onboarding-ink);
+ color:var(--onboarding-ivory);
+ color-scheme:dark;
+ font-family:'DM Sans',sans-serif;
+ isolation:isolate;
+ overflow-x:clip;
+}
+.native-onboarding ::selection {background:#d2ae75;color:#101e30}
+.native-onboarding button,.native-onboarding textarea,.native-onboarding summary {-webkit-tap-highlight-color:transparent}
+.native-onboarding button:focus-visible,.native-onboarding textarea:focus-visible,.native-onboarding summary:focus-visible {outline:2px solid #f2d49e;outline-offset:5px}
+.native-onboarding-header {width:100%;max-width:1120px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.native-onboarding-brand {display:flex;align-items:center;gap:9px}
+.native-onboarding-brand>svg {color:var(--onboarding-brass)}
+.native-onboarding-brand>span {font-family:'Manrope',sans-serif;font-size:23px;font-weight:650;letter-spacing:-.065em}
+.native-onboarding-network {padding:5px 10px;border:1px solid #d2ae753b;border-radius:6px;color:#d8c29e;font-size:11px;line-height:1.3}
+.native-onboarding-stage {width:100%;max-width:420px;margin:0 auto;display:grid;align-content:center;gap:12px;padding:12px 0 18px}
+.native-onboarding-art {height:clamp(210px,34vh,290px);display:flex;justify-content:center;align-items:center;margin:0 -12px -2px;pointer-events:none}
+.native-onboarding-art>svg {height:100%;width:auto;max-width:100%;overflow:visible;animation:native-onboarding-arrive .9s cubic-bezier(.2,.7,.2,1) both}
+.native-onboarding-content {min-width:0}
+.native-onboarding-content h1 {margin:0;font-family:'Manrope',sans-serif;font-size:clamp(40px,12vw,54px);font-weight:600;letter-spacing:-.065em;line-height:1.09}
+.native-onboarding-content h1 span {display:block}
+.native-onboarding-description {max-width:30ch;margin:16px 0 0;color:var(--onboarding-muted);font-size:15px;line-height:1.6;letter-spacing:-.01em}
+.native-onboarding-actions {display:grid;gap:11px;margin-top:27px}
+.native-onboarding button {font-family:inherit;font-size:15px;font-weight:650;letter-spacing:-.015em;line-height:1.3;cursor:pointer;transition:background .18s ease,border-color .18s ease,transform .18s ease}
+.native-onboarding .native-onboarding-primary,.native-onboarding .native-onboarding-secondary {width:100%;min-height:55px;padding:16px 20px;border-radius:13px}
+.native-onboarding .native-onboarding-primary {border:1px solid #e2c28f;background:#dec08d;color:#101e30;box-shadow:inset 0 1px 0 #fff4da70,0 5px 16px #030a1420}
+.native-onboarding .native-onboarding-primary:hover:not(:disabled) {background:#ebd3ac;border-color:#ebd3ac;transform:translateY(-1px)}
+.native-onboarding .native-onboarding-secondary {border:1px solid #7b94aa66;background:transparent;color:#e5eaf0}
+.native-onboarding .native-onboarding-secondary:hover:not(:disabled) {background:#afc4d40b;border-color:#afc4d4aa}
+.native-onboarding button:disabled {cursor:not-allowed;opacity:.48;transform:none}
+.native-onboarding-footer {width:100%;max-width:1120px;margin:6px auto 0;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;color:#a0b0bf;font-size:11px;line-height:1.5}
+.native-onboarding-privacy {position:relative;max-width:180px;text-align:right}
+.native-onboarding-privacy>summary {display:flex;align-items:center;justify-content:flex-end;gap:4px;min-height:30px;cursor:pointer;list-style:none;color:#bdc9d4}
+.native-onboarding-privacy>summary::-webkit-details-marker {display:none}
+.native-onboarding-privacy>summary>svg {width:14px;height:14px;transition:transform .18s ease}
+.native-onboarding-privacy[open]>summary>svg {transform:rotate(180deg)}
+.native-onboarding-privacy>p {margin:10px 0 0;font-size:11px;line-height:1.65;color:#afc4d4}
+.native-onboarding-phase {display:flex;align-items:center;gap:9px;margin:22px 0 0;font-size:13px;line-height:1.6;color:#d8c29e}
+.native-onboarding-spinner {width:14px;height:14px;border:1.5px solid #d2ae7540;border-top-color:#d2ae75;border-radius:50%;animation:native-onboarding-spin 1s linear infinite;flex:none}
+.native-onboarding-error {margin:18px 0 0;padding:12px 14px;border-left:2px solid #e0a29d;background:#e0a29d0c;color:#f0c5be;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.native-onboarding-back {display:flex;align-items:center;gap:4px;margin:0 0 34px -4px;padding:4px;background:none;border:0;color:#c4d0da;font-size:13px!important;font-weight:500!important}
+.native-onboarding-back>svg {width:19px;height:19px}
+.native-onboarding-restore-form {display:grid;gap:10px;margin-top:27px}
+.native-onboarding-restore-form>label {font-size:13px;font-weight:550;color:#d6dfe6}
+.native-onboarding-restore-form>textarea {display:block;width:100%;min-height:136px;resize:vertical;padding:15px 16px;border:1px solid #6f899e75;border-radius:12px;background:#182b3d;color:#f4f1e8;font-family:'DM Sans',sans-serif;font-size:15px;line-height:1.7;box-shadow:inset 0 2px 6px #030a1414}
+.native-onboarding-restore-form>textarea::placeholder {color:#879cad}
+.native-onboarding-restore-form>textarea:disabled {opacity:.6}
+.native-onboarding-restore-warning {margin:0 0 8px;color:#acbdca;font-size:12px;line-height:1.6}
+.native-onboarding-restoring .native-onboarding-stage {padding:28px 0 34px}
+.native-onboarding-restoring .native-onboarding-description {max-width:31ch}
+.native-onboarding-connecting .native-onboarding-description {max-width:32ch}
+@keyframes native-onboarding-arrive {from {opacity:0;transform:translateY(13px) rotate(-3deg)}to {opacity:1;transform:translateY(0) rotate(0)}}
+@keyframes native-onboarding-spin {to {transform:rotate(360deg)}}
+@media(min-width:800px) {
+ .native-onboarding {padding:38px 48px 28px}
+ .native-onboarding-stage {max-width:1120px;grid-template-columns:1fr 1fr;align-items:center;gap:50px;padding:40px 0}
+ .native-onboarding-art {grid-column:2;grid-row:1;height:min(56vh,490px);margin:0 -30px}
+ .native-onboarding-content {grid-column:1;grid-row:1}
+ .native-onboarding-content h1 {font-size:clamp(49px,5.8vw,76px)}
+ .native-onboarding-description {max-width:30ch;font-size:17px}
+ .native-onboarding-actions {max-width:360px;margin-top:32px}
+ .native-onboarding-footer {justify-content:flex-start;gap:36px;font-size:12px}
+ .native-onboarding-privacy {max-width:340px;text-align:left}
+ .native-onboarding-privacy>summary {justify-content:flex-start}
+ .native-onboarding-restoring .native-onboarding-stage {display:block;max-width:440px;padding:42px 0}
+ .native-onboarding-restoring .native-onboarding-content h1 {font-size:56px}
+}
+@media(max-width:359px) {
+ .native-onboarding {padding-right:21px;padding-left:21px}
+ .native-onboarding-brand>span {font-size:21px}
+ .native-onboarding-network {font-size:10px;padding:4px 7px}
+ .native-onboarding-content h1 {font-size:38px}
+ .native-onboarding-description {font-size:14px}
+ .native-onboarding-footer {gap:8px;font-size:10px}
+ .native-onboarding-privacy {max-width:142px}
+}
+@media(max-height:720px) and (max-width:799px) {
+ .native-onboarding {padding-top:max(18px,env(safe-area-inset-top));padding-bottom:max(16px,env(safe-area-inset-bottom))}
+ .native-onboarding-stage {gap:5px;padding-top:6px;padding-bottom:18px}
+ .native-onboarding-art {height:clamp(120px,27vh,194px);margin-bottom:0}
+ .native-onboarding-content h1 {font-size:clamp(36px,10vw,44px)}
+ .native-onboarding-description {margin-top:11px;font-size:14px;line-height:1.5}
+ .native-onboarding-actions {margin-top:20px;gap:9px}
+ .native-onboarding .native-onboarding-primary,.native-onboarding .native-onboarding-secondary {min-height:49px;padding:13px 17px}
+ .native-onboarding-back {margin-bottom:20px}
+ .native-onboarding-restoring .native-onboarding-stage {padding-top:25px;padding-bottom:24px}
+ .native-onboarding-restore-form {margin-top:21px}
+}
+@media(prefers-reduced-motion:reduce) {
+ .native-onboarding *,.native-onboarding *::before,.native-onboarding *::after {animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}

@@ -124,3 +124,44 @@ Every mutation changes one constant. Each corresponding `.cfg` has an expected i
 | `ReleaseUnknown`; `trace-ReleaseUnknown.md` | ClaimMutation → ObserveUnconfirmed → release | Return missing/unavailable status after an uncertain send; application inputs remain reserved |
 
 These are abstract counterexamples to deliberately weakened rules, not discovered implementation vulnerabilities. The action-to-code table and tests must be reconciled with the actual transport and journal boundaries before using this model as implementation evidence.
+
+## Tor status ordering
+
+`TorStatus.tla` models one start and one pause with two delayed status RPCs and a revision bound of four. Renderer phase and native phase are separate. Poll revision capture, native snapshot and renderer delivery are distinct actions. Native pause can succeed or fail while bootstrap completion and start replies race it. A retained local pause intent blocks status updates through either outcome until an explicit start clears it.
+
+| Model action | Owning file and symbol |
+| --- | --- |
+| `StartBegin`, `StartReply` | `src/native/transport.ts`: `NativeBridge.start` |
+| `NativeProgress`, `NativeReady` | `src-tauri/src/transport/session.rs`: `Inner::start`, bootstrap progress |
+| `PollBegin`, `PollSnapshot`, `PollReply` | `src/native/transport.ts`: `NativeBridge.status`, `NativeBridge.acceptStatus`; native `native_status` |
+| `PauseBegin`, `PauseReply` | `src/native/transport.ts`: `NativeBridge.pause` |
+| `NativePause`, `NativePauseFailure` | `src-tauri/src/transport/session.rs`: `Inner::pause`; failed IPC/native call |
+
+```mermaid
+stateDiagram-v2
+    paused --> bootstrapping: StartBegin / clear pause intent, advance revision
+    bootstrapping --> ready: accepted StartReply or first ready PollReply / advance revision
+    bootstrapping --> paused: PauseBegin / latch intent, advance revision
+    ready --> paused: PauseBegin / latch intent, advance revision
+    paused --> paused: native pause success or failure, then PauseReply / retain intent
+    ready --> ready: reject stale poll revision
+    paused --> paused: reject poll while pause intent remains
+```
+
+The first accepted ready observation, including a poll before the start reply, invalidates older bootstrap snapshots. Start and pause begin/completion also fence earlier status replies. The pause-intent latch additionally blocks a fresh ready response after a failed pause; revision matching alone cannot protect that case. Transient pause and completion fences are retained in the model, but the persistent latch makes their individual removal redundant for these properties.
+
+The pinned TLC runner and Java 25 checked the following on November 6, 2026:
+
+| Configuration | Observed result |
+| --- | --- |
+| `TorStatus.cfg` | PASS: 82,529 generated; 19,350 distinct; depth 14; queue empty; all 11 semantic actions fired |
+| `TorStatus_NoRevisionGuard.cfg` | `ReadyNeverRegresses` violated: capture bootstrap at revision 1 → start reply publishes ready at revision 2 → old bootstrap reply clears ready contexts |
+| `TorStatus_NoPauseIntent.cfg` | `NoReadyAfterPause` violated: pause begins → native pause fails → pause reply completes at revision 3 → fresh revision-3 poll returns native ready and restores contexts |
+
+```sh
+node /path/to/tla-model/scripts/tla.mjs check spec/tla/TorStatus --workers 2 --coverage
+node /path/to/tla-model/scripts/tla.mjs trace spec/tla/TorStatus --cfg TorStatus_NoRevisionGuard.cfg
+node /path/to/tla-model/scripts/tla.mjs trace spec/tla/TorStatus --cfg TorStatus_NoPauseIntent.cfg
+```
+
+The model checks status ordering and readiness capability retention. Native generations, repeated starts/resumes, overlapping pause calls, start failures, network reachability, UI rendering, circuit isolation and liveness are outside this bounded model. Implementation tests must drive the same delayed-reply and failed-pause sequences; these results are not an implementation proof.
