@@ -4,6 +4,7 @@ import type {FrontierCheckpoint} from '../../packages/protocol/src/rollup/fronti
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import type {PoolApi,RollupPoolStatus} from './pool.ts';
 import {epochCatchUp,type EpochOnBatch} from './epoch-sync.ts';
+import {isPrivatePoolApi} from './network-privacy.ts';
 
 /** The batch a restore starts at for a wallet made on or after `createdAt`, a day early; picked from every checkpoint's time so the pool never learns the date. /times is indexed by global batch on an epoch pool too. */
 export async function epochBirthCheckpoint(api:PoolApi,createdAt:number):Promise<number>{
@@ -45,13 +46,15 @@ export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,
 export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:PoolApi,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>):Promise<EpochAccount>{
  const pool=await epochPoolOf(api),{epochLen}=pool,epoch=Math.floor(bornAt/epochLen),blocks=Math.floor((bornAt-epoch*epochLen)/CHECKPOINT_EVERY)*CHECKPOINT_EVERY;
  // pool.epoch is the last accepted batch's: at an epoch's end the count alone names the next epoch, whose checkpoint 404s.
- if(epoch===pool.epoch&&blocks>0&&pool.prevNoteRoot!==undefined)try{
+ if(!isPrivatePoolApi(api)&&epoch===pool.epoch&&blocks>0&&pool.prevNoteRoot!==undefined)try{
   const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
   const account=checkpoint.epoch===epoch&&checkpoint.blocks===blocks?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt}):undefined;
   if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched,pool))return account;
  }catch{/* the checkpoint start is only a shortcut, so any failure confirming it (a 404, a checkpoint that does not parse, a 429, an onBatch that threw) falls back instead of rejecting: the replay start below needs none of it and is always right */}
  const start=Math.max(epoch-1,0);
- return start?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint:{epoch:start,blocks:0,filled:Array<string>(NOTE_DEPTH-SUBTREE_DEPTH).fill('0')},bornAt}):EpochAccount.owning(hash,keys,{epochLen,bornAt});
+ const account=start?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint:{epoch:start,blocks:0,filled:Array<string>(NOTE_DEPTH-SUBTREE_DEPTH).fill('0')},bornAt}):EpochAccount.owning(hash,keys,{epochLen,bornAt});
+ if(isPrivatePoolApi(api)&&!await epochMatchesPool(account,api,undefined,onBatch,watched,pool))throw new Error('The pool history does not match its published root.');
+ return account;
 }
 
 /** Resumes a v2 snapshot the pool agrees with. One it refuses, or whose root it refutes, gives way to a fresh account and the reason; a contradicting prevNoteRoot throws. */

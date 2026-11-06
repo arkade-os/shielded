@@ -28,10 +28,11 @@ import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shie
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
+import {isPrivatePoolApi,markPrivatePoolApi} from './network-privacy.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;
  /** Called once with the Arkade address, synchronously and before the pool sync; a throw aborts create. */
  onArkAddress?:(address:string)=>void};
 
@@ -153,6 +154,7 @@ export class ShieldedWallet extends Wallet {
  private readonly listings=new Set<string>();
  private master!:Uint8Array;
  private readonly linkRecords=new Map<string,LinkRecord>();
+ private claimApi?:PoolApi;
  private readonly changeListeners=new Set<()=>void>();
  private readonly used=new Set<string>();
  private readonly usedTxids=new Set<string>();
@@ -172,6 +174,10 @@ export class ShieldedWallet extends Wallet {
  private selfSending=false;
  private nativeOperations=0;
  private statusAt=Date.now();
+ private networkPrivacy=false;
+ private pendingNullifiers?:()=>ReadonlySet<bigint>;
+ private pendingOutpoints?:()=>ReadonlySet<string>;
+ private lnurlFetch?:typeof fetch;
  /** undefined = not looked up this outage; null = looked up but unavailable (head gone); number = the expiry. */
  private headExpiry?:number|null;
 
@@ -182,7 +188,17 @@ export class ShieldedWallet extends Wallet {
    // The manager starts up against the indexer while load() reads the pool; start() awaits this same start-up.
    void wallet.getContractManager().catch(()=>{});
    config.onArkAddress?.(await wallet.getAddress());
-   wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.hash=config.hash;wallet.prover=config.prover;
+   wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
+   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);
+   if(wallet.networkPrivacy){
+    const live=(api:PoolApi):PoolApi=>markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
+     wallet.assertOpen();
+     const result=await api<T>(path,body,()=>{wallet.assertOpen();beforeRequest?.();});
+     wallet.assertOpen();return result;
+    });
+    wallet.api=live(wallet.api);if(wallet.claimApi)wallet.claimApi=live(wallet.claimApi);
+   }
+   wallet.pendingNullifiers=config.pendingNullifiers;wallet.pendingOutpoints=config.pendingOutpoints;wallet.lnurlFetch=config.lnurlFetch;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
    wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;wallet.master=parseMasterSecret(config.secret);wallet.bornAt=config.bornAt??0;wallet.maxDepositFee=maxDepositFee;
    await wallet.load();
@@ -195,7 +211,7 @@ export class ShieldedWallet extends Wallet {
   }catch(error){await wallet.dispose().catch(()=>{});throw error;}
  }
 
- get inFlight():ReadonlySet<bigint>{return this.notes.inFlight;}
+ get inFlight():ReadonlySet<bigint>{return this.pendingNullifiers?new Set([...this.notes.inFlight,...this.pendingNullifiers()]):this.notes.inFlight;}
  get poolAddress():string{return this.ownPoolAddress;}
  get depositFee():DepositFee|undefined{return depositFeeFor(this.pool.status);}
  get acceptedDepositFee():DepositFeeSchedule|undefined{return maxDepositFeeOf(this.maxDepositFee,this.feeAccepted);}
@@ -219,7 +235,7 @@ export class ShieldedWallet extends Wallet {
   const router=new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
    .use(shieldedRail(this)).use(shieldedWithdrawRail(this))
    .use(arkRail()).use(arkAssetRail()).use(poolFundedExit(this,onchainRail({feeInfo}),feeInfo));
-  for(const rail of this.swaps?lightningRails(this,this.swaps):[])router.use(rail);
+  for(const rail of this.swaps?lightningRails(this,this.swaps,this.lnurlFetch):[])router.use(rail);
   return router;
  }
  shieldedBalance(asset=BTC_ASSET):bigint{return this.account.balance(asset);}
@@ -230,7 +246,7 @@ export class ShieldedWallet extends Wallet {
   try{plan=this.account.anchorPlan();}catch{return [];}
   return this.mergeableAssets().flatMap(asset=>this.account.notes(asset)).filter(n=>needsRecovery(n,plan));
  }
- get recoveryInFlight():EpochOwnedNote[]{return this.recovering.filter(n=>this.notes.inFlight.has(n.nullifier));}
+ get recoveryInFlight():EpochOwnedNote[]{return this.recovering.filter(n=>this.inFlight.has(n.nullifier));}
  shieldedHistory():readonly EpochHistoryEntry[]{return this.account.history;}
  override async getTransactionHistory():Promise<ArkTransaction[]>{
   const sdk=await super.getTransactionHistory();
@@ -298,7 +314,7 @@ export class ShieldedWallet extends Wallet {
  private async finishStart():Promise<void>{
   const manager=await this.getContractManager();
   if(this.stopped)return;
-  await manager.watchScript?.(this.poolScript,{label:'shielded pool'});
+  if(!this.networkPrivacy)await manager.watchScript?.(this.poolScript,{label:'shielded pool'});
   if(this.stopped)return;
   this.unwatch.push(manager.onContractEvent(event=>{
    // A watch-only event carries no contract, which is the point: the pool script is not ours. Any movement on it
@@ -337,7 +353,7 @@ export class ShieldedWallet extends Wallet {
  private async renewNotes(){
   const chosen=await this.notes.pick(async()=>{
    for(const asset of this.mergeableAssets()){
-    const plan=await epochIdle(this.account,()=>this.account.renewalDue({inFlight:this.notes.inFlight,asset}));
+    const plan=await epochIdle(this.account,()=>this.account.renewalDue({inFlight:this.inFlight,asset}));
     if(plan&&!this.renewing){const built=await this.account.renew(plan,this.self);this.renewing=true;return {nullifiers:plan.due.map(n=>n.nullifier),built};}
    }
    return undefined;
@@ -346,7 +362,7 @@ export class ShieldedWallet extends Wallet {
  }
  private async recoverNotes(){
   const chosen=await this.notes.pick(async()=>{
-   const note=this.recovering.find(n=>!this.notes.inFlight.has(n.nullifier));
+   const note=this.recovering.find(n=>!this.inFlight.has(n.nullifier));
    return note&&{nullifiers:[note.nullifier],built:await this.account.recover(note,this.self)};
   },chosen=>chosen?.nullifiers??[]);
   if(chosen)this.upkeep(chosen.nullifiers,chosen.built);
@@ -387,7 +403,7 @@ export class ShieldedWallet extends Wallet {
    if(amount<=0n)throw new Error('A claim link needs an amount above zero.');
    const bearer=(nullifier:bigint)=>{const keys=bearerKeysOf(bearerOf(this.master,nullifier));return rollupRecipientOf(this.hash,keys.ask,keys.nk,keys.viewSecret);};
    const field=asset?assetFieldOfId(asset):BTC_ASSET,legs=(inFlight:ReadonlySet<bigint>)=>this.account.pay(bearer,amount,this.self,inFlight,field,{join:this.prover.joinReady?.()??false});
-   const {spends}=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
+   const {spends}=await this.notes.pick(()=>legs(this.inFlight),chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
    held.push(...spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
    return this.submit(spends.map(built=>({built})),step,undefined,async()=>(await legs(this.others(held,[field]))).spends.map(built=>({built})));
   });
@@ -397,7 +413,7 @@ export class ShieldedWallet extends Wallet {
  /** What a link holds now, and whether this wallet minted it; a malformed token throws before anything is fetched. */
  async inspectLink(token:string):Promise<{notes:{asset:bigint;amount:bigint}[];mine:boolean}>{
   const {decoded,mine}=this.mine(token);
-  const {notes}=await bearerAccount(this.hash,decoded,this.api,this.mergeableAssets());
+  const {notes}=await bearerAccount(this.hash,decoded,this.claimApi??this.api,this.mergeableAssets());
   return {notes:notes.map(n=>({asset:n.asset,amount:n.amount})),mine};
  }
  /** Claims everything a link holds into this wallet; on one of its own links, that takes it back. */
@@ -406,7 +422,7 @@ export class ShieldedWallet extends Wallet {
   const handle=shieldedHandle({title:mine?'Taking back a link':'Claiming a link',steps:shieldedSteps.claim,railId:'shielded-claim'},async step=>{
    step(0);this.assertOpen();
    const claim=async()=>{
-    const link=await bearerAccount(this.hash,decoded,this.api,this.mergeableAssets());
+    const link=await bearerAccount(this.hash,decoded,this.claimApi??this.api,this.mergeableAssets());
     if(!link.notes.length)throw new Error('This link is empty or already claimed.');
     const spends=await claimRecovery(this.hash,link,this.self);this.assertOpen();
     return spends.map(built=>({built}));
@@ -530,7 +546,7 @@ export class ShieldedWallet extends Wallet {
   if(address.hrp!==pool.hrp||hex.encode(address.serverPubKey)!==hex.encode(pool.serverPubKey))throw new Error('The Lightning HTLC belongs to another Arkade server.');
   const destination=address.encode(),program=address.pkScript.subarray(2);
   const record=await this.prepareLightning({id,reference:paymentHash,kind:'fund',paymentHash,destination,amount:String(amount),...(expiresAt!==undefined?{expiresAt}:{})},store,async()=>{
-   const input=pickNote(this.account.spendableNotes(),amount,this.notes.inFlight);
+   const input=pickNote(this.account.spendableNotes(),amount,this.inFlight);
    if(!input)throw new Error('No single pool note covers the full Lightning payment.');
    return {built:await this.account.spend({input,withdraw:amount,program},this.self),extra:{program}};
   });
@@ -560,7 +576,8 @@ export class ShieldedWallet extends Wallet {
  }
  /** `skipPayouts` is what auto-shield wants and the "Shield again" button does not: a payout is only shielded on request. */
  planFor(coins:readonly ArkCoin[],skipPayouts=true){
-  return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used:this.used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS,fee:{schedule:this.depositFee,exempt:c=>this.isPoolPayout(c)}});
+  const pending=this.pendingOutpoints?.(),used=pending?new Set([...this.used,...pending]):this.used;
+  return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS,fee:{schedule:this.depositFee,exempt:c=>this.isPoolPayout(c)}});
  }
  private deps():SubmitDeps{return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript};}
  /** Every held note of `assets` but `mine`, as an in-flight set: a rebuild can then choose only the notes its action already holds. */
@@ -598,17 +615,18 @@ export class ShieldedWallet extends Wallet {
   void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
  private assertOpen(){if(this.stopped)throw new Error('The wallet was closed.');}
- private reserved(coin:{txid:string;vout:number}){return this.used.has(`${coin.txid}:${coin.vout}`)||this.usedTxids.has(coin.txid);}
+ private reserved(coin:{txid:string;vout:number},pending=this.pendingOutpoints?.()){const outpoint=`${coin.txid}:${coin.vout}`;return this.used.has(outpoint)||this.usedTxids.has(coin.txid)||pending?.has(outpoint)===true;}
  private async nativeSpend(inputs:readonly {txid:string;vout:number}[]|undefined,run:()=>Promise<string>){
   this.assertOpen();
   if(this.selfSending)throw new Error('A shield deposit coin is being prepared. Try again when it is ready.');
   this.nativeOperations++;
-  try{await this.restoreLightningSpends();this.assertOpen();if(inputs?.some(coin=>this.reserved(coin)))throw new Error('A selected coin is reserved for shielding.');return await run();}finally{this.nativeOperations--;}
+  try{await this.restoreLightningSpends();this.assertOpen();const pending=this.pendingOutpoints?.();if(inputs?.some(coin=>this.reserved(coin,pending)))throw new Error('A selected coin is reserved for shielding.');return await run();}finally{this.nativeOperations--;}
  }
  override async getSpendableVtxos(...args:Parameters<Wallet['getSpendableVtxos']>){
   await this.restoreLightningSpends();
   const coins=await super.getSpendableVtxos(...args);
-  return args[0]?.genericallySpendableOnly?coins.filter(coin=>!this.reserved(coin)):coins;
+  const pending=this.pendingOutpoints?.();
+  return args[0]?.genericallySpendableOnly?coins.filter(coin=>!this.reserved(coin,pending)):coins;
  }
  override send(...args:Parameters<Wallet['send']>){
   return this.nativeSpend('recipients' in args[0]?args[0].selectedVtxos:undefined,()=>super.send(...args));
@@ -681,7 +699,7 @@ export class ShieldedWallet extends Wallet {
  async merge(asset?:bigint,above?:number):Promise<ShieldedPaymentHandle|undefined>{
   if(this.stopped||Date.now()<this.mergeRetryAt)return undefined;
   for(const field of asset===undefined?this.mergeableAssets():[asset]){
-   const plan=await this.notes.pick(()=>this.account.consolidate(this.self,field,this.notes.inFlight,above),chosen=>chosen?chosen.inputs.map(n=>n.nullifier):[]);
+   const plan=await this.notes.pick(()=>this.account.consolidate(this.self,field,this.inFlight,above),chosen=>chosen?chosen.inputs.map(n=>n.nullifier):[]);
    if(!plan)continue;
    const nullifiers=plan.inputs.map(n=>n.nullifier);
    const handle=shieldedHandle({title:'Merging two notes',steps:shieldedSteps.merge,railId:'shielded-merge'},step=>this.submit([{built:plan.built}],step,MERGE_WAIT_MS));
@@ -698,11 +716,11 @@ export class ShieldedWallet extends Wallet {
   this.listings.add(txid);await this.persist();this.changed();
   return txid;
  }
- maxPrivatePayment(asset=BTC_ASSET){try{return topThree(this.account.spendableNotes(asset,this.notes.inFlight));}catch{return 0n;}}
+ maxPrivatePayment(asset=BTC_ASSET){try{return topThree(this.account.spendableNotes(asset,this.inFlight));}catch{return 0n;}}
  canWithdraw(amount:bigint,opts:{asset?:string;sats?:bigint}={}){
   try{
    const field=opts.asset?assetFieldOfId(opts.asset):BTC_ASSET;
-   return coversWithdrawal(this.account.spendableNotes(field),this.account.spendableNotes(BTC_ASSET),amount,this.notes.inFlight,!!opts.asset,opts.sats??BigInt(DUST));
+   return coversWithdrawal(this.account.spendableNotes(field),this.account.spendableNotes(BTC_ASSET),amount,this.inFlight,!!opts.asset,opts.sats??BigInt(DUST));
   }catch{return false;}
  }
  async pay(to:string,amount:bigint,asset?:string):Promise<ShieldedPaymentHandle>{
@@ -717,7 +735,7 @@ export class ShieldedWallet extends Wallet {
     await this.persist();
     return spends.map(built=>({built}));
    };
-   const chosen=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
+   const chosen=await this.notes.pick(()=>legs(this.inFlight),chosen=>chosen.spends.flatMap(s=>s.witness.slot.nullifiers));
    held.push(...chosen.spends.flatMap(s=>s.witness.slot.nullifiers));this.assertOpen();
    return this.submit(await recorded(chosen),step,undefined,async()=>recorded(await legs(this.others(held,[field]))));
   });
@@ -740,7 +758,7 @@ export class ShieldedWallet extends Wallet {
     if(!input)throw new Error('No single note covers this amount.');
     return [{built:await this.account.spend({input,withdraw:amount,program},this.self),extra:{program}}] as SubmitMember[];
    };
-   const members=await this.notes.pick(()=>legs(this.notes.inFlight),chosen=>chosen.flatMap(m=>m.built.witness.slot.nullifiers));
+   const members=await this.notes.pick(()=>legs(this.inFlight),chosen=>chosen.flatMap(m=>m.built.witness.slot.nullifiers));
    held.push(...members.flatMap(m=>m.built.witness.slot.nullifiers));this.assertOpen();
    this.recordSent(members.map(m=>[m.built.witness.slot.nullifiers[0]!,opts.record??{to}] as [bigint,SentRecord]));
    await this.persist();
@@ -786,7 +804,7 @@ export class ShieldedWallet extends Wallet {
  /** The pool refuses coins near expiry; a batch swap renews them, after which auto-shield picks them up. */
  async renew():Promise<string|undefined>{
   if(this.nativeOperations||this.selfSending)return undefined;
-  const coins=await this.coins();
+  const pending=this.pendingOutpoints?.(),coins=(await this.coins()).filter(coin=>!pending?.has(`${coin.txid}:${coin.vout}`));
   if(this.nativeOperations||this.selfSending||!needsRenewal(coins,Date.now(),SHIELD_FLOOR_MS))return undefined;
   const txid=await this.settle();
   this.retryAt=0;await this.sync();this.changed();

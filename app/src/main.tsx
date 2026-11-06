@@ -4,6 +4,8 @@ import {registerAppCache} from './app-cache';
 import ShieldedHome from './ShieldedHome';
 const RollupWallet=lazy(()=>import('./RollupWallet'));
 const Disclose=lazy(()=>import('./Disclose'));
+const NativeWallet=lazy(()=>import('./NativeWallet'));
+declare const __NATIVE_BUILD__:boolean;
 import './fonts.css';
 import '@fontsource/ibm-plex-mono/latin-400.css';
 import '@fontsource/ibm-plex-mono/latin-500.css';
@@ -27,4 +29,4 @@ class RouteBoundary extends React.Component<{children:React.ReactNode},{failed:b
  static getDerivedStateFromError(){return {failed:true};}
  render(){return this.state.failed?<p>Something went wrong. Reload the page.</p>:this.props.children;}
 }
-createRoot(document.getElementById('root')!).render(<React.StrictMode><UpdateBar/><RouteBoundary>{path==='/wallet'||path==='/rollup'||path==='/claim'?<Suspense fallback={loading}><RollupWallet/></Suspense>:path==='/verify'||path==='/watch'?<Suspense fallback={loading}><Disclose/></Suspense>:<ShieldedHome/>}</RouteBoundary></React.StrictMode>);
+createRoot(document.getElementById('root')!).render(__NATIVE_BUILD__?<RouteBoundary><Suspense fallback={loading}><NativeWallet/></Suspense></RouteBoundary>:<React.StrictMode><UpdateBar/><RouteBoundary>{path==='/wallet'||path==='/rollup'||path==='/claim'?<Suspense fallback={loading}><RollupWallet/></Suspense>:path==='/verify'||path==='/watch'?<Suspense fallback={loading}><Disclose/></Suspense>:<ShieldedHome/>}</RouteBoundary></React.StrictMode>);

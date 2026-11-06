@@ -24,6 +24,11 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
+import {isNativeHost,nativeClaimFetch,nativeLnurlFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
+import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
+
+const NATIVE=isNativeHost();
+const POOL_ORIGIN=NATIVE?(globalThis as typeof globalThis&{__SHIELDED_NATIVE__:{poolOrigin:string}}).__SHIELDED_NATIVE__.poolOrigin:'';
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
@@ -65,11 +70,13 @@ const NOT_PRIVATE:PrivateReceiveState={on:false,pending:false,refused:false,with
 const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].includes(errorText(error));
 // Stable, so React focuses it once on mount; an inline ref would take focus back on every render.
 const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
-export default function RollupWallet(){
+export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void}={}){
+ const [sessionFetch]=useState(()=>NATIVE?nativeSessionFetch():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
+ const [nativePending,setNativePending]=useState(false);
  const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
- const [secret,setSecret]=useState(()=>localStorage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>localStorage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
+ const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
@@ -97,12 +104,16 @@ export default function RollupWallet(){
  const sheetOwner=sheetRef.current;
 
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
+ useEffect(()=>{
+  onShutdown?.(async()=>{restoring.current=true;mounted.current=false;await Promise.all([...sessions.current].map(close=>close()));await cacheRef.current!.drain();});
+  return()=>onShutdown?.(undefined);
+ },[onShutdown]);
 
- useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));localStorage.setItem(SECRET,fresh);localStorage.setItem(BORN,'new');localStorage.setItem(CREATED,String(Date.now()));createdHere.current=true;setSecret(fresh);}},[secret]);
+ useEffect(()=>{if(!secret){const fresh=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));storage.setItem(SECRET,fresh);storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));createdHere.current=true;setSecret(fresh);}},[secret]);
  // The wallet needs the pool phase, network and token before creation.
  useEffect(()=>{
   const controller=new AbortController();
-  void retryPageRead(()=>rollupApi<RollupPoolStatus>('/status'),controller.signal,{onError:error=>{if(!restoring.current)setStartupError(errorText(error));}})
+  void retryPageRead(()=>rollupApi<RollupPoolStatus>('/status',undefined,sessionFetch??fetch,1000,POOL_ORIGIN),controller.signal,{onError:error=>{if(!restoring.current)setStartupError(errorText(error));}})
    .then(status=>{if(status&&!controller.signal.aborted&&!restoring.current){poolRef.current=status;setPool(status);if(status.phase==='ready')setInitialPool(status);setStartupError('');}}).catch(()=>{});
   return()=>controller.abort();
  },[]);
@@ -192,8 +203,8 @@ export default function RollupWallet(){
   restoreRequested.current=true;setRestoreStarted(true);
   try{
    const at=restoreDate?Date.parse(restoreDate):NaN,token=poolRef.current?.pool?.token;
-   const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(''),at)}:undefined;
-   await restorePageWallet(restore,{cache:cacheRef.current!,storage:localStorage,reload:()=>location.reload(),...(born?{born}:{}),stop:async()=>{
+   const born=Number.isFinite(at)&&token?{token,at,batches:await epochBirthCheckpoint(poolApiOf(POOL_ORIGIN),at)}:undefined;
+   await restorePageWallet(restore,{cache:cacheRef.current!,storage:storage,reload,...(born?{born}:{}),stop:async()=>{
     restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
    }});
@@ -229,16 +240,19 @@ export default function RollupWallet(){
   },async hash=>{
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
    let created:ShieldedWallet|undefined;
-   const arkProvider=new RestArkProvider(network.arkUrl),indexerProvider=new RestIndexerProvider(network.indexerUrl??network.arkUrl);
-   const pairing=createLightningWallet(secret,{arkProvider,indexerProvider});pairing.catch(()=>{});
+   const privateFetch=NATIVE?nativeSessionFetch():undefined,lnurlFetch=NATIVE?nativeSessionFetch(nativeLnurlFetch):undefined,claimFetch=NATIVE?nativeSessionFetch(nativeClaimFetch):undefined;
+   const providers=NATIVE?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
+   const pairing=createLightningWallet(secret,providers);pairing.catch(()=>{});
    try{
-    const bornAt=bornAtFor(localStorage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
+    if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
+    const bornAt=bornAtFor(storage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
     created=await ShieldedWallet.create({
      identity:SingleKey.fromHex(deriveWalletKeyMaterial(secret,'mutinynet').nativeSecret),
-     arkProvider,indexerProvider,
+     ...providers,
      storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
      settlementConfig:false,walletMode:'static',
-     pool:{origin:'',status},secret,hash,prover:browserProver(()=>poolRef.current??status),
+     pool:{origin:POOL_ORIGIN,status},secret,hash,prover:browserProver(()=>poolRef.current??status,privateFetch),
+     ...(NATIVE?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}:{}),
      shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });
@@ -247,8 +261,8 @@ export default function RollupWallet(){
     const reportLightning=(error:unknown)=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));};
     starting=startPageLightning({
      pairing,
-     swaps:paired=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning}),
-     lnurl:async(paired,swaps)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()}),
+     swaps:paired=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,...(NATIVE?nativeSwapConfig():{})}),
+     lnurl:async(paired,swaps)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:payouts=>swaps.registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()}),
      active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
     startingRef.current=starting;void starting.then(()=>{if(startingRef.current===starting)startingRef.current=undefined;});
@@ -276,7 +290,7 @@ export default function RollupWallet(){
    fundsRef.current={wallet:created,watch:funds};
    unwatch.push(created.onShieldedChange(()=>{if(current()){funds.update();setTick(t=>t+1);}}));
    unwatch.push(created.onAction(handle=>{if(current()){funds.update();quotes.clear();sheetOwner.watch(handle,handle.title);}}));
-   legacy=importLegacySent(created,localStorage,current).catch(error=>{if(current())setPoolError(errorText(error));});
+   legacy=importLegacySent(created,storage,current).catch(error=>{if(current())setPoolError(errorText(error));});
    if(created.repositoryError)setPoolError(`Your saved notes: ${created.repositoryError}`);
    setWallet(created);
    const parts=await starting;
@@ -309,6 +323,11 @@ export default function RollupWallet(){
   return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
  },[wallet]);
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
+ useEffect(()=>{
+  if(!NATIVE||!wallet)return;
+  try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
+  catch(error){setPoolError(errorText(error));}
+ },[wallet,tick]);
  // Local reads of the receive state: after every Lightning action, on a new receiver, and on each tick.
  useEffect(()=>{
   const service=lnurlRef.current;if(!wallet||!unifiedAddress||lnBusy||!service||!receiveCurrent(service))return;
@@ -323,7 +342,7 @@ export default function RollupWallet(){
   void (async()=>{const markets=await swaps.markets(),route=await swaps.resolve({via:'lightning'});if(mounted.current&&lnLimits.current===swaps)setLnBounds(invoiceBounds(markets,route));})().catch(()=>{});
  };
 
- useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool);},[tab,pool]);
+ useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool,'spend','',sessionFetch);},[tab,pool,sessionFetch]);
  const docked=narrow&&pool?.phase==='ready';
  useEffect(()=>{if(!docked)setSheetOpen(false);},[docked]);
  useEffect(()=>{const panel=document.getElementById('stock-panel');if(!sheetOpen||!docked||!panel)return;
@@ -391,7 +410,7 @@ export default function RollupWallet(){
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
  const needsRecovery=new Set(wallet?.recovering.map(note=>note.nullifier)),recovering=new Set(wallet?.recoveryInFlight.map(note=>note.nullifier));
  const inFlight=!!wallet&&[...wallet.shieldedNotes(),...reserves.flatMap(id=>wallet.shieldedNotes(assetFieldOfId(id)))].some(note=>wallet.inFlight.has(note.nullifier)&&!recovering.has(note.nullifier));
- const phrase=secret?recoveryPhraseOf(secret):'',created=Number(localStorage.getItem(CREATED))||0;
+ const phrase=secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity)=>{
   const link=wallet?.revealLinkOfActivity(item);
@@ -469,6 +488,7 @@ export default function RollupWallet(){
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
   return <div className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>wallet</span></a><a className="stock-home" href="/">About</a></header>
+   {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs remain reserved; a dropped status alone does not prove that they cannot be included later.</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
   {wallet?.operatorDown&&<section className="stock-warning" role="alert"><strong>The pool operator is not answering</strong><span>Your notes are safe, but only the operator renews the pool. If it stays down, the pool head and every payout from it expire {wallet.operatorDown.headExpiresAt?`on ${when(wallet.operatorDown.headExpiresAt)}`:'within a week of its last renewal'}. To withdraw without the operator, see <a href="https://github.com/arkade-os/shielded#if-the-operator-stops">If the operator stops</a>.</span></section>}
@@ -542,16 +562,16 @@ export default function RollupWallet(){
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
      <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))}>{busy?'Working…':quoting?'Getting quote…':quote?routeCopy(quote.railId).title:'Get quote'}</button>
      {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
-     {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(location.origin,minted)} qr={claimUrl(location.origin,minted)} label="QR code of the claim link"/>
+     {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(POOL_ORIGIN||location.origin,minted)} qr={claimUrl(POOL_ORIGIN||location.origin,minted)} label="QR code of the claim link"/>
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
      </form>}</>}
     </section></div>
     {(docked||tab==='home')&&links.length>0&&<div className="stock-col"><section className="stock-card"><h2>Your claim links</h2><div className="stock-notes">
     {links.map(link=><div key={link.key}><span>{holdingsText([{asset:BigInt(link.asset),amount:BigInt(link.amount)}],field=>wallet?.assetIdOf(field))}</span><span className={link.state==='unclaimed'?'wait':'ok'}>{LINK_STATE[link.state]}</span>
-     {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
+     {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(POOL_ORIGIN||location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
     </div></section></div>}</div>
   </>}
-    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds.</p><details className="stock-more"><summary>Before you switch devices</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished. The phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{localStorage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds.</p><details className="stock-more"><summary>Before you switch devices</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished. The phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{storage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
     {(!ready||docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
     {!securityView?<div className="stock-security-menu">
      {(backedUp||!secret)&&<button type="button" className="stock-security-choice" onClick={()=>openSecurity('phrase')}><strong>Recovery phrase</strong><small>Back up or reveal your words</small><span aria-hidden="true">›</span></button>}

@@ -1,0 +1,89 @@
+name: Native wallet
+
+on: [pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundle: nsis
+          - os: ubuntu-24.04
+            bundle: deb
+          - os: macos-15
+            bundle: app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential pkg-config libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
+      - run: npm ci
+      - run: node --test tools/native-host.test.mjs
+      - run: node tools/native-build.mjs icons
+      - run: npm run native:frontend
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - run: node tools/native-build.mjs desktop build --debug --bundles ${{ matrix.bundle }}
+
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Select installed Android NDK
+        shell: bash
+        run: |
+          ndk="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          test -n "$ndk"
+          echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: node tools/native-build.mjs android init --ci --skip-targets-install
+      - run: node tools/native-build.mjs android build --debug --apk --target aarch64 --ci
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Select simulator architecture
+        shell: bash
+        run: |
+          if [[ "$(uname -m)" == arm64 ]]; then
+            echo 'IOS_TARGET=aarch64-sim' >> "$GITHUB_ENV"
+            rustup target add aarch64-apple-ios-sim
+          else
+            echo 'IOS_TARGET=x86_64' >> "$GITHUB_ENV"
+            rustup target add x86_64-apple-ios
+          fi
+      - run: npm ci
+      - run: node tools/native-build.mjs ios init --ci --skip-targets-install
+      - run: node tools/native-build.mjs ios build --debug --target "$IOS_TARGET" --no-sign --ci

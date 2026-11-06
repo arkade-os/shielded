@@ -23,7 +23,14 @@
     "funding": "node --experimental-eventsource --import tsx tools/stock-funding-wallet.ts",
     "fallback": "node --max-old-space-size=8192 --experimental-eventsource --import tsx tools/rollup-fallback.ts",
     "fee:keeper": "node --experimental-eventsource --import tsx tools/shielded-fee-keeper.ts",
-    "ohttp:keygen": "node --import tsx tools/ohttp-keygen.ts"
+    "ohttp:keygen": "node --import tsx tools/ohttp-keygen.ts",
+    "native:frontend": "node tools/native-frontend.mjs",
+    "native:dev": "node tools/native-build.mjs desktop dev",
+    "native:build": "node tools/native-build.mjs desktop build",
+    "native:android": "node tools/native-build.mjs android",
+    "native:ios": "node tools/native-build.mjs ios",
+    "native:icons": "node tools/native-build.mjs icons",
+    "native:check": "tsc --noEmit && cargo test --manifest-path src-tauri/Cargo.toml --workspace"
   },
   "dependencies": {
     "@arkade-os/lnurl-client": "0.9.2",
@@ -35,6 +42,7 @@
     "@scure/bip32": "2.4.0",
     "@scure/bip39": "2.4.0",
     "@scure/btc-signer": "2.4.1",
+    "@tauri-apps/api": "2.12.4",
     "circomlib": "2.0.5",
     "circomlibjs": "0.1.7",
     "compression": "1.8.2",
@@ -56,6 +64,7 @@
     "@fontsource-variable/manrope": "5.3.0",
     "@fontsource/ibm-plex-mono": "5.3.0",
     "@fontsource/space-mono": "5.3.0",
+    "@tauri-apps/cli": "2.12.4",
     "@types/compression": "1.8.1",
     "@types/express": "5.0.6",
     "@types/node": "24.19.2",

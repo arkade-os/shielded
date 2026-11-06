@@ -3,6 +3,7 @@ import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-accoun
 import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,type EpochScanBatch} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import type {PoolApi} from './pool.ts';
+import {isPrivatePoolApi} from './network-privacy.ts';
 
 export const WATCHDOG_MS=60_000,EVENT_RETRY_MS=[0,1000,2000,4000,8000],SCAN_FROM=256,SCAN_AFTER=64,SCAN_PAGE=500;
 export interface ScanPage {from:number;total:number;data:string}
@@ -30,6 +31,7 @@ export function epochExclusive<T>(account:EpochAccount,job:()=>Promise<T>):Promi
 /** Single-flight per account: a skipped scan entry still rotates the account on its own count. */
 export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void,watched?:()=>Iterable<bigint>):Promise<number>{
  return epochExclusive(account,async()=>{
+  if(isPrivatePoolApi(api))return privateCatchUp(account,api,onBatch,onPage);
   let applied=0,total=0,scanning=false,whole=!account.canSkip;
   for(;;){
    scanning=!whole&&total-account.batchCount>(scanning?SCAN_AFTER:SCAN_FROM);
@@ -58,6 +60,25 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
    if(account.batchCount>=page.total)return applied;
   }
  });
+}
+
+async function privateCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void):Promise<number>{
+ let from=Math.floor(account.batchCount/account.epochLen)*account.epochLen,applied=0;
+ for(;;){
+  const limit=Math.min(50,account.epochLen-from%account.epochLen),page=await api<EpochBatchPage>(`/batches?from=${from}&limit=${limit}`);
+  if(!Number.isSafeInteger(page.total)||page.total<0)throw new Error('The pool returned an invalid batch count.');
+  if(page.batches.length>limit)throw new Error('The pool returned more batches than requested.');
+  if(page.batches.length<limit&&from+page.batches.length<page.total)throw new Error('The pool returned an incomplete page.');
+  for(const [offset,batch] of page.batches.entries()){
+   const number=from+offset;
+   if(number<account.batchCount)continue;
+   if(number!==account.batchCount)throw new Error('The pool history has a gap.');
+   await account.apply(batch);applied++;await onBatch?.(account.batchCount,batch,account);
+  }
+  await onPage?.(account.batchCount);
+  from+=page.batches.length;
+  if(from>=page.total||!page.batches.length)return applied;
+ }
 }
 
 /** The head moves as soon as arkd takes a batch, a moment before the pool records it, so a catch-up that finds nothing looks again. */

@@ -1,0 +1,171 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {Wallet} from '@arkade-os/sdk';
+import {buildPoseidon} from 'circomlibjs';
+import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
+import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
+import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
+import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
+import {ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
+import {lightningRails} from '../src/shielded/lightning.ts';
+import {waitForSpend,type PoolApi} from '../src/shielded/pool.ts';
+import {markPrivateFetch,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
+import {epochLeafPool} from './fixtures/epoch-pool.ts';
+import {makeNativeMutationJournal} from '../src/native/mutations.ts';
+import {decodeClaimToken,encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
+
+const privateApi=(api:PoolApi)=>Object.assign(api,{[Symbol.for('shielded.private.pool-api')]:true});
+const fakeHistory=(cursor:number,total:number,epochLen=128)=>{
+ const asked:string[]=[],applied:number[]=[],records=Array.from({length:total},(_,n)=>n as unknown as RollupEpochRecord);
+ let batchCount=cursor;
+ const account={get batchCount(){return batchCount;},epochLen,canSkip:true,async apply(batch:RollupEpochRecord){assert.equal(batch as unknown as number,batchCount);applied.push(batchCount++);}} as unknown as EpochAccount;
+ const api=privateApi((async(path:string)=>{
+  asked.push(path);const url=new URL(path,'https://pool.test');assert.equal(url.pathname,'/batches');
+  const from=Number(url.searchParams.get('from')),limit=Number(url.searchParams.get('limit'));
+  return {total,batches:records.slice(from,from+limit)};
+ }) as PoolApi);
+ return {account,api,asked,applied};
+};
+
+test('private catch-up reads complete aligned pages and applies unseen batches with their true cursors',async()=>{
+ const {account,api,asked,applied}=fakeHistory(83,135),callbacks:number[]=[];
+ assert.equal(await epochCatchUp(account,api,cursor=>{callbacks.push(cursor);}),52);
+ assert.deepEqual(asked,['/batches?from=0&limit=50','/batches?from=50&limit=50','/batches?from=100&limit=28','/batches?from=128&limit=50']);
+ assert.deepEqual(applied,Array.from({length:52},(_,n)=>83+n));
+ assert.deepEqual(callbacks,applied.map(n=>n+1));
+});
+
+test('private catch-up never uses scan or matching-batch fetches when far behind',async()=>{
+ const {account,api,asked}=fakeHistory(7,600);
+ assert.equal(await epochCatchUp(account,api),593);
+ assert.ok(asked.every(path=>path.startsWith('/batches?')));
+ assert.ok(asked.every(path=>!path.endsWith('limit=1')));
+ assert.equal(asked[0],'/batches?from=0&limit=50');
+ assert.equal(account.batchCount,600);
+});
+
+test('private epochSyncAccount follows the same aligned history path',async()=>{
+ const {account,api,asked,applied}=fakeHistory(129,135);
+ await epochSyncAccount(account,api);
+ assert.deepEqual(asked,['/batches?from=128&limit=50']);
+ assert.deepEqual(applied,[129,130,131,132,133,134]);
+});
+
+test('a truncated private page cannot force a tagged follow-up cursor',async()=>{
+ const {account}=fakeHistory(83,135),asked:string[]=[];
+ const api=privateApi((async(path:string)=>{asked.push(path);return {total:135,batches:[0 as unknown as RollupEpochRecord]};}) as PoolApi);
+ await assert.rejects(epochCatchUp(account,api),/incomplete page/);
+ assert.deepEqual(asked,['/batches?from=0&limit=50']);
+ assert.equal(account.batchCount,83);
+});
+
+test('private fresh account avoids a birthday checkpoint and verifies the same final root',async()=>{
+ const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),{api,asked}=epochLeafPool(hash,256,140);
+ const loaded=await loadAccount(hash,keys,{token:'g2',epochLen:256,bornAt:130,api:privateApi(api)});
+ assert.equal(loaded.account.batchCount,140);
+ assert.equal(loaded.offline,undefined);
+ assert.ok(!asked.some(path=>path.startsWith('/checkpoints/')));
+ assert.ok(asked.includes('/batches?from=0&limit=50'));
+ assert.ok(!asked.some(path=>path.includes('from=130')));
+});
+
+test('native bearer inspection and claim use a separate private history capability',async()=>{
+ const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const {api,asked}=epochLeafPool(hash,256,140),token=encodeClaimToken({secret:new Uint8Array(32).fill(7),batch:130});
+ const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  hash,claimApi:privateApi(api),api:async()=>{throw new Error('ordinary wallet history must not be used');},
+  mine:()=>({decoded:decodeClaimToken(token),mine:false}),mergeableAssets:()=>[0n],assertOpen:()=>{},announce:(handle:unknown)=>handle,
+ }) as ShieldedWallet;
+ assert.deepEqual(await wallet.inspectLink(token),{notes:[],mine:false});
+ await assert.rejects((await wallet.claimLink(token)).settled(),/empty or already claimed/);
+ assert.ok(asked.some(path=>path.startsWith('/batches?from=0')));
+ assert.ok(!asked.some(path=>path.startsWith('/checkpoints/')));
+});
+
+test('private wallet startup keeps the public pool script out of the wallet watch',async()=>{
+ const watched:string[]=[],events:string[]=[],wallet={
+  networkPrivacy:true,poolScript:'public-pool-script',stopped:false,unwatch:[] as (()=>void)[],
+  async getContractManager(){return {watchScript:async(script:string)=>{watched.push(script);},onContractEvent:()=>()=>{}};},
+  async notifyIncomingFunds(){events.push('own-funds');return ()=>{};},async autoShield(){events.push('shield');},
+ };
+ await (ShieldedWallet.prototype as unknown as {finishStart(this:typeof wallet):Promise<void>}).finishStart.call(wallet);
+ assert.deepEqual(watched,[]);
+ assert.deepEqual(events,['own-funds','shield']);
+});
+
+test('private wallet watchdog reads public status independently of private item watches',async()=>{
+ const asked:string[]=[],wallet={stopped:false,offline:false,pool:{origin:'https://pool.test',status:{}},statusAt:0,headExpiry:undefined,
+  api:async(path:string)=>{asked.push(path);return {phase:'ready'};},async sync(){return 0;},async autoShield(){},async merge(){},async renewNotes(){},async recoverNotes(){},changed(){this.stopped=true;},
+ };
+ await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);
+ assert.deepEqual(asked,['/status']);
+});
+
+test('external uncertain reservations remain visible after local holds release',()=>{
+ const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};
+ const read=()=>Object.getOwnPropertyDescriptor(ShieldedWallet.prototype,'inFlight')!.get!.call(wallet) as ReadonlySet<bigint>;
+ assert.deepEqual([...read()],[1n,2n]);
+ wallet.notes.inFlight.clear();assert.deepEqual([...read()],[2n]);
+ external.clear();assert.deepEqual([...read()],[]);
+});
+
+test('a restarted native wallet reserves uncertain deposit outpoints for every spending entrypoint',async t=>{
+ const rows=new Map<string,string>(),storage={getItem:(key:string)=>rows.get(key)??null,setItem:(key:string,value:string)=>{rows.set(key,value);},removeItem:(key:string)=>{rows.delete(key);}};
+ const origin='https://pool.test',id='a'.repeat(32),input={txid:'c'.repeat(64),vout:1,value:2000},other={...input,txid:'d'.repeat(64)};
+ makeNativeMutationJournal(storage).beforeNativeMutation({url:origin+'/api/rollup/spends',method:'POST',body:JSON.stringify({id,slot:{nullifiers:['17']},coin:input})});
+ const journal=makeNativeMutationJournal(storage),wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  used:new Set<string>(),usedTxids:new Set<string>(),pendingOutpoints:()=>new Set(journal.pendingPoolOutpoints(origin)),
+  stopped:false,selfSending:false,nativeOperations:0,pool:{status:{pool:{reserves:{}}}},
+  restoreLightningSpends:async()=>{},isPoolPayout:()=>false,
+ }) as ShieldedWallet;
+ let submitted=0;
+ for(const name of ['send','settle','sendSelectedVtxosToSelf'] as const)t.mock.method(Wallet.prototype,name,async()=>{submitted++;return 'sent';});
+ t.mock.method(Wallet.prototype,'getSpendableVtxos',async()=>[input,other] as never);
+ assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:true}),[other]);
+ assert.deepEqual(wallet.planFor([input,other],false),{kind:'btc',coins:[other],amount:2000});
+ for(const spend of [()=>wallet.send({recipients:[{address:'unused',amount:330}],selectedVtxos:[input] as never}),()=>wallet.settle({inputs:[input] as never,outputs:[]}),()=>wallet.sendSelectedVtxosToSelf([input] as never)])await assert.rejects(spend(),/reserved/i);
+ wallet.coins=async()=>[{...input,expiresAt:Date.now()}];assert.equal(await wallet.renew(),undefined);
+ assert.equal(submitted,0);
+ journal.observeNativeResponse({url:origin+'/api/rollup/spends/'+id,method:'GET',status:200,body:JSON.stringify({status:'included',txid:'ab'.repeat(32)})});
+ assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:true}),[input,other]);
+ assert.equal(await wallet.send({recipients:[{address:'unused',amount:330}],selectedVtxos:[input] as never}),'sent');
+});
+
+test('native Lightning-address resolution uses its explicit fetch capability',async()=>{
+ const asked:string[]=[],fetcher=(async(input:RequestInfo|URL)=>{
+  asked.push(String(input));return new Response(JSON.stringify({tag:'payRequest',callback:'https://pay.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',paymentOptions:[{id:'shielded',type:'shielded'}]}),{headers:{'content-type':'application/json'}});
+ }) as typeof fetch;
+ const wallet={restoreLightningSpends:async()=>{},maxPrivatePayment:()=>100_000n} as unknown as ShieldedWallet;
+ const rails=lightningRails(wallet,{} as Parameters<typeof lightningRails>[1],fetcher);
+ assert.equal(await rails.at(-1)!.available!({raw:'alice@pay.example',amount:2000},{} as never),true);
+ assert.deepEqual(asked,['https://pay.example/.well-known/lnurlp/alice']);
+});
+
+for(const delayed of ['error','signing'] as const)test(`retired private wallets reject delayed ${delayed} before polling or signing on a resumed transport`,async t=>{
+ let release!:()=>void,entered!:()=>void,generation=1,reads=0,signed=0;
+ const blocked=new Promise<void>(resolve=>{release=resolve;}),firstRead=new Promise<void>(resolve=>{entered=resolve;});
+ const dispatched:{generation:number;method:string}[]=[],held=new Set([17n]),sentinel=new Error('creation inspected');
+ const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  stopped:false,unwatch:[],changeListeners:new Set(),actionListeners:new Set(),notes:{inFlight:new Set()},pendingNullifiers:()=>held,
+  getContractManager:async()=>({}),getAddress:async()=>'unused',
+  async load(this:{api:PoolApi;claimApi:PoolApi;dispose():Promise<void>;readonly inFlight:ReadonlySet<bigint>}){
+   assert.ok(isPrivatePoolApi(this.api));assert.ok(isPrivatePoolApi(this.claimApi));
+   const waiting=waitForSpend('aa'.repeat(16),async()=>{signed++;await this.api('/spends/'+ 'aa'.repeat(16)+'/sign',{signature:'old'});},this.api,1,5000);
+   await firstRead;await this.dispose();generation=2;release();
+   await assert.rejects(waiting,/wallet was closed/);
+   await assert.rejects(this.api('/spends/'+ 'aa'.repeat(16)+'/sign',{signature:'old'}),/wallet was closed/);
+   await assert.rejects(this.claimApi('/status'),/wallet was closed/);
+   assert.deepEqual(dispatched,[{generation:1,method:'GET'}]);assert.equal(signed,0);
+   assert.deepEqual([...this.inFlight],[17n]);throw sentinel;
+  },
+ }) as ShieldedWallet;
+ t.mock.method(Wallet,'create',async()=>wallet as never);t.mock.method(Wallet.prototype,'dispose',async()=>{});
+ const fetcher=markPrivateFetch((async(_input:RequestInfo|URL,init?:RequestInit)=>{
+  const method=init?.method??'GET';dispatched.push({generation,method});
+  if(method==='GET'&&++reads===1){entered();await blocked;if(delayed==='error')throw new Error('private connection paused');}
+  return new Response(JSON.stringify(method==='GET'?{status:reads===2?'signing':'included',arkTx:'old-request'}:{}),{status:200});
+ }) as typeof fetch);
+ await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,claimFetch:fetcher,networkPrivacy:true,pendingNullifiers:()=>held}),error=>error===sentinel);
+});
