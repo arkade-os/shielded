@@ -229,14 +229,24 @@ test('close() closes every subscription and destroys the pool, and a late event 
  assert.equal(opened,1);
 });
 
-test('open() is told the answer cap: 960 KiB unless the caller sets one',async()=>{
+test('an upstream body at the cap fits 8 answer events beside the largest headers fetch passes, and one byte more is a sealed 502',async t=>{
+ const cap=241_644,headers={'content-type':'a'.repeat(16_219),'cache-control':'b'.repeat(64),'retry-after':'c'.repeat(64)};
+ for(const [size,status] of [[cap,200],[cap+1,502]] as const){
+  const g=await rig(t,{reply:()=>new Response(new Uint8Array(size),{headers})}),sent=await g.ask(ARK);await until(()=>sent.answer()?.kind==='sealed');
+  const inner=await sent.inner();
+  assert.deepEqual([inner.status,(await inner.arrayBuffer()).byteLength],[status,status===200?size:0]);
+  assert.ok(sent.heard.get(A)!.length<=8,`${sent.heard.get(A)!.length} answer events`);
+ }
+});
+
+test('open() is told the answer cap unless the caller sets one',async()=>{
  const secret=generateSecretKey(),gateway=getPublicKey(secret),seen:(number|undefined)[]=[],bus=createNostrBus();
  const open:OhttpOpen=async(_sealed,options)=>{seen.push(options?.maxAnswer);return {kind:'refused'};};
  for(const maxAnswer of [undefined,1234]){
   const carrier=startNostrCarrier({open,secret,relays:[A],pool:bus.pool,...(maxAnswer?{maxAnswer}:{})}),before=seen.length;await settle();
   await Promise.all(bus.pool.publish([A],requestEvent(randomBytes(40),gateway,Date.now())));await until(()=>seen.length>before);carrier.close();
  }
- assert.deepEqual(seen,[960<<10,1234]);
+ assert.deepEqual(seen,[241_644,1234]);
 });
 
 test('an answer for a relay that cannot be reached is counted unpublished, and the other relay still gets it',async t=>{

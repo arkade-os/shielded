@@ -11,9 +11,9 @@ export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
 type Relay={onnotice:(message:string)=>void;subscribe(filters:Filter[],params:{onevent:(event:Event)=>void;onclose:(reason:string)=>void}):{close(reason?:string):void};publish(event:Event):Promise<string>};
 export type RelayPool={ensureRelay(url:string):Promise<Relay>;destroy():void};
 
-// 960 KiB of answer plus the HTTP framing and the sealing overhead still fits 32 chunks of 32 KiB.
+// The most body whose sealed answer fits 8 chunks: 63 Padmé steps of 4 KiB (a 64th plus 32 bytes of nonce and tag passes 256 KiB), less 8 bytes of BHTTP framing and 16 396 for the copied headers at their largest, as Node's fetch refuses 16 KiB of header names and values.
 // ponytail: a flat 30 s retry, so a relay that keeps refusing us is asked every 30 s; back off if an operator minds.
-const ANSWER_BYTES=960<<10,REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESUBSCRIBE_MS=30_000;
+const ANSWER_BYTES=63*4096-8-16_396,REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESUBSCRIBE_MS=30_000;
 
 export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
  if(!value?.trim())return NOSTR_RELAYS;
