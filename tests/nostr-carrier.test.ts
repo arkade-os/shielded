@@ -73,6 +73,26 @@ test('a shed request gets a status event and no upstream call',async t=>{
  release();await until(()=>first.answer()?.kind==='sealed');assert.equal(g.calls.length,1);
 });
 
+test('status events are capped at 5 a second, the rest are counted, and the next second publishes again',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ let clock=0;const {held,release}=holding(),g=await rig(t,{now:()=>clock,gateway:{maxInFlight:1,rate:1000},reply:()=>held});
+ await g.ask(ARK);await until(()=>g.calls.length===1);
+ for(let i=0;i<8;i++)await g.ask(ARK,{listen:[]});
+ await until(()=>g.outcomes.length===8);await quiet();
+ assert.equal(g.statuses().length,5,'eight requests were shed, five were told');
+ clock=1000;await g.ask(ARK,{listen:[]});await until(()=>g.statuses().length===6);
+ clock=60_000;await Promise.all(g.bus.pool.publish([A],g.forged('not base64!')));await quiet();
+ assert.deepEqual(lines,['[nostr] busy 6, status-capped 3, dropped 1']);
+ release();await quiet();
+});
+
+test('the status cap does not touch answers',async t=>{
+ const g=await rig(t,{now:()=>0,gateway:{rate:1000}}),sent:Awaited<ReturnType<typeof g.ask>>[]=[];
+ for(let i=0;i<8;i++)sent.push(await g.ask(ARK));
+ await until(()=>sent.every(one=>one.answer()?.kind==='sealed'));
+ assert.equal(g.answers().length,8);
+});
+
 test('garbage, replays and hostile events get nothing',async t=>{
  const g=await rig(t);g.bus.relay(A).unfiltered=true;
  const first=await g.ask(ARK);await until(()=>first.answer()?.kind==='sealed');

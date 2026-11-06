@@ -12,7 +12,7 @@ export type RelayPool={ensureRelay(url:string):Promise<Relay>;destroy():void};
 
 // 960 KiB of answer plus the HTTP framing and the sealing overhead still fits 32 chunks of 32 KiB.
 // ponytail: a flat 30 s retry, so a relay that keeps refusing us is asked every 30 s; back off if an operator minds.
-const ANSWER_BYTES=960<<10,REMEMBERED=10_000,RESUBSCRIBE_MS=30_000;
+const ANSWER_BYTES=960<<10,REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESUBSCRIBE_MS=30_000;
 
 export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
  if(!value?.trim())return NOSTR_RELAYS;
@@ -25,17 +25,20 @@ export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
 // The pool takes pure's verifyEvent: SimplePool bundles a copy that caches its verdict under another symbol, so readRequest would check every signature again.
 export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),now=Date.now,maxAnswer=ANSWER_BYTES}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number}):{close():void} {
  const gateway=getPublicKey(secret),tally=new Map<string,number>(),handled=new Map<string,Set<string>>(),live=new Map<string,{close():void}>(),waiting=new Map<string,ReturnType<typeof setTimeout>>();
- let since=now(),closed=false;
+ let since=now(),closed=false,statusAt=0,statuses=0;
  // A throw into the library makes it print the event being handled, so neither counting nor a handler may throw.
  const note=(kind:string)=>{try{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[nostr] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();}catch{}};
  const safely=<A extends unknown[]>(fn:(...args:A)=>void)=>(...args:A)=>{try{fn(...args);}catch{note('failed');}};
  const relayOf=async(url:string)=>{const relay=await pool.ensureRelay(url);relay.onnotice=()=>{};return relay;};
+ // A flood of shed requests would make the gateway sign and publish a status for each, so they are capped per second (a fixed window, like admit()).
+ const statusRoom=()=>{const at=now();if(at-statusAt>=1000){statusAt=at;statuses=0;}return ++statuses<=STATUSES_PER_SECOND;};
  // A throw can follow the upstream call, so it never becomes a status: a client reads one as "never ran" and may resend a POST.
  const run=async(event:Event,sealed:Uint8Array,targets:Set<string>)=>{
   try{
    const outcome=await open(sealed,{maxAnswer});
    if(closed)return;
    if(outcome.kind==='refused'){note('refused');return;}
+   if(outcome.kind==='busy'&&!statusRoom()){note('status-capped');return;}
    const request={id:event.id,pubkey:event.pubkey},at=now(),answers=outcome.kind==='sealed'?answerEvents(outcome.bytes,request,secret,at):[statusEvent(outcome.status,outcome.retryAfter,request,secret,at)];
    note(outcome.kind==='sealed'?'answered':'busy');
    await Promise.all([...targets].map(async url=>{
