@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
-import type {AddressInfo} from 'node:net';
+import {connect,type AddressInfo} from 'node:net';
 import {test,type TestContext} from 'node:test';
 import {setTimeout as sleep} from 'node:timers/promises';
 import express from 'express';
@@ -48,7 +48,8 @@ test('a sealed GET to an allowed upstream comes back sealed with the upstream st
 test('a target outside the allowlist, or with a disallowed path, is refused 403 and nothing is fetched',async t=>{
  const g=await gateway(t);
  for(const url of ['https://evil.example/v1/info','http://ark.example/v1/info','https://ark.example:8443/v1/info','https://pool.example/api/rollup/ohttp','https://pool.example/api/rollup/OHTTP-keys/',
-  'https://pool.example/api/rollup/..%2Fohttp','https://pool.example/api/other','https://ark.example/admin','https://esplora.example/v1/info'])assert.equal((await g.open(url)).status,403,url);
+  'https://pool.example/api/rollup/..%2Fohttp','https://pool.example/api/other','https://ark.example/admin','https://esplora.example/v1/info',
+  'https://ark.example/v1/%zz','https://pool.example/api/rollup/%6Fhttp'])assert.equal((await g.open(url)).status,403,url);
  assert.equal((await g.open(ARK,{method:'DELETE'})).status,403,'only GET and POST pass');
  assert.equal(g.calls.length,0);
  assert.throws(()=>createOhttpGateway(optionsOf(g.key,{upstreams:[{origin:'http://ark.example',prefix:'/v1/'}]})),/https/);
@@ -70,8 +71,10 @@ test('only content-type and accept reach the upstream',async t=>{
 test('streaming requests are refused 400',async t=>{
  const g=await gateway(t);
  assert.equal((await g.open(ARK,{headers:{accept:'text/event-stream'}})).status,400);
- for(const path of ['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription/x','/v1/Batch/Events'])assert.equal((await g.open('https://ark.example'+path)).status,400,path);
+ for(const path of ['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription/x','/v1/Batch/Events','/v1/tx%73','/v1/%74xs','/v1/batch/event%73','/v1/indexer/script/%73ubscription/x'])assert.equal((await g.open('https://ark.example'+path)).status,400,path);
  assert.equal(g.calls.length,0);
+ assert.equal((await g.open('https://ark.example/v1/%74x/abc')).status,200);
+ assert.deepEqual(g.calls.map(call=>call.url),['https://ark.example/v1/%74x/abc'],'the path goes up as sealed, for the upstream to decode once');
 });
 
 test('limits answer instead of hanging',async t=>{
@@ -107,6 +110,7 @@ test('requests beyond the in-flight cap are shed with 503',async t=>{
  assert.equal((await g.post((await g.seal(ARK)).init.body!)).status,503,'the count is exact once slots come back');
  hold=false;for(const open of gates.splice(0))open();
  for(const response of await Promise.all(held))assert.equal(response.status,200);
+ for(const maxInFlight of [0,1.5,NaN])assert.throws(()=>createOhttpGateway(optionsOf(g.key,{maxInFlight})),/in-flight/,`${maxInFlight} is not a whole number of slots`);
 });
 
 test('a failed or timed-out upstream frees its slot',async t=>{
@@ -115,18 +119,36 @@ test('a failed or timed-out upstream frees its slot',async t=>{
   url===at('huge')?new Response(new Uint8Array((4<<20)+1)):url===at('failing')?new Response(null,{status:500}):Response.json({ok:true})});
  const sealed=await g.seal(ARK);assert.equal((await g.exchange(sealed)).status,200);
  const exits:[()=>Promise<Response>,number][]=[[()=>g.open(at('slow')),504],[()=>g.open(at('broken')),502],[()=>g.open(at('huge')),502],[()=>g.open(at('failing')),500],[()=>g.open('https://evil.example/'),403],
-  [()=>g.open(at('txs')),400],[()=>g.post(new Uint8Array(64)),400],[()=>g.post(sealed.init.body!),400],[()=>g.post(new Uint8Array((1<<20)+1)),413]];
+  [()=>g.open(at('txs')),400],[()=>g.post(new Uint8Array(64)),400],[()=>g.post(sealed.init.body!),400]];
  for(const [exit,status] of exits)for(let i=0;i<2;i++)assert.equal((await exit()).status,status);
  assert.equal((await g.open(ARK)).status,200,'every exit path gave its slot back');
+ const big=await gateway(t,{maxInFlight:2});
+ for(let i=0;i<2;i++)assert.equal((await big.post(new Uint8Array((1<<20)+1))).status,413);
+ assert.equal((await big.open(ARK)).status,200,'a refused upload gave its slot back');
  const dropped=await gateway(t,{maxInFlight:1,reply:(init,url)=>url===at('slow')?waits(init):Response.json({ok:true})});
  const client=new AbortController(),pending=fetch(dropped.base+'/ohttp',{...(await dropped.seal(at('slow'))).init,signal:client.signal});
  await until(()=>dropped.calls.length===1);client.abort();await assert.rejects(pending);
  await until(()=>dropped.calls[0]!.init.signal!.aborted);
  assert.equal((await dropped.open(ARK)).status,200,'a dropped client gives its slot back and stops its upstream fetch');
- const late=await gateway(t,{maxInFlight:1,before:(_req,_res,next)=>void setTimeout(next,100)}),early=new AbortController();
+ let holding=false,passed=false;
+ const late=await gateway(t,{maxInFlight:1,before:(req,res,next)=>{if(req.method!=='POST'||holding)return next();holding=true;res.once('close',()=>{next();passed=true;});}}),early=new AbortController();
  const abandoned=fetch(late.base+'/ohttp',{...(await late.seal(ARK)).init,signal:early.signal});
- await sleep(20);early.abort();await assert.rejects(abandoned);await sleep(150);
+ await until(()=>holding);early.abort();await assert.rejects(abandoned);await until(()=>passed);
  assert.equal((await late.open(ARK)).status,200,'a request dropped before it reached the gateway takes no slot');
+});
+
+test('a stalled upload is cut off at the deadline and frees its slot',async t=>{
+ const g=await gateway(t,{maxInFlight:1,timeoutMs:50}),port=Number(new URL(g.base).port);
+ for(const length of [1000,(1<<20)+1]){
+  const socket=connect(port,'127.0.0.1').on('error',()=>{});
+  socket.write(`POST /api/rollup/ohttp HTTP/1.1\r\nhost: 127.0.0.1\r\ncontent-type: message/ohttp-req\r\ncontent-length: ${length}\r\n\r\n0123456789`);
+  try{await until(()=>socket.destroyed);}finally{socket.destroy();}
+  assert.equal((await g.open(ARK)).status,200,`the stalled ${length}-byte upload gave its slot back`);
+ }
+ const quick=await gateway(t),timers=()=>process.getActiveResourcesInfo().filter(type=>type==='Timeout').length;
+ await quick.open(ARK);const before=timers();
+ for(let i=0;i<10;i++)await quick.open(ARK);
+ assert.ok(timers()<=before,'no deadline outlives its response');
 });
 
 test('a request sealed to another key id is refused 400',async t=>{
