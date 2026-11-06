@@ -150,11 +150,13 @@ test('a POST that went out ends outcome-unknown when its attempts run out, where
  assert.equal(g.sentTo().length,6,'each used its three attempts');
 });
 
-test('close() ends a POST that went out as outcome-unknown, and refuses a new one as unavailable',async t=>{
+test('close() ends a POST that went out as outcome-unknown, and one that never did as unavailable',async t=>{
  const g=await rig(t,{pick:1}),publish=g.bus.pool.publish;g.bus.relay(A).accept=false;
  t.mock.method(g.bus.pool,'publish',(urls:string[],event:Event)=>{const sent=publish(urls,event);g.fetch.close();return sent;});
  await assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown'));await assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('unavailable'));
  assert.equal(g.sentTo().length,1,'neither its second attempt nor the second POST went out');
+ const fresh=await rig(t),sealing=fresh.fetch('/api/rollup/spends',SPEND);fresh.fetch.close();
+ await assert.rejects(sealing,failsWith('unavailable'));assert.equal(fresh.sentTo().length,0,'closed while it sealed, it never went out');
 });
 
 test('abort closes the attempt',async t=>{
