@@ -1,4 +1,4 @@
-import {isRetryableProviderError,TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
+import {FetchError,isRetryableProviderError,TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
@@ -11,7 +11,25 @@ import {restoreNativeStorage} from './native-storage.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
-export const errorText=(error:unknown)=>pausedErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
+function fetchErrorText(error:unknown){
+ if(!(error instanceof FetchError))return;
+ if(!['GET','HEAD'].includes((error.method??'GET').toUpperCase()))return 'The wallet service request did not finish. Its outcome may be unknown. Check its status before trying again.';
+ let url:URL|undefined;try{url=new URL(error.url??'');}catch{}
+ const service=url?.hostname.startsWith('mempool.')||url?.pathname.includes('/api/address/')?'Bitcoin explorer':url?.pathname.includes('/v1/indexer/')?'Wallet indexer':'Wallet service';
+ const native=url&&/^\/\.shielded-native-session\/[1-9]\d*\//.test(url.pathname);
+ const causes:Record<string,string>={
+  'Tor connection failed':'The Tor connection failed.',
+  'private TLS verification failed':'The service failed secure connection verification.',
+  'private HTTP handshake failed':'The service connection failed.',
+  'private HTTP request failed; outcome may be unknown':'The service connection was interrupted.',
+  'private request timed out; outcome may be unknown':'The service timed out.',
+  'Native network generation is retired or paused':'The private connection was paused.',
+ };
+ const cause=typeof error.cause==='string'?error.cause:error.cause instanceof Error?error.cause.message:'';
+ const reason=Object.hasOwn(causes,cause)?causes[cause]:undefined;
+ return `${service} could not be reached${native?' through Tor':''}. Wallet data may be out of date.${reason?' '+reason:''}`;
+}
+export const errorText=(error:unknown)=>pausedErrorText(error)??fetchErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
 export const historyDirection=(item:Activity):'in'|'out'|'own'=>item.intent?.kind==='shield'||item.intent?.kind==='merge'?'own':activityReceived(item)?'in':'out';
 export function pageActivityHistory(history:Activity[],lightning:Activity[]){
@@ -101,25 +119,27 @@ export async function startPageLightning<C extends {dispose():Promise<void>},S e
  return;
 }
 
-export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void){
- let closed=false;
+export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void,options:{retry?:boolean;delayMs?:number}={}){
+ let closed=false;const controller=new AbortController();
  const values:Partial<T>={},errors:Partial<Record<keyof T,string>>={};
  const reads=(Object.keys(readers) as (keyof T)[]).map(key=>{
   let queued=false,running:Promise<void>|undefined;
+  const report=(error:unknown)=>{if(closed)return;errors[key]=errorText(error);publish({...values},{...errors});};
   const request=()=>{
    if(closed)return;queued=true;
    running??=Promise.resolve().then(async()=>{
     while(queued&&!closed){
      queued=false;
-     try{const value=await readers[key]();if(closed)return;values[key]=value;delete errors[key];}
-     catch(error){if(closed)return;errors[key]=errorText(error);}
-     if(!closed)publish({...values},{...errors});
+     try{
+      const value=options.retry?await retryPageRead(readers[key],controller.signal,{delayMs:options.delayMs,onError:report}):await readers[key]();
+      if(closed)return;values[key]=value;delete errors[key];publish({...values},{...errors});
+     }catch(error){if(!options.retry)report(error);}
     }
    }).finally(()=>{running=undefined;if(queued&&!closed)request();});
   };
   return {request,drain:()=>running};
  });
- return {request(){for(const read of reads)read.request();},async close(){closed=true;await Promise.all(reads.map(read=>read.drain()));}};
+ return {request(){for(const read of reads)read.request();},async close(){closed=true;controller.abort();await Promise.all(reads.map(read=>read.drain()));}};
 }
 
 export async function disposeAfterPageReads(wallet:object,refreshes:WeakMap<object,{close:()=>Promise<void>}>,dispose:()=>Promise<void>){

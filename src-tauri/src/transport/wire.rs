@@ -25,7 +25,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 const STREAM_IDLE: Duration = Duration::from_secs(180);
 
-struct ConnectionTask(JoinHandle<()>);
+pub(super) struct ConnectionTask(JoinHandle<()>);
 impl Drop for ConnectionTask {
     fn drop(&mut self) {
         self.0.abort();
@@ -43,11 +43,10 @@ async fn exchange(
         .host_str()
         .ok_or("missing private HTTP host")?
         .to_owned();
+    let endpoint = host.as_str();
     let stream = lease
-        .client
-        .connect((host.as_str(), 443))
-        .await
-        .map_err(|_| "Tor connection failed")?;
+        .connect_with_recovery(|client| async move { client.connect((endpoint, 443)).await })
+        .await?;
     lease.check()?;
     let name = rustls::pki_types::ServerName::try_from(host)
         .map_err(|_| "invalid private TLS hostname")?;
@@ -66,7 +65,7 @@ async fn exchange(
     Ok((response, driver))
 }
 
-async fn send_http<T>(
+pub(super) async fn send_http<T>(
     stream: T,
     request: hyper::Request<Full<Bytes>>,
 ) -> Result<(Response<Incoming>, ConnectionTask), String>
@@ -214,10 +213,8 @@ async fn socket_inner(
             .host_str()
             .ok_or("missing private socket host")?;
         let stream = lease
-            .client
-            .connect((host, 443))
-            .await
-            .map_err(|_| "Tor socket connection failed")?;
+            .connect_with_recovery(|client| async move { client.connect((host, 443)).await })
+            .await?;
         let mut request = checked
             .url
             .as_str()

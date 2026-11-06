@@ -45,6 +45,8 @@
 .stock-route small{color:var(--slate)}
 /* An address or key has no break points; without this its min-content widens the whole grid past the screen. */
 .stock-card{overflow-wrap:anywhere}
+.stock-shell>*{min-width:0}
+.stock-blocked{overflow-wrap:anywhere;max-width:100%}
 /* iOS zooms into any field under 16px. */
 @media(pointer:coarse){.stock-card input,.stock-card select,.stock-card textarea{font-size:16px}.stock-card button,.stock-warning button{min-height:44px}.stock-card .icon-button{min-width:44px}.stock-home{padding-block:13px}.stock-advanced>summary{padding-block:11px}}
 .stock-notes .stock-actions{grid-column:1/-1}

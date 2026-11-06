@@ -19,8 +19,8 @@ try {
   if (createHash('sha256').update(artifact).digest('hex') !== checksum) throw new Error('TLC artifact checksum mismatch');
   const jar = join(temporary, 'tla2tools.jar');
   writeFileSync(jar, artifact);
-  const configurations = readdirSync(directory).filter(name => /^(NativeSession|TorStatus).*\.cfg$/.test(name) && !name.endsWith('_Sim.cfg')).sort();
-  for (const model of ['NativeSession', 'TorStatus']) if (!configurations.includes(`${model}.cfg`)) throw new Error(`${model} base configuration is missing`);
+  const configurations = readdirSync(directory).filter(name => /^(NativeSession|TorStatus|TorConnect).*\.cfg$/.test(name) && !name.endsWith('_Sim.cfg')).sort();
+  for (const model of ['NativeSession', 'TorStatus', 'TorConnect']) if (!configurations.includes(`${model}.cfg`)) throw new Error(`${model} base configuration is missing`);
   for (const configuration of configurations) {
     const expected = readFileSync(join(directory, configuration), 'utf8').match(/^\\\* EXPECT: (.+)\r?$/m)?.[1];
     if (!expected || (expected !== 'GREEN' && !/^Invariant \w+ is violated$/.test(expected))) throw new Error(`Invalid EXPECT in ${configuration}`);

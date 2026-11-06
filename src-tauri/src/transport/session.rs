@@ -553,6 +553,46 @@ impl Session {
 }
 
 impl Lease {
+    pub async fn connect_with_recovery<T, E, F, Fut>(&self, mut connect: F) -> Result<T, String>
+    where
+        F: FnMut(Client) -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+    {
+        self.check()?;
+        let connected = match connect(self.client.clone()).await {
+            Ok(connected) => connected,
+            Err(_) => {
+                let client = self.reconnect_client()?;
+                self.check()?;
+                connect(client).await.map_err(|_| "Tor connection failed")?
+            }
+        };
+        self.check()?;
+        Ok(connected)
+    }
+
+    fn reconnect_client(&self) -> Result<Client, String> {
+        let inner = self.inner.upgrade().ok_or("private transport closed")?;
+        let mut session = inner.lock()?;
+        session.check(self.generation)?;
+        if self.cancel.is_cancelled()
+            || !session
+                .operations
+                .get(&self.id)
+                .is_some_and(|operation| operation.scope == self.scope)
+        {
+            return Err("private request cancelled".into());
+        }
+        let scope = session
+            .scopes
+            .get_mut(&self.scope)
+            .ok_or("private scope closed")?;
+        if Arc::ptr_eq(&scope.client, &self.client) {
+            scope.client = scope.client.isolated_client();
+        }
+        Ok(scope.client.clone())
+    }
+
     pub async fn emit_data(
         &self,
         channel: &Channel<NativeStreamEvent>,
@@ -939,5 +979,181 @@ mod tests {
             session.scopes.get(&scopes[1].id).unwrap().subscription,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn failed_connect_rotates_only_its_scope_before_one_uncertain_post() {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let unrelated = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id.clone(), "recover")).unwrap();
+        let other = register(&inner, &request(1, unrelated.id.clone(), "other")).unwrap();
+        let original = lease.client.clone();
+        let unrelated_client = other.client.clone();
+        inner
+            .lock()
+            .unwrap()
+            .scopes
+            .get_mut(&scope.id)
+            .unwrap()
+            .subscription = Some("server-id".into());
+        let (client, server) = tokio::io::duplex(4096);
+        let mut client = Some(client);
+        let mut attempts = Vec::new();
+        let stream = lease
+            .connect_with_recovery(|client_context| {
+                attempts.push(client_context);
+                std::future::ready(if attempts.len() == 1 {
+                    Err(())
+                } else {
+                    Ok(client.take().unwrap())
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert!(Arc::ptr_eq(&attempts[0], &original));
+        assert!(!Arc::ptr_eq(&attempts[1], &original));
+        {
+            let session = inner.lock().unwrap();
+            let recovered = session.scopes.get(&scope.id).unwrap();
+            assert!(Arc::ptr_eq(&recovered.client, &attempts[1]));
+            assert_eq!(recovered.binding.as_deref(), Some("scripts|aa"));
+            assert_eq!(recovered.subscription.as_deref(), Some("server-id"));
+            assert!(Arc::ptr_eq(
+                &session.scopes.get(&unrelated.id).unwrap().client,
+                &unrelated_client
+            ));
+        }
+        other.check().unwrap();
+        let peer = tokio::spawn(async move {
+            let mut peer = BufReader::new(server);
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                peer.read_until(b'\n', &mut headers).await.unwrap();
+            }
+            assert!(headers.starts_with(b"POST /spend HTTP/1.1"));
+            let mut body = [0; 4];
+            peer.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"once");
+        });
+        let request = hyper::Request::builder()
+            .method("POST")
+            .uri("/spend")
+            .header("host", "example.org")
+            .body(Full::new(Bytes::from_static(b"once")))
+            .unwrap();
+        let result = super::super::wire::send_http(stream, request).await;
+        assert!(matches!(result, Err(error) if error.contains("outcome may be unknown")));
+        peer.await.unwrap();
+        assert_eq!(attempts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn two_failed_connections_exhaust_recovery_without_an_open_stream() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "bounded")).unwrap();
+        let mut attempts = 0;
+        let result = lease
+            .connect_with_recovery(|_| {
+                attempts += 1;
+                std::future::ready(Err::<(), _>(()))
+            })
+            .await;
+        assert_eq!(attempts, 2);
+        assert_eq!(result, Err("Tor connection failed".into()));
+    }
+
+    #[tokio::test]
+    async fn retired_or_closed_scope_cannot_recover_a_failed_connection() {
+        for retire in ["pause", "scope", "cancel"] {
+            let inner = ready();
+            let scope = inner.scope(1, "indexer").unwrap();
+            let lease = register(&inner, &request(1, scope.id.clone(), "retire")).unwrap();
+            let mut attempts = 0;
+            let result = lease
+                .connect_with_recovery(|_| {
+                    attempts += 1;
+                    match retire {
+                        "pause" => {
+                            inner.pause().unwrap();
+                        }
+                        "scope" => {
+                            inner.close_scope(1, &scope.id).unwrap();
+                        }
+                        _ => {
+                            inner.cancel(1, "retire").unwrap();
+                        }
+                    }
+                    std::future::ready(Err::<(), _>(()))
+                })
+                .await;
+            assert!(result.is_err());
+            assert_eq!(attempts, 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recovered_connection_arriving_after_pause_is_not_delivered() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "late-connect")).unwrap();
+        let mut attempts = 0;
+        let result = lease
+            .connect_with_recovery(|_| {
+                attempts += 1;
+                let result = if attempts == 1 {
+                    Err(())
+                } else {
+                    inner.pause().unwrap();
+                    Ok(())
+                };
+                std::future::ready(result)
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(attempts, 2);
+    }
+
+    #[tokio::test]
+    async fn an_older_failed_lease_uses_the_current_replacement_without_overwriting_it() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let first = register(&inner, &request(1, scope.id.clone(), "first-recovery")).unwrap();
+        let older = register(&inner, &request(1, scope.id.clone(), "older-lease")).unwrap();
+        let mut attempts = 0;
+        first
+            .connect_with_recovery(|_| {
+                attempts += 1;
+                std::future::ready(if attempts == 1 { Err(()) } else { Ok(()) })
+            })
+            .await
+            .unwrap();
+        let replacement = inner
+            .lock()
+            .unwrap()
+            .scopes
+            .get(&scope.id)
+            .unwrap()
+            .client
+            .clone();
+        let mut contexts = Vec::new();
+        older
+            .connect_with_recovery(|client| {
+                contexts.push(client);
+                std::future::ready(if contexts.len() == 1 { Err(()) } else { Ok(()) })
+            })
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&contexts[1], &replacement));
+        assert!(Arc::ptr_eq(
+            &inner.lock().unwrap().scopes.get(&scope.id).unwrap().client,
+            &replacement
+        ));
     }
 }

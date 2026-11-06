@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ActivityRegistry,makeHandle,ProviderUnavailableError,TxType,Wallet,type Activity,type ArkTransaction,type RouteQuote} from '@arkade-os/sdk';
+import {ActivityRegistry,FetchError,makeHandle,ProviderUnavailableError,TxType,Wallet,type Activity,type ArkTransaction,type RouteQuote} from '@arkade-os/sdk';
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {epochCatchUp,epochIdle} from '../src/shielded/epoch-sync.ts';
@@ -60,6 +60,40 @@ test('refresh publishes independent successes and clears only recovered read err
  assert.equal(seen.at(-1)!.values.address,'ark');assert.deepEqual(seen.at(-1)!.values.lightning,['incoming']);assert.equal(seen.at(-1)!.errors.balance,'explorer down');
  hang.resolve(1);await flush();broken=false;refresh.request();await flush();
  assert.equal(seen.at(-1)!.values.balance,12);assert.deepEqual(seen.at(-1)!.errors,{});await refresh.close();
+});
+
+test('a failed explorer refresh retains its last value and recovers without clearing another failure',async()=>{
+ let balance=12,broken=false,historyBroken=false;const seen:{values:Record<string,unknown>;errors:Record<string,string>}[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{if(broken)throw new FetchError('private address',{url:'https://mempool.mutinynet.arkade.sh/.shielded-native-session/5/api/address/private/utxo',method:'GET'});return balance;},history:async()=>{if(historyBroken)throw new Error('history unavailable');return [];}},(values,errors)=>seen.push({values,errors}));
+ refresh.request();await flush();assert.equal(seen.at(-1)!.values.balance,12);
+ broken=true;historyBroken=true;refresh.request();await flush();
+ assert.equal(seen.at(-1)!.values.balance,12);assert.match(seen.at(-1)!.errors.balance!,/Bitcoin explorer/);
+ broken=false;balance=13;refresh.request();await flush();
+ assert.equal(seen.at(-1)!.values.balance,13);assert.deepEqual(seen.at(-1)!.errors,{history:'history unavailable'});await refresh.close();
+});
+
+test('native read refresh recovers a transient provider failure without another page event',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ let reads=0;const seen:{values:Record<string,unknown>;errors:Record<string,string>}[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{if(++reads===1)throw new FetchError('network unavailable',{method:'GET'});return 12;}},(values,errors)=>seen.push({values,errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();assert.equal(reads,1);assert.equal(seen.length,1);assert.ok(seen.at(-1)!.errors.balance);
+ t.mock.timers.tick(2);await flush();assert.equal(reads,2);assert.equal(seen.at(-1)!.values.balance,12);assert.deepEqual(seen.at(-1)!.errors,{});await refresh.close();
+});
+
+test('closing native read refresh cancels retry backoff without another request or publication',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ let reads=0,published=0;
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw new FetchError('network unavailable',{method:'GET'});}},()=>{published++;},{retry:true,delayMs:1});
+ refresh.request();await flush();assert.equal(reads,1);assert.equal(published,1);
+ await refresh.close();t.mock.timers.tick(60_000);await flush();assert.equal(reads,1);assert.equal(published,1);
+});
+
+test('native read refresh does not retry a policy or financial refusal',async()=>{
+ for(const error of [new Error('Native network route is not approved'),Object.assign(new Error('Deposits are paused.'),{code:'fee-paused'})]){
+  let reads=0;const seen:Record<string,string>[]=[];
+  const refresh=page.pageRefresh({balance:async()=>{reads++;throw error;}},(_values,errors)=>seen.push(errors),{retry:true,delayMs:1});
+  refresh.request();await flush();await refresh.close();assert.equal(reads,1);assert.deepEqual(seen,[{balance:page.errorText(error)}]);
+ }
 });
 
 test('refresh coalesces notifications and drains an active read without publishing after close',async()=>{
@@ -200,6 +234,26 @@ test('the page words a paused deposit wherever the pause sits in the error, and 
  assert.equal(page.errorText(Object.assign(new Error('A deposit owes a fee.'),{code:'fee-missing'})),'A deposit owes a fee.');
  assert.equal(page.errorText('pool refused'),'pool refused');
  assert.equal(page.errorText({code:'fee-paused-not'}),'The action failed.');
+});
+
+test('native SDK read failures identify the service without exposing addresses or session URLs',()=>{
+ for(const suffix of ['/utxo','/txs']){
+  const url='https://mempool.mutinynet.arkade.sh/.shielded-native-session/5/api/address/private-address'+suffix;
+  for(const cause of ['unexpected failure at '+url,'toString']){
+   const failure=new FetchError('Network request failed: GET '+url,{url,method:'GET',cause});
+   assert.equal(page.errorText(failure),'Bitcoin explorer could not be reached through Tor. Wallet data may be out of date.');
+  }
+ }
+ const url='https://mutinynet.arkade.sh/.shielded-native-session/5/v1/indexer/vtxos?scripts=private-script';
+ assert.equal(page.errorText(new FetchError('Network request failed: GET '+url,{url,method:'GET',cause:'Tor connection failed'})),'Wallet indexer could not be reached through Tor. Wallet data may be out of date. The Tor connection failed.');
+ assert.equal(page.errorText(new FetchError('bad URL with private data',{url:'not a URL',method:'GET'})),'Wallet service could not be reached. Wallet data may be out of date.');
+});
+
+test('a failed native mutation keeps its unknown outcome and paused deposit wording',()=>{
+ const url='https://mutinynet.arkade.sh/.shielded-native-session/5/v1/tx/submit';
+ assert.equal(page.errorText(new FetchError('Network request failed: POST '+url,{url,method:'POST'})),'The wallet service request did not finish. Its outcome may be unknown. Check its status before trying again.');
+ const paused=Object.assign(new Error('Deposits are paused.'),{code:'fee-paused'});
+ assert.equal(page.errorText(new FetchError('Network request failed: POST '+url,{url,method:'POST',cause:paused})),PAUSED_ERROR);
 });
 
 test('a shielded handle that fails on a paused deposit shows the page\'s words on its sheet, and any other failure keeps its message',async()=>{
