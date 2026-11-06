@@ -2,6 +2,8 @@
 
 The Tauri application bundles the existing wallet frontend. Rust owns its embedded Arti client, private network requests, streams and sockets. The bundled renderer has no permission to connect to remote hosts directly. Remote navigation and additional windows are denied.
 
+Web and native use the same `RollupWallet` screen and `WalletOnboarding` create/restore flow. The native wrapper supplies the vault, Tor transport and session lifecycle; the browser keeps its existing storage and networking. Browser onboarding does not start or claim an embedded Tor connection.
+
 The native renderer also disables WebRTC peer connections, which could otherwise introduce ICE/STUN traffic outside the HTTP and WebSocket transport. Workers and remote assets remain subject to the bundled CSP.
 
 The native build targets Windows, Linux, macOS, Android and iOS. Source support and the CI definitions do not establish that each target has been built or tested on a physical device. Record matching build and runtime evidence before distributing a release.
@@ -39,6 +41,22 @@ The simulator example targets an Apple Silicon Mac. Intel Macs use `x86_64`. Dev
 Use the npm scripts for mobile initialization. Tauri uses that package-manager context and the canonical `tauri` script to generate the Rust callbacks invoked from Xcode and Gradle.
 
 Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iOS. `src-tauri/vendor/sysinfo` backports the upstream iOS fix while retaining the pinned release and real memory metrics. Its `README.shielded.md` records the source and patch; remove this override when Arti accepts a fixed release.
+
+## CI binaries
+
+The **Native wallet** GitHub Actions workflow builds release packages on pushes to `master` or `main`, and on manual dispatch. Pull requests build debug packages. Every package uses the fixed Mutinynet pool, `https://shielded.mutinynet.arkade.sh`; collection fails if the native marker and Rust route policy disagree with it. These builds use test funds only.
+
+Open the matching workflow run in the repository's **Actions** tab and download its **Artifacts**. Artifact names include `mutinynet`, platform, profile, source commit and run attempt. Downloads remain available for 14 days and contain `manifest.json`, `SHA256SUMS` and signing notes. This workflow uploads Actions artifacts; it does not publish GitHub releases or tags.
+
+| Platform | Downloads |
+| --- | --- |
+| Windows x86_64 | NSIS `.exe` installer with offline WebView2 |
+| Linux x86_64 | `.deb` and `.AppImage` inside a `.tar.gz` that preserves executable permissions |
+| macOS Intel and Apple Silicon | Universal `.app.zip` and `.dmg`; CI verifies both architecture slices |
+| Android ARM64 | Debug APK for PRs; unsigned release APK plus an installable debug APK for release runs |
+| iOS | Unsigned ARM64 iPhone `.ipa` and a simulator `.app.zip` for the CI host's simulator architecture |
+
+The device IPA needs your own Apple signing and provisioning before installation; the simulator archive is not an iPhone installer. Android release APKs also require signing. The additional Android debug APK uses the runner's development key, which is not a stable distribution identity. Updates require the same signing key: preserve verified recovery data and unresolved-swap app state before replacing an existing installation. Distribution signing credentials and macOS notarization are not configured by this workflow.
 
 ## Native boundary and storage
 
