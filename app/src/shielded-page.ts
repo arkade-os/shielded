@@ -1,4 +1,4 @@
-import {isRetryableProviderError,TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
+import {FetchError,isRetryableProviderError,TxType,type Activity,type PaymentHandle,type RouteQuote} from '@arkade-os/sdk';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
@@ -7,10 +7,29 @@ import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
 import {pausedErrorText} from './rollup-client.ts';
+import {restoreNativeStorage} from './native-storage.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
 type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
-export const errorText=(error:unknown)=>pausedErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
+function fetchErrorText(error:unknown){
+ if(!(error instanceof FetchError))return;
+ if(!['GET','HEAD'].includes((error.method??'GET').toUpperCase()))return 'The wallet service request did not finish. Its outcome may be unknown. Check its status before trying again.';
+ let url:URL|undefined;try{url=new URL(error.url??'');}catch{}
+ const service=url?.hostname.startsWith('mempool.')||url?.pathname.includes('/api/address/')?'Bitcoin explorer':url?.pathname.includes('/v1/indexer/')?'Wallet indexer':'Wallet service';
+ const native=url&&/^\/\.shielded-native-session\/[1-9]\d*\//.test(url.pathname);
+ const causes:Record<string,string>={
+  'Tor connection failed':'The Tor connection failed.',
+  'private TLS verification failed':'The service failed secure connection verification.',
+  'private HTTP handshake failed':'The service connection failed.',
+  'private HTTP request failed; outcome may be unknown':'The service connection was interrupted.',
+  'private request timed out; outcome may be unknown':'The service timed out.',
+  'Native network generation is retired or paused':'The private connection was paused.',
+ };
+ const cause=typeof error.cause==='string'?error.cause:error.cause instanceof Error?error.cause.message:'';
+ const reason=Object.hasOwn(causes,cause)?causes[cause]:undefined;
+ return `${service} could not be reached${native?' through Tor':''}. Wallet data may be out of date.${reason?' '+reason:''}`;
+}
+export const errorText=(error:unknown)=>pausedErrorText(error)??fetchErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
 export const historyDirection=(item:Activity):'in'|'out'|'own'=>item.intent?.kind==='shield'||item.intent?.kind==='merge'?'own':activityReceived(item)?'in':'out';
 export function pageActivityHistory(history:Activity[],lightning:Activity[]){
@@ -60,19 +79,25 @@ export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,op
  }
 }
 
+export function pageClose<A extends unknown[],T>(close:(...args:A)=>Promise<T>){
+ let completed:Promise<T>|undefined;
+ return(...args:A)=>completed??=Promise.resolve().then(()=>close(...args)).catch(error=>{completed=undefined;throw error;});
+}
+
 export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose(),retry:PageRetry={}){
- let cancelled=false,wallet:W|undefined,disposal:Promise<void>|undefined,closing:Promise<W|undefined>|undefined;
+ let cancelled=false,wallet:W|undefined;
  const controller=new AbortController();
- const dispose=()=>disposal??=disposeWallet(wallet!);
+ const dispose=pageClose(()=>disposeWallet(wallet!));
  const ready=(async()=>{
   const prepared=await prepare();if(cancelled)return;
   await retryPageRead(async()=>{wallet=await create(prepared);return wallet;},controller.signal,retry);
   if(cancelled){if(wallet)await dispose();return;}
   return wallet;
  })();
+ const close=pageClose(async()=>{await ready.catch(()=>{});if(wallet)await dispose();return wallet;});
  return {ready,active:()=>!cancelled,close(){
   cancelled=true;controller.abort();
-  return closing??=(async()=>{await ready.catch(()=>{});if(wallet)await dispose();return wallet;})();
+  return close();
  }};
 }
 
@@ -94,25 +119,27 @@ export async function startPageLightning<C extends {dispose():Promise<void>},S e
  return;
 }
 
-export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void){
- let closed=false;
+export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void,options:{retry?:boolean;delayMs?:number}={}){
+ let closed=false;const controller=new AbortController();
  const values:Partial<T>={},errors:Partial<Record<keyof T,string>>={};
  const reads=(Object.keys(readers) as (keyof T)[]).map(key=>{
   let queued=false,running:Promise<void>|undefined;
+  const report=(error:unknown)=>{if(closed)return;errors[key]=errorText(error);publish({...values},{...errors});};
   const request=()=>{
    if(closed)return;queued=true;
    running??=Promise.resolve().then(async()=>{
     while(queued&&!closed){
      queued=false;
-     try{const value=await readers[key]();if(closed)return;values[key]=value;delete errors[key];}
-     catch(error){if(closed)return;errors[key]=errorText(error);}
-     if(!closed)publish({...values},{...errors});
+     try{
+      const value=options.retry?await retryPageRead(readers[key],controller.signal,{delayMs:options.delayMs,onError:report}):await readers[key]();
+      if(closed)return;values[key]=value;delete errors[key];publish({...values},{...errors});
+     }catch(error){if(!options.retry)report(error);}
     }
    }).finally(()=>{running=undefined;if(queued&&!closed)request();});
   };
   return {request,drain:()=>running};
  });
- return {request(){for(const read of reads)read.request();},async close(){closed=true;await Promise.all(reads.map(read=>read.drain()));}};
+ return {request(){for(const read of reads)read.request();},async close(){closed=true;controller.abort();await Promise.all(reads.map(read=>read.drain()));}};
 }
 
 export async function disposeAfterPageReads(wallet:object,refreshes:WeakMap<object,{close:()=>Promise<void>}>,dispose:()=>Promise<void>){
@@ -133,9 +160,19 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
  if(!wallet.repositoryError&&current()&&storage.getItem(SENT)===raw)storage.removeItem(SENT);
 }
 
+export function createPageWallet(storage:PageStorage){
+ if(storage.getItem(SECRET))throw new Error('A wallet already exists in this browser. Reload to open it.');
+ const secret=bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+ storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));storage.setItem(SECRET,secret);
+ return secret;
+}
+
 export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number}}){
  const parsed=bytesToHex(parseMasterSecret(phrase));
- o.cache.close();await o.stop();await o.cache.drain();await o.cache.repository.clear();
+ o.cache.close();await o.stop();await o.cache.drain();
+ const nativeRestore=restoreNativeStorage(o.storage,parsed,o.born);
+ if(nativeRestore){await nativeRestore;await o.cache.repository.clear();o.reload();return;}
+ await o.cache.repository.clear();
  o.storage.setItem(SECRET,parsed);
  for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
  if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);

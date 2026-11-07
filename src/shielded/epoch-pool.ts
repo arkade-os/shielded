@@ -1,8 +1,9 @@
 import {hex} from '@scure/base';
 import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {EpochBuiltSpend} from '../../packages/protocol/src/rollup/epoch-circuit.ts';
-import {epochExclusive,type EpochBatchPage} from './epoch-sync.ts';
+import {epochCatchUp,epochExclusive,type EpochBatchPage} from './epoch-sync.ts';
 import {poolApiOf,type Groth16Proof,type PoolApi,type RollupPoolStatus} from './pool.ts';
+import {isPrivatePoolApi} from './network-privacy.ts';
 
 /** The epoch pool's POST /spends body: slot.anchor where a classic slot has root, and exactly one of rCur (fast path) and origin (recovery). */
 export function epochTransferBody(id:string,built:EpochBuiltSpend,proof:Groth16Proof,extra:{program?:Uint8Array;coin?:{txid:string;vout:number;tapTree:string;leaf:string};asset?:string}={}){
@@ -24,6 +25,7 @@ export const epochProvingUrls=(built:EpochBuiltSpend,proving:NonNullable<RollupP
 
 /** Every batch, whole, from the account's own count, as the account's only sync. */
 export function epochSyncAccount(account:EpochAccount,api:PoolApi=poolApiOf('')){
+ if(isPrivatePoolApi(api))return epochCatchUp(account,api).then(()=>undefined);
  return epochExclusive(account,async()=>{
   for(;;){
    const page=await api<EpochBatchPage>(`/batches?from=${account.batchCount}&limit=50`);

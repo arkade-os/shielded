@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { appCacheManifest } from './app-cache-manifest.ts';
 
 const force = process.env.SHIELDED_APP_CACHE_FORCE === '1', off = process.env.SHIELDED_APP_CACHE_OFF === '1';
+const native = process.env.SHIELDED_NATIVE === '1';
 
 const appCache = (): Plugin => ({
   name: 'app-cache', apply: 'build', enforce: 'post',
@@ -19,8 +20,8 @@ const appCache = (): Plugin => ({
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
-  define: { __APP_CACHE_OFF__: JSON.stringify(off) },
-  plugins: [react(), appCache()],
+  define: { __APP_CACHE_OFF__: JSON.stringify(off || native), __NATIVE_BUILD__: JSON.stringify(native) },
+  plugins: [react(), ...(native ? [] : [appCache()])],
   resolve: {alias: {circomlibjs:fileURLToPath(new URL('./src/circom-browser.ts',import.meta.url))}},
   server: { host: '0.0.0.0', port: 5173, proxy: { '/api': process.env.SHIELDED_API_ORIGIN??'http://127.0.0.1:8792' } },
   build: { outDir: 'dist', emptyOutDir: true },

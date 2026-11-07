@@ -51,11 +51,11 @@ export function lnurlShieldedRail(wallet:ShieldedWallet,client:LnurlClient):Paym
  };
 }
 
-export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<SwapClient,'markets'>):PaymentRail[]{
+export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<SwapClient,'markets'>,fetcher?:typeof fetch):PaymentRail[]{
  const base=lightningRail(swaps);
  // `available` resolves offline against the cached registry, which nothing has fetched on a fresh page.
  const lightning=poolFunded(wallet,{...base,available:async(req,ctx)=>{await swaps.markets().catch(()=>{});return base.available!(req,ctx);}});
- const client=createLnurlClient();
+ const client=createLnurlClient(fetcher?{fetchImpl:fetcher}:undefined);
  const [arkade,viaLightning]=lnurlRails({client,arkade:shieldedWithdrawRail(wallet),lightning}) as [PaymentRail,PaymentRail];
  const handOver=async(error:unknown,req:PaymentRequest,ctx:RouterContext,...rails:PaymentRail[])=>{
   if(!transient(error))for(const rail of rails)if(await Promise.resolve().then(()=>rail.available!(req,ctx)).catch(()=>false))return rail.quote(req,ctx);

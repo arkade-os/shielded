@@ -9,7 +9,7 @@ const files=new Map<string,Promise<Uint8Array>>();
 const cooldowns=new Map<string,number>();
 const cooldownError=(url:string,until:number)=>new Error(`The proving file ${url} is temporarily unavailable. Retry in ${Math.ceil((until-Date.now())/1000)} seconds.`);
 /** A file's `?v=` is the SHA-256 the pool's manifest lists for it; the bytes must match it, since the file runs on the spend's secrets. */
-export function loadProvingFile(url:string,priority:'high'|'low'|'auto'='auto'):Promise<Uint8Array>{
+export function loadProvingFile(url:string,priority:'high'|'low'|'auto'='auto',fetcher:typeof fetch=fetch):Promise<Uint8Array>{
  const cached=files.get(url);if(cached)return cached;
  const digest=new URL(url,'http://pool.invalid').searchParams.get('v');
  if(!digest||!/^[0-9a-f]{64}$/.test(digest))return Promise.reject(new Error(`The proving file ${url} names no digest to check it against.`));
@@ -19,7 +19,7 @@ export function loadProvingFile(url:string,priority:'high'|'low'|'auto'='auto'):
   for(let attempt=0,reload=false;;attempt++){
    let response:Response|undefined,failure:unknown,bytes:Uint8Array<ArrayBuffer>|undefined;
    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(new Error(`The proving file ${url} download timed out.`)),120_000);
-   try{response=await fetch(url,{priority,signal:controller.signal,...(reload?{cache:'reload' as const}:{})});if(response.ok)bytes=new Uint8Array(await response.arrayBuffer());}
+   try{response=await fetcher(url,{priority,signal:controller.signal,...(reload?{cache:'reload' as const}:{})});if(response.ok)bytes=new Uint8Array(await response.arrayBuffer());}
    catch(error){failure=error;}
    finally{clearTimeout(timer);}
    if(bytes){
@@ -48,17 +48,17 @@ export function loadProvingFile(url:string,priority:'high'|'low'|'auto'='auto'):
 }
 
 /** Prefetch and proving share immutable file bytes and any download already in progress. */
-export function prefetchProvingKeys(status:RollupPoolStatus,circuit:'spend'|'join'='spend',origin=''){
+export function prefetchProvingKeys(status:RollupPoolStatus,circuit:'spend'|'join'='spend',origin='',fetcher:typeof fetch=fetch){
  if(!status.proving)return;
  void import('snarkjs').catch(()=>{});
- for(const url of Object.values(epochCircuitUrls(circuit,status.proving,origin)))void loadProvingFile(url,'low').catch(()=>{});
+ for(const url of Object.values(epochCircuitUrls(circuit,status.proving,origin)))void loadProvingFile(url,'low',fetcher).catch(()=>{});
 }
 
 // snarkjs races when two first proofs build its process-wide curve at once, so every prover shares one queue.
 let queue:Promise<unknown>=Promise.resolve();
 /** snarkjs keeps a worker thread per CPU alive; in Node, call this after the last proof so the process can exit. */
 export const releaseProver=async()=>{await queue;await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();};
-export function snarkjsProver({status,origin='',joinReady}:{status:()=>RollupPoolStatus;origin?:string;joinReady?:{get():boolean;set():void}}):ShieldedProver{
+export function snarkjsProver({status,origin='',joinReady,fetcher}:{status:()=>RollupPoolStatus;origin?:string;joinReady?:{get():boolean;set():void};fetcher?:typeof fetch}):ShieldedProver{
  let joined=false;
  const ready=joinReady??{get:()=>joined,set:()=>{joined=true;}};
  return {
@@ -69,7 +69,7 @@ export function snarkjsProver({status,origin='',joinReady}:{status:()=>RollupPoo
     const proving=status().proving;
     if(!proving)throw new Error('The pool has not published its proving keys, so this wallet cannot prove yet.');
     const urls=epochProvingUrls(built,proving,origin);
-    const [wasm,zkey]=await Promise.all([loadProvingFile(urls.wasm),loadProvingFile(urls.zkey)]);
+    const [wasm,zkey]=await Promise.all([loadProvingFile(urls.wasm,'auto',fetcher),loadProvingFile(urls.zkey,'auto',fetcher)]);
     const {groth16}=await import('snarkjs'),{proof}=await groth16.fullProve(toCircuitInput(built.witness.input),wasm,zkey);
     if(built.witness.slot.nullifiers.length===2)try{ready.set();}catch{}
     return proof;

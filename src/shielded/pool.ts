@@ -3,13 +3,17 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
+import {isPrivateFetch,markPrivatePoolApi} from './network-privacy.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number;depositFee?:DepositFee}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Promise<T>;
-export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=><T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
+export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=>{
+ const api:PoolApi=<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
+ return isPrivateFetch(fetcher)?markPrivatePoolApi(api):api;
+};
 export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 const READ_TIMEOUT_MS=60_000;
@@ -25,6 +29,7 @@ export const rejected=(error:unknown,code:string):boolean=>typeof error==='objec
 /** Retries outages and rate limits; definitive refusals surface at once. */
 export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{
  const key=new URL(origin||globalThis.location?.origin||'http://localhost').origin;
+ const privateMutation=body!==undefined&&isPrivateFetch(fetcher);
  const admission=body!==undefined&&!/^\/spends\/[^/]+\/sign(?:\?|$)/.test(path);
  const request:RequestInit={method:body===undefined?'GET':'POST',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})};
  for(let attempt=0;;attempt++){
@@ -37,7 +42,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
    response=await fetcher(origin+'/api/rollup'+path,read?{...request,signal:read.signal}:request);
    // An unreadable GET is read again; an admitted POST is not resent (the pool refuses a duplicate id), its caller polls it by id.
    if(response.status<500)json=await response.json().catch((error:unknown)=>{if(response!.ok&&read)throw error;return {};});
-  }catch(error){response=undefined;if(attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
+  }catch(error){response=undefined;if(privateMutation||attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
   finally{clearTimeout(timer);}
   if(response&&response.status<500){
    const metadata=json&&typeof json==='object'?json:{};
@@ -46,12 +51,12 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
     const delay=retryAfter&&/^\d+$/.test(retryAfter)?Number(retryAfter)*1000:retryAfter&&/^[A-Za-z]/.test(retryAfter)?Date.parse(retryAfter)-Date.now():NaN;
     const cooldown=admission&&(metadata.code==='admission-rate-limit'||metadata.error==='Too many requests from this address; try again in a minute.')?admissionLimitedUntil:rateLimitedUntil;
     cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(Number.isSafeInteger(delay)&&delay>=0?Math.max(1000,delay):60_000)));
-    if(attempt<4)continue;
+    if(!privateMutation&&attempt<4)continue;
    }
    if(!response.ok)throw Object.assign(new PoolRequestError(metadata.error??`The pool answered ${response.status}.`,response.status),typeof metadata.code==='string'?{code:metadata.code}:{});
    return json as T;
   }
-  if(attempt>=4)throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
+  if(privateMutation||attempt>=4)throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
   await sleep(pauseMs);
  }
 }
