@@ -2,6 +2,8 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,EPOCH_NULLIFIER_DEPTH,EPOCH_SLOTS,RECOVERED_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {Gradient,Seal,spirograph,wave,type Tincture} from './guilloche.tsx';
 import {rollupApi,type RollupPoolStatus} from './rollup-client.ts';
+import {AppUpdateNotice} from './AppUpdates.js';
+import NativeDownloads from './NativeDownloads.tsx';
 import './shielded-home.css';
 
 const EPOCH_LEN=128; // The genesis 4 launch value; Dockerfile.dokploy bakes the same SHIELDED_ROLLUP_EPOCH_LEN.
@@ -10,7 +12,7 @@ const confidential=['Who you pay, and who pays you','How much each private payme
 const publicRecord=['Bitcoin entering the pool, with its amount and source','Bitcoin leaving the pool, with its amount and destination','When transactions happen','The total the pool holds','That an epoch rotated, and when.','That someone recovered an older note, and which epoch it came from — never whose it was, or how much it held.'];
 const steps=[
  {numeral:'I',name:'Deposit',tone:'azure',text:'Fund your wallet’s Arkade address, then shield an amount. It becomes a private note that only your keys can spend.'},
- {numeral:'II',name:'Pay privately',tone:'gules',text:'Send to another wallet’s shielded address. Your browser proves you own enough and that the books balance, without revealing which note is yours or how much moves.'},
+ {numeral:'II',name:'Pay privately',tone:'gules',text:'Send to another wallet’s shielded address. Your device proves you own enough and that the books balance, without revealing which note is yours or how much moves.'},
  {numeral:'III',name:'Withdraw',tone:'vert',text:'Withdraw to your Arkade address and the Bitcoin leaves the pool. Like a deposit, this step is public.'},
  {numeral:'IV',name:'Stay fresh',tone:'purpure',text:'The pool forgets in epochs, so a note is spent normally for two of them. Your wallet refreshes its own notes in the background, at a random moment, long before the deadline. You do nothing, and nobody can tell a refresh from a payment.'},
 ] as const;
@@ -19,7 +21,7 @@ const lanes=[
  {name:'Epoch c−1, live',tone:'is-live',text:'Still spendable directly. Your wallet refreshes these.'},
  {name:'Epoch c, current',tone:'is-current',text:'Where new notes land.'},
 ] as const;
-const parties={you:'Your browser',op:'Pool operator',ark:'Arkade'} as const;
+const parties={you:'Your device',op:'Pool operator',ark:'Arkade'} as const;
 type Party=keyof typeof parties;
 const stations:{name:string;by:Party;text:React.ReactNode}[]=[
  {name:'Keys',by:'you',text:<>One recovery secret derives a spend key <var>ask</var>, a nullifier key <var>nk</var> and an X25519 view key. Your bech32m address, <code>shrol21…</code>, carries your owner hash and the public view key.</>},
@@ -32,7 +34,7 @@ type Part={name:string;text:React.ReactNode;maybe?:boolean;packet?:boolean};
 const txIn:Part[]=[{name:'Pool head',text:'The pool’s sats and its supply-1 pool token.'},{name:'Asset reserve',text:'The reserve of the one asset this batch moves.',maybe:true},{name:'Deposits',text:'Coins entering the pool. Amount and source are public.',maybe:true}];
 const txOut:Part[]=[{name:'New head',text:'Carries the pool token and the updated sats.'},{name:'Asset reserve',text:'Back beside the new head, its amount updated.',maybe:true},{name:'Withdrawals',text:'Public, and at least 330 sats each.',maybe:true},{name:'State packet',text:<>Extension packet <code>0x87</code>:</>,packet:true}];
 const defs:[React.ReactNode,React.ReactNode,React.ReactNode][]=[
- ['owner',<>Poseidon(domain, ak, nk)</>,'Goes in your address. ak = Poseidon(tag, ask), and ask never leaves your browser.'],
+ ['owner',<>Poseidon(domain, ak, nk)</>,'Goes in your address. ak = Poseidon(tag, ask), and ask never leaves your device.'],
  ['cm',<>Poseidon(domain, amount, asset, owner, ρ)</>,'A note’s commitment, appended to the note tree.'],
  ['nf',<>Poseidon(domain, nk, ρ)</>,'Revealed when the note is spent; a repeat is refused. A zero-value placeholder input hashes under its own tag, so it can never reveal a real note’s nullifier.'],
  ['asset',<>SHA-256<sub>248</sub>(AssetId)</>,'Any Arkade asset, as the circuit sees it.'],
@@ -198,18 +200,20 @@ export default function ShieldedHome(){
  const status=error?'Pool status is unavailable right now.':phase==='ready'?'The test pool is open on Mutinynet.':pool?.message??'Checking the pool…';
  const item=(text:string,n:number)=><li key={text} style={{'--n':n} as React.CSSProperties}>{text}</li>;
  return <div className="shielded-home">
-  <header className="sh-header"><a className="sh-wordmark" href="/">Shielded<span>on Arkade</span></a><nav aria-label="Main"><a href="#privacy">Privacy</a><a href="#how">How it works</a><a className="sh-cta" href="/wallet">Open wallet</a></nav></header>
+  <header className="sh-header"><a className="sh-wordmark" href="/">Shielded<span>on Arkade</span></a><nav aria-label="Main"><a href="#privacy">Privacy</a><a href="#how">How it works</a><a className="sh-download-nav" href="#download">Download</a><AppUpdateNotice/><a className="sh-cta" href="/wallet">Open wallet</a></nav></header>
   <main>
    <section className="sh-hero" aria-labelledby="sh-title">
     <div className="sh-hero-text">
      <p className="sh-kicker">Private · Your keys · On Arkade</p>
      <h1 id="sh-title">Bitcoin, held in confidence.</h1>
      <p className="sh-lead">Shielded is a private pool for Bitcoin on Arkade. Inside it, payments move as private notes: each one is checked for validity, yet no one learns who paid whom, or how much.</p>
-     <div className="sh-actions"><a className="sh-cta" href="/wallet">Open the wallet <span aria-hidden="true">→</span></a><a href="#privacy">What stays private</a></div>
+     <div className="sh-actions"><a className="sh-cta" href="#download">Download Shielded</a><a href="/wallet">Open the wallet</a></div>
      <p className={'sh-status '+tone} role="status"><i aria-hidden="true"/>{status}</p>
     </div>
     <Rosette/>
    </section>
+   <Ribbon/>
+   <NativeDownloads/>
    <Ribbon/>
    <section id="privacy" className="sh-section" aria-labelledby="sh-privacy-title" data-reveal>
     <h2 id="sh-privacy-title">What the world sees, and what it doesn’t.</h2>
@@ -238,7 +242,7 @@ export default function ShieldedHome(){
    <Plate/>
    <section className="sh-section sh-keys" aria-labelledby="sh-keys-title">
     <Seal className="sh-watermark"/>
-    <h2 id="sh-keys-title">Your keys never leave your browser.</h2>
+    <h2 id="sh-keys-title">Your keys stay on your device.</h2>
     <p>The wallet creates your keys on this device and proves every spend here. The pool’s operator orders transactions and keeps encrypted records, but it cannot move your Bitcoin on its own: a spend counts only with a proof that your keys alone can make.</p>
     <p>The operator can still delay or refuse a transaction, and restoring a wallet needs its encrypted records together with your recovery secret. Keep that secret safe: no one can reset it for you.</p>
     <a className="sh-cta" href="/wallet">Open the wallet <span aria-hidden="true">→</span></a>

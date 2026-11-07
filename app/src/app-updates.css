@@ -1,0 +1,11 @@
+.app-update-notice{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex:none;min-height:44px;min-width:44px;padding:5px 10px;border:1px solid #b8862b55;border-radius:999px;background:#f5eedc;color:#6b4a18;font:550 11px 'DM Sans',sans-serif;line-height:1.4;text-decoration:none;white-space:nowrap;cursor:pointer}
+.app-update-notice:hover{background:#eee1bf}
+.app-update-notice:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
+.app-update-dot{width:5px;height:5px;background:currentColor;border-radius:50%;flex:none}
+.app-update-notice[data-tone=dark]{color:#e3c58e;background:#d2ae7512;border-color:#d2ae7555}
+.app-update-notice[data-tone=dark]:hover{background:#d2ae7522}
+.app-header-status{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.native-wallet-topbar .app-header-status{flex:1;min-width:0;gap:8px 12px}
+.native-wallet-topbar .native-wallet-lock,.native-wallet-topbar .native-tor-health>summary,.wallet-onboarding-footer .native-tor-health>summary{min-height:44px}
+.app-update-fallback{display:flex;justify-content:center;padding:10px}
+@media(max-width:380px){.app-update-notice{padding-inline:8px;font-size:10px}.app-header-status{gap:8px}.native-wallet-topbar{gap:8px}.native-wallet-topbar .native-wallet-lock{padding-inline:8px}}
