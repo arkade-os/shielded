@@ -16,7 +16,7 @@
 .native-tor-panel .native-tor-checked{font-size:11px;color:#6b7d88;font-variant-numeric:tabular-nums}
 .native-tor-panel .native-tor-privacy{padding-top:12px;margin-top:14px;border-top:1px solid #dce2e5;font-size:11px;color:#6b7d88}
 .native-tor-panel .native-tor-problem{font-size:12px;color:#a15a25;overflow-wrap:anywhere}
-.native-wallet-topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:47px;padding:6px 22px;border-bottom:1px solid #ffffffb8;background:rgba(247,251,255,.64);color:#244258;box-shadow:inset 0 -1px 0 #1035540a;backdrop-filter:blur(20px) saturate(1.3);-webkit-backdrop-filter:blur(20px) saturate(1.3)}
+.native-wallet-topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:47px;padding:6px 22px;border-bottom:1px solid #ffffffb8;background:rgba(247,251,255,.64);color:#244258;box-shadow:inset 0 -1px 0 #1035540a;-webkit-backdrop-filter:blur(20px) saturate(1.3);backdrop-filter:blur(20px) saturate(1.3)}
 .native-wallet-topbar .native-wallet-lock{padding:7px 13px;border:1px solid #ffffffd4;border-radius:999px;font:550 12px 'DM Sans',sans-serif;background:rgba(255,255,255,.28);color:#244258;box-shadow:inset 0 1px 0 #fff,0 3px 10px #10355408;cursor:pointer}
 .native-wallet-lock:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
 .native-tor-health[data-tone=dark]{color:#bdcbd6;font-size:11px}
@@ -29,5 +29,5 @@
 .native-tor-health[data-tone=dark] .native-tor-privacy{border-color:#afc4d433}
 .native-tor-health[data-tone=dark] .native-tor-problem{color:#edc5a6}
 @media(max-width:359px){.native-tor-health[data-tone=dark]{font-size:10px}.native-tor-health>summary{gap:6px}.native-wallet-topbar{padding-right:16px;padding-left:16px}}
-@media(prefers-reduced-transparency:reduce){.native-wallet-topbar{background:#f9f6ee;backdrop-filter:none;-webkit-backdrop-filter:none}.native-wallet-topbar .native-wallet-lock{background:#fffdf8}}
+@media(prefers-reduced-transparency:reduce){.native-wallet-topbar{background:#f9f6ee;-webkit-backdrop-filter:none;backdrop-filter:none}.native-wallet-topbar .native-wallet-lock{background:#fffdf8}}
 @media(prefers-reduced-motion:reduce){.native-tor-health>summary>svg{transition:none}}
