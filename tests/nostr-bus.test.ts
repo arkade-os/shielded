@@ -29,7 +29,8 @@ test('a relay dies with its connection, ensureRelay opens a fresh one, and an un
  old.subscribe([{kinds:[1]}],{onevent:()=>{},onclose:reason=>closes.push(reason)});
  bus.drop(A);assert.deepEqual(closes,['relay connection closed']);
  await assert.rejects(old.publish(fresh()),/closed connection/);
- assert.throws(()=>old.subscribe([{kinds:[1]}],{onevent:()=>{},onclose:()=>{}}),/closed connection/);
+ old.subscribe([{kinds:[1]}],{onevent:()=>{},onclose:reason=>closes.push(reason)});
+ assert.deepEqual([closes.length,bus.unhandled.map(error=>error.message)],[1,[`Tried to send message on a closed connection to ${A}.`]],'a subscribe on a dead link returns, never closes, and leaves an unhandled rejection');
  assert.equal(await (await bus.pool.ensureRelay(A)).publish(fresh()),'');
  bus.pool.destroy();bus.relay(A).unreachable=true;
  await assert.rejects(bus.pool.ensureRelay(A),(reason:unknown)=>reason==='connection failed');

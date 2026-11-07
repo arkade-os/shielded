@@ -5,7 +5,7 @@ import type {CarrierPool,RelayPool} from '../../src/rollup/nostr-carrier.ts';
 /** An in-memory relay network shaped like nostr-tools' pool: each URL is a channel, and a relay misbehaves as its options say. `unfiltered` makes it deliver everything. `stores` keeps what it delivers and hands a new subscription what matches, since included, except under limit:0, which `ignoresLimit` disregards. */
 export function createNostrBus(){
  type Sub={url:string;filters:Filter[];onevent:(event:Event)=>void;onclose:(reason:string)=>void};
- const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean;stores:boolean;ignoresLimit:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[],stored=new Map<string,Event[]>();
+ const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean;stores:boolean;ignoresLimit:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[],stored=new Map<string,Event[]>(),unhandled:Error[]=[];
  const relay=(url:string)=>{
   if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,unfiltered:false,unreachable:false,timesOut:false,refusesButDelivers:false,claimsUnreachable:false,stores:false,ignoresLimit:false});
   return relays.get(url)!;
@@ -54,8 +54,9 @@ export function createNostrBus(){
    return {
     onnotice:()=>{},
     subscribe:(filters,params)=>{
-     if(!link.alive)throw stale();
-     const sub:Sub={url,filters,onevent:params.onevent,onclose:params.onclose};join(sub);
+     const sub:Sub={url,filters,onevent:params.onevent,onclose:params.onclose};
+     // The library's fire() never awaits its send, so on a dead link subscribe returns, no onclose follows, and the throw is an unhandled rejection.
+     if(link.alive)join(sub);else unhandled.push(stale());
      return {close:(reason='closed by caller')=>{if(live.delete(sub))sub.onclose(reason);}};
     },
     publish:async event=>{if(!link.alive)throw stale();return take(url,event);},
@@ -63,5 +64,5 @@ export function createNostrBus(){
   },
   destroy:()=>drop(undefined,'relay connection closed by us'),
  };
- return {pool,relay,drop,published,openSubscriptions:()=>live.size};
+ return {pool,relay,drop,published,unhandled,openSubscriptions:()=>live.size};
 }
