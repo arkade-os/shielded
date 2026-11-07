@@ -2,10 +2,13 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { appCacheManifest } from './app-cache-manifest.ts';
+import { nativeBuildIdentity } from './native-build-identity.ts';
 
 const force = process.env.SHIELDED_APP_CACHE_FORCE === '1', off = process.env.SHIELDED_APP_CACHE_OFF === '1';
 const native = process.env.SHIELDED_NATIVE === '1';
+const identity = nativeBuildIdentity(process.env, () => execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8',stdio:['ignore','pipe','ignore']}));
 
 const appCache = (): Plugin => ({
   name: 'app-cache', apply: 'build', enforce: 'post',
@@ -20,7 +23,7 @@ const appCache = (): Plugin => ({
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
-  define: { __APP_CACHE_OFF__: JSON.stringify(off || native), __NATIVE_BUILD__: JSON.stringify(native) },
+  define: { __APP_CACHE_OFF__: JSON.stringify(off || native), __NATIVE_BUILD__: JSON.stringify(native), __APP_COMMIT__: JSON.stringify(identity.commit), __NATIVE_BUILD_NUMBER__: JSON.stringify(identity.buildNumber), __NATIVE_PLATFORM__: JSON.stringify(identity.platform) },
   plugins: [react(), ...(native ? [] : [appCache()])],
   resolve: {alias: {circomlibjs:fileURLToPath(new URL('./src/circom-browser.ts',import.meta.url))}},
   server: { host: '0.0.0.0', port: 5173, proxy: { '/api': process.env.SHIELDED_API_ORIGIN??'http://127.0.0.1:8792' } },

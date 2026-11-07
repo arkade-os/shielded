@@ -1,6 +1,7 @@
 import {useId,useMemo,useState} from 'react';
 import {spirograph,wave} from './guilloche.tsx';
 import NativeTorHealth from './NativeTorHealth.tsx';
+import {AppUpdateNotice} from './AppUpdates.tsx';
 import type {NativeTorHealthState} from './native-tor-monitor.ts';
 import './wallet-onboarding.css';
 
@@ -79,7 +80,7 @@ export default function WalletOnboarding({transport,setup,busy,phase,error,phras
    </section>
   </main>
   <footer className="wallet-onboarding-footer">
-   {tor?<NativeTorHealth health={torHealth} tone="dark"/>:<span className="wallet-onboarding-connection">Browser connection</span>}
+   <div className="app-header-status">{tor?<NativeTorHealth health={torHealth} tone="dark"/>:<span className="wallet-onboarding-connection">Browser connection</span>}<AppUpdateNotice tone="dark"/></div>
    <details className="wallet-onboarding-privacy"><summary>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></details>
   </footer>
  </div>;

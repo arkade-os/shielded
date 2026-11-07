@@ -31,6 +31,8 @@ jobs:
       - run: node tools/check-native-model.mjs
 
   desktop:
+    env:
+      NATIVE_PLATFORM: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +93,8 @@ jobs:
           retention-days: 14
 
   android:
+    env:
+      NATIVE_PLATFORM: android-arm64
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -128,6 +132,8 @@ jobs:
           retention-days: 14
 
   ios:
+    env:
+      NATIVE_PLATFORM: ios
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -170,3 +176,37 @@ jobs:
           path: src-tauri/target/native-artifacts/ios-${{ env.NATIVE_PROFILE }}
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    if: >-
+      github.repository == 'arkade-os/shielded' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [model, desktop, android, ios]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: native-mutinynet-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shielded-mutinynet-*-release-${{ github.sha }}-attempt*
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+          path: native-downloads
+      - name: Publish complete native release, then advance channel
+        run: node --import tsx tools/publish-native-release.ts native-downloads native-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
