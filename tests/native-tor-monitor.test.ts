@@ -124,6 +124,13 @@ test('a status IPC failure clears healthy evidence and reports the failure',asyn
  assert.equal(f.latest().checkedAt,undefined);f.monitor.check();await flush();assert.equal(f.checks.length,1);
 });
 
+test('a direct-mode status failure never relabels the connection as Tor',async t=>{
+ const f=fixture(t,{phase:'ready',generation:2,mode:'direct'});await flush();
+ const pending=f.holdStatus();t.mock.timers.tick(1500);await flush();
+ pending.reject(new Error('IPC unavailable'));await flush();
+ assert.equal(f.latest().status.mode,'direct');assert.equal(f.latest().status.phase,'error');
+});
+
 test('stopping removes timers and subscriptions and ignores outstanding work',async t=>{
  const f=fixture(t);await flush();const pending=f.holdStatus();t.mock.timers.tick(1500);await flush();
  f.monitor.stop();const count=f.health.length,polls=f.statusCalls();

@@ -89,7 +89,7 @@ export function createNativeTorMonitor(
   }catch(error){
    if(!stopped&&foreground()&&captured===revision){
     revision++;invalidate();
-    publish({status:{phase:'error',generation:health.status.generation,error:'Tor status unavailable'},check:'idle'});
+    publish({status:{...health.status,phase:'error',error:'Network status unavailable'},check:'idle'});
     onStatusError(error);
    }
   }finally{polling=false;}

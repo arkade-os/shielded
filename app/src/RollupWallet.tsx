@@ -19,6 +19,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActivityHistory,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
+import WalletSyncStatus from './WalletSyncStatus.tsx';
 import {AppUpdateNotice} from './AppUpdates.tsx';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
@@ -253,7 +254,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    let created:ShieldedWallet|undefined;
    const privateFetch=NATIVE?nativeSessionFetch():undefined,lnurlFetch=NATIVE?nativeSessionFetch(nativeLnurlFetch):undefined,claimFetch=NATIVE?nativeSessionFetch(nativeClaimFetch):undefined;
    const providers=NATIVE?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
-   const pairing=createLightningWallet(secret,providers);pairing.catch(()=>{});
+   const pairing=createLightningWallet(secret,{...providers,...(NATIVE?{lazyInitialization:true}:{})});pairing.catch(()=>{});
    try{
     if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
     const bornAt=bornAtFor(storage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
@@ -489,7 +490,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const receiveDescription=receiveBlocked?'Receive is unavailable while the wallet is being restored.':receivePayload==='arkade'?feePaused?'New deposits are paused until you accept the updated fee.':'Eligible deposits move into your private balance while this wallet is open.'
   :receivePayload==='unified'?privateDescription
   :'Share this for direct private payments inside the pool.';
- const receiveLoading=receiveBlocked?'Restoring wallet…':receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…':'Activating your unified address…';
+ const receiveLoading=receiveBlocked?'Restoring wallet…':receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…':lnError?'Unified address unavailable':'Activating your unified address…';
  const historyItems=rows.map(item=>{
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
@@ -514,7 +515,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const historyContent=(items:typeof historyItems)=>!rows.length?<p className="stock-muted">{synced?'No activity yet.':'Reading the pool…'}</p>:<ul>{items}</ul>;
   const shownAssets=reserves.filter(id=>assetUnits(id)>0n),unshielded=arkAvailable??0;
   const balanceCard=()=> <section className="stock-card stock-balance">
-   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong>{(!synced||arkAvailable===undefined)&&<span className="stock-balance-state">Syncing your wallet…</span>}</div>
+   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} arkReady={arkAvailable!==undefined} error={startupError||refreshError} onRetry={reload}/></div>
    {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
    {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
   </section>;
@@ -555,7 +556,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {tab==='receive'?<div className="stock-receive">
        <ReceivePortal active={!docked||sheetOpen} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receiveValue} loading={receiveLoading} description={receiveDescription} action={!receiveBlocked&&receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
         {!receiveBlocked&&receiveMode==='unified'&&<>
-         {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void retryUnified()}>Retry unified address</button>}
+         {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||busy} onClick={()=>{if(wallet?.swaps&&lnurlRef.current)void retryUnified();else reload();}}>Retry unified address</button>}
          <details className="stock-more"><summary>Had an address before?</summary><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover it</button></details>
          {unifiedAddress&&<><label className="stock-check">Include private payments<input type="checkbox" role="switch" checked={privateChecked} disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>void setPrivate(e.target.checked)}/></label>
           <p id="stock-private-hint" className="stock-muted">Turning this on asks the service to add your shielded address. Anyone looking up your unified address can see that you use the pool.</p>

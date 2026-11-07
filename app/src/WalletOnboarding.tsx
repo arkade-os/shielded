@@ -17,6 +17,8 @@ export interface WalletOnboardingProps {
  onRestore:()=>void;
  onReconnect:()=>void;
  torHealth?:NativeTorHealthState;
+ onToggleTor?:()=>void;
+ transportBusy?:boolean;
 }
 
 function ShieldMark({small=false}:{small?:boolean}){
@@ -52,10 +54,12 @@ function EngravedShield(){
  </svg></div>;
 }
 
-export default function WalletOnboarding({transport,setup,busy,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth}:WalletOnboardingProps){
+export default function WalletOnboarding({transport,setup,busy,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false}:WalletOnboardingProps){
  const [restoring,setRestoring]=useState(false),id=useId();
- const tor=transport==='tor',titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`;
+ const native=transport==='tor',direct=native&&(torHealth?.status.mode??'tor')==='direct',tor=native&&!direct;
+ const titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`;
  const restore=setup&&restoring;
+ const waiting=setup&&native&&torHealth?.status.phase!=='ready',disabled=busy||transportBusy||waiting;
  return <div className={`wallet-onboarding${restore?' wallet-onboarding-restoring':''}${!setup?' wallet-onboarding-connecting':''}`}>
   <header className="wallet-onboarding-header">
    <div className="wallet-onboarding-brand"><ShieldMark/><span>Shielded</span></div>
@@ -64,24 +68,25 @@ export default function WalletOnboarding({transport,setup,busy,phase,error,phras
   <main className="wallet-onboarding-stage">
    {!restore&&<EngravedShield/>}
    <section className="wallet-onboarding-content" aria-labelledby={titleId}>
-    {restore&&<button className="wallet-onboarding-back" type="button" disabled={busy} onClick={()=>setRestoring(false)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m11.5 5-5 5 5 5M7 10h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Back</button>}
+    {restore&&<button className="wallet-onboarding-back" type="button" disabled={busy||transportBusy} onClick={()=>setRestoring(false)}><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m11.5 5-5 5 5 5M7 10h9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>Back</button>}
     <h1 id={titleId}>{restore?<><span>Welcome</span><span>back.</span></>:setup?<><span>Your bitcoin.</span><span>Your business.</span></>:busy?(tor?<><span>Taking the</span><span>private route.</span></>:<><span>Opening your</span><span>wallet.</span></>):<><span>Let’s reconnect.</span>{tor&&<span>Privately.</span>}</>}</h1>
-    <p className="wallet-onboarding-description">{restore?'Your recovery phrase brings your wallet back to this device.':setup?(tor?'Private Bitcoin payments on Arkade. Your keys stay with you.':'Private Bitcoin payments on Arkade. Your keys stay in this browser.'):(tor?'Your wallet connects through Tor before any wallet traffic leaves this device.':'Your browser connects to the wallet services using its own network connection.')}</p>
-    {!setup&&<p className="wallet-onboarding-phase" role="status">{busy&&<span className="wallet-onboarding-spinner" aria-hidden="true"/>}{phase}</p>}
+    <p className="wallet-onboarding-description">{restore?'Your recovery phrase brings your wallet back to this device.':setup?(native?'Private Bitcoin payments on Arkade. Your keys stay with you.':'Private Bitcoin payments on Arkade. Your keys stay in this browser.'):(tor?'Your wallet connects through Tor before any wallet traffic leaves this device.':direct?'Your wallet connects directly while Tor is off. Your IP address and DNS lookups are exposed.':'Your browser connects to the wallet services using its own network connection.')}</p>
+    {(!setup||waiting)&&<p className="wallet-onboarding-phase" role="status">{(busy||waiting)&&<span className="wallet-onboarding-spinner" aria-hidden="true"/>}{phase||(native?(direct?'Connecting directly':'Connecting to Tor'):'Opening your wallet')}</p>}
     {error&&<p className="wallet-onboarding-error" role="alert">{error}</p>}
-    {restore?<form className="wallet-onboarding-restore-form" onSubmit={event=>{event.preventDefault();if(!busy&&phrase.trim())onRestore();}}>
+    {restore?<form className="wallet-onboarding-restore-form" onSubmit={event=>{event.preventDefault();if(!disabled&&phrase.trim())onRestore();}}>
      <label htmlFor={phraseId}>Recovery phrase</label>
-     <textarea id={phraseId} value={phrase} onChange={event=>onPhraseChange(event.target.value)} autoComplete="off" autoCapitalize="none" spellCheck={false} disabled={busy} autoFocus rows={4} placeholder="Enter your recovery phrase" aria-describedby={warningId}/>
+     <textarea id={phraseId} value={phrase} onChange={event=>onPhraseChange(event.target.value)} autoComplete="off" autoCapitalize="none" spellCheck={false} disabled={disabled} autoFocus rows={4} placeholder="Enter your recovery phrase" aria-describedby={warningId}/>
      <p id={warningId} className="wallet-onboarding-restore-warning">Keep the original app data for outstanding Lightning swaps. The phrase alone cannot recover every pending swap.</p>
-     <button className="wallet-onboarding-primary" type="submit" disabled={busy||!phrase.trim()}>{busy?'Restoring wallet…':'Restore wallet'}</button>
+     <button className="wallet-onboarding-primary" type="submit" disabled={disabled||!phrase.trim()}>{busy?'Restoring wallet…':'Restore wallet'}</button>
     </form>:<div className="wallet-onboarding-actions">
-     {setup?<><button className="wallet-onboarding-primary" type="button" disabled={busy} onClick={onCreate}>{busy?'Creating wallet…':'Create wallet'}</button><button className="wallet-onboarding-secondary" type="button" disabled={busy} onClick={()=>setRestoring(true)}>Restore a wallet</button></>:<button className="wallet-onboarding-primary" type="button" disabled={busy} onClick={onReconnect}>{busy?'Please wait…':tor?'Unlock and reconnect':'Reload wallet'}</button>}
+     {setup?<><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled)onCreate();}}>{busy?'Creating wallet…':'Create wallet'}</button><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setRestoring(true);}}>Restore a wallet</button></>:<button className="wallet-onboarding-primary" type="button" disabled={busy||transportBusy} onClick={()=>{if(!busy&&!transportBusy)onReconnect();}}>{busy?'Please wait…':native?'Unlock and reconnect':'Reload wallet'}</button>}
     </div>}
+    {waiting&&!busy&&!transportBusy&&<button className="wallet-onboarding-secondary" type="button" onClick={onReconnect}>Retry connection</button>}
    </section>
   </main>
   <footer className="wallet-onboarding-footer">
-   <div className="app-header-status">{tor?<NativeTorHealth health={torHealth} tone="dark"/>:<span className="wallet-onboarding-connection">Browser connection</span>}<AppUpdateNotice tone="dark"/></div>
-   <details className="wallet-onboarding-privacy"><summary>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></details>
+   <div className="app-header-status">{native?<NativeTorHealth health={torHealth} tone="dark" onToggleTor={onToggleTor} transportBusy={transportBusy}/>:<span className="wallet-onboarding-connection">Browser connection</span>}<AppUpdateNotice tone="dark"/></div>
+   <details className="wallet-onboarding-privacy"><summary>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':direct?'Tor is off. Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></details>
   </footer>
  </div>;
 }

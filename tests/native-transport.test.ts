@@ -269,3 +269,55 @@ test('start during a pending pause cannot release its barrier',async()=>{
  assert.equal(b.calls.filter(call=>call.command==='native_start').length,before);
  paused.resolve({phase:'paused',generation:2});await pause;assert.equal(bridge.current.phase,'paused');
 });
+
+test('native starts select Tor by default and send an explicit direct selection',async()=>{
+ const selections:unknown[]=[],api:NativeBackend={invoke:async(command,args)=>{
+  if(command==='native_start'){selections.push(args?.mode);return {phase:'ready',generation:selections.length,mode:args?.mode};}
+ },channel:()=>({})};
+ const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));
+ assert.equal((await bridge.start()).mode,'tor');assert.equal((await bridge.start('direct')).mode,'direct');
+ assert.deepEqual(selections,['tor','direct']);
+});
+
+test('a mismatched native start cannot publish a direct connection as Tor',async()=>{
+ const api:NativeBackend={invoke:async()=>({phase:'ready',generation:1,mode:'direct'}),channel:()=>({})};
+ const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));
+ await assert.rejects(bridge.start(),/mode/i);assert.notEqual(bridge.current.phase,'ready');
+ assert.throws(()=>bridge.sessionGuard(),/paused|retired/);
+});
+
+test('a delayed Tor start cannot replace a newer direct selection',async()=>{
+ const tor=deferred<NativeStatus>(),direct=deferred<NativeStatus>();
+ const api:NativeBackend={invoke:async(_command,args)=>args?.mode==='direct'?direct.promise:tor.promise,channel:()=>({})};
+ const bridge=new NativeBridge(api,new NativePolicy('https://pool.example')),old=bridge.start(),next=bridge.start('direct');
+ direct.resolve({phase:'ready',generation:2,mode:'direct'});await next;
+ tor.resolve({phase:'ready',generation:1,mode:'tor'});
+ assert.equal((await old).mode,'direct');assert.equal(bridge.current.generation,2);
+});
+
+test('polling during a direct start cannot reopen the previous Tor mode',async()=>{
+ const started=deferred<NativeStatus>();
+ const api:NativeBackend={invoke:async command=>command==='native_start'?started.promise:{phase:'ready',generation:2,mode:'tor'},channel:()=>({})};
+ const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));bridge.acceptStatus({phase:'ready',generation:1,mode:'tor'});
+ const next=bridge.start('direct');assert.notEqual((await bridge.status()).phase,'ready');
+ started.resolve({phase:'ready',generation:3,mode:'direct'});assert.equal((await next).mode,'direct');
+ assert.equal((await bridge.status()).mode,'direct');assert.equal(bridge.current.generation,3);
+});
+
+test('changing native mode requires a new generation',async()=>{
+ const api:NativeBackend={invoke:async(_command,args)=>({phase:'ready',generation:1,mode:args?.mode}),channel:()=>({})};
+ const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));await bridge.start();
+ await assert.rejects(bridge.start('direct'),/generation|mode/i);assert.notEqual(bridge.current.phase,'ready');
+});
+
+test('changing mode retires old handles and guards before its native start completes',async()=>{
+ const pending=deferred<NativeStatus>(),b=backend(),original=b.api.invoke;
+ b.api.invoke=(command,args)=>command==='native_start'?pending.promise:original(command,args);
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://pool.example'));await bridge.status();const guard=bridge.sessionGuard();
+ const stream=bridge.open('native_stream','https://pool.example/api/rollup/status',()=>{});
+ await new Promise(resolve=>setTimeout(resolve,0));b.opened.resolve({id:'remote',generation:1});await stream.ready;
+ const next=bridge.start('direct');assert.throws(guard,/paused|retired/);
+ await assert.rejects(bridge.fetch('https://pool.example/api/rollup/status'),/paused|retired/);
+ assert.ok(b.calls.some(call=>call.command==='native_cancel'&&call.args.id==='remote'));
+ pending.resolve({phase:'ready',generation:2,mode:'direct'});await next;assert.throws(guard,/paused|retired/);
+});

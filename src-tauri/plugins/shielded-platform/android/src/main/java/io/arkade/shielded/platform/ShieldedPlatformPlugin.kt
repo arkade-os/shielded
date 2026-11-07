@@ -4,8 +4,13 @@ import android.app.Activity
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.webkit.WebView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnAttach
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -30,7 +35,21 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     private var destroyed = false
     private var activeActivity: Activity? = activity
 
-    override fun load(webView: WebView) { webview = webView; generation++; destroyed = false }
+    override fun load(webView: WebView) {
+        webview = webView
+        generation++
+        destroyed = false
+        val container = webView.parent as? View ?: return
+        val padding = Insets.of(container.paddingLeft, container.paddingTop, container.paddingRight, container.paddingBottom)
+        val handledTypes = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+        ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
+            val safe = insets.getInsets(handledTypes)
+            view.setPadding(padding.left + safe.left, padding.top + safe.top, padding.right + safe.right, padding.bottom + safe.bottom)
+            // The native container handles these edges; keep keyboard updates flowing to WebView.
+            WindowInsetsCompat.Builder(insets).setInsets(handledTypes, Insets.NONE).build()
+        }
+        container.doOnAttach { ViewCompat.requestApplyInsets(it) }
+    }
 
     private fun trusted(): Boolean {
         val url = webview?.url?.let { Uri.parse(it) } ?: return false

@@ -24,3 +24,17 @@ test('a failed Tor bootstrap cannot read the vault',async()=>{
  await assert.rejects(openNativeVault(async()=>({phase:'error',generation:1,error:'Tor unavailable'}),async()=>{reads++;return null;},()=>true),/Tor unavailable/);
  assert.equal(reads,0);
 });
+
+test('the vault is read only for the requested mode and a new generation',async()=>{
+ for(const [status,opens] of [
+  [{phase:'ready',generation:2},'blocked'],
+  [{phase:'ready',generation:3,mode:'direct'},'blocked'],
+  [{phase:'ready',generation:3},'opens'],
+ ] as [NativeStatus,'opens'|'blocked'][]){
+  const expected={generationAfter:2,mode:'tor' as const};
+  let reads=0;
+  const opened=await openNativeVault(async()=>status,async()=>{reads++;return 'secret';},()=>true,expected);
+  assert.equal(reads,opens==='opens'?1:0);
+  assert.equal(opened?.secret,opens==='opens'?'secret':undefined);
+ }
+});

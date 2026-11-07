@@ -1,5 +1,5 @@
 use super::{
-    NativeHandle, NativeRequest, NativeResponse, NativeStatus, NativeStreamEvent,
+    NativeHandle, NativeMode, NativeRequest, NativeResponse, NativeStatus, NativeStreamEvent,
     policy::CheckedRequest,
 };
 use arti_client::{BootstrapBehavior, DormantMode, TorClient, config::TorClientConfigBuilder};
@@ -7,11 +7,16 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, Mutex, MutexGuard, Weak},
+    task::{Context, Poll},
     time::Duration,
 };
 use tauri::ipc::Channel;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+};
 use tokio_util::sync::CancellationToken;
 use tor_rtcompat::PreferredRuntime;
 
@@ -19,6 +24,7 @@ pub(super) type Client = Arc<TorClient<PreferredRuntime>>;
 const MAX_SCOPES: usize = 1024;
 const MAX_OPERATIONS: usize = 64;
 const MAX_CANCELLED: usize = 4096;
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const PURPOSES: &[&str] = &[
     "public",
     "pool-sync",
@@ -35,6 +41,7 @@ const PURPOSES: &[&str] = &[
 pub(super) struct Session {
     pub phase: &'static str,
     pub generation: u64,
+    pub mode: NativeMode,
     pub error: Option<String>,
     pub client: Option<Client>,
     pub bootstrap_cancel: Option<CancellationToken>,
@@ -44,6 +51,69 @@ pub(super) struct Session {
     completed: HashSet<String>,
     completion_order: VecDeque<String>,
     subscriptions: HashMap<String, String>,
+    resources: Vec<CancellationToken>,
+}
+
+#[derive(Clone)]
+enum ConnectionContext {
+    Tor(Client),
+    Direct,
+}
+
+impl ConnectionContext {
+    fn tor(&self) -> Result<&Client, String> {
+        match self {
+            Self::Tor(client) => Ok(client),
+            Self::Direct => Err("Tor is unavailable in direct mode".into()),
+        }
+    }
+}
+
+pub(super) struct Retirement(CancellationToken);
+impl Drop for Retirement {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+trait NativeIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> NativeIo for T {}
+
+pub(super) struct NativeStream {
+    io: Box<dyn NativeIo>,
+    _retirement: Arc<Retirement>,
+}
+
+impl AsyncRead for NativeStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for NativeStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(context, buffer)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(context)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(context)
+    }
 }
 
 struct Operation {
@@ -74,7 +144,7 @@ impl Default for Delivery {
 }
 
 pub(super) struct Scope {
-    pub client: Client,
+    context: ConnectionContext,
     purpose: String,
     binding: Option<String>,
     subscription: Option<String>,
@@ -91,9 +161,10 @@ pub(super) struct Lease {
     pub id: String,
     pub scope: String,
     pub generation: u64,
-    pub client: Client,
+    context: ConnectionContext,
     pub cancel: CancellationToken,
     delivery: Arc<Delivery>,
+    retirement: Arc<Retirement>,
 }
 
 impl Inner {
@@ -115,6 +186,7 @@ impl Inner {
             session: Mutex::new(Session {
                 phase: "locked",
                 generation: 0,
+                mode: NativeMode::Tor,
                 error: None,
                 client: None,
                 bootstrap_cancel: None,
@@ -124,6 +196,7 @@ impl Inner {
                 completed: HashSet::new(),
                 completion_order: VecDeque::new(),
                 subscriptions: HashMap::new(),
+                resources: Vec::new(),
             }),
         }
     }
@@ -149,20 +222,64 @@ impl Inner {
         Ok(session.status())
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<NativeStatus, String> {
-        let (generation, cancel, existing) = {
+    pub async fn start(self: &Arc<Self>, mode: NativeMode) -> Result<NativeStatus, String> {
+        self.start_with_drain_timeout(mode, DRAIN_TIMEOUT).await
+    }
+
+    async fn start_with_drain_timeout(
+        self: &Arc<Self>,
+        mode: NativeMode,
+        drain_timeout: Duration,
+    ) -> Result<NativeStatus, String> {
+        let (generation, cancel, existing, retiring, _retirement) = {
             let mut session = self.lock()?;
-            if matches!(session.phase, "ready" | "bootstrapping") {
+            if session.mode == mode && matches!(session.phase, "ready" | "bootstrapping") {
                 return Ok(session.status());
             }
             session.invalidate()?;
+            if session.mode != mode {
+                if let Some(client) = session.client.take() {
+                    client.set_dormant(DormantMode::Soft);
+                    let stopped = client.wait_for_stop();
+                    let retirement = session.resource();
+                    tokio::spawn(async move {
+                        stopped.await;
+                        drop(retirement);
+                    });
+                }
+            }
+            session.mode = mode;
             session.phase = "bootstrapping";
             session.error = None;
             let cancel = CancellationToken::new();
             session.bootstrap_cancel = Some(cancel.clone());
-            (session.generation, cancel, session.client.clone())
+            session
+                .resources
+                .retain(|resource| !resource.is_cancelled());
+            let retiring = session.resources.clone();
+            let retirement = session.resource();
+            (
+                session.generation,
+                cancel,
+                session.client.clone(),
+                retiring,
+                retirement,
+            )
         };
-        let result = self.bootstrap(generation, &cancel, existing).await;
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err("private session paused".into()),
+            result = async {
+                tokio::time::timeout(drain_timeout, async {
+                    for resource in retiring { resource.cancelled().await; }
+                }).await.map_err(|_| "previous network requests are still closing; retry to reconnect".to_owned())?;
+                if mode == NativeMode::Tor {
+                    self.bootstrap(generation, &cancel, existing).await
+                } else {
+                    Ok(())
+                }
+            } => result,
+        };
         let mut session = self.lock()?;
         if generation != session.generation || session.phase != "bootstrapping" {
             return Err("private session changed".into());
@@ -234,16 +351,21 @@ impl Inner {
         if session.scopes.len() >= MAX_SCOPES {
             return Err("too many private scopes".into());
         }
-        let client = session
-            .client
-            .as_ref()
-            .ok_or("Tor client unavailable")?
-            .isolated_client();
+        let context = match session.mode {
+            NativeMode::Tor => ConnectionContext::Tor(
+                session
+                    .client
+                    .as_ref()
+                    .ok_or("Tor client unavailable")?
+                    .isolated_client(),
+            ),
+            NativeMode::Direct => ConnectionContext::Direct,
+        };
         let id = uuid::Uuid::new_v4().to_string();
         session.scopes.insert(
             id.clone(),
             Scope {
-                client,
+                context,
                 purpose: purpose.into(),
                 binding: None,
                 subscription: None,
@@ -279,6 +401,9 @@ impl Inner {
         }
         let mut session = self.lock()?;
         session.check(request.generation)?;
+        session
+            .resources
+            .retain(|resource| !resource.is_cancelled());
         if session.cancelled.remove(&request.request_id) {
             session.complete(&request.request_id);
             return Err("private request cancelled".into());
@@ -287,6 +412,7 @@ impl Inner {
             return Err("private request identifier already completed".into());
         }
         if session.operations.len() >= MAX_OPERATIONS
+            || session.resources.len() >= MAX_OPERATIONS
             || session.operations.contains_key(&request.request_id)
         {
             return Err("private request limit or duplicate identifier".into());
@@ -311,9 +437,10 @@ impl Inner {
             }
             scope.binding = Some(binding);
         }
-        let client = scope.client.clone();
+        let context = scope.context.clone();
         let cancel = CancellationToken::new();
         let delivery = Arc::new(Delivery::default());
+        let retirement = session.resource();
         session.operations.insert(
             request.request_id.clone(),
             Operation {
@@ -328,9 +455,10 @@ impl Inner {
             id: request.request_id.clone(),
             scope: request.scope.clone(),
             generation: request.generation,
-            client,
+            context,
             cancel,
             delivery,
+            retirement,
         })
     }
 
@@ -514,8 +642,9 @@ impl Session {
         NativeStatus {
             phase: self.phase.into(),
             generation: self.generation,
+            mode: self.mode,
             error: self.error.clone(),
-            progress: if self.phase == "bootstrapping" {
+            progress: if self.mode == NativeMode::Tor && self.phase == "bootstrapping" {
                 self.client
                     .as_ref()
                     .map(|client| format!("{:.0}%", client.bootstrap_status().as_frac() * 100.0))
@@ -550,16 +679,42 @@ impl Session {
         self.subscriptions.clear();
         Ok(())
     }
+
+    fn resource(&mut self) -> Arc<Retirement> {
+        let completion = CancellationToken::new();
+        self.resources.push(completion.clone());
+        Arc::new(Retirement(completion))
+    }
 }
 
 impl Lease {
+    pub async fn connect(&self, host: &str) -> Result<NativeStream, String> {
+        self.check()?;
+        let io: Box<dyn NativeIo> = match &self.context {
+            ConnectionContext::Tor(_) => Box::new(
+                self.connect_with_recovery(
+                    |client| async move { client.connect((host, 443)).await },
+                )
+                .await?,
+            ),
+            ConnectionContext::Direct => {
+                Box::new(super::direct::connect(host, &self.cancel, self.retirement.clone()).await?)
+            }
+        };
+        self.check()?;
+        Ok(NativeStream {
+            io,
+            _retirement: self.retirement.clone(),
+        })
+    }
+
     pub async fn connect_with_recovery<T, E, F, Fut>(&self, mut connect: F) -> Result<T, String>
     where
         F: FnMut(Client) -> Fut,
         Fut: std::future::Future<Output = Result<T, E>>,
     {
         self.check()?;
-        let connected = match connect(self.client.clone()).await {
+        let connected = match connect(self.context.tor()?.clone()).await {
             Ok(connected) => connected,
             Err(_) => {
                 let client = self.reconnect_client()?;
@@ -587,10 +742,10 @@ impl Lease {
             .scopes
             .get_mut(&self.scope)
             .ok_or("private scope closed")?;
-        if Arc::ptr_eq(&scope.client, &self.client) {
-            scope.client = scope.client.isolated_client();
+        if Arc::ptr_eq(scope.context.tor()?, self.context.tor()?) {
+            scope.context = ConnectionContext::Tor(scope.context.tor()?.isolated_client());
         }
-        Ok(scope.client.clone())
+        Ok(scope.context.tor()?.clone())
     }
 
     pub async fn emit_data(
@@ -733,6 +888,258 @@ mod tests {
         inner
     }
 
+    async fn wait_for_mode(inner: &Inner, mode: NativeMode) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while inner.status().unwrap().mode != mode {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_start_is_explicit_idempotent_and_never_creates_a_tor_client() {
+        let inner = Arc::new(Inner::new(
+            std::env::temp_dir().join("shielded-direct-unused"),
+        ));
+        assert_eq!(inner.status().unwrap().mode, NativeMode::Tor);
+        let started = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(started.phase, "ready");
+        assert_eq!(started.mode, NativeMode::Direct);
+        assert!(inner.lock().unwrap().client.is_none());
+        assert_eq!(
+            inner.start(NativeMode::Direct).await.unwrap().generation,
+            started.generation
+        );
+        let scope = inner.scope(started.generation, "indexer").unwrap();
+        let lease = register(
+            &inner,
+            &request(started.generation, scope.id.clone(), "direct"),
+        )
+        .unwrap();
+        let mut attempts = 0;
+        assert!(
+            lease
+                .connect_with_recovery(|_| {
+                    attempts += 1;
+                    std::future::ready(Ok::<_, ()>(()))
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(attempts, 0);
+        let mut other = request(started.generation, scope.id, "another-item");
+        other.url = "https://mutinynet.arkade.sh/v1/indexer/vtxos?scripts=bb".into();
+        assert!(register(&inner, &other).is_err());
+        assert!(serde_json::from_str::<NativeMode>("\"auto\"").is_err());
+        assert_eq!(
+            serde_json::to_string(&NativeMode::Direct).unwrap(),
+            "\"direct\""
+        );
+    }
+
+    #[tokio::test]
+    async fn tor_initialization_failure_retains_tor_mode_without_direct_fallback() {
+        let inner = Arc::new(Inner::new(PathBuf::from("\0")));
+        let status = inner.start(NativeMode::Tor).await.unwrap();
+        assert_eq!(status.phase, "error");
+        assert_eq!(status.mode, NativeMode::Tor);
+        assert!(status.error.is_some());
+        assert!(inner.lock().unwrap().client.is_none());
+        assert!(inner.scope(status.generation, "public").is_err());
+    }
+
+    #[tokio::test]
+    async fn mode_switch_waits_for_old_lease_and_detached_resource_completion() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "old-transport")).unwrap();
+        let detached = lease.retirement.clone();
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(lease.cancel.is_cancelled());
+        assert!(lease.check().is_err());
+        assert_eq!(inner.status().unwrap().phase, "bootstrapping");
+        assert!(!started.is_finished());
+        drop(lease);
+        tokio::task::yield_now().await;
+        assert!(!started.is_finished());
+        drop(detached);
+        let status = tokio::time::timeout(Duration::from_secs(2), started)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.phase, "ready");
+        assert_eq!(status.mode, NativeMode::Direct);
+        assert!(status.generation > 1);
+        assert!(inner.lock().unwrap().client.is_none());
+        assert!(inner.scope(1, "indexer").is_err());
+    }
+
+    #[tokio::test]
+    async fn unfinished_retirement_leaves_the_selected_mode_in_error_until_retry() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "slow-retirement")).unwrap();
+        let failed = inner
+            .start_with_drain_timeout(NativeMode::Direct, Duration::from_millis(1))
+            .await
+            .unwrap();
+        assert_eq!(failed.phase, "error");
+        assert_eq!(failed.mode, NativeMode::Direct);
+        assert!(failed.error.unwrap().contains("still closing"));
+        assert!(inner.scope(failed.generation, "public").is_err());
+        drop(lease);
+        let retried = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(retried.phase, "ready");
+        assert_eq!(retried.mode, NativeMode::Direct);
+    }
+
+    #[tokio::test]
+    async fn pause_during_mode_retirement_cannot_publish_the_delayed_ready_result() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "pause-during-switch")).unwrap();
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        let paused = inner.pause().unwrap();
+        drop(lease);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let status = inner.status().unwrap();
+        assert_eq!(status.phase, "paused");
+        assert_eq!(status.mode, NativeMode::Direct);
+        assert_eq!(status.generation, paused.generation);
+    }
+
+    #[tokio::test]
+    async fn cancelled_bootstrap_must_finish_before_direct_becomes_ready() {
+        let inner = ready();
+        let bootstrap_cancel = CancellationToken::new();
+        let bootstrap = {
+            let mut session = inner.lock().unwrap();
+            session.phase = "bootstrapping";
+            session.bootstrap_cancel = Some(bootstrap_cancel.clone());
+            session.resource()
+        };
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(bootstrap_cancel.is_cancelled());
+        assert!(!started.is_finished());
+        drop(bootstrap);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn tor_client_shutdown_blocks_direct_even_without_an_active_operation() {
+        let inner = ready();
+        let held = inner.lock().unwrap().client.clone().unwrap();
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(!started.is_finished());
+        assert!(inner.lock().unwrap().client.is_none());
+        drop(held);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn mode_switch_drains_the_http_driver_after_its_lease_has_finished() {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "old-http-driver")).unwrap();
+        let (client, server) = tokio::io::duplex(4096);
+        let stream = NativeStream {
+            io: Box::new(client),
+            _retirement: lease.retirement.clone(),
+        };
+        let peer = tokio::spawn(async move {
+            let mut server = BufReader::new(server);
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                server.read_until(b'\n', &mut request).await.unwrap();
+            }
+            server
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n")
+                .await
+                .unwrap();
+            let mut byte = [0];
+            server.read(&mut byte).await.unwrap()
+        });
+        let request = hyper::Request::builder()
+            .uri("/status")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let (response, driver) = super::super::wire::send_http(stream, request)
+            .await
+            .unwrap();
+        drop(lease);
+        assert!(inner.lock().unwrap().operations.is_empty());
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(!started.is_finished());
+        drop(response);
+        drop(driver);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn unrelated_scopes_get_separate_handles_and_unknown_scopes_fail() {
         let inner = ready();
@@ -741,8 +1148,20 @@ mod tests {
         assert_ne!(first.id, second.id);
         let session = inner.lock().unwrap();
         assert!(!Arc::ptr_eq(
-            &session.scopes.get(&first.id).unwrap().client,
-            &session.scopes.get(&second.id).unwrap().client
+            session
+                .scopes
+                .get(&first.id)
+                .unwrap()
+                .context
+                .tor()
+                .unwrap(),
+            session
+                .scopes
+                .get(&second.id)
+                .unwrap()
+                .context
+                .tor()
+                .unwrap()
         ));
         drop(session);
         assert!(register(&inner, &request(1, "forged".into(), "unknown")).is_err());
@@ -992,8 +1411,8 @@ mod tests {
         let unrelated = inner.scope(1, "indexer").unwrap();
         let lease = register(&inner, &request(1, scope.id.clone(), "recover")).unwrap();
         let other = register(&inner, &request(1, unrelated.id.clone(), "other")).unwrap();
-        let original = lease.client.clone();
-        let unrelated_client = other.client.clone();
+        let original = lease.context.tor().unwrap().clone();
+        let unrelated_client = other.context.tor().unwrap().clone();
         inner
             .lock()
             .unwrap()
@@ -1021,11 +1440,17 @@ mod tests {
         {
             let session = inner.lock().unwrap();
             let recovered = session.scopes.get(&scope.id).unwrap();
-            assert!(Arc::ptr_eq(&recovered.client, &attempts[1]));
+            assert!(Arc::ptr_eq(recovered.context.tor().unwrap(), &attempts[1]));
             assert_eq!(recovered.binding.as_deref(), Some("scripts|aa"));
             assert_eq!(recovered.subscription.as_deref(), Some("server-id"));
             assert!(Arc::ptr_eq(
-                &session.scopes.get(&unrelated.id).unwrap().client,
+                session
+                    .scopes
+                    .get(&unrelated.id)
+                    .unwrap()
+                    .context
+                    .tor()
+                    .unwrap(),
                 &unrelated_client
             ));
         }
@@ -1140,7 +1565,9 @@ mod tests {
             .scopes
             .get(&scope.id)
             .unwrap()
-            .client
+            .context
+            .tor()
+            .unwrap()
             .clone();
         let mut contexts = Vec::new();
         older
@@ -1152,7 +1579,15 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&contexts[1], &replacement));
         assert!(Arc::ptr_eq(
-            &inner.lock().unwrap().scopes.get(&scope.id).unwrap().client,
+            inner
+                .lock()
+                .unwrap()
+                .scopes
+                .get(&scope.id)
+                .unwrap()
+                .context
+                .tor()
+                .unwrap(),
             &replacement
         ));
     }
