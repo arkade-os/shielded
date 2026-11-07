@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Shielded",
+  "version": "0.1.0",
+  "identifier": "io.arkade.shielded",
+  "build": {
+    "beforeDevCommand": "npm run native:frontend",
+    "beforeBuildCommand": "npm run native:frontend",
+    "frontendDist": "../app/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico", "icons/icon.icns"],
+    "windows": { "webviewInstallMode": { "type": "offlineInstaller", "silent": true } },
+    "macOS": { "minimumSystemVersion": "11.0", "hardenedRuntime": true },
+    "iOS": { "minimumSystemVersion": "14.0", "infoPlist": "ios/Info.plist" }
+  }
+}

@@ -1,12 +1,15 @@
-import {useEffect,useRef,useState,type KeyboardEvent,type ReactNode,type TouchEvent} from 'react';
+import {useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type ReactNode,type TouchEvent} from 'react';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode} from './wallet-qr.tsx';
+import {GlassRefraction} from './wallet-glass-surface.tsx';
+import {bindSwipeGesture} from './wallet-gestures.ts';
 import './wallet-receive.css';
 
 export type ReceiveMode='unified'|'shielded'|'arkade';
 export type ReceivePayload='unified'|'shielded'|'lightning'|'invoice'|'arkade';
 
 type ReceivePortalProps={
+ active?:boolean;
  mode:ReceiveMode;
  payload:ReceivePayload;
  onModeChange:(mode:ReceiveMode)=>void;
@@ -27,14 +30,23 @@ const TITLES:Record<ReceivePayload,string>={unified:'Unified address',shielded:'
 const LABELS:Record<ReceivePayload,string>={unified:'Unified address',shielded:'Shielded address',lightning:'Lightning address',invoice:'Lightning invoice',arkade:'Arkade address'};
 const short=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
 
-export function ReceivePortal({mode,payload,onModeChange,value,qrValue,loading,description,action,children}:ReceivePortalProps){
+export function ReceivePortal({active=true,mode,payload,onModeChange,value,qrValue,loading,description,action,children}:ReceivePortalProps){
  const [expanded,setExpanded]=useState(false);
  const buttons=useRef<(HTMLButtonElement|null)[]>([]);
+ const strip=useRef<HTMLDivElement>(null),lens=useRef<HTMLSpanElement>(null);
  const start=useRef<{x:number;y:number}|null>(null);
  const selected=MODES.findIndex(([id])=>id===mode);
+ const navigation=useRef({selected,onModeChange});navigation.current={selected,onModeChange};
  const canShare=typeof navigator!=='undefined'&&typeof navigator.share==='function';
  const invoice=payload==='invoice';
  useEffect(()=>setExpanded(false),[mode,value]);
+ useEffect(()=>{
+  if(!active||!strip.current)return;
+  return bindSwipeGesture(strip.current,direction=>{
+   const view=navigation.current,index=view.selected+(direction==='next'?1:-1),next=MODES[index];
+   if(next){view.onModeChange(next[0]);buttons.current[index]?.focus();}
+  },{allowButtons:true});
+ },[active]);
 
  const keyTab=(event:KeyboardEvent<HTMLButtonElement>,index:number)=>{
   let next:number;
@@ -63,7 +75,8 @@ export function ReceivePortal({mode,payload,onModeChange,value,qrValue,loading,d
  };
 
  return <section className="receive-portal" aria-label="Receive payment">
-  <div className="receive-pill" role="tablist" aria-label="Receive with">
+  <div ref={strip} className="receive-pill wallet-glass-track" style={{'--glass-index':selected,'--glass-count':3} as CSSProperties} role="tablist" aria-label="Receive with">
+   <span ref={lens} className="wallet-glass-lens" aria-hidden="true"/>
    {MODES.map(([id,label,icon],index)=><button key={id} ref={element=>{buttons.current[index]=element;}} type="button" role="tab" id={`receive-tab-${id}`} aria-selected={mode===id} aria-controls="receive-display" tabIndex={mode===id?0:-1} className={mode===id?'is-selected':''} onClick={()=>onModeChange(id)} onKeyDown={event=>keyTab(event,index)}><Icon name={icon} size={17}/><span>{label}</span></button>)}
   </div>
   <div id="receive-display" className="receive-display" role="tabpanel" aria-labelledby={`receive-tab-${mode}`} onTouchStart={touchStart} onTouchEnd={touchEnd} onTouchCancel={()=>{start.current=null;}}>
@@ -78,5 +91,6 @@ export function ReceivePortal({mode,payload,onModeChange,value,qrValue,loading,d
    {action&&<div className="receive-action">{action}</div>}
   </div>
   {children&&<div className="receive-details">{children}</div>}
+  <GlassRefraction target={lens} active={active} radius={999} bezel={9} strength={14}/>
  </section>;
 }

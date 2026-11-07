@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "shielded-main",
+  "description": "Private transport and fixed wallet seed for the bundled wallet",
+  "windows": ["main"],
+  "local": true,
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-native-status",
+    "allow-native-start",
+    "allow-native-pause",
+    "allow-native-scope",
+    "allow-native-scope-close",
+    "allow-native-http",
+    "allow-native-stream",
+    "allow-native-stream-ack",
+    "allow-native-socket",
+    "allow-native-socket-send",
+    "allow-native-cancel",
+    "shielded-platform:allow-secret-get",
+    "shielded-platform:allow-secret-set"
+  ]
+}
