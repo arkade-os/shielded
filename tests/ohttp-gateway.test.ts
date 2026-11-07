@@ -179,7 +179,7 @@ test('a request nothing answers is cut off at three deadlines and frees its slot
  assert.equal(await sent,'cut');
  const cut=performance.now();
  assert.ok(cut-start>=2.5*timeoutMs&&cut-armed<12*timeoutMs,`cut ${Math.round(cut-start)} ms after the send, not at about ${3*timeoutMs}`);
- assert.equal((await g.open(ARK)).status,200,'the slot came back');
+ assert.equal((await through(g.router,await g.seal(ARK))).status,200,'the slot came back');
 });
 
 test('a request sealed to another key id is refused 400',async t=>{
