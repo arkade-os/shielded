@@ -10,9 +10,9 @@ The native build targets Windows, Linux, macOS, Android and iOS. Source support 
 
 ## Download and install
 
-Open [Download Shielded](https://shielded.mutinynet.arkade.sh/#download) and choose your platform. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If downloads are being prepared or release information cannot be checked, the guides and this source build guide remain available.
+Open [Download Shielded](https://shielded.mutinynet.arkade.sh/#download) and choose your platform. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If release information cannot be checked, the page offers **Retry downloads**. The install guides and this source build guide remain available while checking or retrying.
 
-Public packages live in the repository's dedicated `native-mutinynet` GitHub release channel. Their links point to immutable build tags, `native-mutinynet-<commit12>-run<runId>-attempt<attempt>`. The channel's `latest.json` selects the complete build offered by the website; the repository's generic latest release can contain proving keys and is not the native download source. Compare the downloaded file's SHA-256 with the value displayed in its install guide. A matching checksum checks release consistency, not a publisher signature.
+Public packages are versioned GitHub release assets. Their links point to immutable build tags, `native-mutinynet-<commit12>-run<runId>-attempt<attempt>`. The repository's `native-mutinynet` Git branch stores the [public channel index](https://raw.githubusercontent.com/arkade-os/shielded/native-mutinynet/latest.json) in `latest.json`, selecting the complete build offered by the website. Publication atomically updates that branch, so readers receive the previous or new complete index without an unavailable gap. The repository's generic latest release can contain proving keys and is not the native download source. Compare the downloaded file's SHA-256 with the value displayed in its install guide. A matching checksum checks release consistency, not a publisher signature.
 
 ### Windows x64
 
@@ -100,7 +100,7 @@ The **Native wallet** GitHub Actions workflow builds release packages on pushes 
 
 For CI diagnostics, open the matching workflow run in the repository's **Actions** tab and download its **Artifacts**. Artifact names include `mutinynet`, platform, profile, source commit and run attempt. These Actions downloads remain available for 14 days and contain `manifest.json`, `SHA256SUMS` and signing notes. They are separate from the website's public release assets.
 
-Successful release runs on the default `main` or `master` branch publish all five platforms together after the native matrix and ordinary Checks pass for that exact source commit. Manual publication is also restricted to the default branch. Pull requests retain Actions artifacts and do not publish the public channel. A failed or incomplete run leaves the channel pointing at its previous complete build.
+Successful release runs on the default `main` or `master` branch publish all five platforms together after the native matrix and ordinary Checks pass for that exact source commit. Manual publication is also restricted to the default branch. When rerunning only failed jobs, publication selects the latest successful attempt for each platform from that workflow run, retaining successful packages from earlier attempts for the same source commit. Pull requests retain Actions artifacts and do not publish the public channel. A failed or incomplete run leaves the channel pointing at its previous complete build.
 
 | Platform | Downloads |
 | --- | --- |

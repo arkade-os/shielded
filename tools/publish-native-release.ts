@@ -11,6 +11,7 @@ const channel = 'native-mutinynet';
 interface Identity { commit: string; buildNumber: number; runId: number; attempt: number; branch: string; }
 interface Asset { id: number; name: string; size: number; digest?: string; }
 interface Release { id: number; tag_name: string; draft: boolean; prerelease: boolean; immutable?: boolean; assets: Asset[]; }
+export interface NativeReleaseIndex { head: string; manifest: NativeRelease; }
 export interface PreparedNativeRelease { manifest: NativeRelease; files: Map<string, string>; manifestPath: string; sumsPath: string; identity: Identity; }
 
 function object(value: unknown): Record<string, unknown> {
@@ -45,18 +46,37 @@ async function digest(path: string): Promise<string> {
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest('hex');
 }
+export function selectNativeArtifactDirectories(names: readonly string[], identity: Identity): Map<NativePlatform, string> {
+  const selected = new Map<NativePlatform, { name: string; attempt: number }>();
+  const seen = new Set<string>();
+  for (const name of names) {
+    const match = /^shielded-mutinynet-(windows-x86_64|linux-x86_64|macos-universal|android-arm64|ios-unsigned)-release-([a-f0-9]{40})-attempt([1-9]\d*)$/.exec(name);
+    if (!match || match[2] !== identity.commit) throw new Error('Malformed native artifact name or source commit');
+    const platform = (match[1] === 'ios-unsigned' ? 'ios' : match[1]) as NativePlatform, attempt = safeNumber(match[3]);
+    if (attempt > identity.attempt || seen.has(name)) throw new Error('Duplicate or future native artifact attempt');
+    seen.add(name);
+    const previous = selected.get(platform);
+    if (!previous || attempt > previous.attempt) selected.set(platform, { name, attempt });
+  }
+  if (selected.size !== NATIVE_PLATFORMS.length) throw new Error('Missing native platform artifacts');
+  return new Map([...selected].map(([platform, value]) => [platform, value.name]));
+}
 export async function prepareNativeRelease(input: string, output: string, identity: Identity, version: string, now = new Date()): Promise<PreparedNativeRelease> {
-  const archives = artifactFiles(input).filter(path => path.endsWith('.tar.gz'));
-  if (archives.length > 1) throw new Error('Duplicate native Linux archives');
-  for (const archive of archives) extractNativeLinuxArchive(archive, resolve(archive, '..'));
-  const manifests = artifactFiles(input).filter(path => basename(path) === 'manifest.json');
-  if (manifests.length !== NATIVE_PLATFORMS.length) throw new Error('Missing native platform manifests');
+  const entries = readdirSync(input, { withFileTypes: true });
+  if (entries.some(entry => !entry.isDirectory() || entry.isSymbolicLink())) throw new Error('Native downloads must contain platform artifact directories');
+  const selected = selectNativeArtifactDirectories(entries.map(entry => entry.name), identity);
   const tag = `${channel}-${identity.commit.slice(0, 12)}-run${identity.runId}-attempt${identity.attempt}`;
   const files = new Map<string, string>(), platforms = new Set<NativePlatform>(), packages: NativeReleasePackage[] = [];
-  for (const path of manifests) {
+  for (const [expectedPlatform, name] of selected) {
+    const directory = join(input, name), archives = artifactFiles(directory).filter(path => path.endsWith('.tar.gz'));
+    if (archives.length > 1 || (archives.length && (expectedPlatform !== 'linux-x86_64' || basename(archives[0]) !== 'linux-x86_64-release.tar.gz'))) throw new Error('Unexpected native Linux archive');
+    for (const archive of archives) extractNativeLinuxArchive(archive, resolve(archive, '..'));
+    const manifests = artifactFiles(directory).filter(path => basename(path) === 'manifest.json');
+    if (manifests.length !== 1) throw new Error('Missing or duplicate native platform manifests');
+    const path = manifests[0];
     if (lstatSync(path).size > 64 * 1024) throw new Error('Oversized native artifact manifest');
     const manifest = object(JSON.parse(readFileSync(path, 'utf8'))), platform = manifest.platform as NativePlatform;
-    if (manifest.network !== 'mutinynet' || manifest.poolOrigin !== NATIVE_RELEASE_ORIGIN || manifest.commit !== identity.commit || !NATIVE_PLATFORMS.includes(platform) || platforms.has(platform) || !Array.isArray(manifest.packages)) throw new Error('Native artifact source, platform or network mismatch');
+    if (manifest.network !== 'mutinynet' || manifest.poolOrigin !== NATIVE_RELEASE_ORIGIN || manifest.commit !== identity.commit || platform !== expectedPlatform || platforms.has(platform) || !Array.isArray(manifest.packages)) throw new Error('Native artifact source, platform or network mismatch');
     platforms.add(platform);
     for (const raw of manifest.packages) {
       const item = object(raw);
@@ -118,10 +138,7 @@ export class GitHubNativeReleases {
     return response.status === 404 ? null : await response.json() as Release;
   }
   async create(tag: string, commit: string, draft: boolean): Promise<Release> {
-    return await (await this.request('/releases', { method: 'POST', body: JSON.stringify({ tag_name: tag, target_commitish: commit, name: tag === channel ? 'Shielded native Mutinynet channel' : `Shielded native Mutinynet — ${commit.slice(0, 12)}`, draft, prerelease: true, make_latest: 'false', body: 'Mutinynet test funds only. macOS builds are not notarized. Android release APKs are unsigned; debug APKs use a runner development key that is not a stable upgrade identity. iPhone IPAs require your own signing and provisioning. iOS simulator archives do not install on a phone. Preserve your recovery phrase before replacing an installation. See https://shielded.mutinynet.arkade.sh/#download for installation instructions.' }) })).json() as Release;
-  }
-  async upload(release: Release, name: string, bytes: Uint8Array | string): Promise<Asset> {
-    return await (await this.request(`https://uploads.github.com/repos/${repository}/releases/${release.id}/assets?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: typeof bytes === 'string' ? bytes : bytes as BodyInit })).json() as Asset;
+    return await (await this.request('/releases', { method: 'POST', body: JSON.stringify({ tag_name: tag, target_commitish: commit, name: `Shielded native Mutinynet — ${commit.slice(0, 12)}`, draft, prerelease: true, make_latest: 'false', body: 'Mutinynet test funds only. macOS builds are not notarized. Android release APKs are unsigned; debug APKs use a runner development key that is not a stable upgrade identity. iPhone IPAs require your own signing and provisioning. iOS simulator archives do not install on a phone. Preserve your recovery phrase before replacing an installation. See https://shielded.mutinynet.arkade.sh/#download for installation instructions.' }) })).json() as Release;
   }
   async uploadFile(release: Release, name: string, path: string): Promise<Asset> {
     return await (await this.request(`https://uploads.github.com/repos/${repository}/releases/${release.id}/assets?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(lstatSync(path).size) }, body: createReadStream(path) as unknown as BodyInit, duplex: 'half' } as RequestInit)).json() as Asset;
@@ -129,8 +146,17 @@ export class GitHubNativeReleases {
   async publish(release: Release): Promise<void> {
     await this.request(`/releases/${release.id}`, { method: 'PATCH', body: JSON.stringify({ draft: false, prerelease: true, make_latest: 'false' }) });
   }
-  async download(asset: Asset): Promise<Uint8Array> {
-    const response = await this.request(`/releases/assets/${asset.id}`, { headers: { Accept: 'application/octet-stream' } });
+  private async indexHead(): Promise<string | null> {
+    const response = await this.request(`/git/ref/heads/${channel}`, {}, true);
+    if (response.status === 404) return null;
+    const ref = await response.json() as { object: { sha: string } };
+    if (!/^[a-f0-9]{40}$/.test(ref.object.sha)) throw new Error('Invalid native index commit');
+    return ref.object.sha;
+  }
+  async readIndex(): Promise<NativeReleaseIndex | null> {
+    const head = await this.indexHead();
+    if (!head) return null;
+    const response = await this.request(`/contents/latest.json?ref=${head}`, { headers: { Accept: 'application/vnd.github.raw+json' } });
     if (!response.body || Number(response.headers.get('content-length')) > 64 * 1024) {
       await response.body?.cancel();
       throw new Error('Oversized or empty native channel manifest');
@@ -141,23 +167,26 @@ export class GitHubNativeReleases {
       if (size > 64 * 1024) throw new Error('Oversized native channel manifest');
       chunks.push(chunk);
     }
-    return Buffer.concat(chunks);
+    return { head, manifest: parseNativeRelease(JSON.parse(Buffer.concat(chunks).toString('utf8'))) };
   }
-  async removePointer(asset: Asset): Promise<void> {
-    if (asset.name !== 'latest.json') throw new Error('Only the native channel pointer may be replaced');
-    await this.request(`/releases/assets/${asset.id}`, { method: 'DELETE' });
+  async advanceIndex(expected: NativeReleaseIndex | null, manifest: NativeRelease, sourceBranch: string): Promise<void> {
+    const blob = await (await this.request('/git/blobs', { method: 'POST', body: JSON.stringify({ content: JSON.stringify(manifest, null, 2) + '\n', encoding: 'utf-8' }) })).json() as { sha: string };
+    const tree = await (await this.request('/git/trees', { method: 'POST', body: JSON.stringify({ tree: [{ path: 'latest.json', mode: '100644', type: 'blob', sha: blob.sha }] }) })).json() as { sha: string };
+    const commit = await (await this.request('/git/commits', { method: 'POST', body: JSON.stringify({ message: `Native Mutinynet build ${manifest.buildNumber}: ${manifest.commit}`, tree: tree.sha, parents: expected ? [expected.head] : [] }) })).json() as { sha: string };
+    if (await this.indexHead() !== (expected?.head ?? null)) throw new Error('Native release index changed during publication');
+    assertNativeReleaseAdvancement(manifest, null, await this.currentHead(sourceBranch));
+    if (expected) await this.request(`/git/refs/heads/${channel}`, { method: 'PATCH', body: JSON.stringify({ sha: commit.sha, force: false }) });
+    else await this.request('/git/refs', { method: 'POST', body: JSON.stringify({ ref: `refs/heads/${channel}`, sha: commit.sha }) });
   }
 }
 
-export async function publishNativeRelease(prepared: PreparedNativeRelease, github: Pick<GitHubNativeReleases, 'currentHead' | 'assertSourceAdvancement' | 'release' | 'create' | 'uploadFile' | 'upload' | 'publish' | 'download' | 'removePointer'>): Promise<void> {
+export async function publishNativeRelease(prepared: PreparedNativeRelease, github: Pick<GitHubNativeReleases, 'currentHead' | 'assertSourceAdvancement' | 'release' | 'create' | 'uploadFile' | 'publish' | 'readIndex' | 'advanceIndex'>): Promise<NativeRelease> {
   const { manifest, identity } = prepared, tag = manifest.releaseUrl.split('/').at(-1)!;
-  let pointer = await github.release(channel);
-  if (pointer && (pointer.tag_name !== channel || pointer.draft || !pointer.prerelease || pointer.immutable)) throw new Error('Invalid or immutable native channel release');
-  const oldAsset = pointer?.assets.find(asset => asset.name === 'latest.json');
-  const oldBytes = oldAsset ? await github.download(oldAsset) : null;
-  const current = oldBytes ? parseNativeRelease(JSON.parse(new TextDecoder().decode(oldBytes))) : null;
-  assertNativeReleaseAdvancement(manifest, current, await github.currentHead(identity.branch));
+  const index = await github.readIndex(), current = index?.manifest ?? null;
+  assertNativeReleaseAdvancement(manifest, null, await github.currentHead(identity.branch));
   await github.assertSourceAdvancement(current, manifest);
+  if (current?.commit === manifest.commit && current.buildNumber === manifest.buildNumber) return current;
+  assertNativeReleaseAdvancement(manifest, current, manifest.commit);
   if (await github.release(tag)) throw new Error('Immutable native build release already exists');
   const build = await github.create(tag, identity.commit, true);
   for (const item of manifest.packages) {
@@ -168,23 +197,8 @@ export async function publishNativeRelease(prepared: PreparedNativeRelease, gith
   await github.uploadFile(build, 'SHA256SUMS', prepared.sumsPath);
   await github.publish(build);
   assertNativeReleaseAdvancement(manifest, current, await github.currentHead(identity.branch));
-  pointer ??= await github.create(channel, identity.commit, false);
-  if (pointer.immutable) throw new Error('Native channel release must remain mutable');
-  const bytes = readFileSync(prepared.manifestPath);
-  const candidate = await github.upload(pointer, `candidate-run${identity.runId}-attempt${identity.attempt}.json`, bytes);
-  if (!Buffer.from(await github.download(candidate)).equals(bytes)) throw new Error('Native channel candidate verification failed');
-  assertNativeReleaseAdvancement(manifest, current, await github.currentHead(identity.branch));
-  try {
-    if (oldAsset) await github.removePointer(oldAsset);
-    const asset = await github.upload(pointer, 'latest.json', bytes);
-    if (!Buffer.from(await github.download(asset)).equals(bytes)) throw new Error('Native channel pointer verification failed');
-  } catch (error) {
-    const latest = await github.release(channel);
-    const failed = latest?.assets.find(asset => asset.name === 'latest.json');
-    if (failed) await github.removePointer(failed);
-    if (oldBytes) await github.upload(pointer, 'latest.json', oldBytes);
-    throw error;
-  }
+  await github.advanceIndex(index, manifest, identity.branch);
+  return manifest;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -195,7 +209,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     await github.waitForChecks(identity.commit);
     const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version as string;
     const prepared = await prepareNativeRelease(resolve(process.argv[2] ?? 'native-downloads'), resolve(process.argv[3] ?? 'native-release'), identity, version);
-    await publishNativeRelease(prepared, github);
-    console.log(`Published ${prepared.manifest.releaseUrl}`);
+    const published = await publishNativeRelease(prepared, github);
+    console.log(`Published ${published.releaseUrl}`);
   } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
 }

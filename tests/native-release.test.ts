@@ -36,8 +36,12 @@ test('native manifest rejects foreign, redirected, credentialed and traversing U
 
 test('native manifest requires every platform and format without duplicate downloads', () => {
   for (let index = 0; index < 9; index++) {
-    const input = release(); input.packages.splice(index, 1);
-    assert.throws(() => parseNativeRelease(input), /Incomplete/);
+    const input = release(), replacement = { ...input.packages[(index + 1) % 9] };
+    replacement.file = `extra-${replacement.file}`;
+    replacement.url = `${replacement.url.slice(0, replacement.url.lastIndexOf('/') + 1)}${replacement.file}`;
+    input.packages[index] = replacement;
+    assert.equal(input.packages.length, 9);
+    assert.throws(() => parseNativeRelease(input), /Incomplete native release:/);
   }
   const duplicate = release(); duplicate.packages.push({ ...duplicate.packages[0] });
   assert.throws(() => parseNativeRelease(duplicate), /duplicate/);

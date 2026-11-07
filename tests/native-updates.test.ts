@@ -61,6 +61,32 @@ test('native pause and generation changes abort checks and fence stale responses
  f.emit({phase:'ready',generation:3});assert.equal(f.requests.length,3);
 });
 
+test('a validated native update survives wallet cleanup, hidden pages and retired probes',async t=>{
+ const f=fixture(t);await flush();f.requests[0]!.result.resolve(Response.json(nativeReleaseFixture()));await flush();
+ const validated=f.latest();assert.equal(validated?.buildNumber,123);
+ f.monitor.check();await flush();f.emit({phase:'paused',generation:2});
+ assert.equal(f.requests[1]!.signal.aborted,true);assert.equal(f.latest(),validated);
+ f.requests[1]!.result.resolve(Response.json({...nativeReleaseFixture(),buildNumber:100}));await flush();assert.equal(f.latest(),validated);
+ f.emit({phase:'error',generation:3});assert.equal(f.latest(),validated);
+ f.emit({phase:'ready',generation:4});await flush();f.visible(false);
+ assert.equal(f.requests[2]!.signal.aborted,true);assert.equal(f.latest(),validated);
+ f.requests[2]!.result.resolve(Response.json({...nativeReleaseFixture(),buildNumber:100}));await flush();assert.equal(f.latest(),validated);
+ f.visible(true);await flush();f.emit({phase:'ready',generation:5});await flush();
+ assert.equal(f.requests[3]!.signal.aborted,true);assert.equal(f.latest(),validated);
+ f.requests[3]!.result.resolve(Response.json({...nativeReleaseFixture(),buildNumber:100}));await flush();assert.equal(f.latest(),validated);
+});
+
+test('failed native probes preserve a validated update until fresh valid metadata changes the comparison',async t=>{
+ const f=fixture(t);await flush();f.requests[0]!.result.resolve(Response.json(nativeReleaseFixture()));await flush();
+ const validated=f.latest();assert.equal(validated?.buildNumber,123);
+ f.monitor.check();await flush();f.requests[1]!.result.reject(new Error('offline'));await flush();assert.equal(f.latest(),validated);
+ for(const response of [Response.json({schema:1}),Response.json(nativeReleaseFixture(),{status:503})]){
+  f.monitor.check();await flush();f.requests.at(-1)!.result.resolve(response);await flush();assert.equal(f.latest(),validated);
+ }
+ f.monitor.check();await flush();t.mock.timers.tick(10_000);await flush();assert.equal(f.requests.at(-1)!.signal.aborted,true);assert.equal(f.latest(),validated);
+ f.monitor.check();await flush();f.requests.at(-1)!.result.resolve(Response.json({...nativeReleaseFixture(),buildNumber:100}));await flush();assert.equal(f.latest(),undefined);
+});
+
 test('hidden and stopped native update monitors abort work and discard late results',async t=>{
  const f=fixture(t);await flush();f.visible(false);assert.equal(f.requests[0]!.signal.aborted,true);
  f.requests[0]!.result.resolve(Response.json(nativeReleaseFixture()));await flush();assert.equal(f.latest(),undefined);

@@ -1,4 +1,4 @@
-import {useEffect,useState,type ReactNode} from 'react';
+import {useEffect,useRef,useState,type ReactNode} from 'react';
 import {NATIVE_RELEASE_ENDPOINT,type NativePlatform,type NativeRelease,type NativeReleasePackage} from '../../src/native-release.ts';
 import {readNativeReleaseResponse} from '../../src/native-release-response.ts';
 import './native-downloads.css';
@@ -40,6 +40,28 @@ const guides:PlatformGuide[]=[
 export async function loadNativeDownloads(signal:AbortSignal,fetcher:typeof fetch=fetch):Promise<NativeRelease|null>{
  try{return await readNativeReleaseResponse(await fetcher(NATIVE_RELEASE_ENDPOINT,{signal,cache:'no-store',credentials:'omit'}));}catch{return null;}
 }
+export type NativeDownloadsState={state:'loading'|'error';release:null}|{state:'ready';release:NativeRelease};
+export function createNativeDownloadsLoader(onState:(state:NativeDownloadsState)=>void,fetcher:typeof fetch=fetch){
+ type Attempt={controller:AbortController;promise:Promise<void>};
+ let stopped=false,active:Attempt|undefined;
+ function retry():Promise<void>{
+  if(stopped)return Promise.resolve();
+  if(active)return active.promise;
+  const owner:Attempt={controller:new AbortController(),promise:Promise.resolve()};active=owner;
+  let cancel=()=>{};
+  const cancelled=new Promise<null>(resolve=>{cancel=()=>resolve(null);owner.controller.signal.addEventListener('abort',cancel,{once:true});});
+  const timeout=setTimeout(()=>owner.controller.abort(),10_000);
+  onState({state:'loading',release:null});
+  owner.promise=Promise.race([loadNativeDownloads(owner.controller.signal,fetcher),cancelled]).then(release=>{
+   clearTimeout(timeout);owner.controller.signal.removeEventListener('abort',cancel);
+   if(stopped||active!==owner)return;
+   active=undefined;
+   onState(release?{state:'ready',release}:{state:'error',release:null});
+  });
+  return owner.promise;
+ }
+ return {retry,stop(){if(stopped)return;stopped=true;const previous=active;active=undefined;previous?.controller.abort();}};
+}
 export function nativePackageLabel(item:NativeReleasePackage):string{
  if(item.platform==='android-arm64')return item.requiresSigning?'Unsigned release APK':'Debug APK';
  if(item.platform==='ios')return item.requiresSigning?'Device IPA (signing required)':'Simulator ZIP';
@@ -51,19 +73,19 @@ export function nativePackageLabel(item:NativeReleasePackage):string{
 }
 const size=(bytes:number)=>`${(bytes/1_000_000).toLocaleString('en-US',{maximumFractionDigits:1})} MB`;
 
-function PackageLinks({packages}:{packages:NativeReleasePackage[]}){
- return <div className="nd-package-links">{packages.length?packages.filter(item=>!(item.platform==='android-arm64'&&item.requiresSigning)).map(item=><a key={item.file} className="nd-download" href={item.url}><span>{nativePackageLabel(item)}</span><small>{size(item.bytes)}</small></a>):<span className="nd-package-pending">Package pending</span>}</div>;
+function PackageLinks({packages,unavailable}:{packages:NativeReleasePackage[];unavailable:boolean}){
+ return <div className="nd-package-links">{packages.length?packages.filter(item=>!(item.platform==='android-arm64'&&item.requiresSigning)).map(item=><a key={item.file} className="nd-download" href={item.url}><span>{nativePackageLabel(item)}</span><small>{size(item.bytes)}</small></a>):<span className="nd-package-pending">{unavailable?'Download unavailable':'Checking packages…'}</span>}</div>;
 }
-export function NativeDownloadsContent({release}:{release:NativeRelease|null}){
+export function NativeDownloadsContent({release,state=release?'ready':'loading',onRetry}:{release:NativeRelease|null;state?:NativeDownloadsState['state'];onRetry?:()=>void}){
  const source=repository+'/tree/'+(release?.commit??'main');
  return <section id="download" className="sh-section native-downloads" aria-labelledby="nd-title">
   <div className="nd-intro"><h2 id="nd-title">A private wallet.<br/>At home on your device.</h2><div><p>The same Shielded wallet, installed on Windows, Linux, Mac, Android or iPhone. Native apps connect through Tor and keep your recovery secret in the device vault.</p><p className="nd-testnet">Mutinynet test coins only. These are experimental builds.</p></div></div>
-  <div className="nd-release" role="status">{release?<><p>Version {release.version}<span>Build {release.buildNumber}</span><a href={release.releaseUrl}>Release notes</a></p><p><a href={source}>Source <code>{release.commit.slice(0,12)}</code></a><time dateTime={release.publishedAt}>Published {release.publishedAt.slice(0,10)}</time></p></>:<><p>Downloads are being prepared.</p><p>The install guides are ready below. You can also <a href={buildGuide}>build from source</a>.</p></>}</div>
+  <div className="nd-release" role="status" aria-busy={state==='loading'}>{release?<><p>Version {release.version}<span>Build {release.buildNumber}</span><a href={release.releaseUrl}>Release notes</a></p><p><a href={source}>Source <code>{release.commit.slice(0,12)}</code></a><time dateTime={release.publishedAt}>Published {release.publishedAt.slice(0,10)}</time></p></>:<><div className="nd-release-message"><p>{state==='error'?'Downloads are unavailable right now.':'Checking downloads…'}</p><p>The install guides are ready below. {state==='error'?'Try again or ':'You can also '}<a href={buildGuide}>build from source</a>.</p></div>{state==='error'&&<button className="nd-retry" type="button" onClick={onRetry}>Retry downloads</button>}</>}</div>
   <div className="nd-platforms">{guides.map(guide=>{
    const packages=release?.packages.filter(item=>item.platform===guide.platform)??[];
    return <article className="nd-platform" key={guide.platform} aria-labelledby={'nd-'+guide.platform}>
     <div className="nd-platform-heading"><h3 id={'nd-'+guide.platform}>{guide.name}<span>{guide.architecture}</span></h3><p>{guide.description}</p></div>
-    <PackageLinks packages={packages}/>
+    <PackageLinks packages={packages} unavailable={state==='error'}/>
     <details className="nd-install"><summary>Install on {guide.name}<span aria-hidden="true">+</span></summary><div className="nd-guide"><ol>{guide.steps.map((step,index)=><li key={index}>{step}</li>)}</ol><p className="nd-reference">{guide.reference}</p>{packages.length>0&&<div className="nd-checks"><h4>Downloads &amp; checksums</h4><p>Compare the SHA-256 of your downloaded file before opening it. The checksum checks the file against this release; it is not a publisher signature.</p><p>{guide.platform==='windows-x86_64'?<>In PowerShell, run <code>Get-FileHash -Algorithm SHA256 "downloaded-file"</code>.</>:guide.platform==='macos-universal'||guide.platform==='ios'?<>On a Mac, run <code>shasum -a 256 "downloaded-file"</code> in Terminal.</>:<>On a Linux computer, run <code>sha256sum "downloaded-file"</code> in Terminal.</>} Replace <code>downloaded-file</code> with the file’s path, and compare the resulting hash with the value below.</p><ul>{packages.map(item=><li key={item.file}><div><a href={item.url}>{nativePackageLabel(item)}</a><span>{size(item.bytes)}{item.requiresSigning?' · Your signing required':''}</span><a href={source}>Source</a></div><span className="nd-filename">{item.file}</span><code>SHA-256 {item.sha256}</code></li>)}</ul></div>}</div></details>
    </article>;
   })}</div>
@@ -71,7 +93,7 @@ export function NativeDownloadsContent({release}:{release:NativeRelease|null}){
  </section>;
 }
 export default function NativeDownloads(){
- const [release,setRelease]=useState<NativeRelease|null>(null);
- useEffect(()=>{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10_000);void loadNativeDownloads(controller.signal).then(value=>{if(!controller.signal.aborted)setRelease(value);}).finally(()=>clearTimeout(timeout));return()=>{clearTimeout(timeout);controller.abort();};},[]);
- return <NativeDownloadsContent release={release}/>;
+ const [state,setState]=useState<NativeDownloadsState>({state:'loading',release:null}),loader=useRef<ReturnType<typeof createNativeDownloadsLoader>|null>(null);
+ useEffect(()=>{const owner=createNativeDownloadsLoader(setState);loader.current=owner;void owner.retry();return()=>{owner.stop();if(loader.current===owner)loader.current=null;};},[]);
+ return <NativeDownloadsContent {...state} onRetry={()=>{void loader.current?.retry();}}/>;
 }

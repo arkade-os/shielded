@@ -57,10 +57,12 @@ test('native release endpoint coalesces failures and serves bounded last-good me
 });
 
 test('native release endpoint deadline aborts a stuck upstream and ignores its late response',async t=>{
- t.mock.timers.enable({apis:['setTimeout']});let signal:AbortSignal|undefined;
- const pending=deferred<Response>(),handler=createNativeReleasesHandler({fetchImpl:async(_url,init)=>{signal=init!.signal!;return pending.promise;}}),response=request(handler);
+ t.mock.timers.enable({apis:['setTimeout']});let signal:AbortSignal|undefined,calls=0;
+ const pending=deferred<Response>(),handler=createNativeReleasesHandler({now:()=>0,fetchImpl:async(_url,init)=>{calls++;signal=init!.signal!;return pending.promise;}}),response=request(handler);
  t.mock.timers.tick(10_000);await flush();assert.equal(signal?.aborted,true);assert.equal((await response).status,503);
  pending.resolve(Response.json(nativeReleaseFixture()));await flush();
+ const duringBackoff=await request(handler);
+ assert.equal(duringBackoff.status,503);assert.deepEqual(duringBackoff.body,{error:'Native release metadata unavailable'});assert.equal(calls,1);
 });
 
 test('release reader rejects declared and streamed oversize data, HTTP errors and invalid UTF8',async()=>{

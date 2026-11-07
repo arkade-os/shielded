@@ -32,6 +32,7 @@ export class NativePolicy {
  classify(input:string,method='GET',body?:string):NativeRoute {
   const url=nativeUrl(input,this.poolOrigin),path=decodeURIComponent(url.pathname),origin=url.origin,m=method.toUpperCase();
   if(path.includes('%')||/[\\\u0000-\u001f]/.test(path))throw new Error('Invalid encoded native route');
+  // Metadata stays pinned to Mutinynet, matching the Rust route allowlist.
   if(m==='GET'&&url.href==='https://shielded.mutinynet.arkade.sh/api/native/releases')return route('public',url.href);
   if(origin===this.poolOrigin&&path.startsWith('/api/rollup/')){
    const suffix=path.slice('/api/rollup'.length);

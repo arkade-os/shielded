@@ -13,7 +13,7 @@ export function isNewerNativeRelease(release:NativeRelease,identity:NativeBuildI
 export function createNativeUpdateMonitor(network:UpdateNetwork,identity:NativeBuildIdentity,onUpdate:(release:NativeRelease|undefined)=>void,isVisible:()=>boolean){
  type Probe={controller:AbortController;generation:number;deadline?:ReturnType<typeof setTimeout>};
  let status:NativeStatus={phase:'idle',generation:0},stopped=false,revision=0,probe:Probe|undefined,scheduled:ReturnType<typeof setTimeout>|undefined;
- const invalidate=()=>{clearTimeout(scheduled);scheduled=undefined;const previous=probe;probe=undefined;if(previous){clearTimeout(previous.deadline);previous.controller.abort();}if(!stopped)onUpdate(undefined);};
+ const invalidate=()=>{clearTimeout(scheduled);scheduled=undefined;const previous=probe;probe=undefined;if(previous){clearTimeout(previous.deadline);previous.controller.abort();}};
  const known=Number.isSafeInteger(identity.buildNumber)&&identity.buildNumber>0&&/^[a-f0-9]{40}$/.test(identity.commit)&&['windows-x86_64','linux-x86_64','macos-universal','android-arm64','ios'].includes(identity.platform);
  function check(){
   if(stopped||!known||!isVisible()||status.phase!=='ready'||probe)return;
@@ -30,7 +30,7 @@ export function createNativeUpdateMonitor(network:UpdateNetwork,identity:NativeB
    if(stopped||probe!==owner)return;
    probe=undefined;
    if(!isVisible()||status.phase!=='ready'||status.generation!==owner.generation)return;
-   onUpdate(release&&isNewerNativeRelease(release,identity)?release:undefined);
+   if(release)onUpdate(isNewerNativeRelease(release,identity)?release:undefined);
    scheduled=setTimeout(()=>{scheduled=undefined;check();},30*60_000);
   };
   void Promise.race([request(),timeout]).then(finish,()=>finish());

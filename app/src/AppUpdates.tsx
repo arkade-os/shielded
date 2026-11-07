@@ -29,8 +29,13 @@ export function AppUpdatesProvider({children}:{children:ReactNode}){
  return <Updates.Provider value={update}>{children}</Updates.Provider>;
 }
 
-export function AppUpdateNotice({tone='light'}:{tone?:'light'|'dark'}){
+export function NativeUpdateCopyLink(){
+ return <section className="app-update-copy" aria-label="Native update download link"><p>Update available. Copy this link to open it outside Shielded.</p><input aria-label="Download link to copy" readOnly value={NATIVE_RELEASE_ORIGIN+'/#download'} onFocus={event=>event.target.select()}/></section>;
+}
+
+export function AppUpdateNotice({tone='light',copyLink=false}:{tone?:'light'|'dark';copyLink?:boolean}){
  const {apply,release}=useContext(Updates);
+ if(release&&copyLink)return <NativeUpdateCopyLink/>;
  if(release)return <a className="app-update-notice" data-tone={tone} href={NATIVE_RELEASE_ORIGIN+'/#download'} aria-label="Native app update available. View downloads."><span className="app-update-dot" aria-hidden="true"/>Update available</a>;
  return apply?<button className="app-update-notice" data-tone={tone} type="button" onClick={apply} aria-label="Update app to the new version"><span className="app-update-dot" aria-hidden="true"/>Update available</button>:null;
 }
