@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 import {test,type TestContext} from 'node:test';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {base64} from '@scure/base';
@@ -62,7 +62,8 @@ test('a large answer goes out in chunks the client reassembles',async t=>{
  const body=new Uint8Array(100<<10).map((_,i)=>i%251),g=await rig(t,{reply:()=>new Response(body)});
  const sent=await g.ask(ARK);await until(()=>sent.answer()?.kind==='sealed');
  assert.equal(sent.heard.get(A)!.length,4);
- assert.deepEqual(new Uint8Array(await (await sent.inner()).arrayBuffer()),body);
+ const got=new Uint8Array(await (await sent.inner()).arrayBuffer()),digest=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
+ assert.deepEqual([got.length,digest(got)],[body.length,digest(body)]);
 });
 
 test('a shed request gets a status event and no upstream call',async t=>{
