@@ -6,23 +6,35 @@ import v8 from 'node:v8';
 import vm from 'node:vm';
 import {base64} from '@scure/base';
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
+import {matchFilters,type Filter} from 'nostr-tools/filter';
 import {finalizeEvent,generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import {NOSTR_REQUEST_KIND,readAnswer} from '../packages/protocol/src/nostr-carrier.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
+import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
+import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
+import {createSealedFetch,SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 
-// nostr-tools' real pool over an in-memory socket: the far end is `net`, which a test reaches into.
+// nostr-tools' real pool over an in-memory socket: the far end is `net`, one relay per URL routing events between its sockets, which a test reaches into. A quirk makes a relay refuse request events, or take them silently, with no OK and no delivery.
 function network(){
- const net={up:true,sockets:new Set<Socket>(),reqs:[] as {id:string;filters:unknown[]}[],sent:[] as Event[],closes:[] as string[],
+ const net={up:true,sockets:new Set<Socket>(),reqs:[] as {id:string;filters:unknown[]}[],sent:[] as Event[],closes:[] as string[],quirks:new Map<string,'refuses'|'silent'>(),unheard:[] as string[],
   push(event:Event){[...net.sockets].at(-1)!.onmessage!({data:JSON.stringify(['EVENT',net.reqs.at(-1)!.id,event])});}};
  class Socket{
   static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
-  readyState=0;onopen:(()=>void)|null=null;onerror:(()=>void)|null=null;onclose:((event:object)=>void)|null=null;onmessage:((event:{data:string})=>void)|null=null;
+  readyState=0;subs=new Map<string,Filter[]>();onopen:(()=>void)|null=null;onerror:(()=>void)|null=null;onclose:((event:object)=>void)|null=null;onmessage:((event:{data:string})=>void)|null=null;
   constructor(readonly url:string){queueMicrotask(()=>{if(!net.up){this.readyState=3;this.onerror?.();return;}this.readyState=1;net.sockets.add(this);this.onopen?.();});}
   send(data:string){
    const [type,...rest]=JSON.parse(data);
-   if(type==='REQ'){net.reqs.push({id:rest[0],filters:rest.slice(1)});this.hear(['EOSE',rest[0]]);}
-   else if(type==='EVENT'){net.sent.push(rest[0]);this.hear(['OK',rest[0].id,true,'']);}
-   else if(type==='CLOSE')net.closes.push(rest[0]);
+   if(type==='REQ'){net.reqs.push({id:rest[0],filters:rest.slice(1)});this.subs.set(rest[0],rest.slice(1));this.hear(['EOSE',rest[0]]);}
+   else if(type==='EVENT')this.take(rest[0]);
+   else if(type==='CLOSE'){net.closes.push(rest[0]);this.subs.delete(rest[0]);}
+  }
+  take(event:Event){
+   const request=event.kind===NOSTR_REQUEST_KIND,quirk=request?net.quirks.get(this.url):undefined;net.sent.push(event);
+   if(request&&![...this.subs.values()].flat().some(filter=>filter['#e']?.includes(event.id)))net.unheard.push(event.id);
+   if(quirk==='silent')return;
+   if(quirk==='refuses')return this.hear(['OK',event.id,false,'blocked: not here']);
+   for(const socket of net.sockets)if(socket.url===this.url)for(const [id,filters] of socket.subs)if(matchFilters(filters,event))socket.hear(['EVENT',id,event]);
+   this.hear(['OK',event.id,true,'']);
   }
   close(){this.readyState=3;net.sockets.delete(this);}
   hear(frame:unknown){queueMicrotask(()=>this.onmessage?.({data:JSON.stringify(frame)}));}
@@ -30,7 +42,7 @@ function network(){
  }
  return {net,Socket,pool:new AbstractSimplePool({verifyEvent,websocketImplementation:Socket as never,maxWaitForConnection:3000})};
 }
-const A='wss://a.example';
+const A='wss://a.example/',B='wss://b.example/';
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const eventually=async(ok:()=>boolean)=>{for(let i=0;i<500&&!ok();i++)await settle();assert.ok(ok(),'the condition never held');};
 const collect=()=>{v8.setFlagsFromString('--expose-gc');const gc=vm.runInNewContext('gc') as ()=>void;gc();gc();};
@@ -115,4 +127,18 @@ test('a relay that refuses only the subscription (CLOSED) is subscribed again af
  clock+=30_000;t.mock.timers.tick(1);await eventually(()=>net.reqs.length===2);
  assert.deepEqual(net.reqs.map(req=>(req.filters[0] as {since:number}).since),[clock/1000-90,clock/1000-60]);
  net.push(request(gateway));await eventually(()=>opened===1);
+});
+
+test('a sealed fetch on the real pool at both ends: a GET, a POST its first relay refuses, and a POST whose OK times out',async t=>{
+ const {net,Socket}=network(),key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:string[]=[];
+ const real=globalThis.WebSocket;globalThis.WebSocket=Socket as never;t.after(()=>{globalThis.WebSocket=real;});
+ const router=createOhttpGateway({key,upstreams:[{origin:'https://ark.example',prefix:'/v1/'}],poolOrigin:'https://pool.example',poolLoopback:'http://127.0.0.1:9',gatewayToken:'token',fetch:(async(url:string)=>{calls.push(url);return Response.json({ok:true});}) as unknown as typeof fetch});
+ const carrier=startNostrCarrier({open:router.open,secret:key.nostrSecret,relays:[A,B]});t.after(()=>carrier.close());
+ await eventually(()=>net.reqs.length===2);
+ const sealedFetch=createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:'https://pool.example',relays:[A,B],pick:1,timeoutMs:5000,random:()=>0});t.after(()=>sealedFetch.close());
+ const spend={method:'POST',headers:{'content-type':'application/json'},body:'{}'};
+ assert.deepEqual(await (await sealedFetch('https://ark.example/v1/info')).json(),{ok:true});
+ net.quirks.set(A,'refuses');assert.equal((await sealedFetch('/api/rollup/spends',spend)).status,200);
+ net.quirks.set(A,'silent');await assert.rejects(sealedFetch('/api/rollup/spends',spend),(error:unknown)=>error instanceof SealedFetchError&&error.code==='outcome-unknown');
+ assert.deepEqual([net.sent.filter(event=>event.kind===NOSTR_REQUEST_KIND).length,calls.length,net.unheard],[4,2,[]],'the refused POST went out again and the timed-out one did not, each after its answer subscription');
 });
