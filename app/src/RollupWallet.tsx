@@ -79,7 +79,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sessionFetch]=useState(()=>NATIVE?nativeSessionFetch():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [nativePending,setNativePending]=useState(false);
- const [startupError,setStartupError]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
+ const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
@@ -122,10 +122,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  },[onShutdown]);
  useEffect(()=>{
   if(restoring.current||(!onReady&&!onStartupFailure))return;
-  const failure=startupError||poolError||(pool&&pool.phase!=='ready'?(pool.message||'The pool is not ready. Reconnect to try again.'):'');
+  const failure=startupFailure||poolError||(pool&&pool.phase!=='ready'?(pool.message||'The pool is not ready. Reconnect to try again.'):'');
   if(failure)onStartupFailure?.(failure);
   else if(pool?.phase==='ready'&&wallet)onReady?.();
- },[pool,wallet,startupError,poolError,onReady,onStartupFailure]);
+ },[pool,wallet,startupFailure,poolError,onReady,onStartupFailure]);
 
  const createWallet=()=>{
   if(busyRef.current||secret)return;
@@ -137,7 +137,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  // The wallet needs the pool phase, network and token before creation.
  useEffect(()=>{
   const controller=new AbortController();
-  void retryPageRead(()=>rollupApi<RollupPoolStatus>('/status',undefined,sessionFetch??fetch,1000,POOL_ORIGIN),controller.signal,{onError:error=>{if(!restoring.current)setStartupError(errorText(error));}})
+  void retryPageRead(()=>rollupApi<RollupPoolStatus>('/status',undefined,sessionFetch??fetch,1000,POOL_ORIGIN),controller.signal,{onError:error=>{if(!restoring.current)setStartupError(errorText(error));},onTerminal:error=>{if(!restoring.current)setStartupFailure(errorText(error));}})
    .then(status=>{if(status&&!controller.signal.aborted&&!restoring.current){poolRef.current=status;setPool(status);if(status.phase==='ready')setInitialPool(status);setStartupError('');}}).catch(()=>{});
   return()=>controller.abort();
  },[]);
@@ -303,7 +303,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;
    }
-  },dispose,{shouldRetry:()=>!nativeOpened,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupError(errorText(error));}});
+  },dispose,{shouldRetry:()=>!nativeOpened,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupError(errorText(error));},onTerminal:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupFailure(errorText(error));}});
   let legacy=Promise.resolve();
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
   const finishClose=pageClose(async(closed:ReturnType<typeof session.close>)=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);});
@@ -314,7 +314,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   sessions.current.add(close);
   void session.ready.then(async created=>{
    if(!created||!current())return;
-   setStartupError('');
+   setStartupError('');setStartupFailure('');
    // A wallet made here was only ever shown with this status's fee, so it accepts that one, never a newer one. A failed save shows as the saved-notes error.
    const shown=createdHere.current&&created.depositFeePaused?depositFeeFor(status):undefined;if(shown)void created.acceptDepositFee(shown).catch(()=>{});
    const funds=pageQuoteFunds(()=>({token:created.pool.status.pool?.token,notes:created.mergeableAssets().flatMap(asset=>created.shieldedNotes(asset)),inFlight:created.inFlight}),()=>{quotes.clear();setQuoteRevision(v=>v+1);});
@@ -334,7 +334,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    });
    parts.lnurl.start(error=>{if(current()&&receiveCurrent(parts.lnurl))lnFail(error);});
    setTick(t=>t+1);
-  }).catch(error=>{if(current())setStartupError(errorText(error));});
+  }).catch(error=>{if(current()){setStartupError(errorText(error));setStartupFailure(errorText(error));}});
   return()=>{void close().catch(()=>{});};
  },[initialPool,secret]);
 

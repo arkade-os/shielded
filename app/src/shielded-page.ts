@@ -57,7 +57,7 @@ export function pageCache(source:ShieldedNoteRepository){
  return {repository,close(){closed=true;},async drain(){await Promise.allSettled([...writes]);}};
 }
 
-type PageRetry={delayMs?:number;onError?:(error:unknown)=>void;shouldRetry?:()=>boolean};
+type PageRetry={delayMs?:number;onError?:(error:unknown)=>void;onTerminal?:(error:unknown)=>void;shouldRetry?:()=>boolean};
 function retryablePageError(error:unknown){
  if(!(error instanceof Error))return false;
  const status=(error as Error&{status?:number}).status;
@@ -69,7 +69,10 @@ export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,op
   try{const value=await read();return signal.aborted?undefined:value;}
   catch(error){
    if(signal.aborted)return;
-   options.onError?.(error);if(!retryablePageError(error)||options.shouldRetry?.()===false)throw error;
+   options.onError?.(error);
+   const retry=retryablePageError(error)&&options.shouldRetry?.()!==false;
+   if(signal.aborted)return;
+   if(!retry){options.onTerminal?.(error);throw error;}
    await new Promise<void>(resolve=>{
     const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
     const timer=setTimeout(done,Math.min((options.delayMs??5000)*2**Math.min(attempt,4),60_000)*(1+Math.random()/4));
