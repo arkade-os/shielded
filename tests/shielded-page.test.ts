@@ -34,6 +34,16 @@ test('a failed background action releases its recovery fence',async()=>{
  assert.equal(actions.busy,true);await flush();assert.equal(actions.busy,false);
 });
 
+test('a stuck action stops blocking recovery after the UI timeout without cancelling the payment',async context=>{
+ context.mock.timers.enable({apis:['setTimeout']});
+ const done=deferred();let completed=false;
+ const handle=makeHandle('auto-stuck',async emit=>{await done.promise;completed=true;const result={railId:'test'};emit({status:'settled',result});return result;});
+ const actions=page.pageActions(()=>{});actions.track(handle);
+ await Promise.resolve();context.mock.timers.tick(30*60_000);await flush();
+ assert.equal(actions.busy,false);assert.equal(completed,false);assert.equal(handle.status,'pending');
+ done.resolve();await handle.settled();assert.equal(handle.status,'settled');
+});
+
 test('first-run creation persists one wallet only after explicit creation',()=>{
  const storage=storageOf();assert.equal(storage.length,0);
  const before=Date.now(),secret=createPageWallet(storage);

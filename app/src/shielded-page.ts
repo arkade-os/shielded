@@ -90,7 +90,7 @@ export function pageActions(changed:()=>void){
   if(pending.has(handle))return;
   pending.add(handle);changed();
   const finish=()=>{pending.delete(handle);changed();};
-  void Promise.resolve().then(()=>handle.settled()).then(finish,finish);
+  void Promise.resolve().then(()=>handle.settled({timeoutMs:30*60_000})).then(finish,finish);
  }};
 }
 

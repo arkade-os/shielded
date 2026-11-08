@@ -31,7 +31,7 @@ test('the shared amount form covers every receive tab',()=>{
 test('payment URIs encode exact sats as eight decimal BTC amounts',()=>{
  for(const [mode,address,parameter]of recipients){
   for(const [amount,btc]of amounts){
-   assert.equal(amountQrValue(mode,address,amount),`bitcoin:?${parameter}=${address}&amount=${btc}`);
+   assert.equal(amountQrValue(mode,address,amount),`bitcoin:?${parameter}=${mode==='unified'?address.toLowerCase():address}&amount=${btc}`);
   }
  }
 });

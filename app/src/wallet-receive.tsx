@@ -35,8 +35,8 @@ const short=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slic
 export function amountQrValue(mode:ReceiveMode,value:string,amount:string):string|undefined{
  if(!value.trim()||!/^[1-9]\d*$/.test(amount))return undefined;
  const btc=(BigInt(amount)/100000000n).toString()+'.'+String(BigInt(amount)%100000000n).padStart(8,'0');
- // LNURL invoices use BIP21's BTC amount; the recipient converts it to sats.
- return `bitcoin:?${mode==='unified'?'lightning':mode==='shielded'?'shielded':'ark'}=${value}&amount=${btc}`;
+ const destination=mode==='unified'?value.toLowerCase():value;
+ return `bitcoin:?${mode==='unified'?'lightning':mode==='shielded'?'shielded':'ark'}=${destination}&amount=${btc}`;
 }
 
 export function ReceivePortal({active=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,loading,description,action,children}:ReceivePortalProps){
