@@ -60,11 +60,11 @@ test('creation failure cannot persist a wallet before its birth metadata',()=>{
 });
 
 test('startup retries transient creation without repeating preparation and closes the one successful wallet',async()=>{
- let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');
+ let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],terminal:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');
  const session=openPageWallet(async()=>++prepares,async value=>{
   assert.equal(value,1);if(++creates===1)throw failure;return {dispose:async()=>{disposals++;}};
- },undefined,{delayMs:1,onError:error=>errors.push(error)});
- assert.ok(await session.ready);assert.equal(prepares,1);assert.equal(creates,2);assert.deepEqual(errors,[failure]);
+ },undefined,{delayMs:1,onError:error=>errors.push(error),onTerminal:error=>terminal.push(error)});
+ assert.ok(await session.ready);assert.equal(prepares,1);assert.equal(creates,2);assert.deepEqual(errors,[failure]);assert.deepEqual(terminal,[]);
  await session.close();await session.close();assert.equal(disposals,1);
 });
 
@@ -77,15 +77,37 @@ test('startup cancellation wakes retry backoff without another creation',async()
 
 test('startup does not retry a definitive refusal or invalid wallet data',async()=>{
  for(const failure of [Object.assign(new Error('denied'),{status:403}),new Error('invalid secret')]){
-  let creates=0;const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1});
-  await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);
+  let creates=0;const terminal:unknown[]=[];const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,onTerminal:error=>terminal.push(error)});
+  await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);assert.deepEqual(terminal,[failure]);
  }
 });
 
 test('a transient setup failure cannot recreate a native wallet that already started payment work',async()=>{
- let creates=0;const failure=new ProviderUnavailableError('companion unavailable');
- const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,shouldRetry:()=>false});
- await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);
+ let creates=0;const failure=new ProviderUnavailableError('companion unavailable'),terminal:unknown[]=[];
+ const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,shouldRetry:()=>false,onTerminal:error=>terminal.push(error)});
+ await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);assert.deepEqual(terminal,[failure]);
+});
+
+test('a transient pool startup notice keeps automatic retry alive without reporting a terminal failure',async context=>{
+ context.mock.timers.enable({apis:['setTimeout']});
+ const controller=new AbortController(),failure=new Error('The pool did not answer (503).'),notices:unknown[]=[],terminal:unknown[]=[];let reads=0;
+ const opening=page.retryPageRead(async()=>{if(++reads===1)throw failure;return 'ready';},controller.signal,{delayMs:1,onError:error=>notices.push(error),onTerminal:error=>terminal.push(error)});
+ await flush();assert.equal(reads,1);assert.deepEqual(notices,[failure]);assert.deepEqual(terminal,[]);
+ context.mock.timers.tick(2);assert.equal(await opening,'ready');assert.equal(reads,2);assert.deepEqual(terminal,[]);
+});
+
+test('a definitive pool startup failure reports terminal once and does not retry',async()=>{
+ const controller=new AbortController(),failure=Object.assign(new Error('denied'),{status:403}),terminal:unknown[]=[];let reads=0;
+ await assert.rejects(page.retryPageRead(async()=>{reads++;throw failure;},controller.signal,{delayMs:1,onTerminal:error=>terminal.push(error)}),error=>error===failure);
+ assert.equal(reads,1);assert.deepEqual(terminal,[failure]);
+});
+
+test('retiring a page inside retry callbacks cannot report a terminal startup failure',async()=>{
+ for(const retiring of ['notice','policy']){
+  const controller=new AbortController(),terminal:unknown[]=[];let reads=0;
+  const result=await page.retryPageRead(async()=>{reads++;throw Object.assign(new Error('unavailable'),{status:503});},controller.signal,{onError:()=>{if(retiring==='notice')controller.abort();},shouldRetry:()=>{if(retiring==='policy')controller.abort();return false;},onTerminal:error=>terminal.push(error)});
+  assert.equal(result,undefined);assert.equal(reads,1);assert.deepEqual(terminal,[]);
+ }
 });
 
 test('pool startup retries an outage and does not publish a read completed after cancellation',async()=>{
