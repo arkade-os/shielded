@@ -17,6 +17,33 @@ const storageOf=()=>{
 };
 const snapshot={v:2,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
 
+test('background wallet actions keep recovery fenced until every handle settles',async()=>{
+ const a=deferred(),b=deferred();let changes=0;
+ const actions=page.pageActions(()=>{changes++;});
+ const first=makeHandle('auto-first',async()=>{await a.promise;return {railId:'test'};});
+ const second=makeHandle('auto-second',async()=>{await b.promise;return {railId:'test'};});
+ actions.track(first);actions.track(first);actions.track(second);
+ assert.equal(actions.busy,true);assert.equal(changes,2);
+ a.resolve();await flush();assert.equal(actions.busy,true);
+ b.resolve();await flush();assert.equal(actions.busy,false);assert.equal(changes,4);
+});
+
+test('a failed background action releases its recovery fence',async()=>{
+ const actions=page.pageActions(()=>{});
+ actions.track(makeHandle('auto-failed',async()=>{throw new Error('action failed');}));
+ assert.equal(actions.busy,true);await flush();assert.equal(actions.busy,false);
+});
+
+test('a stuck action stops blocking recovery after the UI timeout without cancelling the payment',async context=>{
+ context.mock.timers.enable({apis:['setTimeout']});
+ const done=deferred();let completed=false;
+ const handle=makeHandle('auto-stuck',async emit=>{await done.promise;completed=true;const result={railId:'test'};emit({status:'settled',result});return result;});
+ const actions=page.pageActions(()=>{});actions.track(handle);
+ await Promise.resolve();context.mock.timers.tick(30*60_000);await flush();
+ assert.equal(actions.busy,false);assert.equal(completed,false);assert.equal(handle.status,'pending');
+ done.resolve();await handle.settled();assert.equal(handle.status,'settled');
+});
+
 test('first-run creation persists one wallet only after explicit creation',()=>{
  const storage=storageOf();assert.equal(storage.length,0);
  const before=Date.now(),secret=createPageWallet(storage);

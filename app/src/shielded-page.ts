@@ -84,6 +84,16 @@ export function pageClose<A extends unknown[],T>(close:(...args:A)=>Promise<T>){
  return(...args:A)=>completed??=Promise.resolve().then(()=>close(...args)).catch(error=>{completed=undefined;throw error;});
 }
 
+export function pageActions(changed:()=>void){
+ const pending=new Set<PaymentHandle>();
+ return {get busy(){return pending.size>0;},track(handle:PaymentHandle){
+  if(pending.has(handle))return;
+  pending.add(handle);changed();
+  const finish=()=>{pending.delete(handle);changed();};
+  void Promise.resolve().then(()=>handle.settled({timeoutMs:30*60_000})).then(finish,finish);
+ }};
+}
+
 export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose(),retry:PageRetry={}){
  let cancelled=false,wallet:W|undefined;
  const controller=new AbortController();

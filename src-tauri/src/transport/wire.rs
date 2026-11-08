@@ -43,10 +43,7 @@ async fn exchange(
         .host_str()
         .ok_or("missing private HTTP host")?
         .to_owned();
-    let endpoint = host.as_str();
-    let stream = lease
-        .connect_with_recovery(|client| async move { client.connect((endpoint, 443)).await })
-        .await?;
+    let stream = lease.connect(&host).await?;
     lease.check()?;
     let name = rustls::pki_types::ServerName::try_from(host)
         .map_err(|_| "invalid private TLS hostname")?;
@@ -212,9 +209,7 @@ async fn socket_inner(
             .url
             .host_str()
             .ok_or("missing private socket host")?;
-        let stream = lease
-            .connect_with_recovery(|client| async move { client.connect((host, 443)).await })
-            .await?;
+        let stream = lease.connect(host).await?;
         let mut request = checked
             .url
             .as_str()

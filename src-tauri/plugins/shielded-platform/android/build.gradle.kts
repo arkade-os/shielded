@@ -24,4 +24,5 @@ kotlin { compilerOptions { jvmTarget = JvmTarget.JVM_11 } }
 dependencies {
     implementation(project(":tauri-android"))
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.7.0")
 }

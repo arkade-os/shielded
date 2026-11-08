@@ -8,10 +8,10 @@ import {markPrivateFetch} from '../shielded/network-privacy.ts';
 import {beforeNativeMutation,observeNativeResponse} from './mutations.ts';
 import {NativePolicy,nativeUrl,type NativePurpose} from './policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from './providers.ts';
-import {NativeBridge,bindNativeProvider,type NativeEvent,type NativeStatus} from './transport.ts';
+import {NativeBridge,bindNativeProvider,type NativeEvent,type NativeStatus,type NativeMode} from './transport.ts';
 import {NativeEventSource,NativeWebSocket} from './streams.ts';
 
-export type {NativeStatus} from './transport.ts';
+export type {NativeStatus,NativeMode} from './transport.ts';
 declare global {var __SHIELDED_NATIVE__:{version:1;poolOrigin:string}|undefined;}
 let bridge:NativeBridge|undefined,installed=false;
 const indexers=new Set<IsolatedIndexerProvider>(),pools=new Set<SimplePool>();
@@ -38,7 +38,7 @@ export const nativeLnurlFetch:typeof fetch=scopedFetch('lnurl');
 export const nativeClaimFetch:typeof fetch=scopedFetch('pool-sync');
 export const nativeReleaseFetch:typeof fetch=scopedFetch('public');
 export const nativeNetwork={
- status:():Promise<NativeStatus>=>connection().status(),start:():Promise<NativeStatus>=>connection().start(),pause:():Promise<NativeStatus>=>connection().pause(),
+ status:():Promise<NativeStatus>=>connection().status(),start:(mode:NativeMode='tor'):Promise<NativeStatus>=>connection().start(mode),pause:():Promise<NativeStatus>=>connection().pause(),
  subscribe:(fn:(status:NativeStatus)=>void)=>connection().subscribe(fn),
  async check(signal:AbortSignal):Promise<void>{
   const b=connection(),current=b.sessionGuard(),url=b.policy.poolOrigin+'/api/rollup/status',route={...b.policy.classify(url,'GET'),key:'tor-health:'+crypto.randomUUID()};
