@@ -91,6 +91,9 @@ impl PrivacyTransport {
     pub fn status(&self) -> Result<NativeStatus, String> {
         self.inner.status()
     }
+    pub fn prewarm(&self) -> Result<NativeStatus, String> {
+        self.inner.prewarm()
+    }
     pub async fn start(&self) -> Result<NativeStatus, String> {
         self.start_mode(NativeMode::Tor).await
     }

@@ -85,7 +85,7 @@ export default function NativeWallet(){
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
    },getSecret,generationGuard,{mode:selectedMode.current,current:generationGuard});
-   await loadWallet();
+   if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
    if(mine!==attempt.current||document.hidden||manualLock.current)return;
    if(!opened||healthExpired.current)throw new Error('The connection changed while opening the wallet. Reconnect to try again.');
