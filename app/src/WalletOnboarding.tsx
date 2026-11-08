@@ -25,7 +25,7 @@ function ShieldMark({small=false}:{small?:boolean}){
  return <svg width={small?17:27} height={small?20:31} viewBox="0 0 28 32" fill="none" aria-hidden="true"><path d="M14 2 25 6v9c0 7-5 11-11 15C8 26 3 22 3 15V6l11-4Z" stroke="currentColor" strokeWidth="1.4"/><path d="M18.5 11c-2.8-3-8-1.2-8 1.8 0 3.2 7.3 1.5 7.3 5 0 3.3-5.4 4.5-8 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>;
 }
 
-function EngravedShield(){
+export function EngravedShield(){
  const id=useId().replace(/:/g,''),shape='M0-115C32-100 62-94 91-91V-13C91 48 49 91 0 121-49 91-91 48-91-13V-91C-62-94-32-100 0-115Z';
  const engraving=useMemo(()=>Array.from({length:24},(_,i)=>wave(23+i*4,5.8,14,i*.29,240)),[]);
  const rosette=useMemo(()=>spirograph(38,11,18,960),[]);
@@ -57,7 +57,7 @@ function EngravedShield(){
 export default function WalletOnboarding({transport,setup,busy,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false}:WalletOnboardingProps){
  const [restoring,setRestoring]=useState(false),id=useId();
  const native=transport==='tor',direct=native&&(torHealth?.status.mode??'tor')==='direct',tor=native&&!direct;
- const titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`;
+ const titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`,privacyId=`${id}-privacy`;
  const restore=setup&&restoring;
  const waiting=setup&&native&&torHealth?.status.phase!=='ready',disabled=busy||transportBusy||waiting;
  return <div className={`wallet-onboarding${restore?' wallet-onboarding-restoring':''}${!setup?' wallet-onboarding-connecting':''}`}>
@@ -86,7 +86,7 @@ export default function WalletOnboarding({transport,setup,busy,phase,error,phras
   </main>
   <footer className="wallet-onboarding-footer">
    <div className="app-header-status">{native?<NativeTorHealth health={torHealth} tone="dark" onToggleTor={onToggleTor} transportBusy={transportBusy}/>:<span className="wallet-onboarding-connection">Browser connection</span>}<AppUpdateNotice tone="dark"/></div>
-   <details className="wallet-onboarding-privacy"><summary>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':direct?'Tor is off. Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></details>
+   <details className="wallet-onboarding-privacy" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector('summary')?.focus();}}}><summary aria-controls={privacyId}>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><div className="wallet-onboarding-privacy-menu" id={privacyId} aria-label="About your privacy" role="region" tabIndex={0}><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':direct?'Tor is off. Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></div></details>
   </footer>
  </div>;
 }

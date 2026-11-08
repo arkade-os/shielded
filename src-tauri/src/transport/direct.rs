@@ -1,4 +1,5 @@
 use super::session::Retirement;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use std::{
     future::Future,
     net::{IpAddr, SocketAddr},
@@ -12,6 +13,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_ADDRESSES: usize = 64;
 const MAX_ATTEMPTS: usize = 8;
 const ATTEMPT_DELAY: Duration = Duration::from_millis(50);
+#[cfg(not(test))]
+const ATTEMPT_LIFETIME: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const ATTEMPT_LIFETIME: Duration = Duration::from_millis(250);
 
 fn public_address(address: SocketAddr) -> bool {
     if address.port() != 443 {
@@ -63,29 +68,46 @@ where
         {
             return Err("direct DNS returned a non-public or unsupported target".into());
         }
-        let mut attempts = tokio::task::JoinSet::new();
         let mut pending = addresses.into_iter().peekable();
         if cancel.is_cancelled() {
             return Err("private request cancelled".into());
         }
-        if let Some(address) = pending.next() {
-            attempts.spawn(connect(address));
+        let mut attempts: FuturesUnordered<_> = FuturesUnordered::new();
+        for address in pending.by_ref().take(MAX_ATTEMPTS) {
+            let connection = connect(address);
+            attempts.push(Box::pin(async move {
+                tokio::time::timeout(ATTEMPT_LIFETIME, connection)
+                    .await
+                    .map_err(|_| ())?
+                    .map_err(|_| ())
+            })
+                as std::pin::Pin<Box<dyn Future<Output = Result<T, ()>> + Send>>);
         }
         loop {
             tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err("private request cancelled".into()),
-                result = attempts.join_next(), if !attempts.is_empty() => {
-                    if let Some(Ok(Ok(stream))) = result {
-                        return Ok(stream);
-                    }
-                    if pending.peek().is_none() && attempts.is_empty() {
-                        return Err("direct connection failed".into());
+                result = attempts.next() => {
+                    match result {
+                        Some(Ok(stream)) => return Ok(stream),
+                        Some(Err(_)) if attempts.is_empty() && pending.peek().is_none() => return Err("direct connection failed".into()),
+                        Some(Err(_)) => {},
+                        None if pending.peek().is_none() => return Err("direct connection failed".into()),
+                        None => {},
                     }
                 },
-                _ = tokio::time::sleep(ATTEMPT_DELAY), if pending.peek().is_some() && attempts.len() < MAX_ATTEMPTS => {
-                    attempts.spawn(connect(pending.next().expect("a pending address")));
-                },
+                _ = tokio::time::sleep_until((std::time::Instant::now() + ATTEMPT_DELAY).into()) => {},
+            }
+            while attempts.len() < MAX_ATTEMPTS {
+                let Some(address) = pending.next() else { break };
+                let connection = connect(address);
+                attempts.push(Box::pin(async move {
+                    tokio::time::timeout(ATTEMPT_LIFETIME, connection)
+                        .await
+                        .map_err(|_| ())?
+                        .map_err(|_| ())
+                })
+                    as std::pin::Pin<Box<dyn Future<Output = Result<T, ()>> + Send>>);
             }
         }
     };
@@ -293,5 +315,68 @@ mod tests {
         assert_eq!(result, Ok(17));
         assert!(maximum.load(Ordering::SeqCst) <= 8);
         tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn stalled_attempts_expire_and_losing_attempts_finish_before_cancellation() {
+        let cleaned = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            connect_with(
+                || async {
+                    Ok((1..=9)
+                        .map(|last| address(&format!("8.8.8.{last}:443")))
+                        .collect())
+                },
+                |address| {
+                    let cleaned = cleaned.clone();
+                    let cancel = cancel.clone();
+                    async move {
+                        struct Cleanup(Arc<AtomicUsize>);
+                        impl Drop for Cleanup {
+                            fn drop(&mut self) {
+                                self.0.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        let _cleanup = Cleanup(cleaned);
+                        if address.to_string() == "8.8.8.9:443" {
+                            cancel.cancel();
+                        }
+                        std::future::pending::<Result<u8, ()>>().await
+                    }
+                },
+                &cancel,
+            ),
+        )
+        .await
+        .expect("stalled attempts must expire instead of blocking every address");
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(cleaned.load(Ordering::SeqCst), 9);
+    }
+
+    #[tokio::test]
+    async fn failed_attempt_refills_available_capacity_without_another_delay() {
+        let calls = AtomicUsize::new(0);
+        let start = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            ATTEMPT_DELAY,
+            connect_with(
+                || async {
+                    Ok((1..=3)
+                        .map(|last| address(&format!("8.8.8.{last}:443")))
+                        .collect())
+                },
+                |_| {
+                    let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    async move { if attempt < 3 { Err(()) } else { Ok(19) } }
+                },
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a failed attempt must release its slot without waiting for the stagger");
+        assert_eq!(result, Ok(19));
+        assert!(start.elapsed() < ATTEMPT_DELAY);
     }
 }

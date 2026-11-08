@@ -49,17 +49,19 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         val handledTypes = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
         ViewCompat.setOnApplyWindowInsetsListener(container) { view, insets ->
             val safe = insets.getInsets(handledTypes)
-            val leftBound = view.translationX.toInt()
-            val topBound = view.translationY.toInt()
-            val windowLeft = view.left + leftBound
-            val windowTop = view.top + topBound
-            val windowRight = view.right + leftBound
-            val windowBottom = view.bottom + topBound
-            val topInset = if (windowTop < safe.top) (safe.top - windowTop - view.paddingTop).coerceAtLeast(0) else 0
-            val leftInset = if (windowLeft < safe.left) (safe.left - windowLeft - view.paddingLeft).coerceAtLeast(0) else 0
-            val rightInset = if (windowRight > safe.right) (windowRight - safe.right - view.paddingRight).coerceAtLeast(0) else 0
-            val bottomInset = if (windowBottom > safe.bottom) (windowBottom - safe.bottom - view.paddingBottom).coerceAtLeast(0) else 0
-            if (topInset > 0 || leftInset > 0 || rightInset > 0 || bottomInset > 0) view.setPadding(
+            val position = IntArray(2)
+            view.getLocationInWindow(position)
+            val windowLeft = position[0]
+            val windowTop = position[1]
+            val windowRight = windowLeft + view.width
+            val windowBottom = windowTop + view.height
+            val topInset = if (windowTop < safe.top) (safe.top - windowTop - padding.top).coerceAtLeast(0) else 0
+            val leftInset = if (windowLeft < safe.left) (safe.left - windowLeft - padding.left).coerceAtLeast(0) else 0
+            val rightEdge = view.rootView.width
+            val bottomEdge = view.rootView.height
+            val rightInset = if (rightEdge > 0 && windowRight > rightEdge - safe.right) (windowRight - (rightEdge - safe.right) - padding.right).coerceAtLeast(0) else 0
+            val bottomInset = if (bottomEdge > 0 && windowBottom > bottomEdge - safe.bottom) (windowBottom - (bottomEdge - safe.bottom) - padding.bottom).coerceAtLeast(0) else 0
+            view.setPadding(
                 padding.left + leftInset, padding.top + topInset,
                 padding.right + rightInset, padding.bottom + bottomInset
             )

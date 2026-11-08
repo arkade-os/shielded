@@ -17,6 +17,23 @@ const storageOf=()=>{
 };
 const snapshot={v:2,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
 
+test('background wallet actions keep recovery fenced until every handle settles',async()=>{
+ const a=deferred(),b=deferred();let changes=0;
+ const actions=page.pageActions(()=>{changes++;});
+ const first=makeHandle('auto-first',async()=>{await a.promise;return {railId:'test'};});
+ const second=makeHandle('auto-second',async()=>{await b.promise;return {railId:'test'};});
+ actions.track(first);actions.track(first);actions.track(second);
+ assert.equal(actions.busy,true);assert.equal(changes,2);
+ a.resolve();await flush();assert.equal(actions.busy,true);
+ b.resolve();await flush();assert.equal(actions.busy,false);assert.equal(changes,4);
+});
+
+test('a failed background action releases its recovery fence',async()=>{
+ const actions=page.pageActions(()=>{});
+ actions.track(makeHandle('auto-failed',async()=>{throw new Error('action failed');}));
+ assert.equal(actions.busy,true);await flush();assert.equal(actions.busy,false);
+});
+
 test('first-run creation persists one wallet only after explicit creation',()=>{
  const storage=storageOf();assert.equal(storage.length,0);
  const before=Date.now(),secret=createPageWallet(storage);

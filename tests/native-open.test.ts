@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {openNativeVault} from '../app/src/native-open.ts';
+import {openNativeVault,resumeNativeForeground} from '../app/src/native-open.ts';
+import {NativeBridge} from '../src/native/transport.ts';
+import {NativePolicy} from '../src/native/policy.ts';
 import type {NativeStatus} from '../src/native/transport.ts';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
@@ -47,4 +49,63 @@ test('a vault connection retired while reading cannot publish setup or a wallet'
  assert.equal(await opened,undefined);
  healthy=true;
  assert.deepEqual(await openNativeVault(async()=>({phase:'ready',generation:3}),async()=>null,()=>true,expected),{status:{phase:'ready',generation:3},secret:null});
+});
+
+test('opening accepts the generation created by native start rather than the paused generation',async()=>{
+ let generation=2;
+ const bridge=new NativeBridge({invoke:async()=>({phase:'ready',generation:++generation}),channel:()=>{}},new NativePolicy('https://pool.example'));
+ bridge.current={phase:'paused',generation};
+ const opened=await openNativeVault(()=>bridge.start(),async()=>null,()=>true,{mode:'tor',current:()=>true});
+ assert.equal(opened?.status.generation,3);assert.equal(opened.secret,null);
+});
+
+test('foreground waits for a delayed retired start and then opens one fresh generation',async()=>{
+ const first=deferred<NativeStatus>();let generation=0,starts=0,reads=0,revision=0,visible=true;
+ const bridge=new NativeBridge({invoke:async command=>{
+  if(command==='native_pause')return {phase:'paused',generation:++generation};
+  const status={phase:'ready',generation:++generation};return ++starts===1?first.promise:status;
+ },channel:()=>{}},new NativePolicy('https://pool.example'));
+ const published:number[]=[];
+ const open=async()=>{
+  const mine=++revision,current=()=>visible&&mine===revision;
+  const opened=await openNativeVault(()=>bridge.start(),async()=>{reads++;return 'secret';},current,{mode:'tor',current});
+  if(opened)published.push(opened.status.generation);
+ };
+ const opening=open();visible=false;revision++;
+ const closing=Promise.all([bridge.pause(),opening]);
+ visible=true;const resumeRevision=revision;
+ const resumed=resumeNativeForeground(closing,()=>visible&&revision===resumeRevision,open);
+ await Promise.resolve();assert.equal(starts,1);assert.equal(reads,0);
+ first.resolve({phase:'ready',generation:1});await resumed;
+ assert.equal(starts,2);assert.equal(reads,1);assert.deepEqual(published,[3]);
+});
+
+test('a second hide and show retires the first queued foreground resume',async()=>{
+ const pending=deferred<void>();let revision=1,visible=true,starts=0;
+ const resume=()=>{const mine=revision;return resumeNativeForeground(pending.promise,()=>visible&&revision===mine,async()=>{starts++;});};
+ const first=resume();visible=false;revision++;visible=true;const latest=resume();
+ pending.resolve();await Promise.all([first,latest]);assert.equal(starts,1);
+});
+
+test('locking or hiding before pending cleanup settles cannot restart the network',async()=>{
+ for(const action of ['hide','lock']){
+  const pending=deferred<void>();let visible=true,locked=false,starts=0;
+  const resumed=resumeNativeForeground(pending.promise,()=>visible&&!locked,async()=>{starts++;});
+  if(action==='hide')visible=false;else locked=true;
+  pending.resolve();await resumed;assert.equal(starts,0);
+ }
+});
+
+test('a delayed empty vault cannot publish setup after hide and show retires its opening',async()=>{
+ const secret=deferred<string|null>();let revision=0,visible=true,reads=0,generation=0;
+ const published:{generation:number;secret:string|null}[]=[];
+ const open=async()=>{
+  const mine=++revision,current=()=>visible&&mine===revision;
+  const opened=await openNativeVault(async()=>({phase:'ready',generation:++generation}),()=>++reads===1?secret.promise:Promise.resolve(null),current,{mode:'tor',current});
+  if(opened)published.push({generation:opened.status.generation,secret:opened.secret});
+ };
+ const opening=open();await Promise.resolve();visible=false;revision++;visible=true;
+ const mine=revision,resumed=resumeNativeForeground(opening,()=>visible&&mine===revision,open);
+ secret.resolve(null);await resumed;
+ assert.equal(reads,2);assert.deepEqual(published,[{generation:2,secret:null}]);
 });

@@ -15,6 +15,8 @@ type ReceivePortalProps={
  onModeChange:(mode:ReceiveMode)=>void;
  value:string;
  qrValue?:string;
+ amount?:string;
+ onAmount?:(amount:string)=>void;
  loading?:string;
  description:string;
  action?:ReactNode;
@@ -30,7 +32,14 @@ const TITLES:Record<ReceivePayload,string>={unified:'Unified address',shielded:'
 const LABELS:Record<ReceivePayload,string>={unified:'Unified address',shielded:'Shielded address',lightning:'Lightning address',invoice:'Lightning invoice',arkade:'Arkade address'};
 const short=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
 
-export function ReceivePortal({active=true,mode,payload,onModeChange,value,qrValue,loading,description,action,children}:ReceivePortalProps){
+export function amountQrValue(mode:ReceiveMode,value:string,amount:string):string|undefined{
+ if(!/^[1-9]\d*$/.test(amount))return undefined;
+ const btc=(BigInt(amount)/100000000n).toString()+'.'+String(BigInt(amount)%100000000n).padStart(8,'0');
+ // LNURL invoices use BIP21's BTC amount; the recipient converts it to sats.
+ return `bitcoin:?${mode==='unified'?'lightning':mode==='shielded'?'shielded':'ark'}=${value}&amount=${btc}`;
+}
+
+export function ReceivePortal({active=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,loading,description,action,children}:ReceivePortalProps){
  const [expanded,setExpanded]=useState(false);
  const buttons=useRef<(HTMLButtonElement|null)[]>([]);
  const strip=useRef<HTMLDivElement>(null),lens=useRef<HTMLSpanElement>(null);
@@ -91,6 +100,10 @@ export function ReceivePortal({active=true,mode,payload,onModeChange,value,qrVal
    {action&&<div className="receive-action">{action}</div>}
   </div>
   {children&&<div className="receive-details">{children}</div>}
+  {onAmount&&<div className="receive-details receive-amount">
+   <label className="receive-amount-field">Exact amount<input inputMode="numeric" aria-label="Receive amount in sats" placeholder="Amount in sats" maxLength={10} value={amount??''} onChange={event=>onAmount(event.target.value.replace(/\D/g,''))}/></label>
+   <span className="receive-amount-unit" aria-hidden="true">sats</span>
+  </div>}
   <GlassRefraction target={lens} active={active} radius={999} bezel={9} strength={14}/>
  </section>;
 }
