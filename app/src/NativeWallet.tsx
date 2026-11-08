@@ -29,6 +29,8 @@ export default function NativeWallet(){
  const setupAllowed=useRef(false);
  const active=useRef<Session|undefined>(undefined),attempt=useRef(0),cleanup=useRef(createNativeCleanup()),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
  const opening=useRef<Promise<void>|undefined>(undefined);
+ const openingGeneration=useRef<number|undefined>(undefined);
+ const healthExpired=useRef(false);
  const stop=useRef<(()=>Promise<void>)|undefined>(undefined);
  const onShutdown=useCallback((shutdown:(()=>Promise<void>)|undefined)=>{stop.current=shutdown;},[]);
  const fail=(cause:unknown)=>setError(cause instanceof Error?cause.message:String(cause));
@@ -50,14 +52,22 @@ export default function NativeWallet(){
   if(document.hidden||manualLock.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
   const previousClose=closed.current;
   const run=(async()=>{
-  const mine=++attempt.current;setupAllowed.current=false;setSetup(false);setBusy(true);setError('');
+   healthExpired.current=false;
+   const mine=++attempt.current;setupAllowed.current=false;setSetup(false);setBusy(true);setError('');
   try{
    await cleanup.current.drain();
    await previousClose.catch(()=>{});
    if(mine!==attempt.current||document.hidden||manualLock.current)return;
    setPhase(selectedMode.current==='tor'?'Connecting to Tor':'Opening direct connection');
-   const opened=await openNativeVault(()=>nativeNetwork.start(selectedMode.current),getSecret,()=>mine===attempt.current&&!document.hidden&&!manualLock.current,{generationAfter:torHealth.status.generation,mode:selectedMode.current});
+   const generationGuard=()=>mine===attempt.current&&!document.hidden&&!manualLock.current&&!healthExpired.current;
+   const opened=await openNativeVault(async()=>{
+    const status=await nativeNetwork.start(selectedMode.current);
+    if(status.phase==='ready')openingGeneration.current=status.generation;
+    return status;
+   },getSecret,generationGuard,{generation:openingGeneration.current??-1,mode:selectedMode.current,current:generationGuard});
+   openingGeneration.current=undefined;
    if(!opened||mine!==attempt.current||document.hidden||manualLock.current)return;
+   if(healthExpired.current)return;
    const {secret,status}=opened;
    if(secret===null){
     if(localStorage.getItem('shielded-native-wallet')==='1')throw new Error('The native wallet secret is unavailable. Keep the app data and restore access to its vault.');
@@ -66,13 +76,14 @@ export default function NativeWallet(){
    setSetup(false);const cache=createNativeStorage(secret,localStorage,putSecret);
    manualLock.current=false;const next={generation:status.generation,cache};active.current=next;setSession(next);setPhase(status.mode==='direct'?'Tor off · Direct connection':'Tor connected');
   }catch(cause){if(mine===attempt.current)fail(cause);}
-  finally{if(mine===attempt.current)setBusy(false);}
+  finally{if(mine===attempt.current){setBusy(false);openingGeneration.current=undefined;}}
   })();
   opening.current=run.finally(()=>{opening.current=undefined;});return opening.current;
  },[]);
  const create=async(restore:boolean)=>{
   if(creating.current||transition.current||manualLock.current||!setupAllowed.current)return;
   const mine=attempt.current;setBusy(true);setSaving(true);setError('');
+  healthExpired.current=false;
   const writing=saveNativeSetup(torHealth.status,nativeNetwork.status,()=>mine===attempt.current&&!document.hidden&&!manualLock.current&&!transition.current,
    ()=>restore?bytesToHex(parseMasterSecret(phrase)):bytesToHex(crypto.getRandomValues(new Uint8Array(32))),async secret=>{
     setupAllowed.current=false;setSetup(false);setPhase('Reopen the wallet to confirm secure storage');
@@ -112,6 +123,10 @@ export default function NativeWallet(){
   const monitor=createNativeTorMonitor(nativeNetwork,health=>{
    if(!live)return;setTorHealth(health);
    const observed=active.current;
+   const connecting=openingGeneration.current;
+   if(connecting!==undefined&&(health.status.phase!=='ready'||health.status.generation!==connecting)){
+    openingGeneration.current=undefined;healthExpired.current=true;
+   }
    if(observed&&(health.status.phase!=='ready'||health.status.generation!==observed.generation))void pause();
   },cause=>{if(live){fail(cause);if(active.current)void pause();}},()=>!document.hidden);
   return()=>{live=false;monitor.stop();document.removeEventListener('visibilitychange',visibility);document.removeEventListener('click',external,true);void pause();};

@@ -104,6 +104,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
  const refreshRef=useRef<{request:()=>void}|undefined>(undefined);
+ const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined);
  const refreshes=useRef(new WeakMap<object,{close:()=>Promise<void>}>());
  if(!cacheRef.current)cacheRef.current=pageCache(new IndexedDBShieldedNoteRepository());
  if(!sheetRef.current)sheetRef.current=pageSheet(setSheet);
@@ -136,11 +137,13 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   busyRef.current=true;setBusy(true);
   let owner=sheetOwner.begin(title);
   try{
-   const handle=await start();
+   let handle:PaymentHandle|undefined;
+    handleBusy.current=true;
+    try{handle=await start();}finally{if(!handle)handleBusy.current=false;}
    if(!handle)return false;
-   if(!mounted.current||restoring.current)return false;
+   if(!mounted.current||restoring.current){handleBusy.current=false;return false;}
    owner=sheetOwner.watch(handle,title);
-   await handle.settled({timeoutMs:30*60_000});
+   await handle.settled({timeoutMs:30*60_000}).finally(()=>{handleBusy.current=false;});
    if(mounted.current&&!restoring.current)setAmount('');
    return true;
   }catch(error){owner.fail(error);return false;}
@@ -328,7 +331,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(fundsRef.current?.wallet===wallet)fundsRef.current.watch.update(data.coins);
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
    if(data.history||data.lightningHistory)setRows(pageActivityHistory(data.history??[],data.lightningHistory??[]));
-   setRefreshError([...new Set(Object.values(errors))].join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
+   if(NATIVE)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
+   else refreshFailed.current=false;
+    setRefreshError([...new Set(Object.values(errors))].join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
    setPoolError(e=>wallet.repositoryError?`Your saved notes: ${wallet.repositoryError}`:e.startsWith('Your saved notes: ')?'':e);
   },{retry:NATIVE});
   const close=async()=>{await refresh.close();sessions.current.delete(close);};
@@ -515,7 +520,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const historyContent=(items:typeof historyItems)=>!rows.length?<p className="stock-muted">{synced?'No activity yet.':'Reading the pool…'}</p>:<ul>{items}</ul>;
   const shownAssets=reserves.filter(id=>assetUnits(id)>0n),unshielded=arkAvailable??0;
   const balanceCard=()=> <section className="stock-card stock-balance">
-   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} arkReady={arkAvailable!==undefined} error={startupError||refreshError} onRetry={reload}/></div>
+   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} arkReady={arkAvailable!==undefined} error={startupError||refreshError} onRetry={startupError||refreshFailed.current&&!(busy||handleBusy.current)?reload:()=>refreshRef.current?.request()}/></div>
    {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
    {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
   </section>;
@@ -556,7 +561,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {tab==='receive'?<div className="stock-receive">
        <ReceivePortal active={!docked||sheetOpen} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receiveValue} loading={receiveLoading} description={receiveDescription} action={!receiveBlocked&&receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
         {!receiveBlocked&&receiveMode==='unified'&&<>
-         {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||busy} onClick={()=>{if(wallet?.swaps&&lnurlRef.current)void retryUnified();else reload();}}>Retry unified address</button>}
+         {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||busy||!wallet?.swaps||!lnurlRef.current} onClick={()=>{if(wallet?.swaps&&lnurlRef.current){unifiedRetry.current??=retryUnified().finally(()=>{unifiedRetry.current=undefined;});void unifiedRetry.current;}else if((startupError||lnError)&&!busy&&!handleBusy.current)reload();}}>Retry unified address</button>}
          <details className="stock-more"><summary>Had an address before?</summary><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover it</button></details>
          {unifiedAddress&&<><label className="stock-check">Include private payments<input type="checkbox" role="switch" checked={privateChecked} disabled={lnBusy} aria-describedby="stock-private-hint" onChange={e=>void setPrivate(e.target.checked)}/></label>
           <p id="stock-private-hint" className="stock-muted">Turning this on asks the service to add your shielded address. Anyone looking up your unified address can see that you use the pool.</p>

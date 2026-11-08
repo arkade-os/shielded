@@ -49,7 +49,9 @@ where
     R: FnOnce() -> RF,
     RF: Future<Output = Result<Vec<SocketAddr>, String>>,
     C: FnMut(SocketAddr) -> CF,
-    CF: Future<Output = Result<T, E>>,
+    CF: Future<Output = Result<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: Send + 'static,
 {
     let work = async {
         let addresses = resolve().await?;
@@ -59,11 +61,18 @@ where
         {
             return Err("direct DNS returned a non-public or unsupported target".into());
         }
+        let mut attempts = tokio::task::JoinSet::new();
         for address in addresses {
             if cancel.is_cancelled() {
                 return Err("private request cancelled".into());
             }
-            if let Ok(stream) = connect(address).await {
+            attempts.spawn(connect(address));
+        }
+        while let Some(result) = attempts.join_next().await {
+            if cancel.is_cancelled() {
+                return Err("private request cancelled".into());
+            }
+            if let Ok(Ok(stream)) = result {
                 return Ok(stream);
             }
         }
@@ -211,5 +220,29 @@ mod tests {
             assert!(result.unwrap_err().contains("cancelled"));
             assert_eq!(calls, usize::from(!during_resolution));
         }
+    }
+
+    #[tokio::test]
+    async fn a_stalled_address_does_not_hide_a_reachable_later_address() {
+        let first = address("8.8.8.8:443");
+        let second = address("1.1.1.1:443");
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            connect_with(
+                || async { Ok(vec![first, second]) },
+                move |address| async move {
+                    if address == first {
+                        std::future::pending::<Result<u8, ()>>().await
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Ok(11)
+                    }
+                },
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("reachable later address must finish promptly");
+        assert_eq!(result, Ok(11));
     }
 }

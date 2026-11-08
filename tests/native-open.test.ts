@@ -31,10 +31,20 @@ test('the vault is read only for the requested mode and a new generation',async(
   [{phase:'ready',generation:3,mode:'direct'},'blocked'],
   [{phase:'ready',generation:3},'opens'],
  ] as [NativeStatus,'opens'|'blocked'][]){
-  const expected={generationAfter:2,mode:'tor' as const};
+  const expected={generation:3,mode:'tor' as const,current:()=>true};
   let reads=0;
   const opened=await openNativeVault(async()=>status,async()=>{reads++;return 'secret';},()=>true,expected);
   assert.equal(reads,opens==='opens'?1:0);
   assert.equal(opened?.secret,opens==='opens'?'secret':undefined);
  }
+});
+
+test('a vault connection retired while reading cannot publish setup or a wallet',async()=>{
+ const secret=deferred<string|null>();let healthy=true;
+ const expected={generation:3,mode:'tor' as const,current:()=>healthy};
+ const opened=openNativeVault(async()=>({phase:'ready',generation:3}),()=>secret.promise,()=>true,expected);
+ await Promise.resolve();healthy=false;secret.resolve(null);
+ assert.equal(await opened,undefined);
+ healthy=true;
+ assert.deepEqual(await openNativeVault(async()=>({phase:'ready',generation:3}),async()=>null,()=>true,expected),{status:{phase:'ready',generation:3},secret:null});
 });
