@@ -64,7 +64,7 @@ export default function NativeWallet(){
     const status=await nativeNetwork.start(selectedMode.current);
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
-   },getSecret,generationGuard,{generation:openingGeneration.current??-1,mode:selectedMode.current,current:generationGuard});
+   },getSecret,generationGuard,{generation:(await nativeNetwork.status()).generation,mode:selectedMode.current,current:generationGuard});
    openingGeneration.current=undefined;
    if(!opened||mine!==attempt.current||document.hidden||manualLock.current)return;
    if(healthExpired.current)return;

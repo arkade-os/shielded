@@ -10,6 +10,8 @@ use tokio_util::sync::CancellationToken;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_ADDRESSES: usize = 64;
+const MAX_ATTEMPTS: usize = 8;
+const ATTEMPT_DELAY: Duration = Duration::from_millis(50);
 
 fn public_address(address: SocketAddr) -> bool {
     if address.port() != 443 {
@@ -62,21 +64,30 @@ where
             return Err("direct DNS returned a non-public or unsupported target".into());
         }
         let mut attempts = tokio::task::JoinSet::new();
-        for address in addresses {
-            if cancel.is_cancelled() {
-                return Err("private request cancelled".into());
-            }
+        let mut pending = addresses.into_iter().peekable();
+        if cancel.is_cancelled() {
+            return Err("private request cancelled".into());
+        }
+        if let Some(address) = pending.next() {
             attempts.spawn(connect(address));
         }
-        while let Some(result) = attempts.join_next().await {
-            if cancel.is_cancelled() {
-                return Err("private request cancelled".into());
-            }
-            if let Ok(Ok(stream)) = result {
-                return Ok(stream);
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err("private request cancelled".into()),
+                result = attempts.join_next(), if !attempts.is_empty() => {
+                    if let Some(Ok(Ok(stream))) = result {
+                        return Ok(stream);
+                    }
+                    if pending.peek().is_none() && attempts.is_empty() {
+                        return Err("direct connection failed".into());
+                    }
+                },
+                _ = tokio::time::sleep(ATTEMPT_DELAY), if pending.peek().is_some() && attempts.len() < MAX_ATTEMPTS => {
+                    attempts.spawn(connect(pending.next().expect("a pending address")));
+                },
             }
         }
-        Err("direct connection failed".into())
     };
     tokio::select! {
         biased;
@@ -227,7 +238,7 @@ mod tests {
         let first = address("8.8.8.8:443");
         let second = address("1.1.1.1:443");
         let result = tokio::time::timeout(
-            Duration::from_millis(200),
+            Duration::from_millis(500),
             connect_with(
                 || async { Ok(vec![first, second]) },
                 move |address| async move {
@@ -244,5 +255,43 @@ mod tests {
         .await
         .expect("reachable later address must finish promptly");
         assert_eq!(result, Ok(11));
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn connection_attempts_are_bounded_and_later_addresses_can_succeed() {
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            connect_with(
+                || async {
+                    Ok((1..=12)
+                        .map(|last| address(&format!("8.8.8.{last}:443")))
+                        .collect())
+                },
+                |address| {
+                    let concurrent = concurrent.clone();
+                    let maximum = maximum.clone();
+                    async move {
+                        let active = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(active, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        concurrent.fetch_sub(1, Ordering::SeqCst);
+                        if address.to_string() == "8.8.8.9:443" {
+                            Ok(17)
+                        } else {
+                            Err(())
+                        }
+                    }
+                },
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("bounded attempts must reach the ninth address");
+        assert_eq!(result, Ok(17));
+        assert!(maximum.load(Ordering::SeqCst) <= 8);
+        tokio::task::yield_now().await;
     }
 }
