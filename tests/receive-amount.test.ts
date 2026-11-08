@@ -48,6 +48,10 @@ test('a combined payment URI retains the preferred Arkade destination',()=>{
  assert.deepEqual(payTarget('bitcoin:?lightning=LNURL1EXAMPLE&amount=0.00000012&ark=tark_example'),{to:'tark_example',amount:12});
 });
 
+test('an address that is still loading or masked for restore cannot become an amount QR',()=>{
+ for(const [mode]of recipients)for(const address of ['', ' '])assert.equal(amountQrValue(mode,address,'330'),undefined);
+});
+
 for(const [mode,address,,to]of recipients)test(`${mode} amount QRs roundtrip through the payment decoder`,()=>{
  for(const [amount]of amounts){
   const uri=amountQrValue(mode,address,amount);

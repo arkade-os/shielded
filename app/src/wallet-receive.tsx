@@ -33,7 +33,7 @@ const LABELS:Record<ReceivePayload,string>={unified:'Unified address',shielded:'
 const short=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
 
 export function amountQrValue(mode:ReceiveMode,value:string,amount:string):string|undefined{
- if(!/^[1-9]\d*$/.test(amount))return undefined;
+ if(!value.trim()||!/^[1-9]\d*$/.test(amount))return undefined;
  const btc=(BigInt(amount)/100000000n).toString()+'.'+String(BigInt(amount)%100000000n).padStart(8,'0');
  // LNURL invoices use BIP21's BTC amount; the recipient converts it to sats.
  return `bitcoin:?${mode==='unified'?'lightning':mode==='shielded'?'shielded':'ark'}=${value}&amount=${btc}`;
