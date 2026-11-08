@@ -155,7 +155,12 @@ mod tests {
 
     #[test]
     fn only_public_unicast_addresses_on_tls_port_are_supported() {
-        for value in ["8.8.8.8:443", "1.1.1.1:443", "[2606:4700:4700::1111]:443"] {
+        for value in [
+            "8.8.8.8:443",
+            "1.1.1.1:443",
+            "[2606:4700:4700::1111]:443",
+            "[2001:0200::1]:443",
+        ] {
             assert!(public_address(address(value)), "{value}");
         }
         for value in [
@@ -184,6 +189,7 @@ mod tests {
             "[ff02::1]:443",
             "[64:ff9b::808:808]:443",
             "[2001::1]:443",
+            "[2001:2::1]:443",
             "[2001:db8::1]:443",
             "[2002:808:808::1]:443",
             "[3fff::1]:443",
@@ -363,13 +369,19 @@ mod tests {
             ATTEMPT_DELAY,
             connect_with(
                 || async {
-                    Ok((1..=3)
+                    Ok((1..=9)
                         .map(|last| address(&format!("8.8.8.{last}:443")))
                         .collect())
                 },
                 |_| {
                     let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
-                    async move { if attempt < 3 { Err(()) } else { Ok(19) } }
+                    async move {
+                        match attempt {
+                            1 => Err(()),
+                            9 => Ok(19),
+                            _ => std::future::pending::<Result<i32, ()>>().await,
+                        }
+                    }
                 },
                 &CancellationToken::new(),
             ),

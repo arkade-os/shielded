@@ -66,7 +66,7 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
                 padding.right + rightInset, padding.bottom + bottomInset
             )
             // The native container handles these edges; keep keyboard updates flowing to WebView.
-            WindowInsetsCompat.Builder(insets).setInsets(handledTypes, Insets.of(leftInset, topInset, rightInset, bottomInset)).build()
+            WindowInsetsCompat.Builder(insets).setInsets(handledTypes, Insets.NONE).build()
         }
         container.doOnAttach { ViewCompat.requestApplyInsets(it) }
     }

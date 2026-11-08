@@ -17,6 +17,27 @@ fn request(generation: u64, scope: &str, id: &str, url: &str) -> NativeRequest {
     }
 }
 
+async fn verify_tor(
+    transport: &PrivacyTransport,
+    generation: u64,
+    id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = transport.scope(generation, "discovery")?;
+    let response = transport
+        .http(request(
+            generation,
+            &scope.id,
+            id,
+            "https://check.torproject.org/api/ip",
+        ))
+        .await?;
+    assert_eq!(response.status, 200);
+    let check: serde_json::Value = serde_json::from_slice(&STANDARD.decode(response.body_base64)?)?;
+    assert_eq!(check["IsTor"], true);
+    println!("Tor Project independently reports IsTor=true ({id})");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = std::env::args_os()
@@ -59,19 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             status["phase"].as_str().unwrap_or("unknown")
         );
     }
-    let check = transport.scope(boot.generation, "discovery")?;
-    let response = transport
-        .http(request(
-            boot.generation,
-            &check.id,
-            "tor-check",
-            "https://check.torproject.org/api/ip",
-        ))
-        .await?;
-    assert_eq!(response.status, 200);
-    let check: serde_json::Value = serde_json::from_slice(&STANDARD.decode(response.body_base64)?)?;
-    assert_eq!(check["IsTor"], true);
-    println!("Tor Project independently reports IsTor=true");
+    verify_tor(&transport, boot.generation, "tor-check").await?;
     transport.cancel(boot.generation, "before-open")?;
     assert!(
         transport
@@ -127,5 +136,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         response.status,
         status["phase"].as_str().unwrap_or("unknown")
     );
+    verify_tor(&transport, resumed.generation, "tor-check-resumed").await?;
     Ok(())
 }
