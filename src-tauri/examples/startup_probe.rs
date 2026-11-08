@@ -48,6 +48,10 @@ async fn native_start(
     let invoked = Instant::now();
     let result = transport.start().await;
     let ready = result.as_ref().is_ok_and(|status| status.phase == "ready");
+    let error = match &result {
+        Ok(status) => status.error.as_deref(),
+        Err(error) => Some(error.as_str()),
+    };
     let exit = if ready { 0 } else { 1 };
     if probe
         .exit
@@ -70,6 +74,7 @@ async fn native_start(
             "phase_at_call": status_at_call.phase,
             "progress_at_call": status_at_call.progress,
             "phase": result.as_ref().map(|status| status.phase.as_str()).unwrap_or("error"),
+            "error": error,
             "debug_assertions": cfg!(debug_assertions),
         }));
         app.exit(i32::from(exit));
@@ -128,7 +133,7 @@ fn options() -> Result<(PathBuf, bool), Error> {
 fn embedded_native_assets(
     context: &tauri::Context<tauri::Wry>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if context.config().build.dev_url.is_some() {
+    if tauri::is_dev() && context.config().build.dev_url.is_some() {
         return Err("The startup probe requires bundled assets, not devUrl".into());
     }
     let assets = context.assets();

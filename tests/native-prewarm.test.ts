@@ -4,7 +4,7 @@ import {openNativeVault} from '../app/src/native-open.ts';
 import {NativePolicy} from '../src/native/policy.ts';
 import {NativeBridge,type NativeBackend,type NativeStatus} from '../src/native/transport.ts';
 
-const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
+const deferred=<T>()=>{let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((r,j)=>{resolve=r;reject=j;});return {promise,resolve,reject};};
 const ready:NativeStatus={phase:'ready',generation:1,mode:'tor'};
 function prewarmed(){
  const joined=deferred<NativeStatus>();let native:NativeStatus={phase:'bootstrapping',generation:1,mode:'tor'},starts=0,reads=0;
@@ -15,7 +15,7 @@ function prewarmed(){
   throw new Error('Unexpected native command: '+command);
  },channel:()=>{throw new Error('Unexpected native stream');}};
  const bridge=new NativeBridge(backend,new NativePolicy('https://pool.example'));
- return {bridge,get starts(){return starts;},get reads(){return reads;},ready(){native={...ready};},complete(){joined.resolve({...ready});},
+ return {bridge,get starts(){return starts;},get reads(){return reads;},ready(){native={...ready};},complete(){joined.resolve({...ready});},reject(error:Error){joined.reject(error);},
   open(current:()=>boolean=()=>true){return openNativeVault(()=>bridge.start(),async()=>{reads++;return null;},current,{mode:'tor',current});},
  };
 }
@@ -54,6 +54,16 @@ test('pause or lock retires a joined prewarm before its late result can read the
   await startup.bridge.pause();
   const stopped=action==='pause'?assert.rejects(opening,/Tor is not ready/):opening.then(value=>assert.equal(value,undefined));
   startup.complete();await stopped;
+  assert.equal(startup.bridge.current.phase,'paused');assert.equal(startup.bridge.current.generation,2);assert.equal(startup.starts,1);assert.equal(startup.reads,0);
+ }
+});
+
+test('a rejected prewarm join after pause or lock cannot read the vault',async()=>{
+ for(const action of ['pause','lock']){
+  const startup=prewarmed();let unlocked=true;
+  await startup.bridge.status();const opening=startup.open(()=>unlocked),failed=assert.rejects(opening,/private session paused/);
+  if(action==='lock')unlocked=false;
+  await startup.bridge.pause();startup.reject(new Error('private session paused'));await failed;
   assert.equal(startup.bridge.current.phase,'paused');assert.equal(startup.bridge.current.generation,2);assert.equal(startup.starts,1);assert.equal(startup.reads,0);
  }
 });

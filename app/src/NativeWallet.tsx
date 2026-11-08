@@ -150,7 +150,7 @@ export default function NativeWallet(){
  };
  const toggleTor=()=>{if(transition.current||creating.current||manualLock.current)return;if(selectedMode.current==='direct')void switchMode('tor');else setConfirmDirect(true);};
  useEffect(()=>{
-  let live=true;void open();
+  let live=true;
   const visibility=()=>{
    if(document.hidden){
     void suspend();
@@ -160,6 +160,7 @@ export default function NativeWallet(){
    }
   };
   document.addEventListener('visibilitychange',visibility);
+  visibility();
   const external=(event:MouseEvent)=>{
    const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor)return;
    const url=new URL(anchor.getAttribute('href')!,location.href);

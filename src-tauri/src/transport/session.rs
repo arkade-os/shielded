@@ -1339,15 +1339,18 @@ mod tests {
         let (waiter, work) = reserve_startup(&inner, true);
         let attempts = Arc::new(AtomicUsize::new(0));
         let count = attempts.clone();
-        let running = tokio::spawn(work.run_with_bootstrap(move |_, _, _, _| {
+        let mut running = Box::pin(work.run_with_bootstrap(move |_, _, _, _| {
             count.fetch_add(1, Ordering::SeqCst);
             std::future::ready(Ok(()))
         }));
-        tokio::task::yield_now().await;
+        assert!(matches!(
+            futures_util::poll!(running.as_mut()),
+            Poll::Pending
+        ));
         assert_eq!(attempts.load(Ordering::SeqCst), 0);
         assert_eq!(inner.status().unwrap().phase, "bootstrapping");
         drop(retired);
-        running.await.unwrap();
+        running.await;
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         assert_eq!(waiter.wait(&inner).await.unwrap().phase, "ready");
     }
