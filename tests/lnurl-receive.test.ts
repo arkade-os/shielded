@@ -143,27 +143,30 @@ test('unified setup reports progress through local state, Tor service work, watc
 });
 
 test('a slow Lightning handoff cannot hold the unified address behind swap startup',async()=>{
- const f=setup();let release!:()=>void,finished=0,ready=0;const held=new Promise<void>(resolve=>{release=resolve;});
- const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async(_rows,signal)=>{await held;if(!signal.aborted)finished++;},onPayoutReady:()=>ready++});
+ const f=setup();let release!:()=>void,finished=0,ready=0,attempts=0;const held=new Promise<void>(resolve=>{release=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async(_rows,signal)=>{attempts++;await held;if(!signal.aborted)finished++;},onPayoutReady:()=>ready++});
  const receiver=await Promise.race([service.ensureUnified(),new Promise<never>((_resolve,reject)=>setTimeout(()=>reject(new Error('unified address waited for swap startup')),250))]);
  assert.equal(receiver.lnurl,sessionLnurl);
- assert.equal(f.bound().length,1);assert.deepEqual([finished,ready],[0,0]);
+ assert.equal(f.bound().length,1);assert.deepEqual([finished,ready,attempts],[0,0,1]);
+ await service.check();assert.equal(attempts,1);
  release();await new Promise(resolve=>setImmediate(resolve));
  assert.deepEqual([finished,ready],[1,1]);
+  await service.check();assert.equal(attempts,1);
  await service.dispose();
 });
 
 test('a payout watch that fails after startup reports separately and retries without replacing the address',async()=>{
- const f=setup();let release!:()=>void,attempts=0,ready=0;const failure=new Error('late payout watch failed'),reported:unknown[]=[];
+ const f=setup();let release!:()=>void,attempts=0,ready=0;const failure=new Error('late payout watch failed'),reported:{error:unknown;revision:number}[]=[];
  const held=new Promise<void>(resolve=>{release=resolve;});
- const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async()=>{if(++attempts===1){await held;throw failure;}},onPayoutError:error=>reported.push(error),onPayoutReady:()=>ready++});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async()=>{if(++attempts===1){await held;throw failure;}},onPayoutError:(error,revision)=>reported.push({error,revision}),onPayoutReady:()=>ready++});
  const receiver=await service.ensureUnified();
  assert.equal(receiver.lnurl,sessionLnurl);assert.equal(f.bound().length,1);
+ f.funded.add(at(0).script);await service.check();
+ assert.equal(attempts,2);assert.equal(ready,1);
  release();
  for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
- assert.deepEqual(reported,[failure]);
- await service.check();
- assert.equal(attempts,2);assert.equal(ready,1);
+ assert.deepEqual(reported,[{error:failure,revision:1}]);
+ await service.check();assert.equal(attempts,2);
  await service.dispose();
 });
 

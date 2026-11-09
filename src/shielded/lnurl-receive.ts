@@ -86,8 +86,9 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   });
  const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
- let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,watchRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
+ let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,watchedRevision=0,watchRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
  const pendingWrites=new Set<Promise<unknown>>();
+ const pendingWatches=new Map<string,{promise:Promise<void>;revision:number;background:boolean}>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
  const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
  const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
@@ -158,33 +159,46 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     if(failed?.has(row.script)){await dataWork(manager.updateContract(row.script,{}));failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
    }
    if(config.onPayouts)await dataWork(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
-  }catch(error){watched=false;throw error;}
+  }catch(error){throw error;}
  };
  /** Bounds payout startup while its watch continues in the background. */
  const watchWithGrace=async(rows:Destination[])=>{
   if(!rows.length)return true;
-  const revision=++watchRevision,pending=watch(rows);let timer:ReturnType<typeof setTimeout>|undefined;
+  const key=rows.map(row=>row.script).sort().join('|');
+  let tracked=pendingWatches.get(key);
+  if(!tracked){
+   const revision=++watchRevision,promise=watch(rows);
+   watchedRevision=revision;watched=false;
+   tracked={promise,revision,background:false};pendingWatches.set(key,tracked);
+   void promise.then(()=>{
+    if(revision>=watchedRevision){watchedRevision=revision;watched=true;}
+   },()=>{
+    if(revision>=watchedRevision){watchedRevision=revision;watched=false;}
+   }).finally(()=>{if(pendingWatches.get(key)===tracked)pendingWatches.delete(key);});
+  }
+  // Reuse the same in-flight watch so a timeout cannot double-register identical payouts.
+  const owner=tracked;let graceTimer:ReturnType<typeof setTimeout>|undefined;
   try{
    const settled=await Promise.race([
-    pending.then(()=>true),
-    new Promise<false>(resolve=>{timer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
+    owner.promise.then(()=>true),
+    new Promise<false>(resolve=>{graceTimer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
    ]);
    if(settled){
-    try{config.onPayoutReady?.(revision);}catch{}
-   }else{
-    watched=false;
-    void pending.then(()=>{
-     if(!abort.signal.aborted)try{config.onPayoutReady?.(revision);}catch{}
+    try{config.onPayoutReady?.(owner.revision);}catch{}
+   }else if(!owner.background){
+    owner.background=true;
+    void owner.promise.then(()=>{
+     if(!abort.signal.aborted)try{config.onPayoutReady?.(owner.revision);}catch{}
     },error=>{
      if(abort.signal.aborted)return;
-     try{config.onPayoutError?.(error,revision);}catch{}
+     try{config.onPayoutError?.(error,owner.revision);}catch{}
     });
    }
    return settled;
-  }finally{if(timer)clearTimeout(timer);}
+  }finally{if(graceTimer)clearTimeout(graceTimer);}
  };
  /** Restores payout watches without letting a stalled wallet service hold receive. */
- const restoreWatches=async(state:ReceiveState)=>{if(!watched)watched=await watchWithGrace(state.payouts);};
+ const restoreWatches=async(state:ReceiveState)=>{if(!watched)await watchWithGrace(state.payouts);};
  const used=async(scripts:string[])=>new Set((await untilStopped(config.companion.indexerProvider.getVtxos({scripts}))).vtxos.map(coin=>coin.script));
  // Highest index from `from` on that ever held a coin; stops after `gap` unused ones.
  const scan=async(branch:ReturnType<typeof receiveBranch>,from:number,gap:number)=>{

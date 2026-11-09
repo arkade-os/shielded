@@ -195,7 +195,7 @@ export default function NativeWallet(){
     const restart=async()=>{
      const shown=handoff.current.snapshot.shown;
      if(shown&&!shown.retired)await suspend();
-     if(live&&!manualLock.current&&!clearing.current&&!document.hidden)await open();
+     if(live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden)await open();
     };
     void resumeNativeForeground(Promise.all([closed.current,opening.current]),()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden,restart).catch(fail);
    }
