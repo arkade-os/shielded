@@ -68,6 +68,17 @@ test('no signing, network or watch before the alias is enabled, including the ba
  assert.equal(f.signed(),0);assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
 });
 
+test('disposing an address activation unblocks while payout registration is still waiting',async()=>{
+ const f=setup();let entered!:()=>void;const waiting=new Promise<void>(resolve=>{entered=resolve;}),never=new Promise<void>(()=>{});
+ const service=createLnurlReceive({...f.config,onPayouts:async()=>{entered();await never;}}),activation=service.ensureUnified();
+ await waiting;
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  await Promise.race([service.dispose(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('dispose waited for payout registration')),250);})]);
+  await assert.rejects(activation,/disposed/);
+ }finally{if(timer)clearTimeout(timer);}
+});
+
 test('a unified receiver registers without a name or shielded method and binds before its QR is ready',async()=>{
  const f=setup(),result=await f.service.ensureUnified();
  assert.deepEqual([result.lnurl,result.lightningAddress,result.nameless],[sessionLnurl,undefined,true]);

@@ -70,6 +70,12 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('Invalid Lightning address service URL');
  const baseUrl=url.href.replace(/\/+$/,''),domain=(config.domain??url.hostname).toLowerCase(),serverKey=JSON.stringify([baseUrl,domain]),now=config.now??Date.now;
  const abort=new AbortController(),fetcher=config.fetch??((input,init)=>globalThis.fetch(input,init));
+  const untilStopped=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
+   const stop=()=>reject(new Error('Lightning address service is disposed'));
+   if(abort.signal.aborted)return stop();
+   abort.signal.addEventListener('abort',stop,{once:true});
+   work.then(value=>{abort.signal.removeEventListener('abort',stop);resolve(value);},error=>{abort.signal.removeEventListener('abort',stop);reject(error);});
+  });
  const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
  let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,offEvents:(()=>void)|undefined;
@@ -141,7 +147,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     const failed=failedContractWatches.get(config.companion);
     if(failed?.has(row.script)){await manager.updateContract(row.script,{});failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
    }
-   await config.onPayouts?.(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})));
+   if(config.onPayouts)await untilStopped(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script}))));
   }catch(error){watched=false;throw error;}
  };
  const restoreWatches=async(state:ReceiveState)=>{if(!watched){await watch(state.payouts);watched=true;}};
