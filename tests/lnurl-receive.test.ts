@@ -162,11 +162,42 @@ test('a payout watch that fails after startup reports separately and retries wit
  const receiver=await service.ensureUnified();
  assert.equal(receiver.lnurl,sessionLnurl);assert.equal(f.bound().length,1);
  f.funded.add(at(0).script);await service.check();
- assert.equal(attempts,2);assert.equal(ready,1);
+ assert.deepEqual([attempts,ready],[2,0]);
  release();
  for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
  assert.deepEqual(reported,[{error:failure,revision:1}]);
- await service.check();assert.equal(attempts,2);
+ await service.check();
+ assert.deepEqual([attempts,ready],[3,1]);
+ await service.check();assert.equal(attempts,3);
+ await service.dispose();
+});
+
+test('a successful newer subset watch leaves an older failed payout eligible and keeps receive unhealthy',async()=>{
+ const f=setup(),failure=new Error('older payout watch failed'),ready:number[]=[],reported:number[]=[];
+ let releaseFirst!:()=>void,enteredFirst!:()=>void,attempts=0;
+ const firstEntered=new Promise<void>(resolve=>{enteredFirst=resolve;}),
+  firstHeld=new Promise<void>(resolve=>{releaseFirst=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,
+  onPayouts:async()=>{
+   attempts++;
+   if(attempts===1){enteredFirst();await firstHeld;throw failure;}
+  },
+  onPayoutError:(_error,revision)=>reported.push(revision),
+  onPayoutReady:revision=>ready.push(revision),
+ });
+ const activation=service.ensureUnified();
+ await firstEntered;
+ await activation;
+ f.funded.add(at(0).script);
+ await service.check();
+ assert.equal(attempts,2);
+ assert.deepEqual(ready,[],'a newer subset does not cover the still-pending payout');
+ releaseFirst();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[1]);
+ await service.check();
+ assert.equal(attempts,3,'the failed payout is retried');
+ assert.deepEqual(ready,[3],'receive becomes healthy only after the full payout set is covered');
  await service.dispose();
 });
 
