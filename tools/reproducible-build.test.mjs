@@ -4,9 +4,9 @@ import test from 'node:test';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const pinnedActions = {
-  checkout: '11d5960a326750d5838078e36cf38b85af677262',
-  node: '49933ea5288caeca8642d1e84afbd3f7d6820020',
-  java: 'cf277c60eb25467037889841efdb72551f06f6c3',
+  checkout: 'fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09',
+  node: '249970729cb0ef3589644e2896645e5dc5ba9c38',
+  java: 'b6effb05e454b25005698d916606bdc6ffcbf961',
   upload: 'ea165f8d65b6e75b540449e92b4886f43607fa02',
   download: 'd3f86a106a0bac45b974a628896c90dbdf5c8093',
 };
@@ -43,4 +43,10 @@ test('package manager installs are lockfile exact', () => {
   assert.match(read('.github/workflows/native.yml'), /npm ci/g);
   assert.match(read('.github/workflows/checks.yml'), /npm ci/g);
   assert.match(read('.github/workflows/native.yml'), /Cargo\.toml --workspace --locked/g);
+});
+
+test('release package downloads use bounded retries', () => {
+  const native = read('.github/workflows/native.yml');
+  assert.match(native, /retry-command\.mjs node node_modules\/@tauri-apps\/cli\/tauri\.js android build/);
+  assert.match(native, /retry-command\.mjs node tools\/native-build\.mjs desktop build/);
 });
