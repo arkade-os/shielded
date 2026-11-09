@@ -38,6 +38,7 @@ test('Tor status and initial reachability are monitored before a wallet exists',
  assert.equal(f.latest().check,'checking');assert.equal(f.checks.length,1);
  t.mock.timers.tick(120);f.checks[0]!.result.resolve();await flush();
  assert.equal(f.latest().check,'ok');assert.equal(f.latest().latencyMs,120);assert.equal(f.latest().checkedAt,120);
+ assert.equal(f.latest().attempt,undefined);assert.equal(f.latest().retryAt,undefined);
 });
 
 test('status polling never overlaps and retains a newer subscription result',async t=>{
@@ -85,8 +86,10 @@ test('a rejected check without an error value still reports failure',async t=>{
 
 test('a failed Tor service probe retries in five seconds instead of lingering for a full interval',async t=>{
  const f=fixture(t);await flush();f.checks[0]!.result.reject(new Error('service unavailable'));await flush();
- assert.equal(f.latest().check,'failed');t.mock.timers.tick(4_999);await flush();assert.equal(f.checks.length,1);
+ assert.equal(f.latest().check,'failed');assert.equal(f.latest().attempt,1);assert.equal(f.latest().retryAt,5_000);
+ t.mock.timers.tick(4_999);await flush();assert.equal(f.checks.length,1);
  t.mock.timers.tick(1);await flush();assert.equal(f.checks.length,2);assert.equal(f.latest().check,'checking');
+ assert.equal(f.latest().attempt,2);assert.equal(f.latest().retryAt,undefined);
 });
 
 test('pause aborts a probe and its late success cannot restore connected health',async t=>{

@@ -4,6 +4,7 @@
 .native-tor-trigger[aria-expanded=true]>svg{transform:rotate(180deg)}
 .native-tor-trigger:focus-visible{outline:2px solid #b8862b;outline-offset:4px;border-radius:4px}
 .native-tor-dot{width:7px;height:7px;border-radius:50%;background:#b49459;box-shadow:0 0 0 3px #b4945918;flex:none}
+.native-tor-health[data-health=connecting] .native-tor-dot{animation:native-tor-pulse 1.4s ease-in-out infinite}
 .native-tor-health[data-health=connected] .native-tor-dot{background:#287859;box-shadow:0 0 0 3px #28785919}
 .native-tor-health[data-health=error] .native-tor-dot{background:#b36c30;box-shadow:0 0 0 3px #b36c301a}
 .native-tor-health[data-health=direct] .native-tor-dot{background:#b36c30;box-shadow:0 0 0 3px #b36c301a}
@@ -46,3 +47,5 @@
 @media(max-width:359px){.native-tor-health[data-tone=dark]{font-size:10px}.native-tor-trigger{gap:6px}.native-wallet-topbar{padding-right:16px;padding-left:16px}}
 @media(prefers-reduced-transparency:reduce){.native-wallet-topbar{background:#f9f6ee;-webkit-backdrop-filter:none;backdrop-filter:none}.native-wallet-topbar .native-wallet-lock{background:#fffdf8}}
 @media(prefers-reduced-motion:reduce){.native-tor-trigger>svg,.native-tor-switch-track::after{transition:none}}
+@keyframes native-tor-pulse{50%{opacity:.35;transform:scale(.72)}}
+@media(prefers-reduced-motion:reduce){.native-tor-health[data-health=connecting] .native-tor-dot{animation:none}}

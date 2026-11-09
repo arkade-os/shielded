@@ -76,7 +76,10 @@ test('a ready Tor transport distinguishes a failed service probe from a bootstra
  assert.match(html,/Building Tor circuits/);
  assert.match(html,/42%/);
  assert.match(html,/The first connection can take a minute/);
- const failed=render({status:{phase:'ready',generation:2},check:'failed',error:'Service unavailable'});
- assert.match(failed,/Tor ready · service check failed/);
- assert.match(failed,/Shielded is retrying without falling back/);
+ const checking=render({status:{phase:'ready',generation:2},check:'checking',attempt:2});
+ assert.match(checking,/Verifying private route · try 2/);
+ const failed=render({status:{phase:'ready',generation:2},check:'failed',attempt:2,error:'Service unavailable'});
+ assert.match(failed,/Private route unavailable · retrying/);
+ assert.match(failed,/retrying automatically while Tor stays on/i);
+ assert.match(failed,/Service unavailable/);
 });

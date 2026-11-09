@@ -6,6 +6,8 @@ export interface NativeTorHealthState {
  checkedAt?:number;
  latencyMs?:number;
  error?:string;
+ attempt?:number;
+ retryAt?:number;
 }
 
 interface TorMonitorNetwork {
@@ -24,7 +26,7 @@ export function createNativeTorMonitor(
  onStatusError:(error:unknown)=>void,
  isVisible:()=>boolean
 ){
- type Probe={controller:AbortController;generation:number;started:number;deadline?:ReturnType<typeof setTimeout>};
+ type Probe={controller:AbortController;generation:number;started:number;attempt:number;deadline?:ReturnType<typeof setTimeout>};
  let health:NativeTorHealthState={status:{phase:'idle',generation:0},check:'idle'};
  let stopped=false,polling=false,revision=0,visible=isVisible(),probe:Probe|undefined,failures=0;
  let scheduled:ReturnType<typeof setTimeout>|undefined;
@@ -55,16 +57,23 @@ export function createNativeTorMonitor(
   if(!foreground()||probe!==owner||health.status.phase!=='ready'||health.status.generation!==owner.generation)return;
   clearTimeout(owner.deadline);probe=undefined;
   const checkedAt=Date.now(),latencyMs=checkedAt-owner.started;
-  publish({status:health.status,check:ok?'ok':'failed',checkedAt,latencyMs,
-   ...(ok?{}:{error:error instanceof Error?error.message:String(error??'Tor connection check failed')})});
-  if(ok)failures=0;else failures++;
-  schedule(ok?undefined:Math.min(TOR_CHECK_RETRY_MS*2**(failures-1),TOR_CHECK_INTERVAL_MS));
+  if(ok){
+   failures=0;
+   publish({status:health.status,check:'ok',checkedAt,latencyMs});
+   schedule();
+   return;
+  }
+  failures++;
+  const delay=Math.min(TOR_CHECK_RETRY_MS*2**(failures-1),TOR_CHECK_INTERVAL_MS);
+  publish({status:health.status,check:'failed',checkedAt,latencyMs,attempt:owner.attempt,retryAt:checkedAt+delay,
+   error:error instanceof Error?error.message:String(error??'Tor connection check failed')});
+  schedule(delay);
  };
  function runCheck(){
   if(stopped||!foreground()||health.status.phase!=='ready'||probe)return;
   clearTimeout(scheduled);scheduled=undefined;
-  const owner:Probe={controller:new AbortController(),generation:health.status.generation,started:Date.now()};probe=owner;
-  publish({status:health.status,check:'checking'});
+  const owner:Probe={controller:new AbortController(),generation:health.status.generation,started:Date.now(),attempt:failures+1};probe=owner;
+  publish({status:health.status,check:'checking',attempt:owner.attempt});
   let abort=()=>{};
   const deadline=new Promise<void>((_,reject)=>{
    abort=()=>reject(owner.controller.signal.reason??new Error('Tor connection check cancelled'));
