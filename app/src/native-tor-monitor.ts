@@ -14,6 +14,10 @@ interface TorMonitorNetwork {
  check(signal:AbortSignal):Promise<void>;
 }
 
+export const TOR_CHECK_INTERVAL_MS=30_000;
+export const TOR_CHECK_RETRY_MS=5_000;
+export const TOR_CHECK_JITTER_MS=15_000;
+
 export function createNativeTorMonitor(
  network:TorMonitorNetwork,
  onHealth:(health:NativeTorHealthState)=>void,
@@ -22,7 +26,7 @@ export function createNativeTorMonitor(
 ){
  type Probe={controller:AbortController;generation:number;started:number;deadline?:ReturnType<typeof setTimeout>};
  let health:NativeTorHealthState={status:{phase:'idle',generation:0},check:'idle'};
- let stopped=false,polling=false,revision=0,visible=isVisible(),probe:Probe|undefined;
+ let stopped=false,polling=false,revision=0,visible=isVisible(),probe:Probe|undefined,failures=0;
  let scheduled:ReturnType<typeof setTimeout>|undefined;
  const publish=(value:NativeTorHealthState)=>{health=value;if(!stopped)onHealth(value);};
  const invalidate=()=>{
@@ -42,9 +46,9 @@ export function createNativeTorMonitor(
   if(resumed)runCheck();
   return true;
  };
- const schedule=()=>{
+ const schedule=(delay=TOR_CHECK_INTERVAL_MS+Math.floor(Math.random()*TOR_CHECK_JITTER_MS))=>{
   clearTimeout(scheduled);
-  scheduled=setTimeout(()=>{scheduled=undefined;runCheck();},30_000+Math.floor(Math.random()*15_001));
+  scheduled=setTimeout(()=>{scheduled=undefined;runCheck();},delay);
  };
  const finish=(owner:Probe,ok:boolean,error?:unknown)=>{
   if(stopped||probe!==owner)return;
@@ -53,7 +57,8 @@ export function createNativeTorMonitor(
   const checkedAt=Date.now(),latencyMs=checkedAt-owner.started;
   publish({status:health.status,check:ok?'ok':'failed',checkedAt,latencyMs,
    ...(ok?{}:{error:error instanceof Error?error.message:String(error??'Tor connection check failed')})});
-  schedule();
+  if(ok)failures=0;else failures++;
+  schedule(ok?undefined:Math.min(TOR_CHECK_RETRY_MS*2**(failures-1),TOR_CHECK_INTERVAL_MS));
  };
  function runCheck(){
   if(stopped||!foreground()||health.status.phase!=='ready'||probe)return;
@@ -76,6 +81,7 @@ export function createNativeTorMonitor(
   if(stopped||!Number.isSafeInteger(status.generation)||status.generation<health.status.generation)return;
   revision++;
   const changed=status.generation!==health.status.generation||status.phase!=='ready'||health.status.phase!=='ready';
+  if(changed)failures=0;
   if(changed){invalidate();publish({status,check:'idle'});}
   else publish({...health,status});
   if(foreground()&&status.phase==='ready'&&health.check==='idle')runCheck();

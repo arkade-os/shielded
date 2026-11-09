@@ -1,6 +1,7 @@
 type Shutdown=()=>Promise<void>;
 export type NativeWalletView<T>={session:T;retired:boolean;mounted:boolean;shutdown?:Shutdown;onShutdown:(shutdown:Shutdown|undefined)=>void};
 type RetiredView<T>={session:T;shutdown?:Shutdown};
+export const isNativeWalletViewActive=<T,>(view:NativeWalletView<T>,shown:boolean)=>shown&&!view.retired;
 
 export function createNativeViewHandoff<T>(lateShutdown:(shutdown:Shutdown)=>void=shutdown=>{void shutdown().catch(()=>{});}){
  let shown:NativeWalletView<T>|undefined,candidate:NativeWalletView<T>|undefined;
