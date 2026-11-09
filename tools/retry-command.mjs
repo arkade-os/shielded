@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 
 export function retryCommand(command, args, options = {}) {
   const attempts = options.attempts ?? 3;
+  const delay = options.delay ?? Number(process.env.RETRY_COMMAND_DELAY_MS ?? 5000);
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const result = spawnSync(command, args, { ...options, stdio: 'inherit' });
     if (!result.error && result.status === 0) return;
@@ -9,7 +10,7 @@ export function retryCommand(command, args, options = {}) {
       throw result.error ?? new Error(`${command} failed after ${attempts} attempts (exit ${result.status ?? 'unavailable'})`);
     }
     console.error(`${command} failed (exit ${result.status ?? 'unavailable'}); retrying ${attempt}/${attempts - 1}`);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 5000);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * delay);
   }
 }
 

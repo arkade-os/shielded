@@ -1,6 +1,7 @@
 export const NATIVE_RELEASE_ENDPOINT = '/api/native/releases';
 export const NATIVE_RELEASE_MANIFEST_URL = 'https://raw.githubusercontent.com/arkade-os/shielded/native-mutinynet/latest.json';
 export const NATIVE_RELEASE_ORIGIN = 'https://shielded.mutinynet.arkade.sh';
+const FIRST_REPRODUCIBLE_BUILD = 38;
 
 export type NativePlatform = 'windows-x86_64' | 'linux-x86_64' | 'macos-universal' | 'android-arm64' | 'ios';
 export interface NativeReleasePackage {
@@ -59,6 +60,7 @@ function packageFormat(item: NativeReleasePackage): string {
   return formats[item.platform].find(format => item.file.endsWith(format)) ?? '';
 }
 
+/** Validate the public release channel without trusting extra manifest data. */
 export function parseNativeRelease(input: unknown): NativeRelease {
   const value = record(input);
   if (value.schema !== 1 || value.channel !== 'native-mutinynet' || value.network !== 'mutinynet') throw new Error('Invalid native release channel or network');
@@ -86,7 +88,9 @@ export function parseNativeRelease(input: unknown): NativeRelease {
   });
   for (const platform of NATIVE_PLATFORMS) for (const format of formats[platform]) if (!covered.has(`${platform}:${format}`)) throw new Error(`Incomplete native release: ${platform} ${format}`);
   let environment: NativeBuildEnvironment | undefined;
-  if (value.environment !== undefined) {
+  if (value.environment === undefined) {
+    if (value.buildNumber >= FIRST_REPRODUCIBLE_BUILD) throw new Error('Missing native build environment');
+  } else {
     const candidate = record(value.environment);
     if (candidate.node !== '24.22.2' || candidate.rust !== '1.96.0' || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
     environment = candidate as unknown as NativeBuildEnvironment;

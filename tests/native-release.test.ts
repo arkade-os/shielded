@@ -11,9 +11,10 @@ test('native manifest accepts complete immutable Mutinynet downloads and strips 
 });
 
 test('native manifest keeps the last published release installable before reproducibility metadata existed', () => {
-  const { environment: _, ...legacy } = release(), parsed = parseNativeRelease(legacy);
-  assert.equal(parsed.buildNumber, 123);
+  const { environment: _, ...legacy } = release(), parsed = parseNativeRelease({ ...legacy, buildNumber: 37 });
+  assert.equal(parsed.buildNumber, 37);
   assert.equal('environment' in parsed, false);
+  assert.throws(() => parseNativeRelease({ ...legacy, buildNumber: 38 }), /Missing native build environment/);
 });
 
 test('native manifest rejects incorrect channel, identity, timestamps and oversized packages', () => {
