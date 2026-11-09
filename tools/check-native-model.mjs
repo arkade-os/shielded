@@ -7,14 +7,24 @@ import { fileURLToPath } from 'node:url';
 
 const directory = fileURLToPath(new URL('../spec/tla/', import.meta.url));
 const checksum = '936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88';
+const download = () => fetch('https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar', { signal: AbortSignal.timeout(60_000) });
 const temporary = mkdtempSync(join(tmpdir(), 'shielded-tlc-'));
 try {
   let artifact;
   if (process.env.TLC_JAR) artifact = readFileSync(process.env.TLC_JAR);
   else {
-    const response = await fetch('https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar', { signal: AbortSignal.timeout(60_000) });
-    if (!response.ok) throw new Error(`TLC download failed: HTTP ${response.status}`);
-    artifact = Buffer.from(await response.arrayBuffer());
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const response = await download();
+        if (!response.ok) throw new Error(`TLC download failed: HTTP ${response.status}`);
+        artifact = Buffer.from(await response.arrayBuffer());
+        break;
+      } catch (error) {
+        if (attempt === 3) throw error;
+        process.stderr.write(`${error.message}; retrying ${attempt}/2\n`);
+        await new Promise(resolve => setTimeout(resolve, attempt * 5_000));
+      }
+    }
   }
   if (createHash('sha256').update(artifact).digest('hex') !== checksum) throw new Error('TLC artifact checksum mismatch');
   const jar = join(temporary, 'tla2tools.jar');

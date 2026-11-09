@@ -49,4 +49,5 @@ test('release package downloads use bounded retries', () => {
   const native = read('.github/workflows/native.yml');
   assert.match(native, /retry-command\.mjs node node_modules\/@tauri-apps\/cli\/tauri\.js android build/);
   assert.match(native, /retry-command\.mjs node tools\/native-build\.mjs desktop build/);
+  assert.match(read('tools/check-native-model.mjs'), /attempt <= 3/);
 });
