@@ -207,7 +207,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    await refuseMethods(state,server);throw new Error(METHODS_REFUSED,{cause:refusal});
   }
  };
- const settle=async(state:ReceiveState,server:ServerState)=>{
+ const settle=async(state:ReceiveState,server:ServerState,beforeBind?:()=>void)=>{
   if(!server.receivers.some(row=>row.status==='active'))return;
   await restoreWatches(state);
   // HD services hand out /2/7 children the journal never saw: catch up until the first static bind lands, then follow them while refused.
@@ -217,6 +217,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   }
   const current=state.payouts.find(row=>row.script===server.current);
   if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server);
+  beforeBind?.();
   await bind(state,server);
   if(server.methods||server.withdraw)await confirm(state,server);
  };
@@ -257,8 +258,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(recoverPayouts)server.recovering=true;
   if(JSON.stringify(server.receivers)!==JSON.stringify(receivers)||server.pending||recoverPayouts){server.receivers=receivers;delete server.pending;await save(state);}
    config.onStage?.('Restoring payout watches');
-  await settle(state,server);
-   config.onStage?.('Binding your payment routes');
+  await settle(state,server,()=>config.onStage?.('Binding your payment routes'));
    config.onStage?.('Unified address ready');
   return receiver;
  };

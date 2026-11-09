@@ -71,15 +71,19 @@ test('switching disables the control and direct failures keep direct-mode copy',
  assert.doesNotMatch(html,/Tor check failed|through Tor|Separate Tor scopes/);
 });
 
-test('a ready Tor transport distinguishes a failed service probe from a bootstrap failure',()=>{
+test('a ready Tor transport distinguishes a failed service probe from a bootstrap failure',(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:0});
  const html=render({status:{phase:'bootstrapping',generation:2,progress:'42%'},check:'idle'});
  assert.match(html,/Building Tor circuits/);
  assert.match(html,/42%/);
  assert.match(html,/The first connection can take a minute/);
  const checking=render({status:{phase:'ready',generation:2},check:'checking',attempt:2});
  assert.match(checking,/Verifying private route · try 2/);
- const failed=render({status:{phase:'ready',generation:2},check:'failed',attempt:2,error:'Service unavailable'});
+ const failed=render({status:{phase:'ready',generation:2},check:'failed',attempt:2,retryAt:5_000,error:'Service unavailable'});
  assert.match(failed,/Private route unavailable · retrying/);
- assert.match(failed,/retrying automatically while Tor stays on/i);
+ assert.match(failed,/in about 5s automatically while Tor stays on/i);
  assert.match(failed,/Service unavailable/);
+ t.mock.timers.tick(6_000);
+ const overdue=render({status:{phase:'ready',generation:2},check:'failed',attempt:2,retryAt:5_000,error:'Service unavailable'});
+ assert.doesNotMatch(overdue,/in about/i);
 });

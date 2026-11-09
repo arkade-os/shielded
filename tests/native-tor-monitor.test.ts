@@ -90,6 +90,13 @@ test('a failed Tor service probe retries in five seconds instead of lingering fo
  t.mock.timers.tick(4_999);await flush();assert.equal(f.checks.length,1);
  t.mock.timers.tick(1);await flush();assert.equal(f.checks.length,2);assert.equal(f.latest().check,'checking');
  assert.equal(f.latest().attempt,2);assert.equal(f.latest().retryAt,undefined);
+ f.checks[1]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,15_000);
+ t.mock.timers.tick(10_000);await flush();f.checks[2]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,35_000);
+ t.mock.timers.tick(20_000);await flush();f.checks[3]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,65_000);
+ t.mock.timers.tick(30_000);await flush();f.checks[4]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,95_000);
+ t.mock.timers.tick(30_000);await flush();f.checks[5]!.result.resolve();await flush();assert.equal(f.latest().check,'ok');
+ t.mock.timers.tick(30_000);await flush();f.checks[6]!.result.reject(new Error('outage after recovery'));await flush();
+ assert.equal(f.latest().attempt,1);assert.equal(f.latest().retryAt,130_000);
 });
 
 test('pause aborts a probe and its late success cannot restore connected health',async t=>{

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,dismissTransientWalletViews,privateReceiveStageLabel} from '../app/src/wallet-recovery.ts';
+import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,dismissTransientWalletViews,privateReceiveStageLabel} from '../app/src/wallet-recovery.ts';
 
 class MemoryStorage {
  private readonly values=new Map<string,string>();
@@ -14,6 +14,8 @@ test('a stalled private receive activates one automatic restart per cooldown',()
  assert.equal(claimPrivateReceiveRestart(storage,1_000),true);
  assert.equal(claimPrivateReceiveRestart(storage,2_000),false);
  assert.equal(claimPrivateReceiveRestart(storage,121_000),true);
+ storage.setItem(PRIVATE_RECEIVE_RESTART_KEY,'200000');
+ assert.equal(claimPrivateReceiveRestart(storage,1000),true);
  clearPrivateReceiveRestart(storage);
  assert.equal(claimPrivateReceiveRestart(storage,122_000),true);
 });
@@ -32,7 +34,6 @@ test('foreground recovery dismisses every transient wallet surface',()=>{
   closeAbout:()=>calls.push('about'),
   closeRequest:()=>calls.push('request'),
   closeSecurity:()=>calls.push('security'),
-  clearStatus:()=>calls.push('status'),
  });
- assert.deepEqual(calls,['scanner','sheet','about','request','security','status']);
+ assert.deepEqual(calls,['scanner','sheet','about','request','security']);
 });

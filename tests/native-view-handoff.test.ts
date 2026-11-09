@@ -15,6 +15,7 @@ test('a resumed candidate cannot replace the retired balance view before it is r
  assert.equal(isNativeWalletViewActive(old,true),false);assert.equal(isNativeWalletViewActive(next,false),false);
  assert.equal(handoff.promote(next,()=>false),false);assert.equal(handoff.snapshot.shown,old);
  assert.equal(handoff.promote(next,()=>true),true);assert.equal(handoff.snapshot.shown,next);assert.equal(handoff.snapshot.candidate,undefined);
+ assert.equal(isNativeWalletViewActive(next,true),true);
 });
 
 test('lock removes both views immediately and fences an already captured readiness callback',()=>{

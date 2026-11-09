@@ -125,10 +125,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    closeAbout:()=>setAboutOpen(false),
    closeRequest:()=>setRequestOpen(false),
    closeSecurity:()=>setSecurityView(null),
-   clearStatus:()=>sheetOwner.clear(),
-  }),[sheetOwner]);
+ }),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
-   useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
+   useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();sheetOwner.stop();},[closeTransient,suspended,viewActive,sheetOwner]);
    useEffect(()=>{
     const visibility=()=>{if(document.visibilityState==='hidden'||document.visibilityState==='visible')closeTransient();};
     const pageshow=()=>closeTransient();
@@ -324,6 +323,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     const restartStalled=(message:string,stillCurrent:()=>boolean)=>{
      if(!stillCurrent()||autoRestartTimer)return;
      unifiedStalledRef.current=true;setUnifiedStalled(true);
+     if(document.hidden){setLnError(`${message} Return to Shielded and restart private receive.`);return;}
      const storage=receiveRecoveryStorage();
      if(!storage||!claimPrivateReceiveRestart(storage)){setLnError(`${message} Use Restart private receive below.`);return;}
      setUnifiedStage('Restarting private receive');

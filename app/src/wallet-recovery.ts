@@ -10,7 +10,6 @@ type TransientWalletControls={
  closeAbout:()=>void;
  closeRequest:()=>void;
  closeSecurity:()=>void;
- clearStatus:()=>void;
 };
 
 const stages:UnifiedReceiveStage[]=[
@@ -30,7 +29,7 @@ export function privateReceiveStageLabel(stage:string){
 export function claimPrivateReceiveRestart(storage:StorageLike,now=Date.now()){
  try{
   const previous=Number(storage.getItem(PRIVATE_RECEIVE_RESTART_KEY));
-  if(Number.isFinite(previous)&&previous>0&&now-previous<PRIVATE_RECEIVE_RESTART_COOLDOWN_MS)return false;
+  if(Number.isFinite(previous)&&previous>0&&now>=previous&&now-previous<PRIVATE_RECEIVE_RESTART_COOLDOWN_MS)return false;
   storage.setItem(PRIVATE_RECEIVE_RESTART_KEY,String(now));
   return true;
  }catch{
@@ -48,5 +47,4 @@ export function dismissTransientWalletViews(controls:TransientWalletControls){
  controls.closeAbout();
  controls.closeRequest();
  controls.closeSecurity();
- controls.clearStatus();
 }
