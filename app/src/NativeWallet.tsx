@@ -129,7 +129,7 @@ export default function NativeWallet(){
   transition.current=true;clearing.current=true;setBusy(true);setSaving(true);setError('');setPhase('Clearing wallet');
   try{
    await pause();
-   await clearNativeWalletData(clearSecret);
+   await clearNativeWalletData(clearSecret,{onBlocked:()=>setPhase('Waiting for wallet data to close')});
    location.reload();
   }catch(cause){
    transition.current=false;clearing.current=false;setSaving(false);setBusy(false);fail(cause);throw cause;

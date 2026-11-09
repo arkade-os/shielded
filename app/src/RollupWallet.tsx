@@ -326,8 +326,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     };
     starting=startPageLightning({
      pairing,
-     swaps:paired=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,...(nativeHost?nativeSwapConfig():{})}),
-     lnurl:async(paired,swaps)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async payouts=>(await swaps).registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()}),
+     swaps:(paired,signal)=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,signal,...(nativeHost?nativeSwapConfig():{})}),
+     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,_signal)=>(await swaps).registerPayouts(payouts,_signal),shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
@@ -420,8 +420,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const docked=narrow&&pool?.phase==='ready';
  useEffect(()=>{
   if(!nativeHost)return;
-  const root=document.documentElement;root.classList.toggle('native-sheet-open',docked&&sheetOpen);
-  return()=>{root.classList.remove('native-sheet-open');};
+  const root=document.documentElement,sheet=docked&&sheetOpen,topbar=document.querySelector<HTMLElement>('.native-wallet-topbar');
+  root.classList.toggle('native-sheet-open',sheet);
+  if(topbar){if(sheet)topbar.setAttribute('inert','');else topbar.removeAttribute('inert');}
+  return()=>{root.classList.remove('native-sheet-open');topbar?.removeAttribute('inert');};
  },[docked,sheetOpen,nativeHost]);
  useEffect(()=>{if(!docked)setSheetOpen(false);},[docked]);
  useEffect(()=>{const panel=panelNode.current;if(!viewActive||suspended||!sheetOpen||!docked||!panel)return;

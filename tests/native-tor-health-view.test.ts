@@ -7,7 +7,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import type {NativeTorHealthState} from '../app/src/native-tor-monitor.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
-const {default:NativeTorHealth}=await import('../app/src/NativeTorHealth.tsx');
+const {default:NativeTorHealth,torPanelPosition}=await import('../app/src/NativeTorHealth.tsx');
 const render=(health:NativeTorHealthState,transportBusy=false)=>renderToStaticMarkup(createElement(NativeTorHealth,{health,transportBusy,onToggleTor:()=>{}}));
 
 test('the native connection panel paints above the wallet surface',()=>{
@@ -15,6 +15,9 @@ test('the native connection panel paints above the wallet surface',()=>{
  assert.match(css,/\.native-wallet-topbar\{[^}]*position:relative[^}]*z-index:\d+/);
  assert.match(css,/\.native-tor-panel\{[^}]*position:fixed[^}]*z-index:\d+/);
  assert.match(css,/\.native-tor-panel\{[^}]*max-width:calc\(100vw - 32px\)/);
+ assert.match(css,/\.native-tor-panel\{[^}]*overflow:auto/);
+ assert.match(css,/\.native-tor-panel\[data-tone=dark\]\{[^}]*background:#172a3c/);
+ assert.match(css,/\.native-tor-panel\[data-tone=dark\] \.native-tor-switch\{/);
  assert.match(css,/\.stock-page\.has-sheet \.stock-backdrop\{z-index:45\}/);
  assert.match(css,/\.stock-page\.has-sheet \.stock-panel\{z-index:50\}/);
  assert.match(css,/\.native-sheet-open \.native-wallet-topbar\{pointer-events:none\}/);
@@ -25,9 +28,28 @@ test('legacy Tor status renders an accessible enabled Tor switch',()=>{
  assert.match(html,/Tor connected/);
  assert.match(html,/class="native-tor-trigger"[^>]*aria-expanded="false"/);
  assert.match(html,/class="native-tor-panel"[^>]*hidden=""/);
+ assert.match(html,/data-tone="light"/);
  assert.match(html,/role="switch" aria-checked="true"/);
  assert.match(html,/>Use Tor<\/span>/);
  assert.doesNotMatch(html,/disabled=""|Direct connection|DNS lookups are exposed/);
+});
+
+test('the onboarding connection panel keeps its dark theme when portaled',()=>{
+ const html=renderToStaticMarkup(createElement(NativeTorHealth,{health:{status:{phase:'ready',generation:1},check:'ok'},tone:'dark',onToggleTor:()=>{}}));
+ assert.match(html,/class="native-tor-panel"[^>]*data-tone="dark"[^>]*hidden=""/);
+});
+
+test('the connection panel stays inside a short viewport and scrolls its details',()=>{
+ const above=torPanelPosition({left:24,top:500,bottom:535},{width:360,height:640},'dark');
+ assert.equal(above.bottom,150);
+ assert.equal(above.maxHeight,474);
+ const below=torPanelPosition({left:24,top:20,bottom:54},{width:360,height:240},'light');
+ assert.equal(below.top,64);
+ assert.equal(below.maxHeight,160);
+ const tight=torPanelPosition({left:24,top:20,bottom:54},{width:180,height:100},'light');
+ assert.equal(tight.width,148);
+ assert.equal(tight.top,64);
+ assert.equal(tight.maxHeight,20);
 });
 
 test('direct mode always shows its warning and never claims Tor connectivity',()=>{

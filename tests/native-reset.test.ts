@@ -41,13 +41,36 @@ test('a blocked database keeps the reset pending until deletion succeeds',async(
  assert.deepEqual(events,['storage','vault']);
 });
 
-test('a permanently blocked database fails recoverably instead of hanging',async()=>{
- const events:string[]=[],factory={
+test('a blocked database stays in the clearing state until deletion eventually settles',async()=>{
+ const events:string[]=[];let notified=0,success:(()=>void)|undefined,factory={
   async databases(){return [{name:'shielded-rollup'}];},
   deleteDatabase(){
-   const request:any={};queueMicrotask(()=>request.onblocked?.({}));return request as IDBOpenDBRequest;
+   const request={};
+   Object.defineProperties(request,{
+    onsuccess:{set(callback){success=callback as (()=>void)|undefined;}},
+    onerror:{set(){}},
+    onblocked:{set(callback){queueMicrotask(()=>callback?.({}));}},
+   });
+   return request as IDBOpenDBRequest;
   },
  } as unknown as IDBFactory;
- await assert.rejects(clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory,blockedAfterMs:20}),/still in use/);
+ const clearing=clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory,blockedAfterMs:20,onBlocked:()=>{notified++;}});
+ let settled=false;void clearing.finally(()=>{settled=true;});
+ await new Promise(resolve=>setTimeout(resolve,40));
+ assert.deepEqual([settled,notified,events],[false,1,[]]);
+ success?.();await clearing;
+ assert.deepEqual(events,['storage','vault']);
+});
+
+test('a blocked deletion never removes storage or the vault after its notice deadline',async()=>{
+ const events:string[]=[],factory={
+  async databases(){return [{name:'shielded-rollup'}];},
+  deleteDatabase(){const request:any={};queueMicrotask(()=>request.onblocked?.({}));return request as IDBOpenDBRequest;},
+ } as unknown as IDBFactory;
+ let settled=false,notified=0;
+ const clearing=clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory,blockedAfterMs:20,onBlocked:()=>{notified++;}});
+ void clearing.finally(()=>{settled=true;});
+ await new Promise(resolve=>setTimeout(resolve,40));
  assert.deepEqual(events,[]);
+ assert.deepEqual([settled,notified],[false,1]);
 });

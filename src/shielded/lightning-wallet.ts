@@ -20,7 +20,7 @@ export interface ExitPayout {
 }
 export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,'markets'|'receive'>,AsyncDisposable {
  exitPayout(poolAddress?:string):Promise<ExitPayout>;
- registerPayouts(records:LightningPayout[]):Promise<void>;
+ registerPayouts(records:LightningPayout[],signal?:AbortSignal):Promise<void>;
  getActivityHistory():Promise<Activity[]>;
  quoteRecovery(outpoint:string):Promise<ExitQuote>;
  getRecovery(outpoint:string):Promise<LightningRecovery|undefined>;
@@ -92,13 +92,23 @@ interface PrivateLightningOptions extends ClientOptions {
  acquireSession?:(name:string)=>Promise<()=>Promise<void>>;
  legacyRecovery?:boolean;
  onError?:(error:Error)=>void;
+ signal?:AbortSignal;
 }
 interface Session {artifact:LightningArtifact;repository:AssetSwapRepository;client:SwapClient;view:IWallet;release:()=>Promise<void>;off:()=>void;initialized:boolean;accepting:boolean;funding?:Promise<void>;retiring?:Promise<void>;needsFundingRetry?:boolean;quote?:Quote;closing?:Promise<void>}
 export async function createPrivateLightning(options:PrivateLightningOptions):Promise<PrivateLightningService>{
- const {wallet,companion,journal,repositoryFor=name=>new LightningSwapRepository(name),clientFactory=createSwapClient,acquireSession=acquireLightningSession,legacyRecovery=true,onError,...config}=options;
- const owner=await lightningOwner(companion),pool=wallet.pool.status.pool!.token,namespace=`shielded-lightning-${owner}-${pool}`;
+ const {wallet,companion,journal,repositoryFor=name=>new LightningSwapRepository(name),clientFactory=createSwapClient,acquireSession=acquireLightningSession,legacyRecovery=true,onError,signal,...config}=options;
+ if(signal?.aborted)throw new Error('Lightning startup was cancelled');
+ const operations=new AbortController(),cancel=()=>operations.abort();
+ signal?.addEventListener('abort',cancel,{once:true});
+ const waitForStartup=<T>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
+  if(!signal)return void work.then(resolve,reject);
+  const stopped=()=>reject(new Error('Lightning startup was cancelled'));
+  if(signal.aborted)return stopped();
+  signal.addEventListener('abort',stopped,{once:true});
+  work.then(value=>{signal.removeEventListener('abort',stopped);resolve(value);},error=>{signal.removeEventListener('abort',stopped);reject(error);});
+ });
+ const owner=await waitForStartup(lightningOwner(companion)),pool=wallet.pool.status.pool!.token,namespace=`shielded-lightning-${owner}-${pool}`;
  const sessions=new Map<string,Session>(),listeners=new Set<(update:SwapUpdate)=>void>(),updates=new Map<string,SwapUpdate>();
- const operations=new AbortController();
  const payouts=new Map<string,LightningPayout>(),shielding=new Map<string,Promise<void>>(),shieldingControllers=new Map<string,AbortController>();
  const exiting=new Map<string,()=>Promise<void>>(),exitScripts=new Set<string>();
  const receipts=new Map<string,CorridorSwapRecord>();
@@ -224,11 +234,12 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const recovery=createLightningRecovery({owner,pool,companion,journal,acquireSession,options:async outpoint=>(await recoveryOptions(outpoint)).options,
   stopShielding:async outpoint=>{shieldingControllers.get(outpoint)?.abort();await shielding.get(outpoint)?.catch(()=>{});},
   reconcileShielding:outpoint=>wallet.reconcileLightningPayout(outpoint,journal),changed:()=>wallet.changed(),report});
- const registerPayouts=async(records:LightningPayout[],rescan=true)=>{
-  await validatePayouts(records);const manager=await companion.getContractManager();
-  await journal.savePayouts(owner,pool,records);
+ const registerPayouts=async(records:LightningPayout[],rescan=true,signal?:AbortSignal)=>{
+  const stopped=()=>{if(signal?.aborted)throw new Error('Private Lightning service is closed');};
+  stopped();await validatePayouts(records);stopped();const manager=await companion.getContractManager();stopped();
+  await journal.savePayouts(owner,pool,records);stopped();
   // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
-  for(const record of records){await manager.setContractWatchState(record.script,'watched');payouts.set(record.script,record);}
+  for(const record of records){await manager.setContractWatchState(record.script,'watched');stopped();payouts.set(record.script,record);}
   wallet.changed();
   if(rescan)await scan();
  };
@@ -355,53 +366,53 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   return swap as ReceiveRequest<C>;
  };
  let offPayout:()=>void=()=>{},taking:Promise<void>=Promise.resolve();
- const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();await taking.catch(()=>{});await recovery.dispose();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);
+ const dispose=async()=>{if(stopped)return;stopped=true;operations.abort();signal?.removeEventListener('abort',cancel);let grace:ReturnType<typeof setTimeout>|undefined;try{await Promise.race([taking.catch(()=>{}),new Promise(resolve=>{grace=setTimeout(resolve,1000);})]);}finally{if(grace)clearTimeout(grace);}await recovery.dispose();if(timer)clearTimeout(timer);offPayout();offLegacy?.();await Promise.allSettled([...sessions.values()].map(close));await legacy?.[Symbol.asyncDispose]();await legacyRepository?.[Symbol.asyncDispose]?.();await releaseLegacy?.();await discovery[Symbol.asyncDispose]();await discoveryRepository[Symbol.asyncDispose]?.();await Promise.allSettled([...shielding.values()]);
   await Promise.allSettled([...exiting.values()].map(release=>release()));exiting.clear();listeners.clear();};
  // An accepted swap nobody here drives: opened at startup, and on each tick once a sibling tab holding it closes.
  // A failed payout watch is retried on every pass and reported once; only a swap that fails to open or start is parked.
  const unopenable=new Set<string>(),unwatched=new Set<string>();
  const takeOver=async(startup:boolean)=>{
-  for(const artifact of await journal.artifacts(owner,pool)){
-   if(stopped)return;
+   for(const artifact of await waitForStartup(journal.artifacts(owner,pool))){
+    if(stopped||signal?.aborted)return;
    if(artifact.kind==='exit'||unopenable.has(artifact.id))continue;
    // A swap a sibling started after this tab did, even one that has ended, has no payout watch here yet, so its payout would never be shielded.
-   if(artifact.descriptor&&!payouts.has(artifact.script!))try{await registerPayouts([await watchArtifact(artifact)],false);}catch(error){if(!unwatched.has(artifact.id)){unwatched.add(artifact.id);report(error);}continue;}
+    if(artifact.descriptor&&!payouts.has(artifact.script!))try{await waitForStartup(registerPayouts([await waitForStartup(watchArtifact(artifact))],false));}catch(error){if(!unwatched.has(artifact.id)){unwatched.add(artifact.id);report(error);}continue;}
    if(artifact.state!=='accepted'||sessions.has(artifact.id))continue;
-   const session=await open(artifact).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
+    const session=await waitForStartup(open(artifact)).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
    if(!session)continue;
    if(stopped){await close(session);return;}
-   try{await startSession(session);}catch(error){unopenable.add(artifact.id);await close(session);if(startup)throw error;report(error);}
+    try{await waitForStartup(startSession(session));}catch(error){unopenable.add(artifact.id);await close(session);if(startup)throw error;report(error);}
   }
  };
  try{
-  const artifacts=await journal.artifacts(owner,pool),restoredPayouts=await journal.payouts(owner,pool);
+   const artifacts=await waitForStartup(journal.artifacts(owner,pool)),restoredPayouts=await waitForStartup(journal.payouts(owner,pool));
   for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
-  await registerPayouts(restoredPayouts);
-  taking=takeOver(true);await taking;
+   await waitForStartup(registerPayouts(restoredPayouts));
+   taking=takeOver(true);await waitForStartup(taking);
   for(const artifact of artifacts){
    if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
     try{
-     const release=await acquireSession(`${namespace}-${artifact.id}`);
-     try{const repository=repositoryFor(`${namespace}-${artifact.id}`);try{await repairReceipt(artifact,repository);}finally{await repository[Symbol.asyncDispose]?.();}}
+      const release=await waitForStartup(acquireSession(`${namespace}-${artifact.id}`));
+      try{const repository=repositoryFor(`${namespace}-${artifact.id}`);try{await waitForStartup(repairReceipt(artifact,repository));}finally{await repository[Symbol.asyncDispose]?.();}}
      finally{await release();}
     }catch{report(new Error('A saved Lightning receipt is unavailable; it remains unchanged.'));}
    }
   }
   if(legacyRecovery){
-   const address=await wallet.getAddress();releaseLegacy=await acquireSession(`shielded-lightning-legacy-${address}`).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
+    const address=await waitForStartup(wallet.getAddress());releaseLegacy=await waitForStartup(acquireSession(`shielded-lightning-legacy-${address}`)).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
    if(releaseLegacy){
     legacyRepository=repositoryFor(`shielded-swaps-${address}`);
     const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});
-    legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await legacy.ready;await legacy.start();
+     legacy=clientFactory({...config,wallet:legacyView,repository:legacyRepository,policy:{drive:'manual'}});offLegacy=legacy.onUpdate(forward);await waitForStartup(legacy.ready);await waitForStartup(legacy.start());
    }
   }
-  offPayout=(await companion.getContractManager()).onContractEvent(event=>{
+   offPayout=(await waitForStartup(companion.getContractManager())).onContractEvent(event=>{
    if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
    wallet.changed();if(event.type==='vtxo_received'||event.type==='connection_reset')void scan().catch(report);
   });
   const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}taking=takeOver(false);await taking;await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
-  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts,getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
+  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts:(records,signal)=>registerPayouts(records,true,signal),getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
  }catch(error){await dispose();throw error;}
 }

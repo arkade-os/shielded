@@ -22,7 +22,8 @@ interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<str
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
 export interface LnurlReceiveConfig {
  identity:Identity;companion:Wallet;journal:LnurlReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;now?:()=>number;
- onPayouts?:(payouts:LnurlPayout[])=>Promise<void>;
+ signal?:AbortSignal;
+ onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
  shieldedAddress?:()=>string;
 }
 // Each idle rotation leaves one unused index, so daily keeps a year of idle rotations inside RECOVERY_GAP.
@@ -69,10 +70,11 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const url=new URL(config.baseUrl??LNURL_BASE);
  if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('Invalid Lightning address service URL');
  const baseUrl=url.href.replace(/\/+$/,''),domain=(config.domain??url.hostname).toLowerCase(),serverKey=JSON.stringify([baseUrl,domain]),now=config.now??Date.now;
- const abort=new AbortController(),fetcher=config.fetch??((input,init)=>globalThis.fetch(input,init));
-  const untilStopped=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
-   const stop=()=>reject(new Error('Lightning address service is disposed'));
-   if(abort.signal.aborted)return stop();
+ const abort=new AbortController(),stop=()=>abort.abort(),fetcher=config.fetch??((input,init)=>globalThis.fetch(input,init));
+ if(config.signal?.aborted)abort.abort();else config.signal?.addEventListener('abort',stop,{once:true});
+   const untilStopped=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
+    const stop=()=>reject(new Error('Lightning address service is disposed'));
+    if(abort.signal.aborted){void work.catch(()=>{});return stop();}
    abort.signal.addEventListener('abort',stop,{once:true});
    work.then(value=>{abort.signal.removeEventListener('abort',stop);resolve(value);},error=>{abort.signal.removeEventListener('abort',stop);reject(error);});
   });
@@ -80,7 +82,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
  let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,offEvents:(()=>void)|undefined;
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
- const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
+ const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
  const migrate=async(state:ReceiveState)=>{
   const legacy=await config.journal.getReceiveState<LegacyState>(config.owner,config.pool,`lnurl-hd-v1:${serverKey}`);
   if(!legacy)return;
@@ -139,15 +141,15 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const watch=async(rows:Destination[])=>{
   if(!rows.length)return;
   try{
-   const manager=await config.companion.getContractManager();
+   const manager=await untilStopped(config.companion.getContractManager());
    for(const row of rows)if(row.params){
-    try{await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params,metadata:{signingDescriptor:row.descriptor}});}
-    catch(error){const failed=failedContractWatches.get(config.companion)??new Set<string>();failed.add(row.script);failedContractWatches.set(config.companion,failed);throw error;}
+    try{await untilStopped(manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params,metadata:{signingDescriptor:row.descriptor}}));}
+    catch(error){if(abort.signal.aborted)throw error;const failed=failedContractWatches.get(config.companion)??new Set<string>();failed.add(row.script);failedContractWatches.set(config.companion,failed);throw error;}
     // A failed create can persist before attaching; a later create then returns that row without attaching it.
     const failed=failedContractWatches.get(config.companion);
-    if(failed?.has(row.script)){await manager.updateContract(row.script,{});failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
+    if(failed?.has(row.script)){await untilStopped(manager.updateContract(row.script,{}));failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
    }
-   if(config.onPayouts)await untilStopped(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script}))));
+   if(config.onPayouts)await untilStopped(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
   }catch(error){watched=false;throw error;}
  };
  const restoreWatches=async(state:ReceiveState)=>{if(!watched){await watch(state.payouts);watched=true;}};
@@ -312,11 +314,11 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   }),
   check,
   start(onError:(error:unknown)=>void=()=>{}){
-   if(timer||disposed)return;
+   if(timer||disposed||abort.signal.aborted)return;
    const poll=()=>{if(timerBusy)return;timerBusy=true;void check().catch(error=>{if(!disposed)onError(error);}).finally(()=>{timerBusy=false;});};
    timer=setInterval(poll,CHECK_EVERY_MS);poll();
-   void config.companion.getContractManager().then(manager=>{const off=manager.onContractEvent(event=>{if(event.type==='vtxo_received')poll();});if(disposed)off();else offEvents=off;}).catch(error=>{if(!disposed)onError(error);});
+   void untilStopped(config.companion.getContractManager()).then(manager=>{const off=manager.onContractEvent(event=>{if(event.type==='vtxo_received')poll();});if(disposed)off();else offEvents=off;}).catch(error=>{if(!disposed)onError(error);});
   },
-  async dispose(){disposed=true;if(timer)clearInterval(timer);timer=undefined;offEvents?.();abort.abort();await tail;},
+  async dispose(){disposed=true;if(timer)clearInterval(timer);timer=undefined;offEvents?.();config.signal?.removeEventListener('abort',stop);abort.abort();await tail;},
  };
 }
