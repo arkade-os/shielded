@@ -13,6 +13,8 @@ function fixture(t) {
   const put = (path, content = 'binary') => { const target = join(directory, path); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, content); };
   put('src-tauri/src/lib.rs', "poolOrigin: 'https://shielded.mutinynet.arkade.sh'");
   put('src-tauri/src/transport/routes.rs', 'pub const POOL: &str = "shielded.mutinynet.arkade.sh";');
+  put('package-lock.json', '{}');
+  put('src-tauri/Cargo.lock', '{}');
   return { directory, put };
 }
 

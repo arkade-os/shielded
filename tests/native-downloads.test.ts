@@ -19,7 +19,7 @@ const packages:NativeReleasePackage[]=formats.map(([platform,extension,profile,r
  const file=`shielded-mutinynet-${platform}-${profile}-${requiresSigning?'unsigned-':''}${commit.slice(0,12)}${extension}`;
  return {platform,file,url:`https://github.com/arkade-os/shielded/releases/download/${tag}/${file}`,profile,requiresSigning,bytes:(index+1)*1_048_576,sha256:String(index).repeat(64)};
 });
-const release=parseNativeRelease({schema:1,channel:'native-mutinynet',network:'mutinynet',commit,buildNumber:123,version:'0.1.0',publishedAt:'2026-11-07T12:00:00Z',releaseUrl:`https://github.com/arkade-os/shielded/releases/tag/${tag}`,packages});
+const release=parseNativeRelease({schema:1,channel:'native-mutinynet',network:'mutinynet',commit,buildNumber:123,version:'0.1.0',publishedAt:'2026-11-07T12:00:00Z',releaseUrl:`https://github.com/arkade-os/shielded/releases/tag/${tag}`,environment:{node:'24.22.2',rust:'1.96.0',sourceDateEpoch:1794240000,lockfileSha256:'c'.repeat(64),rustLockfileSha256:'d'.repeat(64)},packages});
 const render=(value:typeof release|null)=>renderToStaticMarkup(createElement(NativeDownloadsContent,{release:value}));
 const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
 function deferred<T>(){let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
@@ -52,6 +52,7 @@ test('public packages keep their signing requirements and exact build identity v
  const html=render(release),rows=[...html.matchAll(/<article class="nd-platform"[\s\S]*?<\/article>/g)].map(match=>match[0]);
  assert.equal(rows.length,5);
  assert.match(html,/Version 0\.1\.0/);assert.match(html,/Build 123/);assert.match(html,/aaaaaaaaaaaa/);assert.match(html,/Published 2026-11-07/);
+ assert.match(html,/Reproducible build inputs are pinned/);assert.match(html,/Node <code>24\.22\.2<\/code> · Rust <code>1\.96\.0<\/code>/);assert.match(html,/npm lock <code>cccccccccccc<\/code>/);
  assert.match(rows[2]!,/Unsigned and not notarized/);
  const primaryAndroid=rows[3]!.match(/<div class="nd-package-links">([\s\S]*?)<\/div>/)![1]!;
  assert.match(primaryAndroid,/Debug APK/);assert.doesNotMatch(primaryAndroid,/Unsigned release APK|unsigned/);
