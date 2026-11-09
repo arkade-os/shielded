@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 import {test} from 'node:test';
 import {createElement} from 'react';
@@ -9,9 +10,17 @@ registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',so
 const {default:NativeTorHealth}=await import('../app/src/NativeTorHealth.tsx');
 const render=(health:NativeTorHealthState,transportBusy=false)=>renderToStaticMarkup(createElement(NativeTorHealth,{health,transportBusy,onToggleTor:()=>{}}));
 
+test('the native connection panel paints above the wallet surface',()=>{
+ const css=readFileSync(new URL('../app/src/native-tor-health.css',import.meta.url),'utf8');
+ assert.match(css,/\.native-wallet-topbar\{[^}]*position:relative[^}]*z-index:\d+/);
+ assert.match(css,/\.native-tor-panel\{[^}]*z-index:\d+/);
+});
+
 test('legacy Tor status renders an accessible enabled Tor switch',()=>{
  const html=render({status:{phase:'ready',generation:1},check:'ok'});
  assert.match(html,/Tor connected/);
+ assert.match(html,/class="native-tor-trigger"[^>]*aria-expanded="false"/);
+ assert.match(html,/class="native-tor-panel"[^>]*hidden=""/);
  assert.match(html,/role="switch" aria-checked="true"/);
  assert.match(html,/>Use Tor<\/span>/);
  assert.doesNotMatch(html,/disabled=""|Direct connection|DNS lookups are exposed/);

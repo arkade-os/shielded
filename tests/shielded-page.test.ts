@@ -496,7 +496,7 @@ test('a Lightning start pairing after the page closed disposes the companion nob
 });
 
 test('a Lightning start finishing after the page closed disposes everything it made, newest first, and reports nothing',async()=>{
- for(const [during,disposed] of [['swaps',['swaps','companion']],['failing swaps',['companion']],['address',['lnurl','swaps','companion']]] as const){
+ for(const [during,disposed] of [['swaps',['lnurl','swaps','companion']],['failing swaps',['lnurl','companion']],['address',['lnurl','swaps','companion']]] as const){
   const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),errors:unknown[]=[];let active=true,addresses=0;
   const start=startPageLightning({
    pairing:Promise.resolve(companion),
@@ -506,7 +506,7 @@ test('a Lightning start finishing after the page closed disposes everything it m
   });
   await flush();active=false;gate.resolve();
   assert.equal(await start,undefined);assert.deepEqual(events,[...disposed]);
-  assert.equal(addresses,during==='address'?1:0);assert.deepEqual(errors,[]);
+  assert.equal(addresses,1);assert.deepEqual(errors,[]);
  }
 });
 
@@ -520,7 +520,7 @@ test('a Lightning start that fails while the page is open reports once and dispo
    active:()=>true,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
   });
   assert.equal(await start,undefined);
-  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['companion']:['swaps','companion']);
+  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['lnurl','companion']:['swaps','companion']);
   assert.deepEqual(reasons(errors),[`Lightning could not start: ${failing} refused`]);
  }
 });
@@ -531,6 +531,22 @@ test('a Lightning start that lands hands the page its companion, swaps and addre
  const parts=await start;
  assert.equal(parts?.companion,companion);assert.equal(parts?.swaps,swaps);assert.equal(parts?.lnurl,lnurl);
  assert.equal(taken.length,1);assert.equal(taken[0],parts);assert.deepEqual(events,[]);assert.deepEqual(errors,[]);
+});
+
+test('a Lightning start exposes the address service before the swap service finishes initializing',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[],taken:unknown[]=[];
+ let pending:Promise<unknown>|undefined;
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),
+  swaps:async()=>{await gate.promise;return swaps;},
+  lnurl:async(_companion,pendingSwaps)=>{pending=pendingSwaps;return lnurl;},
+  onLnurl:service=>exposed.push(service),
+  active:()=>true,handOver:parts=>taken.push(parts),report:()=>{},
+ });
+ await flush();
+ assert.equal(pending instanceof Promise,true);assert.deepEqual(exposed,[lnurl]);assert.deepEqual(taken,[]);assert.deepEqual(events,[]);
+ gate.resolve();await start;
+ assert.deepEqual(taken,[{companion,swaps,lnurl}]);
 });
 
 test('a quote refused without a Lightning rail routes once more after the start settles',async()=>{

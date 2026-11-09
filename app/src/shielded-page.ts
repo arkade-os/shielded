@@ -115,19 +115,22 @@ export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()
 }
 
 export type PageLightning<C,S,L>={companion:C;swaps:S;lnurl:L};
-export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C)=>Promise<S>;lnurl:(companion:C,swaps:S)=>Promise<L>;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
- let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined;
+export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C)=>Promise<S>;lnurl:(companion:C,swaps:Promise<S>)=>Promise<L>;onLnurl?:(lnurl:L)=>void;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
+ let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined,pendingSwaps:Promise<S>|undefined;
  try{
   companion=await o.pairing;
   if(o.active()){
-   swaps=await o.swaps(companion);
+   pendingSwaps=o.swaps(companion);pendingSwaps.catch(()=>{});
+   lnurl=await o.lnurl(companion,pendingSwaps);
+    if(o.active())o.onLnurl?.(lnurl);
    if(o.active()){
-    lnurl=await o.lnurl(companion,swaps);
-    if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
+     swaps=await pendingSwaps;
+     if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
    }
   }
  }catch(error){if(o.active())o.report(new Error(`Lightning could not start: ${errorText(error)}`));}
  // No hand-over, so this start still owns them; swaps and the address service both run on the companion, so it goes last.
+ swaps??=await pendingSwaps?.catch(()=>undefined);
  try{await lnurl?.dispose();}catch{}try{await swaps?.[Symbol.asyncDispose]();}catch{}try{await companion?.dispose();}catch{}
  return;
 }

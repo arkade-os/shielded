@@ -60,7 +60,7 @@ test('native Lightning can bind its hydrated payout while unrelated SDK HD look-
  const start=startPageLightning({
   pairing:createLightningWallet(f.secret,{...f.providers,lazyInitialization:true}),
   swaps:companion=>createPrivateLightning({wallet:main,companion,journal,clientFactory:clientFactory as (config:SwapClientConfig)=>SwapClient,repositoryFor:()=>new InMemoryAssetSwapRepository(),acquireSession:async()=>async()=>{}}),
-  lnurl:async(companion,swaps)=>createLnurlReceive({identity:SingleKey.fromHex('22'.repeat(32)),companion,journal,owner:await lightningOwner(companion),pool:'pool',baseUrl:'https://lnurl.example',fetch:fetcher,onPayouts:rows=>swaps.registerPayouts(rows)}),
+  lnurl:async(companion,swaps)=>createLnurlReceive({identity:SingleKey.fromHex('22'.repeat(32)),companion,journal,owner:await lightningOwner(companion),pool:'pool',baseUrl:'https://lnurl.example',fetch:fetcher,onPayouts:async rows=>(await swaps).registerPayouts(rows)}),
   active:()=>active,handOver(){},report(error){throw error;},
  });
  let parts:Awaited<typeof start>;

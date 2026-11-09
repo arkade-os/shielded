@@ -114,6 +114,12 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         null
     }
 
+    @Command
+    fun secretClear(invoke: Invoke) = secret(invoke) {
+        vault.clear()
+        null
+    }
+
     override fun onResume(activity: AppCompatActivity) {
         if (activeActivity !== activity) generation++
         activeActivity = activity
