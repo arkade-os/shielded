@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { collectNativeArtifacts, verifyMutinynet } from './native-artifacts.mjs';
+import { canonicalTextSha256, collectNativeArtifacts, verifyMutinynet } from './native-artifacts.mjs';
 
 const commit = 'a'.repeat(40);
 function fixture(t) {
@@ -39,7 +39,13 @@ test('artifact manifests hash actual packages and retain network, source and pro
   assert.equal(manifest.packages[0].sha256, createHash('sha256').update(bytes).digest('hex'));
   assert.equal(readFileSync(join(output, manifest.packages[0].file), 'utf8'), bytes);
   assert.match(readFileSync(join(output, 'SHA256SUMS'), 'utf8'), new RegExp(manifest.packages[0].sha256));
+  assert.match(readFileSync(join(output, 'README.txt'), 'utf8'), /CRLF\/CR normalized to LF/);
   assert.throws(() => collectNativeArtifacts(f.directory, 'windows-x86_64', 'release', commit), /must be empty/);
+});
+
+test('lockfile hashes are stable across LF and Windows CRLF checkouts',()=>{
+  const lf='{\n  "lockfileVersion": 3\n}\n';
+  assert.equal(canonicalTextSha256(Buffer.from(lf)),canonicalTextSha256(Buffer.from(lf.replace(/\n/g,'\r\n'))));
 });
 
 test('both Linux package formats are required and empty outputs are refused', t => {

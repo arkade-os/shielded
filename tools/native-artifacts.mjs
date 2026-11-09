@@ -14,6 +14,12 @@ export function verifyMutinynet(projectRoot) {
   }
 }
 
+/** Hashes text with CRLF and lone CR normalized to LF across platforms. */
+export function canonicalTextSha256(bytes) {
+  const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes);
+  return createHash('sha256').update(text.replace(/\r\n?/g, '\n'), 'utf8').digest('hex');
+}
+
 function files(directory) {
   if (!existsSync(directory)) return [];
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
@@ -55,8 +61,8 @@ export function collectNativeArtifacts(projectRoot, platform, profile, commit) {
     const bytes = readFileSync(destination);
     return { file: name, profile: artifact.profile, requiresSigning: artifact.requiresSigning, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   });
-  const lockfileSha256 = createHash('sha256').update(readFileSync(join(projectRoot, 'package-lock.json'))).digest('hex');
-  const rustLockfileSha256 = createHash('sha256').update(readFileSync(join(projectRoot, 'src-tauri/Cargo.lock'))).digest('hex');
+  const lockfileSha256 = canonicalTextSha256(readFileSync(join(projectRoot, 'package-lock.json')));
+  const rustLockfileSha256 = canonicalTextSha256(readFileSync(join(projectRoot, 'src-tauri/Cargo.lock')));
   const environment = {
     node: '24.22.2',
     rust: '1.96.0',
@@ -71,7 +77,7 @@ export function collectNativeArtifacts(projectRoot, platform, profile, commit) {
     `Pool: ${origin}`,
     `Platform: ${platform}. Build profile: ${profile}. Source: ${commit}.`,
     `Reproduction environment: Node ${environment.node}, Rust ${environment.rust}, SOURCE_DATE_EPOCH ${environment.sourceDateEpoch}.`,
-    `Lockfile SHA-256: npm ${lockfileSha256}; Cargo ${rustLockfileSha256}.`,
+    `Lockfile SHA-256 (UTF-8 text, CRLF/CR normalized to LF): npm ${lockfileSha256}; Cargo ${rustLockfileSha256}.`,
     'Wallet networking uses embedded Tor; this workflow does not configure a direct mode.',
     'macOS archives preserve the app bundle and executable permissions. These builds are not notarized by this workflow.',
     'The iPhone device IPA is unsigned and needs your own signing and provisioning before installation. The simulator archive runs only in an iOS simulator.',

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult} from '../app/src/wallet-recovery.ts';
+import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearNativeTransientDocument,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult} from '../app/src/wallet-recovery.ts';
 
 class MemoryStorage {
  private readonly values=new Map<string,string>();
@@ -61,4 +61,10 @@ test('foreground recovery dismisses every transient wallet surface',()=>{
   closeSecurity:()=>calls.push('security'),
  });
  assert.deepEqual(calls,['scanner','sheet','about','request','security']);
+});
+
+test('foreground recovery clears stale document-level sheet locks and inert attributes',()=>{
+ const calls:string[]=[],root={classList:{remove:(name:string)=>calls.push(`class:${name}`)},style:{removeProperty:(name:string)=>calls.push(`style:${name}`)}};
+ clearNativeTransientDocument(root,[{removeAttribute:name=>calls.push(`attr:${name}`)},{removeAttribute:name=>calls.push(`attr:${name}`)}]);
+ assert.deepEqual(calls,['class:native-sheet-open','style:overflow','attr:inert','attr:inert']);
 });

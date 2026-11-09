@@ -21,11 +21,15 @@ interface Destination extends LnurlPayout {index:number;claimPublicKey:string;pa
 interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true;recovering?:true;methods?:true;methodsPending?:true;methodsRefused?:true;withdraw?:true}
 interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<string,ServerState>}
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
+export const WATCH_STARTUP_GRACE_MS=5_000;
 export interface LnurlReceiveConfig {
  identity:Identity;companion:Wallet;journal:LnurlReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;now?:()=>number;
  signal?:AbortSignal;
   onStage?:(stage:UnifiedReceiveStage)=>void;
  onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
+ onPayoutError?:(error:unknown,revision:number)=>void;
+ onPayoutReady?:(revision:number)=>void;
+ watchStartupGraceMs?:number;
  shieldedAddress?:()=>string;
 }
 // Each idle rotation leaves one unused index, so daily keeps a year of idle rotations inside RECOVERY_GAP.
@@ -82,8 +86,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   });
  const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
- let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
+ let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,healthRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
  const pendingWrites=new Set<Promise<unknown>>();
+ const knownScripts=new Set<string>(),watchedScripts=new Set<string>();
+ const pendingWatches=new Map<string,{promise:Promise<void>;background:boolean;scripts:string[]}>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
  const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
  const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
@@ -154,9 +160,46 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     if(failed?.has(row.script)){await dataWork(manager.updateContract(row.script,{}));failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
    }
    if(config.onPayouts)await dataWork(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
-  }catch(error){watched=false;throw error;}
+  }catch(error){throw error;}
  };
- const restoreWatches=async(state:ReceiveState)=>{if(!watched){await watch(state.payouts);watched=true;}};
+ /** Bounds payout startup while its watch continues in the background. */
+ const watchWithGrace=async(rows:Destination[])=>{
+  for(const row of rows)knownScripts.add(row.script);
+  const inFlight=new Set([...pendingWatches.values()].flatMap(watch=>watch.scripts));
+  const eligible=rows.filter(row=>!watchedScripts.has(row.script)&&!inFlight.has(row.script));
+  if(!eligible.length)return true;
+  const key=eligible.map(row=>row.script).sort().join('|'),scripts=eligible.map(row=>row.script);
+  let tracked=pendingWatches.get(key);
+  if(!tracked){
+   const promise=watch(eligible).then(()=>{for(const script of scripts)watchedScripts.add(script);});
+   tracked={promise,background:false,scripts};pendingWatches.set(key,tracked);
+   const cleanup=()=>{if(pendingWatches.get(key)===tracked)pendingWatches.delete(key);};
+   void promise.then(cleanup,cleanup);
+  }
+  const ready=()=>[...knownScripts].every(script=>watchedScripts.has(script));
+  // Reuse the same in-flight watch so a timeout cannot double-register identical payouts.
+  const owner=tracked;let graceTimer:ReturnType<typeof setTimeout>|undefined;
+  try{
+   const settled=await Promise.race([
+    owner.promise.then(()=>true),
+    new Promise<false>(resolve=>{graceTimer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
+   ]);
+   if(settled){
+    if(ready())try{config.onPayoutReady?.(++healthRevision);}catch{}
+   }else if(!owner.background){
+    owner.background=true;
+    void owner.promise.then(()=>{
+     if(!abort.signal.aborted&&ready())try{config.onPayoutReady?.(++healthRevision);}catch{}
+    },error=>{
+     if(abort.signal.aborted)return;
+     try{config.onPayoutError?.(error,++healthRevision);}catch{}
+    });
+   }
+   return settled;
+  }finally{if(graceTimer)clearTimeout(graceTimer);}
+ };
+ /** Restores payout watches without letting a stalled wallet service hold receive. */
+ const restoreWatches=async(state:ReceiveState)=>{if(state.payouts.some(row=>!watchedScripts.has(row.script)))await watchWithGrace(state.payouts);};
  const used=async(scripts:string[])=>new Set((await untilStopped(config.companion.indexerProvider.getVtxos({scripts}))).vtxos.map(coin=>coin.script));
  // Highest index from `from` on that ever held a coin; stops after `gap` unused ones.
  const scan=async(branch:ReturnType<typeof receiveBranch>,from:number,gap:number)=>{
@@ -168,15 +211,17 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   }
   return high;
  };
+ /** Adds recovered payout keys and starts their watches without blocking the address forever. */
  const adopt=async(state:ReceiveState,branch:ReturnType<typeof receiveBranch>,from:number,high:number)=>{
   const added:Destination[]=[];
   for(let index=from;index<=high;index++){const row=receiveDestination(branch,index);if(!state.payouts.some(p=>p.script===row.script)){state.payouts.push(row);added.push(row);}}
-  state.next=Math.max(state.next,high+1);await save(state);await watch(added);
+  state.next=Math.max(state.next,high+1);await save(state);await watchWithGrace(added);
  };
+ /** Persists and watches a fresh payout without blocking the address forever. */
  const advance=async(state:ReceiveState,server:ServerState)=>{
   const row=receiveDestination(await currentBranch(),state.next);
   state.next++;state.payouts.push(row);server.current=row.script;delete server.boundAt;
-  await save(state);await watch([row]);
+  await save(state);await watchWithGrace([row]);
  };
  const bind=async(state:ReceiveState,server:ServerState)=>{
   const row=state.payouts.find(p=>p.script===server.current);

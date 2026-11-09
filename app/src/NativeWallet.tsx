@@ -14,6 +14,7 @@ import {createNativeTorMonitor,type NativeTorHealthState} from './native-tor-mon
 import WalletOnboarding from './WalletOnboarding.tsx';
 import NativeTorHealth from './NativeTorHealth.tsx';
 import {AppUpdateNotice} from './AppUpdates.tsx';
+import {clearNativeTransientDocument} from './wallet-recovery.ts';
 
 installNativeTransport();
 const loadWallet=()=>import('./RollupWallet');
@@ -22,6 +23,7 @@ const getSecret=()=>invoke<string|null>('plugin:shielded-platform|secret_get');
 const putSecret=(value:string)=>invoke<void>('plugin:shielded-platform|secret_set',{value});
 const clearSecret=()=>invoke<void>('plugin:shielded-platform|secret_clear');
 type Session={generation:number;cache:ReturnType<typeof createNativeStorage>;resumed:boolean;onReady?:()=>void;onStartupFailure?:(message:string)=>void};
+const clearTransientDocument=()=>clearNativeTransientDocument(document.documentElement,[...document.querySelectorAll('[inert]')]);
 
 export default function NativeWallet(){
  const [views,setViews]=useState<{shown?:NativeWalletView<Session>;candidate?:NativeWalletView<Session>}>({}),[phase,setPhase]=useState('Connecting to Tor'),[error,setError]=useState('');
@@ -35,6 +37,7 @@ export default function NativeWallet(){
  const selectedMode=useRef<NativeMode>('tor'),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
  const setupAllowed=useRef(false);
  const active=useRef<Session|undefined>(undefined),attempt=useRef(0),cleanup=useRef(createNativeCleanup()),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
+ const resumeRevision=useRef(0);
  const connectionPending=useRef(false);
  const opening=useRef<Promise<void>|undefined>(undefined);
  const openingGeneration=useRef<number|undefined>(undefined);
@@ -44,6 +47,7 @@ export default function NativeWallet(){
   const closing=cleanup.current.add(shutdown);closed.current=Promise.all([closed.current.catch(()=>{}),closing]).then(()=>{});void closed.current.catch(fail);
  }));
  const pause=useCallback(()=>{
+  clearTransientDocument();
   ++attempt.current;
   connectionPending.current=true;setReconnecting(false);
   setupAllowed.current=false;setSetup(false);
@@ -58,6 +62,7 @@ export default function NativeWallet(){
   void closed.current.catch(fail);return closed.current;
  },[]);
  const suspend=useCallback(()=>{
+  clearTransientDocument();
   ++attempt.current;connectionPending.current=true;setReconnecting(true);
   setupAllowed.current=false;setSetup(false);setBusy(false);setPhase('Private connection paused');
   const previous=active.current,pending=opening.current,pendingWrite=creating.current;
@@ -182,11 +187,17 @@ export default function NativeWallet(){
  useEffect(()=>{
   let live=true;
   const visibility=()=>{
+   clearTransientDocument();
+   const mine=++resumeRevision.current;
    if(document.hidden){
     void suspend();
    }else if(!manualLock.current){
-    const mine=attempt.current;
-    void resumeNativeForeground(Promise.all([closed.current,opening.current]),()=>live&&mine===attempt.current&&!manualLock.current&&!clearing.current&&!document.hidden,open).catch(fail);
+    const restart=async()=>{
+     const shown=handoff.current.snapshot.shown;
+     if(shown&&!shown.retired)await suspend();
+     if(live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden)await open();
+    };
+    void resumeNativeForeground(Promise.all([closed.current,opening.current]),()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden,restart).catch(fail);
    }
   };
   document.addEventListener('visibilitychange',visibility);

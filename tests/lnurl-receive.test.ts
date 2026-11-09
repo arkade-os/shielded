@@ -142,6 +142,97 @@ test('unified setup reports progress through local state, Tor service work, watc
  ]);
 });
 
+test('a slow Lightning handoff cannot hold the unified address behind swap startup',async()=>{
+ const f=setup();let release!:()=>void,finished=0,ready=0,attempts=0;const held=new Promise<void>(resolve=>{release=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async(_rows,signal)=>{attempts++;await held;if(!signal.aborted)finished++;},onPayoutReady:()=>ready++});
+ const receiver=await Promise.race([service.ensureUnified(),new Promise<never>((_resolve,reject)=>setTimeout(()=>reject(new Error('unified address waited for swap startup')),250))]);
+ assert.equal(receiver.lnurl,sessionLnurl);
+ assert.equal(f.bound().length,1);assert.deepEqual([finished,ready,attempts],[0,0,1]);
+ await service.check();assert.equal(attempts,1);
+ release();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual([finished,ready],[1,1]);
+  await service.check();assert.equal(attempts,1);
+ await service.dispose();
+});
+
+test('a payout watch that fails after startup reports separately and retries without replacing the address',async()=>{
+ const f=setup();let release!:()=>void,attempts=0,ready=0;const failure=new Error('late payout watch failed'),reported:{error:unknown;revision:number}[]=[];
+ const held=new Promise<void>(resolve=>{release=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async()=>{if(++attempts===1){await held;throw failure;}},onPayoutError:(error,revision)=>reported.push({error,revision}),onPayoutReady:()=>ready++});
+ const receiver=await service.ensureUnified();
+ assert.equal(receiver.lnurl,sessionLnurl);assert.equal(f.bound().length,1);
+ f.funded.add(at(0).script);await service.check();
+ assert.deepEqual([attempts,ready],[2,0]);
+ release();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[{error:failure,revision:1}]);
+ await service.check();
+ assert.deepEqual([attempts,ready],[3,1]);
+ await service.check();assert.equal(attempts,3);
+ await service.dispose();
+});
+
+test('a successful newer subset watch leaves an older failed payout eligible and keeps receive unhealthy',async()=>{
+ const f=setup(),failure=new Error('older payout watch failed'),ready:number[]=[],reported:number[]=[];
+ let releaseFirst!:()=>void,enteredFirst!:()=>void,attempts=0;
+ const firstEntered=new Promise<void>(resolve=>{enteredFirst=resolve;}),
+  firstHeld=new Promise<void>(resolve=>{releaseFirst=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,
+  onPayouts:async()=>{
+   attempts++;
+   if(attempts===1){enteredFirst();await firstHeld;throw failure;}
+  },
+  onPayoutError:(_error,revision)=>reported.push(revision),
+  onPayoutReady:revision=>ready.push(revision),
+ });
+ const activation=service.ensureUnified();
+ await firstEntered;
+ await activation;
+ f.funded.add(at(0).script);
+ await service.check();
+ assert.equal(attempts,2);
+ assert.deepEqual(ready,[],'a newer subset does not cover the still-pending payout');
+ releaseFirst();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[1]);
+ await service.check();
+ assert.equal(attempts,3,'the failed payout is retried');
+ assert.deepEqual(ready,[2],'receive becomes healthy only after the full payout set is covered');
+ await service.dispose();
+});
+
+test('full coverage emits a fresh health revision after an older watch completes late',async()=>{
+ const f=setup(),failure=new Error('newer payout watch failed'),ready:number[]=[],reported:number[]=[];
+ let releaseOlder!:()=>void,enteredOlder!:()=>void,releaseNewer!:()=>void,enteredNewer!:()=>void,attempts=0;
+ const olderEntered=new Promise<void>(resolve=>{enteredOlder=resolve;}),olderHeld=new Promise<void>(resolve=>{releaseOlder=resolve;}),
+  newerEntered=new Promise<void>(resolve=>{enteredNewer=resolve;}),newerHeld=new Promise<void>(resolve=>{releaseNewer=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,
+  onPayouts:async()=>{
+   attempts++;
+   if(attempts===1){enteredOlder();await olderHeld;}
+   else if(attempts===2){enteredNewer();await newerHeld;throw failure;}
+  },
+  onPayoutError:(_error,revision)=>reported.push(revision),
+  onPayoutReady:revision=>ready.push(revision),
+ });
+ const activation=service.ensureUnified();
+ await olderEntered;
+ await activation;
+ f.funded.add(at(0).script);
+ await service.check();
+ await newerEntered;
+ releaseNewer();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[1]);
+ await service.check();
+ assert.equal(attempts,3);
+ assert.deepEqual(ready,[],'the newer retry cannot cover the older pending payout');
+ releaseOlder();
+ for(let i=0;i<20&&!ready.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(ready,[2],'the late older completion advances health past the newer error');
+ await service.dispose();
+});
+
 test('a fresh journal recovers funded session payouts before binding a unified receiver',async()=>{
  const f=setup({aliases:[nameless]});f.funded.add(at(3).script);f.funded.add(at(70).script);
  await f.service.ensureUnified();
