@@ -2,6 +2,7 @@ import type {UnifiedReceiveStage} from '../../src/shielded/lnurl-receive.ts';
 
 export const PRIVATE_RECEIVE_RESTART_KEY='shielded-private-receive-restart-v1';
 export const PRIVATE_RECEIVE_RESTART_COOLDOWN_MS=120_000;
+export const PRIVATE_RECEIVE_STALL_MS=90_000;
 
 type StorageLike=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 type TransientWalletControls={
@@ -10,6 +11,7 @@ type TransientWalletControls={
  closeAbout:()=>void;
  closeRequest:()=>void;
  closeSecurity:()=>void;
+ closeStatus:()=>void;
 };
 
 const stages:UnifiedReceiveStage[]=[
@@ -41,10 +43,30 @@ export function clearPrivateReceiveRestart(storage:StorageLike){
  try{storage.removeItem(PRIVATE_RECEIVE_RESTART_KEY);}catch{}
 }
 
+type WatchdogTimer=ReturnType<typeof setTimeout>;
+type WatchdogTimers={set:(callback:()=>void,delay:number)=>WatchdogTimer;clear:(timer:WatchdogTimer)=>void};
+
+export function createProgressWatchdog(
+ timeoutMs:number,
+ onStall:()=>void,
+ timers:WatchdogTimers={set:(callback,delay)=>setTimeout(callback,delay),clear:timer=>clearTimeout(timer)},
+){
+ let timer:WatchdogTimer|undefined,stopped=false,revision=0;
+ const clear=()=>{revision++;if(timer!==undefined)timers.clear(timer);timer=undefined;};
+ return {
+  arm(){
+   if(stopped)return;clear();const mine=revision;
+   timer=timers.set(()=>{timer=undefined;if(!stopped&&mine===revision)onStall();},timeoutMs);
+  },
+  stop(){stopped=true;clear();},
+ };
+}
+
 export function dismissTransientWalletViews(controls:TransientWalletControls){
  controls.closeScanner();
  controls.closeSheet();
  controls.closeAbout();
  controls.closeRequest();
  controls.closeSecurity();
+ controls.closeStatus();
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,dismissTransientWalletViews,privateReceiveStageLabel} from '../app/src/wallet-recovery.ts';
+import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel} from '../app/src/wallet-recovery.ts';
 
 class MemoryStorage {
  private readonly values=new Map<string,string>();
@@ -26,6 +26,16 @@ test('private receive progress names its numbered setup step',()=>{
  assert.equal(privateReceiveStageLabel('Unified address ready'),'Step 5 of 5 · Unified address ready');
 });
 
+test('private receive stall timers restart from each observed progress step',()=>{
+ let scheduled:()=>void=()=>{},stalls=0;
+ const watchdog=createProgressWatchdog(60_000,()=>stalls++,{
+  set:callback=>{scheduled=callback;return {} as ReturnType<typeof setTimeout>;},
+  clear:()=>{scheduled=()=>{};},
+ });
+ watchdog.arm();const first=scheduled;watchdog.arm();first();assert.equal(stalls,0);scheduled();assert.equal(stalls,1);
+ watchdog.arm();const stopped=scheduled;watchdog.stop();stopped();assert.equal(stalls,1);
+});
+
 test('foreground recovery dismisses every transient wallet surface',()=>{
  const calls:string[]=[];
  dismissTransientWalletViews({
@@ -34,6 +44,7 @@ test('foreground recovery dismisses every transient wallet surface',()=>{
   closeAbout:()=>calls.push('about'),
   closeRequest:()=>calls.push('request'),
   closeSecurity:()=>calls.push('security'),
+ closeStatus:()=>calls.push('status'),
  });
- assert.deepEqual(calls,['scanner','sheet','about','request','security']);
+ assert.deepEqual(calls,['scanner','sheet','about','request','security','status']);
 });

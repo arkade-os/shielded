@@ -27,7 +27,7 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
-import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,dismissTransientWalletViews,privateReceiveStageLabel} from './wallet-recovery.ts';
+import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
@@ -125,15 +125,17 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    closeAbout:()=>setAboutOpen(false),
    closeRequest:()=>setRequestOpen(false),
    closeSecurity:()=>setSecurityView(null),
+   closeStatus:()=>sheetOwner.clear(),
  }),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
-   useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();sheetOwner.stop();},[closeTransient,suspended,viewActive,sheetOwner]);
+   useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
    useEffect(()=>{
     const visibility=()=>{if(document.visibilityState==='hidden'||document.visibilityState==='visible')closeTransient();};
-    const pageshow=()=>closeTransient();
+    const lifecycle=()=>closeTransient();
     document.addEventListener('visibilitychange',visibility);
-    addEventListener('pageshow',pageshow);
-    return()=>{document.removeEventListener('visibilitychange',visibility);removeEventListener('pageshow',pageshow);};
+    addEventListener('pagehide',lifecycle);addEventListener('pageshow',lifecycle);
+    addEventListener('freeze',lifecycle);addEventListener('resume',lifecycle);
+    return()=>{document.removeEventListener('visibilitychange',visibility);removeEventListener('pagehide',lifecycle);removeEventListener('pageshow',lifecycle);removeEventListener('freeze',lifecycle);removeEventListener('resume',lifecycle);};
    },[closeTransient]);
  useEffect(()=>{
   mounted.current=true;
@@ -283,7 +285,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
-  let activationTimer:ReturnType<typeof setTimeout>|undefined,startupTimer:ReturnType<typeof setTimeout>|undefined,autoRestartTimer:ReturnType<typeof setTimeout>|undefined;
+ let autoRestartTimer:ReturnType<typeof setTimeout>|undefined;
+ let stopReceiveWatchdogs=()=>{};
   const startController=new AbortController();
   unifiedStalledRef.current=false;setUnifiedStalled(false);setUnifiedStage('Starting the private Lightning service');
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createLnurlReceive>|undefined;
@@ -332,16 +335,20 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
       if(stillCurrent()&&!document.hidden)reload();
      },800);
     };
+   stopReceiveWatchdogs();
+   const startupWatchdog=createProgressWatchdog(PRIVATE_RECEIVE_STALL_MS,()=>restartStalled('Private receive did not finish starting.',()=>mounted.current&&!restoring.current&&!lnurlRef.current));
+   const activationWatchdog=createProgressWatchdog(PRIVATE_RECEIVE_STALL_MS,()=>restartStalled('Private receive stopped making progress.',()=>receiveCurrent(lnurl)));
+   stopReceiveWatchdogs=()=>{startupWatchdog.stop();activationWatchdog.stop();};
     const startLnurl=(service:ReturnType<typeof createLnurlReceive>)=>{
      if(!current())return;
-     if(startupTimer)clearTimeout(startupTimer);
+     startupWatchdog.stop();activationWatchdog.arm();
      lnurl=service;lnurlRef.current=service;
      void service.current().then(owned=>{if(owned&&current())showReceiver(service,owned);}).catch(error=>{if(receiveCurrent(service))lnFail(error);});
      const activate=async(attempt=0):Promise<void>=>{
       if(!receiveCurrent(service))return;
       try{
        const owned=await service.ensureUnified();
-       if(activationTimer)clearTimeout(activationTimer);
+       activationWatchdog.stop();
        if(current())showReceiver(service,owned);
       }catch(error){
        if(methodsFailure(error)&&receiveCurrent(service)){
@@ -349,23 +356,22 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
         if(owned&&current())showReceiver(service,owned);
        }
        if(!receiveCurrent(service))return;
-       if(unifiedAddressRef.current){if(activationTimer)clearTimeout(activationTimer);return;}
+       if(unifiedAddressRef.current){activationWatchdog.stop();return;}
        if(attempt<2){
+        activationWatchdog.arm();
         setLnError(`${errorText(error)} Retrying privately…`);
         setTimeout(()=>{void activate(attempt+1);},800*2**attempt);
-       }else{if(activationTimer)clearTimeout(activationTimer);lnFail(error);}
+       }else{activationWatchdog.stop();lnFail(error);}
       }
      };
-     activationTimer=setTimeout(()=>{
-      if(receiveCurrent(service)&&!unifiedAddressRef.current)restartStalled('Private receive is taking too long to activate.',()=>receiveCurrent(service));
-     },15_000);
      void activate();
      service.start(error=>{if(current()&&receiveCurrent(service))lnFail(error);});
     };
+   startupWatchdog.arm();
     starting=startPageLightning({
      pairing,
      swaps:(paired,signal)=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,signal,...(nativeHost?nativeSwapConfig():{})}),
-     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current)setUnifiedStage(stage);},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),shieldedAddress:()=>created!.shieldedAddress()}),
+     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current){startupWatchdog.stop();activationWatchdog.arm();setUnifiedStage(stage);}},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
@@ -373,9 +379,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      if(startingRef.current===starting)startingRef.current=undefined;
      if(!parts&&lnurlRef.current===lnurl)lnurlRef.current=undefined;
     });
-    startupTimer=setTimeout(()=>{
-     if(mounted.current&&!restoring.current&&!lnurlRef.current)restartStalled('Private receive did not finish starting.',()=>mounted.current&&!restoring.current&&!lnurlRef.current);
-    },15_000);
     return created;
    }catch(error){
     void pairing.then(c=>c.dispose()).catch(()=>{});
@@ -389,11 +392,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const finishClose=pageClose(async(closed:ReturnType<typeof session.close>)=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);});
   const close=()=>{
    startController.abort();
-   if(activationTimer)clearTimeout(activationTimer);
-   if(startupTimer)clearTimeout(startupTimer);
+   stopReceiveWatchdogs();
    if(autoRestartTimer)clearTimeout(autoRestartTimer);
-   activationTimer=undefined;
-   startupTimer=undefined;
    autoRestartTimer=undefined;
    const closed=session.close();for(const off of unwatch.splice(0))off();sheetOwner.stop();
    return finishClose(closed);

@@ -19,6 +19,7 @@ interface TorMonitorNetwork {
 export const TOR_CHECK_INTERVAL_MS=30_000;
 export const TOR_CHECK_RETRY_MS=5_000;
 export const TOR_CHECK_JITTER_MS=15_000;
+export const TOR_STATUS_FAILURE_LIMIT=3;
 
 export function createNativeTorMonitor(
  network:TorMonitorNetwork,
@@ -28,7 +29,7 @@ export function createNativeTorMonitor(
 ){
  type Probe={controller:AbortController;generation:number;started:number;attempt:number;deadline?:ReturnType<typeof setTimeout>};
  let health:NativeTorHealthState={status:{phase:'idle',generation:0},check:'idle'};
- let stopped=false,polling=false,revision=0,visible=isVisible(),probe:Probe|undefined,failures=0;
+ let stopped=false,polling=false,revision=0,visible=isVisible(),probe:Probe|undefined,failures=0,statusFailures=0;
  let scheduled:ReturnType<typeof setTimeout>|undefined;
  const publish=(value:NativeTorHealthState)=>{health=value;if(!stopped)onHealth(value);};
  const invalidate=()=>{
@@ -88,6 +89,7 @@ export function createNativeTorMonitor(
  }
  const accept=(status:NativeStatus)=>{
   if(stopped||!Number.isSafeInteger(status.generation)||status.generation<health.status.generation)return;
+ statusFailures=0;
   revision++;
   const changed=status.generation!==health.status.generation||status.phase!=='ready'||health.status.phase!=='ready';
   if(changed)failures=0;
@@ -100,9 +102,11 @@ export function createNativeTorMonitor(
   polling=true;const captured=revision;
   try{
    const status=await network.status();
-   if(!stopped&&foreground()&&captured===revision)accept(status);
+   if(!stopped&&foreground()&&captured===revision){statusFailures=0;accept(status);}
   }catch(error){
    if(!stopped&&foreground()&&captured===revision){
+    statusFailures++;
+    if(statusFailures<TOR_STATUS_FAILURE_LIMIT)return;
     revision++;invalidate();
     publish({status:{...health.status,phase:'error',error:'Network status unavailable'},check:'idle'});
     onStatusError(error);

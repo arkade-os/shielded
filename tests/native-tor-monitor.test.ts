@@ -135,15 +135,24 @@ test('a probe completing while hidden never publishes a connected result',async 
 test('a status IPC failure clears healthy evidence and reports the failure',async t=>{
  const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();assert.equal(f.latest().check,'ok');
  const pending=f.holdStatus();t.mock.timers.tick(1500);await flush();
- const error=new Error('native status unavailable');pending.reject(error);await flush();
+ const error=new Error('native status unavailable');pending.reject(error);await flush();assert.equal(f.latest().check,'ok');
+ t.mock.timers.tick(1500);await flush();t.mock.timers.tick(1500);await flush();
  assert.deepEqual(f.errors,[error]);assert.equal(f.latest().status.phase,'error');assert.equal(f.latest().check,'idle');
  assert.equal(f.latest().checkedAt,undefined);f.monitor.check();await flush();assert.equal(f.checks.length,1);
+});
+
+test('one transient status poll failure does not flash an unavailable Tor state',async t=>{
+ const f=fixture(t,{phase:'bootstrapping',generation:1,progress:'20%'});await flush();
+ const first=f.holdStatus();t.mock.timers.tick(1500);await flush();first.reject(new Error('IPC warming'));await flush();
+ assert.equal(f.latest().status.phase,'bootstrapping');assert.equal(f.errors.length,0);
+ f.emit({phase:'ready',generation:1});await flush();
+ assert.equal(f.latest().status.phase,'ready');assert.equal(f.latest().check,'checking');
 });
 
 test('a direct-mode status failure never relabels the connection as Tor',async t=>{
  const f=fixture(t,{phase:'ready',generation:2,mode:'direct'});await flush();
  const pending=f.holdStatus();t.mock.timers.tick(1500);await flush();
- pending.reject(new Error('IPC unavailable'));await flush();
+ pending.reject(new Error('IPC unavailable'));await flush();t.mock.timers.tick(1500);await flush();t.mock.timers.tick(1500);await flush();
  assert.equal(f.latest().status.mode,'direct');assert.equal(f.latest().status.phase,'error');
 });
 
