@@ -81,6 +81,7 @@ export function dismissTransientWalletViews(controls:TransientWalletControls){
  controls.closeSecurity();
 }
 
+/** Removes sheet locks left behind when a native background transition is interrupted. */
 export function clearNativeTransientDocument(root:DocumentRoot,inert:readonly InertNode[]=[]){
  root.classList.remove('native-sheet-open');
  root.style.removeProperty('overflow');

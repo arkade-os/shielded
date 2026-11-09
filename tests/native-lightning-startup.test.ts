@@ -86,17 +86,19 @@ test('native Lightning can bind its payouts without holding the unified address 
   f.releaseBoot();await bounded(manager.whenBooted());assert.ok(f.readScripts.size>=43);assert.equal(manager.getSyncState().mode,'online');
   const legacyScript=hex.encode(new DefaultVtxo.Script({pubKey:f.pubKey,serverPubKey:hex.decode(info.signerPubkey.slice(-64)),csvTimelock:{type:'seconds',value:BigInt(info.unilateralExitDelay)}}).pkScript);
    assert.ok(f.readScripts.has(legacyScript),'fixture actually read the default legacy funding script');
- }finally{
+}finally{
   active=false;f.releaseBoot();f.releasePayout();parts??=await start;
+ let disposalError:unknown;
   for(let i=0;i<10;i++){
-   try{await parts?.lnurl.dispose();break;}catch(error){if(i===9)throw error;await new Promise(resolve=>setTimeout(resolve,10));}
+   try{await parts?.lnurl.dispose();disposalError=undefined;break;}catch(error){disposalError=error;await new Promise(resolve=>setTimeout(resolve,10));}
   }
   await parts?.swaps[Symbol.asyncDispose]();await parts?.companion.dispose();f.indexer.retire();await journal[Symbol.asyncDispose]();
+ if(disposalError)throw disposalError;
  }
 });
 
 test('the default companion still waits for SDK HD look-ahead initialization',async()=>{
  const f=await fixture();let ready=false;const opening=createLightningWallet(f.secret,f.providers).then(wallet=>{ready=true;return wallet;});
- try{await bounded(f.bootEntered.promise);await new Promise(resolve=>setImmediate(resolve));assert.equal(ready,false);}
+ try{await bounded(f.bootEntered.promise,'first look-ahead read',5_000);await new Promise(resolve=>setImmediate(resolve));assert.equal(ready,false);}
  finally{f.releaseBoot();const wallet=await opening;await wallet.dispose();f.indexer.retire();}
 });

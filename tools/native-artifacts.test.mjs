@@ -39,6 +39,7 @@ test('artifact manifests hash actual packages and retain network, source and pro
   assert.equal(manifest.packages[0].sha256, createHash('sha256').update(bytes).digest('hex'));
   assert.equal(readFileSync(join(output, manifest.packages[0].file), 'utf8'), bytes);
   assert.match(readFileSync(join(output, 'SHA256SUMS'), 'utf8'), new RegExp(manifest.packages[0].sha256));
+  assert.match(readFileSync(join(output, 'README.txt'), 'utf8'), /CRLF\/CR normalized to LF/);
   assert.throws(() => collectNativeArtifacts(f.directory, 'windows-x86_64', 'release', commit), /must be empty/);
 });
 

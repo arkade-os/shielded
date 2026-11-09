@@ -28,6 +28,7 @@ export interface LnurlReceiveConfig {
   onStage?:(stage:UnifiedReceiveStage)=>void;
  onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
  onPayoutError?:(error:unknown)=>void;
+ onPayoutReady?:()=>void;
  watchStartupGraceMs?:number;
  shieldedAddress?:()=>string;
 }
@@ -159,16 +160,22 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(config.onPayouts)await dataWork(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
   }catch(error){watched=false;throw error;}
  };
+ /** Bounds payout startup while its watch continues in the background. */
  const watchWithGrace=async(rows:Destination[])=>{
+  if(!rows.length)return true;
   const pending=watch(rows);let timer:ReturnType<typeof setTimeout>|undefined;
   try{
    const settled=await Promise.race([
     pending.then(()=>true),
     new Promise<false>(resolve=>{timer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
    ]);
-   if(!settled){
+   if(settled){
+    try{config.onPayoutReady?.();}catch{}
+   }else{
     watched=false;
-    void pending.catch(error=>{
+    void pending.then(()=>{
+     if(!abort.signal.aborted)try{config.onPayoutReady?.();}catch{}
+    },error=>{
      if(abort.signal.aborted)return;
      try{config.onPayoutError?.(error);}catch{}
     });
@@ -176,6 +183,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    return settled;
   }finally{if(timer)clearTimeout(timer);}
  };
+ /** Restores payout watches without letting a stalled wallet service hold receive. */
  const restoreWatches=async(state:ReceiveState)=>{if(!watched)watched=await watchWithGrace(state.payouts);};
  const used=async(scripts:string[])=>new Set((await untilStopped(config.companion.indexerProvider.getVtxos({scripts}))).vtxos.map(coin=>coin.script));
  // Highest index from `from` on that ever held a coin; stops after `gap` unused ones.
@@ -188,11 +196,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   }
   return high;
  };
+ /** Adds recovered payout keys and starts their watches without blocking the address forever. */
  const adopt=async(state:ReceiveState,branch:ReturnType<typeof receiveBranch>,from:number,high:number)=>{
   const added:Destination[]=[];
   for(let index=from;index<=high;index++){const row=receiveDestination(branch,index);if(!state.payouts.some(p=>p.script===row.script)){state.payouts.push(row);added.push(row);}}
   state.next=Math.max(state.next,high+1);await save(state);await watchWithGrace(added);
  };
+ /** Persists and watches a fresh payout without blocking the address forever. */
  const advance=async(state:ReceiveState,server:ServerState)=>{
   const row=receiveDestination(await currentBranch(),state.next);
   state.next++;state.payouts.push(row);server.current=row.script;delete server.boundAt;
