@@ -21,7 +21,7 @@ export interface NativeRelease {
   version: string;
   publishedAt: string;
   releaseUrl: string;
-  environment: NativeBuildEnvironment;
+  environment?: NativeBuildEnvironment;
   packages: NativeReleasePackage[];
 }
 export interface NativeBuildEnvironment {
@@ -85,7 +85,11 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     return result;
   });
   for (const platform of NATIVE_PLATFORMS) for (const format of formats[platform]) if (!covered.has(`${platform}:${format}`)) throw new Error(`Incomplete native release: ${platform} ${format}`);
-  const environment = record(value.environment);
-  if (environment.node !== '24.22.2' || environment.rust !== '1.96.0' || !positive(environment.sourceDateEpoch) || typeof environment.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.lockfileSha256) || typeof environment.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.rustLockfileSha256)) throw new Error('Invalid native build environment');
-  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, environment: environment as unknown as NativeBuildEnvironment, packages };
+  let environment: NativeBuildEnvironment | undefined;
+  if (value.environment !== undefined) {
+    const candidate = record(value.environment);
+    if (candidate.node !== '24.22.2' || candidate.rust !== '1.96.0' || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
+    environment = candidate as unknown as NativeBuildEnvironment;
+  }
+  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages };
 }
