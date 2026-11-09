@@ -27,7 +27,7 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
-import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
+import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
@@ -130,7 +130,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
    useEffect(()=>{
-    const visibility=()=>{if(document.visibilityState==='hidden'||document.visibilityState==='visible')closeTransient();};
+    const visibility=()=>{if(document.visibilityState==='hidden')closeTransient();};
     const lifecycle=()=>closeTransient();
     document.addEventListener('visibilitychange',visibility);
     addEventListener('pagehide',lifecycle);addEventListener('pageshow',lifecycle);
@@ -332,7 +332,12 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      setUnifiedStage('Restarting private receive');
      setLnError(`${message} Restarting private receive automatically once.`);
      autoRestartTimer=setTimeout(()=>{
-      if(stillCurrent()&&!document.hidden)reload();
+     autoRestartTimer=undefined;
+     if(!stillCurrent())return;
+     restartWhenVisible(()=>document.hidden,reload,()=>{
+      setUnifiedStage('Private receive stalled');
+      setLnError(`${message} Use Restart private receive below.`);
+     });
      },800);
     };
    stopReceiveWatchdogs();

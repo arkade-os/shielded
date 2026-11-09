@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel} from '../app/src/wallet-recovery.ts';
+import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible} from '../app/src/wallet-recovery.ts';
 
 class MemoryStorage {
  private readonly values=new Map<string,string>();
@@ -34,6 +34,14 @@ test('private receive stall timers restart from each observed progress step',()=
  });
  watchdog.arm();const first=scheduled;watchdog.arm();first();assert.equal(stalls,0);scheduled();assert.equal(stalls,1);
  watchdog.arm();const stopped=scheduled;watchdog.stop();stopped();assert.equal(stalls,1);
+});
+
+test('an automatic restart deferred while hidden restores manual recovery instead of staying disabled',()=>{
+ let restarts=0,deferrals=0;
+ assert.equal(restartWhenVisible(()=>true,()=>restarts++,()=>deferrals++),false);
+ assert.deepEqual([restarts,deferrals],[0,1]);
+ assert.equal(restartWhenVisible(()=>false,()=>restarts++,()=>deferrals++),true);
+ assert.deepEqual([restarts,deferrals],[1,1]);
 });
 
 test('foreground recovery dismisses every transient wallet surface',()=>{

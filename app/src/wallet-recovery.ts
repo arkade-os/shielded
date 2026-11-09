@@ -31,6 +31,7 @@ export function privateReceiveStageLabel(stage:string){
 export function claimPrivateReceiveRestart(storage:StorageLike,now=Date.now()){
  try{
   const previous=Number(storage.getItem(PRIVATE_RECEIVE_RESTART_KEY));
+  // A future timestamp from a backwards clock must not hold recovery hostage.
   if(Number.isFinite(previous)&&previous>0&&now>=previous&&now-previous<PRIVATE_RECEIVE_RESTART_COOLDOWN_MS)return false;
   storage.setItem(PRIVATE_RECEIVE_RESTART_KEY,String(now));
   return true;
@@ -60,6 +61,11 @@ export function createProgressWatchdog(
   },
   stop(){stopped=true;clear();},
  };
+}
+
+export function restartWhenVisible(isHidden:()=>boolean,restart:()=>void,defer:()=>void){
+ if(isHidden()){defer();return false;}
+ restart();return true;
 }
 
 export function dismissTransientWalletViews(controls:TransientWalletControls){
