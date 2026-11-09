@@ -86,10 +86,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   });
  const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
- let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watchRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
+ let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,healthRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
  const pendingWrites=new Set<Promise<unknown>>();
  const knownScripts=new Set<string>(),watchedScripts=new Set<string>();
- const pendingWatches=new Map<string,{promise:Promise<void>;revision:number;background:boolean;scripts:string[]}>();
+ const pendingWatches=new Map<string,{promise:Promise<void>;background:boolean;scripts:string[]}>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
  const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
  const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
@@ -171,8 +171,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const key=eligible.map(row=>row.script).sort().join('|'),scripts=eligible.map(row=>row.script);
   let tracked=pendingWatches.get(key);
   if(!tracked){
-   const revision=++watchRevision,promise=watch(eligible).then(()=>{for(const script of scripts)watchedScripts.add(script);});
-   tracked={promise,revision,background:false,scripts};pendingWatches.set(key,tracked);
+   const promise=watch(eligible).then(()=>{for(const script of scripts)watchedScripts.add(script);});
+   tracked={promise,background:false,scripts};pendingWatches.set(key,tracked);
    const cleanup=()=>{if(pendingWatches.get(key)===tracked)pendingWatches.delete(key);};
    void promise.then(cleanup,cleanup);
   }
@@ -185,14 +185,14 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     new Promise<false>(resolve=>{graceTimer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
    ]);
    if(settled){
-    if(ready())try{config.onPayoutReady?.(owner.revision);}catch{}
+    if(ready())try{config.onPayoutReady?.(++healthRevision);}catch{}
    }else if(!owner.background){
     owner.background=true;
     void owner.promise.then(()=>{
-     if(!abort.signal.aborted&&ready())try{config.onPayoutReady?.(owner.revision);}catch{}
+     if(!abort.signal.aborted&&ready())try{config.onPayoutReady?.(++healthRevision);}catch{}
     },error=>{
      if(abort.signal.aborted)return;
-     try{config.onPayoutError?.(error,owner.revision);}catch{}
+     try{config.onPayoutError?.(error,++healthRevision);}catch{}
     });
    }
    return settled;
