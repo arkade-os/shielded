@@ -1,4 +1,5 @@
 type DatabaseFactory=Pick<IDBFactory,'deleteDatabase'> & Partial<Pick<IDBFactory,'databases'>>;
+export const RESET_PENDING='shielded-native-reset-pending-v1';
 
 function deleteDatabase(factory:DatabaseFactory,name:string,blockedAfterMs:number,onBlocked?:()=>void){
  return new Promise<void>((resolve,reject)=>{
@@ -23,11 +24,14 @@ export async function clearNativeWalletData(
   onBlocked?:()=>void;
  }={},
 ){
+ storage.setItem(RESET_PENDING,'1');
  const databases=typeof indexedDB?.databases==='function'?await indexedDB.databases():[];
  const names=[...new Set(databases.map(database=>database.name).filter((name):name is string=>!!name&&name.startsWith('shielded-')))].sort();
  if(indexedDB&&!names.length)names.push('shielded-rollup','shielded-lightning');
  // Keep the vault secret until every database delete settles, so a partial reset stays recoverable.
  for(const name of names)await deleteDatabase(indexedDB!,name,blockedAfterMs,onBlocked);
  storage.clear();
+ storage.setItem(RESET_PENDING,'1');
  await deleteSecret();
+ storage.removeItem(RESET_PENDING);
 }

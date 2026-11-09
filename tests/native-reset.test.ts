@@ -4,6 +4,8 @@ import {clearNativeWalletData} from '../app/src/native-reset.ts';
 
 const storageOf=(events:string[]) => ({
  clear(){events.push('storage');},
+ setItem(key:string){events.push(`set:${key}`);},
+ removeItem(key:string){events.push(`remove:${key}`);},
 }) as unknown as Storage;
 
 test('clearing a native wallet removes only its databases and storage before deleting the vault secret',async()=>{
@@ -16,7 +18,7 @@ test('clearing a native wallet removes only its databases and storage before del
   },
  } as unknown as IDBFactory;
  await clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory});
- assert.deepEqual(events,['database:shielded-lightning-example','database:shielded-rollup','storage','vault']);
+ assert.deepEqual(events,['set:shielded-native-reset-pending-v1','database:shielded-lightning-example','database:shielded-rollup','storage','set:shielded-native-reset-pending-v1','vault','remove:shielded-native-reset-pending-v1']);
 });
 
 test('a blocked database keeps the reset pending until deletion succeeds',async()=>{
@@ -36,9 +38,9 @@ test('a blocked database keeps the reset pending until deletion succeeds',async(
  const clearing=clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory});let settled=false;
  void clearing.finally(()=>{settled=true;});
  await new Promise(resolve=>setImmediate(resolve));blocked?.();await new Promise(resolve=>setImmediate(resolve));
- assert.equal(settled,false);assert.deepEqual(events,[]);
+ assert.equal(settled,false);assert.deepEqual(events,['set:shielded-native-reset-pending-v1']);
  success?.();await clearing;
- assert.deepEqual(events,['storage','vault']);
+ assert.deepEqual(events,['set:shielded-native-reset-pending-v1','storage','set:shielded-native-reset-pending-v1','vault','remove:shielded-native-reset-pending-v1']);
 });
 
 test('a blocked database stays in the clearing state until deletion eventually settles',async()=>{
@@ -57,9 +59,9 @@ test('a blocked database stays in the clearing state until deletion eventually s
  const clearing=clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory,blockedAfterMs:20,onBlocked:()=>{notified++;}});
  let settled=false;void clearing.finally(()=>{settled=true;});
  await new Promise(resolve=>setTimeout(resolve,40));
- assert.deepEqual([settled,notified,events],[false,1,[]]);
+ assert.deepEqual([settled,notified,events],[false,1,['set:shielded-native-reset-pending-v1']]);
  success?.();await clearing;
- assert.deepEqual(events,['storage','vault']);
+ assert.deepEqual(events,['set:shielded-native-reset-pending-v1','storage','set:shielded-native-reset-pending-v1','vault','remove:shielded-native-reset-pending-v1']);
 });
 
 test('a blocked deletion never removes storage or the vault after its notice deadline',async()=>{
@@ -71,6 +73,6 @@ test('a blocked deletion never removes storage or the vault after its notice dea
  const clearing=clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory,blockedAfterMs:20,onBlocked:()=>{notified++;}});
  void clearing.finally(()=>{settled=true;});
  await new Promise(resolve=>setTimeout(resolve,40));
- assert.deepEqual(events,[]);
+ assert.deepEqual(events,['set:shielded-native-reset-pending-v1']);
  assert.deepEqual([settled,notified],[false,1]);
 });

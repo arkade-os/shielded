@@ -103,7 +103,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const waitForStartup=<T>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
   if(!signal)return void work.then(resolve,reject);
   const stopped=()=>reject(new Error('Lightning startup was cancelled'));
-  if(signal.aborted)return stopped();
+  if(signal.aborted){void work.catch(()=>{});return stopped();}
   signal.addEventListener('abort',stopped,{once:true});
   work.then(value=>{signal.removeEventListener('abort',stopped);resolve(value);},error=>{signal.removeEventListener('abort',stopped);reject(error);});
  });
@@ -158,6 +158,11 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   return [...rows.values()].sort((a,b)=>b.createdAt-a.createdAt);
  };
  const close=(session:Session)=>session.closing??=(async()=>{await session.funding?.catch(()=>{});await session.retiring?.catch(()=>{});session.off();await session.client[Symbol.asyncDispose]();await session.repository[Symbol.asyncDispose]?.();await session.release();sessions.delete(session.artifact.id);})();
+ const acquireStartupSession=async(name:string)=>{
+  const work=acquireSession(name);
+  try{return await waitForStartup(work);}
+  catch(error){if(signal?.aborted)void work.then(release=>release(),()=>{}).catch(()=>{});throw error;}
+ };
  const bind=(session:Session)=>{session.off=session.client.onUpdate(update=>{
   forward(update);if(!terminal.has(update.outcome)||session.artifact.state!=='accepted'||session.retiring)return;
   const retiring=(async()=>{
@@ -198,8 +203,9 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    shielding.set(outpoint,task);wallet.changed();void task.catch(report).finally(()=>{shielding.delete(outpoint);shieldingControllers.delete(outpoint);wallet.changed();});
   }
  };
- const validatePayouts=async(records:LightningPayout[])=>{
-  assertOpen();const manager=await companion.getContractManager(),contracts=await manager.getContracts();
+ const validatePayouts=async(records:LightningPayout[],startupSignal?:AbortSignal)=>{
+  assertOpen();const manager=await waitForStartup(companion.getContractManager()),contracts=await waitForStartup(manager.getContracts());
+  if(startupSignal?.aborted)throw new Error('Lightning startup was cancelled');
   const scripts:DefaultVtxo.Script[]=[];
   for(const record of records){
    const contract=contracts.find(c=>c.script===record.script),pubKey=deriveDescriptorLeafPubKey(record.descriptor);
@@ -235,19 +241,20 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   stopShielding:async outpoint=>{shieldingControllers.get(outpoint)?.abort();await shielding.get(outpoint)?.catch(()=>{});},
   reconcileShielding:outpoint=>wallet.reconcileLightningPayout(outpoint,journal),changed:()=>wallet.changed(),report});
  const registerPayouts=async(records:LightningPayout[],rescan=true,signal?:AbortSignal)=>{
-  const stopped=()=>{if(signal?.aborted)throw new Error('Private Lightning service is closed');};
-  stopped();await validatePayouts(records);stopped();const manager=await companion.getContractManager();stopped();
-  await journal.savePayouts(owner,pool,records);stopped();
+  const assertActive=()=>{if(stopped||signal?.aborted)throw new Error('Private Lightning service is closed');};
+  assertActive();await validatePayouts(records,signal);assertActive();const manager=await waitForStartup(companion.getContractManager());assertActive();
+  await waitForStartup(journal.savePayouts(owner,pool,records));assertActive();
   // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
-  for(const record of records){await manager.setContractWatchState(record.script,'watched');stopped();payouts.set(record.script,record);}
+  for(const record of records){await waitForStartup(manager.setContractWatchState(record.script,'watched'));assertActive();payouts.set(record.script,record);}
   wallet.changed();
   if(rescan)await scan();
  };
- const watchArtifact=async(artifact:LightningArtifact)=>{
+ const watchArtifact=async(artifact:LightningArtifact,startupSignal?:AbortSignal)=>{
   if(!artifact.descriptor||!artifact.address||!artifact.script||!artifact.serverPubKey||!artifact.csvTimelock)throw new Error('Incomplete saved Lightning artifact');
-  const pubKey=deriveDescriptorLeafPubKey(artifact.descriptor),manager=await companion.getContractManager();
-  await manager.createContract({type:'default',script:artifact.script,address:artifact.address,watch:'watched',
-   params:{pubKey:hex.encode(pubKey),serverPubKey:artifact.serverPubKey,csvTimelock:artifact.csvTimelock},metadata:{signingDescriptor:artifact.descriptor}});
+  const pubKey=deriveDescriptorLeafPubKey(artifact.descriptor),manager=await waitForStartup(companion.getContractManager());
+  await waitForStartup(manager.createContract({type:'default',script:artifact.script,address:artifact.address,watch:'watched',
+   params:{pubKey:hex.encode(pubKey),serverPubKey:artifact.serverPubKey,csvTimelock:artifact.csvTimelock},metadata:{signingDescriptor:artifact.descriptor}}));
+  if(startupSignal?.aborted)throw new Error('Lightning startup was cancelled');
   return {id:artifact.id,descriptor:artifact.descriptor,address:artifact.address,script:artifact.script};
  };
  /** A never-reused key for one on-chain exit: saved and watched before the caller withdraws, so a crash mid-exit still finds the payout. */
@@ -376,9 +383,9 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
     if(stopped||signal?.aborted)return;
    if(artifact.kind==='exit'||unopenable.has(artifact.id))continue;
    // A swap a sibling started after this tab did, even one that has ended, has no payout watch here yet, so its payout would never be shielded.
-    if(artifact.descriptor&&!payouts.has(artifact.script!))try{await waitForStartup(registerPayouts([await waitForStartup(watchArtifact(artifact))],false));}catch(error){if(!unwatched.has(artifact.id)){unwatched.add(artifact.id);report(error);}continue;}
+    if(artifact.descriptor&&!payouts.has(artifact.script!))try{await waitForStartup(registerPayouts([await waitForStartup(watchArtifact(artifact,signal))],false,signal));}catch(error){if(!unwatched.has(artifact.id)){unwatched.add(artifact.id);report(error);}continue;}
    if(artifact.state!=='accepted'||sessions.has(artifact.id))continue;
-    const session=await waitForStartup(open(artifact)).catch(error=>{const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
+    const pendingOpen=open(artifact),session=await waitForStartup(pendingOpen).catch(error=>{if(signal?.aborted)void pendingOpen.then(opened=>close(opened),()=>{}).catch(()=>{});const busy=error instanceof LightningSessionBusy;if(!busy)unopenable.add(artifact.id);if(!busy||startup)report(error);});
    if(!session)continue;
    if(stopped){await close(session);return;}
     try{await waitForStartup(startSession(session));}catch(error){unopenable.add(artifact.id);await close(session);if(startup)throw error;report(error);}
@@ -386,20 +393,20 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  };
  try{
    const artifacts=await waitForStartup(journal.artifacts(owner,pool)),restoredPayouts=await waitForStartup(journal.payouts(owner,pool));
-  for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
-   await waitForStartup(registerPayouts(restoredPayouts));
+   for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact,signal));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
+   await waitForStartup(registerPayouts(restoredPayouts,true,signal));
    taking=takeOver(true);await waitForStartup(taking);
   for(const artifact of artifacts){
    if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
     try{
-      const release=await waitForStartup(acquireSession(`${namespace}-${artifact.id}`));
+      const release=await acquireStartupSession(`${namespace}-${artifact.id}`);
       try{const repository=repositoryFor(`${namespace}-${artifact.id}`);try{await waitForStartup(repairReceipt(artifact,repository));}finally{await repository[Symbol.asyncDispose]?.();}}
      finally{await release();}
     }catch{report(new Error('A saved Lightning receipt is unavailable; it remains unchanged.'));}
    }
   }
   if(legacyRecovery){
-    const address=await waitForStartup(wallet.getAddress());releaseLegacy=await waitForStartup(acquireSession(`shielded-lightning-legacy-${address}`)).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
+    const address=await waitForStartup(wallet.getAddress());releaseLegacy=await acquireStartupSession(`shielded-lightning-legacy-${address}`).catch(error=>{if(!(error instanceof LightningSessionBusy))report(error);return undefined;});
    if(releaseLegacy){
     legacyRepository=repositoryFor(`shielded-swaps-${address}`);
     const legacyView=new Proxy(wallet,{get(target,key){if(key==='send')return async()=>{throw new Error('Legacy Lightning funding is disabled');};const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}});

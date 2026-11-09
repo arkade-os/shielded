@@ -42,6 +42,11 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
   return()=>{removeEventListener('pointerdown',outside);removeEventListener('keydown',key);};
  },[open]);
  useEffect(()=>{
+  if(!open)return;
+  const frame=requestAnimationFrame(()=>panel.current?.querySelector<HTMLButtonElement>('[role=switch]')?.focus({preventScroll:true}));
+  return()=>cancelAnimationFrame(frame);
+ },[open]);
+ useEffect(()=>{
   if(typeof document==='undefined')return;
   const root=document.documentElement,sync=()=>{if(root.classList.contains('native-sheet-open'))setOpen(false);};
   sync();const observer=new MutationObserver(sync);observer.observe(root,{attributes:true,attributeFilter:['class']});

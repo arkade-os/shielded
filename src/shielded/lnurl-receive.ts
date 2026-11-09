@@ -80,11 +80,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   });
  const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
- let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,offEvents:(()=>void)|undefined;
+ let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
+ const pendingWrites=new Set<Promise<unknown>>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
+ const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
  const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
  const migrate=async(state:ReceiveState)=>{
-  const legacy=await config.journal.getReceiveState<LegacyState>(config.owner,config.pool,`lnurl-hd-v1:${serverKey}`);
+  const legacy=await dataWork(config.journal.getReceiveState<LegacyState>(config.owner,config.pool,`lnurl-hd-v1:${serverKey}`));
   if(!legacy)return;
   if(legacy.v!==1||!Array.isArray(legacy.receivers)||!Array.isArray(legacy.payouts))throw new Error('Invalid local HD receive state');
   state.servers[serverKey]={receivers:legacy.receivers,migrated:true,...(legacy.pending?{pending:legacy.pending}:{})};
@@ -96,15 +98,15 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  };
  // Migration stays unsaved until the next serialized write, so read paths never race one.
  const load=async()=>{
-  const state=await config.journal.getReceiveState<ReceiveState>(config.owner,STATE_POOL,STATE_KEY)??{v:1,next:0,payouts:[],servers:{}};
+  const state=await dataWork(config.journal.getReceiveState<ReceiveState>(config.owner,STATE_POOL,STATE_KEY))??{v:1,next:0,payouts:[],servers:{}};
   if(state.v!==1||!Number.isSafeInteger(state.next)||state.next<0||!Array.isArray(state.payouts)||!state.servers||typeof state.servers!=='object')throw new Error('Invalid local Lightning receive state');
   if(!state.servers[serverKey])await migrate(state);
   return state;
  };
- const save=(state:ReceiveState)=>config.journal.saveReceiveState(config.owner,STATE_POOL,STATE_KEY,state);
+ const save=(state:ReceiveState)=>dataWork(config.journal.saveReceiveState(config.owner,STATE_POOL,STATE_KEY,state));
  const account=()=>{const descriptor=(config.companion.identity as Identity&{descriptor?:string}).descriptor;if(!descriptor)throw new Error('Private Lightning receive requires an HD companion');return descriptor;};
  const currentBranch=async()=>{
-  const info=await config.companion.getArkadeInfo({requireLive:true}),hrp=config.companion.network.hrp;
+  const info=await dataWork(config.companion.getArkadeInfo({requireLive:true})),hrp=config.companion.network.hrp;
   if((hrp!=='ark'&&hrp!=='tark')||networkFromArkadeInfo(info).hrp!==hrp)throw new Error('HD receive operator network mismatch');
   if(!/^(0[23])?[0-9a-f]{64}$/i.test(info.signerPubkey)||info.unilateralExitDelay>0xffffffffn||info.unilateralExitDelay<0n)throw new Error('Invalid HD receive operator script settings');
   const delay=info.unilateralExitDelay;
@@ -141,19 +143,19 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const watch=async(rows:Destination[])=>{
   if(!rows.length)return;
   try{
-   const manager=await untilStopped(config.companion.getContractManager());
+   const manager=await dataWork(config.companion.getContractManager());
    for(const row of rows)if(row.params){
-    try{await untilStopped(manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params,metadata:{signingDescriptor:row.descriptor}}));}
+    try{await dataWork(manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params,metadata:{signingDescriptor:row.descriptor}}));}
     catch(error){if(abort.signal.aborted)throw error;const failed=failedContractWatches.get(config.companion)??new Set<string>();failed.add(row.script);failedContractWatches.set(config.companion,failed);throw error;}
     // A failed create can persist before attaching; a later create then returns that row without attaching it.
     const failed=failedContractWatches.get(config.companion);
-    if(failed?.has(row.script)){await untilStopped(manager.updateContract(row.script,{}));failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
+    if(failed?.has(row.script)){await dataWork(manager.updateContract(row.script,{}));failed.delete(row.script);if(!failed.size)failedContractWatches.delete(config.companion);}
    }
-   if(config.onPayouts)await untilStopped(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
+   if(config.onPayouts)await dataWork(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
   }catch(error){watched=false;throw error;}
  };
  const restoreWatches=async(state:ReceiveState)=>{if(!watched){await watch(state.payouts);watched=true;}};
- const used=async(scripts:string[])=>new Set((await config.companion.indexerProvider.getVtxos({scripts})).vtxos.map(coin=>coin.script));
+ const used=async(scripts:string[])=>new Set((await untilStopped(config.companion.indexerProvider.getVtxos({scripts}))).vtxos.map(coin=>coin.script));
  // Highest index from `from` on that ever held a coin; stops after `gap` unused ones.
  const scan=async(branch:ReturnType<typeof receiveBranch>,from:number,gap:number)=>{
   let high=from-1;
@@ -317,8 +319,12 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(timer||disposed||abort.signal.aborted)return;
    const poll=()=>{if(timerBusy)return;timerBusy=true;void check().catch(error=>{if(!disposed)onError(error);}).finally(()=>{timerBusy=false;});};
    timer=setInterval(poll,CHECK_EVERY_MS);poll();
-   void untilStopped(config.companion.getContractManager()).then(manager=>{const off=manager.onContractEvent(event=>{if(event.type==='vtxo_received')poll();});if(disposed)off();else offEvents=off;}).catch(error=>{if(!disposed)onError(error);});
+   void dataWork(config.companion.getContractManager()).then(manager=>{const off=manager.onContractEvent(event=>{if(event.type==='vtxo_received')poll();});if(disposed)off();else offEvents=off;}).catch(error=>{if(!disposed&&!abort.signal.aborted)onError(error);});
   },
-  async dispose(){disposed=true;if(timer)clearInterval(timer);timer=undefined;offEvents?.();config.signal?.removeEventListener('abort',stop);abort.abort();await tail;},
+  async dispose(){
+   disposed=true;if(timer)clearInterval(timer);timer=undefined;offEvents?.();config.signal?.removeEventListener('abort',stop);abort.abort();
+   closing??=(async()=>{await tail;if(pendingWrites.size)throw new Error('Wallet data is still finishing; reopen Shielded and retry the reset.');})().catch(error=>{closing=undefined;throw error;});
+   await closing;
+  },
  };
 }
