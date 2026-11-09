@@ -63,6 +63,14 @@ test('public packages keep their signing requirements and exact build identity v
  assert.doesNotMatch(html,/href=""|\/actions\/|releases\/latest|uninstall|disable Gatekeeper|xattr/);
 });
 
+test('a legacy release remains downloadable and says its reproducibility metadata predates the current channel',()=>{
+  const {environment:_,...legacy}=release, parsed=parseNativeRelease({...legacy,buildNumber:37}), html=render(parsed);
+  assert.match(html,/This older release predates reproducible build metadata/);
+  assert.match(html,/class="nd-download"/);
+  for(const item of parsed.packages)assert.ok(html.includes(`SHA-256 ${item.sha256}`),item.file);
+  assert.doesNotMatch(html,/Downloads are unavailable right now/);
+});
+
 test('the landing page offers visible download anchors and retains the web wallet',()=>{
  const html=renderToStaticMarkup(createElement(ShieldedHome));
  assert.match(html,/class="sh-download-nav" href="#download">Download/);

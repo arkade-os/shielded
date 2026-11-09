@@ -10,11 +10,19 @@ test('native manifest accepts complete immutable Mutinynet downloads and strips 
   assert.equal('unknown' in parsed, false);
 });
 
+test('native manifest keeps the last published release installable before reproducibility metadata existed', () => {
+  const { environment: _, ...legacy } = release(), parsed = parseNativeRelease({ ...legacy, buildNumber: 37 });
+  assert.equal(parsed.buildNumber, 37);
+  assert.equal('environment' in parsed, false);
+  assert.throws(() => parseNativeRelease({ ...legacy, buildNumber: 38 }), /Missing native build environment/);
+});
+
 test('native manifest rejects incorrect channel, identity, timestamps and oversized packages', () => {
   for (const change of [
     { schema: 2 }, { channel: 'latest' }, { network: 'bitcoin' }, { commit: 'A'.repeat(40) },
     { buildNumber: 0 }, { buildNumber: Number.MAX_SAFE_INTEGER + 1 }, { version: 'unversioned' },
     { publishedAt: 'yesterday' }, { publishedAt: '2026-02-30T00:00:00Z' },
+    { environment: null }, { environment: {} },
   ]) assert.throws(() => parseNativeRelease({ ...release(), ...change }));
   for (const change of [{ bytes: 0 }, { bytes: NATIVE_PACKAGE_MAX_BYTES + 1 }, { sha256: 'B'.repeat(64) }, { sha256: 'bad' }]) {
     const input = release(); Object.assign(input.packages[0], change);

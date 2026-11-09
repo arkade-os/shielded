@@ -1,6 +1,7 @@
 export const NATIVE_RELEASE_ENDPOINT = '/api/native/releases';
 export const NATIVE_RELEASE_MANIFEST_URL = 'https://raw.githubusercontent.com/arkade-os/shielded/native-mutinynet/latest.json';
 export const NATIVE_RELEASE_ORIGIN = 'https://shielded.mutinynet.arkade.sh';
+const FIRST_REPRODUCIBLE_BUILD = 38;
 
 export type NativePlatform = 'windows-x86_64' | 'linux-x86_64' | 'macos-universal' | 'android-arm64' | 'ios';
 export interface NativeReleasePackage {
@@ -21,7 +22,7 @@ export interface NativeRelease {
   version: string;
   publishedAt: string;
   releaseUrl: string;
-  environment: NativeBuildEnvironment;
+  environment?: NativeBuildEnvironment;
   packages: NativeReleasePackage[];
 }
 export interface NativeBuildEnvironment {
@@ -59,6 +60,7 @@ function packageFormat(item: NativeReleasePackage): string {
   return formats[item.platform].find(format => item.file.endsWith(format)) ?? '';
 }
 
+/** Validate the public release channel without trusting extra manifest data. */
 export function parseNativeRelease(input: unknown): NativeRelease {
   const value = record(input);
   if (value.schema !== 1 || value.channel !== 'native-mutinynet' || value.network !== 'mutinynet') throw new Error('Invalid native release channel or network');
@@ -85,7 +87,13 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     return result;
   });
   for (const platform of NATIVE_PLATFORMS) for (const format of formats[platform]) if (!covered.has(`${platform}:${format}`)) throw new Error(`Incomplete native release: ${platform} ${format}`);
-  const environment = record(value.environment);
-  if (environment.node !== '24.22.2' || environment.rust !== '1.96.0' || !positive(environment.sourceDateEpoch) || typeof environment.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.lockfileSha256) || typeof environment.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.rustLockfileSha256)) throw new Error('Invalid native build environment');
-  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, environment: environment as unknown as NativeBuildEnvironment, packages };
+  let environment: NativeBuildEnvironment | undefined;
+  if (value.environment === undefined) {
+    if (value.buildNumber >= FIRST_REPRODUCIBLE_BUILD) throw new Error('Missing native build environment');
+  } else {
+    const candidate = record(value.environment);
+    if (candidate.node !== '24.22.2' || candidate.rust !== '1.96.0' || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
+    environment = candidate as unknown as NativeBuildEnvironment;
+  }
+  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages };
 }
