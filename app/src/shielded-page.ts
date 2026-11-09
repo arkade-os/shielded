@@ -213,27 +213,36 @@ export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof
 }
 
 export function pageSheet(render:(state:StepState|undefined)=>void){
- type Owner={current:()=>boolean;update:(change:(current:StepState)=>StepState)=>void;fail:(error:unknown)=>void};
- let generation=0,off=()=>{},state:StepState|undefined;
+ type Owner={current:()=>boolean;update:(change:(current:StepState)=>StepState)=>void;fail:(error:unknown)=>void;dismiss:()=>void;attach:(off:()=>void)=>void};
+ let generation=0,active:Owner|undefined,state:StepState|undefined;
  const watched=new WeakMap<PaymentHandle,Owner>();
  function begin(title:string):Owner{
-  off();off=()=>{};const mine=++generation;
-  const update=(change:(current:StepState)=>StepState)=>{if(mine===generation){state=change(state??{title,steps:['Start','Done'],current:0});render(state);}};
+  let off=()=>{},dismissed=false;active?.attach(()=>{});const mine=++generation;
+  const publish=(next:StepState,terminal:boolean)=>{if(dismissed&&!terminal)return;state=next;render(next);};
+  const update=(change:(current:StepState)=>StepState)=>{
+   if(mine!==generation)return;
+   const next=change(state??{title,steps:['Start','Done'],current:0});
+   publish(next,!!next.done||!!next.error);
+  };
   state=undefined;
-  return {current:()=>mine===generation,update,fail:(error:unknown)=>update(s=>({...s,error:errorText(error)}))};
+  const owner:Owner={current:()=>mine===generation,update,fail:(error:unknown)=>update(s=>({...s,error:errorText(error)})),
+   dismiss(){if(mine!==generation)return;dismissed=true;state=undefined;render(undefined);},
+   attach(next){off();off=next;}};
+  active=owner;
+  return owner;
  }
  return {
   begin,
   watch(next:PaymentHandle,title:string){
    const previous=watched.get(next);if(previous)return previous;
    const selected=begin(title);watched.set(next,selected);
-   off=watchHandle(next,title,s=>selected.update(()=>s));
+   selected.attach(watchHandle(next,title,s=>selected.update(()=>s)));
    // StepState keeps only the message, and a handle the wallet started (auto-shield) has no run() to word its failure.
    if(isShieldedHandle(next))void next.settled().catch(error=>{if(pausedErrorText(error))selected.fail(error);});
    return selected;
   },
-  clear(){generation++;off();off=()=>{};state=undefined;render(undefined);},
-  stop(){generation++;off();off=()=>{};},
+  clear(){active?.dismiss();},
+  stop(){generation++;active?.attach(()=>{});active=undefined;state=undefined;},
  };
 }
 

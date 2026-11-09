@@ -66,7 +66,29 @@ test('direct mode always shows its warning and never claims Tor connectivity',()
 test('switching disables the control and direct failures keep direct-mode copy',()=>{
  const html=render({status:{phase:'ready',generation:2,mode:'direct'},check:'failed',error:'Service unavailable'},true);
  assert.match(html,/role="switch" aria-checked="false" disabled=""/);
- assert.match(html,/direct connection check failed/);
+ assert.match(html,/wallet-service check failed through the direct connection/i);
  assert.match(html,/Service unavailable/);
  assert.doesNotMatch(html,/Tor check failed|through Tor|Separate Tor scopes/);
+});
+
+test('a ready Tor transport distinguishes a failed service probe from a bootstrap failure',(t)=>{
+ t.mock.timers.enable({apis:['Date'],now:0});
+ const html=render({status:{phase:'bootstrapping',generation:2,progress:'42%'},check:'idle'});
+ assert.match(html,/Building Tor circuits/);
+ assert.match(html,/42%/);
+ assert.match(html,/The first connection can take a minute/);
+ const checking=render({status:{phase:'ready',generation:2},check:'checking',attempt:2});
+ assert.match(checking,/Verifying private route · try 2/);
+ const firstFailure=render({status:{phase:'ready',generation:2},check:'failed',attempt:1,retryAt:5_000,error:'Service unavailable'});
+ assert.match(firstFailure,/data-health="connecting"/);
+ assert.match(firstFailure,/Tor connected · retrying service check/);
+ assert.match(firstFailure,/in about 5s automatically while Tor stays on/i);
+ const failed=render({status:{phase:'ready',generation:2},check:'failed',attempt:2,retryAt:5_000,error:'Service unavailable'});
+ assert.match(failed,/data-health="error"/);
+ assert.match(failed,/Private route unavailable · retrying/);
+ assert.match(failed,/in about 5s automatically while Tor stays on/i);
+ assert.match(failed,/Service unavailable/);
+ t.mock.timers.tick(6_000);
+ const overdue=render({status:{phase:'ready',generation:2},check:'failed',attempt:2,retryAt:5_000,error:'Service unavailable'});
+ assert.doesNotMatch(overdue,/in about/i);
 });

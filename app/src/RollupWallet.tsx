@@ -27,6 +27,7 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
+import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
@@ -43,6 +44,7 @@ const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Time unknown';
 const canShare=typeof navigator!=='undefined'&&typeof navigator.share==='function';
+const receiveRecoveryStorage=()=>{try{return globalThis.sessionStorage;}catch{return undefined;}};
 /** A value to copy; with `qr` it can also show that payload as a QR code and hand the value to the system share sheet. */
 function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
  const [shown,setShown]=useState(false),[whole,setWhole]=useState(false),compact=shortValue(value);
@@ -94,7 +96,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const dockLens=useRef<HTMLSpanElement>(null),mainLens=useRef<HTMLSpanElement>(null),panelLens=useRef<HTMLSpanElement>(null);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
- const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
+ const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[unifiedStage,setUnifiedStage]=useState('Reading your saved receiver'),[unifiedStalled,setUnifiedStalled]=useState(false),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
+ const [pageVisible,setPageVisible]=useState(()=>!document.hidden);
  const [lnBoundsError,setLnBoundsError]=useState('');
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -109,7 +112,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
  const refreshRef=useRef<{request:()=>void}|undefined>(undefined);
- const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined);
+ const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false);
  const actions=useRef<ReturnType<typeof pageActions>|undefined>(undefined);
  actions.current??=pageActions(()=>{if(mounted.current)setTick(t=>t+1);});
  const refreshes=useRef(new WeakMap<object,{close:()=>Promise<void>}>());
@@ -117,9 +120,25 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  if(!sheetRef.current)sheetRef.current=pageSheet(setSheet);
  const sheetOwner=sheetRef.current;
 
+  const closeTransient=useCallback(()=>dismissTransientWalletViews({
+   closeSheet:()=>setSheetOpen(false),
+   closeScanner:()=>setScanning(false),
+   closeAbout:()=>setAboutOpen(false),
+   closeRequest:()=>setRequestOpen(false),
+   closeSecurity:()=>setSecurityView(null),
+ }),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
- useEffect(()=>{if(suspended)setScanning(false);},[suspended]);
- useEffect(()=>{if(suspended||!viewActive)setAboutOpen(false);},[suspended,viewActive]);
+   useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
+   useEffect(()=>{
+    setPageVisible(!document.hidden);
+    const visibility=()=>{const visible=!document.hidden;setPageVisible(visible);if(!visible)closeTransient();};
+    const hidden=()=>{setPageVisible(false);closeTransient();};
+    const visible=()=>{setPageVisible(true);closeTransient();};
+    document.addEventListener('visibilitychange',visibility);
+    addEventListener('pagehide',hidden);addEventListener('freeze',hidden);
+    addEventListener('pageshow',visible);addEventListener('resume',visible);
+    return()=>{document.removeEventListener('visibilitychange',visibility);removeEventListener('pagehide',hidden);removeEventListener('freeze',hidden);removeEventListener('pageshow',visible);removeEventListener('resume',visible);};
+   },[closeTransient]);
  useEffect(()=>{
   mounted.current=true;
   onShutdown?.(async()=>{restoring.current=true;mounted.current=false;await Promise.all([...sessions.current].map(close=>close()));await cacheRef.current?.drain();if(cacheRef.current)await cacheRef.current.repository[Symbol.asyncDispose]();});
@@ -208,7 +227,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(mounted.current&&!restoring.current&&lnurlRef.current===service){setInvoice({id:r.id,bolt11:r.artifact.bolt11,outcome:r.outcome,pays:r.give.amount,fee:r.fee.amount});setRequestOpen(true);}
   });
  };
- const showReceiver=(service:LnurlService,receiver:LnurlReceiver)=>{if(receiveCurrent(service)){unifiedAddressRef.current=receiver.lnurl;setUnifiedAddress(receiver.lnurl);setLnAddress(receiver.lightningAddress??'');setLnError('');}};
+ const showReceiver=(service:LnurlService,receiver:LnurlReceiver)=>{if(receiveCurrent(service)){const storage=receiveRecoveryStorage();if(storage)clearPrivateReceiveRestart(storage);unifiedAddressRef.current=receiver.lnurl;setUnifiedAddress(receiver.lnurl);setLnAddress(receiver.lightningAddress??'');unifiedStalledRef.current=false;setUnifiedStalled(false);setUnifiedStage('Unified address ready');setLnError('');}};
  // claim and recover reject with a method error only after their bind has landed, so the address exists and is shown.
  const bound=async(service:LnurlService|undefined,action:(service:LnurlService)=>Promise<void>)=>{
   if(!service)throw new Error('The wallet is still loading.');
@@ -221,9 +240,18 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const claimAddress=()=>lightning(service=>bound(service,async service=>{
   showReceiver(service,await service.claimName());
  }));
- const retryUnified=()=>lightning(service=>bound(service,async service=>{
-  showReceiver(service,await service.ensureUnified());
- }));
+ const retryUnified=()=>{
+  if(unifiedStalledRef.current){const storage=receiveRecoveryStorage();if(storage)clearPrivateReceiveRestart(storage);unifiedStalledRef.current=false;setUnifiedStalled(false);setLnError('');setUnifiedStage('Restarting private receive');reload();return Promise.resolve();}
+  return lightning(service=>bound(service,async service=>{
+   showReceiver(service,await service.ensureUnified());
+  }));
+ };
+ const retryPrivateReceive=()=>{
+  if(actions.current!.busy)return;
+  if(unifiedStalledRef.current){void retryUnified();return;}
+  if(wallet?.swaps&&lnurlRef.current){unifiedRetry.current??=retryUnified().finally(()=>{unifiedRetry.current=undefined;});void unifiedRetry.current;return;}
+  if((startupError||lnError)&&!busy&&!handleBusy.current)reload();
+ };
  const recoverAddress=()=>lightning(service=>bound(service,async service=>{
   const receivers=await service.recover(),receiver=receivers[0];
   if(receiver)showReceiver(service,receiver);else if(receiveCurrent(service))setLnError('No Lightning address was found for this recovery phrase.');
@@ -259,8 +287,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
-  let activationTimer:ReturnType<typeof setTimeout>|undefined;
+ let autoRestartTimer:ReturnType<typeof setTimeout>|undefined;
+ let stopReceiveWatchdogs=()=>{};
   const startController=new AbortController();
+  unifiedStalledRef.current=false;setUnifiedStalled(false);setUnifiedStage('Starting the private Lightning service');
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createLnurlReceive>|undefined;
   let starting:Promise<PageLightning<Wallet,Awaited<ReturnType<typeof createPrivateLightning>>,ReturnType<typeof createLnurlReceive>>|undefined>|undefined;
   const dispose=(created:ShieldedWallet)=>disposeAfterPageReads(created,refreshes.current,async()=>{
@@ -295,15 +325,37 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     nativeOpened=true;
     void created.started.catch(error=>{if(session.active()&&!restoring.current&&mounted.current)setPoolError(errorText(error));});
     const reportLightning=(error:unknown)=>{if(session.active()&&!restoring.current&&mounted.current)setLnError(errorText(error));};
+    const restartStalled=(message:string,stillCurrent:()=>boolean)=>{
+     if(!stillCurrent()||autoRestartTimer)return;
+     unifiedStalledRef.current=true;setUnifiedStalled(true);
+     if(document.hidden){setLnError(`${message} Return to Shielded and restart private receive.`);return;}
+     const storage=receiveRecoveryStorage();
+     if(!storage||!claimPrivateReceiveRestart(storage)){setLnError(`${message} Use Restart private receive below.`);return;}
+     setUnifiedStage('Restarting private receive');
+     setLnError(`${message} Restarting private receive automatically once.`);
+     autoRestartTimer=setTimeout(()=>{
+     autoRestartTimer=undefined;
+     if(!stillCurrent())return;
+     restartWhenVisible(()=>document.hidden,reload,()=>{
+      setUnifiedStage('Private receive stalled');
+      setLnError(`${message} Use Restart private receive below.`);
+     });
+     },800);
+    };
+   stopReceiveWatchdogs();
+   const startupWatchdog=createProgressWatchdog(PRIVATE_RECEIVE_STALL_MS,()=>restartStalled('Private receive did not finish starting.',()=>mounted.current&&!restoring.current&&!lnurlRef.current));
+   const activationWatchdog=createProgressWatchdog(PRIVATE_RECEIVE_STALL_MS,()=>restartStalled('Private receive stopped making progress.',()=>receiveCurrent(lnurl)));
+   stopReceiveWatchdogs=()=>{startupWatchdog.stop();activationWatchdog.stop();};
     const startLnurl=(service:ReturnType<typeof createLnurlReceive>)=>{
      if(!current())return;
+     startupWatchdog.stop();activationWatchdog.arm();
      lnurl=service;lnurlRef.current=service;
      void service.current().then(owned=>{if(owned&&current())showReceiver(service,owned);}).catch(error=>{if(receiveCurrent(service))lnFail(error);});
      const activate=async(attempt=0):Promise<void>=>{
       if(!receiveCurrent(service))return;
       try{
        const owned=await service.ensureUnified();
-       if(activationTimer)clearTimeout(activationTimer);
+       activationWatchdog.stop();
        if(current())showReceiver(service,owned);
       }catch(error){
        if(methodsFailure(error)&&receiveCurrent(service)){
@@ -311,23 +363,22 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
         if(owned&&current())showReceiver(service,owned);
        }
        if(!receiveCurrent(service))return;
-       if(unifiedAddressRef.current){if(activationTimer)clearTimeout(activationTimer);return;}
+       if(unifiedAddressRef.current){activationWatchdog.stop();return;}
        if(attempt<2){
+        activationWatchdog.arm();
         setLnError(`${errorText(error)} Retrying privately…`);
         setTimeout(()=>{void activate(attempt+1);},800*2**attempt);
-       }else{if(activationTimer)clearTimeout(activationTimer);lnFail(error);}
+       }else{activationWatchdog.stop();lnFail(error);}
       }
      };
-     activationTimer=setTimeout(()=>{
-      if(receiveCurrent(service)&&!unifiedAddressRef.current)setLnError('Unified address setup is taking longer than expected. Retry below or switch to Shielded or Arkade receive.');
-     },15_000);
      void activate();
      service.start(error=>{if(current()&&receiveCurrent(service))lnFail(error);});
     };
+   startupWatchdog.arm();
     starting=startPageLightning({
      pairing,
      swaps:(paired,signal)=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,signal,...(nativeHost?nativeSwapConfig():{})}),
-     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),shieldedAddress:()=>created!.shieldedAddress()}),
+     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current){startupWatchdog.stop();activationWatchdog.arm();setUnifiedStage(stage);}},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
@@ -348,8 +399,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const finishClose=pageClose(async(closed:ReturnType<typeof session.close>)=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);});
   const close=()=>{
    startController.abort();
-   if(activationTimer)clearTimeout(activationTimer);
-   activationTimer=undefined;
+   stopReceiveWatchdogs();
+   if(autoRestartTimer)clearTimeout(autoRestartTimer);
+   autoRestartTimer=undefined;
    const closed=session.close();for(const off of unwatch.splice(0))off();sheetOwner.stop();
    return finishClose(closed);
   };
@@ -439,7 +491,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    return()=>{removeEventListener('keydown',key);root.style.overflow=was;for(const other of behind)other.removeAttribute('inert');if(!document.activeElement?.closest('.stock-dock'))back?.focus();};},[sheetOpen,docked,tab,viewActive,suspended]);
  useEffect(()=>{if(!viewActive||suspended||!securityRef.current?.open)return;securityRef.current.querySelector<HTMLElement>(securityView?'.stock-security-subview h3':'.stock-security-menu button')?.focus();},[securityView,viewActive,suspended]);
  // A finished action leaves the bar after a moment; a failure stays until it is dismissed.
- useEffect(()=>{if(!sheet?.done)return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet]);
+ useEffect(()=>{if(!shouldAutoDismissPaymentResult(sheet,pageVisible&&viewActive&&!suspended&&!hidden))return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet,pageVisible,viewActive,suspended,hidden]);
  const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
  const requestKey=JSON.stringify([tab,to,amount,assetId,carrier]);
  const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};
@@ -570,7 +622,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const receiveDescription=receiveBlocked?'Receive is unavailable while the wallet is being restored.':receivePayload==='arkade'?feePaused?'New deposits are paused until you accept the updated fee.':'Eligible deposits move into your private balance while this wallet is open.'
   :receivePayload==='unified'?privateDescription
   :'Share this for direct private payments inside the pool.';
- const receiveLoading=receiveBlocked?'Restoring wallet…':receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…':lnError?'Unified address unavailable':'Activating your unified address…';
+ const privateReceiveRecovery=!receiveBlocked&&receiveMode==='unified'&&!unifiedAddress&&(unifiedStalled||!!lnError||!!startupError);
+ const receiveAction=receiveBlocked?undefined:receiveMode!=='unified'?undefined:unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):privateReceiveRecovery?<button type="button" className="stock-primary stock-mini" disabled={lnBusy||busy||actions.current.busy||unifiedStage==='Restarting private receive'} onClick={retryPrivateReceive}>Restart private receive</button>:undefined;
+ const receiveLoading=receiveBlocked?'Restoring wallet…':receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…':unifiedStage==='Restarting private receive'?'Restarting private receive…':lnError?'Unified address unavailable':`${privateReceiveStageLabel(unifiedStage)}…`;
  const historyItems=rows.map(item=>{
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
@@ -603,7 +657,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
   if(!secret)return <WalletOnboarding transport="browser" setup={!restoring.current} busy={busy||restoreStarted} phase={restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload}/>;
 
-  return <WalletEntrance enabled={animateEntrance}><div hidden={hidden} style={hidden?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
+  const inactive=hidden||suspended||!viewActive;
+  return <WalletEntrance enabled={animateEntrance}><div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
    {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs remain reserved; a dropped status alone does not prove that they cannot be included later.</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
@@ -634,10 +689,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {paymentTabs&&<div ref={panelTabsNode} className="stock-tabs wallet-glass-track" style={{'--glass-index':tab==='send'?1:0,'--glass-count':2} as CSSProperties} role="tablist" aria-label="Payment direction"><span ref={panelLens} className="wallet-glass-lens" aria-hidden="true"/>{(['receive','send'] as const).map(name=><button key={name} role="tab" aria-selected={tab===name} className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</div>}
      {tab==='home'?(!docked?<div className="stock-home-view">{balanceCard()}{recentPreview}</div>:null):tab==='activity'?<section className="stock-card stock-history stock-history-full"><h2>Activity</h2>{historyContent(historyItems)}{synced&&!rows.length&&<button type="button" className="stock-primary" onClick={()=>docked?openPanel('receive'):selectTab('receive')}>Receive your first payment</button>}</section>:<>
      {tab==='receive'?<div className="stock-receive">
-       <ReceivePortal active={viewActive&&!suspended&&(!docked||sheetOpen)} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receivePaymentValue??receiveValue} qrValue={receivePaymentValue} amount={lnAmount} onAmount={setLnAmount} loading={receiveLoading} description={receiveDescription} action={!receiveBlocked&&receiveMode==='unified'&&unifiedAddress?(lnAddress?<div className="stock-unified-name"><span>Lightning address</span><strong>{lnAddress}</strong><CopyButton value={lnAddress} label="Copy Lightning address"/></div>:<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void claimAddress()}>Claim Lightning address</button>):undefined}>
+       <ReceivePortal active={viewActive&&!suspended&&(!docked||sheetOpen)} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receivePaymentValue??receiveValue} qrValue={receivePaymentValue} amount={lnAmount} onAmount={setLnAmount} loading={receiveLoading} description={receiveDescription} action={receiveAction}>
         {receivePaymentValue&&requestedAmount!==undefined&&<p className="stock-muted" role="status">Requested {satsText(requestedAmount)}. <CopyButton value={receivePaymentValue} label="Copy payment link"/></p>}
         {!receiveBlocked&&receiveMode==='unified'&&<>
-         {!unifiedAddress&&<button type="button" className="stock-ghost stock-mini" disabled={lnBusy||busy||actions.current.busy||!(wallet?.swaps&&lnurlRef.current||((startupError||lnError)&&!handleBusy.current))} onClick={()=>{if(actions.current!.busy)return;if(wallet?.swaps&&lnurlRef.current){unifiedRetry.current??=retryUnified().finally(()=>{unifiedRetry.current=undefined;});void unifiedRetry.current;}else if((startupError||lnError)&&!busy&&!handleBusy.current)reload();}}>Retry unified address</button>}
          <details className="stock-more"><summary>Had an address before?</summary><button type="button" className="stock-ghost stock-mini" disabled={lnBusy||!wallet?.swaps||!lnurlRef.current} onClick={()=>void recoverAddress()}>Recover it</button></details>
          {unifiedAddress&&<><label className="stock-check">Include private payments<input type="checkbox" role="switch" checked={privateChecked} disabled={lnBusy||!wallet?.swaps} aria-describedby="stock-private-hint" onChange={e=>void setPrivate(e.target.checked)}/></label>
            <p id="stock-private-hint" className="stock-muted">{wallet?.swaps?'Turning this on asks the service to add your shielded address. Anyone looking up your unified address can see that you use the pool.':'Private payments become available when Lightning finishes starting.'}</p>

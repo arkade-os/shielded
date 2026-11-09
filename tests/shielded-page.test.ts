@@ -281,13 +281,21 @@ test('legacy migration waits for catch-up and retains its log when saving fails 
  restoring=false;wallet.save=async()=>{};await importLegacySent(wallet,storage,()=>!restoring);assert.equal(storage.getItem(SENT),null);
 });
 
-test('replacing and dismissing a sheet unsubscribes and ignores obsolete handle callbacks',()=>{
+test('replacing a sheet unsubscribes, while dismissing it keeps tracking until the outcome',()=>{
  const states:unknown[]=[],callbacks:((s:{status:'pending'|'sent'})=>void)[]=[];let off=0;
  const fake=()=>({subscribe:(cb:typeof callbacks[number])=>{callbacks.push(cb);cb({status:'pending'});return()=>{off++;};}}) as never;
  const sheet=pageSheet(s=>states.push(s)),first=fake();const a=sheet.watch(first,'A');sheet.watch(fake(),'B');
  assert.equal(off,1);callbacks[0]!({status:'sent'});a.fail('old failure');assert.equal(states.length,2);
  assert.equal((states.at(-1) as {title:string}).title,'B');assert.equal(sheet.watch(first,'A'),a);assert.equal(states.length,2);
- sheet.clear();callbacks[1]!({status:'sent'});assert.equal(off,2);assert.equal(states.at(-1),undefined);
+ sheet.clear();callbacks[1]!({status:'sent'});assert.equal(off,1);assert.equal(states.at(-1),undefined);
+});
+
+test('a dismissed soundbar publishes the terminal payment outcome after the user returns',()=>{
+ const states:any[]=[];let update:(state:any)=>void=()=>{};
+ const handle={subscribe:(fn:typeof update)=>{update=fn;fn({status:'pending'});return()=>{};}} as never;
+ const sheet=pageSheet(s=>states.push(s));sheet.watch(handle,'Paying');
+ sheet.clear();assert.equal(states.at(-1),undefined);
+ update({status:'settled'});assert.equal(states.at(-1).done,true);assert.equal(states.at(-1).title,'Paying');
 });
 
 test('the page words a paused deposit wherever the pause sits in the error, and passes every other message through',()=>{

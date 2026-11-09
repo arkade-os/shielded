@@ -38,6 +38,7 @@ test('Tor status and initial reachability are monitored before a wallet exists',
  assert.equal(f.latest().check,'checking');assert.equal(f.checks.length,1);
  t.mock.timers.tick(120);f.checks[0]!.result.resolve();await flush();
  assert.equal(f.latest().check,'ok');assert.equal(f.latest().latencyMs,120);assert.equal(f.latest().checkedAt,120);
+ assert.equal(f.latest().attempt,undefined);assert.equal(f.latest().retryAt,undefined);
 });
 
 test('status polling never overlaps and retains a newer subscription result',async t=>{
@@ -83,6 +84,21 @@ test('a rejected check without an error value still reports failure',async t=>{
  assert.equal(f.latest().check,'failed');
 });
 
+test('a failed Tor service probe retries in five seconds instead of lingering for a full interval',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.reject(new Error('service unavailable'));await flush();
+ assert.equal(f.latest().check,'failed');assert.equal(f.latest().attempt,1);assert.equal(f.latest().retryAt,5_000);
+ t.mock.timers.tick(4_999);await flush();assert.equal(f.checks.length,1);
+ t.mock.timers.tick(1);await flush();assert.equal(f.checks.length,2);assert.equal(f.latest().check,'checking');
+ assert.equal(f.latest().attempt,2);assert.equal(f.latest().retryAt,undefined);
+ f.checks[1]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,15_000);
+ t.mock.timers.tick(10_000);await flush();f.checks[2]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,35_000);
+ t.mock.timers.tick(20_000);await flush();f.checks[3]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,65_000);
+ t.mock.timers.tick(30_000);await flush();f.checks[4]!.result.reject(new Error('still unavailable'));await flush();assert.equal(f.latest().retryAt,95_000);
+ t.mock.timers.tick(30_000);await flush();f.checks[5]!.result.resolve();await flush();assert.equal(f.latest().check,'ok');
+ t.mock.timers.tick(30_000);await flush();f.checks[6]!.result.reject(new Error('outage after recovery'));await flush();
+ assert.equal(f.latest().attempt,1);assert.equal(f.latest().retryAt,130_000);
+});
+
 test('pause aborts a probe and its late success cannot restore connected health',async t=>{
  const f=fixture(t);await flush();f.emit({phase:'paused',generation:2});
  assert.equal(f.checks[0]!.signal.aborted,true);assert.equal(f.latest().check,'idle');
@@ -119,15 +135,24 @@ test('a probe completing while hidden never publishes a connected result',async 
 test('a status IPC failure clears healthy evidence and reports the failure',async t=>{
  const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();assert.equal(f.latest().check,'ok');
  const pending=f.holdStatus();t.mock.timers.tick(1500);await flush();
- const error=new Error('native status unavailable');pending.reject(error);await flush();
+ const error=new Error('native status unavailable');pending.reject(error);await flush();assert.equal(f.latest().check,'ok');
+ t.mock.timers.tick(1500);await flush();t.mock.timers.tick(1500);await flush();
  assert.deepEqual(f.errors,[error]);assert.equal(f.latest().status.phase,'error');assert.equal(f.latest().check,'idle');
  assert.equal(f.latest().checkedAt,undefined);f.monitor.check();await flush();assert.equal(f.checks.length,1);
+});
+
+test('one transient status poll failure does not flash an unavailable Tor state',async t=>{
+ const f=fixture(t,{phase:'bootstrapping',generation:1,progress:'20%'});await flush();
+ const first=f.holdStatus();t.mock.timers.tick(1500);await flush();first.reject(new Error('IPC warming'));await flush();
+ assert.equal(f.latest().status.phase,'bootstrapping');assert.equal(f.errors.length,0);
+ f.emit({phase:'ready',generation:1});await flush();
+ assert.equal(f.latest().status.phase,'ready');assert.equal(f.latest().check,'checking');
 });
 
 test('a direct-mode status failure never relabels the connection as Tor',async t=>{
  const f=fixture(t,{phase:'ready',generation:2,mode:'direct'});await flush();
  const pending=f.holdStatus();t.mock.timers.tick(1500);await flush();
- pending.reject(new Error('IPC unavailable'));await flush();
+ pending.reject(new Error('IPC unavailable'));await flush();t.mock.timers.tick(1500);await flush();t.mock.timers.tick(1500);await flush();
  assert.equal(f.latest().status.mode,'direct');assert.equal(f.latest().status.phase,'error');
 });
 
