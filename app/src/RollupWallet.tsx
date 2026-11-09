@@ -122,7 +122,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{if(suspended||!viewActive)setAboutOpen(false);},[suspended,viewActive]);
  useEffect(()=>{
   mounted.current=true;
-  onShutdown?.(async()=>{restoring.current=true;mounted.current=false;await Promise.all([...sessions.current].map(close=>close()));await cacheRef.current!.drain();await cacheRef.current!.repository[Symbol.asyncDispose]();});
+  onShutdown?.(async()=>{restoring.current=true;mounted.current=false;await Promise.all([...sessions.current].map(close=>close()));await cacheRef.current?.drain();if(cacheRef.current)await cacheRef.current.repository[Symbol.asyncDispose]();});
   return()=>onShutdown?.(undefined);
  },[onShutdown]);
  useEffect(()=>{

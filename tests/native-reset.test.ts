@@ -40,3 +40,14 @@ test('a blocked database keeps the reset pending until deletion succeeds',async(
  success?.();await clearing;
  assert.deepEqual(events,['storage','vault']);
 });
+
+test('a permanently blocked database fails recoverably instead of hanging',async()=>{
+ const events:string[]=[],factory={
+  async databases(){return [{name:'shielded-rollup'}];},
+  deleteDatabase(){
+   const request:any={};queueMicrotask(()=>request.onblocked?.({}));return request as IDBOpenDBRequest;
+  },
+ } as unknown as IDBFactory;
+ await assert.rejects(clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory,blockedAfterMs:20}),/still in use/);
+ assert.deepEqual(events,[]);
+});
