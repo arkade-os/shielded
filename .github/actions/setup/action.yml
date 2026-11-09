@@ -1,0 +1,16 @@
+name: Pin native build runtimes
+description: Install the pinned Node and Rust runtimes used for native releases
+inputs:
+  rust-target:
+    description: Optional Rust target
+    required: false
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: '24.22.2'
+    - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      with:
+        toolchain: '1.96.0'
+        targets: ${{ inputs.rust-target }}

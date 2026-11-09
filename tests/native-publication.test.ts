@@ -25,7 +25,7 @@ function fixture(t: TestContext) {
       writeFileSync(join(selected, file), bytes);
       return { file, profile: item.profile, requiresSigning: item.requiresSigning, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
     });
-    writeFileSync(join(selected, 'manifest.json'), JSON.stringify({ network: 'mutinynet', poolOrigin: NATIVE_RELEASE_ORIGIN, commit: env.GITHUB_SHA, platform, packages }));
+    writeFileSync(join(selected, 'manifest.json'), JSON.stringify({ network: 'mutinynet', poolOrigin: NATIVE_RELEASE_ORIGIN, commit: env.GITHUB_SHA, platform, environment: { node: '24.22.2', rust: '1.96.0', sourceDateEpoch: 1794240000, lockfileSha256: 'c'.repeat(64), rustLockfileSha256: 'd'.repeat(64) }, packages }));
   };
   for (const platform of NATIVE_PLATFORMS) add(platform, 1);
   return { directory, input, output, artifact, add, prepare: (attempt = 1) => prepareNativeRelease(input, output, nativePublicationIdentity({ ...env, GITHUB_RUN_ATTEMPT: String(attempt) }), '0.1.0', new Date('2026-11-07T12:00:00Z')) };

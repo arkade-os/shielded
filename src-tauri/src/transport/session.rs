@@ -26,6 +26,9 @@ const MAX_SCOPES: usize = 1024;
 const MAX_OPERATIONS: usize = 64;
 const MAX_CANCELLED: usize = 4096;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const DIRECTORY_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const DIRECTORY_RETRY_ATTEMPTS: u32 = 8;
+const DIRECTORY_PARALLELISM: u8 = 8;
 const PURPOSES: &[&str] = &[
     "public",
     "pool-sync",
@@ -54,6 +57,27 @@ pub(super) struct Session {
     completion_order: VecDeque<String>,
     subscriptions: HashMap<String, String>,
     resources: Vec<CancellationToken>,
+}
+
+fn configure_directory_downloads(config: &mut TorClientConfigBuilder) {
+    config
+        .download_schedule()
+        .retry_consensus()
+        .attempts(DIRECTORY_RETRY_ATTEMPTS)
+        .initial_delay(DIRECTORY_INITIAL_DELAY)
+        .parallelism(DIRECTORY_PARALLELISM);
+    config
+        .download_schedule()
+        .retry_certs()
+        .attempts(DIRECTORY_RETRY_ATTEMPTS)
+        .initial_delay(DIRECTORY_INITIAL_DELAY)
+        .parallelism(DIRECTORY_PARALLELISM);
+    config
+        .download_schedule()
+        .retry_microdescs()
+        .attempts(DIRECTORY_RETRY_ATTEMPTS)
+        .initial_delay(DIRECTORY_INITIAL_DELAY)
+        .parallelism(DIRECTORY_PARALLELISM);
 }
 
 type StartupResult = Result<NativeStatus, String>;
@@ -509,12 +533,14 @@ impl Inner {
         let client = match existing {
             Some(client) => client,
             None => {
-                let config = TorClientConfigBuilder::from_directories(
+                let mut config = TorClientConfigBuilder::from_directories(
                     self.data_dir.join("state"),
                     self.data_dir.join("cache"),
-                )
-                .build()
-                .map_err(|_| "Tor storage configuration failed")?;
+                );
+                configure_directory_downloads(&mut config);
+                let config = config
+                    .build()
+                    .map_err(|_| "Tor storage configuration failed")?;
                 TorClient::builder()
                     .config(config)
                     .bootstrap_behavior(BootstrapBehavior::Manual)
@@ -1101,6 +1127,21 @@ mod tests {
             session.client = Some(client);
         }
         inner
+    }
+
+    #[test]
+    fn directory_downloads_prefer_parallel_foreground_retries() {
+        let mut config = TorClientConfigBuilder::from_directories("state", "cache");
+        configure_directory_downloads(&mut config);
+        let config = config.build().unwrap().dir_mgr_config().unwrap();
+        for schedule in [
+            config.schedule.retry_consensus(),
+            config.schedule.retry_certs(),
+            config.schedule.retry_microdescs(),
+        ] {
+            assert_eq!(schedule.n_attempts(), 8);
+            assert_eq!(schedule.parallelism(), 8);
+        }
     }
 
     async fn wait_for_mode(inner: &Inner, mode: NativeMode) {

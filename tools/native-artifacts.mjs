@@ -55,12 +55,23 @@ export function collectNativeArtifacts(projectRoot, platform, profile, commit) {
     const bytes = readFileSync(destination);
     return { file: name, profile: artifact.profile, requiresSigning: artifact.requiresSigning, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   });
-  writeFileSync(join(output, 'manifest.json'), JSON.stringify({ network: 'mutinynet', poolOrigin: origin, platform, commit, packages }, null, 2) + '\n');
+  const lockfileSha256 = createHash('sha256').update(readFileSync(join(projectRoot, 'package-lock.json'))).digest('hex');
+  const rustLockfileSha256 = createHash('sha256').update(readFileSync(join(projectRoot, 'src-tauri/Cargo.lock'))).digest('hex');
+  const environment = {
+    node: '24.22.2',
+    rust: '1.96.0',
+    sourceDateEpoch: Number(process.env.SOURCE_DATE_EPOCH),
+    lockfileSha256,
+    rustLockfileSha256,
+  };
+  writeFileSync(join(output, 'manifest.json'), JSON.stringify({ network: 'mutinynet', poolOrigin: origin, platform, commit, environment, packages }, null, 2) + '\n');
   writeFileSync(join(output, 'SHA256SUMS'), packages.map(item => `${item.sha256}  ${item.file}\n`).join(''));
   writeFileSync(join(output, 'README.txt'), [
     'Shielded native wallet — Mutinynet test funds only.',
     `Pool: ${origin}`,
     `Platform: ${platform}. Build profile: ${profile}. Source: ${commit}.`,
+    `Reproduction environment: Node ${environment.node}, Rust ${environment.rust}, SOURCE_DATE_EPOCH ${environment.sourceDateEpoch}.`,
+    `Lockfile SHA-256: npm ${lockfileSha256}; Cargo ${rustLockfileSha256}.`,
     'Wallet networking uses embedded Tor; this workflow does not configure a direct mode.',
     'macOS archives preserve the app bundle and executable permissions. These builds are not notarized by this workflow.',
     'The iPhone device IPA is unsigned and needs your own signing and provisioning before installation. The simulator archive runs only in an iOS simulator.',

@@ -21,7 +21,15 @@ export interface NativeRelease {
   version: string;
   publishedAt: string;
   releaseUrl: string;
+  environment: NativeBuildEnvironment;
   packages: NativeReleasePackage[];
+}
+export interface NativeBuildEnvironment {
+  node: string;
+  rust: string;
+  sourceDateEpoch: number;
+  lockfileSha256: string;
+  rustLockfileSha256: string;
 }
 
 export const NATIVE_PLATFORMS: readonly NativePlatform[] = ['windows-x86_64', 'linux-x86_64', 'macos-universal', 'android-arm64', 'ios'];
@@ -77,5 +85,7 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     return result;
   });
   for (const platform of NATIVE_PLATFORMS) for (const format of formats[platform]) if (!covered.has(`${platform}:${format}`)) throw new Error(`Incomplete native release: ${platform} ${format}`);
-  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, packages };
+  const environment = record(value.environment);
+  if (environment.node !== '24.22.2' || environment.rust !== '1.96.0' || !positive(environment.sourceDateEpoch) || typeof environment.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.lockfileSha256) || typeof environment.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.rustLockfileSha256)) throw new Error('Invalid native build environment');
+  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, environment: environment as unknown as NativeBuildEnvironment, packages };
 }

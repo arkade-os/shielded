@@ -9,10 +9,11 @@ const repository = 'arkade-os/shielded';
 const apiOrigin = `https://api.github.com/repos/${repository}`;
 const channel = 'native-mutinynet';
 interface Identity { commit: string; buildNumber: number; runId: number; attempt: number; branch: string; }
+interface Environment { node: string; rust: string; sourceDateEpoch: number; lockfileSha256: string; rustLockfileSha256: string; }
 interface Asset { id: number; name: string; size: number; digest?: string; }
 interface Release { id: number; tag_name: string; draft: boolean; prerelease: boolean; immutable?: boolean; assets: Asset[]; }
 export interface NativeReleaseIndex { head: string; manifest: NativeRelease; }
-export interface PreparedNativeRelease { manifest: NativeRelease; files: Map<string, string>; manifestPath: string; sumsPath: string; identity: Identity; }
+export interface PreparedNativeRelease { manifest: NativeRelease; files: Map<string, string>; manifestPath: string; sumsPath: string; identity: Identity; environment: Environment; }
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid native artifact manifest');
@@ -66,7 +67,7 @@ export async function prepareNativeRelease(input: string, output: string, identi
   if (entries.some(entry => !entry.isDirectory() || entry.isSymbolicLink())) throw new Error('Native downloads must contain platform artifact directories');
   const selected = selectNativeArtifactDirectories(entries.map(entry => entry.name), identity);
   const tag = `${channel}-${identity.commit.slice(0, 12)}-run${identity.runId}-attempt${identity.attempt}`;
-  const files = new Map<string, string>(), platforms = new Set<NativePlatform>(), packages: NativeReleasePackage[] = [];
+  const files = new Map<string, string>(), platforms = new Set<NativePlatform>(), packages: NativeReleasePackage[] = [], environments: Environment[] = [];
   for (const [expectedPlatform, name] of selected) {
     const directory = join(input, name), archives = artifactFiles(directory).filter(path => path.endsWith('.tar.gz'));
     if (archives.length > 1 || (archives.length && (expectedPlatform !== 'linux-x86_64' || basename(archives[0]) !== 'linux-x86_64-release.tar.gz'))) throw new Error('Unexpected native Linux archive');
@@ -77,6 +78,9 @@ export async function prepareNativeRelease(input: string, output: string, identi
     if (lstatSync(path).size > 64 * 1024) throw new Error('Oversized native artifact manifest');
     const manifest = object(JSON.parse(readFileSync(path, 'utf8'))), platform = manifest.platform as NativePlatform;
     if (manifest.network !== 'mutinynet' || manifest.poolOrigin !== NATIVE_RELEASE_ORIGIN || manifest.commit !== identity.commit || platform !== expectedPlatform || platforms.has(platform) || !Array.isArray(manifest.packages)) throw new Error('Native artifact source, platform or network mismatch');
+    const environment = object(manifest.environment), sourceDateEpoch = environment.sourceDateEpoch;
+    if (environment.node !== '24.22.2' || environment.rust !== '1.96.0' || !Number.isSafeInteger(sourceDateEpoch) || typeof environment.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.lockfileSha256) || typeof environment.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(environment.rustLockfileSha256)) throw new Error('Native artifact reproduction environment mismatch');
+    environments.push(environment as unknown as Environment);
     platforms.add(platform);
     for (const raw of manifest.packages) {
       const item = object(raw);
@@ -89,12 +93,13 @@ export async function prepareNativeRelease(input: string, output: string, identi
       packages.push({ platform, file, profile: item.profile, requiresSigning: item.requiresSigning, bytes: item.bytes, sha256: item.sha256, url: `https://github.com/${repository}/releases/download/${tag}/${file}` } as NativeReleasePackage);
     }
   }
-  const manifest = parseNativeRelease({ schema: 1, channel, network: 'mutinynet', commit: identity.commit, buildNumber: identity.buildNumber, version, publishedAt: now.toISOString(), releaseUrl: `https://github.com/${repository}/releases/tag/${tag}`, packages });
+  if (environments.some(environment => JSON.stringify(environment) !== JSON.stringify(environments[0]))) throw new Error('Native platforms used different reproduction environments');
+  const manifest = parseNativeRelease({ schema: 1, channel, network: 'mutinynet', commit: identity.commit, buildNumber: identity.buildNumber, version, publishedAt: now.toISOString(), releaseUrl: `https://github.com/${repository}/releases/tag/${tag}`, environment: environments[0], packages });
   mkdirSync(output, { recursive: true });
   const manifestPath = join(output, 'manifest.json'), sumsPath = join(output, 'SHA256SUMS');
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
   writeFileSync(sumsPath, [...packages.map(item => `${item.sha256}  ${item.file}`), `${await digest(manifestPath)}  manifest.json`, ''].join('\n'));
-  return { manifest, files, manifestPath, sumsPath, identity };
+  return { manifest, files, manifestPath, sumsPath, identity, environment: environments[0] };
 }
 
 export function assertNativeReleaseAdvancement(candidate: NativeRelease, current: NativeRelease | null, head: string): void {

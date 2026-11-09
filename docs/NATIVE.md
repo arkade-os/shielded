@@ -96,6 +96,10 @@ Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iO
 
 ## CI binaries and public releases
 
+Release inputs are pinned for reproduction. The workflow uses Node `24.22.2`, Rust `1.96.0`, immutable action commit SHAs, the committed npm and Cargo lockfiles, `SOURCE_DATE_EPOCH=1794240000`, and a Rust path remap. Each platform artifact records those inputs and SHA-256 hashes of both lockfiles. Publication rejects a mixed toolchain or mismatched reproduction metadata. `tools/reproducible-build.test.mjs` fails if a runtime or action becomes floating.
+
+Rebuild the published source commit on the same operating system and target, using the recorded inputs, then compare the rebuilt package SHA-256 with the release manifest. Reproducibility means the build can be independently checked. It does not replace publisher signing; these builds remain unsigned and unnotarized.
+
 The **Native wallet** GitHub Actions workflow builds release packages on pushes to `master` or `main`, and on manual dispatch. Pull requests build debug packages. Every package uses the fixed Mutinynet pool, `https://shielded.mutinynet.arkade.sh`; collection fails if the native marker and Rust route policy disagree with it. These builds use test funds only.
 
 For CI diagnostics, open the matching workflow run in the repository's **Actions** tab and download its **Artifacts**. Artifact names include `mutinynet`, platform, profile, source commit and run attempt. These Actions downloads remain available for 14 days and contain `manifest.json`, `SHA256SUMS` and signing notes. They are separate from the website's public release assets.

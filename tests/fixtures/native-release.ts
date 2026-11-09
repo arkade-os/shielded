@@ -12,5 +12,5 @@ export function nativeReleaseFixture() {
     const file = `shielded-mutinynet-${platform}-run123-mutinynet-${profile}${requiresSigning ? '-unsigned' : ''}-${suffix}`;
     return { platform, file, profile, requiresSigning, url: `https://github.com/arkade-os/shielded/releases/download/${tag}/${file}`, bytes: 100, sha256: 'b'.repeat(64) };
   });
-  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit, buildNumber: 123, version: '0.1.0', publishedAt: '2026-11-07T12:00:00Z', releaseUrl: `https://github.com/arkade-os/shielded/releases/tag/${tag}`, packages };
+  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit, buildNumber: 123, version: '0.1.0', publishedAt: '2026-11-07T12:00:00Z', releaseUrl: `https://github.com/arkade-os/shielded/releases/tag/${tag}`, environment: { node: '24.22.2', rust: '1.96.0', sourceDateEpoch: 1794240000, lockfileSha256: 'c'.repeat(64), rustLockfileSha256: 'd'.repeat(64) }, packages };
 }
