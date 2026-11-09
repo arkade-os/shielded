@@ -11,7 +11,6 @@ type TransientWalletControls={
  closeAbout:()=>void;
  closeRequest:()=>void;
  closeSecurity:()=>void;
- closeStatus:()=>void;
 };
 
 const stages:UnifiedReceiveStage[]=[
@@ -68,11 +67,14 @@ export function restartWhenVisible(isHidden:()=>boolean,restart:()=>void,defer:(
  restart();return true;
 }
 
+export function shouldAutoDismissPaymentResult(state:{done?:boolean}|undefined,visible:boolean){
+ return visible&&!!state?.done;
+}
+
 export function dismissTransientWalletViews(controls:TransientWalletControls){
  controls.closeScanner();
  controls.closeSheet();
  controls.closeAbout();
  controls.closeRequest();
  controls.closeSecurity();
- controls.closeStatus();
 }

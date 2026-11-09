@@ -27,7 +27,7 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
-import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
+import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
@@ -97,6 +97,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[unifiedStage,setUnifiedStage]=useState('Reading your saved receiver'),[unifiedStalled,setUnifiedStalled]=useState(false),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
+ const [pageVisible,setPageVisible]=useState(()=>!document.hidden);
  const [lnBoundsError,setLnBoundsError]=useState('');
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -125,17 +126,18 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    closeAbout:()=>setAboutOpen(false),
    closeRequest:()=>setRequestOpen(false),
    closeSecurity:()=>setSecurityView(null),
-   closeStatus:()=>sheetOwner.clear(),
  }),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
    useEffect(()=>{
-    const visibility=()=>{if(document.visibilityState==='hidden')closeTransient();};
-    const lifecycle=()=>closeTransient();
+    setPageVisible(!document.hidden);
+    const visibility=()=>{const visible=!document.hidden;setPageVisible(visible);if(!visible)closeTransient();};
+    const hidden=()=>{setPageVisible(false);closeTransient();};
+    const visible=()=>{setPageVisible(true);closeTransient();};
     document.addEventListener('visibilitychange',visibility);
-    addEventListener('pagehide',lifecycle);addEventListener('pageshow',lifecycle);
-    addEventListener('freeze',lifecycle);addEventListener('resume',lifecycle);
-    return()=>{document.removeEventListener('visibilitychange',visibility);removeEventListener('pagehide',lifecycle);removeEventListener('pageshow',lifecycle);removeEventListener('freeze',lifecycle);removeEventListener('resume',lifecycle);};
+    addEventListener('pagehide',hidden);addEventListener('freeze',hidden);
+    addEventListener('pageshow',visible);addEventListener('resume',visible);
+    return()=>{document.removeEventListener('visibilitychange',visibility);removeEventListener('pagehide',hidden);removeEventListener('freeze',hidden);removeEventListener('pageshow',visible);removeEventListener('resume',visible);};
    },[closeTransient]);
  useEffect(()=>{
   mounted.current=true;
@@ -489,7 +491,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    return()=>{removeEventListener('keydown',key);root.style.overflow=was;for(const other of behind)other.removeAttribute('inert');if(!document.activeElement?.closest('.stock-dock'))back?.focus();};},[sheetOpen,docked,tab,viewActive,suspended]);
  useEffect(()=>{if(!viewActive||suspended||!securityRef.current?.open)return;securityRef.current.querySelector<HTMLElement>(securityView?'.stock-security-subview h3':'.stock-security-menu button')?.focus();},[securityView,viewActive,suspended]);
  // A finished action leaves the bar after a moment; a failure stays until it is dismissed.
- useEffect(()=>{if(!sheet?.done)return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet]);
+ useEffect(()=>{if(!shouldAutoDismissPaymentResult(sheet,pageVisible&&viewActive&&!suspended&&!hidden))return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet,pageVisible,viewActive,suspended,hidden]);
  const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
  const requestKey=JSON.stringify([tab,to,amount,assetId,carrier]);
  const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible} from '../app/src/wallet-recovery.ts';
+import {PRIVATE_RECEIVE_RESTART_KEY,claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult} from '../app/src/wallet-recovery.ts';
 
 class MemoryStorage {
  private readonly values=new Map<string,string>();
@@ -44,6 +44,13 @@ test('an automatic restart deferred while hidden restores manual recovery instea
  assert.deepEqual([restarts,deferrals],[1,1]);
 });
 
+test('a terminal payment result is retained while hidden and auto-dismisses only when visible',()=>{
+ assert.equal(shouldAutoDismissPaymentResult({done:true},false),false);
+ assert.equal(shouldAutoDismissPaymentResult({done:true},true),true);
+ assert.equal(shouldAutoDismissPaymentResult({done:false},true),false);
+ assert.equal(shouldAutoDismissPaymentResult(undefined,true),false);
+});
+
 test('foreground recovery dismisses every transient wallet surface',()=>{
  const calls:string[]=[];
  dismissTransientWalletViews({
@@ -52,7 +59,6 @@ test('foreground recovery dismisses every transient wallet surface',()=>{
   closeAbout:()=>calls.push('about'),
   closeRequest:()=>calls.push('request'),
   closeSecurity:()=>calls.push('security'),
- closeStatus:()=>calls.push('status'),
  });
- assert.deepEqual(calls,['scanner','sheet','about','request','security','status']);
+ assert.deepEqual(calls,['scanner','sheet','about','request','security']);
 });
