@@ -68,6 +68,54 @@ test('no signing, network or watch before the alias is enabled, including the ba
  assert.equal(f.signed(),0);assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
 });
 
+test('a page cancellation inherited by the address service prevents registration',async()=>{
+ const f=setup(),controller=new AbortController();controller.abort();
+ const service=createLnurlReceive({...f.config,signal:controller.signal});
+ await assert.rejects(service.ensureUnified(),/disposed/);
+ assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
+});
+
+test('disposing an address activation reports blocked payout registration without hanging',async()=>{
+ const f=setup();let entered!:()=>void,signal:AbortSignal|undefined;const waiting=new Promise<void>(resolve=>{entered=resolve;}),never=new Promise<void>(()=>{});
+ const service=createLnurlReceive({...f.config,onPayouts:async(_rows,next)=>{signal=next;entered();await never;}}),activation=service.ensureUnified();
+ await waiting;
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  await assert.rejects(Promise.race([service.dispose(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('dispose waited for payout registration')),250);})]),/still finishing/);
+  await assert.rejects(activation,/disposed/);
+   assert.equal(signal?.aborted,true);
+ }finally{if(timer)clearTimeout(timer);}
+});
+
+test('a payout registration rejected after disposal is already handled',async()=>{
+ const f=setup();let entered!:()=>void,refuse!:()=>void;
+ const waiting=new Promise<void>(resolve=>{entered=resolve;}),late=new Promise<void>((_resolve,reject)=>{refuse=()=>reject(new Error('late payout failure'));});
+ const service=createLnurlReceive({...f.config,onPayouts:async()=>{entered();await late;}}),activation=service.ensureUnified();
+ await waiting;await assert.rejects(service.dispose(),/still finishing/);refuse?.();await new Promise(resolve=>setImmediate(resolve));
+ await assert.rejects(activation,/disposed/);
+});
+
+test('disposing during a blocked contract watch does not wait for the IndexedDB operation',async()=>{
+ const f=setup();let entered!:()=>void,release!:()=>void,finished!:()=>void,saves=0;
+ const waiting=new Promise<void>(resolve=>{entered=resolve;}),late=new Promise<void>(resolve=>{release=resolve;}),done=new Promise<void>(resolve=>{finished=resolve;});
+ const save=f.config.journal.saveReceiveState;
+ f.config.journal.saveReceiveState=async(...args)=>{saves++;await save(...args);};
+ (f.config.companion as unknown as {getContractManager:()=>Promise<unknown>}).getContractManager=async()=>({
+  createContract:async()=>{entered();await late;finished();},
+  onContractEvent:()=>()=>{},
+ });
+ const service=createLnurlReceive(f.config),activation=service.ensureUnified();
+ await waiting;
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  await assert.rejects(Promise.race([service.dispose(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('dispose waited for contract creation')),250);})]),/still finishing/);
+  await assert.rejects(activation,/disposed/);
+  const savesAtDisposal=saves;release();await done;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(saves,savesAtDisposal);assert.equal(f.registered.length,0);assert.equal(f.bound().length,0);
+  await service.dispose();
+ }finally{release?.();if(timer)clearTimeout(timer);}
+});
+
 test('a unified receiver registers without a name or shielded method and binds before its QR is ready',async()=>{
  const f=setup(),result=await f.service.ensureUnified();
  assert.deepEqual([result.lnurl,result.lightningAddress,result.nameless],[sessionLnurl,undefined,true]);

@@ -56,6 +56,13 @@ class AndroidSeedVault(context: Context) {
         check(records.edit().putString("seed", Base64.encodeToString(blob, Base64.NO_WRAP)).commit())
     }
 
+    @Synchronized
+    fun clear() {
+        check(records.edit().clear().commit())
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        if (store.containsAlias(alias)) store.deleteEntry(alias)
+    }
+
     private fun requireSeed(value: String) {
         check(value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' })
     }

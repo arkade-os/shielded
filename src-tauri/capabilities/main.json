@@ -19,6 +19,7 @@
     "allow-native-socket-send",
     "allow-native-cancel",
     "shielded-platform:allow-secret-get",
-    "shielded-platform:allow-secret-set"
+    "shielded-platform:allow-secret-set",
+    "shielded-platform:allow-secret-clear"
   ]
 }

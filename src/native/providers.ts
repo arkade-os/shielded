@@ -36,8 +36,8 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
     vtxos.push(...result.vtxos);const page=result.page;
     if(!page)return vtxos;
     if(page.current!==pageIndex||!Number.isSafeInteger(page.total)||page.total<0||!Number.isSafeInteger(page.next)||page.next<0)throw new Error('Invalid isolated indexer page');
-    if(page.current>=page.total){if(page.next!==page.total||(page.current>page.total&&result.vtxos.length))throw new Error('Invalid isolated indexer page');return vtxos;}
-    if(page.next!==pageIndex+1)throw new Error('Invalid isolated indexer page');
+    if(page.current>=page.total){if(page.current>page.total&&result.vtxos.length)throw new Error('Invalid isolated indexer page');return vtxos;}
+    if(page.next!==page.current+1)throw new Error('Invalid isolated indexer page');
     pageIndex=page.next;
    }
   })).flat();

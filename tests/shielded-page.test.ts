@@ -490,23 +490,30 @@ const reasons=(errors:unknown[])=>errors.map(error=>(error as Error).message);
 
 test('a Lightning start pairing after the page closed disposes the companion nobody took',async()=>{
  const {events,companion,swaps,lnurl}=lightningFakes(),paired=deferred<typeof companion>(),errors:unknown[]=[];let starts=0,active=true;
- const start=startPageLightning({pairing:paired.promise,swaps:async()=>{starts++;return swaps;},lnurl:async()=>lnurl,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error)});
+ const start=startPageLightning({pairing:paired.promise,swaps:async()=>{starts++;return swaps;},lnurl:async()=>lnurl,signal:new AbortController().signal,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error)});
  active=false;paired.resolve(companion);
  assert.equal(await start,undefined);assert.deepEqual(events,['companion']);assert.equal(starts,0);assert.deepEqual(errors,[]);
 });
 
+test('cancelling while pairing is pending disposes the companion when it arrives',async()=>{
+ const {events,companion}=lightningFakes(),paired=deferred<typeof companion>(),controller=new AbortController();
+ const start=startPageLightning({pairing:paired.promise,swaps:async()=>{throw new Error('swaps must not start');},lnurl:async()=>{throw new Error('address must not start');},signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{}});
+ controller.abort();assert.equal(await start,undefined);assert.deepEqual(events,[]);
+ paired.resolve(companion);await flush();assert.deepEqual(events,['companion']);
+});
+
 test('a Lightning start finishing after the page closed disposes everything it made, newest first, and reports nothing',async()=>{
- for(const [during,disposed] of [['swaps',['swaps','companion']],['failing swaps',['companion']],['address',['lnurl','swaps','companion']]] as const){
+ for(const [during,disposed] of [['swaps',['lnurl','swaps','companion']],['failing swaps',['lnurl','companion']],['address',['lnurl','swaps','companion']]] as const){
   const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),errors:unknown[]=[];let active=true,addresses=0;
   const start=startPageLightning({
    pairing:Promise.resolve(companion),
    swaps:async()=>{if(during!=='address')await gate.promise;if(during==='failing swaps')throw new Error('the journal was disposed');return swaps;},
    lnurl:async()=>{addresses++;if(during==='address')await gate.promise;return lnurl;},
-   active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
+   signal:new AbortController().signal,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
   });
   await flush();active=false;gate.resolve();
   assert.equal(await start,undefined);assert.deepEqual(events,[...disposed]);
-  assert.equal(addresses,during==='address'?1:0);assert.deepEqual(errors,[]);
+  assert.equal(addresses,1);assert.deepEqual(errors,[]);
  }
 });
 
@@ -517,20 +524,82 @@ test('a Lightning start that fails while the page is open reports once and dispo
    pairing:failing==='pairing'?Promise.reject<typeof companion>(refused):Promise.resolve(companion),
    swaps:failing==='swaps'?()=>Promise.reject<typeof swaps>(refused):async()=>swaps,
    lnurl:failing==='lnurl'?()=>Promise.reject<typeof lnurl>(refused):async()=>lnurl,
-   active:()=>true,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
+    signal:new AbortController().signal,active:()=>true,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
   });
   assert.equal(await start,undefined);
-  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['companion']:['swaps','companion']);
+  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['lnurl','companion']:['swaps','companion']);
   assert.deepEqual(reasons(errors),[`Lightning could not start: ${failing} refused`]);
  }
 });
 
 test('a Lightning start that lands hands the page its companion, swaps and address service',async()=>{
  const {events,companion,swaps,lnurl}=lightningFakes(),taken:unknown[]=[],errors:unknown[]=[];
- const start=startPageLightning({pairing:Promise.resolve(companion),swaps:async()=>swaps,lnurl:async()=>lnurl,active:()=>true,handOver:parts=>taken.push(parts),report:error=>errors.push(error)});
+ const start=startPageLightning({pairing:Promise.resolve(companion),swaps:async()=>swaps,lnurl:async()=>lnurl,signal:new AbortController().signal,active:()=>true,handOver:parts=>taken.push(parts),report:error=>errors.push(error)});
  const parts=await start;
  assert.equal(parts?.companion,companion);assert.equal(parts?.swaps,swaps);assert.equal(parts?.lnurl,lnurl);
  assert.equal(taken.length,1);assert.equal(taken[0],parts);assert.deepEqual(events,[]);assert.deepEqual(errors,[]);
+});
+
+test('a Lightning start exposes the address service before the swap service finishes initializing',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[],taken:unknown[]=[];
+ let pending:Promise<unknown>|undefined;
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),
+  swaps:async()=>{await gate.promise;return swaps;},
+  lnurl:async(_companion,pendingSwaps)=>{pending=pendingSwaps;return lnurl;},
+  onLnurl:service=>exposed.push(service),
+   signal:new AbortController().signal,active:()=>true,handOver:parts=>taken.push(parts),report:()=>{},
+ });
+ await flush();
+ assert.equal(pending instanceof Promise,true);assert.deepEqual(exposed,[lnurl]);assert.deepEqual(taken,[]);assert.deepEqual(events,[]);
+ gate.resolve();await start;
+ assert.deepEqual(taken,[{companion,swaps,lnurl}]);
+});
+
+test('a later swap failure disposes the address service exposed early',async()=>{
+ const {events,companion,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[],errors:unknown[]=[];
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),
+  swaps:async()=>{await gate.promise;throw new Error('swap startup failed');},
+   lnurl:async()=>lnurl,onLnurl:service=>exposed.push(service),signal:new AbortController().signal,active:()=>true,handOver:()=>{},report:error=>errors.push(error),
+ });
+ await flush();assert.deepEqual(exposed,[lnurl]);gate.resolve();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','companion']);assert.deepEqual(reasons(errors),['Lightning could not start: swap startup failed']);
+});
+
+test('an address service created after the page closes is never exposed',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[];let active=true;
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async()=>swaps,
+   lnurl:async()=>{await gate.promise;return lnurl;},onLnurl:service=>exposed.push(service),signal:new AbortController().signal,active:()=>active,handOver:()=>{},report:()=>{},
+ });
+ await flush();active=false;gate.resolve();assert.equal(await start,undefined);
+ assert.deepEqual(exposed,[]);assert.deepEqual(events,['lnurl','swaps','companion']);
+});
+
+test('closing the page cancels waiting for a stalled swap start',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),controller=new AbortController();
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async(_companion,signal)=>new Promise<typeof swaps>((resolve,reject)=>{
+   signal.addEventListener('abort',()=>{gate.resolve();reject(new Error('swap start cancelled'));},{once:true});
+   void gate.promise.then(()=>resolve(swaps));
+  }),lnurl:async()=>lnurl,
+  signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{},
+ });
+ await flush();controller.abort();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','companion']);
+ gate.resolve();await flush();assert.deepEqual(events,['lnurl','companion']);
+});
+
+test('cancellation drains a swap resource that resolves after the abort before closing its companion',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),controller=new AbortController();
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async(_companion,signal)=>{
+   signal.addEventListener('abort',()=>gate.resolve(),{once:true});await gate.promise;return swaps;
+  },lnurl:async()=>lnurl,signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{},
+ });
+ await flush();controller.abort();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','swaps','companion']);
 });
 
 test('a quote refused without a Lightning rail routes once more after the start settles',async()=>{

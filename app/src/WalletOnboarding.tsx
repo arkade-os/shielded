@@ -19,6 +19,7 @@ export interface WalletOnboardingProps {
  torHealth?:NativeTorHealthState;
  onToggleTor?:()=>void;
  transportBusy?:boolean;
+ reconnectLabel?:string;
 }
 
 function ShieldMark({small=false}:{small?:boolean}){
@@ -54,7 +55,7 @@ export function EngravedShield(){
  </svg></div>;
 }
 
-export default function WalletOnboarding({transport,setup,busy,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false}:WalletOnboardingProps){
+export default function WalletOnboarding({transport,setup,busy,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false,reconnectLabel}:WalletOnboardingProps){
  const [restoring,setRestoring]=useState(false),id=useId();
  const native=transport==='tor',direct=native&&(torHealth?.status.mode??'tor')==='direct',tor=native&&!direct;
  const titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`,privacyId=`${id}-privacy`;
@@ -79,7 +80,7 @@ export default function WalletOnboarding({transport,setup,busy,phase,error,phras
      <p id={warningId} className="wallet-onboarding-restore-warning">Keep the original app data for outstanding Lightning swaps. The phrase alone cannot recover every pending swap.</p>
      <button className="wallet-onboarding-primary" type="submit" disabled={disabled||!phrase.trim()}>{busy?'Restoring wallet…':'Restore wallet'}</button>
     </form>:<div className="wallet-onboarding-actions">
-     {setup?<><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled)onCreate();}}>{busy?'Creating wallet…':'Create wallet'}</button><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setRestoring(true);}}>Restore a wallet</button></>:<button className="wallet-onboarding-primary" type="button" disabled={busy||transportBusy} onClick={()=>{if(!busy&&!transportBusy)onReconnect();}}>{busy?'Please wait…':native?'Unlock and reconnect':'Reload wallet'}</button>}
+     {setup?<><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled)onCreate();}}>{busy?'Creating wallet…':'Create wallet'}</button><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setRestoring(true);}}>Restore a wallet</button></>:<button className="wallet-onboarding-primary" type="button" disabled={busy||transportBusy} onClick={()=>{if(!busy&&!transportBusy)onReconnect();}}>{busy?'Please wait…':reconnectLabel??(native?'Unlock and reconnect':'Reload wallet')}</button>}
     </div>}
     {waiting&&!busy&&!transportBusy&&<button className="wallet-onboarding-secondary" type="button" onClick={onReconnect}>Retry connection</button>}
    </section>

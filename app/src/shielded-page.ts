@@ -115,20 +115,40 @@ export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()
 }
 
 export type PageLightning<C,S,L>={companion:C;swaps:S;lnurl:L};
-export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C)=>Promise<S>;lnurl:(companion:C,swaps:S)=>Promise<L>;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
- let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined;
+export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C,signal:AbortSignal)=>Promise<S>;lnurl:(companion:C,swaps:Promise<S>,signal:AbortSignal)=>Promise<L>;onLnurl?:(lnurl:L)=>void;signal:AbortSignal;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
+ let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined,pendingSwaps:Promise<S>|undefined,pendingLnurl:Promise<L>|undefined;
+ const waitFor=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
+  if(o.signal.aborted){reject(new Error('Lightning start was cancelled'));return;}
+  const stopped=()=>reject(new Error('Lightning start was cancelled'));
+  o.signal.addEventListener('abort',stopped,{once:true});
+  work.then(value=>{o.signal.removeEventListener('abort',stopped);resolve(value);},error=>{o.signal.removeEventListener('abort',stopped);reject(error);});
+ });
  try{
-  companion=await o.pairing;
+  companion=await waitFor(o.pairing);
   if(o.active()){
-   swaps=await o.swaps(companion);
+   pendingSwaps=o.swaps(companion,o.signal);pendingSwaps.catch(()=>{});
+   pendingLnurl=o.lnurl(companion,pendingSwaps,o.signal);
+   lnurl=await waitFor(pendingLnurl);
+    if(o.active())o.onLnurl?.(lnurl);
    if(o.active()){
-    lnurl=await o.lnurl(companion,swaps);
-    if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
+     swaps=await waitFor(pendingSwaps);
+     if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
    }
   }
- }catch(error){if(o.active())o.report(new Error(`Lightning could not start: ${errorText(error)}`));}
+ }catch(error){
+  if(!o.signal.aborted&&o.active())o.report(new Error(`Lightning could not start: ${errorText(error)}`));
+  if(o.signal.aborted&&!companion)void o.pairing.then(value=>value.dispose(),()=>{}).catch(()=>{});
+  if(o.signal.aborted&&!lnurl)void pendingLnurl?.then(value=>value.dispose(),()=>{}).catch(()=>{});
+ }
  // No hand-over, so this start still owns them; swaps and the address service both run on the companion, so it goes last.
- try{await lnurl?.dispose();}catch{}try{await swaps?.[Symbol.asyncDispose]();}catch{}try{await companion?.dispose();}catch{}
+ try{await lnurl?.dispose();}catch{}
+ let shutdownTimer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  const pending=pendingSwaps?.then(async service=>{if(swaps!==service)await service[Symbol.asyncDispose]();},()=>{}).catch(()=>{});
+  if(pending)await Promise.race([pending,new Promise(resolve=>{shutdownTimer=setTimeout(resolve,1500);})]);
+ }finally{if(shutdownTimer)clearTimeout(shutdownTimer);}
+ try{await swaps?.[Symbol.asyncDispose]();}catch{}
+ try{await companion?.dispose();}catch{}
  return;
 }
 

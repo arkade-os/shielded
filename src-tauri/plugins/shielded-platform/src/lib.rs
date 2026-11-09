@@ -55,6 +55,15 @@ fn read_seed() -> Result<Option<String>, String> {
     }
 }
 
+#[cfg(desktop)]
+fn clear_seed() -> Result<(), String> {
+    let _access = VAULT_ACCESS.lock().map_err(|_| UNAVAILABLE)?;
+    match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(_) => Err(UNAVAILABLE.into()),
+    }
+}
+
 #[tauri::command]
 async fn secret_get<R: Runtime>(
     app: AppHandle<R>,
@@ -121,9 +130,38 @@ async fn secret_set<R: Runtime>(
     }
 }
 
+#[tauri::command]
+async fn secret_clear<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    ensure_local(&window)?;
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        tauri::async_runtime::spawn_blocking(clear_seed)
+            .await
+            .map_err(|_| UNAVAILABLE.to_owned())?
+    }
+    #[cfg(mobile)]
+    {
+        let _: serde_json::Value = app
+            .state::<Mobile<R>>()
+            .0
+            .run_mobile_plugin_async("secretClear", serde_json::json!({}))
+            .await
+            .map_err(|_| UNAVAILABLE)?;
+        Ok(())
+    }
+}
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("shielded-platform")
-        .invoke_handler(tauri::generate_handler![secret_get, secret_set])
+        .invoke_handler(tauri::generate_handler![
+            secret_get,
+            secret_set,
+            secret_clear
+        ])
         .setup(|app, api| {
             #[cfg(target_os = "android")]
             app.manage(Mobile::<R>(api.register_android_plugin(
