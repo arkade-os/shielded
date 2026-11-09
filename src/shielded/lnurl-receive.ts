@@ -27,8 +27,8 @@ export interface LnurlReceiveConfig {
  signal?:AbortSignal;
   onStage?:(stage:UnifiedReceiveStage)=>void;
  onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
- onPayoutError?:(error:unknown)=>void;
- onPayoutReady?:()=>void;
+ onPayoutError?:(error:unknown,revision:number)=>void;
+ onPayoutReady?:(revision:number)=>void;
  watchStartupGraceMs?:number;
  shieldedAddress?:()=>string;
 }
@@ -86,7 +86,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   });
  const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
- let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
+ let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,watched=false,watchRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
  const pendingWrites=new Set<Promise<unknown>>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
  const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
@@ -163,21 +163,21 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  /** Bounds payout startup while its watch continues in the background. */
  const watchWithGrace=async(rows:Destination[])=>{
   if(!rows.length)return true;
-  const pending=watch(rows);let timer:ReturnType<typeof setTimeout>|undefined;
+  const revision=++watchRevision,pending=watch(rows);let timer:ReturnType<typeof setTimeout>|undefined;
   try{
    const settled=await Promise.race([
     pending.then(()=>true),
     new Promise<false>(resolve=>{timer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
    ]);
    if(settled){
-    try{config.onPayoutReady?.();}catch{}
+    try{config.onPayoutReady?.(revision);}catch{}
    }else{
     watched=false;
     void pending.then(()=>{
-     if(!abort.signal.aborted)try{config.onPayoutReady?.();}catch{}
+     if(!abort.signal.aborted)try{config.onPayoutReady?.(revision);}catch{}
     },error=>{
      if(abort.signal.aborted)return;
-     try{config.onPayoutError?.(error);}catch{}
+     try{config.onPayoutError?.(error,revision);}catch{}
     });
    }
    return settled;

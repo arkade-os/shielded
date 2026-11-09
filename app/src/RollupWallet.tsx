@@ -101,7 +101,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [lnBoundsError,setLnBoundsError]=useState('');
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
- const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),unifiedAddressRef=useRef(''),lnLimits=useRef<unknown>(undefined),lnLimitsRead=useRef(0),startingRef=useRef<Promise<unknown>|undefined>(undefined),securityRef=useRef<HTMLDetailsElement>(null);
+ const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),unifiedAddressRef=useRef(''),payoutWatchRevision=useRef(0),lnLimits=useRef<unknown>(undefined),lnLimitsRead=useRef(0),startingRef=useRef<Promise<unknown>|undefined>(undefined),securityRef=useRef<HTMLDetailsElement>(null);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
@@ -283,7 +283,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
-  unifiedAddressRef.current='';setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setPayoutWatchError('');setInvoice(undefined);setRequestOpen(false);setListingError(undefined);
+  unifiedAddressRef.current='';payoutWatchRevision.current=0;setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setPayoutWatchError('');setInvoice(undefined);setRequestOpen(false);setListingError(undefined);
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
@@ -378,7 +378,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     starting=startPageLightning({
      pairing,
      swaps:(paired,signal)=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,signal,...(nativeHost?nativeSwapConfig():{})}),
-     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current){startupWatchdog.stop();activationWatchdog.arm();setUnifiedStage(stage);}},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),onPayoutError:error=>{if(session.active()&&mounted.current&&!restoring.current)setPayoutWatchError(errorText(error));},onPayoutReady:()=>{if(session.active()&&mounted.current&&!restoring.current)setPayoutWatchError('');},shieldedAddress:()=>created!.shieldedAddress()}),
+     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current){startupWatchdog.stop();activationWatchdog.arm();setUnifiedStage(stage);}},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),onPayoutError:(error,revision)=>{if(revision>=payoutWatchRevision.current&&session.active()&&mounted.current&&!restoring.current){payoutWatchRevision.current=revision;setPayoutWatchError(errorText(error));}},onPayoutReady:revision=>{if(revision>=payoutWatchRevision.current&&session.active()&&mounted.current&&!restoring.current){payoutWatchRevision.current=revision;setPayoutWatchError('');}},shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
