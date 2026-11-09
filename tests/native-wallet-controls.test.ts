@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -32,5 +33,11 @@ test('About renders as a modal dialog rather than a route',()=>{
  const html=renderToStaticMarkup(createElement(NativeAbout,{onClose:()=>{}}));
  assert.match(html,/role="dialog" aria-modal="true"/);
  assert.match(html,/Your keys stay with you/);
+ assert.match(html,/uses Tor by default, and Tor can be turned off/);
  assert.doesNotMatch(html,/href=/);
+});
+
+test('the About dialog scrolls inside a short viewport',()=>{
+ const css=readFileSync(new URL('../app/src/native-about.css',import.meta.url),'utf8');
+ assert.match(css,/\.native-about\{[^}]*max-height:calc\(100dvh - 48px\)[^}]*overflow-y:auto/);
 });

@@ -23,7 +23,7 @@ export default function NativeAbout({onClose}:{onClose:()=>void}){
    <span>About</span>
    <h2 id="native-about-title">Your keys stay with you.</h2>
    <p>Shielded is a private Bitcoin wallet on Arkade. Payments inside the pool keep their amount, sender and recipient private. Deposits and withdrawals are public.</p>
-   <p>This Mutinynet build is for testing with test funds only. Wallet traffic uses Tor, while repeated identifiers and timing can still reveal links.</p>
+   <p>This Mutinynet build is for testing with test funds only. Wallet traffic uses Tor by default, and Tor can be turned off. Repeated identifiers and timing can still reveal links.</p>
    <button ref={close} type="button" onClick={onClose}>Close</button>
   </section>
  </div>;

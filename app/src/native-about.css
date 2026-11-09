@@ -1,5 +1,5 @@
 .native-about-layer{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:24px;background:#102c4b70;-webkit-backdrop-filter:blur(9px);backdrop-filter:blur(9px)}
-.native-about{width:min(430px,100%);padding:30px;border:1px solid #fff9;border-radius:22px;background:#f9f7ef;color:#173b54;box-shadow:inset 0 1px #fff,0 24px 90px #0d24394d}
+.native-about{width:min(430px,100%);max-height:calc(100dvh - 48px);overflow-y:auto;padding:30px;border:1px solid #fff9;border-radius:22px;background:#f9f7ef;color:#173b54;box-shadow:inset 0 1px #fff,0 24px 90px #0d24394d}
 .native-about>span{color:#8c661f;font-size:11px;letter-spacing:.12em;text-transform:uppercase}
 .native-about h2{margin:12px 0 16px;font:650 27px/1.15 'Manrope',sans-serif}
 .native-about p{margin:0 0 14px;font-size:14px;line-height:1.65}

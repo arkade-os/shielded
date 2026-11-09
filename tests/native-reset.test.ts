@@ -19,17 +19,24 @@ test('clearing a native wallet removes only its databases and storage before del
  assert.deepEqual(events,['database:shielded-lightning-example','database:shielded-rollup','storage','vault']);
 });
 
-test('a database still in use stops the reset before secrets or account metadata are removed',async()=>{
- const events:string[]=[],factory={
+test('a blocked database keeps the reset pending until deletion succeeds',async()=>{
+ const events:string[]=[];let success:(()=>void)|undefined,blocked:(()=>void)|undefined;
+ const factory={
   async databases(){return [{name:'shielded-rollup'}];},
   deleteDatabase(){
-   return Object.defineProperties({},{
-    onsuccess:{set(){}},
+   const request={};
+   Object.defineProperties(request,{
+    onsuccess:{set(callback){(success=callback) as (()=>void)|undefined;}},
     onerror:{set(){}},
-    onblocked:{set(callback){(callback as (()=>void)|undefined)?.();}},
-   }) as IDBOpenDBRequest;
+    onblocked:{set(callback){(blocked=callback) as (()=>void)|undefined;}},
+   });
+   return request as IDBOpenDBRequest;
   },
  } as unknown as IDBFactory;
- await assert.rejects(clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory}),/still in use/);
- assert.deepEqual(events,[]);
+ const clearing=clearNativeWalletData(async()=>{events.push('vault');},{storage:storageOf(events),indexedDB:factory});let settled=false;
+ void clearing.finally(()=>{settled=true;});
+ await new Promise(resolve=>setImmediate(resolve));blocked?.();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(settled,false);assert.deepEqual(events,[]);
+ success?.();await clearing;
+ assert.deepEqual(events,['storage','vault']);
 });

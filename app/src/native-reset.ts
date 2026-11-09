@@ -3,14 +3,12 @@ type DatabaseFactory=Pick<IDBFactory,'deleteDatabase'> & Partial<Pick<IDBFactory
 function deleteDatabase(factory:DatabaseFactory,name:string){
  return new Promise<void>((resolve,reject)=>{
   const request=factory.deleteDatabase(name);
-  const timer=setTimeout(()=>reject(new Error('Wallet data is still in use. Restart Shielded and try again.')),5000);
   const finish=(error?:unknown)=>{
-   clearTimeout(timer);
    if(error)reject(error);else resolve();
   };
   request.onsuccess=()=>finish();
   request.onerror=()=>finish(request.error??new Error(`Could not clear ${name}.`));
-  request.onblocked=()=>finish(new Error('Wallet data is still in use. Restart Shielded and try again.'));
+  request.onblocked=()=>{};
  });
 }
 

@@ -549,6 +549,38 @@ test('a Lightning start exposes the address service before the swap service fini
  assert.deepEqual(taken,[{companion,swaps,lnurl}]);
 });
 
+test('a later swap failure disposes the address service exposed early',async()=>{
+ const {events,companion,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[],errors:unknown[]=[];
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),
+  swaps:async()=>{await gate.promise;throw new Error('swap startup failed');},
+  lnurl:async()=>lnurl,onLnurl:service=>exposed.push(service),active:()=>true,handOver:()=>{},report:error=>errors.push(error),
+ });
+ await flush();assert.deepEqual(exposed,[lnurl]);gate.resolve();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','companion']);assert.deepEqual(reasons(errors),['Lightning could not start: swap startup failed']);
+});
+
+test('an address service created after the page closes is never exposed',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[];let active=true;
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async()=>swaps,
+  lnurl:async()=>{await gate.promise;return lnurl;},onLnurl:service=>exposed.push(service),active:()=>active,handOver:()=>{},report:()=>{},
+ });
+ await flush();active=false;gate.resolve();assert.equal(await start,undefined);
+ assert.deepEqual(exposed,[]);assert.deepEqual(events,['lnurl','swaps','companion']);
+});
+
+test('closing the page cancels waiting for a stalled swap start',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),controller=new AbortController();
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async()=>{await gate.promise;return swaps;},lnurl:async()=>lnurl,
+  signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{},
+ });
+ await flush();controller.abort();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','companion']);
+ gate.resolve();await flush();assert.deepEqual(events,['lnurl','companion','swaps']);
+});
+
 test('a quote refused without a Lightning rail routes once more after the start settles',async()=>{
  const settled=deferred();let attempts=0;
  const quote=pageQuoteRoute(async()=>{if(++attempts===1)throw new Error('no rail for: lnbc1');return 'quoted';},()=>settled.promise);
