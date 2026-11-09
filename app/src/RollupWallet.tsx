@@ -119,6 +119,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
  useEffect(()=>{if(suspended)setScanning(false);},[suspended]);
+ useEffect(()=>{if(suspended||!viewActive)setAboutOpen(false);},[suspended,viewActive]);
  useEffect(()=>{
   onShutdown?.(async()=>{restoring.current=true;mounted.current=false;await Promise.all([...sessions.current].map(close=>close()));await cacheRef.current!.drain();});
   return()=>onShutdown?.(undefined);
@@ -306,7 +307,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      lnurl:async(paired,swaps)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async payouts=>(await swaps).registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()}),
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
-    startingRef.current=starting;void starting.then(()=>{if(startingRef.current===starting)startingRef.current=undefined;});
+    startingRef.current=starting;void starting.then(parts=>{
+     if(startingRef.current===starting)startingRef.current=undefined;
+     if(!parts&&lnurlRef.current===lnurl)lnurlRef.current=undefined;
+    });
     return created;
    }catch(error){
     void pairing.then(c=>c.dispose()).catch(()=>{});
