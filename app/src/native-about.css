@@ -4,5 +4,16 @@
 .native-about h2{margin:12px 0 16px;font:650 27px/1.15 'Manrope',sans-serif}
 .native-about p{margin:0 0 14px;font-size:14px;line-height:1.65}
 .native-about button{width:100%;min-height:46px;margin-top:8px;border:1px solid #173b54;border-radius:999px;background:#173b54;color:white;font:600 13px 'DM Sans',sans-serif;cursor:pointer}
+.native-about button:disabled{opacity:.55;cursor:wait}
 .native-about button:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
+.native-about-wallet{display:grid;gap:8px;margin-top:22px;padding-top:20px;border-top:1px solid #d8cfbd}
+.native-about-wallet>span{color:#8c661f;font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.native-about-wallet h3{margin:0;font:640 20px/1.2 'Manrope',sans-serif}
+.native-about-wallet p{margin:0;color:#526779;font-size:13px}
+.native-about .native-about-clear{border-color:#a94d53;background:transparent;color:#912c35;box-shadow:inset 0 1px #fff}
+.native-about-confirm{display:grid;gap:10px;padding:13px;border:1px solid #b5485133;border-radius:14px;background:#b548510a}
+.native-about-confirm>div{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.native-about-confirm button{margin-top:0;padding-inline:10px}
+.native-about .native-about-danger{border-color:#8f1d3a;background:#8f1d3a}
+.native-about-error{margin:0!important;color:#8f1d3a!important}
 @media(prefers-reduced-transparency:reduce){.native-about-layer{background:#102c4bdb;-webkit-backdrop-filter:none;backdrop-filter:none}}

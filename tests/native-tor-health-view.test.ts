@@ -13,7 +13,8 @@ const render=(health:NativeTorHealthState,transportBusy=false)=>renderToStaticMa
 test('the native connection panel paints above the wallet surface',()=>{
  const css=readFileSync(new URL('../app/src/native-tor-health.css',import.meta.url),'utf8');
  assert.match(css,/\.native-wallet-topbar\{[^}]*position:relative[^}]*z-index:\d+/);
- assert.match(css,/\.native-tor-panel\{[^}]*z-index:\d+/);
+ assert.match(css,/\.native-tor-panel\{[^}]*position:fixed[^}]*z-index:\d+/);
+ assert.match(css,/\.native-tor-panel\{[^}]*max-width:calc\(100vw - 32px\)/);
  assert.match(css,/\.stock-page\.has-sheet \.stock-backdrop\{z-index:45\}/);
  assert.match(css,/\.stock-page\.has-sheet \.stock-panel\{z-index:50\}/);
  assert.match(css,/\.native-sheet-open \.native-wallet-topbar\{pointer-events:none\}/);

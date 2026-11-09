@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState,type CSSProperties} from 'react';
+import {useCallback,useEffect,useRef,useState,type CSSProperties} from 'react';
 import {createPortal} from 'react-dom';
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
@@ -30,13 +30,13 @@ import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
-import {WalletHeaderActions} from './WalletHeaderActions.tsx';
+import {WalletBrand,WalletHeaderActions} from './WalletHeaderActions.tsx';
 import {WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
 import {isNativeHost,nativeClaimFetch,nativeLnurlFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
 
-const NATIVE=isNativeHost();
-const POOL_ORIGIN=NATIVE?(globalThis as typeof globalThis&{__SHIELDED_NATIVE__:{poolOrigin:string}}).__SHIELDED_NATIVE__.poolOrigin:'';
+const INJECTED_NATIVE=isNativeHost();
+const POOL_ORIGIN=INJECTED_NATIVE?(globalThis as typeof globalThis&{__SHIELDED_NATIVE__:{poolOrigin:string}}).__SHIELDED_NATIVE__.poolOrigin:'';
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
@@ -78,8 +78,8 @@ const NOT_PRIVATE:PrivateReceiveState={on:false,pending:false,refused:false,with
 const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].includes(errorText(error));
 // Stable, so React focuses it once on mount; an inline ref would take focus back on every render.
 const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
-export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown,onReady,onStartupFailure,onClearWallet,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onClearWallet?:()=>Promise<void>;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
- const [sessionFetch]=useState(()=>NATIVE?nativeSessionFetch():undefined);
+export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown,onReady,onStartupFailure,onClearWallet,nativeHost=INJECTED_NATIVE,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
+ const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [nativePending,setNativePending]=useState(false);
  const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
@@ -98,7 +98,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [lnBoundsError,setLnBoundsError]=useState('');
  const [privateState,setPrivateState]=useState(NOT_PRIVATE);
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
- const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),lnLimits=useRef<unknown>(undefined),lnLimitsRead=useRef(0),startingRef=useRef<Promise<unknown>|undefined>(undefined),securityRef=useRef<HTMLDetailsElement>(null);
+ const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),unifiedAddressRef=useRef(''),lnLimits=useRef<unknown>(undefined),lnLimitsRead=useRef(0),startingRef=useRef<Promise<unknown>|undefined>(undefined),securityRef=useRef<HTMLDetailsElement>(null);
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
@@ -208,7 +208,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(mounted.current&&!restoring.current&&lnurlRef.current===service){setInvoice({id:r.id,bolt11:r.artifact.bolt11,outcome:r.outcome,pays:r.give.amount,fee:r.fee.amount});setRequestOpen(true);}
   });
  };
- const showReceiver=(service:LnurlService,receiver:LnurlReceiver)=>{if(receiveCurrent(service)){setUnifiedAddress(receiver.lnurl);setLnAddress(receiver.lightningAddress??'');}};
+ const showReceiver=(service:LnurlService,receiver:LnurlReceiver)=>{if(receiveCurrent(service)){unifiedAddressRef.current=receiver.lnurl;setUnifiedAddress(receiver.lnurl);setLnAddress(receiver.lightningAddress??'');setLnError('');}};
  // claim and recover reject with a method error only after their bind has landed, so the address exists and is shown.
  const bound=async(service:LnurlService|undefined,action:(service:LnurlService)=>Promise<void>)=>{
   if(!service)throw new Error('The wallet is still loading.');
@@ -234,6 +234,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  });
 
  const restoreWallet=async()=>{
+  if(secret||wallet){setRestoreError('A wallet is already loaded. Clear it before restoring another wallet.');return;}
   if(busyRef.current||restoreRequested.current||restoring.current)return;
   restoreRequested.current=true;setRestoreStarted(true);
   try{
@@ -254,7 +255,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
-  setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setInvoice(undefined);setRequestOpen(false);setListingError(undefined);
+  unifiedAddressRef.current='';setUnifiedAddress('');setLnAddress('');setPrivateState(NOT_PRIVATE);setLnError('');setInvoice(undefined);setRequestOpen(false);setListingError(undefined);
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
@@ -274,9 +275,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   },async hash=>{
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
    let created:ShieldedWallet|undefined;
-   const privateFetch=NATIVE?nativeSessionFetch():undefined,lnurlFetch=NATIVE?nativeSessionFetch(nativeLnurlFetch):undefined,claimFetch=NATIVE?nativeSessionFetch(nativeClaimFetch):undefined;
-   const providers=NATIVE?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
-   const pairing=createLightningWallet(secret,{...providers,...(NATIVE?{lazyInitialization:true}:{})});pairing.catch(()=>{});
+    const privateFetch=nativeHost?nativeSessionFetch():undefined,lnurlFetch=nativeHost?nativeSessionFetch(nativeLnurlFetch):undefined,claimFetch=nativeHost?nativeSessionFetch(nativeClaimFetch):undefined;
+    const providers=nativeHost?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
+    const pairing=createLightningWallet(secret,{...providers,...(nativeHost?{lazyInitialization:true}:{})});pairing.catch(()=>{});
    try{
     if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
     const bornAt=bornAtFor(storage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
@@ -286,7 +287,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
      settlementConfig:false,walletMode:'static',
      pool:{origin:POOL_ORIGIN,status},secret,hash,prover:browserProver(()=>poolRef.current??status,privateFetch),
-     ...(NATIVE?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}:{}),
+     ...(nativeHost?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}:{}),
      shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });
@@ -297,15 +298,35 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      if(!current())return;
      lnurl=service;lnurlRef.current=service;
      void service.current().then(owned=>{if(owned&&current())showReceiver(service,owned);}).catch(error=>{if(receiveCurrent(service))lnFail(error);});
-     void service.ensureUnified().then(owned=>{if(current())showReceiver(service,owned);}).catch(async error=>{
-      if(methodsFailure(error)&&receiveCurrent(service)){const owned=await service.current().catch(()=>undefined);if(owned&&current())showReceiver(service,owned);}
-      if(current()&&receiveCurrent(service))lnFail(error);
-     });
+     let activationTimer:ReturnType<typeof setTimeout>|undefined;
+     const activate=async(attempt=0):Promise<void>=>{
+      if(!receiveCurrent(service))return;
+      try{
+       const owned=await service.ensureUnified();
+       if(activationTimer)clearTimeout(activationTimer);
+       if(current())showReceiver(service,owned);
+      }catch(error){
+       if(methodsFailure(error)&&receiveCurrent(service)){
+        const owned=await service.current().catch(()=>undefined);
+        if(owned&&current())showReceiver(service,owned);
+       }
+       if(!receiveCurrent(service))return;
+       if(unifiedAddressRef.current){if(activationTimer)clearTimeout(activationTimer);return;}
+       if(attempt<2){
+        setLnError(`${errorText(error)} Retrying privately…`);
+        setTimeout(()=>{void activate(attempt+1);},800*2**attempt);
+       }else{if(activationTimer)clearTimeout(activationTimer);lnFail(error);}
+      }
+     };
+     activationTimer=setTimeout(()=>{
+      if(receiveCurrent(service)&&!unifiedAddressRef.current)setLnError('Unified address setup is taking longer than expected. Retry below or switch to Shielded or Arkade receive.');
+     },15_000);
+     void activate();
      service.start(error=>{if(current()&&receiveCurrent(service))lnFail(error);});
     };
     starting=startPageLightning({
      pairing,
-     swaps:paired=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,...(NATIVE?nativeSwapConfig():{})}),
+     swaps:paired=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,...(nativeHost?nativeSwapConfig():{})}),
      lnurl:async(paired,swaps)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async payouts=>(await swaps).registerPayouts(payouts),shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
@@ -349,7 +370,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    setTick(t=>t+1);
   }).catch(error=>{if(current()){setStartupError(errorText(error));setStartupFailure(errorText(error));}});
   return()=>{void close().catch(()=>{});};
- },[initialPool,secret]);
+  },[initialPool,secret,nativeHost]);
 
  // No page timer: the wallet's watcher stream and its 60 s watchdog are what move `tick`.
  useEffect(()=>{
@@ -359,21 +380,21 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(fundsRef.current?.wallet===wallet)fundsRef.current.watch.update(data.coins);
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
    if(data.history||data.lightningHistory)setRows(pageActivityHistory(data.history??[],data.lightningHistory??[]));
-   if(NATIVE)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
+   if(nativeHost)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
    else refreshFailed.current=false;
     setRefreshError([...new Set(Object.values(errors))].join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
    setPoolError(e=>wallet.repositoryError?`Your saved notes: ${wallet.repositoryError}`:e.startsWith('Your saved notes: ')?'':e);
-  },{retry:NATIVE});
+  },{retry:nativeHost});
   const close=async()=>{await refresh.close();sessions.current.delete(close);};
   refreshes.current.set(wallet,refresh);refreshRef.current=refresh;sessions.current.add(close);
   return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
  },[wallet]);
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
-  if(!NATIVE||!wallet)return;
+  if(!nativeHost||!wallet)return;
   try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
   catch(error){setPoolError(errorText(error));}
- },[wallet,tick]);
+  },[wallet,tick,nativeHost]);
  // Local reads of the receive state: after every Lightning action, on a new receiver, and on each tick.
  useEffect(()=>{
   const service=lnurlRef.current;if(!wallet||!unifiedAddress||lnBusy||!service||!receiveCurrent(service))return;
@@ -398,9 +419,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool,'spend','',sessionFetch);},[tab,pool,sessionFetch]);
  const docked=narrow&&pool?.phase==='ready';
  useEffect(()=>{
-  const root=document.documentElement;if(NATIVE)root.classList.toggle('native-sheet-open',docked&&sheetOpen);
-  return()=>{if(NATIVE)root.classList.remove('native-sheet-open');};
- },[docked,sheetOpen]);
+  if(!nativeHost)return;
+  const root=document.documentElement;root.classList.toggle('native-sheet-open',docked&&sheetOpen);
+  return()=>{root.classList.remove('native-sheet-open');};
+ },[docked,sheetOpen,nativeHost]);
  useEffect(()=>{if(!docked)setSheetOpen(false);},[docked]);
  useEffect(()=>{const panel=panelNode.current;if(!viewActive||suspended||!sheetOpen||!docked||!panel)return;
   // Everything behind the open sheet goes inert, for Tab and for a screen reader's cursor; the backdrop still closes it and the bar keeps reporting.
@@ -519,11 +541,13 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const openSecurity=(view:WalletSecurityView)=>{setReveal(false);setShowView(false);setShowFull(false);setClearError('');setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const clearWallet=async()=>{
-  if(!onClearWallet||busyRef.current||handleBusy.current||actions.current!.busy)return;
+  if(!onClearWallet)throw new Error('This host cannot clear its wallet data.');
+  if(busyRef.current||handleBusy.current||actions.current!.busy)throw new Error('Wait for the current wallet operation to finish before clearing it.');
   busyRef.current=true;setBusy(true);setClearError('');
   try{await onClearWallet();}
-  catch(error){if(mounted.current){setClearError(errorText(error));busyRef.current=false;setBusy(false);}}
+  catch(error){if(mounted.current){setClearError(errorText(error));busyRef.current=false;setBusy(false);}throw error;}
  };
+ const closeAbout=useCallback(()=>setAboutOpen(false),[]);
  const activity=soundbarItem({sheet,recovering:recovering.size>0,inFlight,recoveryLine:RECOVERY_LINE});
  const {checked:privateChecked,notice:privateNotice}=privateReceiveView(privateState);
  const privateListed=privateState.on&&privateState.listed==='own'&&!privateState.pending&&!privateState.refused&&!privateState.withdrawing;
@@ -575,7 +599,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
   if(!secret)return <WalletOnboarding transport="browser" setup={!restoring.current} busy={busy||restoreStarted} phase={restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload}/>;
 
-  return <WalletEntrance enabled={animateEntrance}><div hidden={hidden} style={hidden?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>wallet</span></a><div className="app-header-status">{!NATIVE&&<AppUpdateNotice/>}<WalletHeaderActions native={NATIVE} onAbout={NATIVE?()=>setAboutOpen(true):()=>{}}/></div></header>
+  return <WalletEntrance enabled={animateEntrance}><div hidden={hidden} style={hidden?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
    {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs remain reserved; a dropped status alone does not prove that they cannot be included later.</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
@@ -686,6 +710,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  {ready&&viewActive&&!suspended&&<><GlassRefraction target={panelNode} active={docked&&sheetOpen} radius={30} bezel={24} strength={36}/><GlassRefraction target={dockLens} active={docked&&(!sheetOpen||tab==='activity')} radius={999} bezel={10} strength={18}/><GlassRefraction target={mainLens} active={!docked} radius={999} bezel={10} strength={18}/><GlassRefraction target={panelLens} active={sheetOpen&&paymentTabs} radius={999} bezel={9} strength={14}/></>}
  {ready&&<Soundbar item={activity} onDismiss={()=>sheetOwner.clear()}/>}
  {scanning&&!suspended&&viewActive&&<Scanner onResult={code=>{setScanning(false);if(!suspended&&viewActive)fill(code);}} onClose={()=>setScanning(false)}/>}
-  {aboutOpen&&NATIVE&&viewActive&&!suspended&&!hidden&&createPortal(<NativeAbout onClose={()=>setAboutOpen(false)}/>,document.body)}
+  {aboutOpen&&nativeHost&&viewActive&&!suspended&&!hidden&&createPortal(<NativeAbout onClose={closeAbout} onClearWallet={onClearWallet?clearWallet:undefined}/>,document.body)}
  </div></WalletEntrance>;
 }

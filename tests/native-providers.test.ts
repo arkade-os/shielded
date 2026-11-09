@@ -81,9 +81,15 @@ test('isolated reads follow short server pages for single and multiple selectors
 });
 
 test('isolated reads reject pagination that cannot advance without repeating a request',async()=>{
- for(const page of [{current:2,next:3,total:3},{current:1,next:1,total:2},{current:1,next:3,total:2},{current:1,next:3,total:3},{current:1,next:0,total:-1},{current:1,next:0,total:0},{current:1,next:2,total:1},{current:1,next:0.5,total:1},{current:1,next:1,total:1.5}]){
+ for(const page of [{current:2,next:3,total:3},{current:1,next:1,total:2},{current:1,next:3,total:2},{current:1,next:3,total:3},{current:1,next:0,total:-1},{current:1,next:0.5,total:1},{current:1,next:1,total:1.5}]){
   let calls=0;const base=new RestIndexerProvider('https://ark.example');base.getVtxos=async()=>{calls++;return {vtxos:[coin('a')],page};};
   await assert.rejects(new IsolatedIndexerProvider('https://ark.example',undefined,base).getVtxos({scripts:['a']}),/page/i);assert.equal(calls,1);
+ }
+});
+test('isolated reads accept terminal pages whose next marker is omitted or reset',async()=>{
+ for(const {page,items} of [{page:{current:1,next:0,total:0},items:[]},{page:{current:1,next:2,total:1},items:[coin('a')]},{page:{current:1,next:0,total:1},items:[coin('a')]}]){
+  const base=new RestIndexerProvider('https://ark.example');base.getVtxos=async()=>({vtxos:items,page});
+  assert.deepEqual((await new IsolatedIndexerProvider('https://ark.example',undefined,base).getVtxos({scripts:['a']})).vtxos,items);
  }
 });
 test('isolated reads accept an empty terminal page after the server result shrinks',async()=>{
