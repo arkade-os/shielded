@@ -83,6 +83,12 @@ test('a rejected check without an error value still reports failure',async t=>{
  assert.equal(f.latest().check,'failed');
 });
 
+test('a failed Tor service probe retries in five seconds instead of lingering for a full interval',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.reject(new Error('service unavailable'));await flush();
+ assert.equal(f.latest().check,'failed');t.mock.timers.tick(4_999);await flush();assert.equal(f.checks.length,1);
+ t.mock.timers.tick(1);await flush();assert.equal(f.checks.length,2);assert.equal(f.latest().check,'checking');
+});
+
 test('pause aborts a probe and its late success cannot restore connected health',async t=>{
  const f=fixture(t);await flush();f.emit({phase:'paused',generation:2});
  assert.equal(f.checks[0]!.signal.aborted,true);assert.equal(f.latest().check,'idle');

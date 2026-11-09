@@ -10,6 +10,7 @@ export interface LnurlPayout {id:string;descriptor:string;address:string;script:
 export interface PaymentMethod {type:string;destination:string}
 export interface LnurlReceiver {handle:string;domain:string;lightningAddress:string|undefined;lnurl:string;status:string;nameless?:boolean;sessionLnurl?:string;paymentMethods?:PaymentMethod[]}
 export interface PrivateReceiveState {on:boolean;pending:boolean;refused:boolean;withdrawing:boolean;listed:'own'|'foreign'|null}
+export type UnifiedReceiveStage='Reading your saved receiver'|'Checking the Lightning address service through Tor'|'Registering your unified address'|'Restoring payout watches'|'Binding your payment routes'|'Unified address ready';
 export interface LnurlReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
@@ -23,6 +24,7 @@ interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:Lnu
 export interface LnurlReceiveConfig {
  identity:Identity;companion:Wallet;journal:LnurlReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;now?:()=>number;
  signal?:AbortSignal;
+  onStage?:(stage:UnifiedReceiveStage)=>void;
  onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
  shieldedAddress?:()=>string;
 }
@@ -230,8 +232,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const unified=(receiver:LnurlReceiver)=>!!receiver.sessionLnurl&&receiver.lnurl===receiver.sessionLnurl;
  const unsupportedUnified=()=>new Error('This Lightning address service did not register a unified address. Use Recover a Lightning address to enable its existing address explicitly.');
  const ensureUnifiedLocked=async()=>{
+   config.onStage?.('Reading your saved receiver');
   const state=await load(),existing=state.servers[serverKey],server=existing??{receivers:[]};
   if(!existing){state.servers[serverKey]=server;await save(state);}
+   config.onStage?.('Checking the Lightning address service through Tor');
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');
   const matched=tracked&&owned.find(row=>sameReceiver(row,tracked));
@@ -243,6 +247,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(!receiver&&owned.length)throw new Error('A Lightning address already exists. Use Recover a Lightning address to enable it here explicitly.');
   const recoverPayouts=!!receiver&&!state.payouts.length;
   if(!receiver){
+    config.onStage?.('Registering your unified address');
    const registered=fromAddress(await client.registerAddress({token:await token(),domain,nameless:true}));
    server.pending=registered.handle;await save(state);
    if(!unified(registered))throw unsupportedUnified();
@@ -251,7 +256,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const receivers=[receiver,...server.receivers.filter(row=>!sameReceiver(row,receiver))];
   if(recoverPayouts)server.recovering=true;
   if(JSON.stringify(server.receivers)!==JSON.stringify(receivers)||server.pending||recoverPayouts){server.receivers=receivers;delete server.pending;await save(state);}
+   config.onStage?.('Restoring payout watches');
   await settle(state,server);
+   config.onStage?.('Binding your payment routes');
+   config.onStage?.('Unified address ready');
   return receiver;
  };
  return {

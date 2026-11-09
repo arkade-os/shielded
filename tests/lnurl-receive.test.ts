@@ -129,6 +129,19 @@ test('a unified receiver registers without a name or shielded method and binds b
  assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
 });
 
+test('unified setup reports progress through local state, Tor service work, watch restoration and binding',async()=>{
+ const f=setup(),stages:string[]=[],service=createLnurlReceive({...f.config,onStage:stage=>stages.push(stage)});
+ await service.ensureUnified();
+ assert.deepEqual(stages,[
+  'Reading your saved receiver',
+  'Checking the Lightning address service through Tor',
+  'Registering your unified address',
+  'Restoring payout watches',
+  'Binding your payment routes',
+  'Unified address ready',
+ ]);
+});
+
 test('a fresh journal recovers funded session payouts before binding a unified receiver',async()=>{
  const f=setup({aliases:[nameless]});f.funded.add(at(3).script);f.funded.add(at(70).script);
  await f.service.ensureUnified();

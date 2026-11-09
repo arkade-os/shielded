@@ -66,7 +66,17 @@ test('direct mode always shows its warning and never claims Tor connectivity',()
 test('switching disables the control and direct failures keep direct-mode copy',()=>{
  const html=render({status:{phase:'ready',generation:2,mode:'direct'},check:'failed',error:'Service unavailable'},true);
  assert.match(html,/role="switch" aria-checked="false" disabled=""/);
- assert.match(html,/direct connection check failed/);
+ assert.match(html,/wallet-service check failed through the direct connection/i);
  assert.match(html,/Service unavailable/);
  assert.doesNotMatch(html,/Tor check failed|through Tor|Separate Tor scopes/);
+});
+
+test('a ready Tor transport distinguishes a failed service probe from a bootstrap failure',()=>{
+ const html=render({status:{phase:'bootstrapping',generation:2,progress:'42%'},check:'idle'});
+ assert.match(html,/Building Tor circuits/);
+ assert.match(html,/42%/);
+ assert.match(html,/The first connection can take a minute/);
+ const failed=render({status:{phase:'ready',generation:2},check:'failed',error:'Service unavailable'});
+ assert.match(failed,/Tor ready · service check failed/);
+ assert.match(failed,/Shielded is retrying without falling back/);
 });
