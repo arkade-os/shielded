@@ -166,11 +166,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
     pending.then(()=>true),
     new Promise<false>(resolve=>{timer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
    ]);
-   if(!settled)void pending.catch(error=>{
-    if(abort.signal.aborted)return;
+   if(!settled){
     watched=false;
-    try{config.onPayoutError?.(error);}catch{}
-   });
+    void pending.catch(error=>{
+     if(abort.signal.aborted)return;
+     try{config.onPayoutError?.(error);}catch{}
+    });
+   }
    return settled;
   }finally{if(timer)clearTimeout(timer);}
  };
