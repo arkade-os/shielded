@@ -142,6 +142,17 @@ test('unified setup reports progress through local state, Tor service work, watc
  ]);
 });
 
+test('a slow Lightning handoff cannot hold the unified address behind swap startup',async()=>{
+ const f=setup();let release!:()=>void,finished=0;const held=new Promise<void>(resolve=>{release=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async(_rows,signal)=>{await held;if(!signal.aborted)finished++;}});
+ const receiver=await Promise.race([service.ensureUnified(),new Promise<never>((_resolve,reject)=>setTimeout(()=>reject(new Error('unified address waited for swap startup')),250))]);
+ assert.equal(receiver.lnurl,sessionLnurl);
+ assert.equal(f.bound().length,1);assert.equal(finished,0);
+ release();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(finished,1);
+ await service.dispose();
+});
+
 test('a fresh journal recovers funded session payouts before binding a unified receiver',async()=>{
  const f=setup({aliases:[nameless]});f.funded.add(at(3).script);f.funded.add(at(70).script);
  await f.service.ensureUnified();

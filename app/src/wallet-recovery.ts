@@ -5,6 +5,8 @@ export const PRIVATE_RECEIVE_RESTART_COOLDOWN_MS=120_000;
 export const PRIVATE_RECEIVE_STALL_MS=90_000;
 
 type StorageLike=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
+type DocumentRoot={classList:{remove:(name:string)=>void};style:{removeProperty:(name:string)=>void}};
+type InertNode={removeAttribute:(name:string)=>void};
 type TransientWalletControls={
  closeSheet:()=>void;
  closeScanner:()=>void;
@@ -77,4 +79,10 @@ export function dismissTransientWalletViews(controls:TransientWalletControls){
  controls.closeAbout();
  controls.closeRequest();
  controls.closeSecurity();
+}
+
+export function clearNativeTransientDocument(root:DocumentRoot,inert:readonly InertNode[]=[]){
+ root.classList.remove('native-sheet-open');
+ root.style.removeProperty('overflow');
+ for(const node of inert)node.removeAttribute('inert');
 }

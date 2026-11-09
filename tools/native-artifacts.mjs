@@ -14,6 +14,11 @@ export function verifyMutinynet(projectRoot) {
   }
 }
 
+export function canonicalTextSha256(bytes) {
+  const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes);
+  return createHash('sha256').update(text.replace(/\r\n?/g, '\n'), 'utf8').digest('hex');
+}
+
 function files(directory) {
   if (!existsSync(directory)) return [];
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
@@ -55,8 +60,8 @@ export function collectNativeArtifacts(projectRoot, platform, profile, commit) {
     const bytes = readFileSync(destination);
     return { file: name, profile: artifact.profile, requiresSigning: artifact.requiresSigning, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
   });
-  const lockfileSha256 = createHash('sha256').update(readFileSync(join(projectRoot, 'package-lock.json'))).digest('hex');
-  const rustLockfileSha256 = createHash('sha256').update(readFileSync(join(projectRoot, 'src-tauri/Cargo.lock'))).digest('hex');
+  const lockfileSha256 = canonicalTextSha256(readFileSync(join(projectRoot, 'package-lock.json')));
+  const rustLockfileSha256 = canonicalTextSha256(readFileSync(join(projectRoot, 'src-tauri/Cargo.lock')));
   const environment = {
     node: '24.22.2',
     rust: '1.96.0',

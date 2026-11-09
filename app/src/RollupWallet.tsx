@@ -378,7 +378,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     starting=startPageLightning({
      pairing,
      swaps:(paired,signal)=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,signal,...(nativeHost?nativeSwapConfig():{})}),
-     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current){startupWatchdog.stop();activationWatchdog.arm();setUnifiedStage(stage);}},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),shieldedAddress:()=>created!.shieldedAddress()}),
+     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,onStage:stage=>{if(mounted.current&&!restoring.current){startupWatchdog.stop();activationWatchdog.arm();setUnifiedStage(stage);}},...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),onPayoutError:reportLightning,shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });

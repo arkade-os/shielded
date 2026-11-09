@@ -21,11 +21,14 @@ interface Destination extends LnurlPayout {index:number;claimPublicKey:string;pa
 interface ServerState {receivers:LnurlReceiver[];pending?:string;current?:string;boundAt?:number;refused?:true;migrated?:true;recovering?:true;methods?:true;methodsPending?:true;methodsRefused?:true;withdraw?:true}
 interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<string,ServerState>}
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
+export const WATCH_STARTUP_GRACE_MS=5_000;
 export interface LnurlReceiveConfig {
  identity:Identity;companion:Wallet;journal:LnurlReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;now?:()=>number;
  signal?:AbortSignal;
   onStage?:(stage:UnifiedReceiveStage)=>void;
  onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
+ onPayoutError?:(error:unknown)=>void;
+ watchStartupGraceMs?:number;
  shieldedAddress?:()=>string;
 }
 // Each idle rotation leaves one unused index, so daily keeps a year of idle rotations inside RECOVERY_GAP.
@@ -156,7 +159,22 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(config.onPayouts)await dataWork(config.onPayouts(rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})),abort.signal));
   }catch(error){watched=false;throw error;}
  };
- const restoreWatches=async(state:ReceiveState)=>{if(!watched){await watch(state.payouts);watched=true;}};
+ const watchWithGrace=async(rows:Destination[])=>{
+  const pending=watch(rows);let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+   const settled=await Promise.race([
+    pending.then(()=>true),
+    new Promise<false>(resolve=>{timer=setTimeout(()=>resolve(false),Math.max(0,config.watchStartupGraceMs??WATCH_STARTUP_GRACE_MS));}),
+   ]);
+   if(!settled)void pending.catch(error=>{
+    if(abort.signal.aborted)return;
+    watched=false;
+    try{config.onPayoutError?.(error);}catch{}
+   });
+   return settled;
+  }finally{if(timer)clearTimeout(timer);}
+ };
+ const restoreWatches=async(state:ReceiveState)=>{if(!watched)watched=await watchWithGrace(state.payouts);};
  const used=async(scripts:string[])=>new Set((await untilStopped(config.companion.indexerProvider.getVtxos({scripts}))).vtxos.map(coin=>coin.script));
  // Highest index from `from` on that ever held a coin; stops after `gap` unused ones.
  const scan=async(branch:ReturnType<typeof receiveBranch>,from:number,gap:number)=>{
@@ -171,12 +189,12 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const adopt=async(state:ReceiveState,branch:ReturnType<typeof receiveBranch>,from:number,high:number)=>{
   const added:Destination[]=[];
   for(let index=from;index<=high;index++){const row=receiveDestination(branch,index);if(!state.payouts.some(p=>p.script===row.script)){state.payouts.push(row);added.push(row);}}
-  state.next=Math.max(state.next,high+1);await save(state);await watch(added);
+  state.next=Math.max(state.next,high+1);await save(state);await watchWithGrace(added);
  };
  const advance=async(state:ReceiveState,server:ServerState)=>{
   const row=receiveDestination(await currentBranch(),state.next);
   state.next++;state.payouts.push(row);server.current=row.script;delete server.boundAt;
-  await save(state);await watch([row]);
+  await save(state);await watchWithGrace([row]);
  };
  const bind=async(state:ReceiveState,server:ServerState)=>{
   const row=state.payouts.find(p=>p.script===server.current);
