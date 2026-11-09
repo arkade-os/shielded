@@ -26,6 +26,7 @@ export async function clearNativeWalletData(
  const databases=typeof indexedDB?.databases==='function'?await indexedDB.databases():[];
  const names=[...new Set(databases.map(database=>database.name).filter((name):name is string=>!!name&&name.startsWith('shielded-')))].sort();
  if(indexedDB&&!names.length)names.push('shielded-rollup','shielded-lightning');
+ // Keep the vault secret until every database delete settles, so a partial reset stays recoverable.
  for(const name of names)await deleteDatabase(indexedDB!,name,blockedAfterMs,onBlocked);
  storage.clear();
  await deleteSecret();

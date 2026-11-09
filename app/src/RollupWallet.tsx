@@ -259,6 +259,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const status=initialPool,network=status.network;
   let journal:IndexedDbLightningRepository;
   let nativeOpened=false;
+  let activationTimer:ReturnType<typeof setTimeout>|undefined;
   const startController=new AbortController();
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createLnurlReceive>|undefined;
   let starting:Promise<PageLightning<Wallet,Awaited<ReturnType<typeof createPrivateLightning>>,ReturnType<typeof createLnurlReceive>>|undefined>|undefined;
@@ -298,7 +299,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      if(!current())return;
      lnurl=service;lnurlRef.current=service;
      void service.current().then(owned=>{if(owned&&current())showReceiver(service,owned);}).catch(error=>{if(receiveCurrent(service))lnFail(error);});
-     let activationTimer:ReturnType<typeof setTimeout>|undefined;
      const activate=async(attempt=0):Promise<void>=>{
       if(!receiveCurrent(service))return;
       try{
@@ -327,7 +327,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     starting=startPageLightning({
      pairing,
      swaps:(paired,signal)=>createPrivateLightning({wallet:created!,companion:paired,journal,onError:reportLightning,signal,...(nativeHost?nativeSwapConfig():{})}),
-     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,_signal)=>(await swaps).registerPayouts(payouts,_signal),shieldedAddress:()=>created!.shieldedAddress()}),
+     lnurl:async(paired,swaps,signal)=>createLnurlReceive({identity:created!.identity,companion:paired,journal,owner:await lightningOwner(paired),pool:status.pool!.token,baseUrl:LNURL_BASE,signal,...(lnurlFetch?{fetch:lnurlFetch}:{}),onPayouts:async(payouts,payoutSignal)=>(await swaps).registerPayouts(payouts,payoutSignal),shieldedAddress:()=>created!.shieldedAddress()}),
      signal:startController.signal,
      onLnurl:startLnurl,active:()=>session.active(),handOver:parts=>{companion=parts.companion;lnurl=parts.lnurl;created!.swaps=parts.swaps;},report:reportLightning,
     });
@@ -348,6 +348,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const finishClose=pageClose(async(closed:ReturnType<typeof session.close>)=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);});
   const close=()=>{
    startController.abort();
+   if(activationTimer)clearTimeout(activationTimer);
+   activationTimer=undefined;
    const closed=session.close();for(const off of unwatch.splice(0))off();sheetOwner.stop();
    return finishClose(closed);
   };
@@ -544,7 +546,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const clearWallet=async()=>{
   if(!onClearWallet)throw new Error('This host cannot clear its wallet data.');
-  if(busyRef.current||handleBusy.current||actions.current!.busy)throw new Error('Wait for the current wallet operation to finish before clearing it.');
+  if(busyRef.current||handleBusy.current||actions.current?.busy)throw new Error('Wait for the current wallet operation to finish before clearing it.');
   busyRef.current=true;setBusy(true);setClearError('');
   try{await onClearWallet();}
   catch(error){if(mounted.current){setClearError(errorText(error));busyRef.current=false;setBusy(false);}throw error;}
