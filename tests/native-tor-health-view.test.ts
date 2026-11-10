@@ -19,7 +19,7 @@ test('the native connection panel paints above the wallet surface',()=>{
  assert.match(css,/\.native-tor-panel\[data-tone=dark\]\{[^}]*background:#172a3c/);
  assert.match(css,/\.native-tor-panel\[data-tone=dark\] \.native-tor-switch\{/);
  assert.match(css,/\.stock-page\.has-sheet \.stock-backdrop\{z-index:45\}/);
- assert.match(css,/\.stock-page\.has-sheet \.stock-panel\{z-index:50\}/);
+ assert.match(css,/\.stock-page\.has-dock\.has-sheet \.stock-panel\{z-index:50\}/);
  assert.match(css,/\.native-sheet-open \.native-wallet-topbar\{pointer-events:none\}/);
 });
 

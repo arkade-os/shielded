@@ -7,3 +7,8 @@ export function WalletSecurityMenu({canReveal,canClear,onOpen}:{canReveal:boolea
   {canClear&&<button type="button" className="stock-security-choice stock-security-danger" onClick={()=>onOpen('clear')}><strong>Clear wallet</strong><small>Remove this wallet from this device</small><span aria-hidden="true">›</span></button>}
  </div>;
 }
+
+export function WalletCreatedNotice({created}:{created:number}){
+ if(!created)return null;
+ return <p className="stock-muted">Created {new Date(created).toLocaleDateString()}. Keep the date with the words: a restore that has it skips the pool&apos;s older history.</p>;
+}

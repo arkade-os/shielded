@@ -5,7 +5,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {test} from 'node:test';
 import {WalletBrand,WalletHeaderActions} from '../app/src/WalletHeaderActions.tsx';
-import {WalletSecurityMenu} from '../app/src/WalletSecurityMenu.tsx';
+import {WalletCreatedNotice,WalletSecurityMenu} from '../app/src/WalletSecurityMenu.tsx';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {default:NativeAbout}=await import('../app/src/NativeAbout.tsx');
@@ -36,13 +36,17 @@ test('clear is unavailable where the host cannot delete its vault',()=>{
 });
 
 test('About renders as a modal dialog rather than a route',()=>{
- const html=renderToStaticMarkup(createElement(NativeAbout,{onClose:()=>{},onClearWallet:async()=>{}}));
+ const html=renderToStaticMarkup(createElement(NativeAbout,{onClose:()=>{}}));
  assert.match(html,/role="dialog" aria-modal="true"/);
  assert.match(html,/Your keys stay with you/);
  assert.match(html,/uses Tor by default, and Tor can be turned off/);
- assert.match(html,/Clear this wallet/);
- assert.match(html,/Clear wallet…/);
+ assert.doesNotMatch(html,/Wallet controls|Clear this wallet|Clear wallet…/);
  assert.doesNotMatch(html,/href=/);
+});
+
+test('a wallet without a creation timestamp renders no stray zero',()=>{
+ assert.equal(renderToStaticMarkup(createElement(WalletCreatedNotice,{created:0})),'');
+ assert.match(renderToStaticMarkup(createElement(WalletCreatedNotice,{created:Date.UTC(2026,10,10)})),/Created .*2026/);
 });
 
 test('the About dialog scrolls inside a short viewport',()=>{
