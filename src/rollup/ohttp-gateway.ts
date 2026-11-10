@@ -3,7 +3,7 @@ import type {OhttpGatewayKey} from './ohttp-keys.ts';
 
 export interface OhttpUpstream{origin:string;prefix:string}
 export type OhttpOutcome={kind:'sealed';bytes:Uint8Array}|{kind:'busy';status:429|503;retryAfter:number}|{kind:'refused'};
-export type OhttpOpen=(sealed:Uint8Array,options?:{maxAnswer?:number;signal?:AbortSignal})=>Promise<OhttpOutcome>;
+export type OhttpOpen=(sealed:Uint8Array,options?:{maxAnswer?:number;signal?:AbortSignal;room?:()=>boolean})=>Promise<OhttpOutcome>;
 
 const MAX_RESPONSE=4<<20,REMEMBERED=100_000;
 const STREAMS=['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription','/v1/indexer/subscription'];
@@ -52,9 +52,10 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   return new Uint8Array(await (await opened.context.encapsulateResponse(await forward(opened.request,gone,cap))).arrayBuffer());
  };
  // No upload and no late reader here, so the upstream deadline alone bounds the slot.
- const open:OhttpOpen=async(sealed,{maxAnswer=MAX_RESPONSE,signal=new AbortController().signal}={})=>{
+ const open:OhttpOpen=async(sealed,{maxAnswer=MAX_RESPONSE,signal=new AbortController().signal,room}={})=>{
   // seen holds only requests that opened, so nothing can plant a value: a copy is refused before a full gateway sheds it, which a client reads as "never ran".
   if(seen.has(encOf(sealed))){note('replayed');return {kind:'refused'};}
+  if(room?.()===false){note('outbound');return {kind:'busy',status:503,retryAfter:1};}
   const busy=admit();if(busy)return {kind:'busy',...busy};
   inFlight++;
   try{const bytes=await unseal(sealed,'message/ohttp-req',signal,Number.isFinite(maxAnswer)&&maxAnswer>0&&maxAnswer<MAX_RESPONSE?maxAnswer:MAX_RESPONSE);return bytes?{kind:'sealed',bytes}:{kind:'refused'};}

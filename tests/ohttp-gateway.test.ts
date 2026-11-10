@@ -239,6 +239,15 @@ test('open() sheds and rate-limits before opening',async t=>{
  clock+=1000;assert.equal((await through(rated.router,over)).status,200,'the refused bytes were never opened, so they are no replay');
 });
 
+test('open() asks room after the replay check: a spent room sheds with 503 and takes neither the rate nor the register',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ let clock=0;const g=await gateway(t,{rate:1,now:()=>clock}),sealed=await g.seal(ARK);
+ assert.deepEqual(await g.router.open(bytesOf(sealed),{room:()=>false}),{kind:'busy',status:503,retryAfter:1});assert.equal(g.calls.length,0);
+ assert.equal((await through(g.router,sealed,{room:()=>true})).status,200,'the shed recorded nothing, and the one rate slot was still free');
+ clock=60_000;assert.deepEqual(await g.router.open(bytesOf(sealed),{room:()=>{throw new Error('asked');}}),{kind:'refused'},'a replay never asks');
+ assert.deepEqual(lines,['[ohttp] outbound 1, forwarded 1, replayed 1']);
+});
+
 test('open() refuses garbage and replays, sharing the register with the HTTP route',async t=>{
  const g=await gateway(t),opened=await g.seal(ARK),posted=await g.seal(ARK);
  assert.deepEqual(await g.router.open(randomBytes(64)),{kind:'refused'});
