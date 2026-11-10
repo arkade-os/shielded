@@ -1,15 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {bindSheetGesture,bindSwipeGesture} from '../app/src/wallet-gestures.ts';
+import {bindPullToRefresh,bindSheetGesture,bindSwipeGesture} from '../app/src/wallet-gestures.ts';
 
-class TestDocument extends EventTarget {visibilityState='visible';defaultView=new EventTarget();}
+class TestDocument extends EventTarget {visibilityState='visible';defaultView=new EventTarget();scrollingElement?:TestElement;}
 class TestElement extends EventTarget {
  isConnected=true;
- values=new Map<string,string>();classes=new Set<string>();captured=new Set<number>();
+ values=new Map<string,string>();classes=new Set<string>();captured=new Set<number>();scrollTop=0;
  style={getPropertyValue:(name:string)=>this.values.get(name)??'',setProperty:(name:string,value:string)=>this.values.set(name,value),removeProperty:(name:string)=>{const old=this.values.get(name)??'';this.values.delete(name);return old;}};
- classList={add:(name:string)=>this.classes.add(name),remove:(name:string)=>this.classes.delete(name)};
+ classList={add:(name:string)=>this.classes.add(name),remove:(name:string)=>this.classes.delete(name),contains:(name:string)=>this.classes.has(name)};
  constructor(readonly ownerDocument:TestDocument,readonly tag='div',readonly parent?:TestElement,readonly attributes:Record<string,string>={}){super();}
- closest(selector:string):TestElement|null{return selector.split(',').some(part=>{const s=part.trim();return s===this.tag||s==='[contenteditable]'&&'contenteditable' in this.attributes||s==='[data-gesture-ignore]'&&'data-gesture-ignore' in this.attributes||s===`[role="${this.attributes.role}"]`;})?this:this.parent?.closest(selector)??null;}
+ closest(selector:string):TestElement|null{return selector.split(',').some(part=>{const s=part.trim(),classes=s.startsWith('.')?s.slice(1).split('.'):[];return s===this.tag||classes.length>0&&classes.every(name=>this.classes.has(name))||s==='[contenteditable]'&&'contenteditable' in this.attributes||s==='[data-gesture-ignore]'&&'data-gesture-ignore' in this.attributes||s===`[role="${this.attributes.role}"]`;})?this:this.parent?.closest(selector)??null;}
  setPointerCapture(id:number){this.captured.add(id);}
  hasPointerCapture(id:number){return this.captured.has(id);}
  releasePointerCapture(id:number){this.captured.delete(id);}
@@ -125,4 +125,55 @@ test('mouse, touch and pen contacts use the same primary-pointer dismissal path'
   const s=sheet();pointer(s.handle,'pointerdown',0,0,0,{pointerType});pointer(s.doc,'pointermove',0,120,100,{pointerType});pointer(s.doc,'pointerup',0,120,120,{pointerType});
   assert.equal(s.dismissed(),1,pointerType);s.dispose();
  }
+});
+
+test('pulling down from the top refreshes once and publishes its progress',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),states:boolean[]=[];let refreshes=0;
+ const dispose=bindPullToRefresh(element(surface),async()=>{refreshes++;},{distance:60,onState:state=>states.push(state.refreshing)});
+ pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);assert.ok(surface.classes.has('is-pulling-to-refresh'));
+ pointer(doc,'pointermove',0,5,110);assert.equal(surface.values.get('--wallet-pull-distance'),'5px');assert.equal(surface.classes.has('is-pull-ready'),false);
+ pointer(doc,'pointermove',0,70,115);pointer(doc,'pointerup',0,70,120);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(refreshes,1);assert.equal(states.at(-1),false);assert.equal(surface.classes.size,0);dispose();
+});
+
+test('pull to refresh ignores controls, horizontal movement and scrolled content',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),button=new TestElement(doc,'button',surface);let refreshes=0;
+ const dispose=bindPullToRefresh(element(surface),()=>{refreshes++;});
+ pointer(surface,'pointerdown',0,0,0,{target:button});pointer(doc,'pointermove',0,100,100);pointer(doc,'pointerup',0,100,120);
+ pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',80,4,300);pointer(doc,'pointerup',80,4,320);
+ pointer(surface,'pointerdown',0,0,400);pointer(doc,'pointermove',0,100,500);pointer(doc,'pointerup',0,100,520);
+ const dockedPage=new TestElement(doc,'div',surface);dockedPage.classList.add('stock-page');dockedPage.classList.add('has-dock');
+ const panel=new TestElement(doc,'div',dockedPage);panel.classList.add('stock-panel');panel.scrollTop=100;const content=new TestElement(doc,'p',panel);
+ pointer(surface,'pointerdown',0,0,600,{target:content});pointer(doc,'pointermove',0,100,700);pointer(doc,'pointerup',0,100,720);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(refreshes,1);dispose();
+});
+
+test('an undocked panel uses the document scroll position before accepting a pull',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),page=new TestElement(doc),panel=new TestElement(doc,'div',surface),content=new TestElement(doc,'p',panel);let refreshes=0;
+ panel.classList.add('stock-panel');page.scrollTop=100;doc.scrollingElement=page;
+ const dispose=bindPullToRefresh(element(surface),()=>{refreshes++;});
+ pointer(surface,'pointerdown',0,0,0,{target:content});pointer(doc,'pointermove',0,100,100);pointer(doc,'pointerup',0,100,120);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(refreshes,0);dispose();
+});
+
+test('disposing a pending pull clears its state and an old completion cannot replace a new binding',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),states:boolean[]=[];
+ let finishOld=()=>{},finishNew=()=>{};
+ const first=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finishOld=resolve;}),{distance:60,onState:state=>states.push(state.refreshing)});
+ pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);pointer(doc,'pointerup',0,70,120);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);first();assert.equal(states.at(-1),false);
+ const second=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finishNew=resolve;}),{distance:60,onState:state=>states.push(state.refreshing)});
+ pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',0,70,300);pointer(doc,'pointerup',0,70,320);
+ assert.equal(states.at(-1),true);finishOld();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);
+ finishNew();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),false);second();
+});
+
+test('a pull refresh failure reaches the explicit error channel and releases its state',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),errors:unknown[]=[];
+ const dispose=bindPullToRefresh(element(surface),async()=>{throw new Error('refresh failed');},{distance:60,onError:error=>errors.push(error)});
+ pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);pointer(doc,'pointerup',0,70,120);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal((errors[0] as Error).message,'refresh failed');assert.equal(surface.classes.size,0);dispose();
 });
