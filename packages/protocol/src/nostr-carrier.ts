@@ -37,8 +37,8 @@ export function answerEvents(sealed:Uint8Array,address:string,secret:Uint8Array,
  if(count<1||count>NOSTR_MAX_CHUNKS)throw new RangeError(`A sealed answer is 1 to ${NOSTR_MAX_CHUNKS} chunks of ${NOSTR_CHUNK_BYTES} bytes.`);
  return Array.from({length:count},(_,i)=>answerEvent(address,[['chunk',String(i),String(count)]],base64.encode(sealed.subarray(i*NOSTR_CHUNK_BYTES,(i+1)*NOSTR_CHUNK_BYTES)),secret,roundedSeconds(nowMs)));
 }
-/** retryAfter is whole seconds; readAnswer ignores a status event whose delay is anything else. Signed to the second: a request shed twice within 30 s needs two event ids. */
-export const statusEvent=(status:429|503,retryAfter:number,address:string,secret:Uint8Array,nowMs:number):VerifiedEvent=>answerEvent(address,[['status',String(status)],['retry-after',String(retryAfter)]],'',secret,Math.floor(nowMs/1000));
+/** retryAfter is whole seconds; readAnswer ignores a status event whose delay is anything else. request is the id of the request event that was shed. Signed to the second: a request shed twice within 30 s needs two event ids. */
+export const statusEvent=(status:429|503,retryAfter:number,address:string,request:string,secret:Uint8Array,nowMs:number):VerifiedEvent=>answerEvent(address,[['e',request],['status',String(status)],['retry-after',String(retryAfter)]],'',secret,Math.floor(nowMs/1000));
 
 function joined(events:readonly Event[]):Uint8Array|undefined {
  const parts=new Map<number,string>();let count=0;
@@ -54,12 +54,12 @@ function joined(events:readonly Event[]):Uint8Array|undefined {
  return concatBytes(...chunks);
 }
 /** Chunks first: a status says one copy never ran, and a later copy of the same bytes may still have been answered. */
-export function readAnswer(events:readonly Event[],address:string,gateway:string):{kind:'sealed';bytes:Uint8Array}|{kind:'status';status:number;retryAfter:number}|undefined {
+export function readAnswer(events:readonly Event[],address:string,gateway:string):{kind:'sealed';bytes:Uint8Array}|{kind:'status';status:number;retryAfter:number;request:string}|undefined {
  const mine=events.filter(event=>verified(event)&&event.kind===NOSTR_ANSWER_KIND&&event.pubkey===gateway&&tag(event,'x',address)),bytes=joined(mine);
  if(bytes)return {kind:'sealed',bytes};
  for(const event of mine){
-  const status=whole(tag(event,'status')?.[1]),retryAfter=whole(tag(event,'retry-after')?.[1]);
-  if((status===429||status===503)&&Number.isFinite(retryAfter))return {kind:'status',status,retryAfter};
+  const status=whole(tag(event,'status')?.[1]),retryAfter=whole(tag(event,'retry-after')?.[1]),request=tag(event,'e')?.[1];
+  if((status===429||status===503)&&Number.isFinite(retryAfter)&&typeof request==='string')return {kind:'status',status,retryAfter,request};
  }
  return undefined;
 }

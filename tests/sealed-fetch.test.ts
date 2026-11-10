@@ -170,7 +170,7 @@ test('attempts run out as unavailable',async t=>{
 test('a status event cannot hold the client past its attempt deadline',{timeout:10_000},async t=>{
  let replies=0;const g=await rig(t,{relays:[A],timeoutMs:200,reply:()=>++replies===1?new Promise<Response>(()=>{}):Response.json({ok:true})});
  const started=performance.now(),pending=g.fetch(ARK);await until(()=>g.calls.length===1);
- await Promise.all(g.bus.pool.publish([A],statusEvent(503,3600,g.address(),g.key.nostrSecret,Date.now())));
+ await Promise.all(g.bus.pool.publish([A],statusEvent(503,3600,g.address(),g.sent()[0]!.id,g.key.nostrSecret,Date.now())));
  assert.equal((await pending).status,200);assert.ok(performance.now()-started<2000,'the hour the status asked for was cut to the deadline');
 });
 
@@ -186,13 +186,23 @@ test('a stored status from an earlier attempt does not end a later one',async t=
 test('a status for an earlier GET attempt does not end the current attempt',async t=>{
  const {held,release}=holding(),g=await rig(t,{pick:1,timeoutMs:500,attempts:2,reply:()=>held});g.bus.relay(A).deliver=false;
  const pending=g.fetch(ARK);await until(()=>g.calls.length===1);
- g.bus.relay(A).deliver=true;await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.key.nostrSecret,Date.now())));await sleep(20);release();
+ g.bus.relay(A).deliver=true;await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.sent()[0]!.id,g.key.nostrSecret,Date.now())));await sleep(20);release();
  assert.equal((await pending).status,200,'the second, last attempt kept waiting for its own answer');assert.deepEqual(g.sentTo().slice(0,2),[[A],[B]]);
+});
+
+test('a late status for an earlier copy of a POST does not end a later attempt',async t=>{
+ let replies=0;const slot=holding(),spent=holding(),g=await rig(t,{pick:1,attempts:2,gateway:{maxInFlight:1},reply:()=>++replies===1?slot.held:spent.held});
+ const first=g.fetch(ARK);await until(()=>g.calls.length===1);
+ const spend=g.fetch('/api/rollup/spends',SPEND);await until(()=>g.statuses().length===1);slot.release();await until(()=>g.calls.length===2);
+ const [,shed]=g.sent(),late=finalizeEvent({kind:NOSTR_ANSWER_KIND,tags:[['x',addressOf(readRequest(shed!,g.key.nostrPublic)!)],['e',shed!.id],['status','503'],['retry-after','1']],content:'',created_at:g.statuses()[0]!.created_at+1},g.key.nostrSecret);
+ await Promise.all(g.bus.pool.publish([B],late));await sleep(20);spent.release();
+ assert.equal((await spend).status,200,'the second, last attempt kept waiting for its own answer');
+ assert.deepEqual([g.sentTo().slice(0,3),g.calls.length,(await first).status],[[[A],[A],[B]],2,200]);
 });
 
 test('a status, then the complete answer, resolves with the answer',async t=>{
  const {held,release}=holding(),g=await rig(t,{pick:1,reply:()=>held}),pending=g.fetch(ARK);await until(()=>g.calls.length===1);
- await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.key.nostrSecret,Date.now())));release();
+ await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.sent()[0]!.id,g.key.nostrSecret,Date.now())));release();
  assert.equal((await pending).status,200);assert.equal(g.requests().length,1,'nothing more went out');
 });
 

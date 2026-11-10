@@ -54,7 +54,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   await Promise.all(answers.map(async answer=>{try{await (relay?.publish(answer)??Promise.reject());}catch{note('unpublished');}}));
  }));
  // A throw can follow the upstream call, so it never becomes a status: a client reads one as "never ran" and may resend a POST.
- const run=async(x:string,sealed:Uint8Array,entry:Entry)=>{
+ const run=async(x:string,sealed:Uint8Array,request:string,entry:Entry)=>{
   const forget=()=>{if(handled.get(x)===entry)drop(x);};
   try{
    const outcome=await open(sealed,{maxAnswer,room});
@@ -62,7 +62,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
    if(outcome.kind==='refused'){forget();note('refused');return;}
    if(outcome.kind==='busy'){
     forget();if(!statusRoom()){note('status-capped');return;}
-    note('busy');await publish([statusEvent(outcome.status,outcome.retryAfter,x,secret,now())],entry.targets);return;
+    note('busy');await publish([statusEvent(outcome.status,outcome.retryAfter,x,request,secret,now())],entry.targets);return;
    }
    const at=now(),answers=answerEvents(outcome.bytes,x,secret,at);
    if(handled.get(x)===entry){handled.delete(x);handled.set(x,Object.assign(entry,{answers,at,bytes:answers.reduce((sum,answer)=>sum+answer.content.length+512,0)}));cached+=entry.bytes;evict();}
@@ -76,7 +76,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   const sealed=readRequest(event,gateway);
   if(!sealed){note('dropped');return;}
   const x=addressOf(sealed),entry=handled.get(x);
-  if(!entry){const fresh={targets:new Set([url]),bytes:0};handled.set(x,fresh);evict();void run(x,sealed,fresh);return;}
+  if(!entry){const fresh={targets:new Set([url]),bytes:0};handled.set(x,fresh);evict();void run(x,sealed,event.id,fresh);return;}
   if(entry.targets.has(url)){note('duplicate');return;}
   entry.targets.add(url);
   if(entry.answers&&now()-entry.at!<REPUBLISH_MS){charge(entry.answers.length);void publish(entry.answers,[url]);note('republished');}

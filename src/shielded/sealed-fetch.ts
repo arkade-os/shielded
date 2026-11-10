@@ -34,7 +34,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
   // Sealing only adds bytes, so a body over one event never fits; past 5 MiB ohttp-ts would throw its own error instead.
   if((body?.byteLength??0)>NOSTR_CHUNK_BYTES)throw tooLarge();
   signal?.throwIfAborted();
-  let done=false,sent=false,found:(open:()=>Promise<Response>)=>void=()=>{},live:{x:string;end:(ending:Ending)=>void;deadline:number}|undefined;
+  let done=false,sent=false,found:(open:()=>Promise<Response>)=>void=()=>{},live:{id:string;end:(ending:Ending)=>void;deadline:number}|undefined;
   const noAnswer=(otherwise:SealedFetchError)=>method!=='GET'&&sent?outcomeUnknown():otherwise;
   const answered=new Promise<{kind:'sealed';open:()=>Promise<Response>}>(resolve=>{found=open=>resolve({kind:'sealed',open});});
   const aborted=new Promise<never>((_,reject)=>{const stop=()=>reject(signal!.reason);signal?.addEventListener('abort',stop);cleanup.push(()=>signal?.removeEventListener('abort',stop));});
@@ -66,11 +66,11 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
     if(events.some(old=>old.id===answer.id))return;
     events.push(answer);const read=readAnswer(events,x,gateway);
     if(read?.kind==='sealed')found(()=>context.decapsulateResponse(new Response(read.bytes as Uint8Array<ArrayBuffer>,{headers:{'content-type':'message/ohttp-res'}})));
-    else if(live?.x===x){const status=readAnswer([answer],x,gateway);if(status?.kind==='status')live.end({kind:'status',wait:Math.min(status.retryAfter*1000,live.deadline-Date.now())});}
+    else{const status=readAnswer([answer],x,gateway);if(status?.kind==='status'&&status.request===live?.id)live.end({kind:'status',wait:Math.min(status.retryAfter*1000,live.deadline-Date.now())});}
    };
    return new Promise(settle=>{
     let maybe=false,ended=false;const resolve=(ending:Ending)=>{ended=true;settle(ending);};
-    live={x,end:resolve,deadline:Date.now()+timeoutMs};
+    live={id:event.id,end:resolve,deadline:Date.now()+timeoutMs};
     void after(timeoutMs,{kind:'timeout'} as const).then(resolve);
     const send=()=>{
      const to=closed?[]:choose(used);

@@ -71,7 +71,7 @@ test('a shed request gets a status event and no upstream call',async t=>{
  const {held,release}=holding(),g=await rig(t,{gateway:{maxInFlight:1},reply:()=>held});
  const first=await g.ask(ARK);await until(()=>g.calls.length===1);
  const second=await g.ask(ARK);await until(()=>second.answer()!==undefined);
- assert.deepEqual(second.answer(),{kind:'status',status:503,retryAfter:1});assert.equal(g.calls.length,1);
+ assert.deepEqual(second.answer(),{kind:'status',status:503,retryAfter:1,request:second.event.id});assert.equal(g.calls.length,1);
  release();await until(()=>first.answer()?.kind==='sealed');assert.equal(g.calls.length,1);
 });
 
@@ -194,7 +194,7 @@ test('a shed request leaves no entry, so its next copy runs',async t=>{
  let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B],gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
  const first=await g.ask(ARK);await until(()=>g.calls.length===1);
  const second=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>second.answer(A)!==undefined);
- assert.deepEqual(second.answer(A),{kind:'status',status:503,retryAfter:1});
+ assert.deepEqual(second.answer(A),{kind:'status',status:503,retryAfter:1,request:second.event.id});
  release();await until(()=>first.answer()?.kind==='sealed');
  await Promise.all(g.bus.pool.publish([B],second.event));await until(()=>second.answer(B)?.kind==='sealed');
  assert.equal(g.calls.length,2);assert.equal((await second.inner(B)).status,200);
@@ -215,7 +215,7 @@ test('a spent outbound budget sheds a new request with a 503 before any upstream
  const sixth=await answered();
  assert.deepEqual(relays.map(relay=>sixth.heard.get(relay)!.length),[4,4,4],'admitted on a balance of 4, it still sent all 12');
  const seventh=await g.ask(ARK,{to:relays});await until(()=>seventh.answer(A)?.kind==='status');
- assert.deepEqual([seventh.answer(A),g.calls.length],[{kind:'status',status:503,retryAfter:1},6]);
+ assert.deepEqual([seventh.answer(A),g.calls.length],[{kind:'status',status:503,retryAfter:1,request:seventh.event.id},6]);
  tick+=1000;await answered();assert.equal(g.calls.length,7);
 });
 
