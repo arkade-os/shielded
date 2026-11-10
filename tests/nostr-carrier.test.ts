@@ -235,6 +235,15 @@ test('the answer cache drops the oldest answer past its byte cap',async t=>{
  assert.deepEqual([sent[0]!.heard.get(B)!.length,g.outcomes],[0,['sealed','sealed','refused']],'the evicted request ran again as far as the replay check');
 });
 
+test('byte eviction passes over a running request, so a late copy from a new relay joins it and hears its answer',async t=>{
+ let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B],cacheBytes:3000,reply:()=>++replies===1?held:Response.json({ok:true})});
+ const running=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>g.calls.length===1);
+ for(let i=0;i<2;i++){const done=await g.ask(ARK);await until(()=>done.answer()?.kind==='sealed');}
+ await Promise.all(g.bus.pool.publish([B],running.event));await quiet();release();
+ await until(()=>running.answer(A)?.kind==='sealed');await quiet();
+ assert.deepEqual([g.outcomes,running.answer(B)?.kind],[['sealed','sealed','sealed'],'sealed']);
+});
+
 test('an open() that rejects publishes nothing, not even a status, and is counted as failed',async t=>{
  const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
  let clock=0,calls=0;const g=await rig(t,{now:()=>clock,open:async()=>{calls++;throw new Error('boom');}});

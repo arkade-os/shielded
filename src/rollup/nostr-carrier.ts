@@ -48,7 +48,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
  const room=()=>{refill();return tokens>0;};
  const charge=(count:number)=>{refill();tokens-=count;};
  const drop=(x:string)=>{cached-=handled.get(x)!.bytes;handled.delete(x);};
- const evict=()=>{for(const x of handled.keys()){if(handled.size<=REMEMBERED&&cached<=cacheBytes)return;drop(x);}};
+ const evict=()=>{for(const [x,{bytes}] of handled){if(handled.size<=REMEMBERED&&cached<=cacheBytes)return;if(handled.size>REMEMBERED||bytes)drop(x);}};
  const publish=(answers:Event[],targets:Iterable<string>)=>Promise.all([...targets].map(async url=>{
   const relay=await relayOf(url).catch(()=>undefined);
   await Promise.all(answers.map(async answer=>{try{await (relay?.publish(answer)??Promise.reject());}catch{note('unpublished');}}));
