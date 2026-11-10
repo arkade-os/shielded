@@ -18,7 +18,7 @@ const holding=(reply=()=>Response.json({ok:true}))=>{let release=()=>{};const he
 const failsWith=(code:SealedFetchError['code'])=>(error:unknown)=>error instanceof SealedFetchError&&error.code===code;
 const timers=()=>process.getActiveResourcesInfo().filter(type=>type==='Timeout').length;
 
-type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'attempts'>;
+type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'attempts'|'random'>;
 async function rig(t:TestContext,{relays=[A,B],reply=()=>Response.json({ok:true}),gateway={},...options}:Rig={}){
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:{url:string;init:RequestInit}[]=[],bus=createNostrBus();
  const upstream=(async(url:string,init:RequestInit)=>{calls.push({url,init});return reply();}) as unknown as typeof fetch;
@@ -125,14 +125,31 @@ test('a refusal without a NIP-01 prefix is hedged like a timeout',{timeout:10_00
 });
 
 test('a relay that did not acknowledge is benched for 5 minutes, and an acknowledgement lifts it',{timeout:10_000},async t=>{
- let clock=0;t.mock.method(performance,'now',()=>clock);
- const g=await rig(t,{relays:[A,B,C],pick:1,gateway:{rate:1000}}),dead={timesOut:true,deliver:false};
+ let clock=0,r=0;t.mock.method(performance,'now',()=>clock);
+ const g=await rig(t,{relays:[A,B,C],pick:1,gateway:{rate:1000},random:()=>r}),dead={timesOut:true,deliver:false};
  const fetches=async(...to:string[][])=>{const before=g.sentTo().length;assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo().slice(before),to);};
  Object.assign(g.bus.relay(A),dead);
- await fetches([A],[B]);await fetches([B]);
- clock+=300_000;await fetches([A],[B]);
+ await fetches([A],[B]);
+ clock=299_999;await fetches([B]);
+ clock=300_000;await fetches([A],[B]);
  Object.assign(g.bus.relay(A),{timesOut:false,deliver:true});for(const url of [B,C])Object.assign(g.bus.relay(url),dead);
- await fetches([B],[C],[A]);await fetches([A]);
+ await fetches([B],[C],[A]);
+ r=0.99;await fetches([A]);
+});
+
+test('a round whose OK is still out when another relay brings the answer hedges nothing after the fetch',async t=>{
+ const g=await rig(t,{relays:[A,B,C],pick:1});g.bus.relay(A).refusesButDelivers=true;Object.assign(g.bus.relay(B),{timesOut:true,deliver:false,settleMs:200});
+ assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo(),[[A],[B]],'A delivered as it refused, and B was still out at the answer');
+ await sleep(300);assert.deepEqual(g.sentTo(),[[A],[B]],'B\'s late timeout hedged nothing once the fetch was done');
+});
+
+test('a round whose OK is still out when a status ends its attempt hedges nothing',async t=>{
+ let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B,C],pick:1,gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
+ const first=g.fetch(ARK);await until(()=>g.calls.length===1);
+ Object.assign(g.bus.relay(A),{timesOut:true,settleMs:200});
+ const second=g.fetch(ARK);await until(()=>g.statuses().length===1);await sleep(400);
+ assert.deepEqual(g.sentTo(),[[A],[A]],'A\'s late timeout came in the back-off and hedged nothing');
+ release();assert.equal((await second).status,200);assert.deepEqual(g.sentTo(),[[A],[A],[B]]);assert.equal((await first).status,200);
 });
 
 test('attempts run out as unavailable',async t=>{
@@ -209,9 +226,10 @@ test('close() ends a POST that went out as outcome-unknown, and one that never d
  await assert.rejects(sealing,failsWith('unavailable'));assert.equal(fresh.sentTo().length,0,'closed while it sealed, it never went out');
 });
 
-test('a sealed fetch with no relay, or a pick, attempt count or timeout under one, is refused when it is made',async()=>{
+test('a sealed fetch with no relay, a relay that is not a ws:// or wss:// URL, or a pick, attempt count or timeout under one, is refused when it is made',async()=>{
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!;
- for(const options of [{relays:[]},{pick:0},{attempts:0},{timeoutMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
+ for(const options of [{relays:[]},{relays:[A,'not a url']},{relays:['https://relay.example']},{pick:0},{attempts:0},{timeoutMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
+ createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,relays:['ws://127.0.0.1:7777',A]}).close();
 });
 
 test('abort closes the attempt',async t=>{

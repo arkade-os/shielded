@@ -23,6 +23,8 @@ const outcomeUnknown=()=>new SealedFetchError('outcome-unknown','The request wen
 export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)],bench=new Map<string,number>();
  if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and a positive timeout.');
+ // nostr-tools' publish normalizes each URL synchronously, so a bad one would throw unheard inside a later hedge round and leave the attempt to its deadline.
+ if(!urls.every(relay=>{try{return /^wss?:$/.test(new URL(relay).protocol);}catch{return false;}}))throw new RangeError('Every relay of a sealed fetch is a ws:// or wss:// URL.');
  const shut=()=>new SealedFetchError('unavailable','The sealed fetch is closed.');
  let closed=false;
  const sealedFetch=async(input:string|URL|Request,init?:RequestInit):Promise<Response>=>{
@@ -67,8 +69,9 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
     if(read?.kind==='sealed')found(()=>context.decapsulateResponse(new Response(read.bytes as Uint8Array<ArrayBuffer>,{headers:{'content-type':'message/ohttp-res'}})));
     else if(live?.x===x){const status=readAnswer([answer],x,gateway);if(status?.kind==='status')live.end({kind:'status',wait:Math.min(status.retryAfter*1000,live.deadline-Date.now())});}
    };
-   return new Promise(resolve=>{
-    let maybe=false;live={x,end:resolve,deadline:Date.now()+timeoutMs};
+   return new Promise(settle=>{
+    let maybe=false,ended=false;const resolve=(ending:Ending)=>{ended=true;settle(ending);};
+    live={x,end:resolve,deadline:Date.now()+timeoutMs};
     void after(timeoutMs,{kind:'timeout'} as const).then(resolve);
     const send=()=>{
      const to=closed?[]:choose(used);
@@ -83,7 +86,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
       for(const [i,result] of results.entries())if(acked(result))bench.delete(to[i]!);else bench.set(to[i]!,at+300_000);
       if(results.some(acked))return;
       maybe||=results.some(accepted);
-      if(!done)send();
+      if(!done&&!ended)send();
      });
     };
     send();
