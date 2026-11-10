@@ -19,12 +19,12 @@ const quiet=()=>sleep(100);
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const holding=()=>{let release=()=>{};const held=new Promise<Response>(resolve=>{release=()=>resolve(Response.json({ok:true}));});return {held,release};};
 
-async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),gateway={},now,open,restarting}:{relays?:string[];reply?:(url:string)=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;now?:()=>number;open?:OhttpOpen;restarting?:{key:OhttpGatewayKey;bus:ReturnType<typeof createNostrBus>}}={}){
+async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),gateway={},now,open,restarting,cacheBytes}:{relays?:string[];reply?:(url:string)=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;now?:()=>number;open?:OhttpOpen;restarting?:{key:OhttpGatewayKey;bus:ReturnType<typeof createNostrBus>};cacheBytes?:number}={}){
  const key=restarting?.key??(await loadOhttpKey((await generateOhttpKey()).env))!,calls:string[]=[],outcomes:string[]=[],bus=restarting?.bus??createNostrBus();
  const upstream=(async(url:string)=>{calls.push(url);return reply(url);}) as unknown as typeof fetch;
  const router=createOhttpGateway({key,upstreams:[{origin:'https://ark.example',prefix:'/v1/'}],poolOrigin:'https://pool.example',poolLoopback:'http://127.0.0.1:9',gatewayToken:'token',fetch:upstream,...gateway});
  const opener:OhttpOpen=async(sealed,options)=>{const outcome=await (open??router.open)(sealed,options);outcomes.push(outcome.kind);return outcome;};
- const carrier=startNostrCarrier({open:opener,secret:key.nostrSecret,relays,pool:bus.pool,...(now?{now}:{})});t.after(()=>carrier.close());await settle();
+ const carrier=startNostrCarrier({open:opener,secret:key.nostrSecret,relays,pool:bus.pool,...(now?{now}:{}),cacheBytes});t.after(()=>carrier.close());await settle();
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(key.config)),{maxMessageSize:5<<20});
  const ask=async(url:string,{to=[A],listen=to}:{to?:string[];listen?:string[]}={})=>{
   const sealed=await client.encapsulateRequest(new Request(url)),bytes=sealed.init.body as Uint8Array,event=requestEvent(bytes,key.nostrPublic,Date.now()),x=addressOf(bytes),heard=new Map<string,Event[]>();
@@ -105,7 +105,7 @@ test('garbage, replays and hostile events get nothing',async t=>{
  ];
  for(const event of hostile)await Promise.all(g.bus.pool.publish([A],event));
  await quiet();
- assert.deepEqual(g.outcomes,['sealed','refused','refused'],'only the unopenable bytes and the replay got as far as open()');
+ assert.deepEqual(g.outcomes,['sealed','refused'],'only the unopenable bytes got as far as open(): the replay is a copy of the answered request');
  assert.equal(g.calls.length,1,'no hostile event reached the upstream');
  assert.equal(g.answers().length,1,'the only answer is the first request\'s');
 });
@@ -151,6 +151,9 @@ test('nostrRelaysFromEnv',()=>{
  assert.deepEqual(nostrRelaysFromEnv('wss://a.example, wss://b.example'),['wss://a.example/','wss://b.example/']);
  assert.deepEqual(nostrRelaysFromEnv('wss://a.example,wss://a.example/, WSS://A.Example:443,wss://b.example'),['wss://a.example/','wss://b.example/'],'one connection each, however a URL is spelled');
  for(const value of ['https://a.example','ws://a.example',',','wss://a.example,','not a url'])assert.throws(()=>nostrRelaysFromEnv(value),/wss/,value);
+ const many=(count:number)=>Array.from({length:count},(_,i)=>`wss://r${i}.example`).join(',');
+ assert.equal(nostrRelaysFromEnv(many(12)).length,12);assert.equal(nostrRelaysFromEnv(many(12)+',wss://r0.example').length,12,'counted after deduplication');
+ assert.throws(()=>nostrRelaysFromEnv(many(13)),/at most 12/);
 });
 
 test('a copy of a request that is still running is dropped, so no status goes out for it',async t=>{
@@ -162,19 +165,73 @@ test('a copy of a request that is still running is dropped, so no status goes ou
  assert.equal(g.calls.length,1);assert.deepEqual(sent.answer(A),sent.answer(B));
 });
 
-test('a copy that arrives after the answer is ignored',async t=>{
+test('a copy from a new relay after the answer gets the cached answer there, and runs nothing',async t=>{
  const g=await rig(t,{relays:[A,B]});
  const sent=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>sent.answer(A)?.kind==='sealed');
- await Promise.all(g.bus.pool.publish([B],sent.event));await quiet();
- assert.equal(g.calls.length,1);assert.equal(sent.heard.get(B)!.length,0,'the answer went to the relay that carried the request in time');assert.deepEqual(g.statuses(),[]);
+ await Promise.all(g.bus.pool.publish([B],sent.event));await until(()=>sent.answer(B)?.kind==='sealed');
+ assert.deepEqual([g.calls.length,g.outcomes.length,g.statuses()],[1,1,[]]);
+ const lookups=t.mock.method(g.bus.pool,'ensureRelay');
+ await Promise.all(g.bus.pool.publish([A],sent.event));await quiet();
+ assert.equal(lookups.mock.callCount(),0,'A already has the answer, so nothing is published to it again');
 });
 
-test('two events carrying the same sealed bytes run once, and the one answer is addressed to both',async t=>{
- const g=await rig(t,{relays:[A,B]}),{event,bytes}=await g.ask(ARK,{to:[]}),copy=requestEvent(bytes,g.key.nostrPublic,Date.now()),x=addressOf(bytes);
- await Promise.all([...g.bus.pool.publish([A],event),...g.bus.pool.publish([B],copy)]);await until(()=>g.outcomes.length===2);await quiet();
- assert.deepEqual([g.calls.length,[...g.outcomes].sort()],[1,['refused','sealed']]);
- assert.ok(g.answers().length>0&&g.answers().every(answer=>answer.tags.find(tag=>tag[0]==='x')?.[1]===x));
- assert.equal(readAnswer(g.answers(),x,g.key.nostrPublic)?.kind,'sealed');
+test('a cached answer is not re-published 30 s after it was signed',async t=>{
+ let clock=0;const g=await rig(t,{relays:[A,B],now:()=>clock});
+ const sent=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>sent.answer(A)?.kind==='sealed');
+ clock=30_000;await Promise.all(g.bus.pool.publish([B],sent.event));await quiet();
+ assert.deepEqual([sent.heard.get(B)!.length,g.calls.length],[0,1]);
+});
+
+test('two events carrying the same sealed bytes run once, and both relays hear the one answer',async t=>{
+ const g=await rig(t,{relays:[A,B]}),sent=await g.ask(ARK,{to:[],listen:[A,B]}),copy=requestEvent(sent.bytes,g.key.nostrPublic,Date.now()),x=addressOf(sent.bytes);
+ await Promise.all([...g.bus.pool.publish([A],sent.event),...g.bus.pool.publish([B],copy)]);await until(()=>sent.answer(A)?.kind==='sealed'&&sent.answer(B)?.kind==='sealed');await quiet();
+ assert.deepEqual([g.calls.length,g.outcomes],[1,['sealed']],'the copy never reached open()');
+ assert.ok(g.answers().every(answer=>answer.tags.find(tag=>tag[0]==='x')?.[1]===x));
+});
+
+test('a shed request leaves no entry, so its next copy runs',async t=>{
+ let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B],gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
+ const first=await g.ask(ARK);await until(()=>g.calls.length===1);
+ const second=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>second.answer(A)!==undefined);
+ assert.deepEqual(second.answer(A),{kind:'status',status:503,retryAfter:1});
+ release();await until(()=>first.answer()?.kind==='sealed');
+ await Promise.all(g.bus.pool.publish([B],second.event));await until(()=>second.answer(B)?.kind==='sealed');
+ assert.equal(g.calls.length,2);assert.equal((await second.inner(B)).status,200);
+});
+
+test('a refused request leaves no entry, so each copy is refused by open()',async t=>{
+ const g=await rig(t,{relays:[A,B]}),event=requestEvent(randomBytes(200),g.key.nostrPublic,Date.now());
+ await Promise.all(g.bus.pool.publish([A],event));await until(()=>g.outcomes.length===1);
+ await Promise.all(g.bus.pool.publish([B],event));await until(()=>g.outcomes.length===2);await quiet();
+ assert.deepEqual([g.outcomes,g.answers()],[['refused','refused'],[]]);
+});
+
+test('a spent outbound budget sheds a new request with a 503 before any upstream call, and an admitted answer is still published whole',async t=>{
+ let tick=0;t.mock.method(performance,'now',()=>tick);
+ const relays=[A,B,'wss://c.example'],body=new Uint8Array(100<<10),g=await rig(t,{relays,gateway:{rate:1000},reply:()=>new Response(body)});
+ const answered=async()=>{const sent=await g.ask(ARK,{to:relays});await until(()=>relays.every(relay=>sent.answer(relay)?.kind==='sealed'));return sent;};
+ for(let i=0;i<5;i++)await answered();
+ const sixth=await answered();
+ assert.deepEqual(relays.map(relay=>sixth.heard.get(relay)!.length),[4,4,4],'admitted on a balance of 4, it still sent all 12');
+ const seventh=await g.ask(ARK,{to:relays});await until(()=>seventh.answer(A)?.kind==='status');
+ assert.deepEqual([seventh.answer(A),g.calls.length],[{kind:'status',status:503,retryAfter:1},6]);
+ tick+=1000;await answered();assert.equal(g.calls.length,7);
+});
+
+test('a re-published answer draws on the outbound budget',async t=>{
+ t.mock.method(performance,'now',()=>0);let room=()=>true;
+ const g=await rig(t,{relays:[A,B],open:async(_sealed,options)=>{room=options!.room!;return {kind:'sealed',bytes:new Uint8Array(32<<15)};}});
+ const sent=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>sent.answer(A)?.kind==='sealed');assert.ok(room(),'32 of 64 spent on A');
+ await Promise.all(g.bus.pool.publish([B],sent.event));await until(()=>sent.answer(B)?.kind==='sealed');
+ assert.ok(!room(),'the 32 re-published to B spent the rest');
+});
+
+test('the answer cache drops the oldest answer past its byte cap',async t=>{
+ const g=await rig(t,{relays:[A,B],cacheBytes:3000}),sent:Awaited<ReturnType<typeof g.ask>>[]=[];
+ for(let i=0;i<2;i++){sent.push(await g.ask(ARK,{to:[A],listen:[A,B]}));await until(()=>sent[i]!.answer(A)?.kind==='sealed');}
+ for(const one of sent)await Promise.all(g.bus.pool.publish([B],one.event));
+ await until(()=>sent[1]!.answer(B)?.kind==='sealed');await quiet();
+ assert.deepEqual([sent[0]!.heard.get(B)!.length,g.outcomes],[0,['sealed','sealed','refused']],'the evicted request ran again as far as the replay check');
 });
 
 test('an open() that rejects publishes nothing, not even a status, and is counted as failed',async t=>{
@@ -182,9 +239,9 @@ test('an open() that rejects publishes nothing, not even a status, and is counte
  let clock=0,calls=0;const g=await rig(t,{now:()=>clock,open:async()=>{calls++;throw new Error('boom');}});
  const sent=await g.ask(ARK);await until(()=>calls===1);await quiet();
  await Promise.all(g.bus.pool.publish([A],sent.event));await quiet();
- assert.equal(calls,1,'a copy of a request whose open() threw is not opened again');assert.equal(g.answers().length,0);
+ assert.equal(calls,2,'a throw leaves no entry, so a copy reaches open() again, whose register refuses one that opened');assert.equal(g.answers().length,0);
  clock=60_000;await Promise.all(g.bus.pool.publish([A],g.forged('not base64!')));await quiet();
- assert.deepEqual(lines,['[nostr] failed 1, duplicate 1, dropped 1']);
+ assert.deepEqual(lines,['[nostr] failed 2, dropped 1']);
 });
 
 test('an answer a relay refuses is counted, not thrown',async t=>{
@@ -271,9 +328,10 @@ test('an answer for a relay that cannot be reached is counted unpublished, and t
 });
 
 test('after many requests there is still one subscription per relay, and none was lost',async t=>{
- const g=await rig(t,{relays:[A,B],gateway:{rate:1000}}),count=150;
+ let tick=0;t.mock.method(performance,'now',()=>tick);
+ const g=await rig(t,{relays:[A,B],gateway:{rate:1000,now:()=>0}}),count=150;
  assert.equal(g.bus.openSubscriptions(),2);
- for(let i=0;i<count;i++)await g.ask(ARK,{to:[i%2?A:B],listen:[]});
+ for(let i=0;i<count;i++){tick+=1000;await g.ask(ARK,{to:[i%2?A:B],listen:[]});} // a second apart, so the outbound budget never sheds one
  await until(()=>g.answers().length===count);
  assert.equal(g.bus.openSubscriptions(),2);assert.equal(g.calls.length,count);
  const last=await g.ask(ARK,{to:[A]});await until(()=>last.answer()?.kind==='sealed');
