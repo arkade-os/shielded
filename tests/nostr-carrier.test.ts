@@ -361,6 +361,17 @@ test('a relay that does not echo the canary in 15 s is closed and subscribed aga
  const sent=await g.ask(ARK,{to:[B],listen:[B]});await until(()=>sent.answer(B)?.kind==='sealed');
 });
 
+test('a relay that refuses the canary is not taken for deaf and stays subscribed, but one whose canary times out is closed',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ t.mock.timers.enable({apis:['setTimeout','setInterval']});
+ let clock=0;const g=await rig(t,{relays:[A,B],now:()=>clock});Object.assign(g.bus.relay(B),{accept:false,refusal:'rate-limited: slow down'});
+ await advance(t,30_000);clock=60_000;await advance(t,15_000);assert.equal(g.bus.openSubscriptions(),2);
+ await Promise.all(g.bus.pool.publish([A],g.forged('not base64!')));await advance(t,1000);
+ assert.deepEqual(lines,['[nostr] canary-refused 1, dropped 1']);
+ Object.assign(g.bus.relay(B),{accept:true,timesOut:true,deliver:false});await advance(t,30_000);
+ assert.equal(g.bus.openSubscriptions(),1);
+});
+
 test('close() destroys the pool, then closes each relay that holds a subscription',async t=>{
  const bus=createNostrBus(),order:string[]=[],ensure=bus.pool.ensureRelay;
  t.mock.method(bus.pool,'ensureRelay',async(url:string)=>{const relay=await ensure(url),close=relay.close;relay.close=()=>{order.push(url);close();};return relay;});

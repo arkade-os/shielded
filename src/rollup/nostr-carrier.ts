@@ -4,7 +4,7 @@ import type {SimplePool} from 'nostr-tools/pool';
 import {finalizeEvent,getPublicKey,type Event} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
 import WebSocket from 'ws';
-import {addressOf,answerEvents,idMatches,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,answerEvents,idMatches,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,refusedByRelay,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {OhttpOpen} from './ohttp-gateway.ts';
 
 export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
@@ -96,7 +96,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
  // The canary's traffic also keeps open a relay that drops idle sockets, as one did after 60 s. It uses the relay each subscription holds, never ensureRelay's: a dead relay's late idle close drops a live one from the pool's map by URL.
  const canary=()=>{
   const event=finalizeEvent({kind:NOSTR_REQUEST_KIND,tags:[['p',gateway]],content:'',created_at:Math.floor(now()/1000)},secret);
-  for(const [url,{relay}] of live){echoes.set(url,setTimeout(safely(()=>{note('deaf');relay.close();}),ECHO_MS));void relay.publish(event).catch(()=>{});}
+  for(const [url,{relay}] of live){const echo=setTimeout(safely(()=>{note('deaf');relay.close();}),ECHO_MS);echoes.set(url,echo);void relay.publish(event).catch(error=>{if(refusedByRelay(error)){clearTimeout(echo);note('canary-refused');}});}
  };
  for(const url of new Set(relays))void listen(url);
  const ticker=setInterval(safely(canary),CANARY_MS);
