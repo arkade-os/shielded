@@ -234,10 +234,10 @@ test('a relay whose socket died is closed at once, so close() leaves it no idle 
  assert.ok('idleTimeoutHandle' in dead);assert.equal(dead.idleTimeoutHandle,undefined);
 });
 
-test('a socket with more than 4 MiB unsent drops further sends',async t=>{
- const {url,server}=await relay(t),heard:string[]=[];server.on('req',(_socket:unknown,id:string)=>heard.push(id));
+test('a socket with more than 4 MiB unsent drops further events, never a REQ or a CLOSE',async t=>{
+ const {url,server}=await relay(t),heard:string[]=[];server.on('connection',(conn:any)=>conn.on('message',(data:Buffer)=>heard.push(JSON.parse(String(data))[1])));
  const socket=new CappedSocket(url);t.after(()=>socket.close());await once(socket as never,'open');
- for(const [unsent,id] of [[4<<20,'at'],[(4<<20)+1,'over'],[0,'after']] as const){Object.defineProperty(socket,'bufferedAmount',{value:unsent,configurable:true});socket.send(JSON.stringify(['REQ',id]));}
- await until(()=>heard.length===2);
- assert.deepEqual(heard,['at','after']);
+ for(const [unsent,type,id] of [[4<<20,'EVENT','at'],[(4<<20)+1,'EVENT','over'],[(4<<20)+1,'REQ','req'],[(4<<20)+1,'CLOSE','close'],[0,'EVENT','after']] as const){Object.defineProperty(socket,'bufferedAmount',{value:unsent,configurable:true});socket.send(JSON.stringify([type,id]));}
+ await until(()=>heard.includes('after'));
+ assert.deepEqual(heard,['at','req','close','after']);
 });
