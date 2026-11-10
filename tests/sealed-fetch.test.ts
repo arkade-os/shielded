@@ -67,6 +67,15 @@ test('a status event delays the retry',async t=>{
  const [,shed,retry]=g.sent();assert.equal(shed!.content,retry!.content,'the shed POST went out again with the same sealing, which the gateway had never recorded');
 });
 
+test('a POST shed on two attempts within 30 s hears both statuses and runs on its third',async t=>{
+ const real=Date.now,shift=(45_000-real()%30_000)%30_000;t.mock.method(Date,'now',()=>real()+shift); // starts a 30 s rounding window, so both statuses fall in one
+ let replies=0;const {held,release}=holding(),g=await rig(t,{pick:1,timeoutMs:5000,gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
+ const first=g.fetch(ARK);await until(()=>g.calls.length===1);
+ const spend=g.fetch('/api/rollup/spends',SPEND);await until(()=>g.statuses().length===2);release();
+ assert.equal((await spend).status,200);assert.deepEqual(g.sentTo(),[[A],[A],[B],[A]]);
+ assert.equal(g.calls.filter(call=>call.url===LOOPBACK+'/api/rollup/spends').length,1);assert.equal((await first).status,200);
+});
+
 test('a GET whose relay never delivers is retried on another relay',async t=>{
  const g=await rig(t,{pick:1,timeoutMs:100});g.bus.relay(A).deliver=false;
  assert.equal((await g.fetch(ARK)).status,200);

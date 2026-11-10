@@ -21,7 +21,7 @@ const decode=(text:string)=>{try{const bytes=base64.decode(text);return bytes.le
 const verified=(event:Event)=>{try{return verifyEvent(event);}catch{return false;}};
 /** A request's one-time key carries no authority and relays check signatures (NIP-01), so a request is checked by its id: a hash, where Schnorr costs about 2 ms. */
 export const idMatches=(event:Event)=>{try{return getEventHash(event)===event.id;}catch{return false;}};
-const answerEvent=(address:string,extra:string[][],content:string,secret:Uint8Array,nowMs:number)=>finalizeEvent({kind:NOSTR_ANSWER_KIND,tags:[['x',address],...extra],content,created_at:roundedSeconds(nowMs)},secret);
+const answerEvent=(address:string,extra:string[][],content:string,secret:Uint8Array,created_at:number)=>finalizeEvent({kind:NOSTR_ANSWER_KIND,tags:[['x',address],...extra],content,created_at},secret);
 
 export function requestEvent(sealed:Uint8Array,gateway:string,nowMs:number):VerifiedEvent {
  if(sealed.length>NOSTR_CHUNK_BYTES)throw new RangeError(`A sealed request is at most ${NOSTR_CHUNK_BYTES} bytes.`);
@@ -34,10 +34,10 @@ export function readRequest(event:Event,gateway:string):Uint8Array|undefined {
 export function answerEvents(sealed:Uint8Array,address:string,secret:Uint8Array,nowMs:number):VerifiedEvent[] {
  const count=Math.ceil(sealed.length/NOSTR_CHUNK_BYTES);
  if(count<1||count>NOSTR_MAX_CHUNKS)throw new RangeError(`A sealed answer is 1 to ${NOSTR_MAX_CHUNKS} chunks of ${NOSTR_CHUNK_BYTES} bytes.`);
- return Array.from({length:count},(_,i)=>answerEvent(address,[['chunk',String(i),String(count)]],base64.encode(sealed.subarray(i*NOSTR_CHUNK_BYTES,(i+1)*NOSTR_CHUNK_BYTES)),secret,nowMs));
+ return Array.from({length:count},(_,i)=>answerEvent(address,[['chunk',String(i),String(count)]],base64.encode(sealed.subarray(i*NOSTR_CHUNK_BYTES,(i+1)*NOSTR_CHUNK_BYTES)),secret,roundedSeconds(nowMs)));
 }
-/** retryAfter is whole seconds; readAnswer ignores a status event whose delay is anything else. */
-export const statusEvent=(status:429|503,retryAfter:number,address:string,secret:Uint8Array,nowMs:number):VerifiedEvent=>answerEvent(address,[['status',String(status)],['retry-after',String(retryAfter)]],'',secret,nowMs);
+/** retryAfter is whole seconds; readAnswer ignores a status event whose delay is anything else. Signed to the second: a request shed twice within 30 s needs two event ids. */
+export const statusEvent=(status:429|503,retryAfter:number,address:string,secret:Uint8Array,nowMs:number):VerifiedEvent=>answerEvent(address,[['status',String(status)],['retry-after',String(retryAfter)]],'',secret,Math.floor(nowMs/1000));
 
 function joined(events:readonly Event[]):Uint8Array|undefined {
  const parts=new Map<number,string>();let count=0;

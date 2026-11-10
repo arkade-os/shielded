@@ -38,6 +38,10 @@ test('an answer and a status carry x and their own tags, and no e or p',()=>{
  assert.deepEqual(answerEvents(new Uint8Array(40<<10),x,gwSecret,0).map(e=>e.tags),[[['x',x],['chunk','0','2']],[['x',x],['chunk','1','2']]]);
  assert.deepEqual(statusEvent(503,1,x,gwSecret,0).tags,[['x',x],['status','503'],['retry-after','1']]);
 });
+test('a status is signed to the second, so a request shed twice within 30 s gets two ids, and an answer to the nearest 30 s',()=>{
+ assert.equal(statusEvent(503,1,x,gwSecret,61_500).created_at,61);assert.equal(answerEvents(randomBytes(10),x,gwSecret,61_500)[0]!.created_at,60);
+ assert.notEqual(statusEvent(503,1,x,gwSecret,61_500).id,statusEvent(503,1,x,gwSecret,62_500).id);
+});
 test('readAnswer waits for every chunk and ignores strangers',()=>{
  const events=answerEvents(randomBytes(70_000),x,gwSecret,0),stranger=answerEvents(randomBytes(10),x,generateSecretKey(),0);
  assert.equal(readAnswer(events.slice(1),x,GW),undefined);
