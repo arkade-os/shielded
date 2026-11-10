@@ -2,6 +2,15 @@ type Shutdown=()=>Promise<void>;
 export type NativeWalletView<T>={session:T;retired:boolean;mounted:boolean;shutdown?:Shutdown;onShutdown:(shutdown:Shutdown|undefined)=>void};
 type RetiredView<T>={session:T;shutdown?:Shutdown};
 export const isNativeWalletViewActive=<T,>(view:NativeWalletView<T>,shown:boolean)=>shown&&!view.retired;
+export const currentNativeWalletView=<T,>(view:NativeWalletView<T>|undefined)=>view&&!view.retired?view:undefined;
+export function nativeWalletPresentation<T>(snapshot:{shown?:NativeWalletView<T>;candidate?:NativeWalletView<T>},reconnecting:boolean){
+ const shown=currentNativeWalletView(snapshot.shown),showOpening=!shown||reconnecting;
+ const views=[snapshot.shown,snapshot.candidate]
+   .map(currentNativeWalletView)
+   .filter((view):view is NativeWalletView<T>=>!!view)
+   .map(view=>({view,visible:view===shown&&!showOpening}));
+ return {shown,showOpening,views};
+}
 
 export function createNativeViewHandoff<T>(lateShutdown:(shutdown:Shutdown)=>void=shutdown=>{void shutdown().catch(()=>{});}){
  let shown:NativeWalletView<T>|undefined,candidate:NativeWalletView<T>|undefined;
@@ -10,13 +19,13 @@ export function createNativeViewHandoff<T>(lateShutdown:(shutdown:Shutdown)=>voi
  };
  return {
   get snapshot(){return {shown,candidate};},
-  stage(session:T){
+  stage(session:T,options:{awaitReady?:boolean}={}){
    const view:NativeWalletView<T>={session,retired:false,mounted:false,onShutdown(shutdown){
     if(view.retired){if(shutdown)lateShutdown(shutdown);return;}
     view.shutdown=shutdown;view.mounted=!!shutdown;
    }};
    if(candidate)throw new Error('The previous wallet candidate has not retired.');
-   if(shown)candidate=view;else shown=view;
+   if(shown||options.awaitReady)candidate=view;else shown=view;
    return view;
   },
   promote(view:NativeWalletView<T>,current:()=>boolean){

@@ -6,7 +6,7 @@ import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {installNativeTransport,nativeNetwork,type NativeMode} from '../../src/native/index.ts';
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
-import {createNativeViewHandoff,isNativeWalletViewActive,type NativeWalletView} from './native-view-handoff.ts';
+import {createNativeViewHandoff,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
 import {openNativeVault,resumeNativeForeground} from './native-open.ts';
 import {saveNativeSetup} from './native-setup.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
@@ -24,18 +24,18 @@ const Wallet=lazy(loadWallet);
 const getSecret=()=>invoke<string|null>('plugin:shielded-platform|secret_get');
 const putSecret=(value:string)=>invoke<void>('plugin:shielded-platform|secret_set',{value});
 const clearSecret=()=>invoke<void>('plugin:shielded-platform|secret_clear');
-type Session={generation:number;cache:ReturnType<typeof createNativeStorage>;resumed:boolean;onReady?:()=>void;onStartupFailure?:(message:string)=>void};
+type Session={generation:number;cache:ReturnType<typeof createNativeStorage>;resumed:boolean;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void};
 const clearTransientDocument=()=>clearNativeTransientDocument(document.documentElement,[...document.querySelectorAll('[inert]')]);
 
 export default function NativeWallet(){
  const [views,setViews]=useState<{shown?:NativeWalletView<Session>;candidate?:NativeWalletView<Session>}>({}),[phase,setPhase]=useState('Connecting to Tor'),[error,setError]=useState('');
- const session=views.shown?.session;
+ const [reconnecting,setReconnecting]=useState(false);
+ const presentation=nativeWalletPresentation(views,reconnecting),shown=presentation.shown,candidate=presentation.views.find(item=>item.view===views.candidate)?.view,session=shown?.session;
  const [setup,setSetup]=useState(false),[phrase,setPhrase]=useState(''),[busy,setBusy]=useState(true);
  const [torHealth,setTorHealth]=useState<NativeTorHealthState>({status:{phase:'idle',generation:0},check:'idle'});
  const [externalLink,setExternalLink]=useState('');
  const [paymentRequest,setPaymentRequest]=useState<IncomingPayment>();
  const [confirmDirect,setConfirmDirect]=useState(false),[switching,setSwitching]=useState(false),[saving,setSaving]=useState(false);
- const [reconnecting,setReconnecting]=useState(false);
  const [resetPending,setResetPending]=useState(()=>localStorage.getItem(RESET_PENDING)==='1');
  const selectedMode=useRef<NativeMode>('tor'),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
  const setupAllowed=useRef(false);
@@ -43,7 +43,7 @@ export default function NativeWallet(){
  const resumeRevision=useRef(0);
  const paymentRequestRevision=useRef(0);
  const connectionPending=useRef(false);
- const opening=useRef<Promise<void>|undefined>(undefined);
+ const openingOperation=useRef<Promise<void>|undefined>(undefined);
  const openingGeneration=useRef<number|undefined>(undefined);
  const healthExpired=useRef(false);
  const fail=(cause:unknown)=>setError(cause instanceof Error?cause.message:String(cause));
@@ -57,7 +57,7 @@ export default function NativeWallet(){
   setupAllowed.current=false;setSetup(false);
   const previous=active.current;active.current=undefined;
   const retiring=handoff.current.retire(false);setViews(handoff.current.snapshot);
-  const pending=opening.current;setBusy(false);setPhase('Private connection paused');
+  const pending=openingOperation.current;setBusy(false);setPhase('Private connection paused');
   // An ambiguous vault write must settle before a new open reconciles its metadata.
   const pendingWrite=creating.current;
   const paused=nativeNetwork.pause();void paused.catch(()=>{});
@@ -68,8 +68,8 @@ export default function NativeWallet(){
  const suspend=useCallback(()=>{
   clearTransientDocument();
   ++attempt.current;connectionPending.current=true;setReconnecting(true);
-  setupAllowed.current=false;setSetup(false);setBusy(false);setPhase('Private connection paused');
-  const previous=active.current,pending=opening.current,pendingWrite=creating.current;
+  setupAllowed.current=false;setSetup(false);setBusy(false);setPhase('Reconnecting your private session');
+  const previous=active.current,pending=openingOperation.current,pendingWrite=creating.current;
   const retiring=handoff.current.retire(true);setViews(handoff.current.snapshot);
   const paused=nativeNetwork.pause();void paused.catch(()=>{});
   const closing=cleanup.current.add(async()=>{await pendingWrite?.catch(()=>{});await paused.catch(()=>nativeNetwork.pause());},async()=>{for(const view of retiring)await view.shutdown?.();await previous?.cache.flush();});
@@ -77,7 +77,7 @@ export default function NativeWallet(){
   void closed.current.catch(fail);return closed.current;
  },[]);
  const finishReset=useCallback(()=>{
-  if(opening.current)return opening.current;
+  if(openingOperation.current)return openingOperation.current;
   clearing.current=true;setResetPending(true);setBusy(true);setError('');setPhase('Finishing wallet reset');
   const run=(async()=>{
    try{
@@ -88,10 +88,10 @@ export default function NativeWallet(){
     setBusy(false);fail(cause);throw cause;
    }
   })();
-  opening.current=run.finally(()=>{opening.current=undefined});return opening.current;
+  openingOperation.current=run.finally(()=>{openingOperation.current=undefined});return openingOperation.current;
  },[]);
  const open=useCallback(()=>{
-  if(opening.current)return opening.current;
+  if(openingOperation.current)return openingOperation.current;
    if(document.hidden){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
    if(localStorage.getItem(RESET_PENDING)==='1')return finishReset();
    if(manualLock.current||clearing.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
@@ -125,7 +125,7 @@ export default function NativeWallet(){
    if(resume&&resume.cache.storage.getItem('shielded-rollup-wallet-secret-v1')!==secret)throw new Error('The native vault changed. Lock and reopen the wallet before continuing.');
    setSetup(false);const cache=resume?.cache??createNativeStorage(secret,localStorage,putSecret);
    manualLock.current=false;const next:Session={generation:status.generation,cache,resumed:!!resume};active.current=next;
-   const view=handoff.current.stage(next),candidate=handoff.current.snapshot.candidate===view;
+   const view=handoff.current.stage(next,{awaitReady:true}),candidate=handoff.current.snapshot.candidate===view;
     const current=()=>active.current===next&&mine===attempt.current&&!document.hidden&&!manualLock.current&&!clearing.current&&!healthExpired.current&&handoff.current.snapshot.candidate===view;
    if(candidate){
     next.onStartupFailure=message=>{
@@ -134,6 +134,7 @@ export default function NativeWallet(){
      if(rejected.shutdown)void cleanup.current.add(rejected.shutdown).catch(fail);
      setError(message);void suspend().catch(fail);
     };
+    next.onStartupStage=message=>{if(current())setPhase(message);};
     let checking=false;
     next.onReady=()=>{
      if(checking||!current())return;checking=true;
@@ -144,11 +145,11 @@ export default function NativeWallet(){
      }).catch(cause=>next.onStartupFailure?.(cause instanceof Error?cause.message:String(cause))).finally(()=>{checking=false;});
     };
    }
-   setViews(handoff.current.snapshot);connectionPending.current=false;setReconnecting(candidate);setPhase(candidate?'Reconnecting wallet':status.mode==='direct'?'Tor off · Direct connection':'Tor connected');
+   setViews(handoff.current.snapshot);connectionPending.current=false;setReconnecting(candidate);setPhase(candidate?'Opening your private wallet':status.mode==='direct'?'Tor off · Direct connection':'Tor connected');
   }catch(cause){if(mine===attempt.current)fail(cause);}
   finally{if(mine===attempt.current){setBusy(false);openingGeneration.current=undefined;}}
   })();
-  opening.current=run.finally(()=>{opening.current=undefined;});return opening.current;
+  openingOperation.current=run.finally(()=>{openingOperation.current=undefined;});return openingOperation.current;
  },[finishReset,suspend]);
  const clearWallet=useCallback(async()=>{
   if(transition.current||creating.current)throw new Error('Wait for the current wallet operation to finish before clearing it.');
@@ -204,7 +205,7 @@ export default function NativeWallet(){
      if(shown&&!shown.retired)await suspend();
      if(live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden)await open();
     };
-    void resumeNativeForeground(Promise.all([closed.current,opening.current]),()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden,restart).catch(fail);
+    void resumeNativeForeground(Promise.all([closed.current,openingOperation.current]),()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden,restart).catch(fail);
    }
   };
   document.addEventListener('visibilitychange',visibility);
@@ -237,11 +238,15 @@ export default function NativeWallet(){
    if(attempt.current===nextAttempt&&!manualLock.current&&!document.hidden)await open();
   }).catch(cause=>{if(active.current===current&&attempt.current===mine){fail(cause);void pause();}});
    },[open,pause]);
+ const candidateOpening=!!candidate;
+ const reconnectOpening=reconnecting&&!error;
+ const opening=candidateOpening||reconnectOpening;
+ const showOpening=presentation.showOpening;
  return <>
-  {session&&<div className="native-wallet-topbar"><div className="app-header-status"><NativeTorHealth health={torHealth} onToggleTor={toggleTor} transportBusy={switching||saving||(reconnecting&&!error)}/><AppUpdateNotice/>{reconnecting&&<span role="status">{error||phase}</span>}{reconnecting&&error&&<button type="button" onClick={()=>void open()}>Reconnect</button>}</div><button className="native-wallet-lock" type="button" onClick={()=>{manualLock.current=true;setConfirmDirect(false);void pause();}}>Lock wallet</button></div>}
+  {session&&!showOpening&&<div className="native-wallet-topbar"><div className="app-header-status"><NativeTorHealth health={torHealth} onToggleTor={toggleTor} transportBusy={switching||saving}/><AppUpdateNotice/></div><button className="native-wallet-lock" type="button" onClick={()=>{manualLock.current=true;setConfirmDirect(false);void pause();}}>Lock wallet</button></div>}
   {confirmDirect&&<NativeConnectionWarning onCancel={()=>setConfirmDirect(false)} onConfirm={()=>void switchMode('direct')}/>}
   {externalLink&&<section className="stock-warning" role="dialog" aria-label="External link"><p>Copy this link to open it outside Shielded. Your browser uses its own network connection.</p><input aria-label="Link to copy" readOnly value={externalLink} onFocus={event=>event.target.select()}/><button type="button" onClick={()=>setExternalLink('')}>Close</button></section>}
-    {session?<>{[views.shown,views.candidate].filter((view):view is NativeWalletView<Session>=>!!view).map(view=>{const shown=view===views.shown,viewActive=isNativeWalletViewActive(view,shown);return <Suspense key={view.session.generation} fallback={shown?<p role="status">Opening wallet</p>:null}><Wallet nativeHost storage={view.session.cache.storage} reload={reload} onShutdown={view.onShutdown} onClearWallet={clearWallet} onReady={view.session.onReady} onStartupFailure={view.session.onStartupFailure} paymentRequest={paymentRequest} onPaymentRequestHandled={id=>setPaymentRequest(current=>current?.id===id?undefined:current)} animateEntrance={!view.session.resumed} suspended={view.retired} viewActive={viewActive} hidden={!viewActive}/></Suspense>;})}</>
-   :<WalletOnboarding transport="tor" setup={setup} busy={busy||switching||saving} phase={phase} error={error} phrase={phrase} torHealth={torHealth} onToggleTor={manualLock.current?undefined:toggleTor} transportBusy={switching||saving} reconnectLabel={resetPending?'Retry wallet reset':undefined} onPhraseChange={setPhrase} onCreate={()=>void create(false)} onRestore={()=>void create(true)} onReconnect={()=>{if(transition.current||creating.current)return;manualLock.current=false;void (resetPending?finishReset():open());}}/>}
+    {presentation.views.map(({view,visible})=>{const viewActive=isNativeWalletViewActive(view,visible);return <Suspense key={view.session.generation} fallback={visible?<p role="status">Opening wallet</p>:null}><Wallet nativeHost storage={view.session.cache.storage} reload={reload} onShutdown={view.onShutdown} onClearWallet={clearWallet} onReady={view.session.onReady} onStartupFailure={view.session.onStartupFailure} onStartupStage={view.session.onStartupStage} paymentRequest={paymentRequest} onPaymentRequestHandled={id=>setPaymentRequest(current=>current?.id===id?undefined:current)} animateEntrance={!view.session.resumed&&viewActive} suspended={view.retired} viewActive={viewActive} hidden={!viewActive}/></Suspense>;})}
+    {showOpening&&<WalletOnboarding transport="tor" setup={setup||opening} opening={opening} busy={busy||switching||saving||opening} phase={phase} error={error} phrase={phrase} torHealth={torHealth} onToggleTor={manualLock.current||opening?undefined:toggleTor} transportBusy={switching||saving} reconnectLabel={resetPending?'Retry wallet reset':undefined} onPhraseChange={setPhrase} onCreate={()=>void create(false)} onRestore={()=>void create(true)} onReconnect={()=>{if(transition.current||creating.current)return;manualLock.current=false;void (resetPending?finishReset():open());}}/>}
  </>;
 }

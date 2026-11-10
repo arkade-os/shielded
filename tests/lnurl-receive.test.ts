@@ -21,10 +21,10 @@ const isBind=(r:{url:string;init?:RequestInit})=>r.url.endsWith('/arkade')&&r.in
 
 function setup({aliases=[] as typeof receiver[],exitDelay=2048n,namelessSupported=true}={}){
  const state=new Map<string,unknown>(),kept=new Map<string,unknown>(),requests:{url:string;init?:RequestInit}[]=[],watched:CreateContractParams[]=[],registered:LnurlPayout[][]=[],funded=new Set<string>(),listeners=new Set<(event:{type:string})=>void>();
- let signed=0,saveFailure=false,clock=0,scans=0,reads=0,keeps=true,bindReply:(body:Bind)=>Response|Promise<Response>=()=>json({ok:true});
+ let signed=0,infoReads=0,saveFailure=false,clock=0,scans=0,reads=0,keeps=true,bindReply:(body:Bind)=>Response|Promise<Response>=()=>json({ok:true});
  const identity=SingleKey.fromHex('01'.repeat(32)),sign=identity.signMessage.bind(identity);
  identity.signMessage=async(...args)=>{signed++;return sign(...args);};
- const companion={identity:hdIdentity,network:{hrp:'tark'},getArkadeInfo:async()=>({network:'mutinynet',signerPubkey:hex.encode(server),unilateralExitDelay:exitDelay}),
+  const companion={identity:hdIdentity,network:{hrp:'tark'},getArkadeInfo:async()=>{infoReads++;return {network:'mutinynet',signerPubkey:hex.encode(server),unilateralExitDelay:exitDelay};},
   indexerProvider:{getVtxos:async({scripts}:{scripts:string[]})=>{scans++;return {vtxos:scripts.filter(script=>funded.has(script)).map(script=>({script}))};}},
   getContractManager:async()=>({createContract:async(params:CreateContractParams)=>{watched.push(params);return params;},onContractEvent:(listener:(event:{type:string})=>void)=>{listeners.add(listener);return()=>listeners.delete(listener);}})} as unknown as Wallet;
  const key=(pool:string,name:string)=>JSON.stringify([pool,name]);
@@ -57,7 +57,7 @@ function setup({aliases=[] as typeof receiver[],exitDelay=2048n,namelessSupporte
  const config={identity,companion,journal,owner:'owner',pool:'pool',baseUrl,fetch,now:()=>clock,shieldedAddress:()=>{reads++;return SHROL;},onPayouts:async(rows:LnurlPayout[])=>{registered.push(rows);}};
  const saved=()=>state.get(key('lnurl-receive','state-v1')) as {next:number;payouts:{script:string;index:number;id:string;claimPublicKey:string}[];servers:Record<string,{current?:string;boundAt?:number;refused?:true;recovering?:true;methods?:true;methodsPending?:true;methodsRefused?:true;withdraw?:true}>}|undefined;
  const bound=()=>requests.filter(isBind).map(r=>JSON.parse(String(r.init?.body)) as Bind);
- return {service:createLnurlReceive(config),config,state,requests,watched,registered,funded,listeners,saved,bound,aliases,key,
+ return {service:createLnurlReceive(config),config,state,requests,watched,registered,funded,listeners,saved,bound,aliases,key,infoReads:()=>infoReads,
   signed:()=>signed,scans:()=>scans,reads:()=>reads,keep:(value:boolean)=>{keeps=value;},relist:(handle:string,methods:unknown[])=>{kept.set(handle,methods);},forge:(change:(entry:Record<string,unknown>)=>void)=>{const stored=structuredClone(state.get(key('lnurl-receive','state-v1'))) as {servers:Record<string,Record<string,unknown>>};Object.values(stored.servers).forEach(change);state.set(key('lnurl-receive','state-v1'),stored);},tick:(ms:number)=>{clock+=ms;},saveFailure:(value:boolean)=>{saveFailure=value;},reply:(fn:typeof bindReply)=>{bindReply=fn;}};
 }
 const refusal=()=>json({error:'An HD receiver cannot be downgraded by a static registration',code:'invalid_rails'},400);
@@ -66,6 +66,24 @@ test('no signing, network or watch before the alias is enabled, including the ba
  const f=setup();assert.equal(await f.service.current(),undefined);assert.equal(await f.service.enabled(),false);
  f.service.start();await new Promise(resolve=>setTimeout(resolve,5));await f.service.dispose();
  assert.equal(f.signed(),0);assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
+});
+
+test('each serialized Lightning address operation owns one private fetch scope',async()=>{
+ const f=setup(),signals:AbortSignal[]=[];
+ const service=createLnurlReceive({...f.config,fetchFor:signal=>{signals.push(signal);return f.config.fetch;}});
+ await service.ensureUnified();
+ assert.equal(signals.length,1);
+ assert.equal(signals[0]!.aborted,true);
+ await service.setPrivateReceive(true);
+ assert.equal(signals.length,2);
+ assert.equal(signals[1]!.aborted,true);
+});
+
+test('a verified pool operator avoids a live operator-info request during receive startup',async()=>{
+ const f=setup();
+ const service=createLnurlReceive({...f.config,operator:{serverPubKey:hex.encode(server).slice(-64),exitDelay:{type:'seconds',value:2048}}});
+ await service.ensureUnified();
+ assert.equal(f.infoReads(),0);
 });
 
 test('a page cancellation inherited by the address service prevents registration',async()=>{

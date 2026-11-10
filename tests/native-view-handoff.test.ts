@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {createNativeViewHandoff,isNativeWalletViewActive} from '../app/src/native-view-handoff.ts';
+import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive,nativeWalletPresentation} from '../app/src/native-view-handoff.ts';
 import {createNativeCleanup} from '../app/src/native-cleanup.ts';
 
 const session=(generation:number)=>({generation});
@@ -8,14 +8,34 @@ const mounted=(handoff:ReturnType<typeof createNativeViewHandoff<ReturnType<type
  const view=handoff.stage(session(generation));view.onShutdown(async()=>{});return view;
 };
 
+test('an initial wallet stays inactive until its first ready signal',()=>{
+ const handoff=createNativeViewHandoff<ReturnType<typeof session>>(),first=handoff.stage(session(1),{awaitReady:true});
+ first.onShutdown(async()=>{});
+ assert.equal(handoff.snapshot.shown,undefined);assert.equal(handoff.snapshot.candidate,first);
+ assert.equal(isNativeWalletViewActive(first,false),false);
+ assert.equal(handoff.promote(first,()=>true),true);
+ assert.equal(handoff.snapshot.shown,first);assert.equal(handoff.snapshot.candidate,undefined);
+ assert.equal(isNativeWalletViewActive(first,true),true);
+});
+
 test('a resumed candidate cannot replace the retired balance view before it is ready',()=>{
  const handoff=createNativeViewHandoff<ReturnType<typeof session>>(),old=mounted(handoff,1);
  handoff.retire(true);const next=mounted(handoff,3);
  assert.equal(handoff.snapshot.shown,old);assert.equal(handoff.snapshot.candidate,next);assert.equal(old.retired,true);
+ assert.equal(currentNativeWalletView(handoff.snapshot.shown),undefined);
+ assert.equal(currentNativeWalletView(handoff.snapshot.candidate),next);
  assert.equal(isNativeWalletViewActive(old,true),false);assert.equal(isNativeWalletViewActive(next,false),false);
  assert.equal(handoff.promote(next,()=>false),false);assert.equal(handoff.snapshot.shown,old);
  assert.equal(handoff.promote(next,()=>true),true);assert.equal(handoff.snapshot.shown,next);assert.equal(handoff.snapshot.candidate,undefined);
  assert.equal(isNativeWalletViewActive(next,true),true);
+});
+
+test('a reconnect keeps the splash while mounting its replacement wallet unseen',()=>{
+ const handoff=createNativeViewHandoff<ReturnType<typeof session>>(),old=mounted(handoff,1);
+ handoff.retire(true);const next=mounted(handoff,3);
+ const presentation=nativeWalletPresentation(handoff.snapshot,true);
+ assert.equal(presentation.showOpening,true);
+ assert.deepEqual(presentation.views.map(item=>[item.view.session.generation,item.visible]),[[3,false]]);
 });
 
 test('lock removes both views immediately and fences an already captured readiness callback',()=>{
