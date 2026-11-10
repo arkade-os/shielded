@@ -175,6 +175,17 @@ test('an event under the frame cap but longer than one request never reaches ope
  assert.deepEqual([content.length,opened[0]!.length,socket.readyState,lines],[43_692,32<<10,WebSocket.OPEN,['[nostr] refused 1']],'the longer one was refused before it was even counted');
 });
 
+test('an event with small content but tags bulkier than a request\'s never reaches open(), and its connection stays open',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ const {url,server}=await relay(t),first=once(server,'req'),secret=generateSecretKey(),gateway=getPublicKey(secret),opened:Uint8Array[]=[];let clock=0;
+ const carrier=startNostrCarrier({open:async sealed=>{opened.push(sealed);return {kind:'refused'};},secret,relays:[url],now:()=>clock});t.after(()=>carrier.close());
+ const [socket,id]=await first,sent:string[]=[];
+ const send=(tags:string[][])=>{const content=base64.encode(randomBytes(40));sent.push(content);socket.send(JSON.stringify(['EVENT',id,finalizeEvent({kind:NOSTR_REQUEST_KIND,tags,content,created_at:0},generateSecretKey())]));};
+ clock=60_000;send([['p',gateway,'x'.repeat(100_000)]]);send([['p',gateway]]);
+ await until(()=>opened.length>0);
+ assert.deepEqual([opened.map(bytes=>base64.encode(bytes)),socket.readyState,lines],[sent.slice(1),WebSocket.OPEN,['[nostr] refused 1']]);
+});
+
 test('a relay that never answers the upgrade is given up after 10 s and tried again',{timeout:30_000},async t=>{
  t.mock.timers.enable({apis:['setTimeout']});
  const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
