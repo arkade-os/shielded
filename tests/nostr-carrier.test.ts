@@ -17,6 +17,7 @@ const A='wss://a.example',B='wss://b.example',ARK='https://ark.example/v1/info';
 const until=async(ok:()=>boolean)=>{for(let i=0;i<500&&!ok();i++)await sleep(10);assert.ok(ok(),'the condition never held');};
 const quiet=()=>sleep(100);
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
+const advance=async(t:TestContext,ms:number)=>{for(let at=0;at<ms;at+=1000){t.mock.timers.tick(1000);await settle();}};
 const holding=()=>{let release=()=>{};const held=new Promise<Response>(resolve=>{release=()=>resolve(Response.json({ok:true}));});return {held,release};};
 
 async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),gateway={},now,open,restarting,cacheBytes}:{relays?:string[];reply?:(url:string)=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;now?:()=>number;open?:OhttpOpen;restarting?:{key:OhttpGatewayKey;bus:ReturnType<typeof createNostrBus>};cacheBytes?:number}={}){
@@ -284,11 +285,11 @@ test('a resubscribed relay still delivers requests',async t=>{
  assert.equal((await sent.inner()).status,200);
 });
 
-test('close() closes every subscription and destroys the pool, and a late event is not opened',async()=>{
+test('close() closes every subscription and destroys the pool, and a late event is not opened',async t=>{
  const secret=generateSecretKey(),gateway=getPublicKey(secret),taps:((event:Event)=>void)[]=[];let opened=0,closes=0,destroys=0;
- const relay={subscribe:(_filters:unknown,params:{onevent:(event:Event)=>void})=>{taps.push(params.onevent);return {close(){closes++;}};},publish:async()=>''};
+ const relay={subscribe:(_filters:unknown,params:{onevent:(event:Event)=>void})=>{taps.push(params.onevent);return {close(){closes++;}};},publish:async()=>'',close(){}};
  const pool={ensureRelay:async()=>relay,destroy(){destroys++;}} as unknown as RelayPool;
- const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A,B],pool});
+ const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A,B],pool});t.after(()=>carrier.close());
  await until(()=>taps.length===2);
  taps[0]!(requestEvent(randomBytes(40),gateway,Date.now()));await until(()=>opened===1);
  carrier.close();assert.deepEqual([closes,destroys],[2,1]);
@@ -306,11 +307,11 @@ test('an upstream body at the cap fits 8 answer events beside the largest header
  }
 });
 
-test('open() is told the answer cap unless the caller sets one',async()=>{
+test('open() is told the answer cap unless the caller sets one',async t=>{
  const secret=generateSecretKey(),gateway=getPublicKey(secret),seen:(number|undefined)[]=[],bus=createNostrBus();
  const open:OhttpOpen=async(_sealed,options)=>{seen.push(options?.maxAnswer);return {kind:'refused'};};
  for(const maxAnswer of [undefined,1234]){
-  const carrier=startNostrCarrier({open,secret,relays:[A],pool:bus.pool,...(maxAnswer?{maxAnswer}:{})}),before=seen.length;await settle();
+  const carrier=startNostrCarrier({open,secret,relays:[A],pool:bus.pool,...(maxAnswer?{maxAnswer}:{})}),before=seen.length;t.after(()=>carrier.close());await settle();
   await Promise.all(bus.pool.publish([A],requestEvent(randomBytes(40),gateway,Date.now())));await until(()=>seen.length>before);carrier.close();
  }
  assert.deepEqual(seen,[241_644,1234]);
@@ -336,4 +337,35 @@ test('after many requests there is still one subscription per relay, and none wa
  assert.equal(g.bus.openSubscriptions(),2);assert.equal(g.calls.length,count);
  const last=await g.ask(ARK,{to:[A]});await until(()=>last.answer()?.kind==='sealed');
  assert.equal((await last.inner()).status,200);
+});
+
+test('every 30 s each relay gets one canary signed by the gateway, which is never opened, and a relay that echoes it stays subscribed',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','setInterval']});
+ const g=await rig(t,{relays:[A,B],now:()=>45_999});
+ await advance(t,30_000);
+ const canaries=g.bus.published.filter(event=>event.pubkey===g.key.nostrPublic).map(({kind,tags,content,created_at})=>({kind,tags,content,created_at}));
+ assert.deepEqual(canaries,[{kind:NOSTR_REQUEST_KIND,tags:[['p',g.key.nostrPublic]],content:'',created_at:45}]);
+ await advance(t,15_000);
+ assert.deepEqual([g.bus.openSubscriptions(),g.outcomes],[2,[]]);
+});
+
+test('a relay that does not echo the canary in 15 s is closed and subscribed again 30 s later',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ t.mock.timers.enable({apis:['setTimeout','setInterval']});
+ let clock=0;const g=await rig(t,{relays:[A,B],now:()=>clock});g.bus.relay(B).deliver=false;
+ await advance(t,30_000);clock=60_000;await advance(t,15_000);
+ assert.deepEqual([g.bus.openSubscriptions(),lines],[1,['[nostr] deaf 1']]);
+ g.bus.relay(B).deliver=true;await advance(t,30_000);
+ assert.equal(g.bus.openSubscriptions(),2);
+ t.mock.timers.reset();
+ const sent=await g.ask(ARK,{to:[B],listen:[B]});await until(()=>sent.answer(B)?.kind==='sealed');
+});
+
+test('close() closes each relay it opened before destroying the pool',async t=>{
+ const bus=createNostrBus(),order:string[]=[],ensure=bus.pool.ensureRelay;
+ t.mock.method(bus.pool,'ensureRelay',async(url:string)=>{const relay=await ensure(url),close=relay.close;relay.close=()=>{order.push(url);close();};return relay;});
+ t.mock.method(bus.pool,'destroy',()=>{order.push('destroy');});
+ const carrier=startNostrCarrier({open:async()=>({kind:'refused'}),secret:generateSecretKey(),relays:[A,B],pool:bus.pool});t.after(()=>carrier.close());await settle();
+ carrier.close();
+ assert.deepEqual(order,[A,B,'destroy']);
 });

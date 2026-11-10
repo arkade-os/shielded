@@ -60,6 +60,7 @@ export function createNostrBus(){
      return {close:(reason='closed by caller')=>{if(live.delete(sub))sub.onclose(reason);}};
     },
     publish:async event=>{if(!link.alive)throw stale();return take(url,event);},
+    close:()=>drop(url,'relay connection closed by us'),
    };
   },
   destroy:()=>drop(undefined,'relay connection closed by us'),
