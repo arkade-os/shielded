@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {createNativeViewHandoff,isNativeWalletViewActive} from '../app/src/native-view-handoff.ts';
+import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive} from '../app/src/native-view-handoff.ts';
 import {createNativeCleanup} from '../app/src/native-cleanup.ts';
 
 const session=(generation:number)=>({generation});
@@ -22,6 +22,8 @@ test('a resumed candidate cannot replace the retired balance view before it is r
  const handoff=createNativeViewHandoff<ReturnType<typeof session>>(),old=mounted(handoff,1);
  handoff.retire(true);const next=mounted(handoff,3);
  assert.equal(handoff.snapshot.shown,old);assert.equal(handoff.snapshot.candidate,next);assert.equal(old.retired,true);
+ assert.equal(currentNativeWalletView(handoff.snapshot.shown),undefined);
+ assert.equal(currentNativeWalletView(handoff.snapshot.candidate),next);
  assert.equal(isNativeWalletViewActive(old,true),false);assert.equal(isNativeWalletViewActive(next,false),false);
  assert.equal(handoff.promote(next,()=>false),false);assert.equal(handoff.snapshot.shown,old);
  assert.equal(handoff.promote(next,()=>true),true);assert.equal(handoff.snapshot.shown,next);assert.equal(handoff.snapshot.candidate,undefined);
