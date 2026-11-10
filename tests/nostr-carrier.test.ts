@@ -169,6 +169,14 @@ test('a copy that arrives after the answer is ignored',async t=>{
  assert.equal(g.calls.length,1);assert.equal(sent.heard.get(B)!.length,0,'the answer went to the relay that carried the request in time');assert.deepEqual(g.statuses(),[]);
 });
 
+test('two events carrying the same sealed bytes run once, and the later one gets no answer (Plan 2c addresses answers by enc)',async t=>{
+ const g=await rig(t,{relays:[A,B]}),{event,bytes}=await g.ask(ARK,{to:[]}),copy=requestEvent(bytes,g.key.nostrPublic,Date.now());
+ await Promise.all([...g.bus.pool.publish([A],event),...g.bus.pool.publish([B],copy)]);await until(()=>g.outcomes.length===2);await quiet();
+ const [winner,...others]=new Set(g.answers().map(answer=>answer.tags.find(tag=>tag[0]==='e')![1])),loser=winner===event.id?copy.id:event.id;
+ assert.deepEqual([g.calls.length,others,[...g.outcomes].sort()],[1,[],['refused','sealed']]);assert.ok([event.id,copy.id].includes(winner!));
+ assert.equal(readAnswer(g.answers(),winner!,g.key.nostrPublic)?.kind,'sealed');assert.equal(readAnswer(g.answers(),loser,g.key.nostrPublic),undefined);
+});
+
 test('an open() that rejects publishes nothing, not even a status, and is counted as failed',async t=>{
  const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
  let clock=0,calls=0;const g=await rig(t,{now:()=>clock,open:async()=>{calls++;throw new Error('boom');}});
