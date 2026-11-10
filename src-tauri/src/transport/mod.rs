@@ -1,3 +1,4 @@
+mod direct;
 mod policy;
 mod routes;
 mod session;
@@ -7,11 +8,20 @@ use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, WebviewWindow, ipc::Channel};
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeMode {
+    #[default]
+    Tor,
+    Direct,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeStatus {
     pub phase: String,
     pub generation: u64,
+    pub mode: NativeMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,8 +91,14 @@ impl PrivacyTransport {
     pub fn status(&self) -> Result<NativeStatus, String> {
         self.inner.status()
     }
+    pub fn prewarm(&self) -> Result<NativeStatus, String> {
+        self.inner.prewarm()
+    }
     pub async fn start(&self) -> Result<NativeStatus, String> {
-        self.inner.start().await
+        self.start_mode(NativeMode::Tor).await
+    }
+    pub async fn start_mode(&self, mode: NativeMode) -> Result<NativeStatus, String> {
+        self.inner.start(mode).await
     }
     pub fn scope(&self, generation: u64, purpose: &str) -> Result<NativeHandle, String> {
         self.inner.scope(generation, purpose)
@@ -115,9 +131,10 @@ pub fn native_status(
 pub async fn native_start(
     window: WebviewWindow,
     state: State<'_, PrivacyTransport>,
+    mode: Option<NativeMode>,
 ) -> Result<NativeStatus, String> {
     crate::ensure_local(&window)?;
-    state.start().await
+    state.start_mode(mode.unwrap_or_default()).await
 }
 
 #[tauri::command]

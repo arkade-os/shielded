@@ -43,6 +43,13 @@ final class ShieldedPlatformPlugin: Plugin {
             return nil
         }
     }
+
+    @objc public func secretClear(_ invoke: Invoke) {
+        secret(invoke) {
+            try self.vault.clear()
+            return nil
+        }
+    }
 }
 
 @_cdecl("init_plugin_shielded_platform")

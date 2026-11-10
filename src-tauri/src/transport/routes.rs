@@ -69,6 +69,14 @@ pub fn binding(
             checked.url.origin().ascii_serialization()
         ));
     }
+    if host == POOL
+        && purpose == "public"
+        && get
+        && path == "/api/native/releases"
+        && checked.url.query().is_none()
+    {
+        return Ok(path.into());
+    }
     if host == POOL && parts.starts_with(&["api", "rollup"]) {
         let suffix = &parts[2..];
         if !query_allowed(
@@ -345,6 +353,27 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn release_metadata_requires_the_exact_public_get_route() {
+        let url = format!("https://{POOL}/api/native/releases");
+        assert!(binding("public", &checked(&url, None), None).is_ok());
+        assert!(binding("public", &checked(&url, Some("{}")), None).is_err());
+        assert!(binding("pool-sync", &checked(&url, None), None).is_err());
+        for denied in [
+            format!("{url}?"),
+            format!("{url}?wallet=hidden"),
+            format!("{url}/"),
+            format!("{url}/latest"),
+            format!("https://{POOL}/api/native/%72eleases"),
+            "https://other.example/api/native/releases".into(),
+        ] {
+            assert!(
+                binding("public", &checked(&denied, None), None).is_err(),
+                "{denied}"
+            );
+        }
     }
 
     #[test]

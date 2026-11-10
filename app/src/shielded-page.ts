@@ -57,7 +57,7 @@ export function pageCache(source:ShieldedNoteRepository){
  return {repository,close(){closed=true;},async drain(){await Promise.allSettled([...writes]);}};
 }
 
-type PageRetry={delayMs?:number;onError?:(error:unknown)=>void;shouldRetry?:()=>boolean};
+type PageRetry={delayMs?:number;onError?:(error:unknown)=>void;onTerminal?:(error:unknown)=>void;shouldRetry?:()=>boolean};
 function retryablePageError(error:unknown){
  if(!(error instanceof Error))return false;
  const status=(error as Error&{status?:number}).status;
@@ -69,7 +69,10 @@ export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,op
   try{const value=await read();return signal.aborted?undefined:value;}
   catch(error){
    if(signal.aborted)return;
-   options.onError?.(error);if(!retryablePageError(error)||options.shouldRetry?.()===false)throw error;
+   options.onError?.(error);
+   const retry=retryablePageError(error)&&options.shouldRetry?.()!==false;
+   if(signal.aborted)return;
+   if(!retry){options.onTerminal?.(error);throw error;}
    await new Promise<void>(resolve=>{
     const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
     const timer=setTimeout(done,Math.min((options.delayMs??5000)*2**Math.min(attempt,4),60_000)*(1+Math.random()/4));
@@ -82,6 +85,16 @@ export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,op
 export function pageClose<A extends unknown[],T>(close:(...args:A)=>Promise<T>){
  let completed:Promise<T>|undefined;
  return(...args:A)=>completed??=Promise.resolve().then(()=>close(...args)).catch(error=>{completed=undefined;throw error;});
+}
+
+export function pageActions(changed:()=>void){
+ const pending=new Set<PaymentHandle>();
+ return {get busy(){return pending.size>0;},track(handle:PaymentHandle){
+  if(pending.has(handle))return;
+  pending.add(handle);changed();
+  const finish=()=>{pending.delete(handle);changed();};
+  void Promise.resolve().then(()=>handle.settled({timeoutMs:30*60_000})).then(finish,finish);
+ }};
 }
 
 export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()=>Promise<P>,create:(prepared:P)=>Promise<W>,disposeWallet:(wallet:W)=>Promise<void>=wallet=>wallet.dispose(),retry:PageRetry={}){
@@ -102,20 +115,40 @@ export function openPageWallet<P,W extends {dispose():Promise<void>}>(prepare:()
 }
 
 export type PageLightning<C,S,L>={companion:C;swaps:S;lnurl:L};
-export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C)=>Promise<S>;lnurl:(companion:C,swaps:S)=>Promise<L>;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
- let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined;
+export async function startPageLightning<C extends {dispose():Promise<void>},S extends AsyncDisposable,L extends {dispose():Promise<void>}>(o:{pairing:Promise<C>;swaps:(companion:C,signal:AbortSignal)=>Promise<S>;lnurl:(companion:C,swaps:Promise<S>,signal:AbortSignal)=>Promise<L>;onLnurl?:(lnurl:L)=>void;signal:AbortSignal;active:()=>boolean;handOver:(parts:PageLightning<C,S,L>)=>void;report:(error:unknown)=>void}){
+ let companion:C|undefined,swaps:S|undefined,lnurl:L|undefined,pendingSwaps:Promise<S>|undefined,pendingLnurl:Promise<L>|undefined;
+ const waitFor=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
+  if(o.signal.aborted){reject(new Error('Lightning start was cancelled'));return;}
+  const stopped=()=>reject(new Error('Lightning start was cancelled'));
+  o.signal.addEventListener('abort',stopped,{once:true});
+  work.then(value=>{o.signal.removeEventListener('abort',stopped);resolve(value);},error=>{o.signal.removeEventListener('abort',stopped);reject(error);});
+ });
  try{
-  companion=await o.pairing;
+  companion=await waitFor(o.pairing);
   if(o.active()){
-   swaps=await o.swaps(companion);
+   pendingSwaps=o.swaps(companion,o.signal);pendingSwaps.catch(()=>{});
+   pendingLnurl=o.lnurl(companion,pendingSwaps,o.signal);
+   lnurl=await waitFor(pendingLnurl);
+    if(o.active())o.onLnurl?.(lnurl);
    if(o.active()){
-    lnurl=await o.lnurl(companion,swaps);
-    if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
+     swaps=await waitFor(pendingSwaps);
+     if(o.active()){const parts={companion,swaps,lnurl};o.handOver(parts);return parts;}
    }
   }
- }catch(error){if(o.active())o.report(new Error(`Lightning could not start: ${errorText(error)}`));}
+ }catch(error){
+  if(!o.signal.aborted&&o.active())o.report(new Error(`Lightning could not start: ${errorText(error)}`));
+  if(o.signal.aborted&&!companion)void o.pairing.then(value=>value.dispose(),()=>{}).catch(()=>{});
+  if(o.signal.aborted&&!lnurl)void pendingLnurl?.then(value=>value.dispose(),()=>{}).catch(()=>{});
+ }
  // No hand-over, so this start still owns them; swaps and the address service both run on the companion, so it goes last.
- try{await lnurl?.dispose();}catch{}try{await swaps?.[Symbol.asyncDispose]();}catch{}try{await companion?.dispose();}catch{}
+ try{await lnurl?.dispose();}catch{}
+ let shutdownTimer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  const pending=pendingSwaps?.then(async service=>{if(swaps!==service)await service[Symbol.asyncDispose]();},()=>{}).catch(()=>{});
+  if(pending)await Promise.race([pending,new Promise(resolve=>{shutdownTimer=setTimeout(resolve,1500);})]);
+ }finally{if(shutdownTimer)clearTimeout(shutdownTimer);}
+ try{await swaps?.[Symbol.asyncDispose]();}catch{}
+ try{await companion?.dispose();}catch{}
  return;
 }
 
@@ -180,27 +213,36 @@ export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof
 }
 
 export function pageSheet(render:(state:StepState|undefined)=>void){
- type Owner={current:()=>boolean;update:(change:(current:StepState)=>StepState)=>void;fail:(error:unknown)=>void};
- let generation=0,off=()=>{},state:StepState|undefined;
+ type Owner={current:()=>boolean;update:(change:(current:StepState)=>StepState)=>void;fail:(error:unknown)=>void;dismiss:()=>void;attach:(off:()=>void)=>void};
+ let generation=0,active:Owner|undefined,state:StepState|undefined;
  const watched=new WeakMap<PaymentHandle,Owner>();
  function begin(title:string):Owner{
-  off();off=()=>{};const mine=++generation;
-  const update=(change:(current:StepState)=>StepState)=>{if(mine===generation){state=change(state??{title,steps:['Start','Done'],current:0});render(state);}};
+  let off=()=>{},dismissed=false;active?.attach(()=>{});const mine=++generation;
+  const publish=(next:StepState,terminal:boolean)=>{if(dismissed&&!terminal)return;state=next;render(next);};
+  const update=(change:(current:StepState)=>StepState)=>{
+   if(mine!==generation)return;
+   const next=change(state??{title,steps:['Start','Done'],current:0});
+   publish(next,!!next.done||!!next.error);
+  };
   state=undefined;
-  return {current:()=>mine===generation,update,fail:(error:unknown)=>update(s=>({...s,error:errorText(error)}))};
+  const owner:Owner={current:()=>mine===generation,update,fail:(error:unknown)=>update(s=>({...s,error:errorText(error)})),
+   dismiss(){if(mine!==generation)return;dismissed=true;state=undefined;render(undefined);},
+   attach(next){off();off=next;}};
+  active=owner;
+  return owner;
  }
  return {
   begin,
   watch(next:PaymentHandle,title:string){
    const previous=watched.get(next);if(previous)return previous;
    const selected=begin(title);watched.set(next,selected);
-   off=watchHandle(next,title,s=>selected.update(()=>s));
+   selected.attach(watchHandle(next,title,s=>selected.update(()=>s)));
    // StepState keeps only the message, and a handle the wallet started (auto-shield) has no run() to word its failure.
    if(isShieldedHandle(next))void next.settled().catch(error=>{if(pausedErrorText(error))selected.fail(error);});
    return selected;
   },
-  clear(){generation++;off();off=()=>{};state=undefined;render(undefined);},
-  stop(){generation++;off();off=()=>{};},
+  clear(){active?.dismiss();},
+  stop(){generation++;active?.attach(()=>{});active=undefined;state=undefined;},
  };
 }
 

@@ -20,7 +20,7 @@ sysinfo = { path = "vendor/sysinfo" }
 tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
-arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite"] }
+arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite", "experimental-api"] }
 base64 = "=0.23.1"
 bytes = "=1.12.1"
 futures-util = { version = "=0.3.34", features = ["sink"] }
@@ -32,8 +32,9 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sha2 = "=0.11.1"
 tauri = { version = "=2.12.5", features = [] }
+tauri-plugin-opener = "=2.7.2"
 tauri-plugin-shielded-platform = { path = "plugins/shielded-platform" }
-tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 tokio-util = { version = "=0.7.20", features = ["rt"] }

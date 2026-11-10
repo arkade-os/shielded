@@ -1,17 +1,23 @@
 use super::{
-    NativeHandle, NativeRequest, NativeResponse, NativeStatus, NativeStreamEvent,
+    NativeHandle, NativeMode, NativeRequest, NativeResponse, NativeStatus, NativeStreamEvent,
     policy::CheckedRequest,
 };
 use arti_client::{BootstrapBehavior, DormantMode, TorClient, config::TorClientConfigBuilder};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::{Arc, Mutex, MutexGuard, Weak},
+    task::{Context, Poll},
     time::Duration,
 };
 use tauri::ipc::Channel;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
+};
 use tokio_util::sync::CancellationToken;
 use tor_rtcompat::PreferredRuntime;
 
@@ -19,6 +25,10 @@ pub(super) type Client = Arc<TorClient<PreferredRuntime>>;
 const MAX_SCOPES: usize = 1024;
 const MAX_OPERATIONS: usize = 64;
 const MAX_CANCELLED: usize = 4096;
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const DIRECTORY_INITIAL_DELAY: Duration = Duration::from_secs(1);
+const DIRECTORY_RETRY_ATTEMPTS: u32 = 8;
+const DIRECTORY_PARALLELISM: u8 = 8;
 const PURPOSES: &[&str] = &[
     "public",
     "pool-sync",
@@ -35,15 +45,228 @@ const PURPOSES: &[&str] = &[
 pub(super) struct Session {
     pub phase: &'static str,
     pub generation: u64,
+    pub mode: NativeMode,
     pub error: Option<String>,
     pub client: Option<Client>,
     pub bootstrap_cancel: Option<CancellationToken>,
+    startup: Option<Arc<Startup>>,
     pub scopes: HashMap<String, Scope>,
     operations: HashMap<String, Operation>,
     cancelled: HashSet<String>,
     completed: HashSet<String>,
     completion_order: VecDeque<String>,
     subscriptions: HashMap<String, String>,
+    resources: Vec<CancellationToken>,
+}
+
+fn configure_directory_downloads(config: &mut TorClientConfigBuilder) {
+    config
+        .download_schedule()
+        .retry_consensus()
+        .attempts(DIRECTORY_RETRY_ATTEMPTS)
+        .initial_delay(DIRECTORY_INITIAL_DELAY)
+        .parallelism(DIRECTORY_PARALLELISM);
+    config
+        .download_schedule()
+        .retry_certs()
+        .attempts(DIRECTORY_RETRY_ATTEMPTS)
+        .initial_delay(DIRECTORY_INITIAL_DELAY)
+        .parallelism(DIRECTORY_PARALLELISM);
+    config
+        .download_schedule()
+        .retry_microdescs()
+        .attempts(DIRECTORY_RETRY_ATTEMPTS)
+        .initial_delay(DIRECTORY_INITIAL_DELAY)
+        .parallelism(DIRECTORY_PARALLELISM);
+}
+
+type StartupResult = Result<NativeStatus, String>;
+
+struct Startup {
+    result: watch::Sender<Option<StartupResult>>,
+}
+
+impl Startup {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            result: watch::channel(None).0,
+        })
+    }
+
+    fn waiter(&self, generation: u64, mode: NativeMode) -> StartWaiter {
+        StartWaiter {
+            generation,
+            mode,
+            result: self.result.subscribe(),
+        }
+    }
+
+    fn finish(&self, result: StartupResult) {
+        self.result.send_if_modified(|stored| {
+            if stored.is_some() {
+                return false;
+            }
+            *stored = Some(result);
+            true
+        });
+    }
+}
+
+struct StartWaiter {
+    generation: u64,
+    mode: NativeMode,
+    result: watch::Receiver<Option<StartupResult>>,
+}
+
+impl StartWaiter {
+    async fn wait(mut self, inner: &Inner) -> StartupResult {
+        loop {
+            let result = { self.result.borrow_and_update().clone() };
+            if let Some(result) = result {
+                let session = inner.lock()?;
+                if session.generation != self.generation || session.mode != self.mode {
+                    return Err("private session changed".into());
+                }
+                return result;
+            }
+            self.result
+                .changed()
+                .await
+                .map_err(|_| "private startup stopped; retry to reconnect".to_owned())?;
+        }
+    }
+}
+
+enum PreparedStart {
+    Ready(NativeStatus),
+    Pending {
+        waiter: StartWaiter,
+        work: Option<StartupWork>,
+    },
+}
+
+struct StartupWork {
+    inner: Arc<Inner>,
+    generation: u64,
+    mode: NativeMode,
+    cancel: CancellationToken,
+    existing: Option<Client>,
+    retiring: Vec<CancellationToken>,
+    completion: Arc<Startup>,
+    drain_timeout: Duration,
+    finished: bool,
+    _retirement: Arc<Retirement>,
+}
+
+impl StartupWork {
+    async fn run(self) {
+        self.run_with_bootstrap(|inner, generation, cancel, existing| async move {
+            inner.bootstrap(generation, &cancel, existing).await
+        })
+        .await;
+    }
+
+    async fn run_with_bootstrap<F, Fut>(mut self, bootstrap: F)
+    where
+        F: FnOnce(Arc<Inner>, u64, CancellationToken, Option<Client>) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        let cancel = self.cancel.clone();
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err("private session paused".into()),
+            result = async {
+                self.inner.check_start(self.generation, self.mode, &self.completion)?;
+                tokio::time::timeout(self.drain_timeout, async {
+                    for resource in &self.retiring { resource.cancelled().await; }
+                }).await.map_err(|_| "previous network requests are still closing; retry to reconnect".to_owned())?;
+                self.inner.check_start(self.generation, self.mode, &self.completion)?;
+                if self.mode == NativeMode::Tor {
+                    bootstrap(self.inner.clone(), self.generation, self.cancel.clone(), self.existing.take()).await
+                } else {
+                    Ok(())
+                }
+            } => result,
+        };
+        self.inner
+            .finish_start(self.generation, self.mode, &self.completion, result);
+        self.finished = true;
+    }
+}
+
+impl Drop for StartupWork {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.inner.finish_start(
+                self.generation,
+                self.mode,
+                &self.completion,
+                Err("private startup stopped; retry to reconnect".into()),
+            );
+        }
+    }
+}
+
+#[derive(Clone)]
+enum ConnectionContext {
+    Tor(Client),
+    Direct,
+}
+
+impl ConnectionContext {
+    fn tor(&self) -> Result<&Client, String> {
+        match self {
+            Self::Tor(client) => Ok(client),
+            Self::Direct => Err("Tor is unavailable in direct mode".into()),
+        }
+    }
+}
+
+pub(super) struct Retirement(CancellationToken);
+impl Drop for Retirement {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+trait NativeIo: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> NativeIo for T {}
+
+pub(super) struct NativeStream {
+    io: Box<dyn NativeIo>,
+    _retirement: Arc<Retirement>,
+}
+
+impl AsyncRead for NativeStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for NativeStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(context, buffer)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(context)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(context)
+    }
 }
 
 struct Operation {
@@ -74,7 +297,7 @@ impl Default for Delivery {
 }
 
 pub(super) struct Scope {
-    pub client: Client,
+    context: ConnectionContext,
     purpose: String,
     binding: Option<String>,
     subscription: Option<String>,
@@ -91,9 +314,10 @@ pub(super) struct Lease {
     pub id: String,
     pub scope: String,
     pub generation: u64,
-    pub client: Client,
+    context: ConnectionContext,
     pub cancel: CancellationToken,
     delivery: Arc<Delivery>,
+    retirement: Arc<Retirement>,
 }
 
 impl Inner {
@@ -115,15 +339,18 @@ impl Inner {
             session: Mutex::new(Session {
                 phase: "locked",
                 generation: 0,
+                mode: NativeMode::Tor,
                 error: None,
                 client: None,
                 bootstrap_cancel: None,
+                startup: None,
                 scopes: HashMap::new(),
                 operations: HashMap::new(),
                 cancelled: HashSet::new(),
                 completed: HashSet::new(),
                 completion_order: VecDeque::new(),
                 subscriptions: HashMap::new(),
+                resources: Vec::new(),
             }),
         }
     }
@@ -149,36 +376,152 @@ impl Inner {
         Ok(session.status())
     }
 
-    pub async fn start(self: &Arc<Self>) -> Result<NativeStatus, String> {
-        let (generation, cancel, existing) = {
-            let mut session = self.lock()?;
-            if matches!(session.phase, "ready" | "bootstrapping") {
-                return Ok(session.status());
+    pub async fn start(self: &Arc<Self>, mode: NativeMode) -> Result<NativeStatus, String> {
+        self.start_with_drain_timeout(mode, DRAIN_TIMEOUT).await
+    }
+
+    pub fn prewarm(self: &Arc<Self>) -> Result<NativeStatus, String> {
+        match self.prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, true)? {
+            PreparedStart::Ready(status) => Ok(status),
+            PreparedStart::Pending { work, .. } => {
+                if let Some(work) = work {
+                    let _ = tauri::async_runtime::spawn(work.run());
+                }
+                self.status()
             }
-            session.invalidate()?;
-            session.phase = "bootstrapping";
-            session.error = None;
-            let cancel = CancellationToken::new();
-            session.bootstrap_cancel = Some(cancel.clone());
-            (session.generation, cancel, session.client.clone())
-        };
-        let result = self.bootstrap(generation, &cancel, existing).await;
-        let mut session = self.lock()?;
-        if generation != session.generation || session.phase != "bootstrapping" {
-            return Err("private session changed".into());
         }
-        session.bootstrap_cancel = None;
-        match result {
-            Ok(()) => session.phase = "ready",
+    }
+
+    async fn start_with_drain_timeout(
+        self: &Arc<Self>,
+        mode: NativeMode,
+        drain_timeout: Duration,
+    ) -> Result<NativeStatus, String> {
+        match self.prepare_start(mode, drain_timeout, false)? {
+            PreparedStart::Ready(status) => Ok(status),
+            PreparedStart::Pending { waiter, work } => {
+                if let Some(work) = work {
+                    let _ = tokio::spawn(work.run());
+                }
+                waiter.wait(self).await
+            }
+        }
+    }
+
+    fn prepare_start(
+        self: &Arc<Self>,
+        mode: NativeMode,
+        drain_timeout: Duration,
+        initial_only: bool,
+    ) -> Result<PreparedStart, String> {
+        let mut session = self.lock()?;
+        if initial_only
+            && (session.generation != 0
+                || session.phase != "locked"
+                || session.mode != NativeMode::Tor)
+        {
+            return Ok(PreparedStart::Ready(session.status()));
+        }
+        if session.mode == mode {
+            if session.phase == "ready" {
+                return Ok(PreparedStart::Ready(session.status()));
+            }
+            if session.phase == "bootstrapping" {
+                let completion = session
+                    .startup
+                    .as_ref()
+                    .ok_or("private startup unavailable")?;
+                return Ok(PreparedStart::Pending {
+                    waiter: completion.waiter(session.generation, mode),
+                    work: None,
+                });
+            }
+        }
+        session.invalidate()?;
+        if session.mode != mode {
+            if let Some(client) = session.client.take() {
+                client.set_dormant(DormantMode::Soft);
+                let stopped = client.wait_for_stop();
+                let retirement = session.resource();
+                let _ = tokio::spawn(async move {
+                    stopped.await;
+                    drop(retirement);
+                });
+            }
+        }
+        session.mode = mode;
+        session.phase = "bootstrapping";
+        session.error = None;
+        let cancel = CancellationToken::new();
+        session.bootstrap_cancel = Some(cancel.clone());
+        let completion = Startup::new();
+        session.startup = Some(completion.clone());
+        session
+            .resources
+            .retain(|resource| !resource.is_cancelled());
+        let retiring = session.resources.clone();
+        let retirement = session.resource();
+        Ok(PreparedStart::Pending {
+            waiter: completion.waiter(session.generation, mode),
+            work: Some(StartupWork {
+                inner: self.clone(),
+                generation: session.generation,
+                mode,
+                cancel,
+                existing: session.client.clone(),
+                retiring,
+                completion,
+                drain_timeout,
+                finished: false,
+                _retirement: retirement,
+            }),
+        })
+    }
+
+    fn check_start(
+        &self,
+        generation: u64,
+        mode: NativeMode,
+        completion: &Arc<Startup>,
+    ) -> Result<(), String> {
+        if self.lock()?.start_matches(generation, mode, completion) {
+            Ok(())
+        } else {
+            Err("private session changed".into())
+        }
+    }
+
+    fn finish_start(
+        &self,
+        generation: u64,
+        mode: NativeMode,
+        completion: &Arc<Startup>,
+        result: Result<(), String>,
+    ) {
+        let mut session = match self.lock() {
+            Ok(session) => session,
             Err(error) => {
-                session.phase = "error";
-                session.error = Some(error);
-                if let Some(client) = &session.client {
-                    client.set_dormant(DormantMode::Soft);
+                completion.finish(Err(error));
+                return;
+            }
+        };
+        let result = if !session.start_matches(generation, mode, completion) {
+            Err("private session changed".into())
+        } else {
+            session.bootstrap_cancel = None;
+            match result {
+                Ok(()) => session.phase = "ready",
+                Err(error) => {
+                    session.phase = "error";
+                    session.error = Some(error);
+                    if let Some(client) = &session.client {
+                        client.set_dormant(DormantMode::Soft);
+                    }
                 }
             }
-        }
-        Ok(session.status())
+            Ok(session.status())
+        };
+        completion.finish(result);
     }
 
     async fn bootstrap(
@@ -190,12 +533,14 @@ impl Inner {
         let client = match existing {
             Some(client) => client,
             None => {
-                let config = TorClientConfigBuilder::from_directories(
+                let mut config = TorClientConfigBuilder::from_directories(
                     self.data_dir.join("state"),
                     self.data_dir.join("cache"),
-                )
-                .build()
-                .map_err(|_| "Tor storage configuration failed")?;
+                );
+                configure_directory_downloads(&mut config);
+                let config = config
+                    .build()
+                    .map_err(|_| "Tor storage configuration failed")?;
                 TorClient::builder()
                     .config(config)
                     .bootstrap_behavior(BootstrapBehavior::Manual)
@@ -234,16 +579,21 @@ impl Inner {
         if session.scopes.len() >= MAX_SCOPES {
             return Err("too many private scopes".into());
         }
-        let client = session
-            .client
-            .as_ref()
-            .ok_or("Tor client unavailable")?
-            .isolated_client();
+        let context = match session.mode {
+            NativeMode::Tor => ConnectionContext::Tor(
+                session
+                    .client
+                    .as_ref()
+                    .ok_or("Tor client unavailable")?
+                    .isolated_client(),
+            ),
+            NativeMode::Direct => ConnectionContext::Direct,
+        };
         let id = uuid::Uuid::new_v4().to_string();
         session.scopes.insert(
             id.clone(),
             Scope {
-                client,
+                context,
                 purpose: purpose.into(),
                 binding: None,
                 subscription: None,
@@ -279,6 +629,9 @@ impl Inner {
         }
         let mut session = self.lock()?;
         session.check(request.generation)?;
+        session
+            .resources
+            .retain(|resource| !resource.is_cancelled());
         if session.cancelled.remove(&request.request_id) {
             session.complete(&request.request_id);
             return Err("private request cancelled".into());
@@ -287,6 +640,7 @@ impl Inner {
             return Err("private request identifier already completed".into());
         }
         if session.operations.len() >= MAX_OPERATIONS
+            || session.resources.len() >= MAX_OPERATIONS
             || session.operations.contains_key(&request.request_id)
         {
             return Err("private request limit or duplicate identifier".into());
@@ -311,9 +665,10 @@ impl Inner {
             }
             scope.binding = Some(binding);
         }
-        let client = scope.client.clone();
+        let context = scope.context.clone();
         let cancel = CancellationToken::new();
         let delivery = Arc::new(Delivery::default());
+        let retirement = session.resource();
         session.operations.insert(
             request.request_id.clone(),
             Operation {
@@ -328,9 +683,10 @@ impl Inner {
             id: request.request_id.clone(),
             scope: request.scope.clone(),
             generation: request.generation,
-            client,
+            context,
             cancel,
             delivery,
+            retirement,
         })
     }
 
@@ -514,8 +870,9 @@ impl Session {
         NativeStatus {
             phase: self.phase.into(),
             generation: self.generation,
+            mode: self.mode,
             error: self.error.clone(),
-            progress: if self.phase == "bootstrapping" {
+            progress: if self.mode == NativeMode::Tor && self.phase == "bootstrapping" {
                 self.client
                     .as_ref()
                     .map(|client| format!("{:.0}%", client.bootstrap_status().as_frac() * 100.0))
@@ -532,11 +889,24 @@ impl Session {
         Ok(())
     }
 
+    fn start_matches(&self, generation: u64, mode: NativeMode, completion: &Arc<Startup>) -> bool {
+        self.generation == generation
+            && self.mode == mode
+            && self.phase == "bootstrapping"
+            && self
+                .startup
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, completion))
+    }
+
     fn invalidate(&mut self) -> Result<(), String> {
         self.generation = self
             .generation
             .checked_add(1)
             .ok_or("private session generation exhausted")?;
+        if let Some(completion) = self.startup.take() {
+            completion.finish(Err("private session changed".into()));
+        }
         if let Some(cancel) = self.bootstrap_cancel.take() {
             cancel.cancel();
         }
@@ -550,16 +920,42 @@ impl Session {
         self.subscriptions.clear();
         Ok(())
     }
+
+    fn resource(&mut self) -> Arc<Retirement> {
+        let completion = CancellationToken::new();
+        self.resources.push(completion.clone());
+        Arc::new(Retirement(completion))
+    }
 }
 
 impl Lease {
+    pub async fn connect(&self, host: &str) -> Result<NativeStream, String> {
+        self.check()?;
+        let io: Box<dyn NativeIo> = match &self.context {
+            ConnectionContext::Tor(_) => Box::new(
+                self.connect_with_recovery(
+                    |client| async move { client.connect((host, 443)).await },
+                )
+                .await?,
+            ),
+            ConnectionContext::Direct => {
+                Box::new(super::direct::connect(host, &self.cancel, self.retirement.clone()).await?)
+            }
+        };
+        self.check()?;
+        Ok(NativeStream {
+            io,
+            _retirement: self.retirement.clone(),
+        })
+    }
+
     pub async fn connect_with_recovery<T, E, F, Fut>(&self, mut connect: F) -> Result<T, String>
     where
         F: FnMut(Client) -> Fut,
         Fut: std::future::Future<Output = Result<T, E>>,
     {
         self.check()?;
-        let connected = match connect(self.client.clone()).await {
+        let connected = match connect(self.context.tor()?.clone()).await {
             Ok(connected) => connected,
             Err(_) => {
                 let client = self.reconnect_client()?;
@@ -587,10 +983,10 @@ impl Lease {
             .scopes
             .get_mut(&self.scope)
             .ok_or("private scope closed")?;
-        if Arc::ptr_eq(&scope.client, &self.client) {
-            scope.client = scope.client.isolated_client();
+        if Arc::ptr_eq(scope.context.tor()?, self.context.tor()?) {
+            scope.context = ConnectionContext::Tor(scope.context.tor()?.isolated_client());
         }
-        Ok(scope.client.clone())
+        Ok(scope.context.tor()?.clone())
     }
 
     pub async fn emit_data(
@@ -733,6 +1129,509 @@ mod tests {
         inner
     }
 
+    #[test]
+    fn directory_downloads_prefer_parallel_foreground_retries() {
+        let mut config = TorClientConfigBuilder::from_directories("state", "cache");
+        configure_directory_downloads(&mut config);
+        let config = config.build().unwrap().dir_mgr_config().unwrap();
+        for schedule in [
+            config.schedule.retry_consensus(),
+            config.schedule.retry_certs(),
+            config.schedule.retry_microdescs(),
+        ] {
+            assert_eq!(schedule.n_attempts(), 8);
+            assert_eq!(schedule.parallelism(), 8);
+        }
+    }
+
+    async fn wait_for_mode(inner: &Inner, mode: NativeMode) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while inner.status().unwrap().mode != mode {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_start_is_explicit_idempotent_and_never_creates_a_tor_client() {
+        let inner = Arc::new(Inner::new(
+            std::env::temp_dir().join("shielded-direct-unused"),
+        ));
+        assert_eq!(inner.status().unwrap().mode, NativeMode::Tor);
+        let started = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(started.phase, "ready");
+        assert_eq!(started.mode, NativeMode::Direct);
+        assert!(inner.lock().unwrap().client.is_none());
+        assert_eq!(
+            inner.start(NativeMode::Direct).await.unwrap().generation,
+            started.generation
+        );
+        let scope = inner.scope(started.generation, "indexer").unwrap();
+        let lease = register(
+            &inner,
+            &request(started.generation, scope.id.clone(), "direct"),
+        )
+        .unwrap();
+        let mut attempts = 0;
+        assert!(
+            lease
+                .connect_with_recovery(|_| {
+                    attempts += 1;
+                    std::future::ready(Ok::<_, ()>(()))
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(attempts, 0);
+        let mut other = request(started.generation, scope.id, "another-item");
+        other.url = "https://mutinynet.arkade.sh/v1/indexer/vtxos?scripts=bb".into();
+        assert!(register(&inner, &other).is_err());
+        assert!(serde_json::from_str::<NativeMode>("\"auto\"").is_err());
+        assert_eq!(
+            serde_json::to_string(&NativeMode::Direct).unwrap(),
+            "\"direct\""
+        );
+    }
+
+    #[tokio::test]
+    async fn tor_initialization_failure_retains_tor_mode_without_direct_fallback() {
+        let inner = Arc::new(Inner::new(PathBuf::from("\0")));
+        let status = inner.start(NativeMode::Tor).await.unwrap();
+        assert_eq!(status.phase, "error");
+        assert_eq!(status.mode, NativeMode::Tor);
+        assert!(status.error.is_some());
+        assert!(inner.lock().unwrap().client.is_none());
+        assert!(inner.scope(status.generation, "public").is_err());
+    }
+
+    #[tokio::test]
+    async fn startup_concurrent_callers_wait_for_the_same_pending_transition() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "startup-retirement")).unwrap();
+        let first = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        let mut second = Box::pin(inner.start(NativeMode::Direct));
+        assert!(matches!(
+            futures_util::poll!(second.as_mut()),
+            Poll::Pending
+        ));
+        drop(lease);
+        let first = first.await.unwrap().unwrap();
+        let second = second.await.unwrap();
+        assert_eq!(first.phase, "ready");
+        assert_eq!(second.phase, "ready");
+        assert_eq!(first.generation, second.generation);
+    }
+
+    #[tokio::test]
+    async fn startup_cancelled_waiter_does_not_strand_the_native_transition() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "startup-cancelled-waiter")).unwrap();
+        let first = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        let generation = inner.status().unwrap().generation;
+        first.abort();
+        assert!(matches!(first.await, Err(error) if error.is_cancelled()));
+        drop(lease);
+        let recovered = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(recovered.phase, "ready");
+        assert_eq!(recovered.generation, generation);
+    }
+
+    fn startup_inner() -> Arc<Inner> {
+        Arc::new(Inner::new(
+            std::env::temp_dir().join(format!("shielded-startup-test-{}", uuid::Uuid::new_v4())),
+        ))
+    }
+
+    fn reserve_startup(inner: &Arc<Inner>, initial_only: bool) -> (StartWaiter, StartupWork) {
+        match inner
+            .prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, initial_only)
+            .unwrap()
+        {
+            PreparedStart::Pending {
+                waiter,
+                work: Some(work),
+            } => (waiter, work),
+            _ => panic!("expected a new startup reservation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_reservation_is_single_flight_before_dispatch() {
+        let inner = startup_inner();
+        let (first, work) = reserve_startup(&inner, true);
+        let second = match inner
+            .prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, false)
+            .unwrap()
+        {
+            PreparedStart::Pending { waiter, work: None } => waiter,
+            _ => panic!("expected to join the original startup"),
+        };
+        assert_eq!(inner.lock().unwrap().resources.len(), 1);
+        assert!(matches!(
+            inner.prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, true).unwrap(),
+            PreparedStart::Ready(status) if status.phase == "bootstrapping"
+        ));
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        let first = first.wait(&inner).await.unwrap();
+        let second = second.wait(&inner).await.unwrap();
+        assert_eq!(first.phase, "ready");
+        assert_eq!(first.generation, second.generation);
+    }
+
+    #[tokio::test]
+    async fn startup_pause_before_dispatch_notifies_and_blocks_queued_work() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        let paused = inner.pause().unwrap();
+        let mut waiting = Box::pin(waiter.wait(&inner));
+        assert!(matches!(
+            futures_util::poll!(waiting.as_mut()),
+            Poll::Ready(Err(_))
+        ));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        work.run_with_bootstrap(move |_, _, _, _| {
+            count.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(()))
+        })
+        .await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert!(inner.lock().unwrap().client.is_none());
+        assert_eq!(inner.status().unwrap().phase, "paused");
+        assert_eq!(inner.status().unwrap().generation, paused.generation);
+        assert!(!inner.data_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn startup_invalidation_completion_cannot_be_overwritten_by_late_success() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        let completion = work.completion.clone();
+        let mut stale = inner.status().unwrap();
+        stale.phase = "ready".into();
+        inner.pause().unwrap();
+        completion.finish(Ok(stale));
+        assert!(completion.result.borrow().as_ref().unwrap().is_err());
+        drop(work);
+        assert!(waiter.wait(&inner).await.is_err());
+        assert_eq!(inner.status().unwrap().phase, "paused");
+    }
+
+    #[tokio::test]
+    async fn startup_terminal_success_survives_no_receivers_and_worker_drop() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        let completion = work.completion.clone();
+        let generation = work.generation;
+        drop(waiter);
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        assert_eq!(inner.status().unwrap().phase, "ready");
+        let late = completion
+            .waiter(generation, NativeMode::Tor)
+            .wait(&inner)
+            .await
+            .unwrap();
+        assert_eq!(late.phase, "ready");
+        assert_eq!(late.generation, generation);
+    }
+
+    #[tokio::test]
+    async fn startup_cached_ready_rechecks_generation_before_returning() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        inner.pause().unwrap();
+        assert!(waiter.wait(&inner).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn startup_worker_drop_reports_failure_and_allows_retry() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        let generation = work.generation;
+        drop(work);
+        let failed = waiter.wait(&inner).await.unwrap();
+        assert_eq!(failed.phase, "error");
+        assert!(failed.error.unwrap().contains("startup stopped"));
+        let retried = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(retried.phase, "ready");
+        assert!(retried.generation > generation);
+    }
+
+    #[tokio::test]
+    async fn startup_drain_precedes_bootstrap_work() {
+        let inner = startup_inner();
+        let retired = inner.lock().unwrap().resource();
+        let (waiter, work) = reserve_startup(&inner, true);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let count = attempts.clone();
+        let mut running = Box::pin(work.run_with_bootstrap(move |_, _, _, _| {
+            count.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(()))
+        }));
+        assert!(matches!(
+            futures_util::poll!(running.as_mut()),
+            Poll::Pending
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 0);
+        assert_eq!(inner.status().unwrap().phase, "bootstrapping");
+        drop(retired);
+        running.await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(waiter.wait(&inner).await.unwrap().phase, "ready");
+    }
+
+    #[tokio::test]
+    async fn startup_captured_success_cannot_revive_a_paused_session() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        let paused = inner.clone();
+        work.run_with_bootstrap(move |_, _, _, _| async move {
+            paused.pause()?;
+            Ok(())
+        })
+        .await;
+        assert_eq!(inner.status().unwrap().phase, "paused");
+        assert!(waiter.wait(&inner).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn startup_prewarm_does_not_reverse_pause_or_direct_choice() {
+        let paused = startup_inner();
+        let status = paused.pause().unwrap();
+        let repeated = paused.prewarm().unwrap();
+        assert_eq!(repeated.phase, "paused");
+        assert_eq!(repeated.generation, status.generation);
+        let direct = startup_inner();
+        let status = direct.start(NativeMode::Direct).await.unwrap();
+        let repeated = direct.prewarm().unwrap();
+        assert_eq!(repeated.mode, NativeMode::Direct);
+        assert_eq!(repeated.generation, status.generation);
+        assert!(direct.lock().unwrap().client.is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_failed_bootstrap_notifies_and_retries_a_new_generation() {
+        let inner = startup_inner();
+        let (waiter, work) = reserve_startup(&inner, true);
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Err("unavailable".into())))
+            .await;
+        let failed = waiter.wait(&inner).await.unwrap();
+        assert_eq!(failed.phase, "error");
+        assert_eq!(failed.error.as_deref(), Some("unavailable"));
+        let (waiter, work) = reserve_startup(&inner, false);
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        let ready = waiter.wait(&inner).await.unwrap();
+        assert_eq!(ready.phase, "ready");
+        assert!(ready.generation > failed.generation);
+    }
+
+    #[tokio::test]
+    async fn mode_switch_waits_for_old_lease_and_detached_resource_completion() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "old-transport")).unwrap();
+        let detached = lease.retirement.clone();
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(lease.cancel.is_cancelled());
+        assert!(lease.check().is_err());
+        assert_eq!(inner.status().unwrap().phase, "bootstrapping");
+        assert!(!started.is_finished());
+        drop(lease);
+        tokio::task::yield_now().await;
+        assert!(!started.is_finished());
+        drop(detached);
+        let status = tokio::time::timeout(Duration::from_secs(2), started)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.phase, "ready");
+        assert_eq!(status.mode, NativeMode::Direct);
+        assert!(status.generation > 1);
+        assert!(inner.lock().unwrap().client.is_none());
+        assert!(inner.scope(1, "indexer").is_err());
+    }
+
+    #[tokio::test]
+    async fn unfinished_retirement_leaves_the_selected_mode_in_error_until_retry() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "slow-retirement")).unwrap();
+        let failed = inner
+            .start_with_drain_timeout(NativeMode::Direct, Duration::from_millis(1))
+            .await
+            .unwrap();
+        assert_eq!(failed.phase, "error");
+        assert_eq!(failed.mode, NativeMode::Direct);
+        assert!(failed.error.unwrap().contains("still closing"));
+        assert!(inner.scope(failed.generation, "public").is_err());
+        drop(lease);
+        let retried = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(retried.phase, "ready");
+        assert_eq!(retried.mode, NativeMode::Direct);
+    }
+
+    #[tokio::test]
+    async fn pause_during_mode_retirement_cannot_publish_the_delayed_ready_result() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "pause-during-switch")).unwrap();
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        let paused = inner.pause().unwrap();
+        drop(lease);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        let status = inner.status().unwrap();
+        assert_eq!(status.phase, "paused");
+        assert_eq!(status.mode, NativeMode::Direct);
+        assert_eq!(status.generation, paused.generation);
+    }
+
+    #[tokio::test]
+    async fn cancelled_bootstrap_must_finish_before_direct_becomes_ready() {
+        let inner = ready();
+        let bootstrap_cancel = CancellationToken::new();
+        let bootstrap = {
+            let mut session = inner.lock().unwrap();
+            session.phase = "bootstrapping";
+            session.bootstrap_cancel = Some(bootstrap_cancel.clone());
+            session.resource()
+        };
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(bootstrap_cancel.is_cancelled());
+        assert!(!started.is_finished());
+        drop(bootstrap);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn tor_client_shutdown_blocks_direct_even_without_an_active_operation() {
+        let inner = ready();
+        let held = inner.lock().unwrap().client.clone().unwrap();
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(!started.is_finished());
+        assert!(inner.lock().unwrap().client.is_none());
+        drop(held);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn mode_switch_drains_the_http_driver_after_its_lease_has_finished() {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "old-http-driver")).unwrap();
+        let (client, server) = tokio::io::duplex(4096);
+        let stream = NativeStream {
+            io: Box::new(client),
+            _retirement: lease.retirement.clone(),
+        };
+        let peer = tokio::spawn(async move {
+            let mut server = BufReader::new(server);
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                server.read_until(b'\n', &mut request).await.unwrap();
+            }
+            server
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n")
+                .await
+                .unwrap();
+            let mut byte = [0];
+            server.read(&mut byte).await.unwrap()
+        });
+        let request = hyper::Request::builder()
+            .uri("/status")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let (response, driver) = super::super::wire::send_http(stream, request)
+            .await
+            .unwrap();
+        drop(lease);
+        assert!(inner.lock().unwrap().operations.is_empty());
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(!started.is_finished());
+        drop(response);
+        drop(driver);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), peer)
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn unrelated_scopes_get_separate_handles_and_unknown_scopes_fail() {
         let inner = ready();
@@ -741,8 +1640,20 @@ mod tests {
         assert_ne!(first.id, second.id);
         let session = inner.lock().unwrap();
         assert!(!Arc::ptr_eq(
-            &session.scopes.get(&first.id).unwrap().client,
-            &session.scopes.get(&second.id).unwrap().client
+            session
+                .scopes
+                .get(&first.id)
+                .unwrap()
+                .context
+                .tor()
+                .unwrap(),
+            session
+                .scopes
+                .get(&second.id)
+                .unwrap()
+                .context
+                .tor()
+                .unwrap()
         ));
         drop(session);
         assert!(register(&inner, &request(1, "forged".into(), "unknown")).is_err());
@@ -992,8 +1903,8 @@ mod tests {
         let unrelated = inner.scope(1, "indexer").unwrap();
         let lease = register(&inner, &request(1, scope.id.clone(), "recover")).unwrap();
         let other = register(&inner, &request(1, unrelated.id.clone(), "other")).unwrap();
-        let original = lease.client.clone();
-        let unrelated_client = other.client.clone();
+        let original = lease.context.tor().unwrap().clone();
+        let unrelated_client = other.context.tor().unwrap().clone();
         inner
             .lock()
             .unwrap()
@@ -1021,11 +1932,17 @@ mod tests {
         {
             let session = inner.lock().unwrap();
             let recovered = session.scopes.get(&scope.id).unwrap();
-            assert!(Arc::ptr_eq(&recovered.client, &attempts[1]));
+            assert!(Arc::ptr_eq(recovered.context.tor().unwrap(), &attempts[1]));
             assert_eq!(recovered.binding.as_deref(), Some("scripts|aa"));
             assert_eq!(recovered.subscription.as_deref(), Some("server-id"));
             assert!(Arc::ptr_eq(
-                &session.scopes.get(&unrelated.id).unwrap().client,
+                session
+                    .scopes
+                    .get(&unrelated.id)
+                    .unwrap()
+                    .context
+                    .tor()
+                    .unwrap(),
                 &unrelated_client
             ));
         }
@@ -1140,7 +2057,9 @@ mod tests {
             .scopes
             .get(&scope.id)
             .unwrap()
-            .client
+            .context
+            .tor()
+            .unwrap()
             .clone();
         let mut contexts = Vec::new();
         older
@@ -1152,7 +2071,15 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&contexts[1], &replacement));
         assert!(Arc::ptr_eq(
-            &inner.lock().unwrap().scopes.get(&scope.id).unwrap().client,
+            inner
+                .lock()
+                .unwrap()
+                .scopes
+                .get(&scope.id)
+                .unwrap()
+                .context
+                .tor()
+                .unwrap(),
             &replacement
         ));
     }

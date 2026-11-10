@@ -68,6 +68,54 @@ test('no signing, network or watch before the alias is enabled, including the ba
  assert.equal(f.signed(),0);assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
 });
 
+test('a page cancellation inherited by the address service prevents registration',async()=>{
+ const f=setup(),controller=new AbortController();controller.abort();
+ const service=createLnurlReceive({...f.config,signal:controller.signal});
+ await assert.rejects(service.ensureUnified(),/disposed/);
+ assert.equal(f.requests.length,0);assert.equal(f.watched.length,0);assert.equal(f.scans(),0);
+});
+
+test('disposing an address activation reports blocked payout registration without hanging',async()=>{
+ const f=setup();let entered!:()=>void,signal:AbortSignal|undefined;const waiting=new Promise<void>(resolve=>{entered=resolve;}),never=new Promise<void>(()=>{});
+ const service=createLnurlReceive({...f.config,onPayouts:async(_rows,next)=>{signal=next;entered();await never;}}),activation=service.ensureUnified();
+ await waiting;
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  await assert.rejects(Promise.race([service.dispose(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('dispose waited for payout registration')),250);})]),/still finishing/);
+  await assert.rejects(activation,/disposed/);
+   assert.equal(signal?.aborted,true);
+ }finally{if(timer)clearTimeout(timer);}
+});
+
+test('a payout registration rejected after disposal is already handled',async()=>{
+ const f=setup();let entered!:()=>void,refuse!:()=>void;
+ const waiting=new Promise<void>(resolve=>{entered=resolve;}),late=new Promise<void>((_resolve,reject)=>{refuse=()=>reject(new Error('late payout failure'));});
+ const service=createLnurlReceive({...f.config,onPayouts:async()=>{entered();await late;}}),activation=service.ensureUnified();
+ await waiting;await assert.rejects(service.dispose(),/still finishing/);refuse?.();await new Promise(resolve=>setImmediate(resolve));
+ await assert.rejects(activation,/disposed/);
+});
+
+test('disposing during a blocked contract watch does not wait for the IndexedDB operation',async()=>{
+ const f=setup();let entered!:()=>void,release!:()=>void,finished!:()=>void,saves=0;
+ const waiting=new Promise<void>(resolve=>{entered=resolve;}),late=new Promise<void>(resolve=>{release=resolve;}),done=new Promise<void>(resolve=>{finished=resolve;});
+ const save=f.config.journal.saveReceiveState;
+ f.config.journal.saveReceiveState=async(...args)=>{saves++;await save(...args);};
+ (f.config.companion as unknown as {getContractManager:()=>Promise<unknown>}).getContractManager=async()=>({
+  createContract:async()=>{entered();await late;finished();},
+  onContractEvent:()=>()=>{},
+ });
+ const service=createLnurlReceive(f.config),activation=service.ensureUnified();
+ await waiting;
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{
+  await assert.rejects(Promise.race([service.dispose(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('dispose waited for contract creation')),250);})]),/still finishing/);
+  await assert.rejects(activation,/disposed/);
+  const savesAtDisposal=saves;release();await done;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(saves,savesAtDisposal);assert.equal(f.registered.length,0);assert.equal(f.bound().length,0);
+  await service.dispose();
+ }finally{release?.();if(timer)clearTimeout(timer);}
+});
+
 test('a unified receiver registers without a name or shielded method and binds before its QR is ready',async()=>{
  const f=setup(),result=await f.service.ensureUnified();
  assert.deepEqual([result.lnurl,result.lightningAddress,result.nameless],[sessionLnurl,undefined,true]);
@@ -79,6 +127,110 @@ test('a unified receiver registers without a name or shielded method and binds b
  assert.equal(f.reads(),0);
  assert.equal(f.scans(),0);
  assert.equal(JSON.stringify(f.requests).includes(SHROL),false);
+});
+
+test('unified setup reports progress through local state, Tor service work, watch restoration and binding',async()=>{
+ const f=setup(),stages:string[]=[],service=createLnurlReceive({...f.config,onStage:stage=>stages.push(stage)});
+ await service.ensureUnified();
+ assert.deepEqual(stages,[
+  'Reading your saved receiver',
+  'Checking the Lightning address service through Tor',
+  'Registering your unified address',
+  'Restoring payout watches',
+  'Binding your payment routes',
+  'Unified address ready',
+ ]);
+});
+
+test('a slow Lightning handoff cannot hold the unified address behind swap startup',async()=>{
+ const f=setup();let release!:()=>void,finished=0,ready=0,attempts=0;const held=new Promise<void>(resolve=>{release=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async(_rows,signal)=>{attempts++;await held;if(!signal.aborted)finished++;},onPayoutReady:()=>ready++});
+ const receiver=await Promise.race([service.ensureUnified(),new Promise<never>((_resolve,reject)=>setTimeout(()=>reject(new Error('unified address waited for swap startup')),250))]);
+ assert.equal(receiver.lnurl,sessionLnurl);
+ assert.equal(f.bound().length,1);assert.deepEqual([finished,ready,attempts],[0,0,1]);
+ await service.check();assert.equal(attempts,1);
+ release();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual([finished,ready],[1,1]);
+  await service.check();assert.equal(attempts,1);
+ await service.dispose();
+});
+
+test('a payout watch that fails after startup reports separately and retries without replacing the address',async()=>{
+ const f=setup();let release!:()=>void,attempts=0,ready=0;const failure=new Error('late payout watch failed'),reported:{error:unknown;revision:number}[]=[];
+ const held=new Promise<void>(resolve=>{release=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,onPayouts:async()=>{if(++attempts===1){await held;throw failure;}},onPayoutError:(error,revision)=>reported.push({error,revision}),onPayoutReady:()=>ready++});
+ const receiver=await service.ensureUnified();
+ assert.equal(receiver.lnurl,sessionLnurl);assert.equal(f.bound().length,1);
+ f.funded.add(at(0).script);await service.check();
+ assert.deepEqual([attempts,ready],[2,0]);
+ release();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[{error:failure,revision:1}]);
+ await service.check();
+ assert.deepEqual([attempts,ready],[3,1]);
+ await service.check();assert.equal(attempts,3);
+ await service.dispose();
+});
+
+test('a successful newer subset watch leaves an older failed payout eligible and keeps receive unhealthy',async()=>{
+ const f=setup(),failure=new Error('older payout watch failed'),ready:number[]=[],reported:number[]=[];
+ let releaseFirst!:()=>void,enteredFirst!:()=>void,attempts=0;
+ const firstEntered=new Promise<void>(resolve=>{enteredFirst=resolve;}),
+  firstHeld=new Promise<void>(resolve=>{releaseFirst=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,
+  onPayouts:async()=>{
+   attempts++;
+   if(attempts===1){enteredFirst();await firstHeld;throw failure;}
+  },
+  onPayoutError:(_error,revision)=>reported.push(revision),
+  onPayoutReady:revision=>ready.push(revision),
+ });
+ const activation=service.ensureUnified();
+ await firstEntered;
+ await activation;
+ f.funded.add(at(0).script);
+ await service.check();
+ assert.equal(attempts,2);
+ assert.deepEqual(ready,[],'a newer subset does not cover the still-pending payout');
+ releaseFirst();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[1]);
+ await service.check();
+ assert.equal(attempts,3,'the failed payout is retried');
+ assert.deepEqual(ready,[2],'receive becomes healthy only after the full payout set is covered');
+ await service.dispose();
+});
+
+test('full coverage emits a fresh health revision after an older watch completes late',async()=>{
+ const f=setup(),failure=new Error('newer payout watch failed'),ready:number[]=[],reported:number[]=[];
+ let releaseOlder!:()=>void,enteredOlder!:()=>void,releaseNewer!:()=>void,enteredNewer!:()=>void,attempts=0;
+ const olderEntered=new Promise<void>(resolve=>{enteredOlder=resolve;}),olderHeld=new Promise<void>(resolve=>{releaseOlder=resolve;}),
+  newerEntered=new Promise<void>(resolve=>{enteredNewer=resolve;}),newerHeld=new Promise<void>(resolve=>{releaseNewer=resolve;});
+ const service=createLnurlReceive({...f.config,watchStartupGraceMs:20,
+  onPayouts:async()=>{
+   attempts++;
+   if(attempts===1){enteredOlder();await olderHeld;}
+   else if(attempts===2){enteredNewer();await newerHeld;throw failure;}
+  },
+  onPayoutError:(_error,revision)=>reported.push(revision),
+  onPayoutReady:revision=>ready.push(revision),
+ });
+ const activation=service.ensureUnified();
+ await olderEntered;
+ await activation;
+ f.funded.add(at(0).script);
+ await service.check();
+ await newerEntered;
+ releaseNewer();
+ for(let i=0;i<20&&!reported.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(reported,[1]);
+ await service.check();
+ assert.equal(attempts,3);
+ assert.deepEqual(ready,[],'the newer retry cannot cover the older pending payout');
+ releaseOlder();
+ for(let i=0;i<20&&!ready.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(ready,[2],'the late older completion advances health past the newer error');
+ await service.dispose();
 });
 
 test('a fresh journal recovers funded session payouts before binding a unified receiver',async()=>{

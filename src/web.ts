@@ -1,7 +1,10 @@
 import {join} from 'node:path';
 import express,{type Express} from 'express';
+import {NATIVE_RELEASE_ENDPOINT} from './native-release.ts';
+import {createNativeReleasesHandler} from './native-releases.ts';
 
 export function serveWeb(app:Express,web:string):void{
+ app.get(NATIVE_RELEASE_ENDPOINT,createNativeReleasesHandler());
  app.get(['/','/wallet','/claim','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web}));
  app.use('/assets',express.static(join(web,'assets'),{immutable:true,maxAge:'365d'}));
  // A day, paired with updateViaCache:'all' at registration, is how often a browser asks this server for a new worker; private keeps Cloudflare from adding a day of its own.

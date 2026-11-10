@@ -17,6 +17,33 @@ const storageOf=()=>{
 };
 const snapshot={v:2,token:'pool',account:{},sent:{},listings:[]} as unknown as ShieldedSnapshot;
 
+test('background wallet actions keep recovery fenced until every handle settles',async()=>{
+ const a=deferred(),b=deferred();let changes=0;
+ const actions=page.pageActions(()=>{changes++;});
+ const first=makeHandle('auto-first',async()=>{await a.promise;return {railId:'test'};});
+ const second=makeHandle('auto-second',async()=>{await b.promise;return {railId:'test'};});
+ actions.track(first);actions.track(first);actions.track(second);
+ assert.equal(actions.busy,true);assert.equal(changes,2);
+ a.resolve();await flush();assert.equal(actions.busy,true);
+ b.resolve();await flush();assert.equal(actions.busy,false);assert.equal(changes,4);
+});
+
+test('a failed background action releases its recovery fence',async()=>{
+ const actions=page.pageActions(()=>{});
+ actions.track(makeHandle('auto-failed',async()=>{throw new Error('action failed');}));
+ assert.equal(actions.busy,true);await flush();assert.equal(actions.busy,false);
+});
+
+test('a stuck action stops blocking recovery after the UI timeout without cancelling the payment',async context=>{
+ context.mock.timers.enable({apis:['setTimeout']});
+ const done=deferred();let completed=false;
+ const handle=makeHandle('auto-stuck',async emit=>{await done.promise;completed=true;const result={railId:'test'};emit({status:'settled',result});return result;});
+ const actions=page.pageActions(()=>{});actions.track(handle);
+ await Promise.resolve();context.mock.timers.tick(30*60_000);await flush();
+ assert.equal(actions.busy,false);assert.equal(completed,false);assert.equal(handle.status,'pending');
+ done.resolve();await handle.settled();assert.equal(handle.status,'settled');
+});
+
 test('first-run creation persists one wallet only after explicit creation',()=>{
  const storage=storageOf();assert.equal(storage.length,0);
  const before=Date.now(),secret=createPageWallet(storage);
@@ -33,11 +60,11 @@ test('creation failure cannot persist a wallet before its birth metadata',()=>{
 });
 
 test('startup retries transient creation without repeating preparation and closes the one successful wallet',async()=>{
- let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');
+ let prepares=0,creates=0,disposals=0;const errors:unknown[]=[],terminal:unknown[]=[],failure=new ProviderUnavailableError('Arkade server info is unavailable and no cached snapshot exists');
  const session=openPageWallet(async()=>++prepares,async value=>{
   assert.equal(value,1);if(++creates===1)throw failure;return {dispose:async()=>{disposals++;}};
- },undefined,{delayMs:1,onError:error=>errors.push(error)});
- assert.ok(await session.ready);assert.equal(prepares,1);assert.equal(creates,2);assert.deepEqual(errors,[failure]);
+ },undefined,{delayMs:1,onError:error=>errors.push(error),onTerminal:error=>terminal.push(error)});
+ assert.ok(await session.ready);assert.equal(prepares,1);assert.equal(creates,2);assert.deepEqual(errors,[failure]);assert.deepEqual(terminal,[]);
  await session.close();await session.close();assert.equal(disposals,1);
 });
 
@@ -50,15 +77,37 @@ test('startup cancellation wakes retry backoff without another creation',async()
 
 test('startup does not retry a definitive refusal or invalid wallet data',async()=>{
  for(const failure of [Object.assign(new Error('denied'),{status:403}),new Error('invalid secret')]){
-  let creates=0;const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1});
-  await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);
+  let creates=0;const terminal:unknown[]=[];const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,onTerminal:error=>terminal.push(error)});
+  await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);assert.deepEqual(terminal,[failure]);
  }
 });
 
 test('a transient setup failure cannot recreate a native wallet that already started payment work',async()=>{
- let creates=0;const failure=new ProviderUnavailableError('companion unavailable');
- const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,shouldRetry:()=>false});
- await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);
+ let creates=0;const failure=new ProviderUnavailableError('companion unavailable'),terminal:unknown[]=[];
+ const session=openPageWallet(async()=>1,async()=>{creates++;throw failure;},undefined,{delayMs:1,shouldRetry:()=>false,onTerminal:error=>terminal.push(error)});
+ await assert.rejects(session.ready,error=>error===failure);await session.close();assert.equal(creates,1);assert.deepEqual(terminal,[failure]);
+});
+
+test('a transient pool startup notice keeps automatic retry alive without reporting a terminal failure',async context=>{
+ context.mock.timers.enable({apis:['setTimeout']});
+ const controller=new AbortController(),failure=new Error('The pool did not answer (503).'),notices:unknown[]=[],terminal:unknown[]=[];let reads=0;
+ const opening=page.retryPageRead(async()=>{if(++reads===1)throw failure;return 'ready';},controller.signal,{delayMs:1,onError:error=>notices.push(error),onTerminal:error=>terminal.push(error)});
+ await flush();assert.equal(reads,1);assert.deepEqual(notices,[failure]);assert.deepEqual(terminal,[]);
+ context.mock.timers.tick(2);assert.equal(await opening,'ready');assert.equal(reads,2);assert.deepEqual(terminal,[]);
+});
+
+test('a definitive pool startup failure reports terminal once and does not retry',async()=>{
+ const controller=new AbortController(),failure=Object.assign(new Error('denied'),{status:403}),terminal:unknown[]=[];let reads=0;
+ await assert.rejects(page.retryPageRead(async()=>{reads++;throw failure;},controller.signal,{delayMs:1,onTerminal:error=>terminal.push(error)}),error=>error===failure);
+ assert.equal(reads,1);assert.deepEqual(terminal,[failure]);
+});
+
+test('retiring a page inside retry callbacks cannot report a terminal startup failure',async()=>{
+ for(const retiring of ['notice','policy']){
+  const controller=new AbortController(),terminal:unknown[]=[];let reads=0;
+  const result=await page.retryPageRead(async()=>{reads++;throw Object.assign(new Error('unavailable'),{status:503});},controller.signal,{onError:()=>{if(retiring==='notice')controller.abort();},shouldRetry:()=>{if(retiring==='policy')controller.abort();return false;},onTerminal:error=>terminal.push(error)});
+  assert.equal(result,undefined);assert.equal(reads,1);assert.deepEqual(terminal,[]);
+ }
 });
 
 test('pool startup retries an outage and does not publish a read completed after cancellation',async()=>{
@@ -232,13 +281,21 @@ test('legacy migration waits for catch-up and retains its log when saving fails 
  restoring=false;wallet.save=async()=>{};await importLegacySent(wallet,storage,()=>!restoring);assert.equal(storage.getItem(SENT),null);
 });
 
-test('replacing and dismissing a sheet unsubscribes and ignores obsolete handle callbacks',()=>{
+test('replacing a sheet unsubscribes, while dismissing it keeps tracking until the outcome',()=>{
  const states:unknown[]=[],callbacks:((s:{status:'pending'|'sent'})=>void)[]=[];let off=0;
  const fake=()=>({subscribe:(cb:typeof callbacks[number])=>{callbacks.push(cb);cb({status:'pending'});return()=>{off++;};}}) as never;
  const sheet=pageSheet(s=>states.push(s)),first=fake();const a=sheet.watch(first,'A');sheet.watch(fake(),'B');
  assert.equal(off,1);callbacks[0]!({status:'sent'});a.fail('old failure');assert.equal(states.length,2);
  assert.equal((states.at(-1) as {title:string}).title,'B');assert.equal(sheet.watch(first,'A'),a);assert.equal(states.length,2);
- sheet.clear();callbacks[1]!({status:'sent'});assert.equal(off,2);assert.equal(states.at(-1),undefined);
+ sheet.clear();callbacks[1]!({status:'sent'});assert.equal(off,1);assert.equal(states.at(-1),undefined);
+});
+
+test('a dismissed soundbar publishes the terminal payment outcome after the user returns',()=>{
+ const states:any[]=[];let update:(state:any)=>void=()=>{};
+ const handle={subscribe:(fn:typeof update)=>{update=fn;fn({status:'pending'});return()=>{};}} as never;
+ const sheet=pageSheet(s=>states.push(s));sheet.watch(handle,'Paying');
+ sheet.clear();assert.equal(states.at(-1),undefined);
+ update({status:'settled'});assert.equal(states.at(-1).done,true);assert.equal(states.at(-1).title,'Paying');
 });
 
 test('the page words a paused deposit wherever the pause sits in the error, and passes every other message through',()=>{
@@ -441,23 +498,30 @@ const reasons=(errors:unknown[])=>errors.map(error=>(error as Error).message);
 
 test('a Lightning start pairing after the page closed disposes the companion nobody took',async()=>{
  const {events,companion,swaps,lnurl}=lightningFakes(),paired=deferred<typeof companion>(),errors:unknown[]=[];let starts=0,active=true;
- const start=startPageLightning({pairing:paired.promise,swaps:async()=>{starts++;return swaps;},lnurl:async()=>lnurl,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error)});
+ const start=startPageLightning({pairing:paired.promise,swaps:async()=>{starts++;return swaps;},lnurl:async()=>lnurl,signal:new AbortController().signal,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error)});
  active=false;paired.resolve(companion);
  assert.equal(await start,undefined);assert.deepEqual(events,['companion']);assert.equal(starts,0);assert.deepEqual(errors,[]);
 });
 
+test('cancelling while pairing is pending disposes the companion when it arrives',async()=>{
+ const {events,companion}=lightningFakes(),paired=deferred<typeof companion>(),controller=new AbortController();
+ const start=startPageLightning({pairing:paired.promise,swaps:async()=>{throw new Error('swaps must not start');},lnurl:async()=>{throw new Error('address must not start');},signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{}});
+ controller.abort();assert.equal(await start,undefined);assert.deepEqual(events,[]);
+ paired.resolve(companion);await flush();assert.deepEqual(events,['companion']);
+});
+
 test('a Lightning start finishing after the page closed disposes everything it made, newest first, and reports nothing',async()=>{
- for(const [during,disposed] of [['swaps',['swaps','companion']],['failing swaps',['companion']],['address',['lnurl','swaps','companion']]] as const){
+ for(const [during,disposed] of [['swaps',['lnurl','swaps','companion']],['failing swaps',['lnurl','companion']],['address',['lnurl','swaps','companion']]] as const){
   const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),errors:unknown[]=[];let active=true,addresses=0;
   const start=startPageLightning({
    pairing:Promise.resolve(companion),
    swaps:async()=>{if(during!=='address')await gate.promise;if(during==='failing swaps')throw new Error('the journal was disposed');return swaps;},
    lnurl:async()=>{addresses++;if(during==='address')await gate.promise;return lnurl;},
-   active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
+   signal:new AbortController().signal,active:()=>active,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
   });
   await flush();active=false;gate.resolve();
   assert.equal(await start,undefined);assert.deepEqual(events,[...disposed]);
-  assert.equal(addresses,during==='address'?1:0);assert.deepEqual(errors,[]);
+  assert.equal(addresses,1);assert.deepEqual(errors,[]);
  }
 });
 
@@ -468,20 +532,82 @@ test('a Lightning start that fails while the page is open reports once and dispo
    pairing:failing==='pairing'?Promise.reject<typeof companion>(refused):Promise.resolve(companion),
    swaps:failing==='swaps'?()=>Promise.reject<typeof swaps>(refused):async()=>swaps,
    lnurl:failing==='lnurl'?()=>Promise.reject<typeof lnurl>(refused):async()=>lnurl,
-   active:()=>true,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
+    signal:new AbortController().signal,active:()=>true,handOver:()=>{events.push('handOver');},report:error=>errors.push(error),
   });
   assert.equal(await start,undefined);
-  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['companion']:['swaps','companion']);
+  assert.deepEqual(events,failing==='pairing'?[]:failing==='swaps'?['lnurl','companion']:['swaps','companion']);
   assert.deepEqual(reasons(errors),[`Lightning could not start: ${failing} refused`]);
  }
 });
 
 test('a Lightning start that lands hands the page its companion, swaps and address service',async()=>{
  const {events,companion,swaps,lnurl}=lightningFakes(),taken:unknown[]=[],errors:unknown[]=[];
- const start=startPageLightning({pairing:Promise.resolve(companion),swaps:async()=>swaps,lnurl:async()=>lnurl,active:()=>true,handOver:parts=>taken.push(parts),report:error=>errors.push(error)});
+ const start=startPageLightning({pairing:Promise.resolve(companion),swaps:async()=>swaps,lnurl:async()=>lnurl,signal:new AbortController().signal,active:()=>true,handOver:parts=>taken.push(parts),report:error=>errors.push(error)});
  const parts=await start;
  assert.equal(parts?.companion,companion);assert.equal(parts?.swaps,swaps);assert.equal(parts?.lnurl,lnurl);
  assert.equal(taken.length,1);assert.equal(taken[0],parts);assert.deepEqual(events,[]);assert.deepEqual(errors,[]);
+});
+
+test('a Lightning start exposes the address service before the swap service finishes initializing',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[],taken:unknown[]=[];
+ let pending:Promise<unknown>|undefined;
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),
+  swaps:async()=>{await gate.promise;return swaps;},
+  lnurl:async(_companion,pendingSwaps)=>{pending=pendingSwaps;return lnurl;},
+  onLnurl:service=>exposed.push(service),
+   signal:new AbortController().signal,active:()=>true,handOver:parts=>taken.push(parts),report:()=>{},
+ });
+ await flush();
+ assert.equal(pending instanceof Promise,true);assert.deepEqual(exposed,[lnurl]);assert.deepEqual(taken,[]);assert.deepEqual(events,[]);
+ gate.resolve();await start;
+ assert.deepEqual(taken,[{companion,swaps,lnurl}]);
+});
+
+test('a later swap failure disposes the address service exposed early',async()=>{
+ const {events,companion,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[],errors:unknown[]=[];
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),
+  swaps:async()=>{await gate.promise;throw new Error('swap startup failed');},
+   lnurl:async()=>lnurl,onLnurl:service=>exposed.push(service),signal:new AbortController().signal,active:()=>true,handOver:()=>{},report:error=>errors.push(error),
+ });
+ await flush();assert.deepEqual(exposed,[lnurl]);gate.resolve();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','companion']);assert.deepEqual(reasons(errors),['Lightning could not start: swap startup failed']);
+});
+
+test('an address service created after the page closes is never exposed',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),exposed:unknown[]=[];let active=true;
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async()=>swaps,
+   lnurl:async()=>{await gate.promise;return lnurl;},onLnurl:service=>exposed.push(service),signal:new AbortController().signal,active:()=>active,handOver:()=>{},report:()=>{},
+ });
+ await flush();active=false;gate.resolve();assert.equal(await start,undefined);
+ assert.deepEqual(exposed,[]);assert.deepEqual(events,['lnurl','swaps','companion']);
+});
+
+test('closing the page cancels waiting for a stalled swap start',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),controller=new AbortController();
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async(_companion,signal)=>new Promise<typeof swaps>((resolve,reject)=>{
+   signal.addEventListener('abort',()=>{gate.resolve();reject(new Error('swap start cancelled'));},{once:true});
+   void gate.promise.then(()=>resolve(swaps));
+  }),lnurl:async()=>lnurl,
+  signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{},
+ });
+ await flush();controller.abort();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','companion']);
+ gate.resolve();await flush();assert.deepEqual(events,['lnurl','companion']);
+});
+
+test('cancellation drains a swap resource that resolves after the abort before closing its companion',async()=>{
+ const {events,companion,swaps,lnurl}=lightningFakes(),gate=deferred(),controller=new AbortController();
+ const start=startPageLightning({
+  pairing:Promise.resolve(companion),swaps:async(_companion,signal)=>{
+   signal.addEventListener('abort',()=>gate.resolve(),{once:true});await gate.promise;return swaps;
+  },lnurl:async()=>lnurl,signal:controller.signal,active:()=>true,handOver:()=>{},report:()=>{},
+ });
+ await flush();controller.abort();assert.equal(await start,undefined);
+ assert.deepEqual(events,['lnurl','swaps','companion']);
 });
 
 test('a quote refused without a Lightning rail routes once more after the start settles',async()=>{

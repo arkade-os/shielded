@@ -40,6 +40,11 @@ final class SeedVault {
         } else if status != errSecSuccess { throw SeedVaultError.unavailable }
     }
 
+    func clear() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw SeedVaultError.unavailable }
+    }
+
     private func validSeed(_ value: String) -> Bool {
         value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }

@@ -7,13 +7,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24'
-      - uses: actions/setup-go@v6
+          node-version: '24.22.2'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.9'
           cache-dependency-path: tools/vm/go.sum
@@ -28,13 +28,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24'
-      - uses: actions/cache@v4
+          node-version: '24.22.2'
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .deps
           key: rollup-circom-2.2.2-linux-compiler-e976b5e8
@@ -47,14 +47,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
       - name: Pull base images through mirror.gcr.io (shared runner IPs hit Docker Hub's anonymous rate limit)
         run: |
           sudo sh -c 'f=/etc/docker/daemon.json; [ -s $f ] || echo "{}" > $f; jq ". + {\"registry-mirrors\": [\"https://mirror.gcr.io\"]}" $f > /tmp/daemon.json && mv /tmp/daemon.json $f'
           sudo systemctl restart docker
           docker info --format '{{.RegistryConfig.Mirrors}}'
-      - run: docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
+      - run: node tools/retry-command.mjs docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci bin/shielded-vm -info
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node -e "for(const f of ['src/server.ts','bin/rapidsnark','rollup-keys/manifest.json','rollup-keys/epoch-batch-join.zkey','app/dist/index.html'])require('fs').accessSync(f)"

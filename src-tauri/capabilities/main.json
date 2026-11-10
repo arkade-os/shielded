@@ -18,7 +18,12 @@
     "allow-native-socket",
     "allow-native-socket-send",
     "allow-native-cancel",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://shielded.mutinynet.arkade.sh/#download" }]
+    },
     "shielded-platform:allow-secret-get",
-    "shielded-platform:allow-secret-set"
+    "shielded-platform:allow-secret-set",
+    "shielded-platform:allow-secret-clear"
   ]
 }

@@ -52,3 +52,36 @@ test('multiple onboarding instances have distinct accessible titles and SVG defi
  assert.equal(titles.length,2);
  for(const title of titles)assert.ok(ids.includes(title));
 });
+
+test('a locked native wallet and failed setup connection keep reconnect available',()=>{
+ const locked=render({transport:'tor',setup:false,busy:false,phase:'Private connection paused',torHealth:{status:{phase:'paused',generation:2},check:'idle'}});
+ assert.match(locked,/<button[^>]*>(?:Unlock and reconnect)<\/button>/);
+ assert.doesNotMatch(locked,/<button[^>]*disabled[^>]*>Unlock and reconnect/);
+ const failed=render({transport:'tor',setup:true,busy:false,torHealth:{status:{phase:'error',generation:3},check:'idle'}});
+ assert.match(failed,/<button[^>]*disabled[^>]*>Create wallet/);
+ assert.match(failed,/<button[^>]*>Retry connection<\/button>/);
+});
+
+test('native setup waits for a ready connection even when vault work is idle',()=>{
+ const html=render({transport:'tor',phase:'Connecting to Tor',torHealth:{status:{phase:'bootstrapping',generation:1},check:'idle'}});
+ assert.equal([...html.matchAll(/<button[^>]*disabled=""/g)].length,2);
+ assert.match(html,/class="wallet-onboarding-phase" role="status"/);
+ assert.match(html,/Connecting to Tor/);
+});
+
+test('ready direct native setup enables creation with an honest privacy warning',()=>{
+ const html=render({transport:'tor',torHealth:{status:{phase:'ready',generation:2,mode:'direct'},check:'ok'},onToggleTor:()=>{}});
+ assert.equal([...html.matchAll(/<button[^>]*disabled=""/g)].length,0);
+ assert.match(html,/Your keys stay with you/);
+ assert.match(html,/Tor off · Direct connection/);
+ assert.match(html,/IP address and DNS lookups are exposed/);
+ assert.match(html,/no Tor circuit isolation/);
+ assert.match(html,/role="switch" aria-checked="false"/);
+ assert.doesNotMatch(html,/Wallet traffic uses Tor|Your wallet connects through Tor|Separate Tor scopes/);
+});
+
+test('native transport changes disable creation, restore and the Tor switch',()=>{
+ const html=render({transport:'tor',transportBusy:true,torHealth:{status:{phase:'ready',generation:2},check:'ok'},onToggleTor:()=>{}});
+ assert.equal([...html.matchAll(/<button[^>]*disabled=""/g)].length,3);
+ assert.match(html,/role="switch" aria-checked="true" disabled=""/);
+});

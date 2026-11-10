@@ -246,3 +246,113 @@ Pinned TLC v1.7.4 checked the base on November 6, 2026: 731 generated states, 25
 | `WalletStatus_NoTimerFence.cfg` | Heartbeat response → stop → rearm → `NoTimerAfterStop` fails |
 
 All four mutations exit 12 with their named invariant. Their shortest traces are retained with the external native QA artifacts. The first shutdown mutations exposed an unparenthesized boolean assignment in the model; it was corrected before the recorded checks. The wider `WalletStatus_Sim.cfg` passed 20,000 traces at depth 100 with seed 20261106 and 2,081,629 states checked. It uses six clock intervals; random simulation supplements the exhaustive base and does not prove wider liveness.
+
+## Native wallet view handoff
+
+`NativeViewHandoff.tla` separates an already-mounted wallet from a replacement candidate and its operational owner. Suspend, failed startup and repeated resume retire operations while retaining the old render as inert. Provider creation waits for every previous owner to dispose and a native generation newer than the previous owner's. A candidate replaces the shown wallet only after both pool and private-wallet readiness, with current generation, candidate identity, visibility and lock checks. Lock immediately revokes the candidate and hides both views. `FinishLock` models clearing the abstract retained secret after successful operational disposal; it does not model the source's behavior when cleanup rejects.
+
+The source has a different cache-clearing policy on failure: `NativeWallet.pause` calls `previous?.cache.clearMemory()` in the `finally` of an aggregate promise. It clears on rejection as well as fulfillment, and the aggregate may reject before all other tasks settle. `createNativeCleanup` retains failed tasks, and `NativeWallet.open` drains them before creating new providers. The model checks the ownership handoff and its successful cleanup path; `LockClearsAfterCleanup` does not certify the actual cache-clearing order on failed cleanup. That source policy is unchanged by this handoff change.
+
+| Model action | Owning file and symbol |
+| --- | --- |
+| `Hide`, `Foreground`, `StartNative` | `app/src/NativeWallet.tsx`: visibility handler and `open` |
+| `Retire`, `BeginCandidate` | `app/src/native-view-handoff.ts`: `createNativeViewHandoff` / `retire`, `discard`, `stage`; `NativeWallet.tsx`: cleanup before `open` |
+| `Dispose`, `Unmount` | `app/src/native-view-handoff.ts`: per-view `onShutdown` ownership; `app/src/RollupWallet.tsx`: shutdown and unmount callbacks |
+| `PoolReady`, `WalletReady`, `CaptureReady`, `DeliverReady` | `app/src/RollupWallet.tsx`: `onReady`; `app/src/native-view-handoff.ts`: `promote`; `NativeWallet.tsx`: readiness guard |
+| `LockIntent` | `app/src/NativeWallet.tsx`: lock callback and immediate view retirement |
+| `FinishLock` | Successful-cleanup abstraction only; `NativeWallet.pause` has the different rejection policy described above |
+
+```mermaid
+stateDiagram-v2
+    [*] --> ShownActive
+    ShownActive --> ShownInert: pause / retire operations
+    ShownInert --> Disposed: old shutdown and durable cleanup succeed
+    Disposed --> CandidateLoading: visible, unlocked / start new owner
+    CandidateLoading --> CandidateLoading: pool or private wallet becomes ready
+    CandidateLoading --> ShownActive: both ready, current generation and candidate, visible, unlocked
+    CandidateLoading --> ShownInert: pause, retry, failure / retire candidate
+    ShownActive --> LockedCleanup: lock / hide both views immediately
+    ShownInert --> LockedCleanup: lock / hide both views immediately
+    CandidateLoading --> LockedCleanup: lock / hide both views immediately
+    LockedCleanup --> Locked: modeled successful disposal / clear abstract secret
+```
+
+Two callback actors race at most three operational owners and three native generations in the exhaustive base. Callback capture and delivery are separate steps. Native generation changes, visibility changes, late readiness, candidate retirement and old unmount callbacks can intervene independently. `retained` and `bad` are history variables for view continuity and activation authorization. `DropReady` and `Terminal` represent discarded callbacks and stuttering. All semantic actions fired, including 4,760 callback drops; a zero count of newly discovered states for that action does not mean it was disabled.
+
+Pinned TLC v1.7.4 checked the base on November 8, 2026: 29,415 generated states, 3,837 distinct states, depth 21 and an empty queue. The eight guard mutations each exit 12 with the named invariant:
+
+| Configuration | Shortest counterexample |
+| --- | --- |
+| `NativeViewHandoff_NoGeneration.cfg` | Stage candidate → native generation advances → old generation promotes; `NoStaleGeneration` fails (10 states) |
+| `NativeViewHandoff_NoVisibility.cfg` | Stage candidate → hide → readiness promotes; `NoHiddenActivation` fails (10 states) |
+| `NativeViewHandoff_NoLock.cfg` | Lock → dispose → admit candidate while locked → readiness promotes; `NoLockedActivation` fails (9 states) |
+| `NativeViewHandoff_NoCandidate.cfg` | Stage → retire candidate → old readiness promotes; `OnlyCurrentCandidate` fails (10 states) |
+| `NativeViewHandoff_NoReadiness.cfg` | Stage → callback promotes before either readiness result; `ReadyBeforePromotion` fails (7 states) |
+| `NativeViewHandoff_NoDisposal.cfg` | Start native generation → stage new owner before old disposal; `DisposeBeforeNewOwner` fails (3 states) |
+| `NativeViewHandoff_NoShutdownOwner.cfg` | Dispose old owner → stage new owner → old unmount clears new shutdown handle; `ShutdownOwnerPreserved` fails (6 states) |
+| `NativeViewHandoff_NoRetainedView.cfg` | Pause drops the old view; `RetainUntilReady` fails (2 states) |
+
+The lock mutation removes the unlocked guard from both candidate admission and promotion; immediate candidate revocation also fences previously captured callbacks. The wider configuration passed 20,000 traces at depth 100 with four actors, five owners, five generations and seed 20261108: 2,005,317 states checked. The native CI gate now matches 27 expected configurations, compared with the 18-configuration baseline.
+
+This is a bounded ownership and view-continuity model. It abstracts React rendering and inert behavior, provider internals, actual pool and wallet readiness, transport failure details, vault durability and financial protocols. First unlock, onboarding, mode-switch teardown and cache clearing after rejected cleanup are outside its scope. Disposal is an acknowledged success, so an owner whose cleanup has not succeeded continues to block a new owner. No fairness or recovery liveness is claimed. The action anchors identify related source; they are not a checked refinement mapping. These results do not prove the implementation, secret zeroization or physical-device behavior.
+
+## Eager native Tor startup
+
+`TorStartup.tla` models reserving the initial Tor startup synchronously before the WebView loads, then running its worker alongside frontend initialization. Same-mode frontend calls join the reserved job; they cannot return an intermediate `bootstrapping` result. Bootstrap work belongs to the native host, so cancelling one caller does not cancel work awaited by another.
+
+`prewarm` is the non-blocking kickoff and intentionally returns an immediate status snapshot. The terminal-waiting contract applies to asynchronous `start` and `start_mode`. The `initial_only` check inside `Inner::prepare_start` limits host kickoff to the initial locked, generation-zero Tor state; calling it again cannot reverse pause or a direct-mode choice.
+
+Reservation captures generation, mode and intent. Pause and fresh mode/retry requests invalidate the previous intent, notify its waiters immediately, and cancel old work. New network work waits for retirement acknowledgements. A queued worker checks its reservation before starting; a completed worker checks it again before changing session state. Terminal completion is retained through a first-write CAS, including with no waiting callers, and a late waiter rechecks generation and mode before returning readiness. Owner drop also signals completion. These are abstract contracts, not a checked source refinement.
+
+| Model action | Owning file and symbol |
+| --- | --- |
+| `SetupReserve`, `ShowWebview` | `src-tauri/src/lib.rs`: `run`; `src-tauri/src/transport/mod.rs`: `PrivacyTransport::prewarm`; `session.rs`: `Inner::prewarm`, `Inner::prepare_start` |
+| `RequestStart`, `Read`, `Bind`, `Observe` | `session.rs`: `Inner::prepare_start`, `PreparedStart`, `Startup::waiter`, `StartWaiter::wait` |
+| `WorkerBegin`, `DrainAck` | `session.rs`: `StartupWork::run_with_bootstrap`, its retirement loop, `Inner::check_start`, `Session::start_matches` |
+| `Capture`, `Commit` | `session.rs`: `StartupWork::run`, `StartupWork::run_with_bootstrap`, `Inner::finish_start`, `Session::start_matches` |
+| `Complete`, `Pause` | `session.rs`: `Startup::finish`, `Session::invalidate` |
+| `AbortQueued`, `OwnerAbort` | `session.rs`: `StartupWork::run_with_bootstrap` cancellation/check branches, `StartupWork::drop` |
+| `CancelCaller` | `session.rs`: `Inner::start_with_drain_timeout` detaches the worker before `StartWaiter::wait`; dropping the receiver does not own that task |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Reserved: native setup reserves generation synchronously
+    state Reserved {
+        [*] --> QueuedWorker
+        QueuedWorker --> Connecting: current reservation and prior resources drained
+        Connecting --> TerminalResult: ready or error
+        QueuedWorker --> TerminalResult: owner abort
+        Connecting --> TerminalResult: owner abort
+        --
+        [*] --> LoadingFrontend
+        LoadingFrontend --> Joining: frontend asks for same-mode startup
+        Joining --> Returned: terminal result retained and generation/mode current
+        Joining --> CallerCancelled: caller abandons only its wait
+    }
+    Reserved --> Paused: invalidate and notify immediately; cancel owner
+    Paused --> Draining: fresh explicit start or mode switch
+    Draining --> Reserved: reserve next generation; worker awaits retirement
+```
+
+The exhaustive base has two callers, two startup jobs and three generations, covering a failed attempt followed by one retry. Worker result capture and publication are separate. An intent epoch distinguishes a new user request from a queued host request retired by pause or a mode choice. `oldResources` abstracts all cancellation/stop acknowledgements; it does not mean a retained dormant Arti client is destroyed on ordinary pause.
+
+In the source, `StartWaiter::wait` explicitly rechecks generation and mode after reading the retained result. The model's additional ready-phase predicate is a derived correspondence condition: startup phase writers are fenced by `Session::start_matches`, and the other exits from ready invalidate generation first. A retained ready result therefore cannot become non-ready with the same generation and mode. Non-ready terminal statuses are failures for readiness. The already-ready fast path is linearized inside `Inner::prepare_start`'s session lock rather than awaiting a completion. The model does not cover later IPC delivery, JavaScript revision/visibility checks or actual vault access, and is not composed with the other models into a refinement proof.
+
+Pinned TLC v1.7.4 checked the base on November 8, 2026: 131,128 generated states, 27,210 distinct states, depth 19 and an empty queue. Every semantic action fired. `ReserveLate` and `DuplicateStart` are mutation-only actions and correctly have zero base coverage. `Terminal` is artificial stuttering. All ten guard mutations exit 12 with their named invariant; their single-worker counterexamples are:
+
+| Configuration | Counterexample |
+| --- | --- |
+| `TorStartup_NoReservation.cfg` | Queue host request without reservation → pause → drain → late reservation → worker starts retired intent; `NoRetiredIntentStart` fails (6 states) |
+| `TorStartup_NoSingleFlight.cfg` | Reserve initial startup → duplicate same-generation owner; `OneBootstrapPerGeneration` fails (3 states) |
+| `TorStartup_NoStartFence.cfg` | Reserve → pause → drain → queued worker starts anyway; `NoRetiredIntentStart` fails (5 states) |
+| `TorStartup_NoCompletionFence.cfg` | Reserve → pause → queued abort → old completion changes current phase; `NoStaleCompletion` fails (5 states) |
+| `TorStartup_NoReplyFence.cfg` | Startup succeeds → caller captures result → pause → late join returns stale ready; `NoStaleReadyReply` fails (10 states) |
+| `TorStartup_NoReadiness.cfg` | Frontend binds before completion and returns `bootstrapping`; `TerminalBeforeReply` fails (5 states) |
+| `TorStartup_NoDrain.cfg` | Reserve → mode switch → new worker starts before old retirement; `DrainBeforeBootstrap` fails (5 states) |
+| `TorStartup_NoNotification.cfg` | Reserve → pause loses completion notification; `CompletionAlwaysSignals` fails (3 states) |
+| `TorStartup_NoCallerOwnership.cfg` | Caller captures startup → cancellation aborts native-owned work; `CallerDoesNotOwnBootstrap` fails (5 states) |
+| `TorStartup_NoTerminalCas.cfg` | Worker starts → pause publishes abort → late ready overwrites terminal result; `TerminalResultRetained` fails (6 states) |
+
+`TerminalJoinersRelease` is conditional liveness: once completion is retained, an attached waiter eventually returns or cancels under weak fairness of its observation step. No fairness is imposed on network completion, worker scheduling or retirement acknowledgements, so the model does not promise bootstrap/retry latency or eventual connectivity. Caller delivery before the native reservation boundary and process restart are outside its scope.
+
+The wider configuration passed 20,000 traces at depth 100 with four callers, four jobs, five generations and seed 20261108, checking 2,040,179 states. The native gate includes 38 expected configurations, up from 27. Local checks used two workers and a 256 MiB heap because of host memory pressure. These results do not prove Tor directory validation, circuit isolation, caching, cryptography, native vault durability, frontend rendering, physical-device behavior or a startup speedup.

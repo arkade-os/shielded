@@ -1,6 +1,7 @@
 import {nativeUrl,NativePolicy,type NativeRoute} from './policy.ts';
 
-export interface NativeStatus {phase:string;generation:number;progress?:string;error?:string}
+export type NativeMode='tor'|'direct';
+export interface NativeStatus {phase:string;generation:number;mode?:NativeMode;progress?:string;error?:string}
 export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number;sequence?:number}
 export interface NativeBackend {invoke:(command:string,args?:Record<string,unknown>)=>Promise<any>;channel:(receive:(event:NativeEvent)=>void)=>unknown}
 interface NativeRequest {generation:number;requestId:string;scope:string;url:string;method:string;headers:[string,string][];bodyBase64?:string}
@@ -45,7 +46,7 @@ export function bindNativeProvider<T extends object>(provider:T,check:()=>void):
 }
 
 export class NativeBridge {
- current:NativeStatus={phase:'idle',generation:0};
+ current:NativeStatus={phase:'idle',generation:0,mode:'tor'};
  beforeMutation?:(request:MutationRequest)=>void|Promise<void>;
  observeResponse?:(response:MutationRequest&{status:number;requestBody?:string})=>void;
  private scopes=new Map<string,ScopeEntry>();
@@ -54,28 +55,39 @@ export class NativeBridge {
  private statusRevision=0;
  private pausePending=0;
  private pauseIntent=false;
+ private requestedMode:NativeMode='tor';
  constructor(readonly backend:NativeBackend,readonly policy:NativePolicy){}
+ private acceptsStatus(status:NativeStatus){
+  const mode=status.mode??'tor';
+  return mode===this.requestedMode&&Number.isSafeInteger(status.generation)&&status.generation>=this.current.generation&&(status.generation!==this.current.generation||mode===(this.current.mode??'tor'));
+ }
  acceptStatus(status:NativeStatus){
-  if(!Number.isSafeInteger(status.generation)||status.generation<this.current.generation)return this.current;
+  const mode=status.mode??'tor';
+  if(!this.acceptsStatus(status))return this.current;
   if(status.generation!==this.current.generation||status.phase!=='ready'){
    for(const handle of this.handles)handle.close();
    this.scopes.clear();this.policy.clear();
   }
-  this.current=status;for(const fn of this.listeners)try{fn(status);}catch{}return status;
+  this.current={...status,mode};for(const fn of this.listeners)try{fn(this.current);}catch{}return this.current;
  }
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
  async status(){
   const revision=this.statusRevision,status:NativeStatus=await this.backend.invoke('native_status');
   if(revision!==this.statusRevision||this.pausePending||this.pauseIntent)return this.current;
-  if(status.phase==='ready'&&Number.isSafeInteger(status.generation)&&status.generation>=this.current.generation&&(this.current.phase!=='ready'||status.generation!==this.current.generation))++this.statusRevision;
+  if(this.acceptsStatus(status)&&status.phase==='ready'&&(this.current.phase!=='ready'||status.generation!==this.current.generation))++this.statusRevision;
   return this.acceptStatus(status);
  }
- async start(){
+ async start(mode:NativeMode='tor'){
+  if(mode!=='tor'&&mode!=='direct')throw new Error('Invalid native network mode');
   if(this.pausePending)return this.current;
   const revision=++this.statusRevision;this.pauseIntent=false;
+  if(mode!==(this.current.mode??'tor'))this.acceptStatus({...this.current,phase:'paused'});
+  this.requestedMode=mode;
   try{
-   const status=await this.backend.invoke('native_start');
+   const status:NativeStatus=await this.backend.invoke('native_start',{mode});
    if(revision!==this.statusRevision||this.pausePending||this.pauseIntent)return this.current;
+   if((status.mode??'tor')!==mode){this.acceptStatus({...this.current,phase:'paused'});throw new Error('Native start returned a different network mode');}
+   if(status.generation===this.current.generation&&mode!==(this.current.mode??'tor'))throw new Error('Changing native network mode requires a new generation');
    ++this.statusRevision;return this.acceptStatus(status);
   }finally{if(revision===this.statusRevision)++this.statusRevision;}
  }

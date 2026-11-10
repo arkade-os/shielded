@@ -18,6 +18,7 @@ pub fn run() {
         }
     }));
     builder
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shielded_platform::init())
         .invoke_handler(tauri::generate_handler![
             transport::native_status,
@@ -33,7 +34,10 @@ pub fn run() {
             transport::native_cancel
         ])
         .setup(|app| {
-            app.manage(transport::PrivacyTransport::new(app.path().app_data_dir()?.join("tor")).map_err(std::io::Error::other)?);
+            let transport = transport::PrivacyTransport::new(app.path().app_data_dir()?.join("tor"))
+                .map_err(std::io::Error::other)?;
+            app.manage(transport.clone());
+            transport.prewarm().map_err(std::io::Error::other)?;
             let marker = "(() => { const l = location; const local = !l.port && !l.username && !l.password && ((l.protocol === 'tauri:' && l.hostname === 'localhost') || (['http:', 'https:'].includes(l.protocol) && l.hostname === 'tauri.localhost')); if (window !== window.top || !local) return; Object.defineProperty(window, '__SHIELDED_NATIVE__', {value: Object.freeze({version: 1, poolOrigin: 'https://shielded.mutinynet.arkade.sh'}), writable: false, configurable: false}); })();";
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Shielded")

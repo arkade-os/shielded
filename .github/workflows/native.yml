@@ -8,6 +8,9 @@ on:
 
 env:
   NATIVE_NETWORK: mutinynet
+  SOURCE_DATE_EPOCH: '1794240000'
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: always
   NATIVE_PROFILE: ${{ github.event_name == 'pull_request' && 'debug' || 'release' }}
   NATIVE_BUILD_FLAG: ${{ github.event_name == 'pull_request' && '--debug' || '' }}
 
@@ -18,19 +21,20 @@ jobs:
   model:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-      - uses: actions/setup-java@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '25'
+      - run: node tools/reproducible-build.test.mjs
       - run: node tools/check-native-model.mjs
 
   desktop:
+    env:
+      NATIVE_PLATFORM: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,14 +50,12 @@ jobs:
             platform: macos-universal
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
+      - uses: ./.github/actions/setup
+      - run: node tools/reproducible-build.test.mjs
       - run: node tools/native-artifacts.mjs verify-network
-      - uses: dtolnay/rust-toolchain@stable
       - name: Install universal macOS targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -70,7 +72,8 @@ jobs:
       - run: node tools/native-build.mjs icons
       - run: npm run native:frontend
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
-      - run: node tools/native-build.mjs desktop build ${{ env.NATIVE_BUILD_FLAG }} --bundles ${{ matrix.bundle }} ${{ runner.os == 'macOS' && '--target universal-apple-darwin' || '' }}
+      - name: Build desktop package
+        run: node tools/retry-command.mjs node tools/native-build.mjs desktop build ${{ env.NATIVE_BUILD_FLAG }} --bundles ${{ matrix.bundle }} ${{ runner.os == 'macOS' && '--target universal-apple-darwin' || '' }}
       - name: Verify universal macOS bundle
         if: runner.os == 'macOS'
         shell: bash
@@ -83,7 +86,7 @@ jobs:
       - name: Preserve Linux executable permissions
         if: runner.os == 'Linux'
         run: tar -czf "src-tauri/target/native-artifacts/linux-x86_64-$NATIVE_PROFILE.tar.gz" -C src-tauri/target/native-artifacts "linux-x86_64-$NATIVE_PROFILE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shielded-mutinynet-${{ matrix.platform }}-${{ env.NATIVE_PROFILE }}-${{ github.sha }}-attempt${{ github.run_attempt }}
           path: ${{ runner.os == 'Linux' && format('src-tauri/target/native-artifacts/linux-x86_64-{0}.tar.gz', env.NATIVE_PROFILE) || format('src-tauri/target/native-artifacts/{0}-{1}', matrix.platform, env.NATIVE_PROFILE) }}
@@ -91,22 +94,25 @@ jobs:
           retention-days: 14
 
   android:
+    env:
+      NATIVE_PLATFORM: android-arm64
+      # The installable test APK uses the dev profile; Tor still needs optimized code.
+      CARGO_PROFILE_DEV_OPT_LEVEL: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_DEV_STRIP: debuginfo
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
+      - uses: ./.github/actions/setup
+      - run: node tools/reproducible-build.test.mjs
       - run: node tools/native-artifacts.mjs verify-network
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '21'
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+      - run: rustup target add aarch64-linux-android
       - name: Select installed Android NDK
         shell: bash
         run: |
@@ -115,12 +121,13 @@ jobs:
           echo "NDK_HOME=$ndk" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run native:android -- init --ci --skip-targets-install
-      - run: npm run native:android -- build $NATIVE_BUILD_FLAG --apk --target aarch64 --ci
+      - name: Build Android release package
+        run: node tools/retry-command.mjs node node_modules/@tauri-apps/cli/tauri.js android build $NATIVE_BUILD_FLAG --apk --target aarch64 --ci
       - name: Build installable Mutinynet Android debug APK
         if: env.NATIVE_PROFILE == 'release'
-        run: npm run native:android -- build --debug --apk --target aarch64 --ci
+        run: node tools/retry-command.mjs node node_modules/@tauri-apps/cli/tauri.js android build --debug --apk --target aarch64 --ci
       - run: node tools/native-artifacts.mjs collect android-arm64 ${{ env.NATIVE_PROFILE }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shielded-mutinynet-android-arm64-${{ env.NATIVE_PROFILE }}-${{ github.sha }}-attempt${{ github.run_attempt }}
           path: src-tauri/target/native-artifacts/android-arm64-${{ env.NATIVE_PROFILE }}
@@ -128,16 +135,16 @@ jobs:
           retention-days: 14
 
   ios:
+    env:
+      NATIVE_PLATFORM: ios
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
+      - uses: ./.github/actions/setup
+      - run: node tools/reproducible-build.test.mjs
       - run: node tools/native-artifacts.mjs verify-network
-      - uses: dtolnay/rust-toolchain@stable
       - name: Select simulator architecture
         shell: bash
         run: |
@@ -164,9 +171,41 @@ jobs:
           test "$(uname -m)" = arm64
           cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked --target aarch64-apple-darwin
       - run: node tools/native-artifacts.mjs collect ios ${{ env.NATIVE_PROFILE }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shielded-mutinynet-ios-unsigned-${{ env.NATIVE_PROFILE }}-${{ github.sha }}-attempt${{ github.run_attempt }}
           path: src-tauri/target/native-artifacts/ios-${{ env.NATIVE_PROFILE }}
           if-no-files-found: error
           retention-days: 14
+
+  publish:
+    if: >-
+      github.repository == 'arkade-os/shielded' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [model, desktop, android, ios]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: native-mutinynet-publication
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: npm ci
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: shielded-mutinynet-*-release-${{ github.sha }}-attempt*
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+          path: native-downloads
+      - name: Publish complete native release, then advance channel
+        run: node --import tsx tools/publish-native-release.ts native-downloads native-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
