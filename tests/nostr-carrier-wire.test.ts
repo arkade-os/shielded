@@ -75,6 +75,7 @@ test('a complete answer beats a status, and a status counts while chunks are mis
  const events=answerEvents(randomBytes(70_000),x,gwSecret,0),pair=answerEvents(randomBytes(40_000),x,gwSecret,0),single=()=>answerEvents(randomBytes(10),x,gwSecret,0);
  assert.equal(readAnswer([pair[0],events[1],events[2]],x,GW),undefined);
  assert.equal(readAnswer([...single(),...single()],x,GW),undefined);
+ assert.deepEqual(readAnswer([...single(),...single(),status],x,GW),{kind:'status',status:503,retryAfter:1},'conflicting chunks leave the status standing');
 });
 test('readAnswer ignores a gateway event that breaks the format, alone and beside a good answer',()=>{
  const bytes=randomBytes(10),good=signed([['chunk','0','1']],base64.encode(bytes)),body=base64.encode(randomBytes(10));

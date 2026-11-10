@@ -136,7 +136,7 @@ test('a relay that refuses only the subscription (CLOSED) is subscribed again af
  const carrier=startNostrCarrier({open:async()=>{opened++;return {kind:'refused'};},secret,relays:[A],pool,now:()=>clock});t.after(()=>carrier.close());
  await eventually(()=>net.reqs.length===1);
  [...net.sockets][0]!.onmessage!({data:JSON.stringify(['CLOSED',net.reqs[0]!.id,'rate-limited: slow down'])});
- await settle();assert.equal(net.reqs.length,1);
+ await settle();assert.equal(net.reqs.length,1);assert.equal(net.sockets.size,1);
  t.mock.timers.tick(29_999);await settle();assert.equal(net.reqs.length,1,'not before 30 s');
  clock+=30_000;t.mock.timers.tick(1);await eventually(()=>net.reqs.length===2);
  assert.deepEqual(net.reqs.map(req=>(req.filters[0] as {since:number}).since),[clock/1000-90,clock/1000-60]);
@@ -231,7 +231,7 @@ test('a relay whose socket died is closed at once, so close() leaves it no idle 
  await eventually(()=>net.reqs.length===1);
  const dead=(pool as unknown as {relays:Map<string,{idleTimeoutHandle:unknown}>}).relays.get(A)!;
  [...net.sockets][0]!.hangUp(true);carrier.close();
- assert.equal(dead.idleTimeoutHandle,undefined);
+ assert.ok('idleTimeoutHandle' in dead);assert.equal(dead.idleTimeoutHandle,undefined);
 });
 
 test('a socket with more than 4 MiB unsent drops further sends',async t=>{
