@@ -36,7 +36,9 @@ test('only the local main window receives bounded native commands', () => {
   assert.equal(capability.remote, undefined);
   assert.ok(capability.permissions.includes('shielded-platform:allow-secret-get'));
   assert.ok(capability.permissions.includes('shielded-platform:allow-secret-set'));
-  assert.ok(!capability.permissions.some(permission => /shell|opener|http:|fs:/.test(permission)));
+  const opener = capability.permissions.filter(permission => String(permission.identifier ?? permission).startsWith('opener:'));
+  assert.deepEqual(opener, [{ identifier: 'opener:allow-open-url', allow: [{ url: 'https://shielded.mutinynet.arkade.sh/#download' }] }]);
+  assert.ok(!capability.permissions.some(permission => typeof permission === 'string' && /shell|http:|fs:/.test(permission)));
 });
 
 test('build commands reject incompatible hosts and forward Tauri arguments without a shell', () => {

@@ -1,6 +1,7 @@
-import {createContext,useContext,useEffect,useState,type ReactNode} from 'react';
+import {createContext,useContext,useEffect,useState,type MouseEvent,type ReactNode} from 'react';
+import {openUrl} from '@tauri-apps/plugin-opener';
 import {registerAppCache} from './app-cache.ts';
-import {NATIVE_RELEASE_ORIGIN,type NativeRelease} from '../../src/native-release.ts';
+import {nativeUpdateUrl,type NativeRelease} from '../../src/native-release.ts';
 import {createNativeUpdateMonitor} from './native-updates.ts';
 
 const native=typeof __NATIVE_BUILD__!=='undefined'&&__NATIVE_BUILD__;
@@ -29,13 +30,22 @@ export function AppUpdatesProvider({children}:{children:ReactNode}){
  return <Updates.Provider value={update}>{children}</Updates.Provider>;
 }
 
-export function NativeUpdateCopyLink(){
- return <section className="app-update-copy" aria-label="Native update download link"><p>Update available. Copy this link to open it outside Shielded.</p><input aria-label="Download link to copy" readOnly value={NATIVE_RELEASE_ORIGIN+'/#download'} onFocus={event=>event.target.select()}/></section>;
+export function NativeUpdateLink({tone='light'}:{tone?:'light'|'dark'}){
+ const [error,setError]=useState('');
+ const open=(event:MouseEvent<HTMLAnchorElement>)=>{
+  if(!native)return;
+  event.preventDefault();setError('');
+  void openUrl(nativeUpdateUrl()).catch(cause=>setError(cause instanceof Error?cause.message:String(cause)));
+ };
+ return <><a className="app-update-notice" data-tone={tone} data-native-external="true" href={nativeUpdateUrl()} target={native?'_blank':undefined} rel="noreferrer" onClick={open} aria-label="Native app update available. Open downloads."><span className="app-update-dot" aria-hidden="true"/>Update available</a>{error&&<><span className="app-update-open-error" role="alert">Could not open downloads.</span><NativeUpdateFallback/></>}</>;
 }
 
-export function AppUpdateNotice({tone='light',copyLink=false}:{tone?:'light'|'dark';copyLink?:boolean}){
+export function NativeUpdateFallback(){
+ return <details className="app-update-open-fallback"><summary>Copy download link</summary><input aria-label="Download link to copy" readOnly value={nativeUpdateUrl()} onFocus={event=>event.target.select()}/></details>;
+}
+
+export function AppUpdateNotice({tone='light'}:{tone?:'light'|'dark'}){
  const {apply,release}=useContext(Updates);
- if(release&&copyLink)return <NativeUpdateCopyLink/>;
- if(release)return <a className="app-update-notice" data-tone={tone} href={NATIVE_RELEASE_ORIGIN+'/#download'} aria-label="Native app update available. View downloads."><span className="app-update-dot" aria-hidden="true"/>Update available</a>;
+ if(release)return <NativeUpdateLink tone={tone}/>;
  return apply?<button className="app-update-notice" data-tone={tone} type="button" onClick={apply} aria-label="Update app to the new version"><span className="app-update-dot" aria-hidden="true"/>Update available</button>:null;
 }

@@ -18,6 +18,7 @@ pub fn run() {
         }
     }));
     builder
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shielded_platform::init())
         .invoke_handler(tauri::generate_handler![
             transport::native_status,

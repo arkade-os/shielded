@@ -204,6 +204,7 @@ export default function NativeWallet(){
   visibility();
   const external=(event:MouseEvent)=>{
    const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor)return;
+   if(anchor.getAttribute('data-native-external')==='true')return;
    const url=new URL(anchor.getAttribute('href')!,location.href);
    if(['http:','https:'].includes(url.protocol)&&url.origin!==location.origin){event.preventDefault();event.stopPropagation();setExternalLink(url.href);}
   };
