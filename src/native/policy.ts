@@ -3,6 +3,18 @@ import {bytesToHex} from '@noble/hashes/utils.js';
 
 export type NativePurpose='public'|'pool-sync'|'pool-operation'|'indexer'|'ark'|'esplora'|'swap'|'lnurl'|'assets'|'discovery';
 export interface NativeRoute {purpose:NativePurpose;key:string}
+export function createNativeOperationScope(release:(route:NativeRoute)=>void|Promise<void>){
+ const routes=new Map<string,NativeRoute>();let closed=false;
+ return {
+  track(route:NativeRoute){if(closed)throw new Error('Native operation scope is closed');routes.set(route.key,route);},
+  close(){
+   if(closed)return;
+   closed=true;
+   const owned=[...routes.values()];routes.clear();
+   for(const route of owned)void Promise.resolve(release(route)).catch(()=>{});
+  },
+ };
+}
 const digest=(value:string)=>bytesToHex(sha256(new TextEncoder().encode(value)));
 const object=(body?:string):Record<string,unknown>=>{try{const value=JSON.parse(body??'{}');if(value&&typeof value==='object'&&!Array.isArray(value))return value;}catch{}throw new Error('Native request requires an object body');};
 export function nativeUrl(input:string,origin?:string):URL {

@@ -6,7 +6,7 @@ import {nostrCardFetcher,nostrRfqTransport} from '@arkade-os/swap/nostr';
 import {SimplePool} from 'nostr-tools';
 import {markPrivateFetch} from '../shielded/network-privacy.ts';
 import {beforeNativeMutation,observeNativeResponse} from './mutations.ts';
-import {NativePolicy,nativeUrl,type NativePurpose,type NativeRoute} from './policy.ts';
+import {createNativeOperationScope,NativePolicy,nativeUrl,type NativePurpose,type NativeRoute} from './policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from './providers.ts';
 import {NativeBridge,bindNativeProvider,type NativeEvent,type NativeStatus,type NativeMode} from './transport.ts';
 import {NativeEventSource,NativeWebSocket} from './streams.ts';
@@ -35,13 +35,13 @@ function scopedFetch(purpose:NativePurpose):typeof fetch {
  });
 }
 export function nativeOperationFetch(purpose:NativePurpose,identity=crypto.randomUUID(),signal:AbortSignal):typeof fetch {
- const b=connection();let route:NativeRoute|undefined,closed=false;
- const close=()=>{if(closed)return;closed=true;if(route)void b.release(route).catch(()=>{});};
+ const b=connection(),scope=createNativeOperationScope(route=>b.release(route)),close=()=>scope.close();
  if(signal.aborted)close();else signal.addEventListener('abort',close,{once:true});
  return markPrivateFetch((input,init)=>{
-  if(closed)throw signal.reason??new Error('Native operation scope is closed');
+  if(signal.aborted)throw signal.reason??new Error('Native operation scope is closed');
   const url=nativeUrl(input instanceof Request?input.url:String(input),b.policy.poolOrigin);
-  route=b.policy.explicit(url.href,purpose,identity+'|'+url.origin);
+  const route=b.policy.explicit(url.href,purpose,identity+'|'+url.origin);
+  scope.track(route);
   return b.fetch(input,init,route);
  });
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {NativePolicy} from '../src/native/policy.ts';
+import {createNativeOperationScope,NativePolicy} from '../src/native/policy.ts';
 
 const script='0014'+'ab'.repeat(20),other='0014'+'cd'.repeat(20);
 const policy=()=>{const p=new NativePolicy('https://pool.example');p.registerArk('https://ark.example','https://ark.example');return p;};
@@ -32,4 +32,13 @@ test('a malicious server cannot rebind one subscription id to another item',()=>
  const p=policy();p.subscription('shared-id',script,'https://ark.example');
  assert.throws(()=>p.subscription('shared-id',other,'https://ark.example'),/reused|another/i);
  assert.equal(p.classify('https://ark.example/v1/indexer/script/subscription/shared-id','GET').key,p.classify('https://ark.example/v1/indexer/vtxos?scripts='+script,'GET').key);
+});
+
+test('an operation releases every isolated route it opened exactly once',async()=>{
+ const p=policy(),released:string[]=[],scope=createNativeOperationScope(route=>{released.push(route.key);});
+ scope.track(p.explicit('https://lnurl.example','lnurl','operation|https://lnurl.example'));
+ scope.track(p.explicit('https://pay.example','lnurl','operation|https://pay.example'));
+ scope.close();scope.close();await Promise.resolve();
+ assert.deepEqual(released,[p.explicit('https://lnurl.example','lnurl','operation|https://lnurl.example').key,p.explicit('https://pay.example','lnurl','operation|https://pay.example').key]);
+ assert.throws(()=>scope.track(p.explicit('https://late.example','lnurl','operation|https://late.example')),/closed/i);
 });
