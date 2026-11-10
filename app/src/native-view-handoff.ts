@@ -3,6 +3,14 @@ export type NativeWalletView<T>={session:T;retired:boolean;mounted:boolean;shutd
 type RetiredView<T>={session:T;shutdown?:Shutdown};
 export const isNativeWalletViewActive=<T,>(view:NativeWalletView<T>,shown:boolean)=>shown&&!view.retired;
 export const currentNativeWalletView=<T,>(view:NativeWalletView<T>|undefined)=>view&&!view.retired?view:undefined;
+export function nativeWalletPresentation<T>(snapshot:{shown?:NativeWalletView<T>;candidate?:NativeWalletView<T>},reconnecting:boolean){
+ const shown=currentNativeWalletView(snapshot.shown),showOpening=!shown||reconnecting;
+ const views=[snapshot.shown,snapshot.candidate]
+   .map(currentNativeWalletView)
+   .filter((view):view is NativeWalletView<T>=>!!view)
+   .map(view=>({view,visible:view===shown&&!showOpening}));
+ return {shown,showOpening,views};
+}
 
 export function createNativeViewHandoff<T>(lateShutdown:(shutdown:Shutdown)=>void=shutdown=>{void shutdown().catch(()=>{});}){
  let shown:NativeWalletView<T>|undefined,candidate:NativeWalletView<T>|undefined;
