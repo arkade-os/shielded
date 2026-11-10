@@ -51,8 +51,9 @@ function network(){
 async function relay(t:TestContext){
  const server=new WebSocketServer({host:'127.0.0.1',port:0});
  server.on('connection',(socket:any)=>socket.on('message',(data:Buffer)=>{const [type,id]=JSON.parse(String(data));if(type==='REQ')server.emit('req',socket,id);}));
- // Hooks run in order, so this one runs before the carrier's close and waits for both ends to shut: ws clearing its close timer while the next test mocks timers would leave that timer running.
- await once(server,'listening');t.after(async()=>{for(const socket of server.clients)socket.terminate();server.close();for(let i=0;i<500&&process.getActiveResourcesInfo().includes('TCPSocketWrap');i++)await settle();});
+ // Hooks run in order, and this one, added at the first connection, follows the test's close: a socket cut first leaves its relay a 20 s idle timer, and ws clearing a close timer while the next test mocks timers leaves that one running.
+ server.once('connection',()=>t.after(async()=>{for(const socket of server.clients)socket.terminate();for(let i=0;i<500&&process.getActiveResourcesInfo().includes('TCPSocketWrap');i++)await settle();}));
+ await once(server,'listening');t.after(()=>server.close());
  return {url:`ws://127.0.0.1:${(server.address() as AddressInfo).port}`,server};
 }
 const A='wss://a.example/',B='wss://b.example/';
@@ -193,6 +194,24 @@ test('a relay closed for not echoing the canary cannot crash the listener with a
  t.mock.timers.tick(30_000);await canary;
  socket.send('a'.repeat((1<<20)+1));t.mock.timers.tick(15_000);await once(socket,'close');
  const again=once(server,'req');t.mock.timers.tick(30_000);await again;
+});
+
+test('the canary goes to, and a deaf close shuts, the relay holding the subscription after the pool has dropped it from its map',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','setInterval']});
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ const {net,pool}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret);let clock=0,at=0,opens=0,release=()=>{};
+ const held=new Promise<void>(resolve=>{release=resolve;});
+ const carrier=startNostrCarrier({open:async()=>{if(++opens===1)await held;return {kind:'sealed',bytes:new Uint8Array(100)};},secret,relays:[A],pool,now:()=>clock});t.after(()=>carrier.close());
+ const to=async(second:number)=>{for(;at<second*1000;at+=1000){t.mock.timers.tick(1000);await settle();}};
+ await eventually(()=>net.reqs.length===1);net.push(request(gateway));await eventually(()=>opens===1);
+ // A dead relay's idle close (20 s) drops whichever relay then holds its URL: r1 dies at 1 s, an answer opens r2 at 15 s, which r1 drops at 21 s; A resubscribes on r3 at 31 s, which r2 drops at 35 s; the next answer opens r4, idle-closed at 56 s.
+ await to(1);[...net.sockets][0]!.hangUp(true);
+ await to(15);release();await eventually(()=>net.sent.length===1);
+ await to(36);net.push(request(gateway));await eventually(()=>net.sent.length===2);
+ clock=60_000;await to(76);
+ assert.deepEqual([net.reqs.length,lines],[2,[]],'r3 carried the 60 s canary and echoed it');
+ net.quirks.set(A,'silent');await to(136);
+ assert.equal(net.reqs.length,3,'r3 stopped echoing, so it was closed and A subscribed again');
 });
 
 test('a socket with more than 4 MiB unsent drops further sends',async t=>{

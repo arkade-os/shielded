@@ -36,12 +36,12 @@ type Entry={targets:Set<string>;answers?:Event[];at?:number;bytes:number};
 // The pool's own reconnect is left off: it reopens at since=lastEmitted+1, so one future-dated event deafens a relay, and it never retries a connection that failed first.
 // The pool checks a request's id as readRequest does, never its signature, and refuses content longer than one request before hashing it.
 export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePool({verifyEvent:event=>typeof event.content==='string'&&event.content.length<=43_692&&idMatches(event),maxWaitForConnection:3000,websocketImplementation:CappedSocket as never}),now=Date.now,maxAnswer=ANSWER_BYTES,cacheBytes=16<<20}:{open:OhttpOpen;secret:Uint8Array;relays:readonly string[];pool?:RelayPool;now?:()=>number;maxAnswer?:number;cacheBytes?:number}):{close():void} {
- const gateway=getPublicKey(secret),tally=new Map<string,number>(),handled=new Map<string,Entry>(),live=new Map<string,{close():void}>(),waiting=new Map<string,ReturnType<typeof setTimeout>>(),echoes=new Map<string,ReturnType<typeof setTimeout>>(),opened=new Map<string,Relay>();
+ const gateway=getPublicKey(secret),tally=new Map<string,number>(),handled=new Map<string,Entry>(),live=new Map<string,{relay:Relay;sub:{close():void}}>(),waiting=new Map<string,ReturnType<typeof setTimeout>>(),echoes=new Map<string,ReturnType<typeof setTimeout>>();
  let since=now(),closed=false,statusAt=0,statuses=0,cached=0,tokens=PUBLICATIONS_PER_SECOND,filled=performance.now();
  // A throw into the library makes it print the event being handled, so neither counting nor a handler may throw.
  const note=(kind:string)=>{try{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[nostr] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();}catch{}};
  const safely=<A extends unknown[]>(fn:(...args:A)=>void)=>(...args:A)=>{try{fn(...args);}catch{note('failed');}};
- const relayOf=async(url:string)=>{const relay=await pool.ensureRelay(url);relay.onnotice=()=>{};opened.set(url,relay);return relay;};
+ const relayOf=async(url:string)=>{const relay=await pool.ensureRelay(url);relay.onnotice=()=>{};return relay;};
  // A flood of shed requests would make the gateway sign and publish a status for each, so they are capped per second (a fixed window on the monotonic clock, like admit()).
  const statusRoom=()=>{const at=performance.now();if(at-statusAt>=1000){statusAt=at;statuses=0;}return ++statuses<=STATUSES_PER_SECOND;};
  const refill=()=>{const at=performance.now();tokens=Math.min(PUBLICATIONS_PER_SECOND,tokens+(at-filled)*PUBLICATIONS_PER_SECOND/1000);filled=at;};
@@ -89,13 +89,13 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
    // No connect timeout on purpose: the pool's own leaves the half-open socket behind, and CappedSocket bounds a connect itself.
    const relay=await relayOf(url);
    // limit:0 asks for new events only, so a restart reruns none a relay stored (strfry keeps ephemeral events 300 s); since bounds a relay that ignores it.
-   if(!closed)live.set(url,relay.subscribe([{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway],limit:0,since:roundedSeconds(now())-60}],{onevent:safely(event=>receive(url,event)),onclose:safely(()=>lost(url))}));
+   if(!closed)live.set(url,{relay,sub:relay.subscribe([{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway],limit:0,since:roundedSeconds(now())-60}],{onevent:safely(event=>receive(url,event)),onclose:safely(()=>lost(url))})});
   }catch{lost(url);}
  };
- // The canary's traffic also keeps open a relay that drops idle sockets, as one did after 60 s.
+ // The canary's traffic also keeps open a relay that drops idle sockets, as one did after 60 s. It uses the relay each subscription holds, never ensureRelay's: a dead relay's late idle close drops a live one from the pool's map by URL.
  const canary=()=>{
   const event=finalizeEvent({kind:NOSTR_REQUEST_KIND,tags:[['p',gateway]],content:'',created_at:Math.floor(now()/1000)},secret);
-  for(const url of live.keys()){echoes.set(url,setTimeout(safely(()=>{note('deaf');opened.get(url)?.close();}),ECHO_MS));void opened.get(url)?.publish(event).catch(()=>{});}
+  for(const [url,{relay}] of live){echoes.set(url,setTimeout(safely(()=>{note('deaf');relay.close();}),ECHO_MS));void relay.publish(event).catch(()=>{});}
  };
  for(const url of new Set(relays))void listen(url);
  const ticker=setInterval(safely(canary),CANARY_MS);
@@ -103,9 +103,9 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   closed=true;clearInterval(ticker);
   for(const timer of [...waiting.values(),...echoes.values()])clearTimeout(timer);
   waiting.clear();
-  for(const sub of live.values())sub.close();
-  live.clear();
-  for(const relay of opened.values())relay.close();
+  for(const {sub} of live.values())sub.close();
   pool.destroy();
+  for(const {relay} of live.values())relay.close();
+  live.clear();
  }};
 }

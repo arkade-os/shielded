@@ -361,11 +361,11 @@ test('a relay that does not echo the canary in 15 s is closed and subscribed aga
  const sent=await g.ask(ARK,{to:[B],listen:[B]});await until(()=>sent.answer(B)?.kind==='sealed');
 });
 
-test('close() closes each relay it opened before destroying the pool',async t=>{
+test('close() destroys the pool, then closes each relay that holds a subscription',async t=>{
  const bus=createNostrBus(),order:string[]=[],ensure=bus.pool.ensureRelay;
  t.mock.method(bus.pool,'ensureRelay',async(url:string)=>{const relay=await ensure(url),close=relay.close;relay.close=()=>{order.push(url);close();};return relay;});
  t.mock.method(bus.pool,'destroy',()=>{order.push('destroy');});
  const carrier=startNostrCarrier({open:async()=>({kind:'refused'}),secret:generateSecretKey(),relays:[A,B],pool:bus.pool});t.after(()=>carrier.close());await settle();
  carrier.close();
- assert.deepEqual(order,[A,B,'destroy']);
+ assert.deepEqual(order,['destroy',A,B]);
 });
