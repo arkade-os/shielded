@@ -5,7 +5,7 @@ import type {CarrierPool,RelayPool} from '../../src/rollup/nostr-carrier.ts';
 /** An in-memory relay network shaped like nostr-tools' pool: each URL is a channel, and a relay misbehaves as its options say. `unfiltered` makes it deliver everything. `stores` keeps what it delivers and hands a new subscription what matches, since included, except under limit:0, which `ignoresLimit` disregards. */
 export function createNostrBus(){
  type Sub={url:string;filters:Filter[];onevent:(event:Event)=>void;onclose:(reason:string)=>void};
- const relays=new Map<string,{accept:boolean;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean;stores:boolean;ignoresLimit:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[],stored=new Map<string,Event[]>(),unhandled:Error[]=[];
+ const relays=new Map<string,{accept:boolean;refusal?:string;deliver:boolean;delayMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean;stores:boolean;ignoresLimit:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[],stored=new Map<string,Event[]>(),unhandled:Error[]=[];
  const relay=(url:string)=>{
   if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,unfiltered:false,unreachable:false,timesOut:false,refusesButDelivers:false,claimsUnreachable:false,stores:false,ignoresLimit:false});
   return relays.get(url)!;
@@ -18,12 +18,12 @@ export function createNostrBus(){
  /** Closes subscriptions and the connection the way a relay does when it restarts or refuses them: the owners hear of it. */
  const drop=(url?:string,reason='relay connection closed')=>{
   for(const [at,link] of [...links])if(url===undefined||at===url){link.alive=false;links.delete(at);}
-  for(const sub of [...live])if(url===undefined||sub.url===url){live.delete(sub);sub.onclose(reason);}
+  for(const sub of [...live])if((url===undefined||sub.url===url)&&live.delete(sub))sub.onclose(reason);
  };
  /** A relay taking an event: it throws where the library's publish rejects, and a timed-out OK still delivers. */
  const take=(url:string,event:Event)=>{
-  const {accept,deliver,delayMs,unfiltered,timesOut,refusesButDelivers,claimsUnreachable,stores}=relay(url);
-  if(!accept)throw new Error('blocked: this relay takes nothing');
+  const {accept,refusal='blocked: this relay takes nothing',deliver,delayMs,unfiltered,timesOut,refusesButDelivers,claimsUnreachable,stores}=relay(url);
+  if(!accept)throw new Error(refusal);
   if(!verifyEvent(event))throw new Error('invalid: bad signature');
   if(!published.some(sent=>sent.id===event.id))published.push(event);
   if(deliver){

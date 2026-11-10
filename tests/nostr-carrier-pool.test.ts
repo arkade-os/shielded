@@ -153,8 +153,8 @@ test('a sealed fetch on the real pool at both ends: a GET, a POST its first rela
  const spend={method:'POST',headers:{'content-type':'application/json'},body:'{}'};
  assert.deepEqual(await (await sealedFetch('https://ark.example/v1/info')).json(),{ok:true});
  net.quirks.set(A,'refuses');assert.equal((await sealedFetch('/api/rollup/spends',spend)).status,200);
- net.quirks.set(A,'silent');await assert.rejects(sealedFetch('/api/rollup/spends',spend),(error:unknown)=>error instanceof SealedFetchError&&error.code==='outcome-unknown');
- assert.deepEqual([net.sent.filter(event=>event.kind===NOSTR_REQUEST_KIND).length,calls.length,net.unheard],[4,2,[]],'the refused POST went out again and the timed-out one did not, each after its answer subscription');
+ net.quirks.set(B,'silent');await assert.rejects(sealedFetch('/api/rollup/spends',spend),(error:unknown)=>error instanceof SealedFetchError&&error.code==='outcome-unknown');
+ assert.deepEqual([net.sent.filter(event=>event.kind===NOSTR_REQUEST_KIND).length,calls.length,net.unheard],[5,2,[]],'each POST went on to the other relay: the refused one was answered there, and the one whose OK timed out on B was refused by A, each after its answer subscription');
 });
 
 test('a relay frame over 1 MiB closes that connection, and the listener subscribes again 30 s later',async t=>{

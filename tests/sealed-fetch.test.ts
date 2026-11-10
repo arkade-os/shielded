@@ -96,15 +96,43 @@ test('a POST that no relay accepted is retried',async t=>{
  assert.equal((await g.fetch('/api/rollup/spends',SPEND)).status,200);
  assert.deepEqual(g.sentTo(),[[A,B],[C,D]]);assert.equal(g.requests().length,1,'one accepted request event in total');
  assert.deepEqual(g.calls.map(({url,init})=>[url,new TextDecoder().decode(init.body as ArrayBuffer),new Headers(init.headers).get('content-type')]),[[LOOPBACK+'/api/rollup/spends','{"id":"ab"}','application/json']]);
- const [first,second]=g.sent();assert.equal(first!.content,second!.content,'both attempts carry the one sealed request');assert.notEqual(first!.id,second!.id);
+ const [first,second]=g.sent();assert.equal(first!.id,second!.id,'the event no relay took went on to the next picks');
 });
 
 test('a POST through a relay that delivers what it says it never took runs once, and its answer comes back',async t=>{
  for(const mode of ['refusesButDelivers','claimsUnreachable'] as const){
   const g=await rig(t,{pick:1});g.bus.relay(A)[mode]=true;
   assert.equal((await g.fetch('/api/rollup/spends',SPEND)).status,200,mode);await sleep(100);
-  assert.deepEqual(g.sentTo(),[[A],[B]],mode);assert.equal(g.calls.length,1,`${mode}: the gateway refused the copy on B`);
+  assert.deepEqual(g.sentTo(),[[A],[B]],mode);assert.equal(g.calls.length,1,`${mode}: the listener grouped the copy on B with A's by x`);
  }
+});
+
+test('a pick that times out without delivering is hedged at once, and the answer comes from the next relay',{timeout:10_000},async t=>{
+ const g=await rig(t,{pick:1,timeoutMs:60_000});Object.assign(g.bus.relay(A),{timesOut:true,deliver:false});
+ assert.equal((await g.fetch(ARK)).status,200);
+ assert.deepEqual(g.sentTo(),[[A],[B]]);assert.equal(g.sent()[0]!.id,g.sent()[1]!.id,'the same event went to B');assert.equal(g.requests().length,1);
+});
+
+test('a POST hedged across relays carries one sealing and runs once',{timeout:10_000},async t=>{
+ const g=await rig(t,{pick:1,timeoutMs:60_000});Object.assign(g.bus.relay(A),{timesOut:true,deliver:false});
+ assert.equal((await g.fetch('/api/rollup/spends',SPEND)).status,200);
+ assert.deepEqual([g.sentTo(),g.calls.length,new Set(g.sent().map(event=>event.content)).size],[[[A],[B]],1,1]);
+});
+
+test('a refusal without a NIP-01 prefix is hedged like a timeout',{timeout:10_000},async t=>{
+ const g=await rig(t,{pick:1});Object.assign(g.bus.relay(A),{accept:false,refusal:'Policy violated and pubkey is not in our web of trust.'});
+ assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo(),[[A],[B]]);
+});
+
+test('a relay that did not acknowledge is benched for 5 minutes, and an acknowledgement lifts it',{timeout:10_000},async t=>{
+ let clock=0;t.mock.method(performance,'now',()=>clock);
+ const g=await rig(t,{relays:[A,B,C],pick:1,gateway:{rate:1000}}),dead={timesOut:true,deliver:false};
+ const fetches=async(...to:string[][])=>{const before=g.sentTo().length;assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo().slice(before),to);};
+ Object.assign(g.bus.relay(A),dead);
+ await fetches([A],[B]);await fetches([B]);
+ clock+=300_000;await fetches([A],[B]);
+ Object.assign(g.bus.relay(A),{timesOut:false,deliver:true});for(const url of [B,C])Object.assign(g.bus.relay(url),dead);
+ await fetches([B],[C],[A]);await fetches([A]);
 });
 
 test('attempts run out as unavailable',async t=>{
@@ -118,6 +146,28 @@ test('a status event cannot hold the client past its attempt deadline',{timeout:
  const started=performance.now(),pending=g.fetch(ARK);await until(()=>g.calls.length===1);
  await Promise.all(g.bus.pool.publish([A],statusEvent(503,3600,g.address(),g.key.nostrSecret,Date.now())));
  assert.equal((await pending).status,200);assert.ok(performance.now()-started<2000,'the hour the status asked for was cut to the deadline');
+});
+
+test('a stored status from an earlier attempt does not end a later one',async t=>{
+ let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A],pick:1,attempts:2,gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
+ g.bus.relay(A).stores=true;
+ const first=g.fetch(ARK);await until(()=>g.calls.length===1);
+ const spend=g.fetch('/api/rollup/spends',SPEND);await until(()=>g.statuses().length===1);release();
+ assert.equal((await spend).status,200,'the status A replayed to the second, last attempt did not end it');
+ assert.equal(g.calls.filter(call=>call.url===LOOPBACK+'/api/rollup/spends').length,1);assert.equal((await first).status,200);
+});
+
+test('a status for an earlier GET attempt does not end the current attempt',async t=>{
+ const {held,release}=holding(),g=await rig(t,{pick:1,timeoutMs:500,attempts:2,reply:()=>held});g.bus.relay(A).deliver=false;
+ const pending=g.fetch(ARK);await until(()=>g.calls.length===1);
+ g.bus.relay(A).deliver=true;await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.key.nostrSecret,Date.now())));await sleep(20);release();
+ assert.equal((await pending).status,200,'the second, last attempt kept waiting for its own answer');assert.deepEqual(g.sentTo().slice(0,2),[[A],[B]]);
+});
+
+test('a status, then the complete answer, resolves with the answer',async t=>{
+ const {held,release}=holding(),g=await rig(t,{pick:1,reply:()=>held}),pending=g.fetch(ARK);await until(()=>g.calls.length===1);
+ await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.key.nostrSecret,Date.now())));release();
+ assert.equal((await pending).status,200);assert.equal(g.requests().length,1,'nothing more went out');
 });
 
 test('a relay\'s OK with no message, or with any JSON for one, has taken the event, and nothing throws',async t=>{
