@@ -272,6 +272,14 @@ test('open() never lifts the 4 MiB cap, for NaN or a larger maxAnswer',async t=>
  for(const maxAnswer of [Number.NaN,8<<20])assert.equal((await through(g.router,await g.seal(ARK),{maxAnswer})).status,502,String(maxAnswer));
 });
 
+test('open() takes a negative or zero maxAnswer as the 4 MiB cap',async t=>{
+ const g=await gateway(t,{reply:(_init,url)=>new Response(new Uint8Array(url.endsWith('/over')?(4<<20)+1:4<<20))});
+ for(const maxAnswer of [-1,0]){
+  assert.equal((await (await through(g.router,await g.seal(ARK),{maxAnswer})).arrayBuffer()).byteLength,4<<20,String(maxAnswer));
+  assert.equal((await through(g.router,await g.seal('https://ark.example/v1/over'),{maxAnswer})).status,502,String(maxAnswer));
+ }
+});
+
 test('open() gives its slot back on every path',async t=>{
  const at=(name:string)=>`https://ark.example/v1/${name}`;let release=()=>{};
  const g=await gateway(t,{maxInFlight:1,timeoutMs:50,reply:(init,url)=>url===at('slow')?waits(init):url===at('held')?new Promise<Response>(resolve=>{release=()=>resolve(Response.json({ok:true}));}):Response.json({ok:true})});

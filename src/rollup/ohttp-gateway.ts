@@ -57,7 +57,7 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   if(seen.has(encOf(sealed))){note('replayed');return {kind:'refused'};}
   const busy=admit();if(busy)return {kind:'busy',...busy};
   inFlight++;
-  try{const bytes=await unseal(sealed,'message/ohttp-req',signal,maxAnswer<MAX_RESPONSE?maxAnswer:MAX_RESPONSE);return bytes?{kind:'sealed',bytes}:{kind:'refused'};}
+  try{const bytes=await unseal(sealed,'message/ohttp-req',signal,Number.isFinite(maxAnswer)&&maxAnswer>0&&maxAnswer<MAX_RESPONSE?maxAnswer:MAX_RESPONSE);return bytes?{kind:'sealed',bytes}:{kind:'refused'};}
   finally{inFlight--;}
  };
  const router=express.Router();
