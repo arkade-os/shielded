@@ -6,7 +6,7 @@ import {base64} from '@scure/base';
 import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA256} from 'hpke';
 import {finalizeEvent,generateSecretKey,getPublicKey,type Event} from 'nostr-tools/pure';
 import {KeyConfig,OHTTPClient} from 'ohttp-ts';
-import {NOSTR_ANSWER_KIND,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readAnswer,requestEvent} from '../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,NOSTR_ANSWER_KIND,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readAnswer,requestEvent} from '../packages/protocol/src/nostr-carrier.ts';
 import {createOhttpGateway,type OhttpOpen} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey,type OhttpGatewayKey} from '../src/rollup/ohttp-keys.ts';
 import {nostrRelaysFromEnv,startNostrCarrier,type RelayPool} from '../src/rollup/nostr-carrier.ts';
@@ -27,10 +27,10 @@ async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),
  const carrier=startNostrCarrier({open:opener,secret:key.nostrSecret,relays,pool:bus.pool,...(now?{now}:{})});t.after(()=>carrier.close());await settle();
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(key.config)),{maxMessageSize:5<<20});
  const ask=async(url:string,{to=[A],listen=to}:{to?:string[];listen?:string[]}={})=>{
-  const sealed=await client.encapsulateRequest(new Request(url)),bytes=sealed.init.body as Uint8Array,event=requestEvent(bytes,key.nostrPublic,Date.now()),heard=new Map<string,Event[]>();
-  for(const relay of listen){heard.set(relay,[]);bus.pool.subscribeMany([relay],{kinds:[NOSTR_ANSWER_KIND],authors:[key.nostrPublic],'#e':[event.id]},{onevent:answer=>heard.get(relay)!.push(answer)});}
+  const sealed=await client.encapsulateRequest(new Request(url)),bytes=sealed.init.body as Uint8Array,event=requestEvent(bytes,key.nostrPublic,Date.now()),x=addressOf(bytes),heard=new Map<string,Event[]>();
+  for(const relay of listen){heard.set(relay,[]);bus.pool.subscribeMany([relay],{kinds:[NOSTR_ANSWER_KIND],authors:[key.nostrPublic],'#x':[x]},{onevent:answer=>heard.get(relay)!.push(answer)});}
   await Promise.all(bus.pool.publish(to,event));
-  const answer=(relay=listen[0]!)=>readAnswer(heard.get(relay)!,event.id,key.nostrPublic);
+  const answer=(relay=listen[0]!)=>readAnswer(heard.get(relay)!,x,key.nostrPublic);
   const inner=async(relay=listen[0]!)=>{const got=answer(relay);assert.ok(got?.kind==='sealed');return sealed.context.decapsulateResponse(new Response(Buffer.from(got.bytes),{headers:{'content-type':'message/ohttp-res'}}));};
   return {event,bytes,heard,answer,inner};
  };
@@ -169,12 +169,12 @@ test('a copy that arrives after the answer is ignored',async t=>{
  assert.equal(g.calls.length,1);assert.equal(sent.heard.get(B)!.length,0,'the answer went to the relay that carried the request in time');assert.deepEqual(g.statuses(),[]);
 });
 
-test('two events carrying the same sealed bytes run once, and the later one gets no answer (Plan 2c addresses answers by enc)',async t=>{
- const g=await rig(t,{relays:[A,B]}),{event,bytes}=await g.ask(ARK,{to:[]}),copy=requestEvent(bytes,g.key.nostrPublic,Date.now());
+test('two events carrying the same sealed bytes run once, and the one answer is addressed to both',async t=>{
+ const g=await rig(t,{relays:[A,B]}),{event,bytes}=await g.ask(ARK,{to:[]}),copy=requestEvent(bytes,g.key.nostrPublic,Date.now()),x=addressOf(bytes);
  await Promise.all([...g.bus.pool.publish([A],event),...g.bus.pool.publish([B],copy)]);await until(()=>g.outcomes.length===2);await quiet();
- const [winner,...others]=new Set(g.answers().map(answer=>answer.tags.find(tag=>tag[0]==='e')![1])),loser=winner===event.id?copy.id:event.id;
- assert.deepEqual([g.calls.length,others,[...g.outcomes].sort()],[1,[],['refused','sealed']]);assert.ok([event.id,copy.id].includes(winner!));
- assert.equal(readAnswer(g.answers(),winner!,g.key.nostrPublic)?.kind,'sealed');assert.equal(readAnswer(g.answers(),loser,g.key.nostrPublic),undefined);
+ assert.deepEqual([g.calls.length,[...g.outcomes].sort()],[1,['refused','sealed']]);
+ assert.ok(g.answers().length>0&&g.answers().every(answer=>answer.tags.find(tag=>tag[0]==='x')?.[1]===x));
+ assert.equal(readAnswer(g.answers(),x,g.key.nostrPublic)?.kind,'sealed');
 });
 
 test('an open() that rejects publishes nothing, not even a status, and is counted as failed',async t=>{

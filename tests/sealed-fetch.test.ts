@@ -3,7 +3,7 @@ import {test,type TestContext} from 'node:test';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {base64} from '@scure/base';
 import {finalizeEvent,generateSecretKey,type Event} from 'nostr-tools/pure';
-import {NOSTR_ANSWER_KIND,NOSTR_REQUEST_KIND,readRequest,statusEvent} from '../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,NOSTR_ANSWER_KIND,NOSTR_REQUEST_KIND,readRequest,statusEvent} from '../packages/protocol/src/nostr-carrier.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
@@ -25,9 +25,9 @@ async function rig(t:TestContext,{relays=[A,B],reply=()=>Response.json({ok:true}
  const router=createOhttpGateway({key,upstreams:[{origin:'https://ark.example',prefix:'/v1/'}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:upstream,...gateway});
  const carrier=startNostrCarrier({open:router.open,secret:key.nostrSecret,relays,pool:bus.pool});t.after(()=>carrier.close());await settle();
  const sends=t.mock.method(bus.pool,'publish'),sealedFetch=createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,relays,pool:bus.pool,random:()=>0,...options});t.after(()=>sealedFetch.close());
- const answers=()=>bus.published.filter(event=>event.kind===NOSTR_ANSWER_KIND&&event.pubkey===key.nostrPublic);
- return {key,calls,bus,fetch:sealedFetch,answers,statuses:()=>answers().filter(event=>event.tags.some(tag=>tag[0]==='status')),
-  requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND),sentTo:()=>sends.mock.calls.map(call=>call.arguments[0]),sent:()=>sends.mock.calls.map(call=>call.arguments[1])};
+ const answers=()=>bus.published.filter(event=>event.kind===NOSTR_ANSWER_KIND&&event.pubkey===key.nostrPublic),requests=()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND);
+ return {key,calls,bus,fetch:sealedFetch,answers,requests,address:()=>addressOf(readRequest(requests()[0]!,key.nostrPublic)!),statuses:()=>answers().filter(event=>event.tags.some(tag=>tag[0]==='status')),
+  sentTo:()=>sends.mock.calls.map(call=>call.arguments[0]),sent:()=>sends.mock.calls.map(call=>call.arguments[1])};
 }
 
 test('a GET goes out sealed and comes back as a Response',async t=>{
@@ -50,7 +50,7 @@ test('a large answer is reassembled, from chunks in any order, past a chunk anot
  const body=new Uint8Array(100<<10).map((_,i)=>i%251),{held,release}=holding(()=>new Response(body)),g=await rig(t,{relays:[A],reply:()=>held});
  const pending=g.fetch(ARK);await until(()=>g.calls.length===1);
  g.bus.relay(A).deliver=false;release();await until(()=>g.answers().length===4);
- const forged=finalizeEvent({kind:NOSTR_ANSWER_KIND,tags:[['e',g.requests()[0]!.id],['chunk','0','1']],content:base64.encode(new Uint8Array(64)),created_at:0},generateSecretKey());
+ const forged=finalizeEvent({kind:NOSTR_ANSWER_KIND,tags:[['x',g.address()],['chunk','0','1']],content:base64.encode(new Uint8Array(64)),created_at:0},generateSecretKey());
  Object.assign(g.bus.relay(A),{deliver:true,unfiltered:true});
  for(const event of [forged,...g.answers().reverse()])await Promise.all(g.bus.pool.publish([A],event));
  const got=Buffer.from(await (await pending).arrayBuffer());assert.ok(got.equals(body),`${got.length} bytes came back, not the ${body.length} sent`);
@@ -116,7 +116,7 @@ test('attempts run out as unavailable',async t=>{
 test('a status event cannot hold the client past its attempt deadline',{timeout:10_000},async t=>{
  let replies=0;const g=await rig(t,{relays:[A],timeoutMs:200,reply:()=>++replies===1?new Promise<Response>(()=>{}):Response.json({ok:true})});
  const started=performance.now(),pending=g.fetch(ARK);await until(()=>g.calls.length===1);
- await Promise.all(g.bus.pool.publish([A],statusEvent(503,3600,g.requests()[0]!,g.key.nostrSecret,Date.now())));
+ await Promise.all(g.bus.pool.publish([A],statusEvent(503,3600,g.address(),g.key.nostrSecret,Date.now())));
  assert.equal((await pending).status,200);assert.ok(performance.now()-started<2000,'the hour the status asked for was cut to the deadline');
 });
 

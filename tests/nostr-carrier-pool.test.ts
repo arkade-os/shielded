@@ -8,7 +8,7 @@ import {base64} from '@scure/base';
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import {matchFilters,type Filter} from 'nostr-tools/filter';
 import {finalizeEvent,generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
-import {NOSTR_REQUEST_KIND,readAnswer} from '../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,NOSTR_REQUEST_KIND,readAnswer} from '../packages/protocol/src/nostr-carrier.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
@@ -30,7 +30,7 @@ function network(){
   }
   take(event:Event){
    const request=event.kind===NOSTR_REQUEST_KIND,quirk=request?net.quirks.get(this.url):undefined;net.sent.push(event);
-   if(request&&![...this.subs.values()].flat().some(filter=>filter['#e']?.includes(event.id)))net.unheard.push(event.id);
+   if(request&&![...this.subs.values()].flat().some(filter=>filter['#x']?.includes(addressOf(base64.decode(event.content)))))net.unheard.push(event.id);
    if(quirk==='silent')return;
    if(quirk==='refuses')return this.hear(['OK',event.id,false,'blocked: not here']);
    for(const socket of net.sockets)if(socket.url===this.url)for(const [id,filters] of socket.subs)if(matchFilters(filters,event))socket.hear(['EVENT',id,event]);
@@ -66,7 +66,7 @@ test('the listener asks only for new requests, answers through the relay and lea
  await eventually(()=>net.reqs.length===1);
  assert.deepEqual(net.reqs[0]!.filters,[{kinds:[NOSTR_REQUEST_KIND],'#p':[gateway],limit:0,since:Date.UTC(2020,0,1,7,59,30)/1000}]);
  const asked=request(gateway);net.push(asked);await eventually(()=>net.sent.length===1);
- assert.deepEqual(readAnswer(net.sent,asked.id,gateway),{kind:'sealed',bytes:sealed});
+ assert.deepEqual(readAnswer(net.sent,addressOf(base64.decode(asked.content)),gateway),{kind:'sealed',bytes:sealed});
  carrier.close();await settle();assert.equal(net.sockets.size,0);
 });
 

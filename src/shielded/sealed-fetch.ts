@@ -2,7 +2,7 @@ import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA25
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import {verifyEvent,type Event} from 'nostr-tools/pure';
 import {KeyConfig,OHTTPClient} from 'ohttp-ts';
-import {NOSTR_ANSWER_KIND,NOSTR_CHUNK_BYTES,NOSTR_RELAYS,readAnswer,requestEvent} from '../../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,NOSTR_ANSWER_KIND,NOSTR_CHUNK_BYTES,NOSTR_RELAYS,readAnswer,requestEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {CarrierPool} from '../rollup/nostr-carrier.ts';
 
 const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
@@ -57,10 +57,10 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    // An answer or an abort can end the fetch while this attempt seals; it must not publish after that.
    if(done)return {kind:'refused'};
    if(closed)throw noAnswer(shut());
-   const event=requestEvent(bytes,gateway,Date.now()),to=choose(),events:Event[]=[],deadline=Date.now()+timeoutMs;
+   const event=requestEvent(bytes,gateway,Date.now()),x=addressOf(bytes),to=choose(),events:Event[]=[],deadline=Date.now()+timeoutMs;
    return new Promise(resolve=>{
-    const sub=pool.subscribeMany(to,{kinds:[NOSTR_ANSWER_KIND],authors:[gateway],'#e':[event.id]},{onevent:answer=>{
-     events.push(answer);const read=readAnswer(events,event.id,gateway);
+    const sub=pool.subscribeMany(to,{kinds:[NOSTR_ANSWER_KIND],authors:[gateway],'#x':[x]},{onevent:answer=>{
+     events.push(answer);const read=readAnswer(events,x,gateway);
      if(read?.kind==='sealed')found(()=>context.decapsulateResponse(new Response(read.bytes as Uint8Array<ArrayBuffer>,{headers:{'content-type':'message/ohttp-res'}})));
      else if(read)resolve({kind:'status',wait:Math.min(read.retryAfter*1000,deadline-Date.now())});
     }});

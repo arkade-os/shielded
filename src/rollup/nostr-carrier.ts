@@ -3,7 +3,7 @@ import type {Filter} from 'nostr-tools/filter';
 import type {SimplePool} from 'nostr-tools/pool';
 import {getPublicKey,type Event} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
-import {answerEvents,idMatches,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,answerEvents,idMatches,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest,roundedSeconds,statusEvent} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {OhttpOpen} from './ohttp-gateway.ts';
 
 export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
@@ -34,13 +34,13 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
  // A flood of shed requests would make the gateway sign and publish a status for each, so they are capped per second (a fixed window on the monotonic clock, like admit()).
  const statusRoom=()=>{const at=performance.now();if(at-statusAt>=1000){statusAt=at;statuses=0;}return ++statuses<=STATUSES_PER_SECOND;};
  // A throw can follow the upstream call, so it never becomes a status: a client reads one as "never ran" and may resend a POST.
- const run=async(event:Event,sealed:Uint8Array,targets:Set<string>)=>{
+ const run=async(sealed:Uint8Array,targets:Set<string>)=>{
   try{
    const outcome=await open(sealed,{maxAnswer});
    if(closed)return;
    if(outcome.kind==='refused'){note('refused');return;}
    if(outcome.kind==='busy'&&!statusRoom()){note('status-capped');return;}
-   const request={id:event.id,pubkey:event.pubkey},at=now(),answers=outcome.kind==='sealed'?answerEvents(outcome.bytes,request,secret,at):[statusEvent(outcome.status,outcome.retryAfter,request,secret,at)];
+   const address=addressOf(sealed),at=now(),answers=outcome.kind==='sealed'?answerEvents(outcome.bytes,address,secret,at):[statusEvent(outcome.status,outcome.retryAfter,address,secret,at)];
    note(outcome.kind==='sealed'?'answered':'busy');
    await Promise.all([...targets].map(async url=>{
     const relay=await relayOf(url).catch(()=>undefined);
@@ -56,7 +56,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   if(!sealed){note('dropped');return;}
   const targets=new Set([url]);handled.set(event.id,targets);
   if(handled.size>REMEMBERED)handled.delete(handled.keys().next().value!);
-  void run(event,sealed,targets);
+  void run(sealed,targets);
  };
  const lost=(url:string)=>{if(closed)return;note('lost');waiting.set(url,setTimeout(()=>void listen(url),RESUBSCRIBE_MS));};
  const listen=async(url:string)=>{
