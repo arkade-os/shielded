@@ -16,7 +16,7 @@ import WalletOnboarding from './WalletOnboarding.tsx';
 import NativeTorHealth from './NativeTorHealth.tsx';
 import {AppUpdateNotice} from './AppUpdates.tsx';
 import {clearNativeTransientDocument} from './wallet-recovery.ts';
-import {paymentDeepLink,type IncomingPayment} from './native-deeplink.ts';
+import {watchPaymentDeepLinks,type IncomingPayment} from './native-deeplink.ts';
 
 installNativeTransport();
 const loadWallet=()=>import('./RollupWallet');
@@ -189,15 +189,7 @@ export default function NativeWallet(){
  };
  const toggleTor=()=>{if(transition.current||creating.current||manualLock.current)return;if(selectedMode.current==='direct')void switchMode('tor');else setConfirmDirect(true);};
  useEffect(()=>{
-  let live=true,unlisten:(()=>void)|undefined;
-  const receive=(urls:string[]|null)=>{
-   if(!live)return;
-   const uri=paymentDeepLink(urls);
-   if(uri)setPaymentRequest({id:++paymentRequestRevision.current,uri});
-  };
-  void onOpenUrl(receive).then(remove=>{if(live)unlisten=remove;else remove();}).catch(()=>{});
-  void getCurrent().then(receive).catch(()=>{});
-  return()=>{live=false;unlisten?.();};
+  return watchPaymentDeepLinks({onOpenUrl,getCurrent},uri=>setPaymentRequest({id:++paymentRequestRevision.current,uri}));
  },[]);
  useEffect(()=>{
   let live=true;

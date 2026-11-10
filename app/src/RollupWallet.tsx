@@ -15,7 +15,7 @@ import {RECOVERY_LINE} from '../../src/shielded/epoch-recovery.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
+import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import type {IncomingPayment} from './native-deeplink.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
@@ -583,8 +583,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{
   if(!paymentRequest||handledPaymentRequest.current===paymentRequest.id||!ready||!viewActive||suspended)return;
   handledPaymentRequest.current=paymentRequest.id;
-  fill(paymentRequest.uri,true);
-  if(docked)openPanel('send');else selectTab('send');
+  openPaymentRequest({docked,openPanel:()=>openPanel('send'),selectTab:()=>selectTab('send'),fill:()=>fill(paymentRequest.uri,true)});
   onPaymentRequestHandled?.(paymentRequest.id);
  },[paymentRequest?.id,ready,viewActive,suspended,docked]);
  const navigation=useRef({tab,sheetOpen,selectTab,openPanel});navigation.current={tab,sheetOpen,selectTab,openPanel};
