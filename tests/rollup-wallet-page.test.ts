@@ -7,7 +7,7 @@ import {marketOf,resolveRoute} from '@arkade-os/swap/advanced';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -209,6 +209,9 @@ test('a scanned or pasted payment code becomes a destination, and a payment link
  assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.00001&ark=tark1abc&lightning='+invoice),{to:'tark1abc',amount:1000});
  assert.deepEqual(payTarget('BITCOIN:BC1QEXAMPLE?AMOUNT=1.5&LIGHTNING='+invoice.toUpperCase()),{to:invoice,amount:150_000_000});
  assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.000000001'),{to:'bc1qexample'});
+ assert.deepEqual(payTarget('bitcoin:bc1qvisible?address=bc1qhidden'),{to:'bc1qvisible'});
+ assert.deepEqual(payTarget('arkade:tark1abc?amount=0.00001'),{to:'tark1abc',amount:1000});
+ assert.deepEqual(payTarget('ARKADE://TARK1ABC?ADDRESS=TARK1ABC&AMOUNT=1.5'),{to:'tark1abc',amount:150_000_000});
  assert.deepEqual(payTarget('SHROL21ABC'),{to:'shrol21abc'});
  assert.deepEqual(payTarget('Satoshi@example.com'),{to:'Satoshi@example.com'});
  assert.throws(()=>payTarget('bitcoin:bc1qexample?amount=0.0001&req-pop=callback%3A'),/req-pop/);
@@ -216,6 +219,16 @@ test('a scanned or pasted payment code becomes a destination, and a payment link
  assert.equal(invoiceQr(invoice),'LIGHTNING:'+invoice.toUpperCase());
  assert.throws(()=>payTarget('bitcoin:?amount=0.001'),/no destination/);
  assert.deepEqual(payTarget('bitcoin:?lightning=lnbc1x=y'),{to:'lnbc1x=y'});
+});
+
+test('a payment request opens Send before it fills the destination',()=>{
+ const calls:string[]=[];
+ const callbacks={docked:true,openPanel:()=>calls.push('panel'),selectTab:()=>calls.push('tab'),fill:()=>calls.push('fill')};
+ openPaymentRequest(callbacks);
+ assert.deepEqual(calls,['panel','fill']);
+ calls.length=0;
+ openPaymentRequest({...callbacks,docked:false});
+ assert.deepEqual(calls,['tab','fill']);
 });
 
 test('a pool whose reserves are full refuses another listing instead of swallowing it',()=>{

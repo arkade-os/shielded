@@ -28,6 +28,10 @@ export function arkAssetHoldings(coins:readonly ArkCoin[],payout:(coin:ArkCoin)=
 export const isInvoice=(raw:string)=>/^(lightning:)?ln(bc|tb|bcrt)/i.test(raw.trim());
 /** An invoice that pins its amount refuses a second one, even an equal one; the amount sits before bech32's last `1`. */
 export const invoiceCarriesAmount=(raw:string)=>{const t=raw.trim().replace(/^lightning:/i,'');return isInvoice(t)&&/\d/.test(t.slice(0,t.lastIndexOf('1')));};
+/** Open Send before filling, so selecting its view cannot clear the destination on the way in. */
+export function openPaymentRequest({docked,openPanel,selectTab,fill}:{docked:boolean;openPanel:()=>void;selectTab:()=>void;fill:()=>void}){
+ if(docked)openPanel();else selectTab();fill();
+}
 /** Upper case keeps the whole payload in QR's alphanumeric mode, which is denser than byte mode. */
 export const invoiceQr=(bolt11:string)=>'LIGHTNING:'+bolt11.toUpperCase();
 /** A scanned or pasted payment code as the send form takes it: the destination, and the amount in sats when the code names one. */
@@ -35,11 +39,13 @@ export function payTarget(raw:string):{to:string;amount?:number}{
  // QR codes often carry bech32 in capitals (alphanumeric mode is denser); bech32 is case-insensitive.
  const text=raw.trim(),plain=(s:string)=>/^[A-Z0-9]+$/.test(s)?s.toLowerCase():s,unescape=(s:string)=>{try{return decodeURIComponent(s);}catch{return s;}};
  if(/^lightning:/i.test(text))return {to:plain(text.slice(10))};
- if(!/^bitcoin:/i.test(text))return {to:plain(text)};
- const [path='',query='']=text.slice(8).split('?'),legs=new Map(query.split('&').map(pair=>{const at=pair.indexOf('=');return [(at<0?pair:pair.slice(0,at)).toLowerCase(),unescape(at<0?'':pair.slice(at+1))];}));
+ const scheme=/^(bitcoin|arkade):/i.exec(text)?.[1]?.toLowerCase();
+ if(!scheme)return {to:plain(text)};
+ const [rawPath='',query='']=text.slice(scheme.length+1).split('?'),path=scheme==='arkade'?rawPath.replace(/^\/+/,''):rawPath;
+ const legs=new Map(query.split('&').map(pair=>{const at=pair.indexOf('=');return [(at<0?pair:pair.slice(0,at)).toLowerCase(),unescape(at<0?'':pair.slice(at+1))];}));
  const required=[...legs.keys()].filter(key=>key.startsWith('req-'));
  if(required.length)throw new Error(`This payment link requires ${required.join(', ')}, which this wallet does not support.`);
- const to=legs.get('ark')||legs.get('shielded')||legs.get('lightning')||path;
+ const to=legs.get('ark')||(scheme==='arkade'?legs.get('address'):undefined)||legs.get('shielded')||legs.get('lightning')||path;
  if(!to)throw new Error('This payment link names no destination.');
  const btc=legs.get('amount'),[whole='0',fraction='']=btc?.split('.')??[];
  return {to:plain(to),...(btc&&/^\d+(\.\d{1,8})?$/.test(btc)?{amount:Number(whole)*1e8+Number(fraction.padEnd(8,'0'))}:{})};

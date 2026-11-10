@@ -36,9 +36,18 @@ test('only the local main window receives bounded native commands', () => {
   assert.equal(capability.remote, undefined);
   assert.ok(capability.permissions.includes('shielded-platform:allow-secret-get'));
   assert.ok(capability.permissions.includes('shielded-platform:allow-secret-set'));
+  assert.ok(capability.permissions.includes('deep-link:default'));
   const opener = capability.permissions.filter(permission => String(permission.identifier ?? permission).startsWith('opener:'));
   assert.deepEqual(opener, [{ identifier: 'opener:allow-open-url', allow: [{ url: 'https://shielded.mutinynet.arkade.sh/#download' }] }]);
   assert.ok(!capability.permissions.some(permission => typeof permission === 'string' && /shell|http:|fs:/.test(permission)));
+});
+
+test('native hosts register only the supported payment schemes', () => {
+  const config = json('tauri.conf.json');
+  assert.deepEqual(config.plugins['deep-link'], {
+    desktop: { schemes: ['bitcoin', 'lightning', 'arkade'] },
+    mobile: [{ scheme: ['bitcoin', 'lightning', 'arkade'], appLink: false }],
+  });
 });
 
 test('build commands reject incompatible hosts and forward Tauri arguments without a shell', () => {

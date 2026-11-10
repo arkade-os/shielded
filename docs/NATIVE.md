@@ -14,6 +14,8 @@ Open [Download Shielded](https://shielded.mutinynet.arkade.sh/#download) and cho
 
 When this build detects a newer native release, **Update available** opens the download page directly in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can point this action at their platform listing or update flow.
 
+The desktop and mobile apps register the standard `bitcoin:`, `lightning:` and `arkade:` URI schemes. Opening a payment link fills the Send form with its destination and amount, preserving required-parameter checks, but it never sends without the normal quote and confirmation steps. Links opened before the private wallet is ready remain queued until it opens.
+
 Public packages are versioned GitHub release assets. Their links point to immutable build tags, `native-mutinynet-<commit12>-run<runId>-attempt<attempt>`. The repository's `native-mutinynet` Git branch stores the [public channel index](https://raw.githubusercontent.com/arkade-os/shielded/native-mutinynet/latest.json) in `latest.json`, selecting the complete build offered by the website. Publication atomically updates that branch, so readers receive the previous or new complete index without an unavailable gap. The repository's generic latest release can contain proving keys and is not the native download source. Compare the downloaded file's SHA-256 with the value displayed in its install guide. A matching checksum checks release consistency, not a publisher signature.
 
 ### Windows x64

@@ -18,6 +18,7 @@ pub fn run() {
         }
     }));
     builder
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shielded_platform::init())
         .invoke_handler(tauri::generate_handler![
@@ -34,6 +35,13 @@ pub fn run() {
             transport::native_cancel
         ])
         .setup(|app| {
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("Could not register payment URI handlers: {error}");
+                }
+            }
             let transport = transport::PrivacyTransport::new(app.path().app_data_dir()?.join("tor"))
                 .map_err(std::io::Error::other)?;
             app.manage(transport.clone());
