@@ -244,6 +244,15 @@ test('byte eviction passes over a running request, so a late copy from a new rel
  assert.deepEqual([g.outcomes,running.answer(B)?.kind],[['sealed','sealed','sealed'],'sealed']);
 });
 
+test('an answer cached for a long-running request outlives older cached answers, so a late copy still hears it',async t=>{
+ let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B],cacheBytes:3000,reply:()=>++replies===1?held:Response.json({ok:true})});
+ const slow=await g.ask(ARK,{to:[A],listen:[A,B]});await until(()=>g.calls.length===1);
+ for(let i=0;i<2;i++){const done=await g.ask(ARK);await until(()=>done.answer()?.kind==='sealed');}
+ release();await until(()=>slow.answer(A)?.kind==='sealed');
+ await Promise.all(g.bus.pool.publish([B],slow.event));await until(()=>slow.answer(B)?.kind==='sealed');
+ assert.deepEqual(g.outcomes,['sealed','sealed','sealed'],'the late copy was answered from the cache, not run again');
+});
+
 test('an open() that rejects publishes nothing, not even a status, and is counted as failed',async t=>{
  const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
  let clock=0,calls=0;const g=await rig(t,{now:()=>clock,open:async()=>{calls++;throw new Error('boom');}});

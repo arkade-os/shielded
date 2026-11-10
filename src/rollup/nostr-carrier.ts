@@ -20,7 +20,7 @@ const ANSWER_BYTES=63*4096-8-16_396,REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESU
 export class CappedSocket extends WebSocket {
  // nostr-tools clears onerror before it closes a socket, and ws throws an 'error' nobody hears, which a relay can provoke after we close it.
  constructor(url:string){super(url,{maxPayload:1<<20,handshakeTimeout:10_000});this.on('error',()=>{});}
- send(data:string){if(this.bufferedAmount<=4<<20)super.send(data);}
+ send(...args:unknown[]){if(this.bufferedAmount<=4<<20)super.send(...args);}
 }
 
 export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
@@ -65,7 +65,7 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
     note('busy');await publish([statusEvent(outcome.status,outcome.retryAfter,x,secret,now())],entry.targets);return;
    }
    const at=now(),answers=answerEvents(outcome.bytes,x,secret,at);
-   if(handled.get(x)===entry){Object.assign(entry,{answers,at,bytes:answers.reduce((sum,answer)=>sum+answer.content.length+512,0)});cached+=entry.bytes;evict();}
+   if(handled.get(x)===entry){handled.delete(x);handled.set(x,Object.assign(entry,{answers,at,bytes:answers.reduce((sum,answer)=>sum+answer.content.length+512,0)}));cached+=entry.bytes;evict();}
    note('answered');charge(answers.length*entry.targets.size);await publish(answers,entry.targets);
   }catch{forget();note('failed');}
  };
