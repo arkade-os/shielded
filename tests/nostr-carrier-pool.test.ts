@@ -196,7 +196,7 @@ test('a relay closed for not echoing the canary cannot crash the listener with a
  const again=once(server,'req');t.mock.timers.tick(30_000);await again;
 });
 
-test('the canary goes to, and a deaf close shuts, the relay holding the subscription after the pool has dropped it from its map',async t=>{
+test('after a relay dies, A resubscribes on the connection an answer opened, which carries the canary and is replaced when deaf',async t=>{
  t.mock.timers.enable({apis:['setTimeout','setInterval']});
  const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
  const {net,pool}=network(),secret=generateSecretKey(),gateway=getPublicKey(secret);let clock=0,at=0,opens=0,release=()=>{};
@@ -204,14 +204,23 @@ test('the canary goes to, and a deaf close shuts, the relay holding the subscrip
  const carrier=startNostrCarrier({open:async()=>{if(++opens===1)await held;return {kind:'sealed',bytes:new Uint8Array(100)};},secret,relays:[A],pool,now:()=>clock});t.after(()=>carrier.close());
  const to=async(second:number)=>{for(;at<second*1000;at+=1000){t.mock.timers.tick(1000);await settle();}};
  await eventually(()=>net.reqs.length===1);net.push(request(gateway));await eventually(()=>opens===1);
- // A dead relay's idle close (20 s) drops whichever relay then holds its URL: r1 dies at 1 s, an answer opens r2 at 15 s, which r1 drops at 21 s; A resubscribes on r3 at 31 s, which r2 drops at 35 s; the next answer opens r4, idle-closed at 56 s.
  await to(1);[...net.sockets][0]!.hangUp(true);
  await to(15);release();await eventually(()=>net.sent.length===1);
  await to(36);net.push(request(gateway));await eventually(()=>net.sent.length===2);
+ assert.equal(net.sockets.size,1,'no late idle close of the dead relay dropped the answer\'s connection, so A resubscribed on it and the next answer reused it');
  clock=60_000;await to(76);
- assert.deepEqual([net.reqs.length,lines],[2,[]],'r3 carried the 60 s canary and echoed it');
+ assert.deepEqual([net.reqs.length,lines],[2,[]],'that connection carried the 60 s canary and echoed it');
  net.quirks.set(A,'silent');await to(136);
- assert.equal(net.reqs.length,3,'r3 stopped echoing, so it was closed and A subscribed again');
+ assert.equal(net.reqs.length,3,'it stopped echoing, so it was closed and A subscribed again');
+});
+
+test('a relay whose socket died is closed at once, so close() leaves it no idle timer',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const {net,pool}=network(),carrier=startNostrCarrier({open:async()=>({kind:'refused'}),secret:generateSecretKey(),relays:[A],pool});t.after(()=>carrier.close());
+ await eventually(()=>net.reqs.length===1);
+ const dead=(pool as unknown as {relays:Map<string,{idleTimeoutHandle:unknown}>}).relays.get(A)!;
+ [...net.sockets][0]!.hangUp(true);carrier.close();
+ assert.equal(dead.idleTimeoutHandle,undefined);
 });
 
 test('a socket with more than 4 MiB unsent drops further sends',async t=>{

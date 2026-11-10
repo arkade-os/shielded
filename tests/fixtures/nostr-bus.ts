@@ -53,6 +53,7 @@ export function createNostrBus(){
    const link=links.get(url)!,stale=()=>new Error(`Tried to send message on a closed connection to ${url}.`);
    return {
     onnotice:()=>{},
+    get connected(){return link.alive;},
     subscribe:(filters,params)=>{
      const sub:Sub={url,filters,onevent:params.onevent,onclose:params.onclose};
      // The library's fire() never awaits its send, so on a dead link subscribe returns, no onclose follows, and the throw is an unhandled rejection.

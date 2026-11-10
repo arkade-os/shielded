@@ -9,7 +9,7 @@ import type {OhttpOpen} from './ohttp-gateway.ts';
 
 export type CarrierPool=Pick<SimplePool,'subscribeMany'|'publish'|'destroy'>;
 // The listener works a relay at a time: subscribeMany remembers every event id it sees, and each id pins the whole relay message it was cut from.
-type Relay={onnotice:(message:string)=>void;subscribe(filters:Filter[],params:{onevent:(event:Event)=>void;onclose:(reason:string)=>void}):{close(reason?:string):void};publish(event:Event):Promise<string>;close():void};
+type Relay={onnotice:(message:string)=>void;subscribe(filters:Filter[],params:{onevent:(event:Event)=>void;onclose:(reason:string)=>void}):{close(reason?:string):void};publish(event:Event):Promise<string>;close():void;connected:boolean};
 export type RelayPool={ensureRelay(url:string):Promise<Relay>;destroy():void};
 
 // The most body whose sealed answer fits 8 chunks: 63 Padmé steps of 4 KiB (a 64th plus 32 bytes of nonce and tag passes 256 KiB), less 8 bytes of BHTTP framing and 16 396 for the copied headers at their largest, as Node's fetch refuses 16 KiB of header names and values.
@@ -82,7 +82,8 @@ export function startNostrCarrier({open,secret,relays,pool=new AbstractSimplePoo
   if(entry.answers&&now()-entry.at!<REPUBLISH_MS){charge(entry.answers.length);void publish(entry.answers,[url]);note('republished');}
   else note('duplicate');
  };
- const lost=(url:string)=>{if(closed)return;note('lost');live.delete(url);clearTimeout(echoes.get(url));waiting.set(url,setTimeout(()=>void listen(url),RESUBSCRIBE_MS));};
+ // A relay whose socket died still holds the idle close nostr-tools set as its subscription closed, which would drop the URL's next relay from the pool's map.
+ const lost=(url:string)=>{if(closed)return;note('lost');const held=live.get(url)?.relay;live.delete(url);if(held&&!held.connected)held.close();clearTimeout(echoes.get(url));waiting.set(url,setTimeout(()=>void listen(url),RESUBSCRIBE_MS));};
  const listen=async(url:string)=>{
   waiting.delete(url);
   try{
