@@ -12,6 +12,8 @@ The native build targets Windows, Linux, macOS, Android and iOS. Source support 
 
 Open [Download Shielded](https://shielded.mutinynet.arkade.sh/#download) and choose your platform. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If release information cannot be checked, the page offers **Retry downloads**. The install guides and this source build guide remain available while checking or retrying.
 
+When this build detects a newer native release, **Update available** opens the download page directly in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can point this action at their platform listing or update flow.
+
 Public packages are versioned GitHub release assets. Their links point to immutable build tags, `native-mutinynet-<commit12>-run<runId>-attempt<attempt>`. The repository's `native-mutinynet` Git branch stores the [public channel index](https://raw.githubusercontent.com/arkade-os/shielded/native-mutinynet/latest.json) in `latest.json`, selecting the complete build offered by the website. Publication atomically updates that branch, so readers receive the previous or new complete index without an unavailable gap. The repository's generic latest release can contain proving keys and is not the native download source. Compare the downloaded file's SHA-256 with the value displayed in its install guide. A matching checksum checks release consistency, not a publisher signature.
 
 ### Windows x64

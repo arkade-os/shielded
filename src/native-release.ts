@@ -25,6 +25,11 @@ export interface NativeRelease {
   environment?: NativeBuildEnvironment;
   packages: NativeReleasePackage[];
 }
+
+/** Store-distributed builds can resolve their platform listing or update API here. */
+export function nativeUpdateUrl(){
+ return `${NATIVE_RELEASE_ORIGIN}/#download`;
+}
 export interface NativeBuildEnvironment {
   node: string;
   rust: string;
