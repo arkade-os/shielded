@@ -19,7 +19,7 @@ const ANSWER_BYTES=63*4096-8-16_396,REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESU
 // ponytail: ws's handshakeTimeout only fails an upgrade that stalls, so a relay trickling its reply holds the socket open; add a hard deadline if one does.
 export class CappedSocket extends WebSocket {
  // nostr-tools clears onerror before it closes a socket, and ws throws an 'error' nobody hears, which a relay can provoke after we close it.
- constructor(url:string){super(url,{maxPayload:1<<20,handshakeTimeout:10_000});this.on('error',()=>{});}
+ constructor(url:string){super(url,{maxPayload:1<<20,handshakeTimeout:10_000,allowSynchronousEvents:false});this.on('error',()=>{});}
  send(...args:unknown[]){if(this.bufferedAmount<=4<<20||!String(args[0]).startsWith('["EVENT"'))super.send(...args);}
 }
 

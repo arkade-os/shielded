@@ -11,7 +11,7 @@ import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import {matchFilters,type Filter} from 'nostr-tools/filter';
 import {finalizeEvent,generateSecretKey,getPublicKey,verifyEvent,type Event} from 'nostr-tools/pure';
 import WebSocket,{WebSocketServer} from 'ws';
-import {addressOf,NOSTR_REQUEST_KIND,readAnswer} from '../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,NOSTR_REQUEST_KIND,readAnswer,requestEvent} from '../packages/protocol/src/nostr-carrier.ts';
 import {CappedSocket,startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
@@ -240,4 +240,16 @@ test('a socket with more than 4 MiB unsent drops further events, never a REQ or 
  for(const [unsent,type,id] of [[4<<20,'EVENT','at'],[(4<<20)+1,'EVENT','over'],[(4<<20)+1,'REQ','req'],[(4<<20)+1,'CLOSE','close'],[0,'EVENT','after']] as const){Object.defineProperty(socket,'bufferedAmount',{value:unsent,configurable:true});socket.send(JSON.stringify([type,id]));}
  await until(()=>heard.includes('after'));
  assert.deepEqual(heard,['at','req','close','after']);
+});
+
+test('two copies of a shed request that arrive in one read each get a status naming their own event',async t=>{
+ const {url,server}=await relay(t),first=once(server,'req'),secret=generateSecretKey(),gateway=getPublicKey(secret),statuses:Event[]=[];
+ const carrier=startNostrCarrier({open:async()=>({kind:'busy',status:503,retryAfter:1}),secret,relays:[url]});t.after(()=>carrier.close());
+ const [socket,id]=await first,sealed=randomBytes(64),later=randomBytes(64),copies=[requestEvent(sealed,gateway,Date.now()),requestEvent(sealed,gateway,Date.now())];
+ const named=(bytes:Uint8Array)=>statuses.flatMap(event=>{const read=readAnswer([event],addressOf(bytes),gateway);return read?.kind==='status'?[read.request]:[];});
+ const frame=(event:Event)=>{const text=Buffer.from(JSON.stringify(['EVENT',id,event])),n=text.length;return Buffer.concat([Buffer.from(n<126?[0x81,n]:[0x81,126,n>>8,n&255]),text]);};
+ socket.on('message',(data:Buffer)=>{const [type,event]=JSON.parse(String(data));if(type==='EVENT'){statuses.push(event);socket.send(JSON.stringify(['OK',event.id,true,'']));}});
+ socket._socket.write(Buffer.concat([...copies,requestEvent(later,gateway,Date.now())].map(frame)));
+ await until(()=>named(later).length===1);
+ assert.deepEqual(named(sealed),copies.map(event=>event.id));
 });
