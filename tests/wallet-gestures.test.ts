@@ -147,3 +147,15 @@ test('pull to refresh ignores controls, horizontal movement and scrolled content
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(refreshes,1);dispose();
 });
+
+test('disposing a pending pull clears its state and an old completion cannot replace a new binding',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),states:boolean[]=[];
+ let finishOld=()=>{},finishNew=()=>{};
+ const first=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finishOld=resolve;}),{distance:60,onState:state=>states.push(state.refreshing)});
+ pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);pointer(doc,'pointerup',0,70,120);
+ assert.equal(states.at(-1),true);first();assert.equal(states.at(-1),false);
+ const second=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finishNew=resolve;}),{distance:60,onState:state=>states.push(state.refreshing)});
+ pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',0,70,300);pointer(doc,'pointerup',0,70,320);
+ assert.equal(states.at(-1),true);finishOld();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);
+ finishNew();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),false);second();
+});

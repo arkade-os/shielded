@@ -97,7 +97,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const pageNode=useRef<HTMLDivElement>(null);
  const panelNode=useRef<HTMLElement>(null),panelGrip=useRef<HTMLDivElement>(null),dockNode=useRef<HTMLElement>(null),mainTabsNode=useRef<HTMLElement>(null),panelTabsNode=useRef<HTMLDivElement>(null),recipientNode=useRef<HTMLInputElement>(null),handledPaymentRequest=useRef<number|undefined>(undefined);
  const dockLens=useRef<HTMLSpanElement>(null),mainLens=useRef<HTMLSpanElement>(null),panelLens=useRef<HTMLSpanElement>(null);
- const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
+ const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[pullSyncError,setPullSyncError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnAddress,setLnAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[payoutWatchError,setPayoutWatchError]=useState(''),[unifiedStage,setUnifiedStage]=useState('Reading your saved receiver'),[unifiedStalled,setUnifiedStalled]=useState(false),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
  const [pageVisible,setPageVisible]=useState(()=>!document.hidden);
@@ -553,8 +553,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const page=pageNode.current;
   if(!page||!wallet||!ready||!viewActive||suspended)return;
   return bindPullToRefresh(page,async()=>{
+   if(mounted.current)setPullSyncError('');
    try{await wallet.sync();}
-   catch(error){if(mounted.current)setPoolError(errorText(error));}
+   catch(error){if(mounted.current)setPullSyncError(errorText(error));}
    await refreshRef.current?.request();
   },{onState:setPullRefresh});
  },[wallet,ready,viewActive,suspended]);
@@ -690,6 +691,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   {wallet&&feePaused&&<section className="stock-warning" role="alert"><strong>{PAUSED_TITLE}</strong><span>{depositFeeBanner(feePaused,wallet.acceptedDepositFee)}</span><p><button type="button" className="stock-ghost stock-mini" onClick={()=>acceptFee(wallet,feePaused)}>{ACCEPT_FEE}</button></p></section>}
   {feeConfirmed&&!feePaused&&<section className="stock-message" role="status" tabIndex={-1} ref={viewActive&&!suspended?focusOnMount:undefined}>New fee accepted.</section>}
    {ready&&poolError&&<p className="stock-blocked">{poolError}</p>}
+   {ready&&pullSyncError&&<p className="stock-blocked" role="alert">{pullSyncError}</p>}
    {ready&&feeNotice&&<p className="stock-blocked" role="alert">{feeNotice}</p>}
    {ready&&startupError&&<p className="stock-blocked">{startupError}</p>}
    {ready&&refreshError&&<p className="stock-blocked">{refreshError}</p>}

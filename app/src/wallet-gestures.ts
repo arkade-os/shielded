@@ -156,7 +156,9 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
  doc.addEventListener('pointermove',move,{passive:false});doc.addEventListener('pointerup',up);doc.addEventListener('pointercancel',cancel);
  doc.addEventListener('visibilitychange',hidden);doc.defaultView?.addEventListener('blur',cancel);
  return()=>{
-  if(disposed)return;disposed=true;suppressUntil=0;if(pointer)reset(pointer.id);
+  if(disposed)return;disposed=true;refreshing=false;suppressUntil=0;if(pointer)reset(pointer.id);
+  surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);flag('is-pull-refreshing',false);
+  options.onState?.({distance:0,ready:false,refreshing:false});
   surface.removeEventListener('pointerdown',down);surface.removeEventListener('lostpointercapture',cancel);surface.removeEventListener('click',click,true);
   doc.removeEventListener('pointermove',move);doc.removeEventListener('pointerup',up);doc.removeEventListener('pointercancel',cancel);
   doc.removeEventListener('visibilitychange',hidden);doc.defaultView?.removeEventListener('blur',cancel);
