@@ -54,6 +54,7 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
  // No upload and no late reader here, so the upstream deadline alone bounds the slot.
  const open:OhttpOpen=async(sealed,{maxAnswer=MAX_RESPONSE,signal=new AbortController().signal}={})=>{
   // seen holds only requests that opened, so nothing can plant a value: a copy is refused before a full gateway sheds it, which a client reads as "never ran".
+  // The HTTP route admits before its body is read, so a replay there spends a rate slot first.
   if(seen.has(encOf(sealed))){note('replayed');return {kind:'refused'};}
   const busy=admit();if(busy)return {kind:'busy',...busy};
   inFlight++;
