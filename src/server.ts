@@ -9,6 +9,7 @@ import express from 'express';
 import {dropLegacyData} from './legacy.ts';
 import {createRollupRouter} from './rollup/http.ts';
 import {DEFAULT_VM_BINARY} from './rollup/leaves.ts';
+import {nostrRelaysFromEnv,startNostrCarrier} from './rollup/nostr-carrier.ts';
 import {createOhttpGateway} from './rollup/ohttp-gateway.ts';
 import {loadOhttpKey} from './rollup/ohttp-keys.ts';
 import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
@@ -25,24 +26,27 @@ const app=express();app.disable('x-powered-by');app.set('trust proxy','loopback,
 // Health stays green while waiting for a previous instance's volume lock, or the rollout would never finish.
 app.get('/health',(_req,res)=>{const phase=service?.status().phase??'starting';res.status(phase==='blocked'?503:200).json({ok:phase!=='blocked',ready:phase==='ready',phase});});
 app.get('/readyz',(_req,res)=>res.status(service?.ready()?200:503).json({ready:!!service?.ready()}));
-// Off without a key; a malformed key, rate or upstream, or a PORT or HOST the gateway cannot reach the pool through, stops startup instead. The token is minted per process and never logged: it is the loopback header the pool's per-address limit exempts.
-const ohttpKey=await loadOhttpKey(process.env.SHIELDED_OHTTP_KEY),gatewayToken=ohttpKey?randomBytes(32).toString('hex'):undefined;
+// Off without a key; a malformed key, rate, upstream or relay list, or a PORT or HOST the gateway cannot reach the pool through, stops startup instead. The token is minted per process and never logged: it is the loopback header the pool's per-address limit exempts.
+const ohttpKey=await loadOhttpKey(process.env.SHIELDED_OHTTP_KEY),gatewayToken=ohttpKey?randomBytes(32).toString('hex'):undefined,ohttpHttp=process.env.SHIELDED_OHTTP_HTTP==='1';
+let gateway:ReturnType<typeof createOhttpGateway>|undefined,carrier:{close():void}|undefined,nostrRelays:readonly string[]=[];
 if(ohttpKey&&gatewayToken){
  if(!port)throw new Error('PORT must be a fixed port number while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
  if(!['0.0.0.0','127.0.0.1'].includes(host))throw new Error('HOST must be 0.0.0.0 or 127.0.0.1 while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
  // arkd and the indexer are bare origins, as the pool requires, so their prefixes are fixed; Esplora keeps the path of its base URL.
  const ark=parseStockEndpoint(process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL,'Arkade URL'),indexer=parseStockEndpoint(process.env.SHIELDED_INDEXER_URL||ark,'indexer URL'),esplora=new URL(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet);
- app.use('/api/rollup',createOhttpGateway({key:ohttpKey,gatewayToken,poolOrigin:process.env.SHIELDED_PUBLIC_ORIGIN||'https://shielded.mutinynet.arkade.sh',poolLoopback:`http://127.0.0.1:${port}`,
+ nostrRelays=nostrRelaysFromEnv(process.env.SHIELDED_NOSTR_RELAYS);
+ gateway=createOhttpGateway({key:ohttpKey,gatewayToken,http:ohttpHttp,poolOrigin:process.env.SHIELDED_PUBLIC_ORIGIN||'https://shielded.mutinynet.arkade.sh',poolLoopback:`http://127.0.0.1:${port}`,
   upstreams:[{origin:ark,prefix:'/v1/'},{origin:indexer,prefix:'/v1/indexer/'},{origin:esplora.origin,prefix:esplora.pathname.replace(/\/?$/,'/')}],
-  ...(process.env.SHIELDED_OHTTP_RATE?{rate:Number(process.env.SHIELDED_OHTTP_RATE)}:{})}));
+  ...(process.env.SHIELDED_OHTTP_RATE?{rate:Number(process.env.SHIELDED_OHTTP_RATE)}:{})});
+ app.use('/api/rollup',gateway);
 }
-console.log(ohttpKey?`Oblivious HTTP gateway on (key id ${ohttpKey.keyId}).`:'Oblivious HTTP gateway off.');
+console.log(ohttpKey?`Oblivious HTTP gateway on (key id ${ohttpKey.keyId}, Nostr ${ohttpKey.nostrPublic.slice(0,8)}…, ${nostrRelays.length} relays, HTTP route ${ohttpHttp?'on':'off'}).`:'Oblivious HTTP gateway off.');
 app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean),gatewayToken}));
 for(const old of ['/stock-wallet','/rollup','/lab'])app.get(old,(_req,res)=>res.redirect(301,'/wallet'));
 serveWeb(app,web);
 const listener=app.listen(port,host,()=>console.log(`Shielded listening on port ${port}.`));
 
-const stop=async()=>{if(stopping)return;stopping=true;if(timer)clearTimeout(timer);service?.close();listener.close();await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();process.exit(0);};
+const stop=async()=>{if(stopping)return;stopping=true;if(timer)clearTimeout(timer);carrier?.close();service?.close();listener.close();await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();process.exit(0);};
 process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
 
 service=await openRollupService({directory:join(data,'rollup4'),epochLen:process.env.SHIELDED_ROLLUP_EPOCH_LEN??128,circuits:resolve(process.env.SHIELDED_ROLLUP_CIRCUITS??join(root,'rollup-circuits')),setupTool:join(root,'tools','rollup-setup.mjs'),
@@ -51,8 +55,13 @@ service=await openRollupService({directory:join(data,'rollup4'),epochLen:process
  endpoints:{...(process.env.SHIELDED_ARK_URL?{arkUrl:process.env.SHIELDED_ARK_URL}:{}),...(process.env.SHIELDED_EMULATOR_URL?{emulatorUrl:process.env.SHIELDED_EMULATOR_URL}:{}),...(process.env.SHIELDED_INDEXER_URL?{indexerUrl:process.env.SHIELDED_INDEXER_URL}:{})}});
 const step=async()=>{
  await service!.step();
- // v1 data goes only once this instance owns the pool, so the previous instance has stopped using it.
- if(service!.ready()){try{const removed=dropLegacyData(data);if(removed.length)console.log('Removed retired v1 data: '+removed.join(', '));}catch(error){console.error('Could not remove retired v1 data: '+(error as Error).message);}return;}
+ if(service!.ready()){
+  // Listening starts only now, so a request is never opened while another instance still owns the pool.
+  if(gateway&&ohttpKey&&!carrier&&!stopping){carrier=startNostrCarrier({open:gateway.open,secret:ohttpKey.nostrSecret,relays:nostrRelays});console.log(`Nostr carrier listening on ${nostrRelays.length} relays.`);}
+  // v1 data goes only once this instance owns the pool, so the previous instance has stopped using it.
+  try{const removed=dropLegacyData(data);if(removed.length)console.log('Removed retired v1 data: '+removed.join(', '));}catch(error){console.error('Could not remove retired v1 data: '+(error as Error).message);}
+  return;
+ }
  if(!stopping)timer=setTimeout(step,15000);
 };
 void step();

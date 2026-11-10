@@ -59,12 +59,20 @@ test('a client that reads the published config exchanges a request and a 4 MiB r
  assert.deepEqual(new Uint8Array(await response.arrayBuffer()),body);
 });
 
-test('the keygen tool writes the key only to a new private file and prints just the id and config',async(t)=>{
+test('the Nostr key is derived from the OHTTP key',async()=>{
+ const key=(await loadOhttpKey('7:'+Buffer.alloc(32,1).toString('base64url')))!;
+ assert.equal(Buffer.from(key.nostrSecret).toString('hex'),'0e4cd930c29efd7569b9c1573ac7cb4eefe3af331f1d536cc9c45528fee69828');
+ assert.equal(key.nostrPublic,'06f039a86ac2ca05938d277ec5efb6aab8620431699837354e8e069b337668d1');
+ const made=await generateOhttpKey();assert.equal(made.nostrPublic,(await loadOhttpKey(made.env))!.nostrPublic);assert.notEqual(made.nostrPublic,key.nostrPublic);
+});
+
+test('the keygen tool writes the key only to a new private file and prints just the id, config and Nostr key',async(t)=>{
  const dir=mkdtempSync(join(tmpdir(),'ohttp-keygen-')),file=join(dir,'ohttp.key'),run=(...args:string[])=>promisify(execFile)(process.execPath,['--import','tsx','tools/ohttp-keygen.ts',...args]);
  t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const {stdout}=await run(file),line=readFileSync(file,'utf8'),env=line.replace(/^SHIELDED_OHTTP_KEY=/,'').trim(),{secret}=split(env),key=(await loadOhttpKey(env))!;
  assert.equal(line,`SHIELDED_OHTTP_KEY=${env}\n`);
- assert.equal(stdout,`key id: ${key.keyId}\nconfig: ${Buffer.from(key.config).toString('base64url')}\n`);
+ assert.equal(stdout,`key id: ${key.keyId}\nconfig: ${Buffer.from(key.config).toString('base64url')}\nnostr: ${key.nostrPublic}\n`);
+ assert.match(stdout,/^nostr: [0-9a-f]{64}$/m);assert.ok(!stdout.includes(secret),'stdout never carries the secret');
  if(process.platform!=='win32')assert.equal(statSync(file).mode&0o777,0o600);
  await assert.rejects(run(file),(error:{stderr:string})=>{assert.match(error.stderr,/already exists/);assert.ok(!error.stderr.includes(secret));return true;});
  assert.equal(readFileSync(file,'utf8'),line,'a second run leaves the first key alone');
