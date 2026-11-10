@@ -209,6 +209,8 @@ test('a scanned or pasted payment code becomes a destination, and a payment link
  assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.00001&ark=tark1abc&lightning='+invoice),{to:'tark1abc',amount:1000});
  assert.deepEqual(payTarget('BITCOIN:BC1QEXAMPLE?AMOUNT=1.5&LIGHTNING='+invoice.toUpperCase()),{to:invoice,amount:150_000_000});
  assert.deepEqual(payTarget('bitcoin:bc1qexample?amount=0.000000001'),{to:'bc1qexample'});
+ assert.deepEqual(payTarget('arkade:tark1abc?amount=0.00001'),{to:'tark1abc',amount:1000});
+ assert.deepEqual(payTarget('ARKADE://TARK1ABC?ADDRESS=TARK1ABC&AMOUNT=1.5'),{to:'tark1abc',amount:150_000_000});
  assert.deepEqual(payTarget('SHROL21ABC'),{to:'shrol21abc'});
  assert.deepEqual(payTarget('Satoshi@example.com'),{to:'Satoshi@example.com'});
  assert.throws(()=>payTarget('bitcoin:bc1qexample?amount=0.0001&req-pop=callback%3A'),/req-pop/);

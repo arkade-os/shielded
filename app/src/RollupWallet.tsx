@@ -16,6 +16,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,payTarget,privateReceiveView,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
+import type {IncomingPayment} from './native-deeplink.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
 import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type PageLightning} from './shielded-page.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
@@ -80,7 +81,7 @@ const NOT_PRIVATE:PrivateReceiveState={on:false,pending:false,refused:false,with
 const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].includes(errorText(error));
 // Stable, so React focuses it once on mount; an inline ref would take focus back on every render.
 const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
-export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown,onReady,onStartupFailure,onClearWallet,nativeHost=INJECTED_NATIVE,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
+export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown,onReady,onStartupFailure,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
  const [nativePending,setNativePending]=useState(false);
@@ -92,7 +93,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'home'|'receive'|'send'|'activity'>('home'),[receiveMode,setReceiveMode]=useState<ReceiveMode>('unified'),[requestOpen,setRequestOpen]=useState(false),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
- const panelNode=useRef<HTMLElement>(null),panelGrip=useRef<HTMLDivElement>(null),dockNode=useRef<HTMLElement>(null),mainTabsNode=useRef<HTMLElement>(null),panelTabsNode=useRef<HTMLDivElement>(null),recipientNode=useRef<HTMLInputElement>(null);
+ const panelNode=useRef<HTMLElement>(null),panelGrip=useRef<HTMLDivElement>(null),dockNode=useRef<HTMLElement>(null),mainTabsNode=useRef<HTMLElement>(null),panelTabsNode=useRef<HTMLDivElement>(null),recipientNode=useRef<HTMLInputElement>(null),handledPaymentRequest=useRef<number|undefined>(undefined);
  const dockLens=useRef<HTMLSpanElement>(null),mainLens=useRef<HTMLSpanElement>(null),panelLens=useRef<HTMLSpanElement>(null);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
@@ -563,9 +564,15 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   return quotes.send({...quoteContext,revision:funds.watch.update(currentCoins)},quote);
  },routeCopy(quote.railId).title);}else getQuote();};
 
- const fill=(code:string)=>{
-  let target:ReturnType<typeof payTarget>;try{target=payTarget(code);}catch(error){setCodeError(errorText(error));return;}
+ const fill=(code:string,replace=false)=>{
+  let target:ReturnType<typeof payTarget>;
+  try{target=payTarget(code);}catch(error){
+   setCodeError(errorText(error));
+   if(replace){setTo('');setAmount('');setAssetId('');setWithSats('');}
+   return;
+  }
   setCodeError('');setTo(target.to);
+  if(replace){setAssetId('');setWithSats('');setAmount(invoiceCarriesAmount(target.to)?'':target.amount!==undefined?String(target.amount):'');return;}
   // A link's amount is in sats, so it switches an asset send back to Bitcoin; a fixed-amount invoice's own amount wins.
   if(invoiceCarriesAmount(target.to))setAmount('');
   else if(target.amount!==undefined){setAssetId('');setAmount(String(target.amount));}
@@ -573,6 +580,13 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const paste=async()=>{try{fill(await navigator.clipboard.readText());}catch{recipientNode.current?.focus();}};
  const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};
+ useEffect(()=>{
+  if(!paymentRequest||handledPaymentRequest.current===paymentRequest.id||!ready||!viewActive||suspended)return;
+  handledPaymentRequest.current=paymentRequest.id;
+  fill(paymentRequest.uri,true);
+  if(docked)openPanel('send');else selectTab('send');
+  onPaymentRequestHandled?.(paymentRequest.id);
+ },[paymentRequest?.id,ready,viewActive,suspended,docked]);
  const navigation=useRef({tab,sheetOpen,selectTab,openPanel});navigation.current={tab,sheetOpen,selectTab,openPanel};
  const paymentTabs=docked&&(tab==='receive'||tab==='send');
  useEffect(()=>{
