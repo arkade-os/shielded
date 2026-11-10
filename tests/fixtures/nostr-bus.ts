@@ -2,12 +2,12 @@ import {matchFilter,matchFilters,type Filter} from 'nostr-tools/filter';
 import {verifyEvent,type Event} from 'nostr-tools/pure';
 import type {CarrierPool,RelayPool} from '../../src/rollup/nostr-carrier.ts';
 
-/** An in-memory relay network shaped like nostr-tools' pool: each URL is a channel, and a relay misbehaves as its options say. `unfiltered` makes it deliver everything. `stores` keeps what it delivers and hands a new subscription what matches, since included, except under limit:0, which `ignoresLimit` disregards. `settleMs` holds back a pool publish's OK or rejection, never its delivery. */
+/** An in-memory relay network shaped like nostr-tools' pool: each URL is a channel, and a relay misbehaves as its options say. `unfiltered` makes it deliver everything. `stores` keeps what it delivers and hands a new subscription what matches, since included, except under limit:0, which `ignoresLimit` disregards. `okGate` holds back a pool publish's OK or rejection until it settles, never its delivery. */
 export function createNostrBus(){
  type Sub={url:string;filters:Filter[];onevent:(event:Event)=>void;onclose:(reason:string)=>void};
- const relays=new Map<string,{accept:boolean;refusal?:string;deliver:boolean;delayMs:number;settleMs:number;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean;stores:boolean;ignoresLimit:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[],stored=new Map<string,Event[]>(),unhandled:Error[]=[];
+ const relays=new Map<string,{accept:boolean;refusal?:string;deliver:boolean;delayMs:number;okGate?:Promise<unknown>;unfiltered:boolean;unreachable:boolean;timesOut:boolean;refusesButDelivers:boolean;claimsUnreachable:boolean;stores:boolean;ignoresLimit:boolean}>(),live=new Set<Sub>(),links=new Map<string,{alive:boolean}>(),published:Event[]=[],stored=new Map<string,Event[]>(),unhandled:Error[]=[];
  const relay=(url:string)=>{
-  if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,settleMs:0,unfiltered:false,unreachable:false,timesOut:false,refusesButDelivers:false,claimsUnreachable:false,stores:false,ignoresLimit:false});
+  if(!relays.has(url))relays.set(url,{accept:true,deliver:true,delayMs:0,unfiltered:false,unreachable:false,timesOut:false,refusesButDelivers:false,claimsUnreachable:false,stores:false,ignoresLimit:false});
   return relays.get(url)!;
  };
  const join=(sub:Sub)=>{
@@ -46,7 +46,7 @@ export function createNostrBus(){
   },
   publish:(urls,event)=>urls.map(async url=>{
    if(relay(url).unreachable)return 'connection failure: connection failed';
-   try{return take(url,event);}finally{const {settleMs}=relay(url);if(settleMs)await new Promise(resolve=>setTimeout(resolve,settleMs));}
+   try{return take(url,event);}finally{const {okGate}=relay(url);if(okGate)await okGate;}
   }),
   ensureRelay:async url=>{
    if(!links.has(url)){if(relay(url).unreachable)throw 'connection failed';links.set(url,{alive:true});}

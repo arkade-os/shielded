@@ -24,7 +24,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)],bench=new Map<string,number>();
  if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and a positive timeout.');
  // nostr-tools' publish normalizes each URL synchronously, so a bad one would throw unheard inside a later hedge round and leave the attempt to its deadline.
- if(!urls.every(relay=>{try{return /^wss?:$/.test(new URL(relay).protocol);}catch{return false;}}))throw new RangeError('Every relay of a sealed fetch is a ws:// or wss:// URL.');
+ if(!urls.every(relay=>{try{return relay.includes('://')&&/^wss?:$/.test(new URL(relay).protocol);}catch{return false;}}))throw new RangeError('Every relay of a sealed fetch is a ws:// or wss:// URL.');
  const shut=()=>new SealedFetchError('unavailable','The sealed fetch is closed.');
  let closed=false;
  const sealedFetch=async(input:string|URL|Request,init?:RequestInit):Promise<Response>=>{

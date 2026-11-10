@@ -138,18 +138,18 @@ test('a relay that did not acknowledge is benched for 5 minutes, and an acknowle
 });
 
 test('a round whose OK is still out when another relay brings the answer hedges nothing after the fetch',async t=>{
- const g=await rig(t,{relays:[A,B,C],pick:1});g.bus.relay(A).refusesButDelivers=true;Object.assign(g.bus.relay(B),{timesOut:true,deliver:false,settleMs:200});
+ const gate=holding(),g=await rig(t,{relays:[A,B,C],pick:1});g.bus.relay(A).refusesButDelivers=true;Object.assign(g.bus.relay(B),{timesOut:true,deliver:false,okGate:gate.held});
  assert.equal((await g.fetch(ARK)).status,200);assert.deepEqual(g.sentTo(),[[A],[B]],'A delivered as it refused, and B was still out at the answer');
- await sleep(300);assert.deepEqual(g.sentTo(),[[A],[B]],'B\'s late timeout hedged nothing once the fetch was done');
+ gate.release();await settle();assert.deepEqual(g.sentTo(),[[A],[B]],'B\'s late timeout hedged nothing once the fetch was done');
 });
 
 test('a round whose OK is still out when a status ends its attempt hedges nothing',async t=>{
- let replies=0;const {held,release}=holding(),g=await rig(t,{relays:[A,B,C],pick:1,gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
+ let replies=0;const upstream=holding(),gate=holding(),g=await rig(t,{relays:[A,B,C],pick:1,gateway:{maxInFlight:1},reply:()=>++replies===1?upstream.held:Response.json({ok:true})});
  const first=g.fetch(ARK);await until(()=>g.calls.length===1);
- Object.assign(g.bus.relay(A),{timesOut:true,settleMs:200});
- const second=g.fetch(ARK);await until(()=>g.statuses().length===1);await sleep(400);
+ Object.assign(g.bus.relay(A),{timesOut:true,okGate:gate.held});
+ const second=g.fetch(ARK);await until(()=>g.statuses().length===1);await sleep(10);gate.release();await settle();
  assert.deepEqual(g.sentTo(),[[A],[A]],'A\'s late timeout came in the back-off and hedged nothing');
- release();assert.equal((await second).status,200);assert.deepEqual(g.sentTo(),[[A],[A],[B]]);assert.equal((await first).status,200);
+ upstream.release();assert.equal((await second).status,200);assert.deepEqual(g.sentTo(),[[A],[A],[B]]);assert.equal((await first).status,200);
 });
 
 test('attempts run out as unavailable',async t=>{
@@ -228,7 +228,7 @@ test('close() ends a POST that went out as outcome-unknown, and one that never d
 
 test('a sealed fetch with no relay, a relay that is not a ws:// or wss:// URL, or a pick, attempt count or timeout under one, is refused when it is made',async()=>{
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!;
- for(const options of [{relays:[]},{relays:[A,'not a url']},{relays:['https://relay.example']},{pick:0},{attempts:0},{timeoutMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
+ for(const options of [{relays:[]},{relays:[A,'not a url']},{relays:['https://relay.example']},{relays:['wss:a.example']},{relays:['wss:/a.example']},{pick:0},{attempts:0},{timeoutMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
  createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,relays:['ws://127.0.0.1:7777',A]}).close();
 });
 
