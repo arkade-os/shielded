@@ -90,7 +90,7 @@ export function bindSwipeGesture(surface:HTMLElement,onSwipe:(direction:'previou
  return bindGesture(surface,options.feedback??surface,{axis:'x',allowButtons:options.allowButtons,distance:()=>options.distance??56,onCommit:delta=>onSwipe(delta>0?'previous':'next')});
 }
 
-export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<void>,options:{distance?:number;onState?:(state:PullToRefreshState)=>void}={}):()=>void {
+export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<void>,options:{distance?:number;onState?:(state:PullToRefreshState)=>void;onError?:(error:unknown)=>void}={}):()=>void {
  const doc=surface.ownerDocument,threshold=options.distance??72;
  let pointer:{id:number;y:number;x:number;distance:number}|undefined,refreshing=false,disposed=false,suppressUntil=0;
  const flag=(name:string,on:boolean)=>{if(on)surface.classList.add(name);else surface.classList.remove(name);};
@@ -119,7 +119,7 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
   const current=pointer;if(!current||event.pointerId!==current.id)return;
   const dy=event.clientY-current.y,dx=event.clientX-current.x;
   if(dy<=0||Math.abs(dx)>=8&&Math.abs(dx)>=Math.abs(dy)){reset(current.id);options.onState?.({distance:0,ready:false,refreshing:false});return;}
-  if(Math.abs(dy)<8)return;
+  if(current.distance===0&&Math.abs(dy)<8)return;
   if(!surface.isConnected){reset(current.id);return;}
   try{surface.setPointerCapture(event.pointerId);}catch{}
   current.distance=Math.min(96,Math.max(0,dy));
@@ -133,7 +133,7 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
   reset(current.id);
   if(!commit){options.onState?.({distance:0,ready:false,refreshing:false});return;}
   refreshing=true;publish({distance:threshold,ready:false,refreshing:true});
-  void Promise.resolve().then(refresh).catch(()=>{}).finally(()=>{
+  void Promise.resolve().then(refresh).catch(error=>options.onError?.(error)).finally(()=>{
    refreshing=false;
    if(disposed)return;
    surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);flag('is-pull-refreshing',false);

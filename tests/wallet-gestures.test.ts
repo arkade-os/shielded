@@ -131,7 +131,8 @@ test('pulling down from the top refreshes once and publishes its progress',async
  const doc=new TestDocument(),surface=new TestElement(doc),states:boolean[]=[];let refreshes=0;
  const dispose=bindPullToRefresh(element(surface),async()=>{refreshes++;},{distance:60,onState:state=>states.push(state.refreshing)});
  pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);assert.ok(surface.classes.has('is-pulling-to-refresh'));
- pointer(doc,'pointerup',0,70,120);
+ pointer(doc,'pointermove',0,5,110);assert.equal(surface.values.get('--wallet-pull-distance'),'5px');assert.equal(surface.classes.has('is-pull-ready'),false);
+ pointer(doc,'pointermove',0,70,115);pointer(doc,'pointerup',0,70,120);
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(refreshes,1);assert.equal(states.at(-1),false);assert.equal(surface.classes.size,0);dispose();
 });
@@ -158,4 +159,12 @@ test('disposing a pending pull clears its state and an old completion cannot rep
  pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',0,70,300);pointer(doc,'pointerup',0,70,320);
  assert.equal(states.at(-1),true);finishOld();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);
  finishNew();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),false);second();
+});
+
+test('a pull refresh failure reaches the explicit error channel and releases its state',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),errors:unknown[]=[];
+ const dispose=bindPullToRefresh(element(surface),async()=>{throw new Error('refresh failed');},{distance:60,onError:error=>errors.push(error)});
+ pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);pointer(doc,'pointerup',0,70,120);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal((errors[0] as Error).message,'refresh failed');assert.equal(surface.classes.size,0);dispose();
 });

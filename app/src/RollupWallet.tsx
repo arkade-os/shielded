@@ -563,7 +563,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    setPullSyncError(syncError);
    try{await refreshRef.current?.request();}
    catch(error){if(active&&mounted.current)setPullSyncError(errorText(error));}
-  },{onState:setPullRefresh});
+  },{onState:setPullRefresh,onError:error=>{if(active&&mounted.current)setPullSyncError(errorText(error));}});
   return()=>{active=false;dispose();};
  },[wallet,ready,viewActive,suspended]);
  useEffect(()=>{setPullSyncError('');},[wallet,ready,viewActive,suspended]);
