@@ -552,13 +552,21 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{
   const page=pageNode.current;
   if(!page||!wallet||!ready||!viewActive||suspended)return;
-  return bindPullToRefresh(page,async()=>{
-   if(mounted.current)setPullSyncError('');
+  let active=true;
+  const dispose=bindPullToRefresh(page,async()=>{
+   if(!active||!mounted.current)return;
+   setPullSyncError('');
+   let syncError='';
    try{await wallet.sync();}
-   catch(error){if(mounted.current)setPullSyncError(errorText(error));}
-   await refreshRef.current?.request();
+   catch(error){syncError=errorText(error);}
+   if(!active||!mounted.current)return;
+   setPullSyncError(syncError);
+   try{await refreshRef.current?.request();}
+   catch(error){if(active&&mounted.current)setPullSyncError(errorText(error));}
   },{onState:setPullRefresh});
+  return()=>{active=false;dispose();};
  },[wallet,ready,viewActive,suspended]);
+ useEffect(()=>{setPullSyncError('');},[wallet,ready,viewActive,suspended]);
  const phrase=secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity)=>{
