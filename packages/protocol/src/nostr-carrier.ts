@@ -37,7 +37,6 @@ export function answerEvents(sealed:Uint8Array,request:RequestRef,secret:Uint8Ar
 /** retryAfter is whole seconds; readAnswer ignores a status event whose delay is anything else. */
 export const statusEvent=(status:429|503,retryAfter:number,request:RequestRef,secret:Uint8Array,nowMs:number):VerifiedEvent=>answerEvent(request,[['status',String(status)],['retry-after',String(retryAfter)]],'',secret,nowMs);
 
-/** A status beats the chunks, and the first status event wins: unreachable today, as the gateway sends one status per request. */
 export function readAnswer(events:readonly Event[],requestId:string,gateway:string):{kind:'sealed';bytes:Uint8Array}|{kind:'status';status:number;retryAfter:number}|undefined {
  const mine=events.filter(event=>verified(event)&&event.kind===NOSTR_ANSWER_KIND&&event.pubkey===gateway&&tag(event,'e',requestId));
  for(const event of mine){

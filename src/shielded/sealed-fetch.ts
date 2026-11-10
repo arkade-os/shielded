@@ -18,7 +18,7 @@ type Ending={kind:'refused'|'timeout'}|{kind:'status';wait:number};
 const tooLarge=()=>new SealedFetchError('too-large','The sealed request is larger than one Nostr event carries.');
 const outcomeUnknown=()=>new SealedFetchError('outcome-unknown','The request went out and no answer came back, so it may have run.');
 
-/** The default pool has no enableReconnect (it resubscribes at since=lastEmitted+1; the next attempt covers a dropped relay) and pure's verifyEvent, whose cached verdict readAnswer reads. close() destroys the pool, a caller's own included. */
+// No enableReconnect: it resubscribes at since=lastEmitted+1, and the next attempt covers a dropped relay. Pure's verifyEvent caches the verdict readAnswer reads.
 export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)];
  if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and a positive timeout.');
