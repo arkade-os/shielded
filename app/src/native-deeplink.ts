@@ -7,7 +7,7 @@ export function paymentDeepLink(urls:readonly string[]|null|undefined):string|un
  for(const value of urls??[]){
   if(typeof value!=='string')continue;
   const uri=value.trim();
-  if(uri.length<=MAX_PAYMENT_URI_LENGTH&&/^(?:bitcoin|lightning|arkade):[^\s\u0000-\u001f\u007f]+$/i.test(uri))return uri;
+  if(new TextEncoder().encode(uri).length<=MAX_PAYMENT_URI_LENGTH&&/^(?:bitcoin|lightning|arkade):[^\s\u0000-\u001f\u007f]+$/i.test(uri))return uri;
  }
  return undefined;
 }

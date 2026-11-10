@@ -15,6 +15,7 @@ test('native payment deep links include Lightning invoices and Arkade addresses'
 test('a native deep link ignores unsafe schemes, control characters and oversized values',()=>{
  assert.equal(paymentDeepLink(['javascript:alert(1)','https://example.com','bitcoin:bc1qbad\nnext']),undefined);
  assert.equal(paymentDeepLink(['bitcoin:'+ 'x'.repeat(16*1024)]),undefined);
+ assert.equal(paymentDeepLink(['bitcoin:'+'é'.repeat(8_190)]),undefined);
  assert.equal(paymentDeepLink(null),undefined);
 });
 
