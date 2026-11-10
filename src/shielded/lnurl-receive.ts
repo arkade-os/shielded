@@ -23,7 +23,7 @@ interface ReceiveState {v:1;next:number;payouts:Destination[];servers:Record<str
 interface LegacyState {v:1;receivers:LnurlReceiver[];pending?:string;payouts:LnurlPayout[]}
 export const WATCH_STARTUP_GRACE_MS=5_000;
 export interface LnurlReceiveConfig {
- identity:Identity;companion:Wallet;journal:LnurlReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;now?:()=>number;
+ identity:Identity;companion:Wallet;journal:LnurlReceiveJournal;owner:string;pool:string;baseUrl?:string;domain?:string;fetch?:FetchImpl;fetchFor?:(signal:AbortSignal)=>FetchImpl;operator?:{serverPubKey:string;exitDelay:{type:'seconds'|'blocks';value:number}};now?:()=>number;
  signal?:AbortSignal;
   onStage?:(stage:UnifiedReceiveStage)=>void;
  onPayouts?:(payouts:LnurlPayout[],signal:AbortSignal)=>Promise<void>;
@@ -76,7 +76,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const url=new URL(config.baseUrl??LNURL_BASE);
  if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('Invalid Lightning address service URL');
  const baseUrl=url.href.replace(/\/+$/,''),domain=(config.domain??url.hostname).toLowerCase(),serverKey=JSON.stringify([baseUrl,domain]),now=config.now??Date.now;
- const abort=new AbortController(),stop=()=>abort.abort(),fetcher=config.fetch??((input,init)=>globalThis.fetch(input,init));
+ const abort=new AbortController(),stop=()=>abort.abort(),fallbackFetcher=config.fetch??((input,init)=>globalThis.fetch(input,init));
  if(config.signal?.aborted)abort.abort();else config.signal?.addEventListener('abort',stop,{once:true});
    const untilStopped=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
     const stop=()=>reject(new Error('Lightning address service is disposed'));
@@ -84,7 +84,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    abort.signal.addEventListener('abort',stop,{once:true});
    work.then(value=>{abort.signal.removeEventListener('abort',stop);resolve(value);},error=>{abort.signal.removeEventListener('abort',stop);reject(error);});
   });
- const guardedFetch:FetchImpl=(input,init)=>fetcher(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
+ let operationFetcher:{controller:AbortController;fetch:FetchImpl}|undefined;
+ const guardedFetch:FetchImpl=(input,init)=>(operationFetcher?.fetch??fallbackFetcher)(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
  let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,healthRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
  const pendingWrites=new Set<Promise<unknown>>();
@@ -92,7 +93,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const pendingWatches=new Map<string,{promise:Promise<void>;background:boolean;scripts:string[]}>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
  const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
- const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(()=>{if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');return fn();});tail=pending.catch(()=>{});return pending;};
+ const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(async()=>{
+  if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');
+  const controller=new AbortController();
+  if(config.fetchFor)operationFetcher={controller,fetch:config.fetchFor(AbortSignal.any([abort.signal,controller.signal]))};
+  try{return await fn();}
+  finally{controller.abort();if(operationFetcher?.controller===controller)operationFetcher=undefined;}
+ });tail=pending.catch(()=>{});return pending;};
  const migrate=async(state:ReceiveState)=>{
   const legacy=await dataWork(config.journal.getReceiveState<LegacyState>(config.owner,config.pool,`lnurl-hd-v1:${serverKey}`));
   if(!legacy)return;
@@ -113,12 +120,24 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  };
  const save=(state:ReceiveState)=>dataWork(config.journal.saveReceiveState(config.owner,STATE_POOL,STATE_KEY,state));
  const account=()=>{const descriptor=(config.companion.identity as Identity&{descriptor?:string}).descriptor;if(!descriptor)throw new Error('Private Lightning receive requires an HD companion');return descriptor;};
- const currentBranch=async()=>{
-  const info=await dataWork(config.companion.getArkadeInfo({requireLive:true})),hrp=config.companion.network.hrp;
-  if((hrp!=='ark'&&hrp!=='tark')||networkFromArkadeInfo(info).hrp!==hrp)throw new Error('HD receive operator network mismatch');
-  if(!/^(0[23])?[0-9a-f]{64}$/i.test(info.signerPubkey)||info.unilateralExitDelay>0xffffffffn||info.unilateralExitDelay<0n)throw new Error('Invalid HD receive operator script settings');
-  const delay=info.unilateralExitDelay;
-  return receiveBranch(account(),{serverPubKey:info.signerPubkey.slice(-64),hrp,exitDelay:{type:delay<512n?'blocks':'seconds',value:Number(delay)}});
+ let branchOnce:Promise<ReturnType<typeof receiveBranch>>|undefined;
+ const currentBranch=()=>{
+  if(!branchOnce){
+   const pending=(async()=>{
+    if(config.operator){
+     const hrp=config.companion.network.hrp;
+     if(hrp!=='ark'&&hrp!=='tark')throw new Error('Unsupported Lightning receive network');
+     return receiveBranch(account(),{serverPubKey:config.operator.serverPubKey,hrp,exitDelay:config.operator.exitDelay});
+    }
+    const info=await dataWork(config.companion.getArkadeInfo({requireLive:true})),hrp=config.companion.network.hrp;
+    if((hrp!=='ark'&&hrp!=='tark')||networkFromArkadeInfo(info).hrp!==hrp)throw new Error('HD receive operator network mismatch');
+    if(!/^(0[23])?[0-9a-f]{64}$/i.test(info.signerPubkey)||info.unilateralExitDelay>0xffffffffn||info.unilateralExitDelay<0n)throw new Error('Invalid HD receive operator script settings');
+    const delay=info.unilateralExitDelay;
+    return receiveBranch(account(),{serverPubKey:info.signerPubkey.slice(-64),hrp,exitDelay:{type:delay<512n?'blocks':'seconds',value:Number(delay)}});
+   })();
+   branchOnce=pending;void pending.catch(()=>{if(branchOnce===pending)branchOnce=undefined;});
+  }
+  return branchOnce;
  };
  const fromAddress=(row:{handle:string;domain:string;lightningAddress:string|null;lnurl:string;status:string;nameless?:boolean;sessionLnurl?:string|null;paymentMethods?:unknown}):LnurlReceiver=>{
   if(typeof row.handle!=='string'||!row.handle||typeof row.domain!=='string'||row.domain.toLowerCase()!==domain||typeof row.lnurl!=='string'||typeof row.status!=='string'||(row.lightningAddress!==null&&typeof row.lightningAddress!=='string')||(row.nameless!==undefined&&typeof row.nameless!=='boolean')||(row.sessionLnurl!==undefined&&row.sessionLnurl!==null&&typeof row.sessionLnurl!=='string'))throw new Error('Invalid Lightning address registration');
@@ -218,8 +237,8 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   state.next=Math.max(state.next,high+1);await save(state);await watchWithGrace(added);
  };
  /** Persists and watches a fresh payout without blocking the address forever. */
- const advance=async(state:ReceiveState,server:ServerState)=>{
-  const row=receiveDestination(await currentBranch(),state.next);
+ const advance=async(state:ReceiveState,server:ServerState,branch?:ReturnType<typeof receiveBranch>)=>{
+  const row=receiveDestination(branch??await currentBranch(),state.next);
   state.next++;state.payouts.push(row);server.current=row.script;delete server.boundAt;
   await save(state);await watchWithGrace([row]);
  };
@@ -252,7 +271,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    await refuseMethods(state,server);throw new Error(METHODS_REFUSED,{cause:refusal});
   }
  };
- const settle=async(state:ReceiveState,server:ServerState,beforeBind?:()=>void)=>{
+ const settle=async(state:ReceiveState,server:ServerState,beforeBind?:()=>void,branch?:Promise<ReturnType<typeof receiveBranch>>)=>{
   if(!server.receivers.some(row=>row.status==='active'))return;
   await restoreWatches(state);
   // HD services hand out /2/7 children the journal never saw: catch up until the first static bind lands, then follow them while refused.
@@ -261,7 +280,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(high>=state.next)await adopt(state,branch,state.next,high);
   }
   const current=state.payouts.find(row=>row.script===server.current);
-  if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server);
+  if(!current||(server.boundAt!==undefined&&now()-server.boundAt>=ROTATE_AFTER_MS)||(await used([current.script])).size>0)await advance(state,server,await branch);
   beforeBind?.();
   await bind(state,server);
   if(server.methods||server.withdraw)await confirm(state,server);
@@ -282,6 +301,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const state=await load(),existing=state.servers[serverKey],server=existing??{receivers:[]};
   if(!existing){state.servers[serverKey]=server;await save(state);}
    config.onStage?.('Checking the Lightning address service through Tor');
+  const branch=currentBranch();void branch.catch(()=>{});
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');
   const matched=tracked&&owned.find(row=>sameReceiver(row,tracked));
@@ -303,7 +323,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(recoverPayouts)server.recovering=true;
   if(JSON.stringify(server.receivers)!==JSON.stringify(receivers)||server.pending||recoverPayouts){server.receivers=receivers;delete server.pending;await save(state);}
    config.onStage?.('Restoring payout watches');
-  await settle(state,server,()=>config.onStage?.('Binding your payment routes'));
+  await settle(state,server,()=>config.onStage?.('Binding your payment routes'),branch);
    config.onStage?.('Unified address ready');
   return receiver;
  };

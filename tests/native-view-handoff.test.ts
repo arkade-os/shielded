@@ -8,6 +8,16 @@ const mounted=(handoff:ReturnType<typeof createNativeViewHandoff<ReturnType<type
  const view=handoff.stage(session(generation));view.onShutdown(async()=>{});return view;
 };
 
+test('an initial wallet stays inactive until its first ready signal',()=>{
+ const handoff=createNativeViewHandoff<ReturnType<typeof session>>(),first=handoff.stage(session(1),{awaitReady:true});
+ first.onShutdown(async()=>{});
+ assert.equal(handoff.snapshot.shown,undefined);assert.equal(handoff.snapshot.candidate,first);
+ assert.equal(isNativeWalletViewActive(first,false),false);
+ assert.equal(handoff.promote(first,()=>true),true);
+ assert.equal(handoff.snapshot.shown,first);assert.equal(handoff.snapshot.candidate,undefined);
+ assert.equal(isNativeWalletViewActive(first,true),true);
+});
+
 test('a resumed candidate cannot replace the retired balance view before it is ready',()=>{
  const handoff=createNativeViewHandoff<ReturnType<typeof session>>(),old=mounted(handoff,1);
  handoff.retire(true);const next=mounted(handoff,3);

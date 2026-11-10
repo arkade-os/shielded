@@ -49,6 +49,12 @@
 .wallet-onboarding-privacy-menu>p {margin:0;font-size:12px;line-height:1.75;color:#c1cfda}
 .wallet-onboarding-phase {display:flex;align-items:center;gap:9px;margin:22px 0 0;font-size:13px;line-height:1.6;color:#d8c29e}
 .wallet-onboarding-spinner {width:14px;height:14px;border:1.5px solid #d2ae7540;border-top-color:#d2ae75;border-radius:50%;animation:wallet-onboarding-spin 1s linear infinite;flex:none}
+.wallet-onboarding-opening-phase {min-height:26px}
+.wallet-onboarding-opening .wallet-onboarding-art {position:relative}
+.wallet-onboarding-opening .wallet-onboarding-art::before,
+.wallet-onboarding-opening .wallet-onboarding-art::after {content:'';position:absolute;left:50%;top:50%;width:min(300px,72vw);aspect-ratio:1;border:1px solid #d2ae755c;border-radius:50%;pointer-events:none;transform:translate(-50%,-50%);animation:wallet-onboarding-orbit 2.8s cubic-bezier(.2,.7,.2,1) infinite}
+.wallet-onboarding-opening .wallet-onboarding-art::after {width:min(228px,57vw);border-style:dashed;opacity:.5;animation-delay:-1.3s;animation-direction:reverse}
+.wallet-onboarding-opening .wallet-onboarding-art>svg {animation:wallet-onboarding-breathe 2.8s ease-in-out infinite}
 .wallet-onboarding-error {margin:18px 0 0;padding:12px 14px;border-left:2px solid #e0a29d;background:#e0a29d0c;color:#f0c5be;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
 .wallet-onboarding-back {display:flex;align-items:center;gap:4px;margin:0 0 34px -4px;padding:4px;background:none;border:0;color:#c4d0da;font-size:13px!important;font-weight:500!important}
 .wallet-onboarding-back>svg {width:19px;height:19px}
@@ -68,6 +74,8 @@
 .wallet-entrance-ring {position:absolute;left:var(--entrance-x);top:var(--entrance-y);width:min(310px,78vw);aspect-ratio:1;border:1px solid #e2c28f99;border-radius:50%;box-shadow:0 0 40px #d2ae7526,inset 0 0 36px #d2ae751a;animation:wallet-entrance-ripple .85s cubic-bezier(.12,.6,.2,1) both}
 @keyframes wallet-onboarding-arrive {from {opacity:0;transform:translateY(13px) rotate(-3deg)}to {opacity:1;transform:translateY(0) rotate(0)}}
 @keyframes wallet-onboarding-spin {to {transform:rotate(360deg)}}
+@keyframes wallet-onboarding-breathe {0%,100% {filter:brightness(.94);transform:scale(.985) rotate(-.8deg)}50% {filter:brightness(1.14);transform:scale(1.018) rotate(.8deg)}}
+@keyframes wallet-onboarding-orbit {0% {opacity:0;transform:translate(-50%,-50%) scale(.82) rotate(-12deg)}24%,68% {opacity:1}100% {opacity:0;transform:translate(-50%,-50%) scale(1.08) rotate(12deg)}}
 @keyframes wallet-onboarding-privacy-in {from {opacity:0;transform:translateY(5px)}to {opacity:1;transform:translateY(0)}}
 @keyframes wallet-entrance-unseal {0%,10% {clip-path:ellipse(150% 150% at var(--entrance-x) var(--entrance-y));opacity:1}75% {opacity:1}100% {clip-path:ellipse(0% 0% at var(--entrance-x) var(--entrance-y));opacity:0}}
 @keyframes wallet-entrance-shield {0%,8% {opacity:1;transform:translate(-50%,-50%) scale(1) rotate(0)}42% {opacity:1;filter:brightness(1.18);transform:translate(-50%,-50%) scale(1.045) rotate(2deg)}100% {opacity:0;filter:brightness(1.5) blur(3px);transform:translate(-50%,-50%) scale(.48) rotate(-12deg)}}
@@ -96,6 +104,16 @@
  .wallet-onboarding-description {font-size:14px}
  .wallet-onboarding-footer {gap:8px;font-size:10px}
  .wallet-onboarding-privacy {max-width:142px}
+}
+@media(max-width:520px) {
+ .wallet-onboarding-footer {grid-template-columns:minmax(0,1fr);align-items:start;gap:1px;margin-top:4px}
+ .wallet-onboarding-footer>.app-header-status {width:100%;min-width:0;flex-wrap:nowrap}
+ .wallet-onboarding-footer .native-tor-health {flex:1;min-width:0;max-width:100%}
+ .wallet-onboarding-footer .native-tor-trigger {min-width:0;max-width:100%;overflow:hidden}
+ .wallet-onboarding-footer .native-tor-trigger>[role=status] {display:block;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .wallet-onboarding-privacy {justify-self:stretch;width:100%;max-width:none;text-align:left}
+ .wallet-onboarding-privacy>summary {justify-content:flex-start}
+ .wallet-onboarding-privacy-menu {right:auto;left:0}
 }
 @media(max-height:720px) and (max-width:799px) {
  .wallet-onboarding {padding-top:max(18px,env(safe-area-inset-top));padding-bottom:max(16px,env(safe-area-inset-bottom))}

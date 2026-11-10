@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
 import {test} from 'node:test';
 import {createElement} from 'react';
@@ -34,6 +35,20 @@ test('a reconnect scene has no loading obstacle between the user and the retry a
  const html=render({setup:false,busy:false});
  assert.match(html,/Reload wallet/);
  assert.doesNotMatch(html,/inert=""/);
+});
+
+test('opening a wallet keeps the onboarding scene and removes competing actions while progress is visible',()=>{
+ const html=render({transport:'tor',opening:true,busy:true,phase:'Catching up with the private pool',torHealth:{status:{phase:'ready',generation:1},check:'ok'}});
+ assert.match(html,/Opening your.*private wallet/);
+ assert.match(html,/Catching up with the private pool/);
+ assert.match(html,/wallet-onboarding-opening-phase/);
+ assert.doesNotMatch(html,/Create wallet|Restore a wallet/);
+});
+
+test('the mobile onboarding footer gives connection and privacy copy separate rows',()=>{
+ const css=readFileSync(new URL('../app/src/wallet-onboarding.css',import.meta.url),'utf8');
+ assert.match(css,/@media\(max-width:520px\)\s*\{[\s\S]*?\.wallet-onboarding-footer\s*\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
+ assert.match(css,/\.wallet-onboarding-footer \.native-tor-trigger>\[role=status\][^{]*\{[^}]*text-overflow:ellipsis/);
 });
 
 test('the wallet entry reveals mounted wallet children with a pointer-inert shared shield handoff',()=>{

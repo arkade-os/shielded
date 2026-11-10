@@ -10,13 +10,13 @@ export function createNativeViewHandoff<T>(lateShutdown:(shutdown:Shutdown)=>voi
  };
  return {
   get snapshot(){return {shown,candidate};},
-  stage(session:T){
+  stage(session:T,options:{awaitReady?:boolean}={}){
    const view:NativeWalletView<T>={session,retired:false,mounted:false,onShutdown(shutdown){
     if(view.retired){if(shutdown)lateShutdown(shutdown);return;}
     view.shutdown=shutdown;view.mounted=!!shutdown;
    }};
    if(candidate)throw new Error('The previous wallet candidate has not retired.');
-   if(shown)candidate=view;else shown=view;
+   if(shown||options.awaitReady)candidate=view;else shown=view;
    return view;
   },
   promote(view:NativeWalletView<T>,current:()=>boolean){
