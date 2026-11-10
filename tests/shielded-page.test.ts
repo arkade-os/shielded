@@ -169,6 +169,13 @@ test('refresh coalesces notifications and drains an active read without publishi
  second.resolve(2);await close;assert.equal(reads,2);assert.equal(published,1);refresh.request();await flush();assert.equal(reads,2);
 });
 
+test('a forced refresh returns only after its coalesced read completes',async()=>{
+ const pending=deferred<number>();let settled=false;
+ const refresh=page.pageRefresh({value:()=>pending.promise},()=>{});
+ const request=refresh.request().then(()=>{settled=true;});await flush();assert.equal(settled,false);
+ pending.resolve(1);await request;assert.equal(settled,true);await refresh.close();
+});
+
 test('a pending explorer read does not delay later Lightning refreshes or overlap itself',async()=>{
  const slow=deferred<number>();let explorerReads=0,lightningReads=0;const seen:number[]=[];
  const refresh=page.pageRefresh({explorer:async()=>{explorerReads++;return slow.promise;},lightning:async()=>++lightningReads},data=>{if(data.lightning!==undefined)seen.push(data.lightning);});

@@ -30,10 +30,10 @@ import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
 import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
-import {bindSheetGesture,bindSwipeGesture} from './wallet-gestures.ts';
+import {bindPullToRefresh,bindSheetGesture,bindSwipeGesture,type PullToRefreshState} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
 import {WalletBrand,WalletHeaderActions} from './WalletHeaderActions.tsx';
-import {WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
+import {WalletCreatedNotice,WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
 import {isNativeHost,nativeClaimFetch,nativeLnurlFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
 
@@ -93,6 +93,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
  const [tab,setTab]=useState<'home'|'receive'|'send'|'activity'>('home'),[receiveMode,setReceiveMode]=useState<ReceiveMode>('unified'),[requestOpen,setRequestOpen]=useState(false),[assetId,setAssetId]=useState(''),[to,setTo]=useState(''),[amount,setAmount]=useState(''),[withSats,setWithSats]=useState('');
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
+ const [pullRefresh,setPullRefresh]=useState<PullToRefreshState>({distance:0,ready:false,refreshing:false});
+ const pageNode=useRef<HTMLDivElement>(null);
  const panelNode=useRef<HTMLElement>(null),panelGrip=useRef<HTMLDivElement>(null),dockNode=useRef<HTMLElement>(null),mainTabsNode=useRef<HTMLElement>(null),panelTabsNode=useRef<HTMLDivElement>(null),recipientNode=useRef<HTMLInputElement>(null),handledPaymentRequest=useRef<number|undefined>(undefined);
  const dockLens=useRef<HTMLSpanElement>(null),mainLens=useRef<HTMLSpanElement>(null),panelLens=useRef<HTMLSpanElement>(null);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
@@ -112,7 +114,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const busyRef=useRef(false),restoreRequested=useRef(false),restoring=useRef(false),mounted=useRef(false),createdHere=useRef(false);
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
- const refreshRef=useRef<{request:()=>void}|undefined>(undefined);
+ const refreshRef=useRef<{request:()=>Promise<void>}|undefined>(undefined);
  const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false);
  const actions=useRef<ReturnType<typeof pageActions>|undefined>(undefined);
  actions.current??=pageActions(()=>{if(mounted.current)setTick(t=>t+1);});
@@ -547,6 +549,15 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
  const needsRecovery=new Set(wallet?.recovering.map(note=>note.nullifier)),recovering=new Set(wallet?.recoveryInFlight.map(note=>note.nullifier));
  const inFlight=!!wallet&&[...wallet.shieldedNotes(),...reserves.flatMap(id=>wallet.shieldedNotes(assetFieldOfId(id)))].some(note=>wallet.inFlight.has(note.nullifier)&&!recovering.has(note.nullifier));
+ useEffect(()=>{
+  const page=pageNode.current;
+  if(!page||!wallet||!ready||!viewActive||suspended)return;
+  return bindPullToRefresh(page,async()=>{
+   try{await wallet.sync();}
+   catch(error){if(mounted.current)setPoolError(errorText(error));}
+   await refreshRef.current?.request();
+  },{onState:setPullRefresh});
+ },[wallet,ready,viewActive,suspended]);
  const phrase=secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity)=>{
@@ -671,7 +682,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   if(!secret)return <WalletOnboarding transport="browser" setup={!restoring.current} busy={busy||restoreStarted} phase={restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload}/>;
 
   const inactive=hidden||suspended||!viewActive;
-  return <WalletEntrance enabled={animateEntrance}><div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
+  return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><Icon name="reset" size={16}/><span>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div><div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
    {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs remain reserved; a dropped status alone does not prove that they cannot be included later.</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
@@ -761,7 +772,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {!securityView?<WalletSecurityMenu canReveal={backedUp||!secret} canClear={!!onClearWallet} onOpen={openSecurity}/>:<div className="stock-security-subview"><button type="button" className="stock-security-back" onClick={leaveSecurity}>← Back</button><h3 tabIndex={-1}>{securityView==='phrase'?'Recovery phrase':securityView==='viewing'?'Viewing access':'Clear wallet'}</h3>
      {securityView==='phrase'&&<><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds. Keep this browser&apos;s data while Lightning swaps or payouts are pending: the phrase alone does not restore every outstanding swap. A fresh browser recovers a Lightning alias through Recover a Lightning address; direct swaps also need their stored recovery records.</p>
       {secret?(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button type="button" className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>):<p className="stock-muted">No recovery phrase is available in this browser.</p>}
-      {secret&&created&&<p className="stock-muted">Created {new Date(created).toLocaleDateString()}. Keep the date with the words: a restore that has it skips the pool&apos;s older history.</p>}</>}
+      {secret&&<WalletCreatedNotice created={created}/>}</>}
      {securityView==='viewing'&&<>{wallet?<><section className="stock-security-key"><h4>View key · read only</h4>{showView?<><Copyable value={wallet.viewKey()}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${wallet.viewKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</section>
        <section className="stock-security-key"><h4>Full viewing key · sees spends</h4>{showFull?<><Copyable value={wallet.fullViewingKey()}/><p className="stock-muted">Shows every note this wallet received and which ones it spent, so also how much each payment out sent, forever. It cannot spend and cannot freeze your notes. <a className="stock-txlink" href={`/watch#${wallet.fullViewingKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowFull(true)}>Show full viewing key</button>}</section></>:<p className="stock-muted">Viewing access is available when the wallet is ready.</p>}</>}
       {securityView==='clear'&&<><p className="stock-blocked"><strong>This removes the wallet and its recovery secret from this device.</strong> If you have not saved the recovery phrase, you will not be able to recover these funds here.</p>
@@ -782,6 +793,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  {ready&&viewActive&&!suspended&&<><GlassRefraction target={panelNode} active={docked&&sheetOpen} radius={30} bezel={24} strength={36}/><GlassRefraction target={dockLens} active={docked&&(!sheetOpen||tab==='activity')} radius={999} bezel={10} strength={18}/><GlassRefraction target={mainLens} active={!docked} radius={999} bezel={10} strength={18}/><GlassRefraction target={panelLens} active={sheetOpen&&paymentTabs} radius={999} bezel={9} strength={14}/></>}
  {ready&&<Soundbar item={activity} onDismiss={()=>sheetOwner.clear()}/>}
  {scanning&&!suspended&&viewActive&&<Scanner onResult={code=>{setScanning(false);if(!suspended&&viewActive)fill(code);}} onClose={()=>setScanning(false)}/>}
-  {aboutOpen&&nativeHost&&viewActive&&!suspended&&!hidden&&createPortal(<NativeAbout onClose={closeAbout} onClearWallet={onClearWallet?clearWallet:undefined}/>,document.body)}
+  {aboutOpen&&nativeHost&&viewActive&&!suspended&&!hidden&&createPortal(<NativeAbout onClose={closeAbout}/>,document.body)}
  </div></WalletEntrance>;
 }

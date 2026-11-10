@@ -172,7 +172,10 @@ export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in key
   };
   return {request,drain:()=>running};
  });
- return {request(){for(const read of reads)read.request();},async close(){closed=true;controller.abort();await Promise.all(reads.map(read=>read.drain()));}};
+ return {
+  request(){for(const read of reads)read.request();return Promise.all(reads.map(read=>read.drain())).then(()=>undefined);},
+  async close(){closed=true;controller.abort();await Promise.all(reads.map(read=>read.drain()));},
+ };
 }
 
 export async function disposeAfterPageReads(wallet:object,refreshes:WeakMap<object,{close:()=>Promise<void>}>,dispose:()=>Promise<void>){
