@@ -561,8 +561,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    catch(error){syncError=errorText(error);}
    if(!active||!mounted.current)return;
    setPullSyncError(syncError);
-   try{await refreshRef.current?.request();}
-   catch(error){if(active&&mounted.current)setPullSyncError(errorText(error));}
+   void Promise.resolve().then(async()=>{if(active&&mounted.current)await refreshRef.current?.request();}).catch(error=>{if(active&&mounted.current)setPullSyncError(errorText(error));});
   },{onState:setPullRefresh,onError:error=>{if(active&&mounted.current)setPullSyncError(errorText(error));}});
   return()=>{active=false;dispose();};
  },[wallet,ready,viewActive,suspended]);

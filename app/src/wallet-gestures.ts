@@ -104,7 +104,7 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
  const reset=(id?:number)=>{if(id!==undefined)try{if(surface.hasPointerCapture(id))surface.releasePointerCapture(id);}catch{}pointer=undefined;surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);};
  const atTop=(target:Element|null)=>{
   const panel=target?.closest<HTMLElement>('.stock-panel');
-  if(panel)return panel.scrollTop<=0;
+  if(panel?.closest('.stock-page.has-dock'))return panel.scrollTop<=0;
   const page=doc.scrollingElement as HTMLElement|null|undefined;
   return (page?.scrollTop??doc.defaultView?.scrollY??0)<=0;
  };

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {bindPullToRefresh,bindSheetGesture,bindSwipeGesture} from '../app/src/wallet-gestures.ts';
 
-class TestDocument extends EventTarget {visibilityState='visible';defaultView=new EventTarget();}
+class TestDocument extends EventTarget {visibilityState='visible';defaultView=new EventTarget();scrollingElement?:TestElement;}
 class TestElement extends EventTarget {
  isConnected=true;
  values=new Map<string,string>();classes=new Set<string>();captured=new Set<number>();scrollTop=0;
@@ -143,10 +143,19 @@ test('pull to refresh ignores controls, horizontal movement and scrolled content
  pointer(surface,'pointerdown',0,0,0,{target:button});pointer(doc,'pointermove',0,100,100);pointer(doc,'pointerup',0,100,120);
  pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',80,4,300);pointer(doc,'pointerup',80,4,320);
  pointer(surface,'pointerdown',0,0,400);pointer(doc,'pointermove',0,100,500);pointer(doc,'pointerup',0,100,520);
- const panel=new TestElement(doc,'div',surface);panel.classList.add('stock-panel');panel.scrollTop=100;const content=new TestElement(doc,'p',panel);
+ const dockedPage=new TestElement(doc,'div',surface);dockedPage.classList.add('stock-page.has-dock');
+ const panel=new TestElement(doc,'div',dockedPage);panel.classList.add('stock-panel');panel.scrollTop=100;const content=new TestElement(doc,'p',panel);
  pointer(surface,'pointerdown',0,0,600,{target:content});pointer(doc,'pointermove',0,100,700);pointer(doc,'pointerup',0,100,720);
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(refreshes,1);dispose();
+});
+
+test('an undocked panel uses the document scroll position before accepting a pull',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),page=new TestElement(doc),panel=new TestElement(doc,'div',surface),content=new TestElement(doc,'p',panel);let refreshes=0;
+ panel.classList.add('stock-panel');page.scrollTop=100;doc.scrollingElement=page;
+ const dispose=bindPullToRefresh(element(surface),()=>{refreshes++;});
+ pointer(surface,'pointerdown',0,0,0,{target:content});pointer(doc,'pointermove',0,100,100);pointer(doc,'pointerup',0,100,120);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(refreshes,0);dispose();
 });
 
 test('disposing a pending pull clears its state and an old completion cannot replace a new binding',async()=>{
@@ -154,7 +163,7 @@ test('disposing a pending pull clears its state and an old completion cannot rep
  let finishOld=()=>{},finishNew=()=>{};
  const first=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finishOld=resolve;}),{distance:60,onState:state=>states.push(state.refreshing)});
  pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);pointer(doc,'pointerup',0,70,120);
- assert.equal(states.at(-1),true);first();assert.equal(states.at(-1),false);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);first();assert.equal(states.at(-1),false);
  const second=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finishNew=resolve;}),{distance:60,onState:state=>states.push(state.refreshing)});
  pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',0,70,300);pointer(doc,'pointerup',0,70,320);
  assert.equal(states.at(-1),true);finishOld();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);
