@@ -9,7 +9,7 @@ class TestElement extends EventTarget {
  style={getPropertyValue:(name:string)=>this.values.get(name)??'',setProperty:(name:string,value:string)=>this.values.set(name,value),removeProperty:(name:string)=>{const old=this.values.get(name)??'';this.values.delete(name);return old;}};
  classList={add:(name:string)=>this.classes.add(name),remove:(name:string)=>this.classes.delete(name),contains:(name:string)=>this.classes.has(name)};
  constructor(readonly ownerDocument:TestDocument,readonly tag='div',readonly parent?:TestElement,readonly attributes:Record<string,string>={}){super();}
- closest(selector:string):TestElement|null{return selector.split(',').some(part=>{const s=part.trim();return s===this.tag||s.startsWith('.')&&this.classes.has(s.slice(1))||s==='[contenteditable]'&&'contenteditable' in this.attributes||s==='[data-gesture-ignore]'&&'data-gesture-ignore' in this.attributes||s===`[role="${this.attributes.role}"]`;})?this:this.parent?.closest(selector)??null;}
+ closest(selector:string):TestElement|null{return selector.split(',').some(part=>{const s=part.trim(),classes=s.startsWith('.')?s.slice(1).split('.'):[];return s===this.tag||classes.length>0&&classes.every(name=>this.classes.has(name))||s==='[contenteditable]'&&'contenteditable' in this.attributes||s==='[data-gesture-ignore]'&&'data-gesture-ignore' in this.attributes||s===`[role="${this.attributes.role}"]`;})?this:this.parent?.closest(selector)??null;}
  setPointerCapture(id:number){this.captured.add(id);}
  hasPointerCapture(id:number){return this.captured.has(id);}
  releasePointerCapture(id:number){this.captured.delete(id);}
@@ -143,7 +143,7 @@ test('pull to refresh ignores controls, horizontal movement and scrolled content
  pointer(surface,'pointerdown',0,0,0,{target:button});pointer(doc,'pointermove',0,100,100);pointer(doc,'pointerup',0,100,120);
  pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',80,4,300);pointer(doc,'pointerup',80,4,320);
  pointer(surface,'pointerdown',0,0,400);pointer(doc,'pointermove',0,100,500);pointer(doc,'pointerup',0,100,520);
- const dockedPage=new TestElement(doc,'div',surface);dockedPage.classList.add('stock-page.has-dock');
+ const dockedPage=new TestElement(doc,'div',surface);dockedPage.classList.add('stock-page');dockedPage.classList.add('has-dock');
  const panel=new TestElement(doc,'div',dockedPage);panel.classList.add('stock-panel');panel.scrollTop=100;const content=new TestElement(doc,'p',panel);
  pointer(surface,'pointerdown',0,0,600,{target:content});pointer(doc,'pointermove',0,100,700);pointer(doc,'pointerup',0,100,720);
  await new Promise(resolve=>setImmediate(resolve));
