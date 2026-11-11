@@ -61,6 +61,8 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }
   save([...entries,{origin,...parsed,body:request.body,createdAt:now()}]);
  };
+ /** For a request that provably never left: its entry goes at once. */
+ const cancelNativeMutation=(request:NativeMutation)=>{const {origin}=route(request.url);drop(row=>row.origin===origin&&row.body===request.body);};
  const pendingPoolNullifiers=(poolOrigin:string):bigint[]=>{
   const origin=new URL(poolOrigin).origin;
   return [...new Set(load().filter(row=>row.origin===origin).flatMap(row=>row.nullifiers))].map(BigInt);
@@ -102,7 +104,7 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
- return {beforeNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations};
+ return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations};
 }
 
 const current=()=>{if(!globalThis.localStorage)throw new Error('The native payment journal is unavailable; no payment was sent.');return makeNativeMutationJournal(globalThis.localStorage);};

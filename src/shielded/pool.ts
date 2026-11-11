@@ -3,7 +3,7 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
-import {PRIVATE_PAGE_DEFAULT,isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage} from './network-privacy.ts';
+import {isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number;depositFee?:DepositFee}}
@@ -12,7 +12,7 @@ export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Promise<T>;
 export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch,page?:number):PoolApi=>{
  const api:PoolApi=<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
- return isPrivateFetch(fetcher)?markPrivatePoolPage(markPrivatePoolApi(api),page??PRIVATE_PAGE_DEFAULT):api;
+ return isPrivateFetch(fetcher)?markPrivatePoolPage(markPrivatePoolApi(api),page??privatePoolPage(fetcher)):api;
 };
 export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));

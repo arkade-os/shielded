@@ -6,8 +6,8 @@ import {NOSTR_RELAYS} from '../../packages/protocol/src/nostr-carrier.ts';
 import {journalledRoute,makeNativeMutationJournal} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
-import {markPrivateFetch,markSealedFetch} from './network-privacy.ts';
-import {createSealedFetch} from './sealed-fetch.ts';
+import {markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
+import {createSealedFetch,SealedFetchError} from './sealed-fetch.ts';
 
 export const PRIVATE_PAGE=12;
 export const PRIVATE_GRACE_MS=180_000;
@@ -21,7 +21,7 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
  if(installed)return installed;
  const target=(config.globals??globalThis) as Record<string,unknown>,direct=target.fetch as typeof fetch,Original=config.socket??(target.WebSocket as typeof WebSocket);
  const relays=config.relays??NOSTR_RELAYS,pinned=new Set(relays.map(normalizeURL)),policy=new NativePolicy(config.poolOrigin),{poolOrigin}=policy,pageOrigin=new URL(config.pageOrigin).origin;
- const journal=makeNativeMutationJournal(config.storage??globalThis.localStorage);
+ const journal=makeNativeMutationJournal(config.storage??globalThis.localStorage,{graceMs:PRIVATE_GRACE_MS});
  const sealedFetch=createSealedFetch({config:config.config,gateway:config.gateway,origin:poolOrigin,relays,pool:new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000,websocketImplementation:Original})});
  const Guarded=class extends Original {constructor(url:string|URL,protocols?:string|string[]){const u=normalizeURL(String(url));if(!pinned.has(u))throw new Error('Private networking does not permit a WebSocket to '+url);super(u,protocols);}};
  // Express routes ignore case, so these checks do. Order matters: a pool API path is sealed at the pinned origin even when the page is served from it, and a proving path on the page origin goes direct even when it is not.
@@ -31,17 +31,20 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
   else if(url.origin!==poolOrigin||poolApi)return url.href;
   throw new Error('Private networking does not permit '+url.origin+path);
  };
- const privateFetch:typeof fetch=markSealedFetch(markPrivateFetch(async(input,init)=>{
+ const privateFetch:typeof fetch=markPrivatePoolPage(markSealedFetch(markPrivateFetch(async(input,init)=>{
   const url=new URL(input instanceof Request?input.url:String(input),pageOrigin),href=route(url);
   if(href===undefined)return direct(input instanceof Request?input:url.href,init);
   const source=new Request(input instanceof Request?input:url,init),method=source.method,body=method==='GET'?undefined:await source.text();
   policy.classify(href,method,body);
   const journalled=journalledRoute(href,method);
-  if(journalled&&method!=='GET')journal.beforeNativeMutation({url:href,method,body});
-  const response=await sealedFetch(href,{method,headers:source.headers,body,signal:source.signal});
+  const mutation=journalled&&method!=='GET'?{url:href,method,body}:undefined;
+  if(mutation)journal.beforeNativeMutation(mutation);
+  let response:Response;
+  try{response=await sealedFetch(href,{method,headers:source.headers,body,signal:source.signal});}
+  catch(error){if(mutation&&error instanceof SealedFetchError&&(error.code==='too-large'||error.code==='unavailable'))journal.cancelNativeMutation(mutation);throw error;}
   if(journalled)journal.observeNativeResponse({url:href,method,status:response.status,body:await response.clone().text(),requestBody:body});
   return response;
- }));
+ })),PRIVATE_PAGE);
  const transport:PrivateTransport={fetch:privateFetch,poolOrigin,pageSize:PRIVATE_PAGE,journal,
   providers(arkUrl,indexerUrl){
    policy.registerArk(arkUrl,indexerUrl);

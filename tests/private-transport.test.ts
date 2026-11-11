@@ -3,13 +3,15 @@ import {readFileSync} from 'node:fs';
 import {test,type TestContext} from 'node:test';
 import {ESPLORA_URL} from '@arkade-os/sdk';
 import {normalizeURL} from 'nostr-tools/utils';
-import {NOSTR_RELAYS,NOSTR_REQUEST_KIND} from '../packages/protocol/src/nostr-carrier.ts';
+import {NOSTR_CHUNK_BYTES,NOSTR_RELAYS,NOSTR_REQUEST_KIND} from '../packages/protocol/src/nostr-carrier.ts';
 import {IsolatedOnchainProvider} from '../src/native/providers.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
-import {isPrivateFetch,isSealedFetch} from '../src/shielded/network-privacy.ts';
-import {installPrivateTransport,privateTransport} from '../src/shielded/private-transport.ts';
+import {isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
+import {poolApiOf} from '../src/shielded/pool.ts';
+import {installPrivateTransport,privateTransport,PRIVATE_GRACE_MS,PRIVATE_PAGE} from '../src/shielded/private-transport.ts';
+import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
 const POOL='https://pool.example',PAGE='http://127.0.0.1:5173',LOOPBACK='http://127.0.0.1:9',ARK='https://ark.example',ESPLORA=ESPLORA_URL.mutinynet,ID='ab'.repeat(16);
@@ -39,7 +41,7 @@ async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.
  }
  const target:Record<string,unknown>={fetch:async(input:string)=>{direct.push(String(input));return new Response('direct');},...globals};
  const transport=installPrivateTransport({config:key.config,gateway:key.nostrPublic,poolOrigin:POOL,pageOrigin,storage:memory(),socket:Sentinel as unknown as typeof WebSocket,globals:target});t.after(()=>transport.close());
- return {transport,globals:target,calls,direct,made,Sentinel,requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND)};
+ return {transport,globals:target,bus,calls,direct,made,Sentinel,requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND)};
 }
 
 test('a relative pool path is rewritten to the pinned pool origin and sealed',async t=>{
@@ -99,6 +101,11 @@ test('the transport fetch is marked private and sealed',async t=>{
  assert.ok(isPrivateFetch(g.transport.fetch));assert.ok(isSealedFetch(g.transport.fetch));assert.equal(g.globals.fetch,g.transport.fetch);
 });
 
+test('a pool api on the transport fetch pages at the transport size, unless told otherwise, and a native private fetcher keeps 50',async t=>{
+ const g=await rig(t),native=markPrivateFetch((async()=>Response.json({})) as typeof fetch);
+ assert.deepEqual([poolApiOf('',g.transport.fetch),poolApiOf('',g.transport.fetch,30),poolApiOf('',native)].map(api=>privatePoolPage(api)),[PRIVATE_PAGE,30,50]);
+});
+
 test('a second install returns the first transport',async t=>{
  const g=await rig(t);
  assert.equal(installPrivateTransport({config:new Uint8Array(),gateway:'',poolOrigin:'https://other.example',pageOrigin:PAGE,globals:g.globals}),g.transport);
@@ -136,6 +143,29 @@ test('a pool spend POST is journalled before it goes out and resolved by its own
  assert.deepEqual([reserved,g.transport.journal.pendingPoolNullifiers(POOL)],[[17n],[17n]],'the entry was written before the POST reached the pool');
  assert.equal((await g.transport.fetch('/api/rollup/spends/'+ID)).status,200);
  assert.deepEqual([g.calls,g.transport.journal.pendingPoolNullifiers(POOL)],[[LOOPBACK+'/api/rollup/spends',LOOPBACK+'/api/rollup/spends/'+ID],[]]);
+});
+
+const spendPost=(id:string,nf:string,pad='')=>({method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,slot:{nullifiers:[nf]},pad})});
+test('a sealed 404 frees a journalled spend only once the grace has passed',async t=>{
+ const g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json({error:'Unknown spend; it may have expired or the server restarted.'},{status:404})});
+ const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
+ assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(ID,'17'))).status,202);
+ for(const [later,left] of [[PRIVATE_GRACE_MS-1,[17n]],[PRIVATE_GRACE_MS+1,[]]] as const){
+  at=start+later;assert.equal((await g.transport.fetch('/api/rollup/spends/'+ID)).status,404);
+  assert.deepEqual(g.transport.journal.pendingPoolNullifiers(POOL),left,String(later));
+ }
+});
+
+test('a spend POST that never went out frees its reservation at once, and one that may have run keeps it',async t=>{
+ const g=await rig(t),fails=(code:string)=>(error:unknown)=>error instanceof SealedFetchError&&error.code===code;
+ await assert.rejects(g.transport.fetch('/api/rollup/spends',spendPost(ID,'17','0'.repeat(NOSTR_CHUNK_BYTES))),fails('too-large'));
+ assert.deepEqual(g.transport.journal.pendingPoolNullifiers(POOL),[]);
+ for(const relay of NOSTR_RELAYS)g.bus.relay(normalizeURL(relay)).accept=false;
+ await assert.rejects(g.transport.fetch('/api/rollup/spends',spendPost(ID,'17')),fails('outcome-unknown'),'the freed id goes out again, and every relay refuses it');
+ assert.deepEqual(g.transport.journal.pendingPoolNullifiers(POOL),[17n]);
+ g.transport.close();
+ await assert.rejects(g.transport.fetch('/api/rollup/spends',spendPost('cd'.repeat(16),'23')),fails('unavailable'));
+ assert.deepEqual([g.transport.journal.pendingPoolNullifiers(POOL),g.calls],[[17n],[]]);
 });
 
 test('the module never imports the native entry point',()=>{
