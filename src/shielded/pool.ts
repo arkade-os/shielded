@@ -99,8 +99,14 @@ export function checkSigningRequest(request:SpendStatus,coin:{txid:string;vout:n
  if(!batchStatements(ark).includes(statement))throw new Error('The batch does not carry this deposit; not signing.');
 }
 
+/** The pool checks only the arkTx's id and reads only our input's signature, so the arkTx goes back without every input's source transaction; the checkpoint replaces the operator's whole. */
 export async function signDeposit(identity:Identity,request:SpendStatus){
- const ark=await identity.sign(Transaction.fromPSBT(base64.decode(request.arkTx!)),[request.vin!]),checkpoint=await identity.sign(Transaction.fromPSBT(base64.decode(request.checkpoint!)),[0]);
+ const vin=request.vin!,signed=await identity.sign(Transaction.fromPSBT(base64.decode(request.arkTx!)),[vin]),checkpoint=await identity.sign(Transaction.fromPSBT(base64.decode(request.checkpoint!)),[0]);
+ const ark=new Transaction({version:signed.version,lockTime:signed.lockTime});
+ for(let i=0;i<signed.inputsLength;i++){const {txid,index,sequence}=signed.getInput(i);ark.addInput({txid:txid!,index:index!,sequence});}
+ for(let i=0;i<signed.outputsLength;i++){const {script,amount}=signed.getOutput(i);ark.addOutput({script:script!,amount:amount!});}
+ // Outputs before the signature: scure-btc-signer refuses addOutput once an input is signed.
+ const {witnessUtxo,tapLeafScript,tapScriptSig}=signed.getInput(vin);ark.updateInput(vin,{witnessUtxo,tapLeafScript,tapScriptSig},true);
  return {arkTx:base64.encode(ark.toPSBT()),checkpoint:base64.encode(checkpoint.toPSBT())};
 }
 
