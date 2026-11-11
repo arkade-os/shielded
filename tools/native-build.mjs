@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
+const iconArguments = ['icon', 'src-tauri/icon.json', '--output', 'src-tauri/icons', '--ios-color', '#111f31'];
 
 export function androidVersionCode(env = process.env) {
   if (!env.GITHUB_RUN_NUMBER && env.GITHUB_ACTIONS !== 'true') return undefined;
@@ -60,11 +61,11 @@ export function prepareAndroid(projectRoot = root) {
 }
 
 export function main([platform = 'desktop', action = 'dev', ...args] = process.argv.slice(2)) {
-  if (platform === 'icons') { run(['icon', 'src-tauri/icon.svg', '--output', 'src-tauri/icons']); return; }
+  if (platform === 'icons') { run(iconArguments); return; }
   if (args[0] === '--') args.shift();
   const command = nativeArguments(platform, action, args);
   if (args.some(arg => ['--help', '-h'].includes(arg))) { run(command); return; }
-  if (!existsSync(resolve(root, 'src-tauri/icons/icon.png'))) run(['icon', 'src-tauri/icon.svg', '--output', 'src-tauri/icons']);
+  if (!existsSync(resolve(root, 'src-tauri/icons/icon.png'))) run(iconArguments);
   if (platform === 'android') {
     if (action === 'init') {
       if (!existsSync(resolve(root, 'src-tauri/gen/android/app'))) run(command);
