@@ -88,12 +88,13 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const guardedFetch:FetchImpl=(input,init)=>(operationFetcher?.fetch??fallbackFetcher)(input,{...init,redirect:'error',credentials:'omit',signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30_000),...(init?.signal?[init.signal]:[])])});
  const client=createLnurlClient({baseUrl,fetchImpl:guardedFetch});
  let tokenOnce:Promise<string>|undefined,tail:Promise<unknown>=Promise.resolve(),timer:ReturnType<typeof setInterval>|undefined,timerBusy=false,disposed=false,healthRevision=0,offEvents:(()=>void)|undefined,closing:Promise<void>|undefined;
+ let initialCheck:Promise<number|undefined>|undefined;
  const pendingWrites=new Set<Promise<unknown>>();
  const knownScripts=new Set<string>(),watchedScripts=new Set<string>();
  const pendingWatches=new Map<string,{promise:Promise<void>;background:boolean;scripts:string[]}>();
  const token=()=>tokenOnce??=deriveSessionTokenForIdentity(config.identity,domain);
  const dataWork=<T>(work:Promise<T>)=>{pendingWrites.add(work);void work.then(()=>pendingWrites.delete(work),()=>pendingWrites.delete(work));return untilStopped(work);};
- const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{const pending=tail.then(async()=>{
+ const serial=<T,>(fn:()=>Promise<T>):Promise<T>=>{initialCheck=undefined;const pending=tail.then(async()=>{
   if(disposed||abort.signal.aborted)throw new Error('Lightning address service is disposed');
   const controller=new AbortController();
   if(config.fetchFor)operationFetcher={controller,fetch:config.fetchFor(AbortSignal.any([abort.signal,controller.signal]))};
@@ -330,7 +331,9 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  return {
   enabled:async()=>Boolean((await load()).servers[serverKey]),
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
-  ensureUnified:()=>serial(ensureUnifiedLocked),
+  ensureUnified:()=>{
+   const pending=serial(ensureUnifiedLocked);initialCheck=pending.then(()=>now(),()=>undefined);return pending;
+  },
   claimName:()=>serial(async()=>{
    const receiver=await ensureUnifiedLocked();
    if(receiver.lightningAddress)return receiver;
@@ -390,8 +393,12 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   check,
   start(onError:(error:unknown)=>void=()=>{}){
    if(timer||disposed||abort.signal.aborted)return;
-   const poll=()=>{if(timerBusy)return;timerBusy=true;void check().catch(error=>{if(!disposed)onError(error);}).finally(()=>{timerBusy=false;});};
-   timer=setInterval(poll,CHECK_EVERY_MS);poll();
+   const initial=initialCheck,poll=()=>{if(disposed||abort.signal.aborted||timerBusy)return;timerBusy=true;void check().catch(error=>{if(!disposed)onError(error);}).finally(()=>{timerBusy=false;});};
+   timer=setInterval(poll,CHECK_EVERY_MS);
+   if(initial)void initial.then(checkedAt=>{
+    const age=checkedAt===undefined?CHECK_EVERY_MS:now()-checkedAt;
+    if(initialCheck!==initial||age<0||age>=CHECK_EVERY_MS)poll();
+   });else poll();
    void dataWork(config.companion.getContractManager()).then(manager=>{const off=manager.onContractEvent(event=>{if(event.type==='vtxo_received')poll();});if(disposed)off();else offEvents=off;}).catch(error=>{if(!disposed&&!abort.signal.aborted)onError(error);});
   },
   async dispose(){

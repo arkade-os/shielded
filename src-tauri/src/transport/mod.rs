@@ -4,6 +4,9 @@ mod routes;
 mod session;
 mod wire;
 
+#[cfg(test)]
+mod http_tests;
+
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use tauri::{State, WebviewWindow, ipc::Channel};

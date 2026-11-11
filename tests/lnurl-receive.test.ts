@@ -86,6 +86,80 @@ test('a verified pool operator avoids a live operator-info request during receiv
  assert.equal(f.infoReads(),0);
 });
 
+test('unified activation satisfies the initial maintenance check while the periodic check still runs',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const f=setup(),activation=f.service.ensureUnified();f.service.start();
+ try{
+  await activation;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.bound().length,1);assert.equal(f.requests.length,3);assert.equal(f.scans(),0);
+  t.mock.timers.tick(CHECK_EVERY_MS);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.bound().length,2);assert.equal(f.scans(),1);
+ }finally{await f.service.dispose();}
+});
+
+test('starting maintenance just after unified activation does not repeat its network work',async()=>{
+ const f=setup();await f.service.ensureUnified();f.service.start();
+ try{
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.bound().length,1);assert.equal(f.requests.length,3);assert.equal(f.scans(),0);
+ }finally{await f.service.dispose();}
+});
+
+test('an old activation does not suppress the initial maintenance check',async()=>{
+ const f=setup();await f.service.ensureUnified();f.tick(CHECK_EVERY_MS);f.service.start();
+ try{
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.bound().length,2);assert.equal(f.scans(),1);
+ }finally{await f.service.dispose();}
+});
+
+test('failed activation still receives the initial background maintenance retry',async()=>{
+ const f=setup(),errors:unknown[]=[];let binds=0;
+ f.reply(()=>++binds===1?json({error:'temporarily unavailable'},503):json({ok:true}));
+ const activation=f.service.ensureUnified();f.service.start(error=>errors.push(error));
+ try{
+  await assert.rejects(activation,/temporarily unavailable/);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(binds,2);assert.deepEqual(errors,[]);assert.equal(f.saved()!.servers[JSON.stringify([baseUrl,domain])]!.current,at(0).script);
+ }finally{await f.service.dispose();}
+});
+
+test('a received payment during activation keeps its queued maintenance check',async()=>{
+ const f=setup();let release!:()=>void,entered!:()=>void,binds=0;
+ const held=new Promise<void>(resolve=>{release=resolve;}),binding=new Promise<void>(resolve=>{entered=resolve;});
+ f.reply(async()=>{if(++binds===1){entered();await held;}return json({ok:true});});
+ const activation=f.service.ensureUnified();f.service.start();
+ try{
+  await binding;assert.equal(f.listeners.size,1);f.funded.add(at(0).script);
+  for(const listener of f.listeners)listener({type:'vtxo_received'});
+  release();await activation;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.bound().length,2);assert.equal(f.bound().at(-1)!.arkadeAddress,at(1).address);
+  assert.deepEqual((await f.service.payouts()).map(row=>row.script),[at(0).script,at(1).script]);
+ }finally{release();await f.service.dispose();}
+});
+
+test('a queued private receive change invalidates the activation initial-check shortcut',async()=>{
+ const f=setup();await f.service.ensureUnified();f.reply(()=>json({error:'temporarily unavailable'},503));
+ await assert.rejects(f.service.setPrivateReceive(true),/temporarily unavailable/);f.reply(()=>json({ok:true}));f.service.start();
+ try{
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.bound().length,3);assert.equal((await f.service.privateReceiveState()).on,true);
+ }finally{await f.service.dispose();}
+});
+
+test('a refused withdrawal during activation keeps its background retries',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const f=setup(),errors:unknown[]=[];await f.service.ensureUnified();await f.service.setPrivateReceive(true);f.keep(false);
+ await assert.rejects(f.service.setPrivateReceive(false),{message:METHODS_NOT_WITHDRAWN});
+ const activation=f.service.ensureUnified();f.service.start(error=>errors.push(error));
+ try{
+  await assert.rejects(activation,{message:METHODS_NOT_WITHDRAWN});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(errors.length,1);assert.equal((errors[0] as Error).message,METHODS_NOT_WITHDRAWN);
+  assert.equal((await f.service.privateReceiveState()).withdrawing,true);
+  f.keep(true);t.mock.timers.tick(CHECK_EVERY_MS);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal((await f.service.privateReceiveState()).withdrawing,false);
+ }finally{await f.service.dispose();}
+});
+
 test('a page cancellation inherited by the address service prevents registration',async()=>{
  const f=setup(),controller=new AbortController();controller.abort();
  const service=createLnurlReceive({...f.config,signal:controller.signal});

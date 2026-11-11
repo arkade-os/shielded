@@ -137,7 +137,6 @@ pub fn check_request(request: &NativeRequest, socket: bool) -> Result<CheckedReq
             hyper::header::ACCEPT_ENCODING,
             HeaderValue::from_static("identity"),
         ));
-        headers.push((hyper::header::CONNECTION, HeaderValue::from_static("close")));
     }
     Ok(CheckedRequest {
         url,
@@ -182,6 +181,17 @@ mod tests {
         let checked = check_request(&request("https://example.org/path?q=1"), false).unwrap();
         assert_eq!(checked.url.host_str(), Some("example.org"));
         assert_eq!(http_request(checked).unwrap().uri(), "/path?q=1");
+    }
+
+    #[test]
+    fn http_policy_allows_native_owned_keepalive() {
+        let checked = check_request(&request("https://example.org/status"), false).unwrap();
+        assert!(
+            checked
+                .headers
+                .iter()
+                .all(|(name, _)| name != hyper::header::CONNECTION)
+        );
     }
 
     #[test]
