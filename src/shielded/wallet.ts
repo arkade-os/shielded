@@ -367,7 +367,8 @@ export class ShieldedWallet extends Wallet {
  private async tick():Promise<void>{
   if(this.stopped)return;
   let atHead=false;
-  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}await this.sync();if(this.stopped)return;atHead=!this.offline;}
+  // Only a tick has just read the status; finish(), renew() and catchUpAfterEvent sync without one, so the skip is not in sync().
+  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.networkPrivacy||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(!this.stopped&&this.operatorDown&&this.headExpiry===undefined){
    const revision=this.statusRevision,expiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;

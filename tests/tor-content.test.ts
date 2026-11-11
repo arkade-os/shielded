@@ -145,6 +145,46 @@ test('private wallet watchdog reads public status independently of private item 
  assert.deepEqual(asked,['/status']);
 });
 
+const tickRig=(held:number,reported:number,networkPrivacy=true)=>{
+ const asked:string[]=[],ran:string[]=[],pool={batches:reported};let batchCount=held;
+ const account={get batchCount(){return batchCount;},epochLen:128,async apply(batch:number){assert.equal(batch,batchCount++);}};
+ const plain=(async(path:string)=>{
+  asked.push(path);const url=new URL(path,'https://pool.test');
+  if(url.pathname==='/status')return {phase:'ready',pool:{batches:pool.batches}};
+  const from=Number(url.searchParams.get('from')),limit=Number(url.searchParams.get('limit'));
+  return {total:pool.batches,batches:Array.from({length:Math.max(0,Math.min(limit,pool.batches-from))},(_,n)=>from+n)};
+ }) as PoolApi;
+ const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  stopped:false,offline:false,networkPrivacy,pool:{origin:'https://pool.test',status:{}},statusAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
+  watchLinks(){},async autoShield(){},async merge(){},async renewNotes(){ran.push('renew');},async recoverNotes(){ran.push('recover');},changed(){this.stopped=true;},
+ });
+ // changed() stops the wallet, or tick() would arm its 60 s timer.
+ const tick=async()=>{wallet.stopped=false;await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);};
+ return {asked,ran,pool,account,tick,pages:()=>asked.filter(path=>path.startsWith('/batches'))};
+};
+
+test('a private tick reads no batch page while the pool reports the count the account already holds',async()=>{
+ const {asked,pages,ran,tick}=tickRig(140,140);
+ await tick();
+ assert.ok(asked.includes('/status'));assert.deepEqual(pages(),[]);
+ assert.deepEqual(ran.toSorted(),['recover','renew']);
+});
+
+test('a private tick syncs as soon as the pool count moves, including across an epoch rotation',async()=>{
+ const {asked,pages,pool,account,tick}=tickRig(127,127);
+ // 128 closes epoch 0 (epochLen 128); 130 is two batches into epoch 1.
+ pool.batches=128;await tick();
+ assert.equal(account.batchCount,128);assert.equal(pages().at(-1),'/batches?from=120&limit=8');
+ asked.length=0;pool.batches=130;await tick();
+ assert.equal(account.batchCount,130);assert.deepEqual(pages(),['/batches?from=128&limit=12']);
+});
+
+test('a direct tick still syncs on every tick',async()=>{
+ const {pages,tick}=tickRig(140,140,false);
+ await tick();await tick();
+ assert.equal(pages().length,2);
+});
+
 test('external uncertain reservations remain visible after local holds release',()=>{
  const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};
  const read=()=>Object.getOwnPropertyDescriptor(ShieldedWallet.prototype,'inFlight')!.get!.call(wallet) as ReadonlySet<bigint>;
