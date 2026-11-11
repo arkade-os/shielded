@@ -86,7 +86,7 @@ const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].in
 const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
 export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
- const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState('');
+ const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState(''),[journalError,setJournalError]=useState('');
  const [nativePending,setNativePending]=useState(false);
  const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
@@ -120,7 +120,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
  const refreshRef=useRef<{request:()=>Promise<void>}|undefined>(undefined);
- const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false),reconcileError=useRef('');
+ const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false);
  const actions=useRef<ReturnType<typeof pageActions>|undefined>(undefined);
  actions.current??=pageActions(()=>{if(mounted.current)setTick(t=>t+1);});
  const refreshes=useRef(new WeakMap<object,{close:()=>Promise<void>}>());
@@ -449,7 +449,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
   if(!wallet||!nativeHost&&!PRIVATE)return;
-  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(!live)return;setNativePending(pending);setPoolError(e=>e===reconcileError.current?'':e);},error=>{if(live)setPoolError(reconcileError.current=errorText(error));});return()=>{live=false;};}
+  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(!live)return;setNativePending(pending);setJournalError('');},error=>{if(!live)return;setNativePending(true);setJournalError(errorText(error));});return()=>{live=false;};}
   try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
   catch(error){setPoolError(errorText(error));}
   },[wallet,tick,nativeHost]);
@@ -697,6 +697,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   {wallet&&feePaused&&<section className="stock-warning" role="alert"><strong>{PAUSED_TITLE}</strong><span>{depositFeeBanner(feePaused,wallet.acceptedDepositFee)}</span><p><button type="button" className="stock-ghost stock-mini" onClick={()=>acceptFee(wallet,feePaused)}>{ACCEPT_FEE}</button></p></section>}
   {feeConfirmed&&!feePaused&&<section className="stock-message" role="status" tabIndex={-1} ref={viewActive&&!suspended?focusOnMount:undefined}>New fee accepted.</section>}
    {ready&&poolError&&<p className="stock-blocked">{poolError}</p>}
+   {ready&&journalError&&<p className="stock-blocked">{journalError}</p>}
    {ready&&pullSyncError&&<p className="stock-blocked" role="alert">{pullSyncError}</p>}
    {ready&&feeNotice&&<p className="stock-blocked" role="alert">{feeNotice}</p>}
    {ready&&startupError&&<p className="stock-blocked">{startupError}</p>}

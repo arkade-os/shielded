@@ -45,7 +45,10 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
  const wallet=read('app/src/RollupWallet.tsx'),effect=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/.exec(wallet);
  assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(\)/);
- assert.match(effect?.[1]??'',/setPoolError\(e=>e===reconcileError\.current\?'':e\)[^\n]*setPoolError\(reconcileError\.current=errorText\(error\)\)/,'a reconcile that recovers clears its own error and no other');
+ const privateBranch=/if\(!nativeHost\)\{[^\n]*/.exec(effect?.[1]??'')?.[0]??'';
+ assert.match(privateBranch,/setNativePending\(pending\);setJournalError\(''\)[^\n]*setNativePending\(true\);setJournalError\(errorText\(error\)\)/,'a failed reconcile keeps the unresolved line and its own error; a later success clears only that');
+ assert.doesNotMatch(privateBranch,/setPoolError/,'a journal error never replaces a startup error');
+ assert.match(wallet,/\{ready&&journalError&&<p className="stock-blocked">\{journalError\}<\/p>\}/);
  assert.match(effect?.[2]??'',/\btick\b/);
  assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
 });
