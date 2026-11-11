@@ -82,7 +82,7 @@ test('a POST shed on two attempts within 30 s hears both statuses and runs on it
 });
 
 test('a GET whose relay never delivers is retried on another relay',async t=>{
- const g=await rig(t,{pick:1,getTimeoutMs:100});g.bus.relay(A).deliver=false;
+ const g=await rig(t,{pick:1,getTimeoutMs:400});g.bus.relay(A).deliver=false;
  assert.equal((await g.fetch(ARK)).status,200);
  assert.deepEqual(g.sentTo(),[[A],[B]]);assert.equal(g.requests().length,2);
  assert.notEqual(g.sent()[0]!.content,g.sent()[1]!.content,'each GET attempt is sealed afresh');
