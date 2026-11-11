@@ -12,8 +12,8 @@ const copied=(from:Headers,names:string[])=>{const kept=new Headers();for(const 
 export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,http=true,fetch:send=fetch,now=()=>performance.now(),clock=()=>Date.now(),windowMs=90_000}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;http?:boolean;fetch?:typeof fetch;now?:()=>number;clock?:()=>number;windowMs?:number}){
  if(![rate,maxInFlight].every(count=>Number.isSafeInteger(count)&&count>=1))throw new Error('The Oblivious HTTP rate and in-flight cap are whole numbers of at least 1.');
  const allowed=upstreams.map(({origin,prefix})=>{const url=new URL(origin);if(url.protocol!=='https:'||!prefix.startsWith('/')||!prefix.endsWith('/'))throw new Error(`An Oblivious HTTP upstream is https with a path prefix that starts and ends with /, not ${origin} ${prefix}.`);return {origin:url.origin,prefix};});
- const pool=new URL(poolOrigin).origin,loopback=new URL(poolLoopback).origin,tally=new Map<string,number>(),seen=new Set<string>(),startedAt=clock();
- let since=now(),second=0,used=0,inFlight=0;
+ const pool=new URL(poolOrigin).origin,loopback=new URL(poolLoopback).origin,tally=new Map<string,number>(),seen=new Set<string>();
+ let since=now(),second=0,used=0,inFlight=0,startedAt=clock();
  const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[ohttp] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
  const answer=(status:number,kind:string)=>{note(kind);return new Response(null,{status});};
  const forward=async(request:Request,gone:AbortSignal,cap:number)=>{
@@ -80,5 +80,6 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   res.status(200).setHeader('Content-Type','message/ohttp-res').setHeader('Cache-Control','no-store').end(sealed);
  });
  router.use((error:{status?:number},_req:express.Request,res:express.Response,_next:express.NextFunction)=>{note(error.status===413?'too-large':'failed');res.sendStatus(error.status??500);});
- return Object.assign(router,{open});
+ // Call as the carrier starts: a request dated before then may have run on the previous instance, whose replay register this one lacks.
+ return Object.assign(router,{open,listen(){startedAt=clock();}});
 }

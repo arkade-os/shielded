@@ -330,6 +330,18 @@ test('an x-date before the gateway started is refused, with 15 s of rounding sla
  assert.deepEqual(await g.router.open(bytesOf(await at(T-15_001))),{kind:'refused'});assert.equal(g.calls.length,1);
 });
 
+test('listen() moves the start to when the carrier listens, so a request dated before that, less 15 s, is stale',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ const T=Date.UTC(2026,10,11,12);let clock=T,tick=0;const g=await gateway(t,{clock:()=>clock,now:()=>tick}),at=(ms:number)=>g.seal(ARK,{headers:{'x-date':new Date(ms).toISOString()}});
+ clock=T+60_000;
+ assert.equal((await through(g.router,await at(T+30_000))).status,200,'until listen(), the gateway started when it was made');
+ g.router.listen();
+ assert.deepEqual(await g.router.open(bytesOf(await at(T+30_000))),{kind:'refused'});
+ assert.equal((await through(g.router,await at(T+45_000))).status,200,'the 15 s of rounding slack holds');
+ tick=60_000;assert.equal((await through(g.router,await at(T+60_000))).status,200);
+ assert.deepEqual(lines,['[ohttp] forwarded 3, stale 1']);
+});
+
 test('x-digest crosses to the upstream and x-date does not',async t=>{
  const g=await gateway(t);
  assert.equal((await g.open(ARK,{headers:{'x-digest':'abc','x-date':new Date().toUTCString(),'x-sdk-version':'ts-sdk/0.5.3'}})).status,200);
