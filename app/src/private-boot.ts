@@ -31,7 +31,7 @@ if(typeof __NATIVE_BUILD__!=='undefined'){
  const install=__SHIELDED_OHTTP_CONFIG__&&__SHIELDED_NOSTR_GATEWAY__?()=>bootPrivateTransport({config:__SHIELDED_OHTTP_CONFIG__,gateway:__SHIELDED_NOSTR_GATEWAY__,relays:__SHIELDED_NOSTR_RELAYS__,poolOrigin:__SHIELDED_POOL_ORIGIN__},location.search,storage,location.origin):undefined;
  try{bootPrivate(__NATIVE_BUILD__,install,location.search,storage);}
  catch(error){
-  document.getElementById('root')?.replaceChildren(`Private networking could not start, so the wallet stays closed: ${String(error instanceof Error?error.message:error).replace(/\.$/,'')}. To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage.`);
+  document.getElementById('root')?.replaceChildren(`Private networking could not start, so the wallet stays closed: ${String(error instanceof Error?error.message:error).replace(/\.$/,'')}. To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage, then open this page again without ?private=1 in its address.`);
   throw error;
  }
 }

@@ -38,7 +38,8 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
  assert.ok(wallet.includes(`{${live}&&to.trim()&&`));
  assert.match(wallet,new RegExp(`expiring>0&&\\(${live}\\?<button[^\\n]*?>Renew expiring sats</button>:`));
  assert.match(wallet,/^import \{PRIVATE_FLAG\} from '\.\/private-boot(\.ts)?';$/m);
- assert.ok(wallet.includes('turn private networking off: remove {PRIVATE_FLAG} from this site&apos;s local storage, then reload.'));
+ assert.ok(wallet.includes('turn private networking off: remove {PRIVATE_FLAG} from this site&apos;s local storage, then open this page again without ?private=1 in its address.'));
+ assert.ok(read('app/src/private-boot.ts').includes("To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage, then open this page again without ?private=1 in its address."),'a link with ?private=1 sets the flag again on reload');
 });
 
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
