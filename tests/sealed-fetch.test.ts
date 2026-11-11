@@ -17,7 +17,9 @@ const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const holding=(reply=()=>Response.json({ok:true}))=>{let release=()=>{};const held=new Promise<Response>(resolve=>{release=()=>resolve(reply());});return {held,release};};
 const failsWith=(code:SealedFetchError['code'])=>(error:unknown)=>error instanceof SealedFetchError&&error.code===code;
 const timers=()=>process.getActiveResourcesInfo().filter(type=>type==='Timeout').length;
-const advance=async(t:TestContext,ms:number)=>{for(let at=0;at<ms;at+=1000){t.mock.timers.tick(1000);await settle();}};
+// The bus delivers on zero-delay timers; firing them in place keeps a relay hop from costing mocked time, so only the waits move the clock.
+const flush=async(t:TestContext)=>{for(let i=0;i<8;i++){t.mock.timers.tick(0);await settle();}};
+const advance=async(t:TestContext,ms:number)=>{await flush(t);for(let at=0;at<ms;at+=1000){t.mock.timers.tick(1000);await flush(t);}};
 const FORBIDDEN=['accept-charset','accept-encoding','access-control-request-headers','access-control-request-method','connection','content-length','cookie','cookie2','date','dnt','expect','host','keep-alive','origin','referer','set-cookie','te','trailer','transfer-encoding','upgrade','via'];
 
 type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;open?:OhttpOpen}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'getTimeoutMs'|'attempts'|'random'>;
@@ -269,7 +271,7 @@ test('every sealed request carries an x-date rounded to the nearest 30 s, and x-
  const g=await rig(t);
  assert.equal((await g.fetch(ARK,{headers:{'x-digest':'abc',authorization:'x','x-sdk-version':'ts-sdk/0.5.3'}})).status,200);
  const {headers}=await g.inner(),at=Date.parse(headers.get('x-date')!);
- assert.ok(at%30_000===0&&Math.abs(Date.now()-at)<=30_000,String(headers.get('x-date')));
+ assert.ok(at%30_000===0&&Math.abs(Date.now()-at)<=16_000,String(headers.get('x-date')));
  assert.deepEqual([headers.get('x-digest'),headers.has('authorization'),headers.has('x-sdk-version')],['abc',false,false]);
 });
 
@@ -296,16 +298,19 @@ test('a GET attempt ends after 9 s and a POST attempt after 40 s',async t=>{
  t.mock.timers.tick(1);await post;
 });
 
-test('a GET answered on its first attempt resolves well inside the SDK getInfo abort',async t=>{
+test('a GET answered on its first attempt publishes once and leaves no deadline behind',async t=>{
  const g=await rig(t),before=timers();
  assert.equal((await g.fetch(ARK)).status,200);await sleep(20);
  assert.deepEqual([g.requests().length,timers()],[1,before]);
 });
 
 test('a POST stops attempting 45 s after its sealing and ends outcome-unknown',async t=>{
- const g=await rig(t,{attempts:3,open:async()=>({kind:'busy',status:503,retryAfter:30})});t.mock.timers.enable({apis:['setTimeout','Date'],now:Date.now()});
- const spend=assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown'));await until(()=>g.sentTo().length===1);
- await advance(t,33_000);assert.equal(g.requests().length,2,'the second attempt went after the first 30 s back-off');
- await advance(t,40_000);await spend;
- assert.equal(g.requests().length,2,'the second back-off ended past 45 s, so no third attempt went out');assert.equal(new Set(g.requests().map(event=>event.content)).size,1);
+ for(const [retryAfter,attempts,later] of [[30,3,[30_000]],[22,3,[22_000,44_000]],[15,4,[15_000,30_000]]] as const){
+  const g=await rig(t,{attempts,open:async()=>({kind:'busy',status:503,retryAfter})});t.mock.timers.enable({apis:['setTimeout','Date'],now:Date.now()});
+  const start=Date.now(),sent:number[]=[],spend=assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown'));await until(()=>g.sentTo().length===1);
+  for(let at=0;at<100_000;at+=1000){const before=g.requests().length;await advance(t,1000);if(g.requests().length>before)sent.push(Date.now()-start);}
+  await spend;
+  assert.deepEqual(sent,later,`retryAfter ${retryAfter}, attempts ${attempts}`);assert.equal(new Set(g.requests().map(event=>event.content)).size,1);
+  t.mock.timers.reset();
+ }
 });
