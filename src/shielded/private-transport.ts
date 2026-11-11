@@ -3,6 +3,7 @@ import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import {verifyEvent} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
 import {NOSTR_RELAYS} from '../../packages/protocol/src/nostr-carrier.ts';
+import {NATIVE_RELEASE_ENDPOINT} from '../native-release.ts';
 import {journalledRoute,makeNativeMutationJournal} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
@@ -24,15 +25,15 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
  const journal=makeNativeMutationJournal(config.storage??globalThis.localStorage,{graceMs:PRIVATE_GRACE_MS});
  const sealedFetch=createSealedFetch({config:config.config,gateway:config.gateway,origin:poolOrigin,relays,pool:new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000,websocketImplementation:Original})});
  const Guarded=class extends Original {constructor(url:string|URL,protocols?:string|string[]){const u=normalizeURL(String(url));if(!pinned.has(u))throw new Error('Private networking does not permit a WebSocket to '+url);super(u,protocols);}};
- // Express routes ignore case, so these checks do. Order matters: a pool API path is sealed at the pinned origin even when the page is served from it, and a proving path on the page origin goes direct even when it is not.
- const route=(url:URL)=>{
+ // Express routes ignore case, so these checks do; the release list matches exactly, as its handler does. Order matters: a pool API path is sealed at the pinned origin even when the page is served from it, and a proving path on the page origin goes direct even when it is not.
+ const route=(url:URL,method:string)=>{
   const path=url.pathname,lower=path.toLowerCase(),proving=/^\/api\/rollup\/proving\//.test(lower),poolApi=/^\/api\/rollup\//.test(lower)&&!proving;
-  if(url.origin===pageOrigin){if(proving||!lower.startsWith('/api/'))return undefined;if(poolApi)return poolOrigin+path+url.search;}
+  if(url.origin===pageOrigin){if(proving||!lower.startsWith('/api/')||method==='GET'&&path===NATIVE_RELEASE_ENDPOINT)return undefined;if(poolApi)return poolOrigin+path+url.search;}
   else if(url.origin!==poolOrigin||poolApi)return url.href;
   throw new Error('Private networking does not permit '+url.origin+path);
  };
  const privateFetch:typeof fetch=markPrivatePoolPage(markSealedFetch(markPrivateFetch(async(input,init)=>{
-  const url=new URL(input instanceof Request?input.url:String(input),pageOrigin),href=route(url);
+  const url=new URL(input instanceof Request?input.url:String(input),pageOrigin),href=route(url,(init?.method??(input instanceof Request?input.method:'GET')).toUpperCase());
   if(href===undefined)return direct(input instanceof Request?input:url.href,init);
   const source=new Request(input instanceof Request?input:url,init),method=source.method,body=method==='GET'?undefined:await source.text();
   policy.classify(href,method,body);

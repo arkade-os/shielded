@@ -18,7 +18,7 @@ const POOL='https://pool.example',PAGE='http://127.0.0.1:5173',LOOPBACK='http://
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const memory=()=>{const items=new Map<string,string>();return {getItem:(key:string)=>items.get(key)??null,setItem:(key:string,value:string)=>{items.set(key,value);},removeItem:(key:string)=>{items.delete(key);}};};
 
-async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.json({ok:true})}:{pageOrigin?:string;globals?:Record<string,unknown>;reply?:(url:string)=>Response}={}){
+async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.json({ok:true}),inject=true}:{pageOrigin?:string;globals?:Record<string,unknown>;reply?:(url:string)=>Response;inject?:boolean}={}){
  // Node's own WebSocket reaches the six public relays, so a pool that lost its websocketImplementation fails here instead.
  const real=globalThis.WebSocket;globalThis.WebSocket=class {constructor(){throw new Error('a test reached for a public relay');}} as unknown as typeof WebSocket;t.after(()=>{globalThis.WebSocket=real;});
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,bus=createNostrBus(),calls:string[]=[],direct:string[]=[],made:unknown[]=[];
@@ -39,8 +39,8 @@ async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.
   }
   close(){this.readyState=3;for(const sub of this.subs.values())sub.close();this.subs.clear();}
  }
- const target:Record<string,unknown>={fetch:async(input:string)=>{direct.push(String(input));return new Response('direct');},...globals};
- const transport=installPrivateTransport({config:key.config,gateway:key.nostrPublic,poolOrigin:POOL,pageOrigin,storage:memory(),socket:Sentinel as unknown as typeof WebSocket,globals:target});t.after(()=>transport.close());
+ const target:Record<string,unknown>={fetch:async(input:string)=>{direct.push(String(input));return new Response('direct');},...(inject?{}:{WebSocket:Sentinel}),...globals};
+ const transport=installPrivateTransport({config:key.config,gateway:key.nostrPublic,poolOrigin:POOL,pageOrigin,storage:memory(),...(inject?{socket:Sentinel as unknown as typeof WebSocket}:{}),globals:target});t.after(()=>transport.close());
  return {transport,globals:target,bus,calls,direct,made,Sentinel,requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND)};
 }
 
@@ -57,12 +57,13 @@ test('a pool path is sealed even when the page origin is the pool origin',async 
  assert.deepEqual([g.calls,g.direct],[[LOOPBACK+'/api/rollup/status'],[]]);
 });
 
-test('the page assets and the proving files go direct, and nothing else under /api does',async t=>{
- const g=await rig(t),paths=['/','/assets/app.js','/api/rollup/proving/epoch-spend.wasm?v='+'c'.repeat(64)];
+test('the page assets, the proving files and a GET of the release list go direct, and nothing else under /api does',async t=>{
+ const g=await rig(t),paths=['/','/assets/app.js','/api/rollup/proving/epoch-spend.wasm?v='+'c'.repeat(64),'/api/native/releases'];
  for(const path of paths)assert.equal(await (await g.transport.fetch(path)).text(),'direct',path);
  assert.deepEqual(g.direct,paths.map(path=>POOL+path));
- for(const path of ['/api/native/releases','/api/other'])await assert.rejects(g.transport.fetch(path),/does not permit/,path);
- assert.deepEqual([g.requests().length,g.calls.length],[0,0]);
+ await assert.rejects(g.transport.fetch('/api/other'),/does not permit/);
+ for(const method of ['POST','HEAD'])await assert.rejects(g.transport.fetch('/api/native/releases',{method}),/does not permit/,method);
+ assert.deepEqual([g.requests().length,g.calls.length,g.direct.length],[0,0,paths.length]);
 });
 
 test('on a page origin other than the pool, the page assets and the proving files still go direct',async t=>{
@@ -120,10 +121,17 @@ test('EventSource, XMLHttpRequest and WebRTC are refused, and WebSocket only rea
  for(const url of ['wss://nostr.arkade.sh','ws://relay.snort.social'])assert.throws(()=>new G.WebSocket!(url),/does not permit/,url);
 });
 
-test('the sealed fetch is given the original WebSocket, not the guarded one',async t=>{
+test('an injected socket builds every relay socket, not the page WebSocket nor the guarded one',async t=>{
  const g=await rig(t,{globals:{WebSocket:class {constructor(){throw new Error('the page WebSocket was used');}}}});
  assert.equal((await g.transport.fetch('/api/rollup/status')).status,200);
  assert.ok(g.made.length&&g.made.every(made=>made===g.Sentinel),'every relay socket was built by the original constructor itself');
+});
+
+test('with no socket injected, the sealed fetch gets the page WebSocket captured before the guard replaced it',async t=>{
+ const g=await rig(t,{inject:false});
+ assert.notEqual(g.globals.WebSocket,g.Sentinel);
+ assert.equal((await g.transport.fetch('/api/rollup/status')).status,200);
+ assert.ok(g.made.length&&g.made.every(made=>made===g.Sentinel),'a socket the guard built would carry its own new.target');
 });
 
 test('providers carry no event source and an onchain provider that polls',async t=>{
