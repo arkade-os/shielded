@@ -69,11 +69,27 @@ test('an install whose index.html is not the one this build hashed fails and cac
 
 test('a navigation to any app route is answered with the cached index.html',async()=>{
  const sw=worker();await sw.dispatch('install');
- for(const path of ['/','/wallet','/wallet/','/claim#token','/claim/#token','/verify','/watch'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'cached /index.html',intercepted:true},path);
+ for(const path of ['/wallet','/wallet/','/claim#token','/claim/#token','/verify','/watch'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'cached /index.html',intercepted:true},path);
  assert.equal(sw.fetch.mock.callCount(),0);
  for(const path of ['/stock-wallet','/stock-wallet/'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'net',intercepted:false},`${path}: the server still redirects legacy paths`);
  await sw.caches.delete(shell);
  assert.deepEqual(await sw.get('/claim',{navigate:true}),{body:'net',intercepted:true},'a cache miss goes to the network');
+});
+
+test('public pages fetch fresh HTML without replacing the wallet shell or activating its update',async()=>{
+ const sw=worker();await sw.dispatch('install');
+ for(const path of ['/','/#download','/download','/download/','/index.html'])assert.deepEqual(await sw.get(path,{navigate:true}),{body:'net',intercepted:true},path);
+ assert.deepEqual(await sw.get('/wallet',{navigate:true}),{body:'cached /index.html',intercepted:true});
+ assert.equal(await sw.stores.get(shell)!.get(origin+'/index.html')!.response.clone().text(),'cached /index.html');
+ assert.equal(sw.skipWaiting.mock.callCount(),0);
+});
+
+test('offline public pages can still use the cached shell without changing wallet caches',async()=>{
+ const sw=worker();await sw.dispatch('install');
+ sw.fetch.mock.mockImplementationOnce(async()=>{throw new TypeError('offline');});
+ assert.deepEqual(await sw.get('/download',{navigate:true}),{body:'cached /index.html',intercepted:true});
+ assert.equal(sw.fetch.mock.callCount(),1);
+ assert.deepEqual(await sw.get('/wallet',{navigate:true}),{body:'cached /index.html',intercepted:true});
 });
 
 test('anything but a same-origin GET reaches the network untouched',async()=>{
@@ -221,7 +237,7 @@ test('registerAppCache does nothing without service workers',async()=>{
 test('a waiting version is offered once and applying it reloads once',async()=>{
  const waiting=fakeWorker('installed'),page=browser({},waiting),offers:(()=>void)[]=[],reload=mock.fn();
  registerAppCache(apply=>offers.push(apply),{prod:true,navigator:page.navigator,reload});await tick();
- assert.deepEqual(page.container.register.mock.calls.map(call=>call.arguments),[['/sw.js',{updateViaCache:'all'}]]);
+ assert.deepEqual(page.container.register.mock.calls.map(call=>call.arguments),[['/sw.js',{updateViaCache:'none'}]]);
  assert.equal(offers.length,1);assert.equal(waiting.postMessage.mock.callCount(),0,'the version waits for the tap');
  offers[0]();
  assert.deepEqual(waiting.postMessage.mock.calls.map(call=>call.arguments),[[{type:'skip-waiting'}]]);

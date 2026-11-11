@@ -1,6 +1,6 @@
 const APP_CACHE=__APP_CACHE__;
 // appCache() in vite.config.ts fills in line 1 with this build's files, version, force flag and index.html hash.
-const SHELL=`shielded-shell-${APP_CACHE.version}`,PROVING='shielded-proving',ROUTES=['/','/wallet','/claim','/verify','/watch'];
+const SHELL=`shielded-shell-${APP_CACHE.version}`,PROVING='shielded-proving',ROUTES=['/wallet','/claim','/verify','/watch'],PUBLIC_ROUTES=['/','/download','/index.html'];
 // Built files have one copy each; crossorigin scripts send Origin, so a Vary: Origin answer would never match the precache.
 // A failing CacheStorage falls back to the network: recovering by clearing site data would also wipe the wallet secret.
 const cacheFirst=(request,key=request)=>caches.open(SHELL).then(cache=>cache.match(key,{ignoreVary:true})).catch(()=>{}).then(hit=>hit??fetch(request));
@@ -24,6 +24,8 @@ self.addEventListener('fetch',event=>{
   const response=await fetch(request);if(response.ok)event.waitUntil(cache.put(request,response.clone()));return response;
  },()=>fetch(request)));
  if(url.pathname.startsWith('/api/'))return;
- if(request.mode==='navigate'&&ROUTES.includes(url.pathname.replace(/\/+$/,'')||'/'))return event.respondWith(cacheFirst(request,'/index.html'));
+ const route=url.pathname.replace(/\/+$/,'')||'/';
+ if(request.mode==='navigate'&&PUBLIC_ROUTES.includes(route))return event.respondWith(fetch(request).catch(()=>cacheFirst(request,'/index.html')));
+ if(request.mode==='navigate'&&ROUTES.includes(route))return event.respondWith(cacheFirst(request,'/index.html'));
  if(APP_CACHE.files.includes(url.pathname))event.respondWith(cacheFirst(request));
 });

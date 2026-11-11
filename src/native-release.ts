@@ -39,7 +39,7 @@ export interface NativeRelease {
 
 /** Store-distributed builds can resolve their platform listing or update API here. */
 export function nativeUpdateUrl(){
- return `${NATIVE_RELEASE_ORIGIN}/#download`;
+ return `${NATIVE_RELEASE_ORIGIN}/download#download`;
 }
 export interface NativeBuildEnvironment {
   node: string;

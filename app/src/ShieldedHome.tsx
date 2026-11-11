@@ -2,7 +2,6 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {ARCHIVE_DEPTH,BATCH_SLOTS,EPOCH_NULLIFIER_DEPTH,EPOCH_SLOTS,RECOVERED_DEPTH} from '../../packages/protocol/src/rollup/constants.ts';
 import {Gradient,Seal,spirograph,wave,type Tincture} from './guilloche.tsx';
 import {rollupApi,type RollupPoolStatus} from './rollup-client.ts';
-import {AppUpdateNotice} from './AppUpdates.js';
 import NativeDownloads from './NativeDownloads.tsx';
 import './shielded-home.css';
 
@@ -187,7 +186,7 @@ function Plate(){
  </section>;
 }
 
-export default function ShieldedHome(){
+export default function ShieldedHome({downloadOnly=false}:{downloadOnly?:boolean}){
  useEffect(()=>{
   const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){entry.target.setAttribute('data-visible','');observer.unobserve(entry.target);}},{rootMargin:'0px 0px -15% 0px'});
   document.querySelectorAll('[data-reveal]').forEach(node=>observer.observe(node));
@@ -195,19 +194,20 @@ export default function ShieldedHome(){
   return()=>observer.disconnect();
  },[]);
  const [pool,setPool]=useState<RollupPoolStatus>(),[error,setError]=useState(false);
- useEffect(()=>{rollupApi<RollupPoolStatus>('/status').then(setPool,()=>setError(true));},[]);
+ useEffect(()=>{if(!downloadOnly)rollupApi<RollupPoolStatus>('/status').then(setPool,()=>setError(true));},[downloadOnly]);
  const phase=pool?.phase,tone=error||phase==='blocked'?'is-blocked':phase==='ready'?'is-open':'';
  const status=error?'Pool status is unavailable right now.':phase==='ready'?'The test pool is open on Mutinynet.':pool?.message??'Checking the pool…';
  const item=(text:string,n:number)=><li key={text} style={{'--n':n} as React.CSSProperties}>{text}</li>;
- return <div className="shielded-home">
-  <header className="sh-header"><a className="sh-wordmark" href="/">Shielded<span>on Arkade</span></a><nav aria-label="Main"><a href="#privacy">Privacy</a><a href="#how">How it works</a><a className="sh-download-nav" href="#download">Download</a><AppUpdateNotice/><a className="sh-cta" href="/wallet">Open wallet</a></nav></header>
+ return <div className={'shielded-home'+(downloadOnly?' sh-download-page':'')}>
+  <header className="sh-header"><a className="sh-wordmark" href="/">Shielded<span>on Arkade</span></a><nav aria-label="Main"><a href={downloadOnly?'/#privacy':'#privacy'}>Privacy</a><a href={downloadOnly?'/#how':'#how'}>How it works</a><a className="sh-download-nav" href="/download#download">Download</a><a className="sh-cta" href="/wallet">Open wallet</a></nav></header>
   <main>
+   {downloadOnly?<NativeDownloads/>:<>
    <section className="sh-hero" aria-labelledby="sh-title">
     <div className="sh-hero-text">
      <p className="sh-kicker">Private · Your keys · On Arkade</p>
      <h1 id="sh-title">Bitcoin, held in confidence.</h1>
      <p className="sh-lead">Shielded is a private pool for Bitcoin on Arkade. Inside it, payments move as private notes: each one is checked for validity, yet no one learns who paid whom, or how much.</p>
-     <div className="sh-actions"><a className="sh-cta" href="#download">Download Shielded</a><a href="/wallet">Open the wallet</a></div>
+     <div className="sh-actions"><a className="sh-cta" href="/download#download">Download Shielded</a><a href="/wallet">Open the wallet</a></div>
      <p className={'sh-status '+tone} role="status"><i aria-hidden="true"/>{status}</p>
     </div>
     <Rosette/>
@@ -247,6 +247,7 @@ export default function ShieldedHome(){
     <p>The operator can still delay or refuse a transaction, and restoring a wallet needs its encrypted records together with your recovery secret. Keep that secret safe: no one can reset it for you.</p>
     <a className="sh-cta" href="/wallet">Open the wallet <span aria-hidden="true">→</span></a>
    </section>
+   </>}
   </main>
   <footer className="sh-footer"><Ribbon dark/><div><span>Shielded on Arkade</span><span>An experimental privacy pool for Bitcoin, running on Mutinynet.</span></div></footer>
  </div>;

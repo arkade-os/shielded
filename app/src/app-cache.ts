@@ -9,7 +9,7 @@ export function registerAppCache(onUpdate:(apply:()=>void)=>void,{prod,off,navig
  let reloaded=false;
  const reloadOnce=()=>{if(!reloaded){reloaded=true;reload();}};
  container.addEventListener('controllerchange',reloadOnce);
- container.register('/sw.js',{updateViaCache:'all'}).then(registration=>{
+ container.register('/sw.js',{updateViaCache:'none'}).then(registration=>{
   // Nothing waits once the version has activated, and this tab still runs the old code, so it reloads instead.
   const apply=()=>{if(registration.waiting)registration.waiting.postMessage({type:'skip-waiting'});else reloadOnce();};
   const offer=()=>{if(container.controller)onUpdate(apply);};

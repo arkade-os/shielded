@@ -6,6 +6,7 @@ import {NativeUpdateFallback,NativeUpdateLink} from '../app/src/AppUpdates.tsx';
 import {nativeUpdateUrl} from '../src/native-release.ts';
 
 test('native update availability is a direct external link',()=>{
+ assert.equal(nativeUpdateUrl(),'https://shielded.mutinynet.arkade.sh/download#download');
  const html=renderToStaticMarkup(createElement(NativeUpdateLink));
  assert.match(html,/Update available/);assert.match(html,/<a\b/);
  assert.ok(html.includes(`href="${nativeUpdateUrl()}"`));assert.match(html,/data-native-external="true"/);
