@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {test} from 'node:test';
+import {test,type TestContext} from 'node:test';
 import {DefaultVtxo,SingleKey,Wallet} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -7,7 +7,7 @@ import {BATCH_SLOTS,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constant
 import type {RollupEpochRecord,RollupEpochRecordSlot} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
-import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {EVENT_RETRY_MS,WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
@@ -161,8 +161,11 @@ const tickRig=(held:number,reported:number,fetcher:typeof fetch)=>{
  });
  // changed() stops the wallet, or tick() would arm its 60 s timer.
  const tick=async()=>{wallet.stopped=false;await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);};
- return {asked,ran,pool,account,tick,pages:()=>asked.filter(path=>path.startsWith('/batches'))};
+ return {asked,ran,pool,account,wallet,tick,pages:()=>asked.filter(path=>path.startsWith('/batches'))};
 };
+const timers=(t:TestContext)=>{const armed:{ms:number;run:()=>void}[]=[];t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>armed.push({ms,run})) as never);return armed;};
+const spread=(t:TestContext)=>{let n=0;t.mock.method(Math,'random',()=>(++n%9+1)/10);};
+const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
 
 test('a private tick reads no batch page while the pool reports the count the account already holds',async()=>{
  const {asked,pages,ran,tick}=tickRig(140,140,sealedStub());
@@ -200,6 +203,38 @@ test('create marks only a sealed pool fetcher as a sealed transport',async t=>{
  t.mock.method(Wallet,'create',async()=>wallet as never);t.mock.method(Wallet.prototype,'dispose',async()=>{});
  for(const fetcher of [sealedStub(),nativeStub(),stub()])await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,networkPrivacy:isPrivateFetch(fetcher)}),error=>error===sentinel);
  assert.deepEqual(seen,[true,false,false]);
+});
+
+test('a sealed wallet re-draws its watchdog and status intervals every round, and a direct or native one keeps them at 60 s',async t=>{
+ spread(t);const armed=timers(t),proto=ShieldedWallet.prototype as unknown as {start(this:unknown):Promise<void>;statusTick(this:unknown):Promise<void>};
+ const delays=async(fetcher:typeof fetch)=>{
+  const {wallet,tick}=tickRig(140,140,fetcher);Object.assign(wallet,{changed(){},finishStart:async()=>{}});armed.length=0;
+  await proto.start.call(wallet);
+  for(let round=0;round<5;round++){await tick();await proto.statusTick.call(wallet);}
+  return armed.map(timer=>timer.ms);
+ };
+ const sealed=await delays(sealedStub());
+ assert.equal(sealed.length,12);
+ assert.ok(sealed.every(ms=>ms>WATCHDOG_MS&&ms<=1.25*WATCHDOG_MS)&&new Set(sealed).size>1,sealed.join());
+ for(const fetcher of [stub(),nativeStub()])assert.deepEqual(await delays(fetcher),Array(12).fill(WATCHDOG_MS));
+});
+
+test('a sealed catch-up after an indexer event re-draws its retry delays, and a direct or native one keeps them',async t=>{
+ spread(t);const armed=timers(t);
+ const retries=async(fetcher:typeof fetch)=>{
+  let notify:(event:{type:string})=>void=()=>{},syncs=0;armed.length=0;
+  const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{networkPrivacy:isPrivateFetch(fetcher),sealedTransport:isSealedFetch(fetcher),stopped:false,unwatch:[],poolScript:'script',
+   getContractManager:async()=>({watchScript:async()=>{},onContractEvent:(listener:typeof notify)=>{notify=listener;return ()=>{};}}),notifyIncomingFunds:async()=>()=>{},autoShield:async()=>{},sync:async()=>{syncs++;return 0;}});
+  await (ShieldedWallet.prototype as unknown as {finishStart(this:unknown):Promise<void>}).finishStart.call(wallet);
+  notify({type:'vtxo_received'});
+  for(let i=0;i<EVENT_RETRY_MS.length-1;i++){await flush();armed[i]!.run();}
+  await flush();
+  return {syncs,delays:armed.map(timer=>timer.ms)};
+ };
+ const sealed=await retries(sealedStub());
+ assert.deepEqual([sealed.syncs,sealed.delays.length],[EVENT_RETRY_MS.length,EVENT_RETRY_MS.length-1],'a zero delay stays zero and arms no timer');
+ assert.ok(sealed.delays.every((ms,i)=>ms>EVENT_RETRY_MS[i+1]!&&ms<=1.25*EVENT_RETRY_MS[i+1]!),sealed.delays.join());
+ for(const fetcher of [stub(),nativeStub()])assert.deepEqual(await retries(fetcher),{syncs:EVENT_RETRY_MS.length,delays:EVENT_RETRY_MS.slice(1)});
 });
 
 test('external uncertain reservations remain visible after local holds release',()=>{

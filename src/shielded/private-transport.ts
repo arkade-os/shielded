@@ -7,7 +7,7 @@ import {NATIVE_RELEASE_ENDPOINT} from '../native-release.ts';
 import {journalledRoute,makeNativeMutationJournal} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
-import {markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
+import {PRIVATE_ONCHAIN_POLL_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
 import {createSealedFetch,SealedFetchError} from './sealed-fetch.ts';
 
 export const PRIVATE_PAGE=12;
@@ -56,7 +56,7 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
   },
   providers(arkUrl,indexerUrl){
    policy.registerArk(arkUrl,indexerUrl);
-   return {arkProvider:new RestArkProvider(arkUrl),indexerProvider:new IsolatedIndexerProvider(indexerUrl,undefined,undefined,undefined,0),onchainProvider:network=>{const url=ESPLORA_URL[network];policy.registerEsplora(url);return new IsolatedOnchainProvider(url);}};
+   return {arkProvider:new RestArkProvider(arkUrl),indexerProvider:new IsolatedIndexerProvider(indexerUrl,undefined,undefined,undefined,0),onchainProvider:network=>{const url=ESPLORA_URL[network];policy.registerEsplora(url);return new IsolatedOnchainProvider(url,PRIVATE_ONCHAIN_POLL_MS);}};
   },
   close(){sealedFetch.close();if(installed===transport)installed=undefined;},
  };

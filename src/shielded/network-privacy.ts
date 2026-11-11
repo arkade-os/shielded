@@ -3,6 +3,8 @@ export const SEALED_FETCH=Symbol.for('shielded.sealed.fetch');
 export const PRIVATE_POOL_API=Symbol.for('shielded.private.pool-api');
 export const PRIVATE_POOL_PAGE=Symbol.for('shielded.private.pool-page');
 export const PRIVATE_PAGE_DEFAULT=50;
+export const PRIVATE_ONCHAIN_POLL_MS=60_000;
+export const privateInterval=(ms:number):number=>Math.round(ms*(1+Math.random()/4));
 
 const brandOf=(value:unknown,key:symbol)=>typeof value==='function'?(value as unknown as Record<symbol,unknown>)[key]:undefined;
 const marked=(value:unknown,key:symbol)=>brandOf(value,key)===true;

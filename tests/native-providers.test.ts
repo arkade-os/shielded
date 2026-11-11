@@ -146,6 +146,23 @@ test('an indexer provider built with no stream reservations polls every script i
  const q=new IsolatedIndexerProvider('https://ark.example',undefined,streaming);await q.unsubscribeForScripts(await q.subscribeForScripts(['a']));
  assert.deepEqual(subscribed,[['a']],'the three-argument default still reserves a stream');
 });
+test('an isolated onchain provider without a poll interval keeps the SDK default, and one with it re-randomizes every read',()=>{
+ const url='https://chain.example/api',plain=new IsolatedOnchainProvider(url),slow=new IsolatedOnchainProvider(url,60_000),reads=Array.from({length:20},()=>slow.pollingInterval);
+ assert.equal(plain.pollingInterval,15_000);assert.ok('value' in Object.getOwnPropertyDescriptor(plain,'pollingInterval')!,'no getter is installed without a poll interval');
+ assert.ok(reads.every(ms=>ms>=60_000&&ms<=75_000)&&new Set(reads).size>1,reads.join());
+ assert.deepEqual([plain.forcePolling,slow.forcePolling],[true,true]);
+});
+test("the SDK's own poll loop schedules every round on a freshly drawn interval",async t=>{
+ const armed:{ms:number;run:()=>void}[]=[],stats={tx_count:0,funded_txo_count:0,spent_txo_count:0},flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
+ t.mock.method(console,'warn',()=>{});
+ t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>armed.push({ms,run})) as never);
+ t.mock.method(globalThis,'fetch',(async(url:string)=>Response.json(url.endsWith('/txs')?[]:url.endsWith('/blocks')?[{id:'00',height:1,mediantime:1}]:{chain_stats:stats,mempool_stats:stats})) as never);
+ const stop=await new IsolatedOnchainProvider('https://chain.example/api',60_000).watchAddresses(['a'],()=>{});
+ for(let round=0;round<6;round++){await flush();armed[round]!.run();}
+ await flush();stop();
+ const delays=armed.map(timer=>timer.ms);
+ assert.equal(delays.length,7);assert.ok(delays.every(ms=>ms>=60_000&&ms<=75_000)&&new Set(delays).size>1,delays.join());
+});
 test('native onchain watches split addresses and release every watch',async()=>{
  const original=EsploraProvider.prototype.watchAddresses,calls:string[][]=[],closed:string[]=[];
  EsploraProvider.prototype.watchAddresses=async addresses=>{calls.push(addresses);return ()=>{closed.push(...addresses);};};

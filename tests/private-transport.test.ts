@@ -9,7 +9,7 @@ import {IsolatedOnchainProvider} from '../src/native/providers.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
-import {isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
+import {PRIVATE_ONCHAIN_POLL_MS,isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
 import {poolApiOf} from '../src/shielded/pool.ts';
 import {installPrivateTransport,privateTransport,PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
@@ -144,6 +144,11 @@ test('providers carry no event source and an onchain provider that polls',async 
  const original=globalThis.fetch,sent:string[]=[];globalThis.fetch=(async(input:string)=>{sent.push(input);return Response.json({subscriptionId:'remote'});}) as unknown as typeof fetch;
  try{await p.indexerProvider.unsubscribeForScripts(await p.indexerProvider.subscribeForScripts(['aa']));}finally{globalThis.fetch=original;}
  assert.deepEqual(sent,[],'a watched script is polled, never subscribed');
+});
+
+test('the private transport builds its onchain provider on the slow poll interval',async t=>{
+ const g=await rig(t),interval=(g.transport.providers(ARK,ARK).onchainProvider('mutinynet') as IsolatedOnchainProvider).pollingInterval;
+ assert.ok(interval>=PRIVATE_ONCHAIN_POLL_MS&&interval<=1.25*PRIVATE_ONCHAIN_POLL_MS,String(interval));
 });
 
 test('a pool spend POST is journalled before it goes out and resolved by its own GET',async t=>{

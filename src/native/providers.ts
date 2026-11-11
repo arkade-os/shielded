@@ -1,4 +1,5 @@
 import {EsploraProvider,RestIndexerProvider,isVtxoSpent,type EventSourceFactory,type ExplorerTransaction,type GetVtxosOptions,type IndexerProvider,type PaginationOptions,type SubscriptionResponse,type SubscriptionFilter,type SubscriptionEvent,type SubscriptionHeartbeat,type VirtualCoin} from '@arkade-os/sdk';
+import {privateInterval} from '../shielded/network-privacy.ts';
 
 export class AsyncQueue<T> implements AsyncIterableIterator<T> {
  private values:T[]=[];private waiters:{resolve:(value:IteratorResult<T>)=>void;reject:(error:unknown)=>void}[]=[];private done=false;private error:unknown;
@@ -117,7 +118,11 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
  retire(){for(const record of this.subscriptions.values()){record.closed=true;for(const remote of record.entries.values())if(remote)streamReservations--;record.entries.clear();for(const stream of [...record.streams])stream.queue.fail(new Error('Native network generation retired'));}this.subscriptions.clear();}
 }
 export class IsolatedOnchainProvider extends EsploraProvider {
- constructor(url:string){super(url,{forcePolling:true});}
+ constructor(url:string,pollMs?:number){
+  super(url,pollMs===undefined?{forcePolling:true}:{forcePolling:true,pollingInterval:pollMs});
+  // The SDK's poll loop re-reads this at every round; an accessor on the class would make the base constructor's assignment throw.
+  if(pollMs!==undefined)Object.defineProperty(this,'pollingInterval',{get:()=>privateInterval(pollMs)});
+ }
  override async watchAddresses(addresses:string[],callback:(txs:ExplorerTransaction[])=>void):Promise<()=>void>{
   const stopped:(()=>void)[]=[];
   try{for(const address of new Set(addresses))stopped.push(await super.watchAddresses([address],callback));}

@@ -18,7 +18,7 @@ import {epochConfirmed,epochFreshAccount,epochMatchesPool} from './epoch-checkpo
 import {epochRevealLinkOf} from './epoch-disclosure.ts';
 import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
-import {WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
+import {EVENT_RETRY_MS,WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
@@ -28,7 +28,7 @@ import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shie
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
+import {isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
@@ -308,13 +308,15 @@ export class ShieldedWallet extends Wallet {
  }
  /** The watch registration, the incoming-funds watch and the first auto-shield, which run behind `create()`; rejects with the watch setup's first error. */
  get started():Promise<void>{return this.startup;}
+ /** Only the sealed browser transport re-draws its timers; native is private too but keeps its fixed ones. */
+ private pace(ms:number){return this.sealedTransport?privateInterval(ms):ms;}
  async start():Promise<void>{
   // A confirmed account is already at the pool's count; autoShield's sync below runs once the watches are up, so nothing lands unseen.
   if(!epochConfirmed(this.account))await this.sync();
   if(this.stopped)return;
   // Armed before the watch setup, so the tick runs even when that setup fails or stalls on a POST with no deadline.
-  this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
-  this.statusTimer=setTimeout(()=>void this.statusTick(),WATCHDOG_MS);
+  this.timer=setTimeout(()=>void this.tick().catch(()=>{}),this.pace(WATCHDOG_MS));
+  this.statusTimer=setTimeout(()=>void this.statusTick(),this.pace(WATCHDOG_MS));
   this.startup=this.finishStart();
   // A caller that never reads `started` must not turn its rejection into an unhandled one.
   this.startup.catch(()=>{});
@@ -327,7 +329,7 @@ export class ShieldedWallet extends Wallet {
   this.unwatch.push(manager.onContractEvent(event=>{
    // A watch-only event carries no contract, which is the point: the pool script is not ours. Any movement on it
    // means the head moved, and `connection_reset` means an event may have been missed.
-   if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void catchUpAfterEvent(()=>this.sync(),()=>this.stopped).catch(()=>{});
+   if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void catchUpAfterEvent(()=>this.sync(),()=>this.stopped,EVENT_RETRY_MS.map(ms=>this.pace(ms))).catch(()=>{});
   }));
   const off=await this.notifyIncomingFunds(()=>{this.changed();void this.autoShield().catch(()=>{});});
   // dispose() has already drained `unwatch`, so a watch that arrives after it is stopped here rather than kept.
@@ -362,7 +364,7 @@ export class ShieldedWallet extends Wallet {
   try{await this.refreshPoolStatus();}catch{}
   if(this.stopped)return;
   this.changed();
-  if(!this.stopped)this.statusTimer=setTimeout(()=>void this.statusTick(),WATCHDOG_MS);
+  if(!this.stopped)this.statusTimer=setTimeout(()=>void this.statusTick(),this.pace(WATCHDOG_MS));
  }
  /** The safety net behind the stream: refresh the pool, catch up, then start anything waiting. Never awaits a batch. */
  private async tick():Promise<void>{
@@ -382,7 +384,7 @@ export class ShieldedWallet extends Wallet {
   // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
   if(atHead){void this.renewNotes().catch(()=>{});void this.recoverNotes().catch(()=>{});}
   this.changed();
-  if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
+  if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),this.pace(WATCHDOG_MS));
  }
  /** One renewal plan at a time, over every held asset; epochIdle keeps a replay from moving the window the targets are drawn in. */
  private async renewNotes(){
