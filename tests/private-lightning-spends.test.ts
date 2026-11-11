@@ -561,13 +561,14 @@ test('a fee refusal on a Lightning shield reads the fee again, so the next attem
  }finally{await wallet.dispose();}
 });
 
-test('a wallet with batch swaps off refuses renewal and the on-chain exit before any intent is registered',async t=>{
- const settle=t.mock.method(Wallet.prototype,'settle',async()=>'renewed');t.mock.method(Wallet.prototype,'send',async()=>'sent');
+test('a wallet with batch swaps off refuses renewal and the on-chain exit before any intent is registered, and still sends to itself offchain',async t=>{
+ const settle=t.mock.method(Wallet.prototype,'settle',async()=>'renewed');t.mock.method(Wallet.prototype,'send',async()=>'sent');t.mock.method(Wallet.prototype,'sendSelectedVtxosToSelf',async()=>'migrated');
  const near=async()=>[{txid:TXID,vout:0,value:1000,expiresAt:Date.now()+SHIELD_FLOOR_MS-60_000}];
  const off=await open(new Store(),undefined,prover,undefined,{batchSwaps:false}),on=await open(new Store());
  try{
   off.coins=near;on.coins=near;
-  for(const swap of [()=>off.renew(),()=>off.settle(),()=>off.sendSelectedVtxosToSelf([])])await assert.rejects(swap(),/batch stream/);
+  for(const swap of [()=>off.renew(),()=>off.settle()])await assert.rejects(swap(),/batch stream/);
+  assert.equal(await off.sendSelectedVtxosToSelf([]),'migrated','signer migration sends offchain, with no batch');
   assert.throws(()=>off.exitFromPool(1000,'Sending 1,000 sats on-chain',async()=>{throw new Error('the exit ran');},{to:'tb1qexit',sats:1000}),/batch stream/,'before the pool pays a fresh key');
   assert.equal(settle.mock.callCount(),0);
   assert.equal(await off.send({recipients:[{address:destination,amount:330}]}),'sent');

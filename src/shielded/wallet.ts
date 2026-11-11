@@ -669,7 +669,7 @@ export class ShieldedWallet extends Wallet {
   return this.nativeSpend('recipients' in args[0]?args[0].selectedVtxos:undefined,()=>super.send(...args));
  }
  override async settle(...args:Parameters<Wallet['settle']>){this.assertBatchSwaps();return this.nativeSpend(args[0]?.inputs,()=>super.settle(...args));}
- override async sendSelectedVtxosToSelf(...args:Parameters<Wallet['sendSelectedVtxosToSelf']>){this.assertBatchSwaps();return this.nativeSpend(args[0],()=>super.sendSelectedVtxosToSelf(...args));}
+ override async sendSelectedVtxosToSelf(...args:Parameters<Wallet['sendSelectedVtxosToSelf']>){return this.nativeSpend(args[0],()=>super.sendSelectedVtxosToSelf(...args));}
  override async getContractManager(){
   this.assertOpen();
   const manager=await super.getContractManager();
