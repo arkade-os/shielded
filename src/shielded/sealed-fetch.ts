@@ -5,7 +5,7 @@ import {KeyConfig,OHTTPClient} from 'ohttp-ts';
 import {addressOf,NOSTR_ANSWER_KIND,NOSTR_CHUNK_BYTES,NOSTR_RELAYS,readAnswer,refusedByRelay,requestEvent,roundedSeconds} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {CarrierPool} from '../rollup/nostr-carrier.ts';
 
-const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
+const SUITE=/*#__PURE__*/new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
 // nostr-tools fulfils "connection failure: …" for a relay it never reached, and otherwise with the relay's own OK text, which may be absent. It rejects an OK false with NIP-01's reason; a timeout or a dropped connection rejects though the event may be out, and "duplicate:" means the relay has it.
 const acked=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'&&!(typeof result.value==='string'&&result.value.startsWith('connection failure'));
 const accepted=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'?acked(result):!refusedByRelay(result.reason);
