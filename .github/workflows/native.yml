@@ -63,15 +63,17 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 10
         run: |
-          printf '%s\tpriority:%s\n' \
-            https://mirrors.edge.kernel.org/ubuntu/ 1 \
-            https://mirror.math.princeton.edu/pub/ubuntu/ 2 \
-            https://archive.ubuntu.com/ubuntu/ 3 \
-            https://security.ubuntu.com/ubuntu/ 4 | sudo tee /etc/apt/apt-mirrors.txt
-          sudo sed -i 's|^URIs:.*|URIs: mirror+file:/etc/apt/apt-mirrors.txt|' /etc/apt/sources.list.d/ubuntu.sources
-          apt_options=(-o APT::Update::Error-Mode=any -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-          sudo apt-get "${apt_options[@]}" update
-          sudo apt-get "${apt_options[@]}" install -y libwebkit2gtk-4.1-dev build-essential pkg-config libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev
+          packages=(libwebkit2gtk-4.1-dev build-essential pkg-config libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev)
+          apt_options=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o APT::Update::Error-Mode=any -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          for mirror in https://mirrors.edge.kernel.org/ubuntu/ https://mirror.math.princeton.edu/pub/ubuntu/; do
+            sudo sed -i "s|^URIs:.*|URIs: $mirror|" /etc/apt/sources.list.d/ubuntu.sources
+            if sudo timeout --kill-after=10s 60s apt-get "${apt_options[@]}" update &&
+               sudo timeout --kill-after=10s 180s apt-get "${apt_options[@]}" install --download-only -y "${packages[@]}"; then
+              sudo apt-get "${apt_options[@]}" install --no-download -y "${packages[@]}"
+              exit 0
+            fi
+          done
+          exit 1
       - run: npm ci
       - run: node --test tools/native-host.test.mjs tools/native-artifacts.test.mjs
       - run: node tools/native-build.mjs icons
