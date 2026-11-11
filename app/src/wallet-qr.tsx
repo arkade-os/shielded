@@ -8,7 +8,7 @@ export function QrCode({value,label}:{value:string;label:string}){
 
 const cameraProblem=(error:unknown)=>{
  const name=(error as {name?:string}|undefined)?.name;
- return name==='NotAllowedError'?'This site may not use the camera. Allow it in the browser settings, or paste the code instead.'
+ return name==='NotAllowedError'?'Shielded may not use the camera. Allow it in your browser or app settings, or paste the code instead.'
   :name==='NotFoundError'||name==='OverconstrainedError'?'No camera was found. Paste the code instead.'
   :'The camera did not start. Paste the code instead.';
 };

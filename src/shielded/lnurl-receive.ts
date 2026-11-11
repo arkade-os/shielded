@@ -35,7 +35,7 @@ export interface LnurlReceiveConfig {
 // Each idle rotation leaves one unused index, so daily keeps a year of idle rotations inside RECOVERY_GAP.
 export const ROTATE_AFTER_MS=24*60*60_000,CHECK_EVERY_MS=10*60_000,RECOVERY_GAP=400;
 export const HD_REFUSED='This Lightning address is still in HD receive mode, and its service cannot switch it to a private static address until the service is updated. Earlier payouts stay watched; the wallet retries automatically.';
-export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. The wallet has stopped sending it; switch private receive on again once the service is updated.';
+export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. The wallet stops sending it until Shielded opens again.';
 export const METHODS_NOT_WITHDRAWN='The service for this Lightning address still lists the private receive address after it was withdrawn, so payers may still be offered it. The wallet keeps asking the service to remove it and retries automatically.';
 const SCAN_BATCH=50,STATE_POOL='lnurl-receive',STATE_KEY='state-v1';
 const TESTNET_BIP32={public:0x043587cf,private:0x04358394};
@@ -295,9 +295,20 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(off&&server.receivers.some(row=>row.status==='active'))await relist(state,server);
  });
  const sameReceiver=(a:LnurlReceiver,b:LnurlReceiver)=>a.handle===b.handle||!!a.sessionLnurl&&a.sessionLnurl===b.sessionLnurl;
- const unified=(receiver:LnurlReceiver)=>!!receiver.sessionLnurl&&receiver.lnurl===receiver.sessionLnurl;
- const unsupportedUnified=()=>new Error('This Lightning address service did not register a unified address. Use Recover a Lightning address to enable its existing address explicitly.');
- const ensureUnifiedLocked=async()=>{
+ /** False when private receive is already live; otherwise switches it on, leaving the save and settle to the caller. */
+ const turnOn=(server:ServerState)=>{
+  advertised();
+  if(server.methods&&!server.methodsPending)return false;
+  server.methods=true;server.methodsPending=true;delete server.methodsRefused;delete server.withdraw;return true;
+ };
+ const upgrade=async(receiver:LnurlReceiver):Promise<LnurlReceiver>=>{
+  if(!receiver.sessionLnurl)throw new Error('This unified address cannot be named.');
+  const named=fromAddress(await client.upgradeAddress({token:await token(),handle:receiver.handle,domain}));
+  if(!named.lightningAddress||named.sessionLnurl!==receiver.sessionLnurl||named.lnurl!==receiver.lnurl)throw new Error('The Lightning address service did not keep the unified address during the claim.');
+  return named.paymentMethods===undefined&&receiver.paymentMethods?{...named,paymentMethods:receiver.paymentMethods}:named;
+ };
+ // Naming and switching private receive on both land before the bind, so a refused method still leaves the name saved.
+ const ensureUnifiedLocked=async({named=false,privately=false}={})=>{
    config.onStage?.('Reading your saved receiver');
   const state=await load(),existing=state.servers[serverKey],server=existing??{receivers:[]};
   if(!existing){state.servers[serverKey]=server;await save(state);}
@@ -305,47 +316,30 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const branch=currentBranch();void branch.catch(()=>{});
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');
-  const matched=tracked&&owned.find(row=>sameReceiver(row,tracked));
-  let receiver=matched;
-  receiver??=owned.find(row=>row.handle===server.pending);
-  // A session LNURL belongs to this identity even after its handle is upgraded. A legacy named alias still needs explicit recovery.
-  receiver??=owned.find(row=>!!row.sessionLnurl);
-  if(receiver&&!matched&&!unified(receiver))throw unsupportedUnified();
-  if(!receiver&&owned.length)throw new Error('A Lightning address already exists. Use Recover a Lightning address to enable it here explicitly.');
+  // A name this identity already owns, from another device or an older wallet, wins over a nameless receiver or a new one.
+  let receiver=(tracked&&owned.find(row=>sameReceiver(row,tracked)))??owned.find(row=>row.handle===server.pending)??owned.find(row=>!!row.lightningAddress)??owned[0];
   const recoverPayouts=!!receiver&&!state.payouts.length;
   if(!receiver){
     config.onStage?.('Registering your unified address');
-   const registered=fromAddress(await client.registerAddress({token:await token(),domain,nameless:true}));
-   server.pending=registered.handle;await save(state);
-   if(!unified(registered))throw unsupportedUnified();
-   receiver=registered;
+   receiver=fromAddress(await client.registerAddress({token:await token(),domain,nameless:true}));
+   server.pending=receiver.handle;await save(state);
   }
+  if(named&&!receiver.lightningAddress)receiver=await upgrade(receiver);
   const receivers=[receiver,...server.receivers.filter(row=>!sameReceiver(row,receiver))];
   if(recoverPayouts)server.recovering=true;
-  if(JSON.stringify(server.receivers)!==JSON.stringify(receivers)||server.pending||recoverPayouts){server.receivers=receivers;delete server.pending;await save(state);}
+  const enabled=privately&&turnOn(server);
+  if(JSON.stringify(server.receivers)!==JSON.stringify(receivers)||server.pending||recoverPayouts||enabled){server.receivers=receivers;delete server.pending;await save(state);}
    config.onStage?.('Restoring payout watches');
   await settle(state,server,()=>config.onStage?.('Binding your payment routes'),branch);
    config.onStage?.('Unified address ready');
   return receiver;
  };
+ const activation=<T,>(work:()=>Promise<T>)=>{const pending=serial(work);initialCheck=pending.then(()=>now(),()=>undefined);return pending;};
  return {
   enabled:async()=>Boolean((await load()).servers[serverKey]),
   current:async()=>(await load()).servers[serverKey]?.receivers.find(row=>row.status==='active'),
-  ensureUnified:()=>{
-   const pending=serial(ensureUnifiedLocked);initialCheck=pending.then(()=>now(),()=>undefined);return pending;
-  },
-  claimName:()=>serial(async()=>{
-   const receiver=await ensureUnifiedLocked();
-   if(receiver.lightningAddress)return receiver;
-   if(!receiver.sessionLnurl)throw new Error('This unified address cannot be named.');
-   const named=fromAddress(await client.upgradeAddress({token:await token(),handle:receiver.handle,domain}));
-   if(!named.lightningAddress||named.sessionLnurl!==receiver.sessionLnurl||named.lnurl!==receiver.lnurl)throw new Error('The Lightning address service did not keep the unified address during the claim.');
-   const state=await load(),server=state.servers[serverKey];
-   if(!server)throw new Error('The unified address is not enabled on this device.');
-   server.receivers=[{...named,...(named.paymentMethods===undefined&&receiver.paymentMethods?{paymentMethods:receiver.paymentMethods}:{})},...server.receivers.filter(row=>!sameReceiver(row,receiver))];
-   await save(state);
-   return named;
-  }),
+  ensureUnified:()=>activation(()=>ensureUnifiedLocked()),
+  claimName:({privately=false}={})=>activation(()=>ensureUnifiedLocked({named:true,privately})),
   payouts:async()=>(await load()).payouts,
   privateReceiveState:async():Promise<PrivateReceiveState>=>{
    const server=(await load()).servers[serverKey],listed=server?shieldedListed(server):[],own=listed.length?config.shieldedAddress?.():undefined;
@@ -361,9 +355,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    const state=await load(),server=state.servers[serverKey];
    if(!server){if(on)throw new Error('Enable a Lightning address before turning on private receive');return;}
    if(on){
-    advertised();
-    if(server.methods&&!server.methodsPending)return;
-    server.methods=true;server.methodsPending=true;delete server.methodsRefused;delete server.withdraw;
+    if(!turnOn(server))return;
    }else{
     if(!server.methods&&!server.withdraw&&!shieldedListed(server).length){if(server.methodsRefused){delete server.methodsRefused;await save(state);}return;}
     delete server.methods;delete server.methodsPending;delete server.methodsRefused;server.withdraw=true;

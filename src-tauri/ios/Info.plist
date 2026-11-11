@@ -3,4 +3,5 @@
 <plist version="1.0"><dict>
   <key>UIFileSharingEnabled</key><false/>
   <key>LSSupportsOpeningDocumentsInPlace</key><false/>
+  <key>NSCameraUsageDescription</key><string>Shielded uses the camera only to scan payment QR codes.</string>
 </dict></plist>
