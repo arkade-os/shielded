@@ -53,11 +53,44 @@ test('package manager installs are lockfile exact', () => {
 
 test('release package downloads use bounded retries', () => {
   const native = read('.github/workflows/native.yml');
-  assert.match(native, /retry-command\.mjs node node_modules\/@tauri-apps\/cli\/tauri\.js android build \$NATIVE_BUILD_FLAG/);
-  assert.match(native, /retry-command\.mjs node node_modules\/@tauri-apps\/cli\/tauri\.js android build --debug/);
+  assert.match(native, /retry-command\.mjs node tools\/native-build\.mjs android build \$NATIVE_BUILD_FLAG/);
+  assert.match(native, /retry-command\.mjs node tools\/native-build\.mjs android build --debug/);
   assert.match(native, /retry-command\.mjs node tools\/native-build\.mjs desktop build/);
   assert.match(read('.github/workflows/checks.yml'), /retry-command\.mjs docker build/);
   assert.match(read('tools/check-native-model.mjs'), /attempt <= 3/);
+});
+
+test('production APK signing is isolated from pull requests and only receives secrets in the signing step', () => {
+  const source = read('.github/workflows/native.yml'), signing = source.split(/\r?\n  android-sign:\r?\n/)[1]?.split(/\r?\n  ios:\r?\n/)[0];
+  assert.ok(signing);
+  assert.match(signing, /github\.repository == 'arkade-os\/shielded'/);
+  assert.match(signing, /github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'/);
+  assert.match(signing, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(signing, /needs: android/);
+  assert.match(signing, /run-id: \$\{\{ github\.run_id \}\}/);
+  assert.doesNotMatch(signing, /npm ci|npm install|pull_request_target/);
+  assert.match(signing, /cmdline-tools\/latest\/bin\/sdkmanager" ''build-tools;36\.0\.0''/);
+  assert.equal((source.match(/secrets\.ANDROID_RELEASE_KEYSTORE_BASE64/g) ?? []).length, 1);
+  assert.equal((source.match(/secrets\.ANDROID_RELEASE_KEYSTORE_PASSWORD/g) ?? []).length, 1);
+  assert.ok(signing.indexOf('sdkmanager') < signing.indexOf('secrets.ANDROID_RELEASE_KEYSTORE_BASE64'));
+  assert.match(source, /run: node tools\/check-android-signing\.mjs/);
+});
+
+test('APK data retention is gated by a bounded disposable emulator without physical-device discovery', () => {
+  const source = read('.github/workflows/native.yml'), job = source.split(/\r?\n  android-update-data:\r?\n/)[1]?.split(/\r?\n  android-sign:\r?\n/)[0];
+  assert.ok(job);
+  assert.match(job, /timeout-minutes: 20/);
+  assert.match(job, /SHIELDED_TEST_EMULATOR_SERIAL: emulator-5554/);
+  assert.match(job, /-no-window .*?-gpu swiftshader/);
+  assert.match(job, /timeout 300/);
+  assert.match(job, /if: always\(\)/);
+  assert.doesNotMatch(job, /secrets\./);
+  const probe = read('tools/check-android-signing.mjs');
+  const guard = read('tools/android-update-fixture/emulator-guard.mjs');
+  assert.match(guard, /ro\.kernel\.qemu/);
+  assert.match(guard, /Existing Shielded installation is preserved/);
+  assert.doesNotMatch(probe, /device\('uninstall'|device\('shell', 'pm', 'clear'|device\('devices'/);
+  assert.match(probe, /device\('install', '-r', signedPaths\[1\]\)/);
 });
 
 test('TLC downloads retry transport errors and corrupt bodies before failing', async () => {

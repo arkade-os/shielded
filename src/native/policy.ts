@@ -1,7 +1,7 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex} from '@noble/hashes/utils.js';
 
-export type NativePurpose='public'|'pool-sync'|'pool-operation'|'indexer'|'ark'|'esplora'|'swap'|'lnurl'|'assets'|'discovery';
+export type NativePurpose='public'|'pool-sync'|'pool-operation'|'indexer'|'ark'|'esplora'|'swap'|'lnurl'|'assets'|'discovery'|'release';
 export interface NativeRoute {purpose:NativePurpose;key:string}
 export function createNativeOperationScope(release:(route:NativeRoute)=>void|Promise<void>){
  const routes=new Map<string,NativeRoute>();let closed=false;
@@ -45,7 +45,7 @@ export class NativePolicy {
   const url=nativeUrl(input,this.poolOrigin),path=decodeURIComponent(url.pathname),origin=url.origin,m=method.toUpperCase();
   if(path.includes('%')||/[\\\u0000-\u001f]/.test(path))throw new Error('Invalid encoded native route');
   // Metadata stays pinned to Mutinynet, matching the Rust route allowlist.
-  if(m==='GET'&&url.href==='https://shielded.mutinynet.arkade.sh/api/native/releases')return route('public',url.href);
+  if(m==='GET'&&url.href==='https://shielded.mutinynet.arkade.sh/api/native/releases')return route('release',url.href);
   if(origin===this.poolOrigin&&path.startsWith('/api/rollup/')){
    const suffix=path.slice('/api/rollup'.length);
    if(m==='GET'&&/^\/(status|assets|archives|times)$/.test(suffix))return route('public',origin+suffix);

@@ -1,5 +1,4 @@
 import {DUST,planFeeOf,rejected,shieldPlan,shieldableWithFee,type ArkCoin,type RollupPoolStatus,type ShieldPlan} from '../../src/shielded/pool.ts';
-import type {PrivateReceiveState} from '../../src/shielded/lnurl-receive.ts';
 import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
@@ -34,6 +33,8 @@ export function openPaymentRequest({docked,openPanel,selectTab,fill}:{docked:boo
 }
 /** Upper case keeps the whole payload in QR's alphanumeric mode, which is denser than byte mode. */
 export const invoiceQr=(bolt11:string)=>'LIGHTNING:'+bolt11.toUpperCase();
+// Lower case: '@' keeps it out of QR alphanumeric mode anyway, and a payer may not fold the name.
+export const lightningAddressQr=(address:string)=>'lightning:'+address;
 /** A scanned or pasted payment code as the send form takes it: the destination, and the amount in sats when the code names one. */
 export function payTarget(raw:string):{to:string;amount?:number}{
  // QR codes often carry bech32 in capitals (alphanumeric mode is denser); bech32 is case-insensitive.
@@ -136,11 +137,6 @@ export const noSwapErrorText=(error:unknown)=>error instanceof Error&&error.name
 /** Why a token cannot be a claim link, read before any network call; '' when it can be. */
 export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return '';}catch(error){return error instanceof Error?error.message:'Not a claim link.';}};
 export const claimUrl=(origin:string,token:string)=>`${origin}/claim#${token}`;
-/** The box shows the user's choice; the notice shows what the service lists, one at a time, most pressing first. */
-export const privateReceiveView=({on,pending,refused,withdrawing,listed}:PrivateReceiveState):{checked:boolean;notice:'pending'|'foreign'|'confirming'|'own'|'refused'|''}=>({
- checked:on||pending,
- notice:withdrawing&&listed!==null?'pending':listed==='foreign'?'foreign':pending?'confirming':listed==='own'&&!on?'own':refused?'refused':'',
-});
 /** A long value as its first 20 and last 12 characters; copy, QR and share always take the whole value. */
 export const shortValue=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
 export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],assetIdOf:(field:bigint)=>string|undefined){

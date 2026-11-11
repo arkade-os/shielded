@@ -39,12 +39,11 @@ export function invoiceRequestAmount(amount:string,bounds:InvoiceBounds|undefine
  const sats=receiveAmount(amount);
  return sats!==undefined&&bounds&&invoiceInRange(bounds,sats)?sats:undefined;
 }
-export function amountQrValue(mode:ReceiveMode,value:string,amount:string):string|undefined{
+export function amountQrValue(mode:Exclude<ReceiveMode,'unified'>,value:string,amount:string):string|undefined{
  const sats=receiveAmount(amount);
  if(!value.trim()||sats===undefined)return undefined;
  const btc=(sats/100000000n).toString()+'.'+String(sats%100000000n).padStart(8,'0');
- const destination=mode==='unified'?value.toLowerCase():value;
- return `bitcoin:?${mode==='unified'?'lightning':mode==='shielded'?'shielded':'ark'}=${destination}&amount=${btc}`;
+ return `bitcoin:?${mode==='shielded'?'shielded':'ark'}=${value}&amount=${btc}`;
 }
 
 export function ReceivePortal({active=true,unified=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,loading,description,action,children}:ReceivePortalProps){

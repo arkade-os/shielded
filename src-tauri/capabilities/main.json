@@ -18,6 +18,12 @@
     "allow-native-socket",
     "allow-native-socket-send",
     "allow-native-cancel",
+    "allow-native-android-update-info",
+    "allow-native-android-update-download",
+    "allow-native-android-update-cancel",
+    "allow-native-android-update-permission",
+    "allow-native-android-update-install",
+    "allow-native-android-update-confirm",
     "deep-link:default",
     {
       "identifier": "opener:allow-open-url",

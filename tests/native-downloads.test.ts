@@ -3,11 +3,13 @@ import {registerHooks} from 'node:module';
 import {test} from 'node:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
+import decodeQR from 'qr/decode.js';
 import {parseNativeRelease,type NativePlatform,type NativeReleasePackage} from '../src/native-release.ts';
 import type {NativeDownloadsState} from '../app/src/NativeDownloads.tsx';
+import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-release.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
-const {NativeDownloadsContent,loadNativeDownloads,createNativeDownloadsLoader}=await import('../app/src/NativeDownloads.tsx');
+const {NativeDownloadsContent,NativeDownloadQr,detectNativeDownloadPlatform,nativeDownloadPlatforms,loadNativeDownloads,createNativeDownloadsLoader}=await import('../app/src/NativeDownloads.tsx');
 const {default:ShieldedHome}=await import('../app/src/ShieldedHome.tsx');
 const commit='a'.repeat(40),tag=`native-mutinynet-${commit.slice(0,12)}-run123-attempt1`;
 const formats:[NativePlatform,string,'release'|'debug',boolean][]=[
@@ -71,6 +73,15 @@ test('a legacy release remains downloadable and says its reproducibility metadat
   assert.doesNotMatch(html,/Downloads are unavailable right now/);
 });
 
+test('Android downloads prefer the stable signed APK while preserving every legacy checksum',()=>{
+ const base=nativeReleaseFixture(),update=androidUpdateFixture(base),signed=parseNativeRelease({...base,androidUpdate:update}),html=render(signed);
+ const android=[...html.matchAll(/<article class="nd-platform"[\s\S]*?<\/article>/g)][3]![0],primary=android.match(/<div class="nd-package-links">([\s\S]*?)<\/div>/)![1]!;
+ assert.match(primary,/Signed APK/);assert.ok(primary.includes(update.url));assert.doesNotMatch(primary,/Debug APK|Unsigned release APK/);
+ assert.ok(android.includes(`SHA-256 ${update.sha256}`));assert.equal([...android.matchAll(/>Source<\/a>/g)].length,3);
+ for(const item of signed.packages.filter(item=>item.platform==='android-arm64'))assert.ok(android.includes(`SHA-256 ${item.sha256}`));
+ assert.match(android,/in-place updates/);assert.match(android,/wallet data/);assert.match(android,/Keep the existing installation and its data/);
+});
+
 test('the landing page offers visible download anchors and retains the web wallet',()=>{
  const html=renderToStaticMarkup(createElement(ShieldedHome));
  assert.match(html,/class="sh-download-nav" href="#download">Download/);
@@ -125,4 +136,66 @@ test('unmount aborts the active download and old callbacks cannot overwrite a re
  const mounted=createNativeDownloadsLoader(state=>states.push(state),(async()=>current.promise) as typeof fetch),loaded=mounted.retry();
  current.resolve(Response.json(release));await loaded;old.resolve(Response.json({...release,version:'0.2.0',buildNumber:124}));await flush();
  assert.deepEqual(states.at(-1),{state:'ready',release});assert.equal(states.length,count+2);mounted.stop();
+});
+
+test('download detection distinguishes mobile platforms before their desktop user-agent tokens',()=>{
+ const visitors:[{userAgent?:string;platform?:string;maxTouchPoints?:number},NativePlatform|undefined][]=[
+  [{userAgent:'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36',platform:'Linux armv8l'},'android-arm64'],
+  [{userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',platform:'iPhone'},'ios'],
+  [{userAgent:'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)',platform:'iPad'},'ios'],
+  [{userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) Version/18.0 Safari/605.1.15',platform:'MacIntel',maxTouchPoints:5},'ios'],
+  [{userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)',platform:'MacIntel',maxTouchPoints:0},'macos-universal'],
+  [{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',platform:'Win32'},'windows-x86_64'],
+  [{userAgent:'Mozilla/5.0 (X11; Linux x86_64)',platform:'Linux x86_64'},'linux-x86_64'],
+  [{platform:'Win32'},'windows-x86_64'],[{userAgent:'Mozilla/5.0 (X11; CrOS x86_64 15917)',platform:'Linux x86_64'},undefined],[{},undefined],[{userAgent:'Unknown device'},undefined],
+ ];
+ for(const [visitor,platform] of visitors)assert.equal(detectNativeDownloadPlatform(visitor),platform,JSON.stringify(visitor));
+});
+
+test('Other systems expands every guide with the detected platform first and collapses back to it',()=>{
+ const all:NativePlatform[]=['windows-x86_64','linux-x86_64','macos-universal','android-arm64','ios'];
+ for(const platform of all){
+  assert.deepEqual(nativeDownloadPlatforms(platform,false),[platform]);
+  const expanded=nativeDownloadPlatforms(platform,true);assert.equal(expanded[0],platform);assert.deepEqual(new Set(expanded),new Set(all));assert.equal(expanded.length,5);
+  assert.deepEqual(nativeDownloadPlatforms(platform,false),[platform]);
+ }
+ assert.deepEqual(nativeDownloadPlatforms(undefined,false),all);assert.deepEqual(nativeDownloadPlatforms(undefined,true),all);
+});
+
+test('a known visitor sees their own packages and install guide with an accessible Other systems control',()=>{
+ const html=renderToStaticMarkup(createElement(NativeDownloadsContent,{release,platform:'android-arm64'}));
+ assert.equal([...html.matchAll(/<article class="nd-platform"/g)].length,1);assert.match(html,/Downloads for Android/);
+ assert.match(html,/aria-expanded="false" aria-controls="nd-platforms"/);assert.match(html,/>Other systems<\/button>/);assert.match(html,/<summary>Install on Android/);
+ assert.doesNotMatch(html,/<summary>Install on Windows|<summary>Install on macOS|<summary>Install on Linux|<summary>Install on iOS/);
+});
+
+test('every primary and alternative binary has an adjacent QR control, including unsigned and debug APKs',()=>{
+ const base=nativeReleaseFixture(),signed=parseNativeRelease({...base,androidUpdate:androidUpdateFixture(base)}),html=render(signed);
+ const all=[...signed.packages,signed.androidUpdate!];
+ for(const item of all){
+  const at=html.indexOf(`<a href="${item.url}">`);assert.ok(at>=0,item.file);const end=html.indexOf('</a>',at)+4;
+  assert.match(html.slice(end,end+220),/^<button[^>]*class="nd-qr-button"[^>]*aria-label="Show QR code for /,item.file);
+ }
+ const primary=[...html.matchAll(/<a class="nd-download" href="([^"]+)">[\s\S]*?<\/a><button[^>]*class="nd-qr-button"/g)];
+ assert.equal(primary.length,8);assert.ok(primary.some(match=>match[1]===signed.androidUpdate!.url));
+ assert.equal([...html.matchAll(/class="nd-qr-button"/g)].length,18);
+ assert.doesNotMatch(html,/api\.qrserver|quickchart|chart\.googleapis/);
+});
+
+function decodedDownloadQr(html:string){
+ const modules=Number(/viewBox="0 0 (\d+) \d+"/.exec(html)?.[1]),path=/<path d="([^"]*)"/.exec(html)?.[1];assert.ok(modules&&path);
+ const scale=4,width=modules*scale,data=new Uint8Array(width*width*4).fill(255);
+ for(const module of path.matchAll(/M(\d+) (\d+)h1v1h-1z/g))for(let y=0;y<scale;y++)for(let x=0;x<scale;x++){
+  const at=((Number(module[2])*scale+y)*width+Number(module[1])*scale+x)*4;data[at]=data[at+1]=data[at+2]=0;
+ }
+ return decodeQR({width,height:width,data});
+}
+
+test('each locally rendered download QR decodes to its exact validated binary URL',()=>{
+ const base=nativeReleaseFixture(),signed=parseNativeRelease({...base,androidUpdate:androidUpdateFixture(base)});
+ for(const item of [...signed.packages,signed.androidUpdate!]){
+  const html=renderToStaticMarkup(createElement(NativeDownloadQr,{item,onClose:()=>{}}));
+  assert.match(html,/<dialog[^>]*aria-labelledby="nd-qr-title"/);assert.match(html,/aria-label="Close download QR code"/);assert.ok(html.includes(`href="${item.url}"`));
+  assert.equal(decodedDownloadQr(html),item.url,item.file);assert.doesNotMatch(html,/<img|https:\/\/(?:api\.qrserver|quickchart|chart\.googleapis)/);
+ }
 });

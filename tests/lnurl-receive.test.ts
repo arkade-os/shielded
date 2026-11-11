@@ -97,11 +97,11 @@ test('unified activation satisfies the initial maintenance check while the perio
  }finally{await f.service.dispose();}
 });
 
-test('starting maintenance just after unified activation does not repeat its network work',async()=>{
- const f=setup();await f.service.ensureUnified();f.service.start();
+for(const [activate,requests] of [['ensureUnified',3],['claimName',4]] as const)test(`starting maintenance just after ${activate} does not repeat its network work`,async()=>{
+ const f=setup();await f.service[activate]();f.service.start();
  try{
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(f.bound().length,1);assert.equal(f.requests.length,3);assert.equal(f.scans(),0);
+  assert.equal(f.bound().length,1);assert.equal(f.requests.length,requests);assert.equal(f.scans(),0);
  }finally{await f.service.dispose();}
 });
 
@@ -351,13 +351,11 @@ test('a background check after restart finishes a failed fresh-journal recovery 
  const scans=f.scans();await restart.check();assert.equal(f.scans()-scans,1);
 });
 
-test('an unsupported nameless registration stays pending and cannot bind through retries',async()=>{
- const f=setup({namelessSupported:false});
- for(const service of [f.service,f.service,createLnurlReceive(f.config)])await assert.rejects(service.ensureUnified(),/did not register a unified address.*Recover a Lightning address/);
- assert.equal(f.aliases.length,1);assert.equal(f.bound().length,0);assert.equal(await f.service.current(),undefined);
- const stored=f.state.get(f.key('lnurl-receive','state-v1')) as {servers:Record<string,{pending?:string}>};
- assert.equal(Object.values(stored.servers)[0]!.pending,receiver.handle);
- await f.service.recover();assert.equal((await f.service.current())?.handle,receiver.handle);assert.equal(f.bound().length,1);
+test('a service that names a nameless registration keeps that name and binds it',async()=>{
+ const f=setup({namelessSupported:false}),named=await f.service.claimName();
+ assert.equal(named.lightningAddress,receiver.lightningAddress);
+ assert.equal(f.aliases.length,1);assert.equal(f.bound().length,1);assert.equal((await f.service.current())?.handle,receiver.handle);
+ assert.equal(f.requests.some(r=>r.init?.method==='PATCH'),false);
 });
 
 test('a unified QR stays the same after its receiver claims a Lightning address',async()=>{
@@ -383,7 +381,8 @@ test('naming a unified receiver keeps its confirmed shielded method and the same
 });
 
 test('an explicit methods list returned by naming replaces the previous local snapshot',async()=>{
- const f=setup();await f.service.ensureUnified();await f.service.setPrivateReceive(true);
+ const f=setup();await f.service.ensureUnified();f.relist(nameless.handle,[shielded]);await f.service.check();
+ assert.deepEqual((await f.service.current())?.paymentMethods,[shielded]);
  const service=createLnurlReceive({...f.config,fetch:async(url,init)=>{
   const response=await f.config.fetch(url,init);
   if(init?.method!=='PATCH')return response;
@@ -475,11 +474,45 @@ test('an already tracked named receiver keeps its existing LNURL without a namel
  assert.equal(f.requests.slice(requests).filter(r=>r.init?.method==='PATCH'||r.init?.method==='POST'&&r.url.endsWith('/lnurl/address')).length,0);
 });
 
-test('an untracked legacy named receiver still needs explicit recovery',async()=>{
- const f=setup({aliases:[receiver]});
- await assert.rejects(f.service.ensureUnified(),/Recover a Lightning address/);
- assert.equal(f.bound().length,0);
- assert.equal(f.requests.some(r=>r.init?.method==='POST'&&r.url.endsWith('/lnurl/address')),false);
+test('a name this identity owns from another device is adopted with its funded payouts',async()=>{
+ const f=setup({aliases:[receiver]});f.funded.add(at(2).script);
+ assert.equal((await f.service.claimName()).lightningAddress,receiver.lightningAddress);
+ assert.equal(f.bound()[0]!.arkadeAddress,at(3).address);
+ assert.ok(f.registered.flat().some(row=>row.script===at(2).script));
+ assert.equal(f.requests.some(r=>r.init?.method==='PATCH'||r.init?.method==='POST'&&r.url.endsWith('/lnurl/address')),false);
+});
+
+test('opening privately names a fresh receiver and lists the shielded address in one activation',async()=>{
+ const f=setup();await f.service.claimName({privately:true});f.service.start();
+ try{
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(f.bound().map(b=>b.methods),[[shielded]]);
+  assert.equal((await f.service.current())?.lightningAddress,receiver.lightningAddress);
+  assert.deepEqual(await f.service.privateReceiveState(),{on:true,pending:false,refused:false,withdrawing:false,listed:'own'});
+ }finally{await f.service.dispose();}
+});
+
+test('a refused method on opening still leaves the receiver named, and the next opening asks again',async()=>{
+ const f=setup();f.reply(body=>body.methods?json({error:'method type is reserved'},400):json({ok:true}));
+ await assert.rejects(f.service.claimName({privately:true}),{message:METHODS_REFUSED});
+ assert.equal((await f.service.current())?.lightningAddress,receiver.lightningAddress);
+ const binds=f.bound().length;f.reply(()=>json({ok:true}));
+ await createLnurlReceive(f.config).claimName({privately:true});
+ assert.deepEqual(f.bound().slice(binds).map(b=>b.methods),[[shielded]]);
+ assert.equal((await f.service.privateReceiveState()).on,true);
+});
+
+test('opening privately cancels an owed withdrawal instead of failing on it',async()=>{
+ const f=setup();await f.service.claim();f.relist(receiver.handle,[shielded]);f.forge(entry=>Object.assign(entry,{withdraw:true}));f.keep(false);
+ await f.service.claimName({privately:true});
+ assert.deepEqual(f.bound().at(-1)!.methods,[shielded]);
+ assert.equal((await f.service.privateReceiveState()).on,true);
+});
+
+test('an owned name wins over a nameless receiver of the same identity',async()=>{
+ const f=setup({aliases:[nameless,receiver]});
+ assert.equal((await f.service.claimName()).handle,receiver.handle);
+ assert.equal(f.requests.some(r=>r.init?.method==='PATCH'),false);
 });
 
 test('claim binds the first locally derived /2/7 child with its compressed claim key',async()=>{

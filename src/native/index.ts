@@ -47,7 +47,7 @@ export function nativeOperationFetch(purpose:NativePurpose,identity=crypto.rando
 }
 export const nativeLnurlFetch:typeof fetch=scopedFetch('lnurl');
 export const nativeClaimFetch:typeof fetch=scopedFetch('pool-sync');
-export const nativeReleaseFetch:typeof fetch=scopedFetch('public');
+export const nativeReleaseFetch:typeof fetch=scopedFetch('release');
 export const nativeNetwork={
  status:():Promise<NativeStatus>=>connection().status(),start:(mode:NativeMode='tor'):Promise<NativeStatus>=>connection().start(mode),pause:():Promise<NativeStatus>=>connection().pause(),
  subscribe:(fn:(status:NativeStatus)=>void)=>connection().subscribe(fn),

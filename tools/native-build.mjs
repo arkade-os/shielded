@@ -6,12 +6,25 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
 
+export function androidVersionCode(env = process.env) {
+  if (!env.GITHUB_RUN_NUMBER && env.GITHUB_ACTIONS !== 'true') return undefined;
+  const build = env.GITHUB_RUN_NUMBER;
+  if (!/^[1-9]\d*$/.test(build ?? '') || !Number.isSafeInteger(Number(build)) || Number(build) > 2_099_900_000) throw new Error('Android version code requires a positive, bounded GitHub run number');
+  return 100_000 + Number(build);
+}
+
 export function nativeArguments(platform, action, args = [], host = process.platform, env = process.env) {
   if (!['desktop', 'android', 'ios'].includes(platform)) throw new Error('Use desktop, android or ios');
   if (platform === 'ios' && host !== 'darwin') throw new Error('Build iOS on macOS with Xcode');
   if (!['dev', 'build', 'init', 'prepare'].includes(action) || (platform === 'desktop' && !['dev', 'build'].includes(action))) throw new Error('Unsupported native action');
   if (action === 'init' && !env.npm_execpath && !env.PNPM_PACKAGE_NAME) throw new Error(`Initialize through npm run native:${platform} -- init so generated IDE callbacks can resolve Tauri`);
-  return [...(platform === 'desktop' ? [] : [platform]), action, ...args];
+  const command = [...(platform === 'desktop' ? [] : [platform]), action, ...args];
+  const versionCode = platform === 'android' && action !== 'prepare' ? androidVersionCode(env) : undefined;
+  if (versionCode !== undefined) {
+    const separator = command.indexOf('--');
+    command.splice(separator < 0 ? command.length : separator, 0, '--config', JSON.stringify({ bundle: { android: { versionCode, autoIncrementVersionCode: false } } }));
+  }
+  return command;
 }
 
 export function protectAndroidManifest(source) {
@@ -25,9 +38,13 @@ export function protectAndroidManifest(source) {
   return source.replace(matches[0][0], () => application);
 }
 
-function run(args) {
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, shell: false, stdio: 'inherit' });
+function run(args, cwd = root) {
+  const result = spawnSync(process.execPath, [cli, ...args], { cwd, shell: false, stdio: 'inherit' });
   if (result.error || result.status !== 0) throw new Error(`Tauri command failed (exit ${result.status ?? 'unavailable'})`);
+}
+
+export function prepareIcons(projectRoot = root) {
+  run(['icon', resolve(projectRoot, 'src-tauri/icon.json'), '--output', resolve(projectRoot, 'src-tauri/icons'), '--ios-color', '#111f31'], projectRoot);
 }
 
 export function prepareAndroid(projectRoot = root) {
@@ -44,14 +61,15 @@ export function prepareAndroid(projectRoot = root) {
   const source = readFileSync(manifest, 'utf8');
   const prepared = protectAndroidManifest(source);
   if (prepared !== source) writeFileSync(manifest, prepared);
+  prepareIcons(projectRoot);
 }
 
 export function main([platform = 'desktop', action = 'dev', ...args] = process.argv.slice(2)) {
-  if (platform === 'icons') { run(['icon', 'src-tauri/icon.svg', '--output', 'src-tauri/icons']); return; }
+  if (platform === 'icons') { prepareIcons(); return; }
   if (args[0] === '--') args.shift();
   const command = nativeArguments(platform, action, args);
   if (args.some(arg => ['--help', '-h'].includes(arg))) { run(command); return; }
-  if (!existsSync(resolve(root, 'src-tauri/icons/icon.png'))) run(['icon', 'src-tauri/icon.svg', '--output', 'src-tauri/icons']);
+  if (!existsSync(resolve(root, 'src-tauri/icons/icon.png'))) prepareIcons();
   if (platform === 'android') {
     if (action === 'init') {
       if (!existsSync(resolve(root, 'src-tauri/gen/android/app'))) run(command);
@@ -63,8 +81,13 @@ export function main([platform = 'desktop', action = 'dev', ...args] = process.a
   }
   if (platform === 'ios') {
     const initialized = existsSync(resolve(root, 'src-tauri/gen/apple'));
-    if (action === 'init' && initialized) return;
+    if (action === 'init') {
+      if (!initialized) run(command);
+      prepareIcons();
+      return;
+    }
     if (action !== 'init' && !initialized) throw new Error('Initialize the local iOS project first');
+    prepareIcons();
     if (action === 'prepare') return;
   }
   run(command);

@@ -2,10 +2,16 @@ mod direct;
 mod policy;
 mod routes;
 mod session;
+mod update;
 mod wire;
+
+pub use update::{UpdateDownload, UpdateProgress};
 
 #[cfg(test)]
 mod http_tests;
+
+#[cfg(test)]
+mod update_tests;
 
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};

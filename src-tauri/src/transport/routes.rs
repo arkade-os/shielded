@@ -60,6 +60,13 @@ pub fn binding(
     let get = checked.method == hyper::Method::GET;
     let post = checked.method == hyper::Method::POST;
     let denied = || Err("private scope does not permit this route or item".into());
+    if purpose == "update" {
+        if get && checked.body.is_empty() {
+            super::update::initial_url(checked.url.as_str())?;
+            return Ok(checked.url.as_str().into());
+        }
+        return denied();
+    }
     if ["lnurl", "swap", "discovery"].contains(&purpose) {
         if [POOL, ARK, ESPLORA].contains(&host) {
             return denied();
@@ -70,7 +77,7 @@ pub fn binding(
         ));
     }
     if host == POOL
-        && purpose == "public"
+        && purpose == "release"
         && get
         && path == "/api/native/releases"
         && checked.url.query().is_none()
@@ -356,10 +363,11 @@ mod tests {
     }
 
     #[test]
-    fn release_metadata_requires_the_exact_public_get_route() {
+    fn release_metadata_requires_the_exact_tor_release_get_route() {
         let url = format!("https://{POOL}/api/native/releases");
-        assert!(binding("public", &checked(&url, None), None).is_ok());
-        assert!(binding("public", &checked(&url, Some("{}")), None).is_err());
+        assert!(binding("release", &checked(&url, None), None).is_ok());
+        assert!(binding("release", &checked(&url, Some("{}")), None).is_err());
+        assert!(binding("public", &checked(&url, None), None).is_err());
         assert!(binding("pool-sync", &checked(&url, None), None).is_err());
         for denied in [
             format!("{url}?"),
@@ -370,7 +378,7 @@ mod tests {
             "https://other.example/api/native/releases".into(),
         ] {
             assert!(
-                binding("public", &checked(&denied, None), None).is_err(),
+                binding("release", &checked(&denied, None), None).is_err(),
                 "{denied}"
             );
         }

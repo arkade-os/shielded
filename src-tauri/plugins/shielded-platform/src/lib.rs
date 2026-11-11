@@ -155,6 +155,60 @@ async fn secret_clear<R: Runtime>(
     }
 }
 
+async fn android_update_request<R: Runtime>(
+    app: &AppHandle<R>,
+    command: &str,
+    metadata: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "android")]
+    {
+        app.state::<Mobile<R>>()
+            .0
+            .run_mobile_plugin_async(command, metadata)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, command, metadata);
+        Err("In-app Android updates are unavailable on this platform".into())
+    }
+}
+
+pub async fn android_update_info<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<serde_json::Value, String> {
+    android_update_request(app, "updateInfo", serde_json::json!({})).await
+}
+
+pub async fn android_update_permission<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    android_update_request(app, "updatePermission", serde_json::json!({}))
+        .await
+        .map(|_| ())
+}
+
+pub async fn android_verify_update<R: Runtime>(
+    app: &AppHandle<R>,
+    metadata: serde_json::Value,
+) -> Result<(), String> {
+    android_update_request(app, "updateVerify", metadata)
+        .await
+        .map(|_| ())
+}
+
+pub async fn android_install_update<R: Runtime>(
+    app: &AppHandle<R>,
+    metadata: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    android_update_request(app, "updateInstall", metadata).await
+}
+
+pub async fn android_confirm_update<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<serde_json::Value, String> {
+    android_update_request(app, "updateConfirm", serde_json::json!({})).await
+}
+
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     tauri::plugin::Builder::new("shielded-platform")
         .invoke_handler(tauri::generate_handler![

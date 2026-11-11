@@ -1,5 +1,5 @@
 use super::{
-    NativeResponse, NativeStreamEvent,
+    NativeRequest, NativeResponse, NativeStreamEvent, UpdateDownload, UpdateProgress,
     policy::{CheckedRequest, MAX_CHUNK, MAX_RESPONSE, http_request},
     session::Lease,
 };
@@ -9,9 +9,13 @@ use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Response, body::Incoming, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use std::{sync::Arc, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tauri::ipc::Channel;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{io::AsyncWriteExt, sync::mpsc, task::JoinHandle};
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::{
     Connector, client_async_tls_with_config,
@@ -24,6 +28,8 @@ use tokio_tungstenite::{
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 const STREAM_IDLE: Duration = Duration::from_secs(180);
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const UPDATE_PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct ConnectionTask(JoinHandle<()>);
 impl Drop for ConnectionTask {
@@ -196,6 +202,166 @@ where
     };
     lease.check()?;
     Ok(response)
+}
+
+pub(super) fn download<'a, P>(
+    lease: &'a Lease,
+    asset: &'a UpdateDownload,
+    file: tokio::fs::File,
+    tls: Arc<rustls::ClientConfig>,
+    progress: &'a P,
+) -> BoxFuture<'a, Result<(), String>>
+where
+    P: Fn(UpdateProgress) + Sync,
+{
+    Box::pin(download_with(
+        lease,
+        asset,
+        file,
+        progress,
+        move |checked| exchange(lease, checked, tls.clone()),
+    ))
+}
+
+pub(super) async fn download_with<F, Fut, P>(
+    lease: &Lease,
+    asset: &UpdateDownload,
+    mut file: tokio::fs::File,
+    progress: &P,
+    mut exchange: F,
+) -> Result<(), String>
+where
+    F: FnMut(CheckedRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<(Response<Incoming>, ConnectionTask), String>>,
+    P: Fn(UpdateProgress) + Sync,
+{
+    let mut url = asset.validate()?;
+    lease.require_tor()?;
+    let work = async {
+        lease.require_tor()?;
+        progress(UpdateProgress {
+            received: 0,
+            total: asset.bytes,
+        });
+        for redirects in 0..=2 {
+            let checked = super::policy::check_request(
+                &NativeRequest {
+                    generation: lease.generation,
+                    request_id: lease.id.clone(),
+                    scope: lease.scope.clone(),
+                    url: url.as_str().into(),
+                    method: "GET".into(),
+                    headers: vec![("Accept".into(), "application/octet-stream".into())],
+                    body_base64: None,
+                },
+                false,
+            )?;
+            lease.require_tor()?;
+            let (response, driver) = tokio::time::timeout(CONNECT_TIMEOUT, exchange(checked))
+                .await
+                .map_err(|_| "Update connection timed out; retry the download")??;
+            lease.require_tor()?;
+            check_encoding(&response)?;
+            if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+                if redirects == 2 {
+                    return Err("Update redirect limit exceeded".into());
+                }
+                let location = response
+                    .headers()
+                    .get(hyper::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or("Update redirect is missing its destination")?;
+                url = super::update::redirect_url(location)?;
+                drop(response);
+                drop(driver);
+                continue;
+            }
+            if response.status() != hyper::StatusCode::OK {
+                return Err("Update server did not return the requested package".into());
+            }
+            if let Some(length) = response.headers().get(hyper::header::CONTENT_LENGTH) {
+                let length = length
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .ok_or("Update package length is invalid")?;
+                if length != asset.bytes {
+                    return Err("Update package length does not match the release".into());
+                }
+            }
+            let mut body = response.into_body();
+            let mut received = 0u64;
+            let mut digest = Sha256::new();
+            let mut last_progress = Instant::now();
+            while let Some(frame) = tokio::time::timeout(STREAM_IDLE, body.frame())
+                .await
+                .map_err(|_| "Update download stopped responding; retry the download")?
+            {
+                let frame =
+                    frame.map_err(|_| "Update download was interrupted; retry the download")?;
+                if let Ok(bytes) = frame.into_data() {
+                    for chunk in bytes.chunks(MAX_CHUNK) {
+                        lease.require_tor()?;
+                        received = received
+                            .checked_add(chunk.len() as u64)
+                            .filter(|received| *received <= asset.bytes)
+                            .ok_or("Update package exceeded its advertised size")?;
+                        file.write_all(chunk)
+                            .await
+                            .map_err(|_| "Could not write the private update file")?;
+                        digest.update(chunk);
+                        lease.require_tor()?;
+                        if received < asset.bytes
+                            && last_progress.elapsed() >= UPDATE_PROGRESS_INTERVAL
+                        {
+                            progress(UpdateProgress {
+                                received,
+                                total: asset.bytes,
+                            });
+                            last_progress = Instant::now();
+                        }
+                    }
+                }
+            }
+            if received != asset.bytes {
+                return Err("Update package was incomplete; retry the download".into());
+            }
+            let actual: String = digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            if actual != asset.sha256 {
+                return Err("Update package checksum does not match the release".into());
+            }
+            file.flush()
+                .await
+                .map_err(|_| "Could not finish the private update file")?;
+            file.sync_all()
+                .await
+                .map_err(|_| "Could not save the private update file")?;
+            lease.require_tor()?;
+            progress(UpdateProgress {
+                received,
+                total: asset.bytes,
+            });
+            drop(driver);
+            lease.require_tor()?;
+            return Ok(());
+        }
+        Err("Update redirect limit exceeded".into())
+    };
+    let result = tokio::select! {
+        biased;
+        _ = lease.cancel.cancelled() => Err("Update download cancelled; retry when Tor is connected".into()),
+        result = tokio::time::timeout(UPDATE_TIMEOUT, work) => {
+            result.unwrap_or_else(|_| Err("Update download timed out; retry the download".into()))
+        }
+    };
+    if result.is_err() {
+        let _ = file.flush().await;
+    }
+    result
 }
 
 pub(super) async fn stream(
