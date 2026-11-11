@@ -38,6 +38,10 @@ export function invoiceRequestAmount(amount:string,bounds:InvoiceBounds|undefine
  const sats=receiveAmount(amount);
  return sats!==undefined&&bounds&&invoiceInRange(bounds,sats)?sats:undefined;
 }
+type InvoiceState={amount:bigint;outcome:string};
+/** A lapsed invoice is replaced; a paid or failed one stays shown until the amount is edited. */
+export const needsInvoice=(amount:bigint|undefined,invoice:InvoiceState|undefined,tried:bigint|undefined)=>amount!==undefined&&tried!==amount&&(invoice?.amount!==amount||invoice.outcome==='lapsed');
+export const keptInvoice=<T extends InvoiceState>(invoice:T|undefined)=>invoice&&(invoice.outcome==='open'||invoice.outcome==='accepted')?invoice:undefined;
 export function amountQrValue(mode:Exclude<ReceiveMode,'unified'>,value:string,amount:string):string|undefined{
  const sats=receiveAmount(amount);
  if(!value.trim()||sats===undefined)return undefined;

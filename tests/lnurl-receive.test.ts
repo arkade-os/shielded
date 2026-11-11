@@ -509,6 +509,13 @@ test('opening privately cancels an owed withdrawal instead of failing on it',asy
  assert.equal((await f.service.privateReceiveState()).on,true);
 });
 
+test('naming adopts an owned name even while this device tracks a nameless receiver',async()=>{
+ const f=setup();await f.service.ensureUnified();f.aliases.push(receiver);
+ assert.equal((await f.service.claimName()).handle,receiver.handle);
+ assert.equal(f.requests.some(r=>r.init?.method==='PATCH'),false);
+ assert.deepEqual(f.requests.filter(isBind).slice(-2).map(r=>r.url.split('/').at(-2)),[receiver.handle,nameless.handle]);
+});
+
 test('an owned name wins over a nameless receiver of the same identity',async()=>{
  const f=setup({aliases:[nameless,receiver]});
  assert.equal((await f.service.claimName()).handle,receiver.handle);

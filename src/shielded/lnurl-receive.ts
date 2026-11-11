@@ -316,8 +316,9 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const branch=currentBranch();void branch.catch(()=>{});
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');
+  const matched=tracked&&owned.find(row=>sameReceiver(row,tracked));
   // A name this identity already owns, from another device or an older wallet, wins over a nameless receiver or a new one.
-  let receiver=(tracked&&owned.find(row=>sameReceiver(row,tracked)))??owned.find(row=>row.handle===server.pending)??owned.find(row=>!!row.lightningAddress)??owned[0];
+  let receiver=[matched,...owned].find(row=>!!row?.lightningAddress)??matched??owned.find(row=>row.handle===server.pending)??owned[0];
   const recoverPayouts=!!receiver&&!state.payouts.length;
   if(!receiver){
     config.onStage?.('Registering your unified address');
