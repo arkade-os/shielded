@@ -356,3 +356,61 @@ Pinned TLC v1.7.4 checked the base on November 8, 2026: 131,128 generated states
 `TerminalJoinersRelease` is conditional liveness: once completion is retained, an attached waiter eventually returns or cancels under weak fairness of its observation step. No fairness is imposed on network completion, worker scheduling or retirement acknowledgements, so the model does not promise bootstrap/retry latency or eventual connectivity. Caller delivery before the native reservation boundary and process restart are outside its scope.
 
 The wider configuration passed 20,000 traces at depth 100 with four callers, four jobs, five generations and seed 20261108, checking 2,040,179 states. The native gate includes 38 expected configurations, up from 27. Local checks used two workers and a 256 MiB heap because of host memory pressure. These results do not prove Tor directory validation, circuit isolation, caching, cryptography, native vault durability, frontend rendering, physical-device behavior or a startup speedup.
+
+## Scoped native HTTP reuse
+
+`HttpReuse.tla` models HTTP/1 keepalive inside a native isolation scope. The session owns at most one idle socket per scope, additionally matched by origin and Arti context. A request removes the cached socket before awaiting readiness, then owns it exclusively through dispatch and complete body consumption. Only a validated complete response can return it to the cache. A stale socket can be replaced before dispatch; a failure after dispatch never retries the request.
+
+Each return assigns a unique cache-entry identity. An idle-expiry callback checks generation, scope and that identity before removing a slot. Scope closure, context rotation and session retirement drop cached sockets. Their native stream retirement remains pending until the driver closes; a replacement session waits for that drain. A lease that recovered with a newer Arti context than its captured context does not repopulate the cache.
+
+| Model actions | Owning file and symbols |
+| --- | --- |
+| `Register`, `Checkout` | `src-tauri/src/transport/session.rs`: `Inner::register`, `Lease::take_http` |
+| `Open`, `ConnectResult`, `Recover` | `session.rs`: `Lease::connect`, `Lease::connect_with_recovery`, `Lease::reconnect_client` |
+| `ReplaceClosed`, `Dispatch`, `Response` | `src-tauri/src/transport/wire.rs`: `HttpConnection::new`, `HttpConnection::ready`, `HttpConnection::send`, `http` |
+| `Return` | `session.rs`: `Lease::return_http`; `wire.rs`: `http` returns only after bounded body collection |
+| `Expire`, `Evict` | `session.rs`: `Inner::expire_http`, `Lease::return_http` |
+| `Cancel`, `Drop`, `Fail`, `CloseScope` | `session.rs`: `Inner::cancel`, `Inner::close_scope`, `Lease::drop`; `wire.rs`: cancellation, timeout and response-error paths |
+| `Rotate` | `session.rs`: `Lease::reconnect_client` |
+| `Pause`, `Drain`, `Resume` | `session.rs`: `Session::invalidate`, `Retirement::drop`, `StartupWork::run_with_bootstrap` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Registered: capture scope, generation and context
+    Registered --> Owned: atomically take matching idle socket
+    Registered --> Connecting: open a dedicated socket
+    Connecting --> Owned: verified TLS and HTTP handshake
+    Owned --> Connecting: closed before dispatch only
+    Owned --> Dispatched: active lease, one send
+    Dispatched --> Complete: entire bounded response validated
+    Complete --> Cached: lease and context still current, bounded idle slot
+    Cached --> Owned: matching next request takes ownership
+    Cached --> Closing: matching expiry, eviction, scope close or retirement
+    Connecting --> Closing: error or cancellation
+    Dispatched --> Closing: partial body, error, timeout or cancellation
+    Complete --> Closing: stale lease or context
+    Closing --> [*]: native stream retirement acknowledged
+```
+
+The exhaustive base uses two workers, two scopes, two origins, one request per worker, one session-generation advance and one context advance per scope. Its idle cap is reduced to one to force overflow with two scopes; this is a bounded abstraction of the production cap of sixteen. Recovery after another request has already advanced the context may join that current context; a second advance beyond the model's one-rotation bound is outside this configuration. Successful body collection and native resource retirement are abstract acknowledgements, not assumptions that an interrupted request succeeded.
+
+Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 2 GiB JVM heap: 19,900,857 generated states, 3,750,692 distinct states, depth 26 and an empty queue. Every semantic action fired except `Resend`, which is intentionally mutation-only. All twelve guard mutations exit 12 with their intended invariant:
+
+| Configuration | Observed counterexample |
+| --- | --- |
+| `HttpReuse_NoCheckoutFence.cfg` | A cancelled lease takes an idle connection; `NoRetiredCheckout` fails |
+| `HttpReuse_NoScope.cfg` | A request takes another scope's connection; `NoCrossScopeUse` fails |
+| `HttpReuse_NoOrigin.cfg` | A request takes a socket for another origin; `NoCrossOriginUse` fails |
+| `HttpReuse_NoCheckoutContext.cfg` | An old lease takes a new-context socket after rotation; `NoRetiredContextCheckout` fails |
+| `HttpReuse_NoExclusive.cfg` | Checkout leaves the same socket cached and owned by a request; `ExclusiveOwnership` fails |
+| `HttpReuse_NoReturnFence.cfg` | Cancellation between body completion and return repopulates the cache; `NoRetiredReturn` fails |
+| `HttpReuse_NoReturnContext.cfg` | Context rotation between completion and return repopulates an old-context slot; `NoRetiredContextReturn` fails |
+| `HttpReuse_NoComplete.cfg` | The request is cached before its body completes; `OnlyCompleteBodiesCached` fails |
+| `HttpReuse_NoBound.cfg` | Two scopes fill an idle pool whose bound is one; `BoundedIdle` fails |
+| `HttpReuse_NoExpiryFence.cfg` | The first return's timer removes the second return's replacement slot; `NoStaleExpiry` fails |
+| `HttpReuse_Resend.cfg` | A failed post-dispatch request is sent again; `AtMostOneSend` fails |
+| `HttpReuse_NoDrain.cfg` | A new session becomes ready while the old stream is still live; `DrainBeforeResume` fails |
+
+The CI checker includes all thirteen exhaustive configurations, bringing the complete native gate to 51 expected configurations without removing any previous coverage. The wider configuration passed with four workers, the same two scopes and origins, 20,000 random traces at depth 100 and seed 20261111: 2,000,001 states checked.
+
+The model abstracts DNS, TLS internals, actual body bytes, HTTP parsing, cache-age wall time, server keepalive policy and scheduler behavior. It treats checkout, cache return, expiry comparison and session invalidation as the corresponding session-lock atomic steps. It provides no fairness, latency, termination, cryptographic-isolation or physical-device proof, and the source-symbol anchors are not a checked refinement mapping. SSE and WebSockets remain outside this HTTP reuse model and retain dedicated connections.

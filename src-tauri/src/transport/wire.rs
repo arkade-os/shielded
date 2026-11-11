@@ -32,6 +32,74 @@ impl Drop for ConnectionTask {
     }
 }
 
+pub(super) struct HttpConnection {
+    sender: http1::SendRequest<Full<Bytes>>,
+    driver: ConnectionTask,
+}
+
+impl HttpConnection {
+    pub async fn new<T>(stream: T) -> Result<Self, String>
+    where
+        T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        let (sender, connection) = http1::Builder::new()
+            .max_buf_size(64 * 1024)
+            .handshake::<_, Full<Bytes>>(TokioIo::new(stream))
+            .await
+            .map_err(|_| "private HTTP handshake failed")?;
+        let driver = ConnectionTask(tokio::spawn(async move {
+            let _ = connection.await;
+        }));
+        Ok(Self { sender, driver })
+    }
+
+    pub async fn ready(&mut self) -> Result<(), String> {
+        self.sender
+            .ready()
+            .await
+            .map_err(|_| "private HTTP connection closed before request".into())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.sender.is_closed() || self.driver.0.is_finished()
+    }
+
+    async fn send(
+        &mut self,
+        request: hyper::Request<Full<Bytes>>,
+    ) -> Result<Response<Incoming>, String> {
+        self.sender
+            .send_request(request)
+            .await
+            .map_err(|_| "private HTTP request failed; outcome may be unknown".into())
+    }
+}
+
+async fn connect_http(
+    lease: &Lease,
+    host: &str,
+    tls: Arc<rustls::ClientConfig>,
+) -> Result<HttpConnection, String> {
+    let stream = lease.connect(host).await?;
+    lease.check()?;
+    let name = rustls::pki_types::ServerName::try_from(host.to_owned())
+        .map_err(|_| "invalid private TLS hostname")?;
+    let stream = TlsConnector::from(tls)
+        .connect(name, stream)
+        .await
+        .map_err(|_| "private TLS verification failed")?;
+    HttpConnection::new(stream).await
+}
+
+fn check_encoding(response: &Response<Incoming>) -> Result<(), String> {
+    if let Some(encoding) = response.headers().get(hyper::header::CONTENT_ENCODING) {
+        if encoding.as_bytes() != b"identity" {
+            return Err("upstream ignored private identity encoding".into());
+        }
+    }
+    Ok(())
+}
+
 async fn exchange(
     lease: &Lease,
     checked: CheckedRequest,
@@ -43,25 +111,16 @@ async fn exchange(
         .host_str()
         .ok_or("missing private HTTP host")?
         .to_owned();
-    let stream = lease.connect(&host).await?;
-    lease.check()?;
-    let name = rustls::pki_types::ServerName::try_from(host)
-        .map_err(|_| "invalid private TLS hostname")?;
-    let stream = TlsConnector::from(tls)
-        .connect(name, stream)
-        .await
-        .map_err(|_| "private TLS verification failed")?;
+    let mut connection = connect_http(lease, &host, tls).await?;
+    connection.ready().await?;
     let request = http_request(checked)?;
     lease.check()?;
-    let (response, driver) = send_http(stream, request).await?;
-    if let Some(encoding) = response.headers().get(hyper::header::CONTENT_ENCODING) {
-        if encoding.as_bytes() != b"identity" {
-            return Err("upstream ignored private identity encoding".into());
-        }
-    }
-    Ok((response, driver))
+    let response = connection.send(request).await?;
+    check_encoding(&response)?;
+    Ok((response, connection.driver))
 }
 
+#[cfg(test)]
 pub(super) async fn send_http<T>(
     stream: T,
     request: hyper::Request<Full<Bytes>>,
@@ -69,19 +128,10 @@ pub(super) async fn send_http<T>(
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut sender, connection) = http1::Builder::new()
-        .max_buf_size(64 * 1024)
-        .handshake::<_, Full<Bytes>>(TokioIo::new(stream))
-        .await
-        .map_err(|_| "private HTTP handshake failed")?;
-    let driver = ConnectionTask(tokio::spawn(async move {
-        let _ = connection.await;
-    }));
-    let response = sender
-        .send_request(request)
-        .await
-        .map_err(|_| "private HTTP request failed; outcome may be unknown")?;
-    Ok((response, driver))
+    let mut connection = HttpConnection::new(stream).await?;
+    connection.ready().await?;
+    let response = connection.send(request).await?;
+    Ok((response, connection.driver))
 }
 
 pub(super) async fn http(
@@ -89,11 +139,47 @@ pub(super) async fn http(
     checked: CheckedRequest,
     tls: Arc<rustls::ClientConfig>,
 ) -> Result<NativeResponse, String> {
+    let host = checked
+        .url
+        .host_str()
+        .ok_or("missing private HTTP host")?
+        .to_owned();
+    http_with(&lease, checked, || connect_http(&lease, &host, tls)).await
+}
+
+pub(super) async fn http_with<F, Fut>(
+    lease: &Lease,
+    checked: CheckedRequest,
+    connect: F,
+) -> Result<NativeResponse, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<HttpConnection, String>>,
+{
+    let host = checked
+        .url
+        .host_str()
+        .ok_or("missing private HTTP host")?
+        .to_owned();
     let response = tokio::select! {
         biased;
         _ = lease.cancel.cancelled() => return Err("private request cancelled; outcome may be unknown".into()),
         result = tokio::time::timeout(HTTP_TIMEOUT, async {
-            let (response, _driver) = exchange(&lease, checked, tls).await?;
+            let mut cached = lease.take_http(&host)?;
+            if let Some(connection) = cached.as_mut() {
+                if connection.ready().await.is_err() { cached = None; }
+            }
+            let mut connection = match cached {
+                Some(connection) => connection,
+                None => connect().await?,
+            };
+            connection.ready().await?;
+            let request = http_request(checked)?;
+            lease.check()?;
+            let response = connection.send(request).await?;
+            check_encoding(&response)?;
+            let reusable = response.version() == hyper::Version::HTTP_11
+                && !response.headers().get_all(hyper::header::CONNECTION).iter().any(|value| value.as_bytes().split(|byte| *byte == b',').any(|token| token.trim_ascii().eq_ignore_ascii_case(b"close")));
             let status = response.status().as_u16();
             let mut headers = Vec::new();
             for (name, value) in response.headers() {
@@ -101,6 +187,8 @@ pub(super) async fn http(
                 headers.push((name.to_string(), value.to_str().map_err(|_| "invalid private response header")?.to_owned()));
             }
             let body = Limited::new(response.into_body(), MAX_RESPONSE).collect().await.map_err(|_| "private response failed or exceeded size limit; outcome may be unknown")?.to_bytes();
+            lease.check()?;
+            if reusable { lease.return_http(host, connection)?; }
             Ok::<_, String>(NativeResponse { generation: lease.generation, status, headers, body_base64: STANDARD.encode(body) })
         }) => result.map_err(|_| "private request timed out; outcome may be unknown")??,
     };

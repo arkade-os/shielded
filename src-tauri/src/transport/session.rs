@@ -1,6 +1,6 @@
 use super::{
     NativeHandle, NativeMode, NativeRequest, NativeResponse, NativeStatus, NativeStreamEvent,
-    policy::CheckedRequest,
+    policy::CheckedRequest, wire::HttpConnection,
 };
 use arti_client::{BootstrapBehavior, DormantMode, TorClient, config::TorClientConfigBuilder};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -11,19 +11,21 @@ use std::{
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard, Weak},
     task::{Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::ipc::Channel;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch},
 };
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use tor_rtcompat::PreferredRuntime;
 
 pub(super) type Client = Arc<TorClient<PreferredRuntime>>;
 const MAX_SCOPES: usize = 1024;
 const MAX_OPERATIONS: usize = 64;
+const MAX_IDLE_HTTP: usize = 16;
+const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CANCELLED: usize = 4096;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const DIRECTORY_INITIAL_DELAY: Duration = Duration::from_secs(1);
@@ -214,6 +216,14 @@ enum ConnectionContext {
 }
 
 impl ConnectionContext {
+    fn matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Tor(left), Self::Tor(right)) => Arc::ptr_eq(left, right),
+            (Self::Direct, Self::Direct) => true,
+            _ => false,
+        }
+    }
+
     fn tor(&self) -> Result<&Client, String> {
         match self {
             Self::Tor(client) => Ok(client),
@@ -301,6 +311,15 @@ pub(super) struct Scope {
     purpose: String,
     binding: Option<String>,
     subscription: Option<String>,
+    http: Option<IdleHttp>,
+}
+
+struct IdleHttp {
+    host: String,
+    id: uuid::Uuid,
+    since: Instant,
+    connection: HttpConnection,
+    _expiry: AbortOnDropHandle<()>,
 }
 
 pub(super) struct Inner {
@@ -597,6 +616,7 @@ impl Inner {
                 purpose: purpose.into(),
                 binding: None,
                 subscription: None,
+                http: None,
             },
         );
         Ok(NativeHandle { id, generation })
@@ -640,7 +660,7 @@ impl Inner {
             return Err("private request identifier already completed".into());
         }
         if session.operations.len() >= MAX_OPERATIONS
-            || session.resources.len() >= MAX_OPERATIONS
+            || session.resources.len() >= MAX_OPERATIONS + MAX_IDLE_HTTP
             || session.operations.contains_key(&request.request_id)
         {
             return Err("private request limit or duplicate identifier".into());
@@ -714,6 +734,18 @@ impl Inner {
         }
         session.cancelled.insert(id.to_owned());
         Ok(())
+    }
+
+    fn expire_http(&self, generation: u64, scope: &str, id: uuid::Uuid) {
+        if let Ok(mut session) = self.lock() {
+            if session.generation == generation {
+                if let Some(scope) = session.scopes.get_mut(scope) {
+                    if scope.http.as_ref().is_some_and(|entry| entry.id == id) {
+                        scope.http.take();
+                    }
+                }
+            }
+        }
     }
 
     pub fn subscription_response(
@@ -929,6 +961,86 @@ impl Session {
 }
 
 impl Lease {
+    pub fn take_http(&self, host: &str) -> Result<Option<HttpConnection>, String> {
+        let inner = self.inner.upgrade().ok_or("private transport closed")?;
+        let mut session = inner.lock()?;
+        session.check(self.generation)?;
+        if self.cancel.is_cancelled() {
+            return Err("private request cancelled".into());
+        }
+        let scope = session
+            .scopes
+            .get_mut(&self.scope)
+            .ok_or("private scope closed")?;
+        if !scope.context.matches(&self.context) {
+            return Ok(None);
+        }
+        Ok(scope
+            .http
+            .take()
+            .filter(|entry| {
+                entry.host == host
+                    && entry.since.elapsed() < HTTP_IDLE_TIMEOUT
+                    && !entry.connection.is_closed()
+            })
+            .map(|entry| entry.connection))
+    }
+
+    pub fn return_http(&self, host: String, connection: HttpConnection) -> Result<bool, String> {
+        let inner = self.inner.upgrade().ok_or("private transport closed")?;
+        let mut session = inner.lock()?;
+        session.check(self.generation)?;
+        if self.cancel.is_cancelled() {
+            return Err("private request cancelled".into());
+        }
+        let scope = session
+            .scopes
+            .get(&self.scope)
+            .ok_or("private scope closed")?;
+        if !scope.context.matches(&self.context) || connection.is_closed() {
+            return Ok(false);
+        }
+        if scope.http.is_none()
+            && session
+                .scopes
+                .values()
+                .filter(|scope| scope.http.is_some())
+                .count()
+                >= MAX_IDLE_HTTP
+        {
+            let oldest = session
+                .scopes
+                .iter()
+                .filter_map(|(id, scope)| {
+                    scope.http.as_ref().map(|entry| (id.clone(), entry.since))
+                })
+                .min_by_key(|(_, since)| *since)
+                .map(|(id, _)| id);
+            if let Some(oldest) = oldest {
+                session.scopes.get_mut(&oldest).unwrap().http.take();
+            }
+        }
+        let id = uuid::Uuid::new_v4();
+        let since = Instant::now();
+        let weak = Arc::downgrade(&inner);
+        let scope = self.scope.clone();
+        let generation = self.generation;
+        let expiry = tokio::spawn(async move {
+            tokio::time::sleep_until((since + HTTP_IDLE_TIMEOUT).into()).await;
+            if let Some(inner) = weak.upgrade() {
+                inner.expire_http(generation, &scope, id);
+            }
+        });
+        session.scopes.get_mut(&self.scope).unwrap().http = Some(IdleHttp {
+            host,
+            id,
+            since,
+            connection,
+            _expiry: AbortOnDropHandle::new(expiry),
+        });
+        Ok(true)
+    }
+
     pub async fn connect(&self, host: &str) -> Result<NativeStream, String> {
         self.check()?;
         let io: Box<dyn NativeIo> = match &self.context {
@@ -984,6 +1096,7 @@ impl Lease {
             .get_mut(&self.scope)
             .ok_or("private scope closed")?;
         if Arc::ptr_eq(scope.context.tor()?, self.context.tor()?) {
+            scope.http.take();
             scope.context = ConnectionContext::Tor(scope.context.tor()?.isolated_client());
         }
         Ok(scope.context.tor()?.clone())
@@ -1127,6 +1240,297 @@ mod tests {
             session.client = Some(client);
         }
         inner
+    }
+
+    async fn http_connection(lease: &Lease) -> (HttpConnection, tokio::io::DuplexStream) {
+        let (client, server) = tokio::io::duplex(4096);
+        let stream = NativeStream {
+            io: Box::new(client),
+            _retirement: lease.retirement.clone(),
+        };
+        (HttpConnection::new(stream).await.unwrap(), server)
+    }
+
+    async fn closed(mut peer: tokio::io::DuplexStream) {
+        use tokio::io::AsyncReadExt;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), peer.read(&mut [0]))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn http_cache_checkout_is_exclusive_and_separates_scopes_and_hosts() {
+        let inner = ready();
+        let first = inner.scope(1, "indexer").unwrap();
+        let second = inner.scope(1, "indexer").unwrap();
+        let first = register(&inner, &request(1, first.id, "http-first")).unwrap();
+        let second = register(&inner, &request(1, second.id, "http-second")).unwrap();
+        let (connection, peer) = http_connection(&first).await;
+        assert!(
+            first
+                .return_http("mutinynet.arkade.sh".into(), connection)
+                .unwrap()
+        );
+        assert!(second.take_http("mutinynet.arkade.sh").unwrap().is_none());
+        let connection = first.take_http("mutinynet.arkade.sh").unwrap().unwrap();
+        assert!(first.take_http("mutinynet.arkade.sh").unwrap().is_none());
+        assert!(
+            first
+                .return_http("mutinynet.arkade.sh".into(), connection)
+                .unwrap()
+        );
+        assert!(first.take_http("other.example").unwrap().is_none());
+        closed(peer).await;
+    }
+
+    #[tokio::test]
+    async fn http_context_rotation_drops_idle_and_rejects_an_old_return() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "http-rotate")).unwrap();
+        let (connection, peer) = http_connection(&lease).await;
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        lease.reconnect_client().unwrap();
+        assert!(inner.lock().unwrap().scopes[&handle.id].http.is_none());
+        closed(peer).await;
+        let fresh = register(&inner, &request(1, handle.id.clone(), "http-current")).unwrap();
+        let (connection, peer) = http_connection(&fresh).await;
+        assert!(
+            fresh
+                .return_http("mutinynet.arkade.sh".into(), connection)
+                .unwrap()
+        );
+        let id = inner.lock().unwrap().scopes[&handle.id]
+            .http
+            .as_ref()
+            .unwrap()
+            .id;
+        let (old, old_peer) = http_connection(&lease).await;
+        assert!(
+            !lease
+                .return_http("mutinynet.arkade.sh".into(), old)
+                .unwrap()
+        );
+        assert_eq!(
+            inner.lock().unwrap().scopes[&handle.id]
+                .http
+                .as_ref()
+                .unwrap()
+                .id,
+            id
+        );
+        closed(old_peer).await;
+        inner.close_scope(1, &handle.id).unwrap();
+        closed(peer).await;
+    }
+
+    #[tokio::test]
+    async fn http_expiry_cannot_remove_a_replacement_or_another_generation() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "http-expiry")).unwrap();
+        let (connection, peer) = http_connection(&lease).await;
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        let old = inner.lock().unwrap().scopes[&handle.id]
+            .http
+            .as_ref()
+            .unwrap()
+            .id;
+        let connection = lease.take_http("mutinynet.arkade.sh").unwrap().unwrap();
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        let current = inner.lock().unwrap().scopes[&handle.id]
+            .http
+            .as_ref()
+            .unwrap()
+            .id;
+        assert_ne!(old, current);
+        inner.expire_http(1, &handle.id, old);
+        inner.expire_http(2, &handle.id, current);
+        assert_eq!(
+            inner.lock().unwrap().scopes[&handle.id]
+                .http
+                .as_ref()
+                .unwrap()
+                .id,
+            current
+        );
+        inner.expire_http(1, &handle.id, current);
+        assert!(inner.lock().unwrap().scopes[&handle.id].http.is_none());
+        closed(peer).await;
+        assert_eq!(Arc::strong_count(&inner), 1);
+    }
+
+    #[tokio::test]
+    async fn expired_http_connections_are_closed_instead_of_checked_out() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "http-too-old")).unwrap();
+        let (connection, peer) = http_connection(&lease).await;
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        inner
+            .lock()
+            .unwrap()
+            .scopes
+            .get_mut(&handle.id)
+            .unwrap()
+            .http
+            .as_mut()
+            .unwrap()
+            .since = Instant::now() - HTTP_IDLE_TIMEOUT;
+        assert!(lease.take_http("mutinynet.arkade.sh").unwrap().is_none());
+        closed(peer).await;
+    }
+
+    #[tokio::test]
+    async fn checking_out_http_cancels_its_idle_expiry_task() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "http-expiry-owner")).unwrap();
+        let (connection, peer) = http_connection(&lease).await;
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        let expiry = inner.lock().unwrap().scopes[&handle.id]
+            .http
+            .as_ref()
+            .unwrap()
+            ._expiry
+            .abort_handle();
+        let connection = lease.take_http("mutinynet.arkade.sh").unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !expiry.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(connection);
+        closed(peer).await;
+    }
+
+    #[tokio::test]
+    async fn idle_http_cache_evicts_oldest_without_cancelling_its_request() {
+        let inner = ready();
+        let mut leases = Vec::new();
+        let mut peers = Vec::new();
+        for index in 0..=MAX_IDLE_HTTP {
+            let handle = inner.scope(1, "indexer").unwrap();
+            let lease = register(
+                &inner,
+                &request(1, handle.id, &format!("http-bound-{index}")),
+            )
+            .unwrap();
+            let (connection, peer) = http_connection(&lease).await;
+            lease
+                .return_http("mutinynet.arkade.sh".into(), connection)
+                .unwrap();
+            leases.push(lease);
+            peers.push(peer);
+        }
+        assert_eq!(
+            inner
+                .lock()
+                .unwrap()
+                .scopes
+                .values()
+                .filter(|scope| scope.http.is_some())
+                .count(),
+            MAX_IDLE_HTTP
+        );
+        assert!(
+            leases[0]
+                .take_http("mutinynet.arkade.sh")
+                .unwrap()
+                .is_none()
+        );
+        assert!(leases.iter().all(|lease| lease.check().is_ok()));
+        closed(peers.remove(0)).await;
+        inner.pause().unwrap();
+        for peer in peers {
+            closed(peer).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_http_connections_preserve_the_full_active_operation_budget() {
+        let inner = ready();
+        let mut peers = Vec::new();
+        for index in 0..MAX_IDLE_HTTP {
+            let handle = inner.scope(1, "indexer").unwrap();
+            let lease = register(
+                &inner,
+                &request(1, handle.id, &format!("http-idle-{index}")),
+            )
+            .unwrap();
+            let (connection, peer) = http_connection(&lease).await;
+            lease
+                .return_http("mutinynet.arkade.sh".into(), connection)
+                .unwrap();
+            peers.push(peer);
+        }
+        let mut active = Vec::new();
+        for index in 0..MAX_OPERATIONS {
+            let handle = inner.scope(1, "indexer").unwrap();
+            active.push(
+                register(
+                    &inner,
+                    &request(1, handle.id, &format!("http-active-{index}")),
+                )
+                .unwrap(),
+            );
+        }
+        let extra = inner.scope(1, "indexer").unwrap();
+        assert!(register(&inner, &request(1, extra.id, "http-overflow")).is_err());
+        assert_eq!(inner.lock().unwrap().operations.len(), MAX_OPERATIONS);
+        drop(active);
+        inner.pause().unwrap();
+        for peer in peers {
+            closed(peer).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_http_driver_retirement_is_drained_on_mode_change() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "http-retirement")).unwrap();
+        let (connection, peer) = http_connection(&lease).await;
+        let retired = lease.retirement.clone();
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        drop(lease);
+        assert!(inner.lock().unwrap().operations.is_empty());
+        let started = tokio::spawn({
+            let inner = inner.clone();
+            async move { inner.start(NativeMode::Direct).await }
+        });
+        wait_for_mode(&inner, NativeMode::Direct).await;
+        assert!(inner.lock().unwrap().scopes.is_empty());
+        assert!(!started.is_finished());
+        closed(peer).await;
+        drop(retired);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), started)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .phase,
+            "ready"
+        );
     }
 
     #[test]
