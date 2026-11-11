@@ -9,11 +9,11 @@ import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
-import {ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
+import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
-import {waitForSpend,type PoolApi} from '../src/shielded/pool.ts';
+import {waitForSpend,type ArkCoin,type PoolApi} from '../src/shielded/pool.ts';
 import {markPrivateFetch,markPrivatePoolPage,privatePoolPage,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
-import {PRIVATE_PAGE} from '../src/shielded/private-transport.ts';
+import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
 import {makeNativeMutationJournal} from '../src/native/mutations.ts';
@@ -173,6 +173,14 @@ test('a restarted native wallet reserves uncertain deposit outpoints for every s
  journal.observeNativeResponse({url:origin+'/api/rollup/spends/'+id,method:'GET',status:200,body:JSON.stringify({status:'included',txid:'ab'.repeat(32)})});
  assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:true}),[input,other]);
  assert.equal(await wallet.send({recipients:[{address:'unused',amount:330}],selectedVtxos:[input] as never}),'sent');
+});
+
+test('a 30-coin plan in private mode takes at most the cap, the soonest to expire first and coins without expiry last, and a direct plan takes all',()=>{
+ const now=Date.now(),coins:ArkCoin[]=Array.from({length:30},(_,i)=>({txid:i.toString(16).padStart(64,'0'),vout:0,value:1000,...(i%2?{}:{expiresAt:now+SHIELD_FLOOR_MS+(100-i)*60_000})}));
+ const plan=(cap?:number)=>(Object.assign(Object.create(ShieldedWallet.prototype),{used:new Set(),usedTxids:new Set(),pool:{status:{pool:{reserves:{}}}},isPoolPayout:()=>false,maxShieldCoins:cap}) as ShieldedWallet).planFor(coins,false);
+ const soonest=[...coins.filter(coin=>coin.expiresAt).reverse(),...coins.filter(coin=>!coin.expiresAt).slice(0,PRIVATE_SHIELD_COINS-15)];
+ assert.deepEqual(plan(PRIVATE_SHIELD_COINS),{kind:'btc',coins:soonest,amount:1000*PRIVATE_SHIELD_COINS});
+ assert.deepEqual(plan(),{kind:'btc',coins,amount:30_000});
 });
 
 test('real SDK automatic send and settlement exclude restarted uncertain deposits',async t=>{

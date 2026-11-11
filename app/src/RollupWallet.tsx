@@ -37,7 +37,7 @@ import {WalletCreatedNotice,WalletSecurityMenu,type WalletSecurityView} from './
 import {isNativeHost,nativeClaimFetch,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {loadWalletPoseidon} from './wallet-crypto.ts';
 import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
-import {privateTransport} from '../../src/shielded/private-transport.ts';
+import {privateTransport,PRIVATE_SHIELD_COINS} from '../../src/shielded/private-transport.ts';
 
 const INJECTED_NATIVE=isNativeHost();
 const PRIVATE=privateTransport();
@@ -334,7 +334,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      settlementConfig:false,walletMode:'static',
      pool:{origin:POOL_ORIGIN,status},secret,hash,prover:browserProver(()=>poolRef.current??status,privateFetch??PRIVATE?.fetch),
      ...(nativeHost?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}
-      :PRIVATE?{networkPrivacy:true,fetcher:PRIVATE.fetch,claimFetch:PRIVATE.fetch,poolPage:PRIVATE.pageSize,batchSwaps:false,pendingNullifiers:()=>new Set(PRIVATE.journal.pendingPoolNullifiers(PRIVATE.poolOrigin)),pendingOutpoints:()=>new Set(PRIVATE.journal.pendingPoolOutpoints(PRIVATE.poolOrigin))}:{}),
+      :PRIVATE?{networkPrivacy:true,fetcher:PRIVATE.fetch,claimFetch:PRIVATE.fetch,poolPage:PRIVATE.pageSize,batchSwaps:false,maxShieldCoins:PRIVATE_SHIELD_COINS,pendingNullifiers:()=>new Set(PRIVATE.journal.pendingPoolNullifiers(PRIVATE.poolOrigin)),pendingOutpoints:()=>new Set(PRIVATE.journal.pendingPoolOutpoints(PRIVATE.poolOrigin))}:{}),
      shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });

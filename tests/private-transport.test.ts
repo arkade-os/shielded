@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test,type TestContext} from 'node:test';
-import {ESPLORA_URL} from '@arkade-os/sdk';
+import {buildOffchainTx,CSVMultisigTapscript,DefaultVtxo,ESPLORA_URL,SingleKey} from '@arkade-os/sdk';
+import {base64,hex} from '@scure/base';
 import {normalizeURL} from 'nostr-tools/utils';
 import {NOSTR_CHUNK_BYTES,NOSTR_RELAYS,NOSTR_REQUEST_KIND} from '../packages/protocol/src/nostr-carrier.ts';
 import {IsolatedOnchainProvider} from '../src/native/providers.ts';
@@ -10,9 +11,10 @@ import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
 import {poolApiOf} from '../src/shielded/pool.ts';
-import {installPrivateTransport,privateTransport,PRIVATE_PAGE} from '../src/shielded/private-transport.ts';
+import {installPrivateTransport,privateTransport,PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
+import info from './fixtures/ark-info.json' with {type:'json'};
 
 const POOL='https://pool.example',PAGE='http://127.0.0.1:5173',LOOPBACK='http://127.0.0.1:9',ARK='https://ark.example',ESPLORA=ESPLORA_URL.mutinynet,ID='ab'.repeat(16);
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
@@ -185,6 +187,22 @@ test('a spend POST that never went out frees its reservation at once, and one th
  g.transport.close();
  await assert.rejects(g.transport.fetch('/api/rollup/spends',spendPost('cd'.repeat(16),'23')),fails('unavailable'));
  assert.deepEqual([g.transport.journal.pendingPoolNullifiers(POOL),g.calls],[[17n],[]]);
+});
+
+// As the SDK's one-shot send posts them: submit carries every checkpoint signed by the wallet, finalize the same checkpoints signed by both.
+const offchainSend=async(n:number)=>{
+ const user=SingleKey.fromHex('11'.repeat(32)),server=SingleKey.fromHex('22'.repeat(32));
+ const vtxo=new DefaultVtxo.Script({pubKey:await user.xOnlyPublicKey(),serverPubKey:await server.xOnlyPublicKey(),csvTimelock:{type:'seconds',value:BigInt(info.unilateralExitDelay)}});
+ const coins=Array.from({length:n},(_,i)=>({txid:(i+1).toString(16).padStart(64,'a'),vout:i%3,value:12_345_678+i,tapTree:vtxo.encode(),tapLeafScript:vtxo.forfeit()}));
+ const {arkTx,checkpoints}=buildOffchainTx(coins,[{script:vtxo.pkScript,amount:BigInt(coins.reduce((sum,coin)=>sum+coin.value,0))}],CSVMultisigTapscript.decode(hex.decode(info.checkpointTapscript)));
+ const ark=await user.sign(arkTx),mine=await Promise.all(checkpoints.map(checkpoint=>user.sign(checkpoint))),both=await Promise.all(mine.map(checkpoint=>server.sign(checkpoint)));
+ return {'/v1/tx/submit':JSON.stringify({signedArkTx:base64.encode(ark.toPSBT()),checkpointTxs:mine.map(c=>base64.encode(c.toPSBT()))}),'/v1/tx/finalize':JSON.stringify({arkTxid:ark.id,finalCheckpointTxs:both.map(c=>base64.encode(c.toPSBT()))})};
+};
+test(`a ${PRIVATE_SHIELD_COINS}-coin shield's submit and finalize bodies each seal into one event`,async t=>{
+ const g=await rig(t);g.transport.providers(ARK,ARK);
+ for(const [path,body] of Object.entries(await offchainSend(PRIVATE_SHIELD_COINS)))assert.equal((await g.transport.fetch(ARK+path,{method:'POST',headers:{'content-type':'application/json','x-digest':info.digest},body})).status,200,path);
+ const sealed=g.requests().map(event=>base64.decode(event.content).length);
+ assert.ok(sealed.length===2&&sealed.every(size=>size<=NOSTR_CHUNK_BYTES),String(sealed));
 });
 
 test('the module never imports the native entry point',()=>{
