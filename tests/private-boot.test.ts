@@ -10,12 +10,12 @@ const PAGE='http://127.0.0.1:5173',POOL='https://shielded.mutinynet.arkade.sh';
 const memory=()=>{const items=new Map<string,string>();return {items,getItem:(key:string)=>items.get(key)??null,setItem:(key:string,value:string)=>{items.set(key,value);},removeItem:(key:string)=>{items.delete(key);}};};
 const pinned=async()=>{const {config,nostrPublic}=await generateOhttpKey();return {config:Buffer.from(config).toString('base64url'),gateway:nostrPublic,relays:'',poolOrigin:POOL};};
 
-test('?private=1 stores the flag, ?private=0 clears it, and nothing else reads it back',()=>{
+test('?private=1 stores the flag, and no other value of private clears it',()=>{
  const s=memory(),blocked=()=>{throw new Error('blocked');};
- assert.equal(privateFlag('?private=1',s),true);assert.equal(s.items.get(PRIVATE_FLAG),'1');
- assert.equal(privateFlag('',s),true);assert.equal(privateFlag('?private=yes',s),true);
  assert.equal(privateFlag('?private=0',s),false);assert.equal(s.items.has(PRIVATE_FLAG),false);
- assert.equal(privateFlag('',s),false);
+ assert.equal(privateFlag('?private=1',s),true);assert.equal(s.items.get(PRIVATE_FLAG),'1');
+ for(const search of ['','?private=0','?private=yes'])assert.equal(privateFlag(search,s),true,search);
+ assert.equal(s.items.get(PRIVATE_FLAG),'1');
  assert.equal(privateFlag('?private=1',{getItem:blocked,setItem:blocked,removeItem:blocked}),false);
 });
 

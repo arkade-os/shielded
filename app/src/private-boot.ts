@@ -6,9 +6,7 @@ type FlagStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 
 export function privateFlag(search:string,storage:FlagStorage):boolean{
  try{
-  const value=new URLSearchParams(search).get('private');
-  if(value==='1'){storage.setItem(PRIVATE_FLAG,'1');return true;}
-  if(value==='0'){storage.removeItem(PRIVATE_FLAG);return false;}
+  if(new URLSearchParams(search).get('private')==='1'){storage.setItem(PRIVATE_FLAG,'1');return true;}
   return storage.getItem(PRIVATE_FLAG)==='1';
  }catch{return false;}
 }
@@ -24,7 +22,7 @@ if(typeof __SHIELDED_OHTTP_CONFIG__!=='undefined'&&__SHIELDED_OHTTP_CONFIG__&&__
  const storage:FlagStorage={getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value),removeItem:key=>localStorage.removeItem(key)};
  try{bootPrivateTransport({config:__SHIELDED_OHTTP_CONFIG__,gateway:__SHIELDED_NOSTR_GATEWAY__,relays:__SHIELDED_NOSTR_RELAYS__,poolOrigin:__SHIELDED_POOL_ORIGIN__},location.search,storage,location.origin);}
  catch(error){
-  document.getElementById('root')?.replaceChildren(`Private networking could not start, so the wallet stays closed: ${String(error instanceof Error?error.message:error).replace(/\.$/,'')}. Open this page with ?private=0 to turn it off.`);
+  document.getElementById('root')?.replaceChildren(`Private networking could not start, so the wallet stays closed: ${String(error instanceof Error?error.message:error).replace(/\.$/,'')}. To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage.`);
   throw error;
  }
 }
