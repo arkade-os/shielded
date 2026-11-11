@@ -120,7 +120,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
  const refreshRef=useRef<{request:()=>Promise<void>}|undefined>(undefined);
- const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false);
+ const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false),reconcileError=useRef('');
  const actions=useRef<ReturnType<typeof pageActions>|undefined>(undefined);
  actions.current??=pageActions(()=>{if(mounted.current)setTick(t=>t+1);});
  const refreshes=useRef(new WeakMap<object,{close:()=>Promise<void>}>());
@@ -449,7 +449,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
   if(!wallet||!nativeHost&&!PRIVATE)return;
-  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(live)setNativePending(pending);},error=>{if(live)setPoolError(errorText(error));});return()=>{live=false;};}
+  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(!live)return;setNativePending(pending);setPoolError(e=>e===reconcileError.current?'':e);},error=>{if(live)setPoolError(reconcileError.current=errorText(error));});return()=>{live=false;};}
   try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
   catch(error){setPoolError(errorText(error));}
   },[wallet,tick,nativeHost]);

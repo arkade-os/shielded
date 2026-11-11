@@ -45,6 +45,7 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
  const wallet=read('app/src/RollupWallet.tsx'),effect=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/.exec(wallet);
  assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(\)/);
+ assert.match(effect?.[1]??'',/setPoolError\(e=>e===reconcileError\.current\?'':e\)[^\n]*setPoolError\(reconcileError\.current=errorText\(error\)\)/,'a reconcile that recovers clears its own error and no other');
  assert.match(effect?.[2]??'',/\btick\b/);
  assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
 });
