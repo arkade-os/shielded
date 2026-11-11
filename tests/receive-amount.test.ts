@@ -112,7 +112,7 @@ test('an exact amount gets an invoice unless one for it is still in play or just
  assert.equal(needsInvoice(1000n,undefined,undefined),true);
  assert.equal(needsInvoice(1000n,at(2000n,'open'),undefined),true);
  assert.equal(needsInvoice(1000n,at(1000n,'lapsed'),undefined),true);
- for(const outcome of ['open','accepted','funding','claimed','failed'])assert.equal(needsInvoice(1000n,at(1000n,outcome),undefined),false,outcome);
+ for(const outcome of ['open','accepted','funding','funded','claimed','failed','needs_recovery'])assert.equal(needsInvoice(1000n,at(1000n,outcome),undefined),false,outcome);
  assert.equal(needsInvoice(1000n,undefined,1000n),false);
 });
 
