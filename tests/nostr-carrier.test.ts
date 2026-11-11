@@ -9,7 +9,7 @@ import {KeyConfig,OHTTPClient} from 'ohttp-ts';
 import {addressOf,NOSTR_ANSWER_KIND,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readAnswer,requestEvent} from '../packages/protocol/src/nostr-carrier.ts';
 import {createOhttpGateway,type OhttpOpen} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey,type OhttpGatewayKey} from '../src/rollup/ohttp-keys.ts';
-import {nostrRelaysFromEnv,startNostrCarrier,type RelayPool} from '../src/rollup/nostr-carrier.ts';
+import {ANSWER_BYTES,nostrRelaysFromEnv,startNostrCarrier,type RelayPool} from '../src/rollup/nostr-carrier.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
 const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
@@ -316,7 +316,7 @@ test('close() closes every subscription and destroys the pool, and a late event 
 });
 
 test('an upstream body at the cap fits 8 answer events beside the largest headers fetch passes, and one byte more is a sealed 502',async t=>{
- const cap=241_644,headers={'content-type':'a'.repeat(16_219),'cache-control':'b'.repeat(64),'retry-after':'c'.repeat(64)};
+ const cap=ANSWER_BYTES,headers={'content-type':'a'.repeat(16_219),'cache-control':'b'.repeat(64),'retry-after':'c'.repeat(64)};
  for(const [size,status] of [[cap,200],[cap+1,502]] as const){
   const g=await rig(t,{reply:()=>new Response(new Uint8Array(size),{headers})}),sent=await g.ask(ARK);await until(()=>sent.answer()?.kind==='sealed');
   const inner=await sent.inner();
@@ -332,7 +332,7 @@ test('open() is told the answer cap unless the caller sets one',async t=>{
   const carrier=startNostrCarrier({open,secret,relays:[A],pool:bus.pool,...(maxAnswer?{maxAnswer}:{})}),before=seen.length;t.after(()=>carrier.close());await settle();
   await Promise.all(bus.pool.publish([A],requestEvent(randomBytes(40),gateway,Date.now())));await until(()=>seen.length>before);carrier.close();
  }
- assert.deepEqual(seen,[241_644,1234]);
+ assert.deepEqual(seen,[ANSWER_BYTES,1234]);
 });
 
 test('an answer for a relay that cannot be reached is counted unpublished, and the other relay still gets it',async t=>{

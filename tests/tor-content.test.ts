@@ -14,6 +14,7 @@ import {lightningRails} from '../src/shielded/lightning.ts';
 import {waitForSpend,type PoolApi} from '../src/shielded/pool.ts';
 import {markPrivateFetch,markPrivatePoolPage,privatePoolPage,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
 import {PRIVATE_PAGE} from '../src/shielded/private-transport.ts';
+import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
 import {makeNativeMutationJournal} from '../src/native/mutations.ts';
 import {decodeClaimToken,encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
@@ -97,7 +98,7 @@ test('a re-wrapped private pool api keeps its page size',async t=>{
 test('a worst-case page of 12 batches stays inside the gateway answer cap',()=>{
  const f='9'.repeat(String(ROLLUP_FIELD).length),slot:RollupEpochRecordSlot={anchor:f,rCur:{epoch:99_999,root:f},nullifiers:[f,f],commitments:[f,f],ctDigest:f,groupId:f,groupSize:10,publics:Array(7).fill(f),ciphertext:'f'.repeat(2*ROLLUP_RECORD_BYTES)};
  const record:RollupEpochRecord={kind:'spend',slots:Array(BATCH_SLOTS).fill(slot),noteBlockRoot:f,txid:'f'.repeat(64),at:1_700_000_000_000};
- const page=(n:number)=>JSON.stringify({from:0,total:n,batches:Array(n).fill(record)}).length,cap=63*4096-8-16_396;
+ const page=(n:number)=>JSON.stringify({from:0,total:n,batches:Array(n).fill(record)}).length,cap=ANSWER_BYTES;
  assert.ok(page(PRIVATE_PAGE)<=cap,String(page(PRIVATE_PAGE)));assert.ok(page(16)>cap,String(page(16)));
 });
 
