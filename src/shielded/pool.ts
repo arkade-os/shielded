@@ -3,16 +3,16 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
-import {isPrivateFetch,markPrivatePoolApi} from './network-privacy.ts';
+import {isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number;depositFee?:DepositFee}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Promise<T>;
-export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch):PoolApi=>{
+export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch,page?:number):PoolApi=>{
  const api:PoolApi=<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
- return isPrivateFetch(fetcher)?markPrivatePoolApi(api):api;
+ return isPrivateFetch(fetcher)?markPrivatePoolPage(markPrivatePoolApi(api),page??privatePoolPage(fetcher)):api;
 };
 export const DUST=330;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -42,7 +42,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
    response=await fetcher(origin+'/api/rollup'+path,read?{...request,signal:read.signal}:request);
    // An unreadable GET is read again; an admitted POST is not resent (the pool refuses a duplicate id), its caller polls it by id.
    if(response.status<500)json=await response.json().catch((error:unknown)=>{if(response!.ok&&read)throw error;return {};});
-  }catch(error){response=undefined;if(privateMutation||attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
+  }catch(error){response=undefined;if(privateMutation||attempt>=4||isSealedFetch(fetcher)&&rejected(error,'unavailable'))throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
   finally{clearTimeout(timer);}
   if(response&&response.status<500){
    const metadata=json&&typeof json==='object'?json:{};
@@ -56,7 +56,9 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
    if(!response.ok)throw Object.assign(new PoolRequestError(metadata.error??`The pool answered ${response.status}.`,response.status),typeof metadata.code==='string'?{code:metadata.code}:{});
    return json as T;
   }
-  if(privateMutation||attempt>=4)throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
+  // A sealed 502 (an oversize page or a dead pool) and a sealed unavailable (its three relay attempts spent, caught above) would only repeat, so each gets one try.
+  // Only the browser's sealed fetch: a private native fetch is not the gateway, and keeps its retries.
+  if(privateMutation||attempt>=4||response?.status===502&&isSealedFetch(fetcher))throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
   await sleep(pauseMs);
  }
 }
@@ -97,8 +99,14 @@ export function checkSigningRequest(request:SpendStatus,coin:{txid:string;vout:n
  if(!batchStatements(ark).includes(statement))throw new Error('The batch does not carry this deposit; not signing.');
 }
 
+/** The pool checks only the arkTx's id and reads only our input's signature, so the arkTx goes back without every input's source transaction; the checkpoint replaces the operator's whole. */
 export async function signDeposit(identity:Identity,request:SpendStatus){
- const ark=await identity.sign(Transaction.fromPSBT(base64.decode(request.arkTx!)),[request.vin!]),checkpoint=await identity.sign(Transaction.fromPSBT(base64.decode(request.checkpoint!)),[0]);
+ const vin=request.vin!,signed=await identity.sign(Transaction.fromPSBT(base64.decode(request.arkTx!)),[vin]),checkpoint=await identity.sign(Transaction.fromPSBT(base64.decode(request.checkpoint!)),[0]);
+ const ark=new Transaction({version:signed.version,lockTime:signed.lockTime});
+ for(let i=0;i<signed.inputsLength;i++){const {txid,index,sequence}=signed.getInput(i);ark.addInput({txid:txid!,index:index!,sequence});}
+ for(let i=0;i<signed.outputsLength;i++){const {script,amount}=signed.getOutput(i);ark.addOutput({script:script!,amount:amount!});}
+ // Outputs before the signature: scure-btc-signer refuses addOutput once an input is signed.
+ const {witnessUtxo,tapLeafScript,tapScriptSig}=signed.getInput(vin);ark.updateInput(vin,{witnessUtxo,tapLeafScript,tapScriptSig},true);
  return {arkTx:base64.encode(ark.toPSBT()),checkpoint:base64.encode(checkpoint.toPSBT())};
 }
 
@@ -134,12 +142,15 @@ export const shieldableWithFee=(plan:ShieldPlan,fee:DepositFeeSchedule|undefined
  const carrier=BigInt(plan.coin.value),free=BigInt(CARRIER_FREE_SATS);
  return carrier<=free||carrier-owed>=free;
 };
-/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry, and a deposit the fee would eat is left out. While a fee charges, pool payouts (`exempt`) go one at a time: a merged coin is a plain send and would pay. */
-export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,now:number,floorMs:number,fee:{schedule?:DepositFeeSchedule;exempt?:(coin:ArkCoin)=>boolean}={}):ShieldPlan|undefined {
- const {schedule,exempt}=fee,usable=coins.filter(c=>c.expiresAt===undefined||c.expiresAt-now>floorMs);
- let plain=usable.filter(c=>!c.assets?.length);
- if(exempt&&plain.length>1&&(schedule?.fixedSats||schedule?.bps)&&plain.every(exempt))plain=[plain.reduce((a,b)=>b.value>a.value?b:a)];
- const btc:ShieldPlan={kind:'btc',coins:plain,amount:plain.reduce((sum,c)=>sum+c.value,0)};
- if(shieldableWithFee(btc,schedule,exempt))return btc;
+/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry, and a deposit the fee would eat is left out. While a fee charges, pool payouts (`exempt`) go one at a time: a merged coin is a plain send and would pay. Past `maxCoins` plain coins, the soonest to expire go first, or the largest when only they cover the fee. When no merged group nets past the fee, the largest payout goes alone. */
+export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,now:number,floorMs:number,fee:{schedule?:DepositFeeSchedule;exempt?:(coin:ArkCoin)=>boolean}={},maxCoins=Infinity):ShieldPlan|undefined {
+ const {schedule,exempt}=fee,usable=coins.filter(c=>c.expiresAt===undefined||c.expiresAt-now>floorMs),plain=usable.filter(c=>!c.assets?.length);
+ const expiry=(c:ArkCoin)=>c.expiresAt??Number.MAX_SAFE_INTEGER,largest=(group:ArkCoin[])=>group.reduce((a,b)=>b.value>a.value?b:a),payouts=exempt?plain.filter(exempt):[];
+ const groups=[...(plain.length>maxCoins?[[...plain].sort((a,b)=>expiry(a)-expiry(b)),[...plain].sort((a,b)=>b.value-a.value)].map(group=>group.slice(0,maxCoins)):[plain]),...(payouts.length?[[largest(payouts)]]:[])];
+ for(let picked of groups){
+  if(exempt&&picked.length>1&&(schedule?.fixedSats||schedule?.bps)&&picked.every(exempt))picked=[largest(picked)];
+  const btc:ShieldPlan={kind:'btc',coins:picked,amount:picked.reduce((sum,c)=>sum+c.value,0)};
+  if(shieldableWithFee(btc,schedule,exempt))return btc;
+ }
  return usable.filter(c=>c.assets?.length===1&&listed.has(c.assets[0]!.assetId)).map((coin):ShieldPlan=>({kind:'asset',coin,assetId:coin.assets![0]!.assetId,units:coin.assets![0]!.amount})).find(plan=>shieldableWithFee(plan,schedule,exempt));
 }

@@ -174,7 +174,7 @@ test('what the gateway forwards to the pool is admitted past the per-address lim
  app.use('/api/rollup',createRollupRouter(()=>({ready:()=>true,submit:async()=>{}}) as unknown as RollupService,{gatewayToken:TOKEN}));
  const client=new OHTTPClient(suite,KeyConfig.select(suite,KeyConfig.parseMultiple(key.config)),{maxMessageSize:5<<20});
  for(let i=0;i<61;i++){
-  const {init,context}=await client.encapsulateRequest(new Request('https://pool.example/api/rollup/spends',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(spend)}));
+  const {init,context}=await client.encapsulateRequest(new Request('https://pool.example/api/rollup/spends',{method:'POST',headers:{'content-type':'application/json','x-date':new Date().toUTCString()},body:JSON.stringify(spend)}));
   assert.equal((await context.decapsulateResponse(await fetch(origin+'/api/rollup/ohttp',init))).status,202,`sealed POST ${i+1}`);
  }
 });

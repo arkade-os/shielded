@@ -2,10 +2,10 @@ import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA25
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import {verifyEvent,type Event} from 'nostr-tools/pure';
 import {KeyConfig,OHTTPClient} from 'ohttp-ts';
-import {addressOf,NOSTR_ANSWER_KIND,NOSTR_CHUNK_BYTES,NOSTR_RELAYS,readAnswer,refusedByRelay,requestEvent} from '../../packages/protocol/src/nostr-carrier.ts';
+import {addressOf,NOSTR_ANSWER_KIND,NOSTR_CHUNK_BYTES,NOSTR_RELAYS,readAnswer,refusedByRelay,requestEvent,roundedSeconds} from '../../packages/protocol/src/nostr-carrier.ts';
 import type {CarrierPool} from '../rollup/nostr-carrier.ts';
 
-const SUITE=new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
+const SUITE=/*#__PURE__*/new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM);
 // nostr-tools fulfils "connection failure: …" for a relay it never reached, and otherwise with the relay's own OK text, which may be absent. It rejects an OK false with NIP-01's reason; a timeout or a dropped connection rejects though the event may be out, and "duplicate:" means the relay has it.
 const acked=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'&&!(typeof result.value==='string'&&result.value.startsWith('connection failure'));
 const accepted=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'?acked(result):!refusedByRelay(result.reason);
@@ -19,9 +19,9 @@ const tooLarge=()=>new SealedFetchError('too-large','The sealed request is large
 const outcomeUnknown=()=>new SealedFetchError('outcome-unknown','The request went out and no answer came back, so it may have run.');
 
 // No enableReconnect: it resubscribes at since=lastEmitted+1, and the next attempt covers a dropped relay. Pure's verifyEvent caches the verdict readAnswer reads.
-export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
+export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,getTimeoutMs=9_000,sealedForMs=45_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;getTimeoutMs?:number;sealedForMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)],bench=new Map<string,number>();
- if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and a positive timeout.');
+ if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0&&getTimeoutMs>0&&sealedForMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and positive timeouts.');
  // nostr-tools' publish normalizes each URL synchronously, so a bad one would throw unheard inside a later hedge round and leave the attempt to its deadline.
  if(!urls.every(relay=>{try{return relay.includes('://')&&/^wss?:$/.test(new URL(relay).protocol);}catch{return false;}}))throw new RangeError('Every relay of a sealed fetch is a ws:// or wss:// URL.');
  const shut=()=>new SealedFetchError('unavailable','The sealed fetch is closed.');
@@ -29,8 +29,8 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
  const sealedFetch=async(input:string|URL|Request,init?:RequestInit):Promise<Response>=>{
   if(closed)throw shut();
   const signal=init?.signal??(input instanceof Request?input.signal:undefined),source=new Request(input instanceof Request?input:new URL(input,origin),init),headers=new Headers();
-  for(const name of ['content-type','accept']){const value=source.headers.get(name);if(value!==null)headers.set(name,value);}
-  const {url,method}=source,body=source.body?await source.arrayBuffer():undefined,tried=new Set<string>(),cleanup:(()=>void)[]=[],heard=new Map<string,Event[]>();
+  for(const name of ['content-type','accept','x-digest']){const value=source.headers.get(name);if(value!==null)headers.set(name,value);}
+  const {url,method}=source,attemptMs=method==='GET'?getTimeoutMs:timeoutMs,body=source.body?await source.arrayBuffer():undefined,tried=new Set<string>(),cleanup:(()=>void)[]=[],heard=new Map<string,Event[]>();
   // Sealing only adds bytes, so a body over one event never fits; past 5 MiB ohttp-ts would throw its own error instead.
   if((body?.byteLength??0)>NOSTR_CHUNK_BYTES)throw tooLarge();
   signal?.throwIfAborted();
@@ -48,14 +48,16 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    return chosen;
   };
   const seal=async()=>{
+   // x-date, not Date (RFC 9458 section 6.5.1): a browser's Request drops Date, a forbidden header name.
+   headers.set('x-date',new Date(roundedSeconds(Date.now())*1000).toUTCString());
    const {init:sealed,context}=await client.encapsulateRequest(new Request(url,{method,headers,body})),bytes=sealed.body as Uint8Array;
    if(bytes.length>NOSTR_CHUNK_BYTES)throw tooLarge();
    return {bytes,context};
   };
-  let once:ReturnType<typeof seal>|undefined;
+  let once:ReturnType<typeof seal>|undefined,sealedAt:number|undefined;
   const attempt=async():Promise<Ending>=>{
    // Every copy of a POST carries one sealing: the gateway opens an enc at most once and never records a shed one, so the POST runs at most once, while the gateway remembers its enc, whatever the relays claim.
-   const {bytes,context}=await (method==='GET'?seal():(once??=seal()));
+   const {bytes,context}=await (method==='GET'?seal():(once??=seal()));sealedAt??=Date.now();
    // An answer or an abort can end the fetch while this attempt seals; it must not publish after that.
    if(done)return {kind:'refused'};
    if(closed)throw noAnswer(shut());
@@ -70,8 +72,8 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
    };
    return new Promise(settle=>{
     let maybe=false,ended=false;const resolve=(ending:Ending)=>{ended=true;settle(ending);};
-    live={id:event.id,end:resolve,deadline:Date.now()+timeoutMs};
-    void after(timeoutMs,{kind:'timeout'} as const).then(resolve);
+    live={id:event.id,end:resolve,deadline:Date.now()+attemptMs};
+    void after(attemptMs,{kind:'timeout'} as const).then(resolve);
     const send=()=>{
      const to=closed?[]:choose(used);
      if(!to.length){if(!maybe)resolve({kind:'refused'});return;}
@@ -93,6 +95,8 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
   };
   try{
    for(let n=1;n<=attempts;n++){
+    // Every copy of a POST carries its one x-date, so it stops while the gateway's window still holds that date.
+    if(n>1&&method!=='GET'&&Date.now()-sealedAt!>=sealedForMs)break;
     const end=await Promise.race([answered,aborted,attempt()]);
     if(end.kind==='sealed')return end.open();
     if(end.kind==='timeout'&&method!=='GET')throw outcomeUnknown();

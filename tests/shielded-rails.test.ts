@@ -415,7 +415,7 @@ const YOUNG_FEE={intentFee:{offchainInput:"inputType == 'vtxo' && now() - birth 
 const exitWallet=(o:{covers:boolean;arkade?:number[];privately?:boolean})=>{
  const exits:{sats:number;title:string;dest:{to:string;sats:number}}[]=[],filters:unknown[]=[],settled:unknown[]=[],payout={txid:'cd'.repeat(32),vout:1,value:20_041,createdAt:new Date(),isSwept:false};
  const view={getAddress:async()=>ELSEWHERE,settle:async(params:unknown)=>{settled.push(params);return 'ef'.repeat(32);}};
- const wallet={canWithdraw:()=>o.covers,canExitPrivately:()=>o.privately??true,
+ const wallet={canWithdraw:()=>o.covers,canExitPrivately:()=>o.privately??true,assertBatchSwaps:()=>{},
   getSpendableVtxos:async(filter:unknown)=>{filters.push(filter);return (o.arkade??[]).map(value=>({value}));},
   exitFromPool:(sats:number,title:string,exit:(coin:unknown,view:unknown)=>Promise<unknown>,dest:{to:string;sats:number})=>{exits.push({sats,title,dest});return exit(payout,view);}} as unknown as ShieldedWallet;
  return {wallet,exits,filters,payout,view,settled};

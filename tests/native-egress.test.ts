@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
+import {isPrivateFetch,isSealedFetch} from '../src/shielded/network-privacy.ts';
 
 test('native renderer disables WebRTC constructors before an ICE connection can start',async()=>{
  let direct=0;
@@ -13,4 +14,9 @@ test('native renderer disables WebRTC constructors before an ICE connection can 
   assert.equal(descriptor.writable,false);assert.equal(descriptor.configurable,false);
  }
  assert.equal(direct,0);
+});
+
+test('the native fetch is private but not sealed, so it keeps the retries a sealed fetch gives up',async()=>{
+ const {nativeFetch}=await import('../src/native/index.ts');
+ assert.deepEqual([isPrivateFetch(nativeFetch),isSealedFetch(nativeFetch)],[true,false]);
 });

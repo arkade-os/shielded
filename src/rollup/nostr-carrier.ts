@@ -14,7 +14,8 @@ export type RelayPool={ensureRelay(url:string):Promise<Relay>;destroy():void};
 
 // The most body whose sealed answer fits 8 chunks: 63 Padmé steps of 4 KiB (a 64th plus 32 bytes of nonce and tag passes 256 KiB), less 8 bytes of BHTTP framing and 16 396 for the copied headers at their largest, as Node's fetch refuses 16 KiB of header names and values.
 // ponytail: a flat 30 s retry, so a relay that keeps refusing us is asked every 30 s; back off if an operator minds.
-const ANSWER_BYTES=63*4096-8-16_396,REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESUBSCRIBE_MS=30_000,PUBLICATIONS_PER_SECOND=64,REPUBLISH_MS=30_000,MAX_RELAYS=12,CANARY_MS=30_000,ECHO_MS=15_000;
+export const ANSWER_BYTES=63*4096-8-16_396;
+const REMEMBERED=10_000,STATUSES_PER_SECOND=5,RESUBSCRIBE_MS=30_000,PUBLICATIONS_PER_SECOND=64,REPUBLISH_MS=30_000,MAX_RELAYS=12,CANARY_MS=30_000,ECHO_MS=15_000;
 
 // ponytail: ws's handshakeTimeout only fails an upgrade that stalls, so a relay trickling its reply holds the socket open; add a hard deadline if one does.
 export class CappedSocket extends WebSocket {

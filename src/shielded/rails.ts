@@ -86,6 +86,7 @@ function freshPayoutFor(total:number,fees:FeeInfo):number{
 export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()=>Promise<FeeInfo>):PaymentRail{
  const sats=(value:number)=>value.toLocaleString('en-US');
  return {...rail,async quote(req,ctx){
+  wallet.assertBatchSwaps();
   const quote=await rail.quote(req,ctx);
   if(req.selectedVtxos)return quote;
   const gross=freshPayoutFor(quote.total,await feeInfo());

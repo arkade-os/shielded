@@ -133,6 +133,19 @@ test('ninety watched scripts preserve per-item receive and spend events beyond t
  spent=true;const changed=await stream.next();assert.equal(changed.value?.spentVtxos[0]?.script,'s69');swept=true;const sweep=await stream.next();assert.equal(sweep.value?.sweptVtxos[0]?.script,'s70');assert.equal(sweep.value?.spentVtxos[0]?.isSwept,true);
  assert.ok(reads.every(items=>items.length===1));abort.abort();p.retire();
 });
+test('an indexer provider built with no stream reservations polls every script instead of subscribing',async()=>{
+ const base=new RestIndexerProvider('https://ark.example'),polled=new Map<string,SubscriptionResponse>();
+ base.subscribeForScripts=async()=>{throw new Error('a stream was reserved');};
+ base.getVtxos=async opts=>{const script=opts!.scripts![0]!;return {vtxos:[{...coin('t'+script),script,isSpent:false,isSwept:false,isUnrolled:false}]};};
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,base,20_000,0),abort=new AbortController(),stream=p.getSubscription(await p.subscribeForScripts(['a','b']),abort.signal);
+ while(polled.size<2){const event=(await stream.next()).value!;polled.set(event.scripts[0]!,event);}
+ for(const script of ['a','b'])assert.deepEqual(polled.get(script)!.newVtxos.map(c=>c.script),[script]);
+ abort.abort();p.retire();
+ const subscribed:string[][]=[],streaming=new RestIndexerProvider('https://ark.example');
+ streaming.subscribeForScripts=async scripts=>{subscribed.push(scripts);return 'remote-1';};streaming.unsubscribeForScripts=async()=>{};
+ const q=new IsolatedIndexerProvider('https://ark.example',undefined,streaming);await q.unsubscribeForScripts(await q.subscribeForScripts(['a']));
+ assert.deepEqual(subscribed,[['a']],'the three-argument default still reserves a stream');
+});
 test('native onchain watches split addresses and release every watch',async()=>{
  const original=EsploraProvider.prototype.watchAddresses,calls:string[][]=[],closed:string[]=[];
  EsploraProvider.prototype.watchAddresses=async addresses=>{calls.push(addresses);return ()=>{closed.push(...addresses);};};

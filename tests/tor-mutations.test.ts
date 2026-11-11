@@ -3,6 +3,7 @@ import {test} from 'node:test';
 import {rollupApi,poolApiOf} from '../src/shielded/pool.ts';
 import {isPrivatePoolApi,markPrivateFetch} from '../src/shielded/network-privacy.ts';
 import {makeNativeMutationJournal} from '../src/native/mutations.ts';
+import {PRIVATE_GRACE_MS} from '../src/shielded/private-transport.ts';
 import {ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 
 const origin='https://pool.test',id='a'.repeat(32),other='b'.repeat(32);
@@ -63,7 +64,7 @@ test('uncertain deposits reserve the same coin across differently named submissi
  assert.throws(()=>journal.beforeNativeMutation({...mutation(other,['23']),body:body(other,['23'],coin)}),/reserved/i);
 });
 
-test('404, network errors, nonterminal states and malformed terminal evidence retain reservations',async()=>{
+test('network errors, nonterminal states, malformed terminal evidence and a 404 inside the grace retain reservations',async()=>{
  for(const response of [new Response('',{status:404}),Response.json({status:'pending'}),Response.json({status:'signing'}),Response.json({status:'included'}),Response.json({status:'dropped',reason:42})]){
   const journal=makeNativeMutationJournal(storage());journal.beforeNativeMutation(mutation());
   await journal.reconcileNativeMutations((async()=>response) as typeof fetch,origin);
@@ -72,6 +73,42 @@ test('404, network errors, nonterminal states and malformed terminal evidence re
  const journal=makeNativeMutationJournal(storage());journal.beforeNativeMutation(mutation());
  await journal.reconcileNativeMutations((async()=>{throw new Error('lost');}) as typeof fetch,origin);
  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n]);
+});
+
+const UNKNOWN=JSON.stringify({error:'Unknown spend; it may have expired or the server restarted.'});
+const lost=(journal:ReturnType<typeof makeNativeMutationJournal>,answer='')=>journal.reconcileNativeMutations((async()=>new Response(answer,{status:404})) as typeof fetch,origin);
+test('a 404 inside the grace keeps a spend reserved, and past it releases',async()=>{
+ const coin={txid:'c'.repeat(64),vout:1};
+ for(const answer of ['',UNKNOWN]){
+  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:180_000,now:()=>at});
+  journal.beforeNativeMutation({...mutation(),body:body(id,['17'],coin)});
+  at+=179_999;await lost(journal,answer);
+  assert.deepEqual([journal.pendingPoolNullifiers(origin),journal.pendingPoolOutpoints(origin)],[[17n],[`${coin.txid}:1`]],answer);
+  at+=2;await lost(journal,answer);
+  assert.deepEqual([journal.pendingPoolNullifiers(origin),journal.pendingPoolOutpoints(origin)],[[],[]],answer);
+ }
+});
+
+test('a 404 after the pool stops tracking leaves the entry pending',async()=>{
+ let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:180_000,now:()=>at});
+ journal.beforeNativeMutation(mutation());
+ at+=3_600_001;await lost(journal,UNKNOWN);
+ assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n]);
+});
+
+test('with the browser grace, a 404 releases until 45 minutes after the POST and keeps the entry from then on',async()=>{
+ for(const [age,left] of [[2_699_999,[]],[2_700_000,[17n]]] as const){
+  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+  journal.beforeNativeMutation(mutation());
+  at+=age;await lost(journal,UNKNOWN);
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),left,String(age));
+ }
+});
+
+test('a journal built without a grace never releases on a 404',async t=>{
+ let at=1_000_000;t.mock.method(Date,'now',()=>at);
+ const journal=makeNativeMutationJournal(storage());journal.beforeNativeMutation(mutation());
+ for(const later of [300_001,3_599_999]){at=1_000_000+later;await lost(journal,UNKNOWN);assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(later));}
 });
 
 test('only a matching definitive status response retires a reservation durably',async()=>{
