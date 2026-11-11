@@ -8,7 +8,7 @@ import {parseNativeRelease,type NativePlatform,type NativeReleasePackage} from '
 import type {NativeDownloadsState} from '../app/src/NativeDownloads.tsx';
 import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-release.ts';
 
-registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
+registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:/\/app\/src\/AppUpdates\.(?:tsx|js)(?:\?|$)/.test(url)?{format:'module',source:"export const AppUpdateNotice=()=> 'Update available';",shortCircuit:true}:next(url,context)});
 const {NativeDownloadsContent,NativeDownloadQr,detectNativeDownloadPlatform,nativeDownloadPlatforms,loadNativeDownloads,createNativeDownloadsLoader}=await import('../app/src/NativeDownloads.tsx');
 const {default:ShieldedHome}=await import('../app/src/ShieldedHome.tsx');
 const commit='a'.repeat(40),tag=`native-mutinynet-${commit.slice(0,12)}-run123-attempt1`;
@@ -59,6 +59,7 @@ test('public packages keep their signing requirements and exact build identity v
  const primaryAndroid=rows[3]!.match(/<div class="nd-package-links">([\s\S]*?)<\/div>/)![1]!;
  assert.match(primaryAndroid,/Debug APK/);assert.doesNotMatch(primaryAndroid,/Unsigned release APK|unsigned/);
  assert.match(rows[3]!,/Unsigned release APK/);assert.match(rows[3]!,/development key can change/);assert.match(rows[3]!,/Keep the existing installation and its data/);
+ assert.match(rows[3]!.match(/<div class="nd-platform-heading">[\s\S]*?<p>([\s\S]*?)<\/p>/)![1]!,/Debug APK signed with a development key/);
  assert.match(rows[4]!,/Device IPA \(signing required\)/);assert.match(rows[4]!,/Simulator ZIP/);assert.match(rows[4]!,/unsigned and cannot be tapped to install/);
  for(const item of packages){assert.ok(html.includes(item.url),item.file);assert.ok(html.includes(`SHA-256 ${item.sha256}`),item.file);}
  assert.equal([...html.matchAll(/>Source<\/a>/g)].length,9);
@@ -77,6 +78,8 @@ test('Android downloads prefer the stable signed APK while preserving every lega
  const base=nativeReleaseFixture(),update=androidUpdateFixture(base),signed=parseNativeRelease({...base,androidUpdate:update}),html=render(signed);
  const android=[...html.matchAll(/<article class="nd-platform"[\s\S]*?<\/article>/g)][3]![0],primary=android.match(/<div class="nd-package-links">([\s\S]*?)<\/div>/)![1]!;
  assert.match(primary,/Signed APK/);assert.ok(primary.includes(update.url));assert.doesNotMatch(primary,/Debug APK|Unsigned release APK/);
+ assert.match(android.match(/<div class="nd-platform-heading">[\s\S]*?<p>([\s\S]*?)<\/p>/)![1]!,/Signed Android app with in-place updates over Tor/);
+ assert.ok(html.indexOf('class="nd-package-links"')<html.indexOf('class="nd-reproducible"'),'download controls precede technical build details');
  assert.ok(android.includes(`SHA-256 ${update.sha256}`));assert.equal([...android.matchAll(/>Source<\/a>/g)].length,3);
  for(const item of signed.packages.filter(item=>item.platform==='android-arm64'))assert.ok(android.includes(`SHA-256 ${item.sha256}`));
  assert.match(android,/in-place updates/);assert.match(android,/wallet data/);assert.match(android,/Keep the existing installation and its data/);
@@ -84,11 +87,24 @@ test('Android downloads prefer the stable signed APK while preserving every lega
 
 test('the landing page offers visible download anchors and retains the web wallet',()=>{
  const html=renderToStaticMarkup(createElement(ShieldedHome));
- assert.match(html,/class="sh-download-nav" href="#download">Download/);
- assert.match(html,/href="#download">Download Shielded/);
+ assert.match(html,/class="sh-download-nav" href="\/download#download">Download/);
+ assert.match(html,/href="\/download#download">Download Shielded/);
  assert.match(html,/href="\/wallet">Open wallet/);
  assert.match(html,/Your keys stay on your device/);
  assert.doesNotMatch(html,/Your keys never leave your browser/);
+});
+
+test('the marketing header never offers a wallet update even when one is available',()=>{
+ const html=renderToStaticMarkup(createElement(ShieldedHome)),header=html.match(/<header\b[\s\S]*?<\/header>/)![0];
+ assert.doesNotMatch(header,/Update available|app-update-notice/);
+ assert.match(header,/Open wallet/);
+});
+
+test('the dedicated downloads page starts with downloads instead of the large hero illustration',()=>{
+ const html=renderToStaticMarkup(createElement(ShieldedHome,{downloadOnly:true}));
+ assert.match(html,/id="download"/);assert.match(html,/sh-download-page/);
+ assert.doesNotMatch(html,/class="sh-hero"|class="sh-art"/);
+ assert.match(html,/href="\/#privacy"/);
 });
 
 test('download metadata uses the same-origin endpoint and the shared validated response reader',async()=>{

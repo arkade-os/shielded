@@ -43,7 +43,7 @@ test('only the local main window receives bounded native commands', () => {
   assert.ok(capability.permissions.includes('shielded-platform:allow-secret-set'));
   assert.ok(capability.permissions.includes('deep-link:default'));
   const opener = capability.permissions.filter(permission => String(permission.identifier ?? permission).startsWith('opener:'));
-  assert.deepEqual(opener, [{ identifier: 'opener:allow-open-url', allow: [{ url: 'https://shielded.mutinynet.arkade.sh/#download' }] }]);
+  assert.deepEqual(opener, [{ identifier: 'opener:allow-open-url', allow: [{ url: 'https://shielded.mutinynet.arkade.sh/#download' }, { url: 'https://shielded.mutinynet.arkade.sh/download#download' }] }]);
   assert.ok(!capability.permissions.some(permission => typeof permission === 'string' && /shell|http:|fs:/.test(permission)));
 });
 
