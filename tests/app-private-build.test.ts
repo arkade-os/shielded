@@ -30,6 +30,13 @@ test('a private wallet, which has no Lightning, opens receive on shielded and of
  assert.match(wallet,new RegExp(`<ReceivePortal [^>]*unified=\\{${lightning}\\}`));
 });
 
+test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
+ const wallet=read('app/src/RollupWallet.tsx'),effect=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/.exec(wallet);
+ assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(\)/);
+ assert.match(effect?.[2]??'',/\btick\b/);
+ assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
+});
+
 // Source-level: /watch and the wallet are read for their literals and branches, not rendered.
 test('the pool-reading pages take their page size and their links from the transport',()=>{
  const disclose=read('app/src/Disclose.tsx');

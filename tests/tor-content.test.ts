@@ -84,15 +84,15 @@ test('a size outside 1 to 100 reads back as 50, and a branded one as itself',()=
  assert.equal(privatePoolPage(()=>{}),50);assert.equal(privatePoolPage(undefined),50);
 });
 
-test('a re-wrapped private pool api keeps its page size',async t=>{
- const sizes:number[]=[],sentinel=new Error('creation inspected'),wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+test('a re-wrapped private pool api keeps its page size, and create keeps the shield cap',async t=>{
+ const sizes:(number|undefined)[]=[],sentinel=new Error('creation inspected'),wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
   stopped:false,unwatch:[],changeListeners:new Set(),actionListeners:new Set(),getContractManager:async()=>({}),getAddress:async()=>'unused',
-  async load(this:{api:PoolApi;claimApi:PoolApi}){sizes.push(privatePoolPage(this.api),privatePoolPage(this.claimApi));throw sentinel;},
+  async load(this:{api:PoolApi;claimApi:PoolApi;maxShieldCoins?:number}){sizes.push(privatePoolPage(this.api),privatePoolPage(this.claimApi),this.maxShieldCoins);throw sentinel;},
  }) as ShieldedWallet;
  t.mock.method(Wallet,'create',async()=>wallet as never);t.mock.method(Wallet.prototype,'dispose',async()=>{});
  const fetcher=markPrivateFetch((async()=>Response.json({})) as typeof fetch);
- await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,claimFetch:fetcher,networkPrivacy:true,poolPage:12}),error=>error===sentinel);
- assert.deepEqual(sizes,[12,12]);
+ await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,claimFetch:fetcher,networkPrivacy:true,poolPage:12,maxShieldCoins:PRIVATE_SHIELD_COINS}),error=>error===sentinel);
+ assert.deepEqual(sizes,[12,12,PRIVATE_SHIELD_COINS]);
 });
 
 test('a worst-case page of 12 batches stays inside the gateway answer cap',()=>{
