@@ -8,7 +8,6 @@ import {payTarget} from '../app/src/rollup-client.ts';
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount}=await import('../app/src/wallet-receive.tsx');
 const recipients=[
- ['unified','LNURL1EXAMPLE','lightning','lnurl1example'],
  ['shielded','shrol_example','shielded','shrol_example'],
  ['arkade','tark_example','ark','tark_example'],
 ] as const;
@@ -23,7 +22,7 @@ const amounts=[
 
 test('the shared amount form covers every receive tab',()=>{
  for(const mode of ['unified','shielded','arkade'] as const){
-  const rendered=renderToStaticMarkup(createElement(ReceivePortal,{mode,payload:mode,value:'placeholder',description:'Test receive',amount:'330',onAmount:()=>{},onModeChange:()=>{},qrValue:amountQrValue(mode,'placeholder','330')}));
+  const rendered=renderToStaticMarkup(createElement(ReceivePortal,{mode,payload:mode,value:'placeholder',description:'Test receive',amount:'330',onAmount:()=>{},onModeChange:()=>{}}));
   assert.match(rendered,/aria-label="Receive amount in sats"/);
  }
 });
@@ -31,7 +30,7 @@ test('the shared amount form covers every receive tab',()=>{
 test('payment URIs encode exact sats as eight decimal BTC amounts',()=>{
  for(const [mode,address,parameter]of recipients){
   for(const [amount,btc]of amounts){
-   assert.equal(amountQrValue(mode,address,amount),`bitcoin:?${parameter}=${mode==='unified'?address.toLowerCase():address}&amount=${btc}`);
+   assert.equal(amountQrValue(mode,address,amount),`bitcoin:?${parameter}=${address}&amount=${btc}`);
   }
  }
 });
@@ -45,7 +44,7 @@ test('empty, zero, invalid and noninteger amounts do not produce an amount QR',(
 });
 
 test('invalid receive input stays visible and cannot expose a plain-address QR or copy control',()=>{
- for(const [mode,address]of recipients)for(const amount of ['1.5','01','0','-1','1e3','1,000','10000000000']){
+ for(const [mode,address]of [['unified','alice@lnurl.example'],...recipients] as const)for(const amount of ['1.5','01','0','-1','1e3','1,000','10000000000']){
   const rendered=renderToStaticMarkup(createElement(ReceivePortal,{mode,payload:mode,value:address,description:'Test receive',amount,onAmount:()=>{},onModeChange:()=>{},action:createElement('button',{},'Copy Lightning address')}));
   assert.ok(rendered.includes(`value="${amount}"`));
   assert.match(rendered,/aria-invalid="true"/);

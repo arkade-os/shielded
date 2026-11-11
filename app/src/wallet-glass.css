@@ -53,10 +53,6 @@
 .stock-page .receive-portal .receive-address-value{background:transparent;color:var(--receive-ink);border:0;box-shadow:none}
 .stock-page .receive-portal .receive-stage-copy h2{font-size:17px;color:var(--receive-ink)}
 .stock-page .receive-portal .receive-controls button:first-child{background:var(--receive-ink);border-color:var(--receive-ink);color:var(--receive-pearl)}
-.stock-page .receive-portal .stock-unified-name{display:grid;justify-items:center;gap:4px;min-width:0;text-align:center}
-.stock-page .receive-portal .stock-unified-name span{color:var(--receive-muted);font-size:12px}
-.stock-page .receive-portal .stock-unified-name strong{max-width:100%;overflow-wrap:anywhere;font-size:14px;font-weight:620}
-.stock-page .receive-portal .stock-unified-name button{justify-self:center;min-height:32px;padding:3px 8px;border:0;background:none;color:var(--receive-gold);box-shadow:none;font-size:12px}
 .stock-page .receive-portal .receive-action button{justify-self:center}
 .stock-page .receive-portal .receive-action button.stock-ghost{border:1px solid rgba(184,134,43,.6);border-radius:999px;background:var(--receive-gold-fill);color:var(--receive-ink);box-shadow:inset 0 1px 0 rgba(255,255,255,.65),0 9px 19px -12px rgba(16,53,84,.35)}
 .stock-page .receive-portal .receive-action button.stock-ghost:hover{background:#f0d78f}
@@ -90,10 +86,6 @@
 .stock-page .stock-address,.stock-page .stock-row>div{border:1px solid var(--rule);border-radius:16px;background:#fffaf1}
 .stock-page .stock-address small,.stock-page .stock-row small{font-size:11px;letter-spacing:0;text-transform:none}
 .stock-page .stock-copy code{color:var(--navy)}
-.stock-page .stock-invoice-result{display:grid;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid var(--rule);min-width:0}
-.stock-page .stock-invoice-result>strong{font-size:13px;font-weight:620}
-.stock-page .stock-invoice-result>.stock-qr{justify-self:center;width:min(100%,218px);border-radius:14px}
-.stock-page .stock-invoice-result>p{margin:0}
 .stock-page .stock-code{color:var(--navy)}
 .stock-page .stock-history{padding:0 3px;border:0;border-radius:0;background:none;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
 .stock-page .stock-history h2{font-size:17px}

@@ -11,7 +11,6 @@ type TransientWalletControls={
  closeSheet:()=>void;
  closeScanner:()=>void;
  closeAbout:()=>void;
- closeRequest:()=>void;
  closeSecurity:()=>void;
 };
 
@@ -77,7 +76,6 @@ export function dismissTransientWalletViews(controls:TransientWalletControls){
  controls.closeScanner();
  controls.closeSheet();
  controls.closeAbout();
- controls.closeRequest();
  controls.closeSecurity();
 }
 

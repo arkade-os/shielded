@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- wry asks for CAMERA when the scanner calls getUserMedia; Android denies an undeclared permission without a prompt. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application>
         <receiver android:name="io.arkade.shielded.platform.UpdateReceiver" android:exported="false" />
     </application>

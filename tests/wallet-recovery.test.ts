@@ -57,10 +57,9 @@ test('foreground recovery dismisses every transient wallet surface',()=>{
   closeSheet:()=>calls.push('sheet'),
   closeScanner:()=>calls.push('scanner'),
   closeAbout:()=>calls.push('about'),
-  closeRequest:()=>calls.push('request'),
   closeSecurity:()=>calls.push('security'),
  });
- assert.deepEqual(calls,['scanner','sheet','about','request','security']);
+ assert.deepEqual(calls,['scanner','sheet','about','security']);
 });
 
 test('foreground recovery clears stale document-level sheet locks and inert attributes',()=>{

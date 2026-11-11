@@ -7,7 +7,7 @@ import {marketOf,resolveRoute} from '@arkade-os/swap/advanced';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,pausedErrorText,payTarget,privateReceiveView,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,pausedErrorText,payTarget,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -15,7 +15,6 @@ import {encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {soundbarItem} from '../app/src/wallet-soundbar.tsx';
 import {shieldTitle} from '../src/shielded/wallet.ts';
-import type {PrivateReceiveState} from '../src/shielded/lnurl-receive.ts';
 
 const note=(amount:bigint,nullifier:bigint):OwnedNote=>({amount,asset:0n,rho:1n,index:0,nullifier});
 const tx=(inputs:{txid:string;index:number;script:Uint8Array}[])=>{
@@ -217,6 +216,7 @@ test('a scanned or pasted payment code becomes a destination, and a payment link
  assert.throws(()=>payTarget('bitcoin:bc1qexample?amount=0.0001&req-pop=callback%3A'),/req-pop/);
  assert.throws(()=>payTarget('BITCOIN:BC1QEXAMPLE?REQ-SOMETHING=1'),/req-something/);
  assert.equal(invoiceQr(invoice),'LIGHTNING:'+invoice.toUpperCase());
+ assert.deepEqual(payTarget(lightningAddressQr('satoshi@example.com')),{to:'satoshi@example.com'});
  assert.throws(()=>payTarget('bitcoin:?amount=0.001'),/no destination/);
  assert.deepEqual(payTarget('bitcoin:?lightning=lnbc1x=y'),{to:'lnbc1x=y'});
 });
@@ -346,18 +346,6 @@ test('a Lightning payout\'s fee is that of the one deposit in its batch transact
  assert.equal(lightningShieldFeeOf([entry('send',a,10_000n,9_000n),entry('receive',a,10_000n,9_000n)],a,10_000),undefined);
  assert.equal(lightningShieldFeeOf([entry('shield',a,10_000n,10_000n),beside],a,10_000),0n,'an exempt payout paid nothing: a fee of zero, which the page leaves unshown');
  for(const txid of [undefined,7,null])assert.equal(lightningShieldFeeOf([entry('shield',undefined,10_000n,9_900n),payout],txid,10_000),undefined,'a row without a transaction id matches no entry');
-});
-
-test('the private-receive box follows the user\'s choice, and one notice follows what the service lists',()=>{
- const none:PrivateReceiveState={on:false,pending:false,refused:false,withdrawing:false,listed:null};
- const table:[string,Partial<PrivateReceiveState>,boolean,string[]][]=[
-  ['off',{},false,['','own','foreign']],
-  ['on, not yet confirmed',{pending:true},true,['confirming','confirming','foreign']],
-  ['live',{on:true},true,['','','foreign']],
-  ['refused',{refused:true},false,['refused','own','foreign']],
-  ['withdrawing',{withdrawing:true},false,['','pending','pending']],
- ];
- for(const [name,state,checked,notices] of table)([null,'own','foreign'] as const).forEach((listed,i)=>assert.deepEqual(privateReceiveView({...none,...state,listed}),{checked,notice:notices[i]},`${name}, listed ${listed}`));
 });
 
 test('a long value shows its start and end, and a short one shows whole',()=>{
