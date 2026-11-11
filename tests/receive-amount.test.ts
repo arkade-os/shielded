@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import {Children,createElement,isValidElement,type ReactNode} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -32,6 +33,11 @@ test('without unified, the portal offers shielded and arkade only',()=>{
  const tabs=(unified?:boolean)=>{const rendered=renderToStaticMarkup(createElement(ReceivePortal,{...(unified===undefined?{}:{unified}),mode:'shielded',payload:'shielded',value:'shrol_example',description:'Test receive',onModeChange:()=>{}}));return [[...rendered.matchAll(/id="receive-tab-(\w+)"/g)].map(m=>m[1]),/--glass-count:(\d)/.exec(rendered)?.[1]];};
  assert.deepEqual(tabs(false),[['shielded','arkade'],'2']);
  assert.deepEqual(tabs(),[['unified','shielded','arkade'],'3']);
+});
+
+test('the receive strip lays out one column per offered tab, as its lens does',()=>{
+ const pill=/\.receive-pill\{[^}]*\}/.exec(readFileSync(new URL('../app/src/wallet-receive.css',import.meta.url),'utf8'))?.[0]??'';
+ assert.match(pill,/grid-template-columns:repeat\(var\(--glass-count,3\),minmax\(0,1fr\)\)/);
 });
 
 test('payment URIs encode exact sats as eight decimal BTC amounts',()=>{
