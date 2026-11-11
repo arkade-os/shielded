@@ -69,7 +69,7 @@ test('production APK signing is isolated from pull requests and only receives se
   assert.match(signing, /needs: android/);
   assert.match(signing, /run-id: \$\{\{ github\.run_id \}\}/);
   assert.doesNotMatch(signing, /npm ci|npm install|pull_request_target/);
-  assert.match(signing, /sdkmanager 'build-tools;36\.0\.0'/);
+  assert.match(signing, /cmdline-tools\/latest\/bin\/sdkmanager" ''build-tools;36\.0\.0''/);
   assert.equal((source.match(/secrets\.ANDROID_RELEASE_KEYSTORE_BASE64/g) ?? []).length, 1);
   assert.equal((source.match(/secrets\.ANDROID_RELEASE_KEYSTORE_PASSWORD/g) ?? []).length, 1);
   assert.ok(signing.indexOf('sdkmanager') < signing.indexOf('secrets.ANDROID_RELEASE_KEYSTORE_BASE64'));
