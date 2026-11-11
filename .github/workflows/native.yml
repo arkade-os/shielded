@@ -112,6 +112,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Install pinned Android signing tools
+        run: sdkmanager 'build-tools;36.0.0' 'platforms;android-36'
+      - run: node --test tools/sign-android.test.mjs
+      - name: Check APK signing and tamper rejection with a disposable key
+        run: node tools/check-android-signing.mjs
       - run: rustup target add aarch64-linux-android
       - name: Select installed Android NDK
         shell: bash
@@ -122,15 +127,108 @@ jobs:
       - run: npm ci
       - run: npm run native:android -- init --ci --skip-targets-install
       - name: Build Android release package
-        run: node tools/retry-command.mjs node node_modules/@tauri-apps/cli/tauri.js android build $NATIVE_BUILD_FLAG --apk --target aarch64 --ci
+        run: node tools/retry-command.mjs node tools/native-build.mjs android build $NATIVE_BUILD_FLAG --apk --target aarch64 --ci
       - name: Build installable Mutinynet Android debug APK
         if: env.NATIVE_PROFILE == 'release'
-        run: node tools/retry-command.mjs node node_modules/@tauri-apps/cli/tauri.js android build --debug --apk --target aarch64 --ci
+        run: node tools/retry-command.mjs node tools/native-build.mjs android build --debug --apk --target aarch64 --ci
+      - name: Test native Android update policy
+        working-directory: src-tauri/gen/android
+        run: ./gradlew :tauri-plugin-shielded-platform:testDebugUnitTest --no-daemon
       - run: node tools/native-artifacts.mjs collect android-arm64 ${{ env.NATIVE_PROFILE }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shielded-mutinynet-android-arm64-${{ env.NATIVE_PROFILE }}-${{ github.sha }}-attempt${{ github.run_attempt }}
           path: src-tauri/target/native-artifacts/android-arm64-${{ env.NATIVE_PROFILE }}
+          if-no-files-found: error
+          retention-days: 14
+
+  android-update-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      ANDROID_AVD_HOME: ${{ runner.temp }}/shielded-update-avd
+      SHIELDED_TEST_EMULATOR_SERIAL: emulator-5554
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Prepare disposable Android update emulator
+        shell: bash
+        run: |
+          sdkmanager 'platform-tools' 'emulator' 'build-tools;36.0.0' 'platforms;android-36' 'system-images;android-35;google_apis;x86_64'
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --name ShieldedUpdateCI --package 'system-images;android-35;google_apis;x86_64' --device pixel_6
+          sudo chmod 666 /dev/kvm
+      - name: Start headless emulator and wait for bounded boot
+        shell: bash
+        run: |
+          "$ANDROID_HOME/emulator/emulator" -avd ShieldedUpdateCI -port 5554 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 -cores 2 > "$RUNNER_TEMP/shielded-update-emulator.log" 2>&1 &
+          timeout 300 "$ANDROID_HOME/platform-tools/adb" -s "$SHIELDED_TEST_EMULATOR_SERIAL" wait-for-device
+          for attempt in $(seq 1 120); do
+            if [[ "$("$ANDROID_HOME/platform-tools/adb" -s "$SHIELDED_TEST_EMULATOR_SERIAL" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          tail -n 80 "$RUNNER_TEMP/shielded-update-emulator.log"
+          exit 1
+      - name: Verify in-place update preserves private app data
+        run: node tools/check-android-signing.mjs
+      - name: Stop only the disposable emulator
+        if: always()
+        shell: bash
+        run: |
+          if [[ -x "$ANDROID_HOME/platform-tools/adb" ]]; then
+            timeout 30 "$ANDROID_HOME/platform-tools/adb" -s "$SHIELDED_TEST_EMULATOR_SERIAL" logcat -d -s AndroidRuntime:E ShieldedUpdateProbe:I '*:S' || true
+            timeout 15 "$ANDROID_HOME/platform-tools/adb" -s "$SHIELDED_TEST_EMULATOR_SERIAL" emu kill || true
+          fi
+
+  android-sign:
+    if: >-
+      github.repository == 'arkade-os/shielded' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: android
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Android signing tools
+        run: sdkmanager 'build-tools;36.0.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: shielded-mutinynet-android-arm64-release-${{ github.sha }}-attempt*
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+          path: android-sign-input
+      - name: Sign the validated release APK with the stable distribution identity
+        run: node tools/sign-android.mjs android-sign-input src-tauri/target/native-artifacts/android-update-release
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shielded-mutinynet-android-update-release-${{ github.sha }}-attempt${{ github.run_attempt }}
+          path: src-tauri/target/native-artifacts/android-update-release
           if-no-files-found: error
           retention-days: 14
 
@@ -183,7 +281,7 @@ jobs:
       github.repository == 'arkade-os/shielded' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    needs: [model, desktop, android, ios]
+    needs: [model, desktop, android, android-update-data, android-sign, ios]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type NativePlatform, type NativeRelease } from '../src/native-release.ts';
 import { nativeReleaseFixture } from './fixtures/native-release.ts';
+import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
 import { assertNativeReleaseAdvancement, extractNativeLinuxArchive, GitHubNativeReleases, nativePublicationIdentity, prepareNativeRelease, publishNativeRelease, selectNativeArtifactDirectories, type NativeReleaseIndex, type PreparedNativeRelease } from '../tools/publish-native-release.ts';
 
 const env = { GITHUB_REPOSITORY: 'arkade-os/shielded', GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_NUMBER: '124', GITHUB_RUN_ID: '999', GITHUB_RUN_ATTEMPT: '1' };
@@ -28,7 +29,13 @@ function fixture(t: TestContext) {
     writeFileSync(join(selected, 'manifest.json'), JSON.stringify({ network: 'mutinynet', poolOrigin: NATIVE_RELEASE_ORIGIN, commit: env.GITHUB_SHA, platform, environment: { node: '24.22.2', rust: '1.96.0', sourceDateEpoch: 1794240000, lockfileSha256: 'c'.repeat(64), rustLockfileSha256: 'd'.repeat(64) }, packages }));
   };
   for (const platform of NATIVE_PLATFORMS) add(platform, 1);
-  return { directory, input, output, artifact, add, prepare: (attempt = 1) => prepareNativeRelease(input, output, nativePublicationIdentity({ ...env, GITHUB_RUN_ATTEMPT: String(attempt) }), '0.1.0', new Date('2026-11-07T12:00:00Z')) };
+  const signed = (attempt = 1) => join(input, `shielded-mutinynet-android-update-release-${env.GITHUB_SHA}-attempt${attempt}`);
+  const addSigned = (attempt = 1) => {
+    const selected = signed(attempt), file = 'mutinynet-release-signed.apk', bytes = Buffer.from(`signed APK attempt ${attempt}`);
+    mkdirSync(selected, { recursive: true }); writeFileSync(join(selected, file), bytes);
+    writeFileSync(join(selected, 'manifest.json'), JSON.stringify({ schema: 1, network: 'mutinynet', commit: env.GITHUB_SHA, buildNumber: Number(env.GITHUB_RUN_NUMBER), versionCode: 100000 + Number(env.GITHUB_RUN_NUMBER), packageName: androidSigning.packageName, signerSha256: androidSigning.certificateSha256, package: { file, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } }));
+  };
+  return { directory, input, output, artifact, add, signed, addSigned, prepare: (attempt = 1) => prepareNativeRelease(input, output, nativePublicationIdentity({ ...env, GITHUB_RUN_ATTEMPT: String(attempt) }), '0.1.0', new Date('2026-11-07T12:00:00Z')) };
 }
 function fakeGitHub(prepared: PreparedNativeRelease, options: { noChannel?: boolean; beforeAdvance?: boolean; afterAdvance?: boolean; conflict?: boolean; changedHead?: boolean; rejectSource?: boolean } = {}) {
   type Asset = { id: number; name: string; size: number };
@@ -44,7 +51,7 @@ function fakeGitHub(prepared: PreparedNativeRelease, options: { noChannel?: bool
     release: async (tag: string) => releases.get(tag) ?? null,
     create: async (tag: string, _commit: string, draft: boolean) => { events.push(`create:${tag}`); const release = { id: nextId++, tag_name: tag, draft, prerelease: true, assets: [] }; releases.set(tag, release); return release; },
     uploadFile: async (release: Release, name: string, path: string) => { events.push(`upload:${name}`); const asset = { id: nextId++, name, size: readFileSync(path).length }; release.assets.push(asset); return asset; },
-    publish: async (release: Release) => { events.push('publish:build'); assert.equal(release.assets.length, 11); release.draft = false; },
+    publish: async (release: Release) => { events.push('publish:build'); assert.equal(release.assets.length, 11 + Number(!!prepared.manifest.androidUpdate)); release.draft = false; },
     readIndex: async () => index,
     advanceIndex: async (expected: NativeReleaseIndex | null, manifest: NativeRelease) => {
       events.push('index:write');
@@ -70,6 +77,44 @@ test('native preparation validates all actual hashes and writes complete unified
   assert.match(prepared.manifest.releaseUrl, /native-mutinynet-aaaaaaaaaaaa-run999-attempt1$/);
   assert.equal(readFileSync(prepared.sumsPath, 'utf8').trim().split('\n').length, 10);
   assert.equal(parseNativeRelease(JSON.parse(readFileSync(prepared.manifestPath, 'utf8'))).buildNumber, 124);
+});
+
+test('signed Android artifact is published separately without changing legacy packages', async t => {
+  const f = fixture(t); f.addSigned(); const prepared = await f.prepare(), update = prepared.manifest.androidUpdate!;
+  assert.equal(prepared.manifest.packages.length, 9); assert.equal(prepared.files.size, 10);
+  assert.equal(update.file, 'shielded-mutinynet-android-arm64-aaaaaaaaaaaa-run999-attempt1-mutinynet-release-signed.apk');
+  assert.equal(update.versionCode, 100124); assert.equal(update.signerSha256, androidSigning.certificateSha256);
+  assert.equal(prepared.files.get(update.file), join(f.signed(), 'mutinynet-release-signed.apk'));
+  assert.match(readFileSync(prepared.sumsPath, 'utf8'), new RegExp(`${update.sha256}  ${update.file}`));
+  const github = fakeGitHub(prepared); await publishNativeRelease(prepared, github);
+  assert.ok(github.events.indexOf(`upload:${update.file}`) < github.events.indexOf('publish:build'));
+  assert.deepEqual(github.latest()?.manifest.androidUpdate, update);
+});
+
+test('a rejected signed APK upload leaves the old public channel intact', async t => {
+  const f = fixture(t); f.addSigned(); const prepared = await f.prepare(), github = fakeGitHub(prepared), upload = github.uploadFile;
+  github.uploadFile = async (release, name, path) => {
+    const asset = await upload(release, name, path);
+    return name === prepared.manifest.androidUpdate!.file ? { ...asset, size: asset.size + 1 } : asset;
+  };
+  await assert.rejects(publishNativeRelease(prepared, github), /checksum or size mismatch/);
+  assert.deepEqual(github.latest(), github.old);
+  assert.equal(github.events.includes('publish:build'), false); assert.equal(github.events.includes('index:advance'), false);
+});
+
+test('signed artifact attempts stay pinned to the source run and the newest eligible attempt', async t => {
+  const f = fixture(t); f.addSigned(); f.addSigned(2); const prepared = await f.prepare(3);
+  assert.ok(prepared.files.get(prepared.manifest.androidUpdate!.file)!.startsWith(f.signed(2)));
+  await assert.rejects(f.prepare(), /future/);
+});
+
+test('signed artifact preparation refuses altered bytes, signing identity and Android build mismatches', async t => {
+  const f = fixture(t); f.addSigned(); const path = join(f.signed(), 'manifest.json'), original = JSON.parse(readFileSync(path, 'utf8'));
+  for (const change of [{ schema: 2 }, { network: 'bitcoin' }, { commit: 'b'.repeat(40) }, { buildNumber: 125 }, { versionCode: 1000 }, { packageName: 'io.other.wallet' }, { signerSha256: 'c'.repeat(64) }, { package: { ...original.package, file: '../escape.apk' } }, { package: { ...original.package, bytes: original.package.bytes + 1 } }, { package: { ...original.package, sha256: 'e'.repeat(64) } }]) {
+    writeFileSync(path, JSON.stringify({ ...original, ...change })); await assert.rejects(f.prepare());
+  }
+  writeFileSync(path, JSON.stringify(original)); writeFileSync(join(f.signed(), original.package.file), 'altered APK');
+  await assert.rejects(f.prepare(), /SHA256/);
 });
 
 test('reruns select the newest available attempt independently for every platform within the current source run', async t => {
@@ -278,12 +323,12 @@ test('workflow keeps native gates and retention, limits publisher trust and seri
   assert.match(publisher, /github\.repository == 'arkade-os\/shielded'/);
   assert.match(publisher, /github\.event_name == 'push' \|\| github\.event_name == 'workflow_dispatch'/);
   assert.match(publisher, /github\.ref == 'refs\/heads\/main' \|\| github\.ref == 'refs\/heads\/master'/);
-  assert.match(publisher, /needs: \[model, desktop, android, ios\]/);
+  assert.match(publisher, /needs: \[model, desktop, android, android-update-data, android-sign, ios\]/);
   assert.match(publisher, /group: native-mutinynet-publication\s+cancel-in-progress: false/);
   assert.match(publisher, /permissions:\s+contents: write\s+actions: read/);
   assert.match(publisher, /pattern: shielded-mutinynet-\*-release-\$\{\{ github\.sha \}\}-attempt\*/);
   assert.match(publisher, /run-id: \$\{\{ github\.run_id \}\}/);
-  assert.equal((workflow.match(/retention-days: 14/g) ?? []).length, 3);
+  assert.equal((workflow.match(/retention-days: 14/g) ?? []).length, 4);
   assert.match(workflow, /lipo .* -verify_arch arm64 x86_64/);
   assert.match(workflow, /test "\$\(uname -m\)" = arm64/);
   assert.match(workflow, /cargo test .*--target aarch64-apple-darwin/);

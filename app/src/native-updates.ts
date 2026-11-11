@@ -16,7 +16,7 @@ export function createNativeUpdateMonitor(network:UpdateNetwork,identity:NativeB
  const invalidate=()=>{clearTimeout(scheduled);scheduled=undefined;const previous=probe;probe=undefined;if(previous){clearTimeout(previous.deadline);previous.controller.abort();}};
  const known=Number.isSafeInteger(identity.buildNumber)&&identity.buildNumber>0&&/^[a-f0-9]{40}$/.test(identity.commit)&&['windows-x86_64','linux-x86_64','macos-universal','android-arm64','ios'].includes(identity.platform);
  function check(){
-  if(stopped||!known||!isVisible()||status.phase!=='ready'||probe)return;
+  if(stopped||!known||!isVisible()||status.phase!=='ready'||status.mode==='direct'||probe)return;
   clearTimeout(scheduled);scheduled=undefined;
   const owner:Probe={controller:new AbortController(),generation:status.generation};probe=owner;
   let abort=()=>{};
@@ -29,7 +29,7 @@ export function createNativeUpdateMonitor(network:UpdateNetwork,identity:NativeB
    clearTimeout(owner.deadline);owner.controller.signal.removeEventListener('abort',abort);
    if(stopped||probe!==owner)return;
    probe=undefined;
-   if(!isVisible()||status.phase!=='ready'||status.generation!==owner.generation)return;
+   if(!isVisible()||status.phase!=='ready'||status.mode==='direct'||status.generation!==owner.generation)return;
    if(release)onUpdate(isNewerNativeRelease(release,identity)?release:undefined);
    scheduled=setTimeout(()=>{scheduled=undefined;check();},30*60_000);
   };
@@ -38,7 +38,7 @@ export function createNativeUpdateMonitor(network:UpdateNetwork,identity:NativeB
  const accept=(next:NativeStatus)=>{
   if(stopped||!Number.isSafeInteger(next.generation)||next.generation<status.generation)return;
   revision++;
-  const changed=next.generation!==status.generation||next.phase!=='ready'||status.phase!=='ready';status=next;
+  const changed=next.generation!==status.generation||next.phase!=='ready'||status.phase!=='ready'||next.mode!==status.mode;status=next;
   if(changed)invalidate();
   if(isVisible()&&status.phase==='ready'&&!scheduled)check();
  };

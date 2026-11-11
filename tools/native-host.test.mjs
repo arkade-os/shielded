@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { nativeArguments, prepareAndroid, protectAndroidManifest } from './native-build.mjs';
+import { androidVersionCode, nativeArguments, prepareAndroid, protectAndroidManifest } from './native-build.mjs';
 
 const root = new URL('../src-tauri/', import.meta.url);
 const json = name => JSON.parse(readFileSync(new URL(name, root), 'utf8'));
@@ -52,7 +52,7 @@ test('native hosts register only the supported payment schemes', () => {
 
 test('build commands reject incompatible hosts and forward Tauri arguments without a shell', () => {
   assert.deepEqual(nativeArguments('desktop', 'build', ['--debug'], 'win32'), ['build', '--debug']);
-  assert.deepEqual(nativeArguments('android', 'build', ['--apk'], 'linux'), ['android', 'build', '--apk']);
+  assert.deepEqual(nativeArguments('android', 'build', ['--apk'], 'linux', {}), ['android', 'build', '--apk']);
   assert.deepEqual(nativeArguments('ios', 'build', ['--no-sign'], 'darwin'), ['ios', 'build', '--no-sign']);
   assert.throws(() => nativeArguments('ios', 'build', [], 'win32'), /macOS/);
   assert.throws(() => nativeArguments('desktop', 'init', [], 'linux'), /action/);
@@ -63,6 +63,20 @@ test('mobile initialization requires a package-manager runner for generated IDE 
     assert.throws(() => nativeArguments(platform, 'init', [], 'darwin', {}), /npm run native:/);
     assert.deepEqual(nativeArguments(platform, 'init', [], 'darwin', { npm_execpath: '/node/npm-cli.js' }), [platform, 'init']);
   }
+});
+
+test('Android CI packages have one monotonic version code independent of the unchanged app version', () => {
+  assert.equal(androidVersionCode({ GITHUB_RUN_NUMBER: '99' }), 100099);
+  assert.equal(androidVersionCode({}), undefined);
+  for (const value of ['0', '-1', '01', '1.5', 'NaN', '2099900001', '9007199254740992']) assert.throws(() => androidVersionCode({ GITHUB_RUN_NUMBER: value }), /version code/);
+  assert.throws(() => androidVersionCode({ GITHUB_ACTIONS: 'true' }), /version code/);
+  for (const action of ['init', 'build', 'dev']) {
+    const args = nativeArguments('android', action, ['--apk'], 'linux', { GITHUB_RUN_NUMBER: '99', npm_execpath: '/npm' });
+    assert.deepEqual(JSON.parse(args.at(-1)), { bundle: { android: { versionCode: 100099, autoIncrementVersionCode: false } } });
+    assert.equal(args.at(-2), '--config');
+  }
+  const args = nativeArguments('android', 'build', ['--apk', '--', 'runner-arg'], 'linux', { GITHUB_RUN_NUMBER: '99' });
+  assert.deepEqual(args.slice(-2), ['--', 'runner-arg']);
 });
 
 test('generated mobile callbacks resolve the local CLI from the IDE working directory', t => {

@@ -5,6 +5,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {parseNativeRelease,type NativePlatform,type NativeReleasePackage} from '../src/native-release.ts';
 import type {NativeDownloadsState} from '../app/src/NativeDownloads.tsx';
+import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-release.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {NativeDownloadsContent,loadNativeDownloads,createNativeDownloadsLoader}=await import('../app/src/NativeDownloads.tsx');
@@ -69,6 +70,15 @@ test('a legacy release remains downloadable and says its reproducibility metadat
   assert.match(html,/class="nd-download"/);
   for(const item of parsed.packages)assert.ok(html.includes(`SHA-256 ${item.sha256}`),item.file);
   assert.doesNotMatch(html,/Downloads are unavailable right now/);
+});
+
+test('Android downloads prefer the stable signed APK while preserving every legacy checksum',()=>{
+ const base=nativeReleaseFixture(),update=androidUpdateFixture(base),signed=parseNativeRelease({...base,androidUpdate:update}),html=render(signed);
+ const android=[...html.matchAll(/<article class="nd-platform"[\s\S]*?<\/article>/g)][3]![0],primary=android.match(/<div class="nd-package-links">([\s\S]*?)<\/div>/)![1]!;
+ assert.match(primary,/Signed APK/);assert.ok(primary.includes(update.url));assert.doesNotMatch(primary,/Debug APK|Unsigned release APK/);
+ assert.ok(android.includes(`SHA-256 ${update.sha256}`));assert.equal([...android.matchAll(/>Source<\/a>/g)].length,3);
+ for(const item of signed.packages.filter(item=>item.platform==='android-arm64'))assert.ok(android.includes(`SHA-256 ${item.sha256}`));
+ assert.match(android,/in-place updates/);assert.match(android,/wallet data/);assert.match(android,/Keep the existing installation and its data/);
 });
 
 test('the landing page offers visible download anchors and retains the web wallet',()=>{

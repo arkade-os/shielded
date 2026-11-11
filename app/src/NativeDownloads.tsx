@@ -23,10 +23,10 @@ const guides:PlatformGuide[]=[
   <>Open Shielded from Applications. macOS may block this unsigned, unnotarized build. If you trust this specific download, follow <a href="https://support.apple.com/en-us/102445">Apple’s instructions</a> for its per-app Privacy &amp; Security exception.</>,
   <>Wait for Tor to connect, then create or restore your wallet. macOS Keychain holds the wallet’s recovery secret on this device.</>,
  ],reference:<>Requires macOS 11 or later. Check the download and checksum before granting a per-app exception; keep the Mac’s security protections enabled.</>},
- {platform:'android-arm64',name:'Android',architecture:'ARM64',description:'An installable test APK, signed with a development key. Updates may need extra care.',steps:[
-  <>On your ARM64 phone, download the debug APK. The unsigned release APK is for people who will sign it themselves; it cannot be installed as downloaded.</>,
+ {platform:'android-arm64',name:'Android',architecture:'ARM64',description:'Signed release APKs support in-place updates that keep your wallet data.',steps:[
+  <>On your ARM64 phone, download the signed APK when offered. Older releases offer a debug APK instead. The unsigned release APK is for people who will sign it themselves; it cannot be installed as downloaded.</>,
   <>Open the APK from Downloads. If prompted, allow only the browser or file manager opening it to install unknown apps. Return to the installer and follow its prompts.</>,
-  <>After installation, turn off that source’s installation permission. Open Shielded and wait for Tor before creating or restoring your wallet.</>,
+  <>After installation, turn off that source’s installation permission. Open Shielded and wait for Tor before creating or restoring your wallet. Signed releases can download updates inside Shielded through Tor and use Android’s installer without clearing wallet data.</>,
   <>Before an update, preserve verified recovery data and app data for unresolved swaps. The build runner’s development key can change, and Android can then refuse an in-place update. Keep the existing installation and its data while you resolve this.</>,
  ],reference:<>See <a href="https://support.google.com/pixelphone/answer/7391672?hl=en-GB">Google’s instructions for apps from other sources</a>. Names vary by device; leave Play Protect enabled.</>},
  {platform:'ios',name:'iOS',architecture:'iPhone & Simulator',description:'The device IPA needs your own Apple signing and provisioning. A Mac and Xcode are required.',steps:[
@@ -63,7 +63,7 @@ export function createNativeDownloadsLoader(onState:(state:NativeDownloadsState)
  return {retry,stop(){if(stopped)return;stopped=true;const previous=active;active=undefined;previous?.controller.abort();}};
 }
 export function nativePackageLabel(item:NativeReleasePackage):string{
- if(item.platform==='android-arm64')return item.requiresSigning?'Unsigned release APK':'Debug APK';
+ if(item.platform==='android-arm64')return item.requiresSigning?'Unsigned release APK':item.profile==='release'?'Signed APK':'Debug APK';
  if(item.platform==='ios')return item.requiresSigning?'Device IPA (signing required)':'Simulator ZIP';
  if(item.file.endsWith('.app.zip'))return 'App ZIP';
  if(item.file.endsWith('.AppImage'))return 'AppImage';
@@ -74,16 +74,18 @@ export function nativePackageLabel(item:NativeReleasePackage):string{
 const size=(bytes:number)=>`${(bytes/1_000_000).toLocaleString('en-US',{maximumFractionDigits:1})} MB`;
 
 function PackageLinks({packages,unavailable}:{packages:NativeReleasePackage[];unavailable:boolean}){
- return <div className="nd-package-links">{packages.length?packages.filter(item=>!(item.platform==='android-arm64'&&item.requiresSigning)).map(item=><a key={item.file} className="nd-download" href={item.url}><span>{nativePackageLabel(item)}</span><small>{size(item.bytes)}</small></a>):<span className="nd-package-pending">{unavailable?'Download unavailable':'Checking packages…'}</span>}</div>;
+ const signed=packages.find(item=>item.platform==='android-arm64'&&item.profile==='release'&&!item.requiresSigning),primary=signed?[signed]:packages.filter(item=>!(item.platform==='android-arm64'&&item.requiresSigning));
+ return <div className="nd-package-links">{primary.length?primary.map(item=><a key={item.file} className="nd-download" href={item.url}><span>{nativePackageLabel(item)}</span><small>{size(item.bytes)}</small></a>):<span className="nd-package-pending">{unavailable?'Download unavailable':'Checking packages…'}</span>}</div>;
 }
 export function NativeDownloadsContent({release,state=release?'ready':'loading',onRetry}:{release:NativeRelease|null;state?:NativeDownloadsState['state'];onRetry?:()=>void}){
  const source=repository+'/tree/'+(release?.commit??'main');
  return <section id="download" className="sh-section native-downloads" aria-labelledby="nd-title">
   <div className="nd-intro"><h2 id="nd-title">A private wallet.<br/>At home on your device.</h2><div><p>The same Shielded wallet, installed on Windows, Linux, Mac, Android or iPhone. Native apps connect through Tor and keep your recovery secret in the device vault.</p><p className="nd-testnet">Mutinynet test coins only. These are experimental builds.</p></div></div>
   <div className="nd-release" role="status" aria-busy={state==='loading'}>{release?<><p>Version {release.version}<span>Build {release.buildNumber}</span><a href={release.releaseUrl}>Release notes</a></p><p><a href={source}>Source <code>{release.commit.slice(0,12)}</code></a><time dateTime={release.publishedAt}>Published {release.publishedAt.slice(0,10)}</time></p></>:<><div className="nd-release-message"><p>{state==='error'?'Downloads are unavailable right now.':'Checking downloads…'}</p><p>The install guides are ready below. {state==='error'?'Try again or ':'You can also '}<a href={buildGuide}>build from source</a>.</p></div>{state==='error'&&<button className="nd-retry" type="button" onClick={onRetry}>Retry downloads</button>}</>}</div>
-  {release?.environment?<div className="nd-reproducible"><p>Reproducible build inputs are pinned across every platform. Rebuild the source commit with the recorded toolchain and lockfiles, then compare the package SHA-256.</p><p>Node <code>{release.environment.node}</code> · Rust <code>{release.environment.rust}</code> · npm lock <code>{release.environment.lockfileSha256.slice(0,12)}</code> · Cargo lock <code>{release.environment.rustLockfileSha256.slice(0,12)}</code></p></div>:release?<div className="nd-reproducible"><p>This older release predates reproducible build metadata. Its source commit and package checksums remain available below.</p></div>:null}
+  {release?.environment?<div className="nd-reproducible"><p>Reproducible build inputs are pinned across every platform. Rebuild the source commit with the recorded toolchain and lockfiles, then compare the package SHA-256. Compare Android build output with the unsigned APK; reproducing its publisher signature also requires the private signing key.</p><p>Node <code>{release.environment.node}</code> · Rust <code>{release.environment.rust}</code> · npm lock <code>{release.environment.lockfileSha256.slice(0,12)}</code> · Cargo lock <code>{release.environment.rustLockfileSha256.slice(0,12)}</code></p></div>:release?<div className="nd-reproducible"><p>This older release predates reproducible build metadata. Its source commit and package checksums remain available below.</p></div>:null}
   <div className="nd-platforms">{guides.map(guide=>{
    const packages=release?.packages.filter(item=>item.platform===guide.platform)??[];
+   if(guide.platform==='android-arm64'&&release?.androidUpdate)packages.unshift(release.androidUpdate);
    return <article className="nd-platform" key={guide.platform} aria-labelledby={'nd-'+guide.platform}>
     <div className="nd-platform-heading"><h3 id={'nd-'+guide.platform}>{guide.name}<span>{guide.architecture}</span></h3><p>{guide.description}</p></div>
     <PackageLinks packages={packages} unavailable={state==='error'}/>

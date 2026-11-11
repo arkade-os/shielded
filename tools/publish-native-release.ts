@@ -3,7 +3,8 @@ import { createReadStream, lstatSync, mkdirSync, readdirSync, readFileSync, writ
 import { basename, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { NATIVE_PACKAGE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type NativePlatform, type NativeRelease, type NativeReleasePackage } from '../src/native-release.ts';
+import { ANDROID_UPDATE_MAX_BYTES, NATIVE_PACKAGE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type AndroidUpdatePackage, type NativePlatform, type NativeRelease, type NativeReleasePackage } from '../src/native-release.ts';
+import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
 
 const repository = 'arkade-os/shielded';
 const apiOrigin = `https://api.github.com/repos/${repository}`;
@@ -47,28 +48,31 @@ async function digest(path: string): Promise<string> {
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest('hex');
 }
-export function selectNativeArtifactDirectories(names: readonly string[], identity: Identity): Map<NativePlatform, string> {
-  const selected = new Map<NativePlatform, { name: string; attempt: number }>();
+function selectNativeArtifacts(names: readonly string[], identity: Identity): { platforms: Map<NativePlatform, string>; androidUpdate?: string } {
+  const selected = new Map<NativePlatform | 'android-update', { name: string; attempt: number }>();
   const seen = new Set<string>();
   for (const name of names) {
-    const match = /^shielded-mutinynet-(windows-x86_64|linux-x86_64|macos-universal|android-arm64|ios-unsigned)-release-([a-f0-9]{40})-attempt([1-9]\d*)$/.exec(name);
+    const match = /^shielded-mutinynet-(windows-x86_64|linux-x86_64|macos-universal|android-arm64|android-update|ios-unsigned)-release-([a-f0-9]{40})-attempt([1-9]\d*)$/.exec(name);
     if (!match || match[2] !== identity.commit) throw new Error('Malformed native artifact name or source commit');
-    const platform = (match[1] === 'ios-unsigned' ? 'ios' : match[1]) as NativePlatform, attempt = safeNumber(match[3]);
+    const platform = (match[1] === 'ios-unsigned' ? 'ios' : match[1]) as NativePlatform | 'android-update', attempt = safeNumber(match[3]);
     if (attempt > identity.attempt || seen.has(name)) throw new Error('Duplicate or future native artifact attempt');
     seen.add(name);
     const previous = selected.get(platform);
     if (!previous || attempt > previous.attempt) selected.set(platform, { name, attempt });
   }
-  if (selected.size !== NATIVE_PLATFORMS.length) throw new Error('Missing native platform artifacts');
-  return new Map([...selected].map(([platform, value]) => [platform, value.name]));
+  if (NATIVE_PLATFORMS.some(platform => !selected.has(platform))) throw new Error('Missing native platform artifacts');
+  return { platforms: new Map(NATIVE_PLATFORMS.map(platform => [platform, selected.get(platform)!.name])), androidUpdate: selected.get('android-update')?.name };
+}
+export function selectNativeArtifactDirectories(names: readonly string[], identity: Identity): Map<NativePlatform, string> {
+  return selectNativeArtifacts(names, identity).platforms;
 }
 export async function prepareNativeRelease(input: string, output: string, identity: Identity, version: string, now = new Date()): Promise<PreparedNativeRelease> {
   const entries = readdirSync(input, { withFileTypes: true });
   if (entries.some(entry => !entry.isDirectory() || entry.isSymbolicLink())) throw new Error('Native downloads must contain platform artifact directories');
-  const selected = selectNativeArtifactDirectories(entries.map(entry => entry.name), identity);
+  const selected = selectNativeArtifacts(entries.map(entry => entry.name), identity);
   const tag = `${channel}-${identity.commit.slice(0, 12)}-run${identity.runId}-attempt${identity.attempt}`;
   const files = new Map<string, string>(), platforms = new Set<NativePlatform>(), packages: NativeReleasePackage[] = [], environments: Environment[] = [];
-  for (const [expectedPlatform, name] of selected) {
+  for (const [expectedPlatform, name] of selected.platforms) {
     const directory = join(input, name), archives = artifactFiles(directory).filter(path => path.endsWith('.tar.gz'));
     if (archives.length > 1 || (archives.length && (expectedPlatform !== 'linux-x86_64' || basename(archives[0]) !== 'linux-x86_64-release.tar.gz'))) throw new Error('Unexpected native Linux archive');
     for (const archive of archives) extractNativeLinuxArchive(archive, resolve(archive, '..'));
@@ -94,11 +98,23 @@ export async function prepareNativeRelease(input: string, output: string, identi
     }
   }
   if (environments.some(environment => JSON.stringify(environment) !== JSON.stringify(environments[0]))) throw new Error('Native platforms used different reproduction environments');
-  const manifest = parseNativeRelease({ schema: 1, channel, network: 'mutinynet', commit: identity.commit, buildNumber: identity.buildNumber, version, publishedAt: now.toISOString(), releaseUrl: `https://github.com/${repository}/releases/tag/${tag}`, environment: environments[0], packages });
+  let androidUpdate: AndroidUpdatePackage | undefined;
+  if (selected.androidUpdate) {
+    const directory = join(input, selected.androidUpdate), contents = artifactFiles(directory), path = join(directory, 'manifest.json');
+    if (contents.length !== 2 || !contents.includes(path) || lstatSync(path).size > 64 * 1024) throw new Error('Invalid signed Android artifact contents');
+    const signed = object(JSON.parse(readFileSync(path, 'utf8'))), item = object(signed.package);
+    if (signed.schema !== 1 || signed.network !== 'mutinynet' || signed.commit !== identity.commit || signed.buildNumber !== identity.buildNumber || signed.versionCode !== 100000 + identity.buildNumber || signed.packageName !== androidSigning.packageName || signed.signerSha256 !== androidSigning.certificateSha256 || item.file !== 'mutinynet-release-signed.apk') throw new Error('Signed Android artifact identity mismatch');
+    const packagePath = join(directory, item.file), stats = lstatSync(packagePath);
+    if (!stats.isFile() || stats.isSymbolicLink() || !stats.size || stats.size > ANDROID_UPDATE_MAX_BYTES || stats.size !== item.bytes || await digest(packagePath) !== item.sha256) throw new Error('Signed Android artifact size or SHA256 mismatch');
+    const file = `shielded-mutinynet-android-arm64-${identity.commit.slice(0, 12)}-run${identity.runId}-attempt${identity.attempt}-${item.file}`;
+    files.set(file, packagePath);
+    androidUpdate = { platform: 'android-arm64', file, url: `https://github.com/${repository}/releases/download/${tag}/${file}`, profile: 'release', requiresSigning: false, bytes: stats.size, sha256: item.sha256 as string, packageName: 'io.arkade.shielded', versionCode: signed.versionCode as number, signerSha256: signed.signerSha256 as string };
+  }
+  const manifest = parseNativeRelease({ schema: 1, channel, network: 'mutinynet', commit: identity.commit, buildNumber: identity.buildNumber, version, publishedAt: now.toISOString(), releaseUrl: `https://github.com/${repository}/releases/tag/${tag}`, environment: environments[0], packages, ...(androidUpdate ? { androidUpdate } : {}) });
   mkdirSync(output, { recursive: true });
   const manifestPath = join(output, 'manifest.json'), sumsPath = join(output, 'SHA256SUMS');
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-  writeFileSync(sumsPath, [...packages.map(item => `${item.sha256}  ${item.file}`), `${await digest(manifestPath)}  manifest.json`, ''].join('\n'));
+  writeFileSync(sumsPath, [...packages, ...(androidUpdate ? [androidUpdate] : [])].map(item => `${item.sha256}  ${item.file}`).concat(`${await digest(manifestPath)}  manifest.json`, '').join('\n'));
   return { manifest, files, manifestPath, sumsPath, identity, environment: environments[0] };
 }
 
@@ -143,7 +159,7 @@ export class GitHubNativeReleases {
     return response.status === 404 ? null : await response.json() as Release;
   }
   async create(tag: string, commit: string, draft: boolean): Promise<Release> {
-    return await (await this.request('/releases', { method: 'POST', body: JSON.stringify({ tag_name: tag, target_commitish: commit, name: `Shielded native Mutinynet — ${commit.slice(0, 12)}`, draft, prerelease: true, make_latest: 'false', body: 'Mutinynet test funds only. macOS builds are not notarized. Android release APKs are unsigned; debug APKs use a runner development key that is not a stable upgrade identity. iPhone IPAs require your own signing and provisioning. iOS simulator archives do not install on a phone. Preserve your recovery phrase before replacing an installation. See https://shielded.mutinynet.arkade.sh/#download for installation instructions.' }) })).json() as Release;
+    return await (await this.request('/releases', { method: 'POST', body: JSON.stringify({ tag_name: tag, target_commitish: commit, name: `Shielded native Mutinynet — ${commit.slice(0, 12)}`, draft, prerelease: true, make_latest: 'false', body: 'Mutinynet test funds only. The signed Android release APK supports in-place updates from the same permanent signing identity. Separate unsigned and legacy debug APKs remain available; older debug keys may be incompatible, so keep the existing installation and wallet data if Android refuses an update. macOS builds are not notarized. iPhone IPAs require your own signing and provisioning. iOS simulator archives do not install on a phone. See https://shielded.mutinynet.arkade.sh/#download for installation instructions.' }) })).json() as Release;
   }
   async uploadFile(release: Release, name: string, path: string): Promise<Asset> {
     return await (await this.request(`https://uploads.github.com/repos/${repository}/releases/${release.id}/assets?name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(lstatSync(path).size) }, body: createReadStream(path) as unknown as BodyInit, duplex: 'half' } as RequestInit)).json() as Asset;
@@ -194,7 +210,7 @@ export async function publishNativeRelease(prepared: PreparedNativeRelease, gith
   assertNativeReleaseAdvancement(manifest, current, manifest.commit);
   if (await github.release(tag)) throw new Error('Immutable native build release already exists');
   const build = await github.create(tag, identity.commit, true);
-  for (const item of manifest.packages) {
+  for (const item of [...manifest.packages, ...(manifest.androidUpdate ? [manifest.androidUpdate] : [])]) {
     const asset = await github.uploadFile(build, item.file, prepared.files.get(item.file)!);
     if (asset.size !== item.bytes || (asset.digest && asset.digest !== `sha256:${item.sha256}`)) throw new Error('Published native package checksum or size mismatch');
   }
@@ -214,6 +230,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     await github.waitForChecks(identity.commit);
     const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version as string;
     const prepared = await prepareNativeRelease(resolve(process.argv[2] ?? 'native-downloads'), resolve(process.argv[3] ?? 'native-release'), identity, version);
+    if (!prepared.manifest.androidUpdate) throw new Error('Native publication requires the stable signed Android update artifact');
     const published = await publishNativeRelease(prepared, github);
     console.log(`Published ${published.releaseUrl}`);
   } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }

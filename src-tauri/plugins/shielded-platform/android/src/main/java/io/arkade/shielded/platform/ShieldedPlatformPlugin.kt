@@ -18,6 +18,7 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.WeakHashMap
@@ -26,17 +27,28 @@ import org.json.JSONObject
 @InvokeArg
 class SeedArgs { var value: String = "" }
 
+@InvokeArg
+class UpdateArgs {
+    var path: String = ""
+    var sha256: String = ""
+    var bytes: Long = 0
+    var versionCode: Long = 0
+}
+
 private val baseInsets = WeakHashMap<View, Insets>()
 
 @TauriPlugin
 class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private var updateWorker = Executors.newSingleThreadExecutor()
+    private val updater = AndroidUpdater(activity)
     private val vault = AndroidSeedVault(activity)
     private var webview: WebView? = null
     @Volatile private var generation = 0L
     private var destroyed = false
     private var activeActivity: Activity? = activity
+    private var resumed = false
 
     override fun load(webView: WebView) {
         webview = webView
@@ -120,16 +132,86 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         null
     }
 
+    private fun update(invoke: Invoke, operation: ((() -> Unit) -> Unit) -> JSObject?) {
+        main.post {
+            if (destroyed || !trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
+            val ticket = generation
+            val source = webview
+            try {
+                updateWorker.execute {
+                    try {
+                        val authorize: (() -> Unit) -> Unit = { action ->
+                            val task = FutureTask {
+                                if (generation != ticket || destroyed || webview !== source || !trusted() || !resumed)
+                                    throw UpdateRejected("Return to Shielded to continue the Android update")
+                                action()
+                            }
+                            if (!main.post(task)) throw UpdateRejected("Android update authorization unavailable")
+                            // A timed-out commit could still execute later on the main thread.
+                            try { task.get() } catch (error: ExecutionException) { throw (error.cause as? Exception ?: error) }
+                        }
+                        val authorization = FutureTask { generation == ticket && !destroyed && webview === source && trusted() }
+                        if (!main.post(authorization) || !authorization.get(10, TimeUnit.SECONDS))
+                            throw UpdateRejected("Android update authorization unavailable")
+                        val result = operation(authorize)
+                        main.post {
+                            if (generation != ticket || destroyed || webview !== source || !trusted()) invoke.reject("Android update unavailable")
+                            else if (result == null) invoke.resolve() else invoke.resolve(result)
+                        }
+                    } catch (error: Exception) {
+                        main.post { invoke.reject((error as? UpdateRejected)?.message ?: "Android update unavailable. You can retry.") }
+                    }
+                }
+            } catch (_: Exception) { invoke.reject("Android update unavailable. You can retry.") }
+        }
+    }
+
+    @Command
+    fun updateInfo(invoke: Invoke) = update(invoke) { updater.info() }
+
+    @Command
+    fun updateVerify(invoke: Invoke) = update(invoke) {
+        updater.verifyOnly(invoke.parseArgs(UpdateArgs::class.java))
+        null
+    }
+
+    @Command
+    fun updatePermission(invoke: Invoke) = update(invoke) { authorize ->
+        authorize { updater.permission(activeActivity ?: throw UpdateRejected("Return to Shielded to allow Android updates")) }
+        null
+    }
+
+    @Command
+    fun updateInstall(invoke: Invoke) = update(invoke) { authorize ->
+        updater.install(invoke.parseArgs(UpdateArgs::class.java), authorize)
+    }
+
+    @Command
+    fun updateConfirm(invoke: Invoke) = update(invoke) { authorize ->
+        var result: JSObject? = null
+        authorize { result = updater.confirm(activeActivity ?: throw UpdateRejected("Return to Shielded to confirm the Android update")) }
+        result
+    }
+
     override fun onResume(activity: AppCompatActivity) {
         if (activeActivity !== activity) generation++
         activeActivity = activity
         destroyed = false
+        resumed = true
+        if (updateWorker.isShutdown) updateWorker = Executors.newSingleThreadExecutor()
+        updater.resumed()
+    }
+
+    override fun onPause(activity: AppCompatActivity) {
+        if (activeActivity === activity) resumed = false
     }
 
     override fun onDestroy(activity: AppCompatActivity) {
         if (activeActivity !== activity) return
         generation++
         destroyed = true
+        resumed = false
         activeActivity = null
+        updateWorker.shutdown()
     }
 }

@@ -414,3 +414,64 @@ Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 2
 The CI checker includes all thirteen exhaustive configurations, bringing the complete native gate to 51 expected configurations without removing any previous coverage. The wider configuration passed with four workers, the same two scopes and origins, 20,000 random traces at depth 100 and seed 20261111: 2,000,001 states checked.
 
 The model abstracts DNS, TLS internals, actual body bytes, HTTP parsing, cache-age wall time, server keepalive policy and scheduler behavior. It treats checkout, cache return, expiry comparison and session invalidation as the corresponding session-lock atomic steps. It provides no fairness, latency, termination, cryptographic-isolation or physical-device proof, and the source-symbol anchors are not a checked refinement mapping. SSE and WebSockets remain outside this HTTP reuse model and retain dedicated connections.
+
+## Android updates through Tor
+
+`AndroidUpdate.tla` separates the update controller, native download completion and Android installer callback. The controller reserves one update owner before awaiting network work. A download captures its Tor generation; cancellation and pause can happen between byte completion, verification and publication. Only complete bytes with the advertised hash, the same application and signing certificate, and a strictly newer Android version may become prepared. A prepared file can remain ready while the Tor session changes.
+
+Installation requires a fresh explicit action. Returning from Android's unknown-source permission settings returns to ready and consumes the earlier action. The native installer rechecks the prepared archive and retains exclusive ownership while copying its bytes into a package-install session. One attempt can commit that session once. A pending-user-action callback is not success; a lost callback becomes unknown and must be reconciled before another attempt. A bounded process crash discards unsubmitted staging and preserves the identity of an already committed attempt. None of these actions changes wallet storage.
+
+| Model actions | Owning file and symbol boundary |
+| --- | --- |
+| `Begin`, `Cancel`, `Retire` | `src-tauri/src/android_updates.rs`: `AndroidUpdates::reserve`, `AndroidUpdates::cancel`, `DownloadOwner::drop` |
+| `Receive`, `Publish` | `src-tauri/src/transport/update.rs`: `PrivacyTransport::download_update`, `PrivacyTransport::finish_update`; `android_updates.rs`: `DownloadOwner::publish` |
+| `Verify`, `BeginInstall` | `android_updates.rs`: `check_installation`, `check_candidate`, `AndroidUpdates::begin_install`; `AndroidUpdater.kt`: `verify` |
+| `Click`, `NeedPermission`, `PermissionReturn` | `app/src/android-updates.ts`: `createAndroidUpdateController` methods `install`, `permission`, `visibilityChanged`; `AndroidUpdater.kt`: `permission` |
+| `Submit`, `Reply`, `UserDecision`, `Reconcile` | `src-tauri/plugins/shielded-platform/android/src/main/java/io/arkade/shielded/platform/AndroidUpdater.kt`: `install`, `receive`, `reconcile` and Android `PackageInstaller`; `android_updates.rs`: `InstallOwner::finish` |
+| `Invalidate`, `Resume`, `Crash` | transport generation/cancellation; `AndroidUpdates::new`; `AndroidUpdater.reconcile` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Downloading: reserve sole owner, ready Tor generation
+    Downloading --> Received: native private file, bounded stream complete
+    Received --> Checked: length, hash, app, signer and newer version match
+    Checked --> Ready: owner, cancellation and Tor generation still current
+    Downloading --> Failed: error, cancel or transport retirement
+    Received --> Failed: invalid bytes or identity
+    Checked --> Failed: stale generation or cancellation
+    Ready --> Permission: explicit install, unknown-source permission missing
+    Permission --> Ready: settings return consumes previous install action
+    Ready --> Installing: fresh explicit install, archive rechecked
+    Installing --> Submitted: copy owns prepared file, commit once
+    Submitted --> UserConfirmation: Android requires user action
+    UserConfirmation --> Done: Android confirms successful installation
+    UserConfirmation --> Failed: user declines or Android rejects package
+    Submitted --> Done: Android confirms successful installation
+    Submitted --> Failed: Android reports failure
+    Submitted --> Unknown: callback lost or process restart
+    Unknown --> Done: reconcile installed version and session result
+    Unknown --> Failed: reconcile definitive failure
+    Unknown --> UserConfirmation: reconcile required user action
+```
+
+Pinned TLC v1.7.4 checked the exhaustive base on November 11, 2026 with two workers and a 2 GiB heap: 403,208 generated states, 170,816 distinct states, depth 28 and an empty queue. Every semantic action fired. The base bounds two update attempts, two transport-generation advances and one process crash. All thirteen individual guard mutations exit 12 with the named invariant:
+
+| Configuration | Counterexample condition |
+| --- | --- |
+| `AndroidUpdate_NoOwner.cfg` | two update downloads overlap; `OneDownloader` fails |
+| `AndroidUpdate_NoTor.cfg` | an update starts in direct or paused mode; `TorOnly` fails |
+| `AndroidUpdate_NoFence.cfg` | a cancelled or retired completion becomes ready; `FreshPublication` fails |
+| `AndroidUpdate_NoLength.cfg` | truncated bytes become ready; `CompleteBytes` fails |
+| `AndroidUpdate_NoHash.cfg` | bytes with the wrong digest become ready; `MatchingHash` fails |
+| `AndroidUpdate_NoCertificate.cfg` | another signer's APK becomes ready; `MatchingCertificate` fails |
+| `AndroidUpdate_NoPackage.cfg` | another application's APK becomes ready; `MatchingPackage` fails |
+| `AndroidUpdate_NoVersion.cfg` | an equal or older version becomes ready; `NewerVersion` fails |
+| `AndroidUpdate_NoRecheck.cfg` | an archive changed after preparation reaches installation; `RecheckedInstall` fails |
+| `AndroidUpdate_NoConsent.cfg` | settings return automatically resumes installation; `ExplicitInstall` fails |
+| `AndroidUpdate_NoFileLease.cfg` | cancellation deletes the file while the installer copies it; `PreparedFileLeased` fails |
+| `AndroidUpdate_NoCommitOnce.cfg` | a repeated call commits the same attempt twice; `OneInstallerCommit` fails |
+| `AndroidUpdate_NoPending.cfg` | pending user confirmation is reported as installed; `PendingRequiresUser` fails |
+
+The CI checker includes these fourteen configurations, increasing its gate from 51 to 65 without dropping previous coverage. Wider simulation passed 20,000 traces at depth 100 with four attempts, three generation advances, two crashes and seed 20261111, checking 331,245 states.
+
+The model abstracts actual HTTP/TLS and redirect parsing, digest/signature algorithms, Android package parsing, file-system durability, permission UI and the installer service. It assumes the native verification results accurately describe the bytes. It checks bounded safety, not eventual connectivity, download speed, store eligibility, on-device installation or preservation of a particular device's wallet data. The source boundaries above are review anchors, not a checked refinement mapping.

@@ -1,3 +1,5 @@
+import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
+
 export const NATIVE_RELEASE_ENDPOINT = '/api/native/releases';
 export const NATIVE_RELEASE_MANIFEST_URL = 'https://raw.githubusercontent.com/arkade-os/shielded/native-mutinynet/latest.json';
 export const NATIVE_RELEASE_ORIGIN = 'https://shielded.mutinynet.arkade.sh';
@@ -13,6 +15,14 @@ export interface NativeReleasePackage {
   bytes: number;
   sha256: string;
 }
+export interface AndroidUpdatePackage extends NativeReleasePackage {
+  platform: 'android-arm64';
+  profile: 'release';
+  requiresSigning: false;
+  packageName: 'io.arkade.shielded';
+  versionCode: number;
+  signerSha256: string;
+}
 export interface NativeRelease {
   schema: 1;
   channel: 'native-mutinynet';
@@ -24,6 +34,7 @@ export interface NativeRelease {
   releaseUrl: string;
   environment?: NativeBuildEnvironment;
   packages: NativeReleasePackage[];
+  androidUpdate?: AndroidUpdatePackage;
 }
 
 /** Store-distributed builds can resolve their platform listing or update API here. */
@@ -40,6 +51,7 @@ export interface NativeBuildEnvironment {
 
 export const NATIVE_PLATFORMS: readonly NativePlatform[] = ['windows-x86_64', 'linux-x86_64', 'macos-universal', 'android-arm64', 'ios'];
 export const NATIVE_PACKAGE_MAX_BYTES = 2_147_483_647;
+export const ANDROID_UPDATE_MAX_BYTES = 128 * 1024 * 1024;
 const releasesBase = 'https://github.com/arkade-os/shielded/releases';
 const formats: Record<NativePlatform, readonly string[]> = {
   'windows-x86_64': ['.exe'], 'linux-x86_64': ['.deb', '.AppImage'],
@@ -92,6 +104,15 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     return result;
   });
   for (const platform of NATIVE_PLATFORMS) for (const format of formats[platform]) if (!covered.has(`${platform}:${format}`)) throw new Error(`Incomplete native release: ${platform} ${format}`);
+  let androidUpdate: AndroidUpdatePackage | undefined;
+  if (value.androidUpdate !== undefined) {
+    const item = record(value.androidUpdate), file = `shielded-mutinynet-android-arm64-${tag.slice('native-mutinynet-'.length)}-mutinynet-release-signed.apk`;
+    if (item.platform !== 'android-arm64' || item.profile !== 'release' || item.requiresSigning !== false || item.packageName !== 'io.arkade.shielded' || item.signerSha256 !== androidSigning.certificateSha256 || !positive(item.versionCode, 2_100_000_000) || item.versionCode !== 100000 + value.buildNumber) throw new Error('Invalid signed Android update identity');
+    if (item.file !== file || files.has(file) || !positive(item.bytes, ANDROID_UPDATE_MAX_BYTES) || typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new Error('Invalid signed Android update package');
+    const url = safeUrl(item.url);
+    if (url !== `${releasesBase}/download/${tag}/${file}` || urls.has(url)) throw new Error('Invalid signed Android update download');
+    androidUpdate = { platform: 'android-arm64', file, url, profile: 'release', requiresSigning: false, bytes: item.bytes, sha256: item.sha256, packageName: 'io.arkade.shielded', versionCode: item.versionCode, signerSha256: item.signerSha256 };
+  }
   let environment: NativeBuildEnvironment | undefined;
   if (value.environment === undefined) {
     if (value.buildNumber >= FIRST_REPRODUCIBLE_BUILD) throw new Error('Missing native build environment');
@@ -100,5 +121,5 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     if (candidate.node !== '24.22.2' || candidate.rust !== '1.96.0' || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
     environment = candidate as unknown as NativeBuildEnvironment;
   }
-  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages };
+  return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages, ...(androidUpdate ? { androidUpdate } : {}) };
 }

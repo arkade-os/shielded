@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { NATIVE_PACKAGE_MAX_BYTES, parseNativeRelease } from '../src/native-release.ts';
-import { nativeReleaseFixture as release } from './fixtures/native-release.ts';
+import { androidUpdateFixture, nativeReleaseFixture as release } from './fixtures/native-release.ts';
 
 test('native manifest accepts complete immutable Mutinynet downloads and strips unknown data', () => {
   const input = { ...release(), unknown: 'ignored' }, parsed = parseNativeRelease(input);
@@ -67,4 +67,26 @@ test('native manifest keeps Android debug and unsigned device labels honest', ()
   }
   const input = release(); input.packages[0].profile = 'debug';
   assert.throws(() => parseNativeRelease(input));
+});
+
+test('signed Android update metadata is additive to every legacy download', () => {
+  const input = release(), androidUpdate = androidUpdateFixture(input), parsed = parseNativeRelease({ ...input, androidUpdate: { ...androidUpdate, ignored: true } });
+  assert.deepEqual(parsed.packages, parseNativeRelease(input).packages);
+  assert.deepEqual(parsed.androidUpdate, androidUpdate);
+  assert.equal('androidUpdate' in parseNativeRelease(input), false);
+});
+
+test('signed Android updates reject foreign identity, signer, build, filename and unsafe downloads', () => {
+  const input = release(), original = androidUpdateFixture(input);
+  for (const change of [
+    { packageName: 'io.attacker.wallet' }, { signerSha256: 'e'.repeat(64) }, { signerSha256: 'BAD' },
+    { versionCode: 1000 }, { versionCode: original.versionCode + 1 }, { versionCode: 2_100_000_001 },
+    { platform: 'ios' }, { profile: 'debug' }, { requiresSigning: true }, { bytes: 0 }, { bytes: 128 * 1024 * 1024 + 1 }, { sha256: 'bad' },
+    { file: '../release.apk' }, { file: original.file.replace('signed.apk', 'unsigned.apk') },
+    { url: original.url.replace('arkade-os/shielded', 'attacker/shielded') },
+    { url: `${original.url}?token=1` }, { url: original.url.replace('https:', 'http:') },
+    { url: original.url.replace('/download/', '/download/../download/') }, { url: original.url.replace('github.com', 'user@github.com') },
+  ]) assert.throws(() => parseNativeRelease({ ...input, androidUpdate: { ...original, ...change } }), JSON.stringify(change));
+  assert.throws(() => parseNativeRelease({ ...input, androidUpdate: null }));
+  assert.throws(() => parseNativeRelease({ ...input, buildNumber: 2_100_000_000, androidUpdate: { ...original, versionCode: 2_100_100_000 } }));
 });

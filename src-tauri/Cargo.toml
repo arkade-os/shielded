@@ -35,7 +35,7 @@ tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-deep-link = "=2.6.3"
 tauri-plugin-opener = "=2.7.2"
 tauri-plugin-shielded-platform = { path = "plugins/shielded-platform" }
-tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net", "fs"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 tokio-util = { version = "=0.7.20", features = ["rt"] }

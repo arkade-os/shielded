@@ -17,6 +17,7 @@ import NativeTorHealth from './NativeTorHealth.tsx';
 import {AppUpdateNotice} from './AppUpdates.tsx';
 import {clearNativeTransientDocument} from './wallet-recovery.ts';
 import {watchPaymentDeepLinks,type IncomingPayment} from './native-deeplink.ts';
+import {registerAndroidInstallPreparation} from './android-updates.ts';
 
 installNativeTransport();
 const loadWallet=()=>import('./RollupWallet');
@@ -76,6 +77,11 @@ export default function NativeWallet(){
   closed.current=Promise.all([closed.current.catch(()=>{}),closing,pending]).then(()=>{});
   void closed.current.catch(fail);return closed.current;
  },[]);
+ useEffect(()=>registerAndroidInstallPreparation(async()=>{
+  if(clearing.current||localStorage.getItem(RESET_PENDING)==='1')throw new Error('The wallet is being cleared. Finish that operation before installing an update.');
+  manualLock.current=true;setConfirmDirect(false);await pause();
+  if(clearing.current||localStorage.getItem(RESET_PENDING)==='1')throw new Error('The wallet is being cleared. Finish that operation before installing an update.');
+ }),[pause]);
  const finishReset=useCallback(()=>{
   if(openingOperation.current)return openingOperation.current;
   clearing.current=true;setResetPending(true);setBusy(true);setError('');setPhase('Finishing wallet reset');
