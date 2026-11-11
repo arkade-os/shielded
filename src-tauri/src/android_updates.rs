@@ -161,6 +161,7 @@ impl AndroidUpdates {
 
     fn prepare_directory(&self) -> Result<(), String> {
         let mut ready = self.directory_ready.lock().map_err(|_| UNAVAILABLE)?;
+        // Android can evict this cache after initialization; recreate it and reject substituted symlinks.
         let directory = &self.directory;
         std::fs::create_dir_all(&directory).map_err(|_| UNAVAILABLE)?;
         if std::fs::symlink_metadata(&directory)

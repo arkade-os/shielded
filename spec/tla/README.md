@@ -538,3 +538,42 @@ Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 5
 The checker retains all 65 earlier configurations and adds these nine, for 74 expected configurations. Wider simulation passed 20,000 traces at depth 100 with four attempts and seed 20261111, checking 2,000,024 states. C is advertised metadata in this model; installing C is outside its boundary.
 
 The model abstracts package bytes, disk and preference APIs, Android process/service internals, actual file checks and wall-clock time. Cache inspection and subsequent state publication represent the native guarded transition, not unguarded file IO under a mutex. A missing file is reported after observation rather than treated as immediately known to every actor. No fairness, eventual recovery, physical-device behavior or checked refinement relationship is claimed.
+
+## Terminal receipts and operation dispatch
+
+`UpdateRecoveryReceipts.tla` isolates two callback/bridge boundaries without multiplying the larger query model's states. A terminal Android callback can arrive before a possible-commit error reaches the install catch. If its token, session and target match this attempt, the catch preserves the exact installed/failed status and error in both the journal and its response. An older attempt's terminal record cannot replace the current attempt's failure.
+
+The plugin dispatch gate distinguishes Queued, Started and Cancelled. A failed install request is definitively retryable only after cancellation wins before dispatch. Started failures retain generic error semantics because the operation might have run. Confirm and read-only requests keep generic errors even when dispatch never starts. Two failure callers classify and publish separately: the caller that cancelled the queue can lose the response race, so the other caller must classify the stable Cancelled state rather than its own failed compare-and-set. Cancelled work never starts later, and a response already claimed cannot be overwritten.
+
+| Model actions | Source anchors |
+| --- | --- |
+| `ReceiveTerminal`, `Recover` | `AndroidUpdater.kt`: `receive`, `install` catch under the shared lock; `AndroidUpdatePolicy.kt`: `terminalResult` |
+| `ClassifyFailure`, `PublishFailure`, `BeginOperation`, `CompleteOperation` | `AndroidUpdateDispatch.kt`: `fail`, `begin`, `complete`; `ShieldedPlatformPlugin.kt`: `update`, install-only `updateInstall` |
+| `Deliver` | `src-tauri/src/android_updates.rs`: `InstallOwner::finish` accepts a definitive failed install result |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued
+    Queued --> Cancelled: failure wins cancellation
+    Cancelled --> Retryable: install-only failed receipt, one response
+    Queued --> Started: operation atomically claims dispatch
+    Started --> Unknown: bridge failure may follow dispatched work
+    Started --> PossibleCommit: current attempt journal and session
+    PossibleCommit --> TerminalCallback: Android reports installed or failed
+    PossibleCommit --> RecoveryCatch: timeout or operation error
+    TerminalCallback --> RecoveryCatch: callback arrived before catch
+    RecoveryCatch --> PreservedTerminal: matching token, session and target
+    RecoveryCatch --> Unknown: possible commit without matching terminal result
+```
+
+Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 512 MiB heap: 1,044 generated states, 468 distinct states, depth 12 and an empty queue. Every semantic action fired. Three separate guard mutations fail their intended invariant:
+
+| Configuration | Counterexample |
+| --- | --- |
+| `UpdateRecoveryReceipts_NoTerminalReceipt.cfg` | callback saves a matching terminal result, then generic catch recovery overwrites it; `TerminalReceiptRetained` fails |
+| `UpdateRecoveryReceipts_NoCancelledReceipt.cfg` | the first failure cancels Queued but the second failure wins the response and uses its lost compare-and-set to reject a definitely unstarted install; `DefiniteInstallRejectionRetryable` fails |
+| `UpdateRecoveryReceipts_NoDispatchFence.cfg` | a classified cancelled request starts its operation later; `NoCancelledDispatch` fails |
+
+Wider simulation passed 20,000 traces at depth 100 with four opaque failure codes instead of two, seed 20261111, checking 99,048 states. The checker retains the earlier 74 configurations and adds this base plus three mutants, for 78 expected configurations.
+
+The model has one operation and two failure callers, abstracts bridge and Android APIs, and assumes an available prepared file and accurate journal reads under the shared lock. It preserves opaque callback errors by equality rather than interpreting them. The broader recovery model owns file loss, subsequent status queries and explicit retry attempts. No eventual delivery, successful Android installation, cryptographic correctness or checked source refinement is claimed.

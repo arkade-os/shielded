@@ -34,7 +34,7 @@ async function main() {
     const jar = join(temporary, 'tla2tools.jar');
     writeFileSync(jar, artifact);
     const configurations = readdirSync(directory).filter(name => /^(NativeSession|NativeViewHandoff|TorStatus|TorStartup|TorConnect|WalletStatus|HttpReuse|AndroidUpdate|UpdateRecovery).*\.cfg$/.test(name) && !name.endsWith('_Sim.cfg')).sort();
-    for (const model of ['NativeSession', 'NativeViewHandoff', 'TorStatus', 'TorStartup', 'TorConnect', 'WalletStatus', 'HttpReuse', 'AndroidUpdate', 'UpdateRecovery']) if (!configurations.includes(`${model}.cfg`)) throw new Error(`${model} base configuration is missing`);
+    for (const model of ['NativeSession', 'NativeViewHandoff', 'TorStatus', 'TorStartup', 'TorConnect', 'WalletStatus', 'HttpReuse', 'AndroidUpdate', 'UpdateRecovery', 'UpdateRecoveryReceipts']) if (!configurations.includes(`${model}.cfg`)) throw new Error(`${model} base configuration is missing`);
     for (const configuration of configurations) {
       const expected = readFileSync(join(directory, configuration), 'utf8').match(/^\\\* EXPECT: (.+)\r?$/m)?.[1];
       if (!expected || (expected !== 'GREEN' && !/^Invariant \w+ is violated$/.test(expected))) throw new Error(`Invalid EXPECT in ${configuration}`);

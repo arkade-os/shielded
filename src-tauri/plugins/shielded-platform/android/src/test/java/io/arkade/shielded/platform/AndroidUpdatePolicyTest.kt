@@ -212,4 +212,33 @@ class AndroidUpdatePolicyTest {
         assertEquals("installed", AndroidUpdatePolicy.afterAbandon(false, true, 2, 2))
         assertEquals("installed", AndroidUpdatePolicy.afterAbandon(true, false, 3, 2))
     }
+
+    @Test fun aMatchingInstalledCallbackWinsATimeoutRecovery() {
+        assertEquals("installed" to null, AndroidUpdatePolicy.terminalResult("current", 8, 2, "current", 8, 2, "installed", null))
+    }
+
+    @Test fun aMatchingFailedCallbackKeepsItsExactError() {
+        assertEquals("failed" to "Android cancelled this update", AndroidUpdatePolicy.terminalResult(
+            "current", 8, 2, "current", 8, 2, "failed", "Android cancelled this update"))
+    }
+
+    @Test fun anOlderTerminalReceiptCannotHideANewAttemptFailure() {
+        for ((token, session) in listOf("previous" to 7, "previous" to 8, "current" to 7))
+            assertNull(AndroidUpdatePolicy.terminalResult("current", 8, 2, token, session, 2, "installed", null))
+        assertNull(AndroidUpdatePolicy.terminalResult("current", 8, 2, "current", 8, 1, "installed", null))
+    }
+
+    @Test fun nonterminalOrSessionlessRecordsDoNotOverrideRecovery() {
+        for (status in listOf("idle", "preparing", "installing", "confirmation-required"))
+            assertNull(AndroidUpdatePolicy.terminalResult("current", 8, 2, "current", 8, 2, status, null))
+        assertNull(AndroidUpdatePolicy.terminalResult("current", -1, 2, "current", -1, 2, "failed", "No session exists"))
+    }
+
+    @Test fun aTerminalCallbackSurvivesFailedPersistenceDuringTimeoutRecovery() {
+        val journal = AndroidUpdateJournal<Pair<String, String?>>()
+        try { journal.write("failed" to "Android rejected the package") { throw UpdateRejected("Could not save") } }
+        catch (_: UpdateRejected) { }
+        val receipt = journal.read { "installing" to null }!!
+        assertEquals(receipt, AndroidUpdatePolicy.terminalResult("current", 8, 2, "current", 8, 2, receipt.first, receipt.second))
+    }
 }

@@ -7,6 +7,7 @@ import java.security.MessageDigest
 
 internal class UpdateRejected(message: String) : Exception(message)
 
+// Production access is serialized by AndroidUpdater's companion lock.
 internal class AndroidUpdateJournal<T : Any> {
     private var receipt: T? = null
 
@@ -70,6 +71,11 @@ internal object AndroidUpdatePolicy {
         token.isNotEmpty() && session >= 0 && token == expectedToken && session == expectedSession
 
     fun mayHaveCommitted(commitStarted: Boolean, error: Exception) = commitStarted || error is AmbiguousUpdateAuthorization
+
+    fun terminalResult(token: String, session: Int, target: Long, recordToken: String, recordSession: Int,
+        recordTarget: Long, status: String, error: String?): Pair<String, String?>? =
+        if (target == recordTarget && callback(token, session, recordToken, recordSession) && status in listOf("installed", "failed"))
+            status to error else null
 
     fun recoverInstallFailure(possibleCommit: Boolean, ownsAttempt: Boolean, persist: (String) -> Unit): String {
         val status = if (possibleCommit) "confirmation-required" else "failed"

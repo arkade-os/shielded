@@ -195,15 +195,21 @@ internal class AndroidUpdater(context: Context) {
             val possibleCommit = AndroidUpdatePolicy.mayHaveCommitted(commitStarted, error)
             val message = if (possibleCommit) "Android could not confirm installation. Continue to check this attempt."
                 else (error as? UpdateRejected)?.message ?: "Android could not prepare the update. You can retry."
-            val status = synchronized(lock) {
-                if (!possibleCommit) {
-                    if (sessionId >= 0) runCatching { installer.abandonSession(sessionId) }
-                } else if (submitted == token) submitted = null
-                AndroidUpdatePolicy.recoverInstallFailure(possibleCommit, preparing == token) { next ->
-                    write(Record(token, sessionId, args.versionCode, next, message))
+            val receipt = synchronized(lock) {
+                val current = try { read() } catch (_: Exception) { null }
+                val terminal = current?.let { AndroidUpdatePolicy.terminalResult(token, sessionId, args.versionCode,
+                    it.token, it.session, it.target, it.status, it.error) }
+                if (terminal != null) terminal else {
+                    if (!possibleCommit) {
+                        if (sessionId >= 0) runCatching { installer.abandonSession(sessionId) }
+                    } else if (submitted == token) submitted = null
+                    val status = AndroidUpdatePolicy.recoverInstallFailure(possibleCommit, preparing == token) { next ->
+                        write(Record(token, sessionId, args.versionCode, next, message))
+                    }
+                    status to message
                 }
             }
-            return result(status, message)
+            return result(receipt.first, receipt.second)
         } finally {
             synchronized(lock) { if (preparing == token) preparing = null }
         }
