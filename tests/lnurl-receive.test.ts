@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {MnemonicIdentity,SingleKey,type CreateContractParams,type Wallet} from '@arkade-os/sdk';
 import {bech32m,hex} from '@scure/base';
-import {CHECK_EVERY_MS,HD_REFUSED,METHODS_NOT_WITHDRAWN,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
+import {CHECK_EVERY_MS,HD_REFUSED,METHODS_NOT_WITHDRAWN,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,privateReceiveNotice,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
 
 const mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const hdIdentity=MnemonicIdentity.fromMnemonic(mnemonic,{isMainnet:false});
@@ -507,6 +507,21 @@ test('opening privately cancels an owed withdrawal instead of failing on it',asy
  await f.service.claimName({privately:true});
  assert.deepEqual(f.bound().at(-1)!.methods,[shielded]);
  assert.equal((await f.service.privateReceiveState()).on,true);
+});
+
+test('adopting another owned receiver scans for the payouts its other device bound',async()=>{
+ const f=setup();await f.service.ensureUnified();f.aliases.push(receiver);f.funded.add(at(5).script);
+ await f.service.claimName();
+ assert.ok(f.registered.flat().some(row=>row.script===at(5).script));
+ assert.equal(f.saved()!.next,6);
+});
+
+test('a method still listed after its withdrawal is reported ahead of a refusal',()=>{
+ const none={on:false,pending:false,refused:false,withdrawing:false,listed:null};
+ assert.equal(privateReceiveNotice(none),'');
+ assert.equal(privateReceiveNotice({...none,withdrawing:true}),'');
+ assert.equal(privateReceiveNotice({...none,refused:true}),METHODS_REFUSED);
+ assert.equal(privateReceiveNotice({...none,refused:true,withdrawing:true,listed:'own'}),METHODS_NOT_WITHDRAWN);
 });
 
 test('naming adopts an owned name even while this device tracks a nameless receiver',async()=>{

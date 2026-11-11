@@ -10,7 +10,7 @@ import type {StepState} from '../../src/shielded/handle.ts';
 import {LNURL_BASE} from '../../src/shielded/lightning.ts';
 import {IndexedDbLightningRepository} from '../../src/shielded/lightning-repository.ts';
 import {createLightningWallet,createPrivateLightning,lightningOwner} from '../../src/shielded/lightning-wallet.ts';
-import {METHODS_NOT_WITHDRAWN,METHODS_REFUSED,createLnurlReceive,type LnurlReceiver} from '../../src/shielded/lnurl-receive.ts';
+import {METHODS_NOT_WITHDRAWN,METHODS_REFUSED,createLnurlReceive,privateReceiveNotice,type LnurlReceiver} from '../../src/shielded/lnurl-receive.ts';
 import {RECOVERY_LINE} from '../../src/shielded/epoch-recovery.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
@@ -105,7 +105,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [lnBoundsError,setLnBoundsError]=useState('');
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
  const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),unifiedAddressRef=useRef(''),payoutWatchRevision=useRef(0),lnLimits=useRef<unknown>(undefined),lnLimitsRead=useRef(0),startingRef=useRef<Promise<unknown>|undefined>(undefined),securityRef=useRef<HTMLDetailsElement>(null);
- const invoiceTried=useRef<bigint|undefined>(undefined),[invoiceBusy,setInvoiceBusy]=useState(false),[invoiceError,setInvoiceError]=useState(''),[privateRefused,setPrivateRefused]=useState(false);
+ const invoiceTried=useRef<bigint|undefined>(undefined),[invoiceBusy,setInvoiceBusy]=useState(false),[invoiceError,setInvoiceError]=useState(''),[privateNotice,setPrivateNotice]=useState('');
  const [,setQuoteRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
@@ -280,7 +280,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{
   if(!initialPool||!secret||restoring.current)return;
   reportStartupStage('Preparing private wallet keys');
-  unifiedAddressRef.current='';payoutWatchRevision.current=0;setUnifiedAddress('');setLnError('');setPrivateRefused(false);setPayoutWatchError('');setInvoice(undefined);setInvoiceError('');setListingError(undefined);
+  unifiedAddressRef.current='';payoutWatchRevision.current=0;setUnifiedAddress('');setLnError('');setPrivateNotice('');setPayoutWatchError('');setInvoice(undefined);setInvoiceError('');setListingError(undefined);
   const status=initialPool,network=status.network;
   const operator=typeof network?.serverKey==='string'&&/^[0-9a-f]{64}$/i.test(network.serverKey)&&(network.exitDelay?.type==='blocks'||network.exitDelay?.type==='seconds')&&Number.isSafeInteger(network.exitDelay.value)&&network.exitDelay.value>0?{serverPubKey:network.serverKey,exitDelay:{type:network.exitDelay.type,value:network.exitDelay.value}}:undefined;
   let journal:IndexedDbLightningRepository;
@@ -456,7 +456,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{
   const service=lnurlRef.current;if(!wallet||!unifiedAddress||!service||!receiveCurrent(service))return;
   let stop=false;
-  void service.privateReceiveState().then(next=>{if(!stop&&receiveCurrent(service))setPrivateRefused(next.refused);},error=>{if(!stop&&receiveCurrent(service))setLnError(errorText(error));});
+  void service.privateReceiveState().then(next=>{if(!stop&&receiveCurrent(service))setPrivateNotice(privateReceiveNotice(next));},error=>{if(!stop&&receiveCurrent(service))setLnError(errorText(error));});
   return()=>{stop=true;};
  },[wallet,tick,unifiedAddress,lnBusy,restoreStarted]);
  useEffect(()=>{lnLimits.current=wallet?.swaps;lnLimitsRead.current++;setLnBounds(undefined);setLnBoundsError('');},[wallet,wallet?.swaps]);
@@ -731,7 +731,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
         {!receiveBlocked&&receiveMode==='unified'&&<>
         {wantsInvoice&&lnBoundsError&&<p className="stock-blocked" role="alert">{lnBoundsError} <button type="button" className="stock-ghost stock-mini" onClick={readLnBounds}>Retry invoice limits</button></p>}
         {wantsInvoice&&invoiceError&&<p className="stock-blocked" role="alert">{invoiceError}</p>}
-        {privateRefused&&<p className="stock-blocked" role="alert">{METHODS_REFUSED}</p>}
+        {privateNotice&&<p className="stock-blocked" role="alert">{privateNotice}</p>}
         {lnError&&<p className="stock-blocked" role="alert">{lnError}</p>}
         {payoutWatchError&&<p className="stock-blocked" role="alert">Payout watches are still catching up: {payoutWatchError} Shielded will retry them without blocking your address.</p>}
         <details className="stock-more"><summary>Receive details</summary>{feeLine&&<p className="stock-muted">{feeLine}{feePaused&&` ${PAUSED_LINE}`}</p>}<p className="stock-muted">This Lightning address pays one Arkade payout address at a time, which this wallet derives and replaces after a payment or once a day. {lightningMinimumLine(fee)} The Lightning address stays the same and accepts payments while closed. Its service sees each payout address it serves and can link them to this receiver; payers before the next replacement share one address.</p></details>
