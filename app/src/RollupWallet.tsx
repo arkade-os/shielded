@@ -37,8 +37,10 @@ import {WalletCreatedNotice,WalletSecurityMenu,type WalletSecurityView} from './
 import {isNativeHost,nativeClaimFetch,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {loadWalletPoseidon} from './wallet-crypto.ts';
 import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
+import {privateTransport} from '../../src/shielded/private-transport.ts';
 
 const INJECTED_NATIVE=isNativeHost();
+const PRIVATE=privateTransport();
 const POOL_ORIGIN=INJECTED_NATIVE?(globalThis as typeof globalThis&{__SHIELDED_NATIVE__:{poolOrigin:string}}).__SHIELDED_NATIVE__.poolOrigin:'';
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
@@ -55,7 +57,7 @@ function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
   {qr!==undefined&&canShare&&<button type="button" className="icon-button" aria-label="Share" onClick={()=>void navigator.share(/^https?:/.test(value)?{url:value}:{text:value}).catch(()=>{})}><Icon name="share" size={16}/></button>}</div>
   {shown&&qr!==undefined&&<QrCode value={qr} label={label??'QR code'}/>}</>;
 }
-const TxLink=({txid,path='tx'}:{txid:string;path?:string})=><a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
+const TxLink=({txid,path='tx'}:{txid:string;path?:string})=>PRIVATE?<code>{txid}</code>:<a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 // The resolver's kinds, mapped onto the swatches the history list already has.
 const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','shielded-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
 const LIGHTNING_STATUS:Record<string,string>={received:'Received; waiting to shield',shielding:'Received; shielding',shielded:'Shielded in the pool',retrying:'Received; shielding will retry','below-minimum':'Received outside the pool; below the shielding minimum','onchain-recovery':'Onchain recovery; shielding paused','onchain-recovered':'Recovered onchain'};
@@ -317,11 +319,12 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    journal=new IndexedDbLightningRepository();companion=undefined;lnurl=undefined;
    let created:ShieldedWallet|undefined;
     const privateFetch=nativeHost?nativeSessionFetch():undefined,lnurlFetch=nativeHost?nativeSessionFetch(nativeOperationFetch('lnurl',crypto.randomUUID(),lnurlPaymentScope.signal)):undefined,lnurlFetchFor=nativeHost?(signal:AbortSignal)=>nativeSessionFetch(nativeOperationFetch('lnurl',crypto.randomUUID(),signal)):undefined,claimFetch=nativeHost?nativeSessionFetch(nativeClaimFetch):undefined;
-    const providers=nativeHost?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
-    const pairing=createLightningWallet(secret,{...providers,...(nativeHost?{lazyInitialization:true}:{})});pairing.catch(()=>{});
+    const providers=nativeHost?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):PRIVATE?PRIVATE.providers(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
+    const pairing=PRIVATE&&!nativeHost?undefined:createLightningWallet(secret,{...providers,...(nativeHost?{lazyInitialization:true}:{})});pairing?.catch(()=>{});
    try{
     reportStartupStage('Connecting to the private wallet');
     if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
+    else if(PRIVATE)await PRIVATE.journal.reconcileNativeMutations(PRIVATE.fetch,PRIVATE.poolOrigin);
     reportStartupStage('Catching up with the private pool');
     const bornAt=bornAtFor(storage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
     created=await ShieldedWallet.create({
@@ -329,8 +332,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      ...providers,
      storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
      settlementConfig:false,walletMode:'static',
-     pool:{origin:POOL_ORIGIN,status},secret,hash,prover:browserProver(()=>poolRef.current??status,privateFetch),
-     ...(nativeHost?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}:{}),
+     pool:{origin:POOL_ORIGIN,status},secret,hash,prover:browserProver(()=>poolRef.current??status,privateFetch??PRIVATE?.fetch),
+     ...(nativeHost?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}
+      :PRIVATE?{networkPrivacy:true,fetcher:PRIVATE.fetch,claimFetch:PRIVATE.fetch,poolPage:PRIVATE.pageSize,batchSwaps:false,pendingNullifiers:()=>new Set(PRIVATE.journal.pendingPoolNullifiers(PRIVATE.poolOrigin)),pendingOutpoints:()=>new Set(PRIVATE.journal.pendingPoolOutpoints(PRIVATE.poolOrigin))}:{}),
      shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
      onArkAddress:ark=>{if(mounted.current&&!restoring.current)setEarly(e=>e?.secret===secret?{...e,ark}:e);},
     });
@@ -386,6 +390,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      void activate();
      service.start(error=>{if(current()&&receiveCurrent(service))lnFail(error);});
     };
+   if(pairing){
    startupWatchdog.arm();
     starting=startPageLightning({
      pairing,
@@ -398,9 +403,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      if(startingRef.current===starting)startingRef.current=undefined;
      if(!parts&&lnurlRef.current===lnurl)lnurlRef.current=undefined;
     });
+   }
     return created;
    }catch(error){
-    void pairing.then(c=>c.dispose()).catch(()=>{});
+    void pairing?.then(c=>c.dispose()).catch(()=>{});
     try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;
@@ -459,8 +465,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  },[wallet]);
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
-  if(!nativeHost||!wallet)return;
-  try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
+  if(!wallet||!nativeHost&&!PRIVATE)return;
+  const journal=nativeHost?{pendingPoolNullifiers,pendingPoolOutpoints}:PRIVATE!.journal,origin=nativeHost?POOL_ORIGIN:PRIVATE!.poolOrigin;
+  try{setNativePending(journal.pendingPoolNullifiers(origin).length>0||journal.pendingPoolOutpoints(origin).length>0);}
   catch(error){setPoolError(errorText(error));}
   },[wallet,tick,nativeHost]);
  // Local reads of the receive state: after every Lightning action, on a new receiver, and on each tick.

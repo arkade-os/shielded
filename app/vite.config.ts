@@ -23,7 +23,8 @@ const appCache = (): Plugin => ({
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
-  define: { __APP_CACHE_OFF__: JSON.stringify(off || native), __NATIVE_BUILD__: JSON.stringify(native), __APP_COMMIT__: JSON.stringify(identity.commit), __NATIVE_BUILD_NUMBER__: JSON.stringify(identity.buildNumber), __NATIVE_PLATFORM__: JSON.stringify(identity.platform) },
+  define: { __APP_CACHE_OFF__: JSON.stringify(off || native), __NATIVE_BUILD__: JSON.stringify(native), __APP_COMMIT__: JSON.stringify(identity.commit), __NATIVE_BUILD_NUMBER__: JSON.stringify(identity.buildNumber), __NATIVE_PLATFORM__: JSON.stringify(identity.platform),
+    __SHIELDED_OHTTP_CONFIG__: JSON.stringify(process.env.SHIELDED_OHTTP_CONFIG ?? ''), __SHIELDED_NOSTR_GATEWAY__: JSON.stringify(process.env.SHIELDED_NOSTR_GATEWAY ?? ''), __SHIELDED_NOSTR_RELAYS__: JSON.stringify(process.env.SHIELDED_NOSTR_RELAYS ?? ''), __SHIELDED_POOL_ORIGIN__: JSON.stringify(process.env.SHIELDED_PUBLIC_ORIGIN || 'https://shielded.mutinynet.arkade.sh') },
   plugins: [react(), ...(native ? [] : [appCache()])],
   resolve: {alias: {circomlibjs:fileURLToPath(new URL('./src/circom-browser.ts',import.meta.url))}},
   server: { host: '0.0.0.0', port: 5173, proxy: { '/api': process.env.SHIELDED_API_ORIGIN??'http://127.0.0.1:8792' } },

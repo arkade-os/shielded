@@ -18,9 +18,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-# The app cache's escape hatches (docs/DOKPLOY.md, App cache); RUN only sees build arguments declared here.
+# The app cache's escape hatches and the private transport's pins (docs/DOKPLOY.md: App cache, Nostr carrier); RUN only sees build arguments declared here.
 ARG SHIELDED_APP_CACHE_FORCE
 ARG SHIELDED_APP_CACHE_OFF
+ARG SHIELDED_OHTTP_CONFIG
+ARG SHIELDED_NOSTR_GATEWAY
+ARG SHIELDED_NOSTR_RELAYS
+ARG SHIELDED_PUBLIC_ORIGIN
 RUN npm run build
 
 FROM --platform=linux/amd64 golang:1.26.9-bookworm AS vm-build

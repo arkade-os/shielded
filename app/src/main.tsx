@@ -1,3 +1,5 @@
+// First, so the private transport's guards stand before any other module runs: nostr-tools/pool captures WebSocket as it loads.
+import './private-boot';
 import React,{lazy,Suspense} from 'react';
 import {createRoot} from 'react-dom/client';
 import {AppUpdatesProvider,NativeUpdateLink} from './AppUpdates.tsx';
