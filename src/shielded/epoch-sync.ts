@@ -3,7 +3,7 @@ import type {EpochAccount} from '../../packages/protocol/src/rollup/epoch-accoun
 import type {RollupEpochRecord} from '../../packages/protocol/src/rollup/epoch-record.ts';
 import {decodeEpochScan,type EpochScanBatch} from '../../packages/protocol/src/rollup/epoch-scan.ts';
 import type {PoolApi} from './pool.ts';
-import {isPrivatePoolApi} from './network-privacy.ts';
+import {isPrivatePoolApi,privatePoolPage} from './network-privacy.ts';
 
 export const WATCHDOG_MS=60_000,EVENT_RETRY_MS=[0,1000,2000,4000,8000],SCAN_FROM=256,SCAN_AFTER=64,SCAN_PAGE=500;
 export interface ScanPage {from:number;total:number;data:string}
@@ -65,7 +65,7 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
 async function privateCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void):Promise<number>{
  let from=Math.floor(account.batchCount/account.epochLen)*account.epochLen,applied=0;
  for(;;){
-  const limit=Math.min(50,account.epochLen-from%account.epochLen),page=await api<EpochBatchPage>(`/batches?from=${from}&limit=${limit}`);
+  const limit=Math.min(privatePoolPage(api),account.epochLen-from%account.epochLen),page=await api<EpochBatchPage>(`/batches?from=${from}&limit=${limit}`);
   if(!Number.isSafeInteger(page.total)||page.total<0)throw new Error('The pool returned an invalid batch count.');
   if(page.batches.length>limit)throw new Error('The pool returned more batches than requested.');
   if(page.batches.length<limit&&from+page.batches.length<page.total)throw new Error('The pool returned an incomplete page.');

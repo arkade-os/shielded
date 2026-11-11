@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {setImmediate} from 'node:timers/promises';
 import {test} from 'node:test';
 import {poolApiOf,rollupApi,waitForSpend} from '../src/shielded/pool.ts';
+import {markPrivateFetch} from '../src/shielded/network-privacy.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
@@ -174,6 +175,15 @@ test('definitive 400 and 409 refusals are never retried',async()=>{
   const fetcher=(async()=>{calls++;return Response.json({error:'definitive refusal'},{status});}) as typeof fetch;
   await assert.rejects(poolApiOf(`https://refusal-${status}.test`,fetcher)('/spends',{}),(error:{status?:number;message?:string})=>error.status===status&&error.message==='definitive refusal');
   assert.equal(calls,1);
+ }
+});
+
+test('a private read does not repeat a sealed 502, and a direct read still does',async()=>{
+ for(const [label,isPrivate,status,calls] of [['private 502',true,502,1],['direct 502',false,502,5],['private 503',true,503,5]] as const){
+  let count=0;
+  const raw=(async()=>{count++;return new Response('',{status});}) as typeof fetch;
+  await assert.rejects(rollupApi('/batches?from=0&limit=12',undefined,isPrivate?markPrivateFetch(raw):raw,0,'https://sealed-502.test'),(error:{status?:number})=>error.status===status,label);
+  assert.equal(count,calls,label);
  }
 });
 

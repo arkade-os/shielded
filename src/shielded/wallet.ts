@@ -28,11 +28,11 @@ import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shie
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {isPrivatePoolApi,markPrivatePoolApi} from './network-privacy.ts';
+import {isPrivatePoolApi,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;poolPage?:number;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;
  /** Called once with the Arkade address, synchronously and before the pool sync; a throw aborts create. */
  onArkAddress?:(address:string)=>void};
 
@@ -191,14 +191,14 @@ export class ShieldedWallet extends Wallet {
    // The manager starts up against the indexer while load() reads the pool; start() awaits this same start-up.
    void wallet.getContractManager().catch(()=>{});
    config.onArkAddress?.(await wallet.getAddress());
-   wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
+   wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher,config.poolPage);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch,config.poolPage):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);
    if(wallet.networkPrivacy){
-    const live=(api:PoolApi):PoolApi=>markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
+    const live=(api:PoolApi):PoolApi=>markPrivatePoolPage(markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
      wallet.assertOpen();
      const result=await api<T>(path,body,()=>{wallet.assertOpen();beforeRequest?.();});
      wallet.assertOpen();return result;
-    });
+    }),privatePoolPage(api));
     wallet.api=live(wallet.api);if(wallet.claimApi)wallet.claimApi=live(wallet.claimApi);
    }
    wallet.pendingNullifiers=config.pendingNullifiers;wallet.pendingOutpoints=config.pendingOutpoints;wallet.lnurlFetch=config.lnurlFetch;
