@@ -37,6 +37,8 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
  assert.ok(wallet.includes(`{${live}?' A Bitcoin address leaves the pool`));
  assert.ok(wallet.includes(`{${live}&&to.trim()&&`));
  assert.match(wallet,new RegExp(`expiring>0&&\\(${live}\\?<button[^\\n]*?>Renew expiring sats</button>:`));
+ assert.match(wallet,/^import \{PRIVATE_FLAG\} from '\.\/private-boot(\.ts)?';$/m);
+ assert.ok(wallet.includes('turn private networking off: remove {PRIVATE_FLAG} from this site&apos;s local storage, then reload.'));
 });
 
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
