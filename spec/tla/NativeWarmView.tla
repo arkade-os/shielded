@@ -39,7 +39,7 @@ WantScanner == /\ GraphReady /\ ~s.intent /\ s' = [s EXCEPT !.intent = TRUE]
 Hide(sensor) ==
     /\ s.gen < MaxGeneration
     /\ LET warm == s.phase = "ready" /\ s.torReady /\ s.warmCount < MaxWarmTickets
-           duplicate == s.phase = "paused" /\ s.warmActive
+           duplicate == s.phase = "paused" /\ s.warmActive /\ s.now < s.warmDeadline
            visible == IF sensor = "native" THEN [s EXCEPT !.nativeActive = FALSE]
                 ELSE [s EXCEPT !.jsVisible = FALSE]
            revoked == [visible EXCEPT !.phase = "paused", !.gen = @ + 1,
@@ -128,7 +128,7 @@ ApplyExpiry ==
                 /\ s.phase = "paused" /\ ~BothVisible /\ s.now >= s.warmDeadline
            changesCurrent == (s.timers[t].client = s.client /\ s.dormancy[s.client] = "normal")
                 \/ s.warmActive \/ HasPresentation
-           next == [s EXCEPT !.expiry.stage = "done", !.timers[t].fired = TRUE]
+           next == [s EXCEPT !.expiry = [stage |-> "none", ticket |-> 0], !.timers[t].fired = TRUE]
        IN IF current \/ BreakExpiryFence
           THEN s' = DropPresentation([next EXCEPT !.dormancy[s.timers[t].client] = "soft",
               !.warmActive = FALSE, !.badExpiry = @ \/ (~current /\ changesCurrent)])
@@ -169,7 +169,7 @@ TypeOK == s \in [phase: {"ready", "paused", "starting"}, gen: 1..MaxGeneration,
     dormancy: [Clients -> {"normal", "soft"}], now: 0..MaxTime,
     warmCount: 0..MaxWarmTickets, warmActive: BOOLEAN, warmDeadline: 0..(MaxTime + Grace),
     timers: [WarmTickets -> [client: 0..MaxClients, deadline: 0..(MaxTime + Grace), fired: BOOLEAN]],
-    expiry: [stage: {"none", "captured", "done"}, ticket: 0..MaxWarmTickets],
+    expiry: [stage: {"none", "captured"}, ticket: 0..MaxWarmTickets],
     snapshot: {"none", "frozen-strings", "graph"}, snapshotDeadline: 0..(MaxTime + Grace), intent: BOOLEAN,
     operation: [pc: {"idle", "proof", "fetch", "sent", "response", "done"},
         born: 0..MaxGeneration, fetch: 0..MaxGeneration],
