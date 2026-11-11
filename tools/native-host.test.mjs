@@ -11,7 +11,7 @@ const root = new URL('../src-tauri/', import.meta.url);
 const json = name => JSON.parse(readFileSync(new URL(name, root), 'utf8'));
 const iconSources = workspace => {
   mkdirSync(resolve(workspace, 'src-tauri'), { recursive: true });
-  for (const name of ['icon.json', 'icon.svg', 'icon-background.svg', 'icon-monochrome.svg']) copyFileSync(new URL(name, root), resolve(workspace, 'src-tauri', name));
+  for (const name of ['icon.json', 'icon.svg', 'icon-background.svg', 'icon-foreground.svg', 'icon-monochrome.svg']) copyFileSync(new URL(name, root), resolve(workspace, 'src-tauri', name));
 };
 
 test('Windows setup bundles WebView2 without a first-run download', () => {
@@ -161,8 +161,10 @@ test('icon preparation updates initialized mobile projects from source and prese
   for (const name of ['foreground', 'background', 'monochrome']) assert.ok(adaptive.includes(`@mipmap/ic_launcher_${name}`));
   assert.deepEqual(readFileSync(resolve(ios, 'AppIcon-512@2x.png')).subarray(0, 8), signature);
   const previous = readFileSync(resolve(android, 'mipmap-xxxhdpi/ic_launcher.png'));
-  writeFileSync(resolve(workspace, 'src-tauri/icon.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><path fill="#a12345" d="M0 0h512v512H0Z"/></svg>');
+  const previousIos = readFileSync(resolve(ios, 'AppIcon-512@2x.png'));
+  for (const name of ['icon.svg', 'icon-foreground.svg']) writeFileSync(resolve(workspace, 'src-tauri', name), '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><path fill="#a12345" d="M0 0h512v512H0Z"/></svg>');
   nativeBuild.prepareIcons(workspace);
   assert.notDeepEqual(readFileSync(resolve(android, 'mipmap-xxxhdpi/ic_launcher.png')), previous);
+  assert.notDeepEqual(readFileSync(resolve(ios, 'AppIcon-512@2x.png')), previousIos);
   assert.equal(readFileSync(resolve(ios, 'Contents.json'), 'utf8'), contents);
 });
