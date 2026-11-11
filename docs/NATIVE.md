@@ -134,9 +134,15 @@ The device IPA needs your own Apple signing and provisioning before installation
 
 The signing job runs only for this repository's primary-branch push or dispatch after the unprivileged Android build. It verifies the unsigned artifact's identity and hash, signs with the permanent key, verifies the resulting certificate and package, and uploads the signed APK with its own manifest. Pull requests do not receive the distribution key. Missing credentials or an unexpected certificate fail publication; there is no development-key fallback for the signed channel.
 
+Keep two independently recoverable, encrypted backups of the keystore and its unlocking credentials, separate from source and CI artifacts. A machine-bound encrypted password also needs that machine account's recovery material. If CI secrets are deleted, restore the existing identity from a verified backup; do not create a new key. If every recoverable copy is lost, installed apps cannot accept ordinary updates signed with a replacement key. Uninstalling removes local wallet and pending-payment data; a recovery phrase alone does not restore every pending operation.
+
 Android `versionCode` is `100000 + GITHUB_RUN_NUMBER`, above the previous default `1000`. Reruns retain the same version code; a later workflow run advances it. Package identity remains `io.arkade.shielded`, and the storage origin and native vault identity stay unchanged. The installer accepts only a strictly newer version.
 
 The public release manifest remains schema 1 and retains its nine legacy packages. New clients read the optional `androidUpdate` entry for the separately signed APK; older clients continue reading the original package list. Publication uploads both sets completely before advancing the channel.
+
+The `release` transport purpose is an internal bridge policy bundled with its matching frontend. Older native binaries retain their own `public` policy; the remote metadata endpoint and legacy package schema remain compatible. Native builds use bundled assets with the service worker disabled, so a new host does not load an older cached wallet frontend.
+
+The sideload plugin declares `REQUEST_INSTALL_PACKAGES` in both debug and release builds so the installer path can be tested consistently. Installation still requires the pinned certificate, an explicit action and Android permission. Store distribution needs its own update integration and permission policy.
 
 ## Native boundary and storage
 

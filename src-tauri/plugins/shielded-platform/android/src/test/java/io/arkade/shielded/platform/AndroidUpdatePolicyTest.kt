@@ -127,4 +127,89 @@ class AndroidUpdatePolicyTest {
         assertEquals("installed", AndroidUpdatePolicy.reconcile("installing", 2, 2, false, false))
         assertEquals("installed", AndroidUpdatePolicy.reconcile("failed", 3, 2, false, false))
     }
+
+    @Test fun precommitFailureWithoutASavedRecordIsExplicitlyRetryable() {
+        var saved = "idle"
+        val status = AndroidUpdatePolicy.recoverInstallFailure(false, true) { saved = it }
+        assertEquals("failed", status)
+        assertEquals("failed", saved)
+    }
+
+    @Test fun precommitFailureReplacesAnOlderInstalledRecord() {
+        var saved = "installed"
+        assertEquals("failed", AndroidUpdatePolicy.recoverInstallFailure(false, true) { saved = it })
+        assertEquals("failed", saved)
+    }
+
+    @Test fun failedPreferenceWritesCannotMakeAKnownFailureAmbiguous() {
+        assertEquals("failed", AndroidUpdatePolicy.recoverInstallFailure(false, true) {
+            throw UpdateRejected("Could not save the Android update state")
+        })
+    }
+
+    @Test fun failedCallsCannotOverwriteANewerAttempt() {
+        var writes = 0
+        assertEquals("failed", AndroidUpdatePolicy.recoverInstallFailure(false, false) { writes++ })
+        assertEquals(0, writes)
+    }
+
+    @Test fun possibleCommitsStayAmbiguousWhenPreferenceWritesFail() {
+        assertEquals("confirmation-required", AndroidUpdatePolicy.recoverInstallFailure(true, true) {
+            throw UpdateRejected("Could not save the Android update state")
+        })
+    }
+
+    @Test fun possibleCommitsCannotOverwriteANewerAttempt() {
+        var writes = 0
+        assertEquals("confirmation-required", AndroidUpdatePolicy.recoverInstallFailure(true, false) { writes++ })
+        assertEquals(0, writes)
+    }
+
+    @Test fun failedPersistenceCannotResurrectAnIdleOrInstalledRecord() {
+        for (previous in listOf("idle", "installed", "installing")) {
+            val journal = AndroidUpdateJournal<String>()
+            val status = AndroidUpdatePolicy.recoverInstallFailure(false, true) { failure ->
+                journal.write(failure) { throw UpdateRejected("Could not save the Android update state") }
+            }
+            assertEquals("failed", status)
+            assertEquals("failed", journal.read { previous })
+        }
+    }
+
+    @Test fun failedPersistenceRetainsAnAmbiguousCommitReceipt() {
+        val journal = AndroidUpdateJournal<String>()
+        assertEquals("confirmation-required", AndroidUpdatePolicy.recoverInstallFailure(true, true) { status ->
+            journal.write(status) { throw UpdateRejected("Could not save the Android update state") }
+        })
+        assertEquals("confirmation-required", journal.read { "installed" })
+    }
+
+    @Test fun successfulPersistenceClearsTheFallbackForLaterInstallerCallbacks() {
+        val journal = AndroidUpdateJournal<String>()
+        var durable = "idle"
+        try { journal.write("failed") { throw UpdateRejected("Could not save") } } catch (_: UpdateRejected) { }
+        assertEquals("failed", journal.read { durable })
+        journal.write("installing") { durable = it }
+        durable = "installed"
+        assertEquals("installed", journal.read { durable })
+    }
+
+    @Test fun failedAbandonmentCannotTurnAnUncertainCommitIntoARetry() {
+        assertEquals("confirmation-required", AndroidUpdatePolicy.afterAbandon(false, true, 1, 2))
+        assertEquals("confirmation-required", AndroidUpdatePolicy.afterAbandon(false, false, 1, 2))
+        assertEquals("confirmation-required", AndroidUpdatePolicy.afterAbandon(true, false, null, 2))
+    }
+
+    @Test fun aRemainingOwnedSessionKeepsRetryLocked() {
+        assertEquals("confirmation-required", AndroidUpdatePolicy.afterAbandon(true, true, 1, 2))
+    }
+
+    @Test fun confirmedAbandonmentAndAbsenceAllowAnExplicitRetry() {
+        assertEquals("failed", AndroidUpdatePolicy.afterAbandon(true, false, 1, 2))
+    }
+
+    @Test fun anInstalledUpdateWinsAnAbandonmentRace() {
+        assertEquals("installed", AndroidUpdatePolicy.afterAbandon(false, true, 2, 2))
+        assertEquals("installed", AndroidUpdatePolicy.afterAbandon(true, false, 3, 2))
+    }
 }

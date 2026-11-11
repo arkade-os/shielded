@@ -70,6 +70,7 @@ pub(super) fn redirect_url(value: &str) -> Result<Url, String> {
     if url.host_str() != Some("release-assets.githubusercontent.com")
         || parts.len() != 3
         || parts[0] != "github-production-release-asset"
+        // Pin GitHub's numeric repository ID for arkade-os/shielded, not just its CDN host.
         || parts[1] != "1398591288"
         || uuid::Uuid::parse_str(parts[2]).is_err()
     {

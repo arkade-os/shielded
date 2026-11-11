@@ -18,7 +18,6 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.util.concurrent.Executors
-import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.WeakHashMap
@@ -141,15 +140,11 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
                 updateWorker.execute {
                     try {
                         val authorize: (() -> Unit) -> Unit = { action ->
-                            val task = FutureTask {
-                                if (generation != ticket || destroyed || webview !== source || !trusted() || !resumed)
-                                    throw UpdateRejected("Return to Shielded to continue the Android update")
-                                action()
-                            }
-                            if (!main.post(task)) throw UpdateRejected("Android update authorization unavailable")
-                            // A timed-out commit could still execute later on the main thread.
-                            try { task.get() } catch (error: ExecutionException) { throw (error.cause as? Exception ?: error) }
+                            AndroidUpdateAuthorization({ main.post(it) }, {
+                                generation == ticket && !destroyed && webview === source && trusted() && resumed
+                            }).run(action)
                         }
+                        // Read-only checks remain available while paused; installer actions require the resumed Activity.
                         val authorization = FutureTask { generation == ticket && !destroyed && webview === source && trusted() }
                         if (!main.post(authorization) || !authorization.get(10, TimeUnit.SECONDS))
                             throw UpdateRejected("Android update authorization unavailable")

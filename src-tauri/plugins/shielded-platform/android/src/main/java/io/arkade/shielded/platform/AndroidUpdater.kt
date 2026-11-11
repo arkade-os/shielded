@@ -30,6 +30,7 @@ internal class AndroidUpdater(context: Context) {
 
     companion object {
         private val lock = Any()
+        private val journal = AndroidUpdateJournal<Record>()
         private var preparing: String? = null
         private var submitted: String? = null
         private var submittedAt = 0L
@@ -56,15 +57,16 @@ internal class AndroidUpdater(context: Context) {
         else manager.getInstallerPackageName(ownPackage)
 
     private fun canInstall() = Build.VERSION.SDK_INT < 26 || manager.canRequestPackageInstalls()
-    private fun read(): Record? {
-        val token = preferences.getString("token", null) ?: return null
-        return Record(token, preferences.getInt("session", -1), preferences.getLong("target", 0),
-            preferences.getString("status", "failed") ?: "failed", preferences.getString("error", null))
+    private fun read(): Record? = journal.read {
+        preferences.getString("token", null)?.let { token ->
+            Record(token, preferences.getInt("session", -1), preferences.getLong("target", 0),
+                preferences.getString("status", "failed") ?: "failed", preferences.getString("error", null))
+        }
     }
 
-    private fun write(record: Record) {
-        if (!preferences.edit().putString("token", record.token).putInt("session", record.session)
-            .putLong("target", record.target).putString("status", record.status).putString("error", record.error).commit())
+    private fun write(record: Record) = journal.write(record) { saved ->
+        if (!preferences.edit().putString("token", saved.token).putInt("session", saved.session)
+            .putLong("target", saved.target).putString("status", saved.status).putString("error", saved.error).commit())
             throw UpdateRejected("Could not save the Android update state")
     }
 
@@ -174,34 +176,51 @@ internal class AndroidUpdater(context: Context) {
                 }
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
                 val callback = PendingIntent.getBroadcast(context, sessionId, intent, flags)
+                synchronized(lock) { write(Record(token, sessionId, args.versionCode, "installing")) }
                 authorize {
                     synchronized(lock) {
-                        if (preparing != token) throw UpdateRejected("Android update authorization expired")
-                        write(Record(token, sessionId, args.versionCode, "installing"))
+                        val record = read()
+                        if (preparing != token || record == null || record.status != "installing" ||
+                            !AndroidUpdatePolicy.callback(token, sessionId, record.token, record.session))
+                            throw UpdateRejected("Android update authorization expired")
                         submitted = token
                         submittedAt = SystemClock.elapsedRealtime()
                         commitStarted = true
-                        session.commit(callback.intentSender)
                     }
+                    session.commit(callback.intentSender)
                 }
             }
             return result("installing")
         } catch (error: Exception) {
-            synchronized(lock) {
-                if (!commitStarted) {
+            val possibleCommit = AndroidUpdatePolicy.mayHaveCommitted(commitStarted, error)
+            val message = if (possibleCommit) "Android could not confirm installation. Continue to check this attempt."
+                else (error as? UpdateRejected)?.message ?: "Android could not prepare the update. You can retry."
+            val status = synchronized(lock) {
+                if (!possibleCommit) {
                     if (sessionId >= 0) runCatching { installer.abandonSession(sessionId) }
-                    if (read()?.token == token) write(Record(token, sessionId, args.versionCode, "failed",
-                        (error as? UpdateRejected)?.message ?: "Android could not prepare the update. You can retry."))
-                } else {
-                    submitted = null
-                    write(Record(token, sessionId, args.versionCode, "confirmation-required", "Android could not confirm installation. Continue to check this attempt."))
+                } else if (submitted == token) submitted = null
+                AndroidUpdatePolicy.recoverInstallFailure(possibleCommit, preparing == token) { next ->
+                    write(Record(token, sessionId, args.versionCode, next, message))
                 }
             }
-            if (commitStarted) return result("confirmation-required", "Android could not confirm installation. Continue to check this attempt.")
-            throw error
+            return result(status, message)
         } finally {
             synchronized(lock) { if (preparing == token) preparing = null }
         }
+    }
+
+    private fun abandonPending(record: Record): Record {
+        val abandoned = try { installer.abandonSession(record.session); true } catch (_: Exception) { false }
+        val sessionExists = try { installer.getSessionInfo(record.session) != null } catch (_: Exception) { true }
+        val currentVersion = try { version(installed()) } catch (_: Exception) { null }
+        val status = AndroidUpdatePolicy.afterAbandon(abandoned, sessionExists, currentVersion, record.target)
+        val error = when (status) {
+            "installed" -> null
+            "failed" -> "Update confirmation was interrupted. Install the update again."
+            else -> "Android has not confirmed that this installation ended. Check its status before retrying."
+        }
+        if (status != "confirmation-required" && submitted == record.token) submitted = null
+        return record.copy(status = status, error = error)
     }
 
     fun confirm(activity: Activity): JSObject = synchronized(lock) {
@@ -209,10 +228,9 @@ internal class AndroidUpdater(context: Context) {
         if (record.status != "confirmation-required") return result(record.status, record.error)
         val intent = pending?.takeIf { it.first == record.token }?.second
         if (intent == null) {
-            runCatching { installer.abandonSession(record.session) }
-            write(record.copy(status = "failed", error = "Update confirmation was interrupted. Install the update again."))
-            submitted = null
-            return result("failed", "Update confirmation was interrupted. Install the update again.")
+            val next = abandonPending(record)
+            try { write(next) } catch (_: Exception) { }
+            return result(next.status, next.error)
         }
         if (launched != record.token) {
             activity.startActivity(Intent(intent))
@@ -234,10 +252,7 @@ internal class AndroidUpdater(context: Context) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirmation = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
                     else intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                if (confirmation == null) {
-                    runCatching { installer.abandonSession(record.session) }
-                    record.copy(status = "failed", error = "Android did not provide update confirmation. Retry the installation.")
-                }
+                if (confirmation == null) abandonPending(record)
                 else { pending = record.token to confirmation; record.copy(status = "confirmation-required", error = null) }
             }
             PackageInstaller.STATUS_SUCCESS -> record.copy(status = "installed", error = null)
