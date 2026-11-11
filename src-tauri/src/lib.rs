@@ -1,5 +1,6 @@
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod android_updates;
 pub mod transport;
 
 pub(crate) fn ensure_local(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -32,7 +33,13 @@ pub fn run() {
             transport::native_stream_ack,
             transport::native_socket,
             transport::native_socket_send,
-            transport::native_cancel
+            transport::native_cancel,
+            android_updates::native_android_update_info,
+            android_updates::native_android_update_download,
+            android_updates::native_android_update_cancel,
+            android_updates::native_android_update_permission,
+            android_updates::native_android_update_install,
+            android_updates::native_android_update_confirm
         ])
         .setup(|app| {
             #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -45,6 +52,8 @@ pub fn run() {
             let transport = transport::PrivacyTransport::new(app.path().app_data_dir()?.join("tor"))
                 .map_err(std::io::Error::other)?;
             app.manage(transport.clone());
+            app.manage(android_updates::AndroidUpdates::new(app.path().app_cache_dir()?.join("shielded-updates"))
+                .map_err(std::io::Error::other)?);
             transport.prewarm().map_err(std::io::Error::other)?;
             let marker = "(() => { const l = location; const local = !l.port && !l.username && !l.password && ((l.protocol === 'tauri:' && l.hostname === 'localhost') || (['http:', 'https:'].includes(l.protocol) && l.hostname === 'tauri.localhost')); if (window !== window.top || !local) return; Object.defineProperty(window, '__SHIELDED_NATIVE__', {value: Object.freeze({version: 1, poolOrigin: 'https://shielded.mutinynet.arkade.sh'}), writable: false, configurable: false}); })();";
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))

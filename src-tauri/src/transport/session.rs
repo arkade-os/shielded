@@ -42,6 +42,8 @@ const PURPOSES: &[&str] = &[
     "lnurl",
     "assets",
     "discovery",
+    "update",
+    "release",
 ];
 
 pub(super) struct Session {
@@ -384,6 +386,19 @@ impl Inner {
         Ok(self.lock()?.status())
     }
 
+    pub fn finish_update<T>(
+        &self,
+        generation: u64,
+        publish: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let session = self.lock()?;
+        session.check(generation)?;
+        if session.mode != NativeMode::Tor {
+            return Err("Connect Tor before completing an update download".into());
+        }
+        publish()
+    }
+
     pub fn pause(&self) -> Result<NativeStatus, String> {
         let mut session = self.lock()?;
         session.invalidate()?;
@@ -595,6 +610,9 @@ impl Inner {
         }
         let mut session = self.lock()?;
         session.check(generation)?;
+        if ["update", "release"].contains(&purpose) && session.mode != NativeMode::Tor {
+            return Err("Connect Tor before downloading an update".into());
+        }
         if session.scopes.len() >= MAX_SCOPES {
             return Err("too many private scopes".into());
         }
@@ -669,6 +687,9 @@ impl Inner {
             .scopes
             .get_mut(&request.scope)
             .ok_or("unknown private scope")?;
+        if ["update", "release"].contains(&scope.purpose.as_str()) {
+            scope.context.tor()?;
+        }
         let binding =
             super::routes::binding(&scope.purpose, checked, scope.subscription.as_deref())?;
         if binding == "subscription" {
@@ -961,6 +982,22 @@ impl Session {
 }
 
 impl Lease {
+    #[cfg(test)]
+    pub fn test_stream<T>(&self, io: T) -> NativeStream
+    where
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        NativeStream {
+            io: Box::new(io),
+            _retirement: self.retirement.clone(),
+        }
+    }
+
+    pub fn require_tor(&self) -> Result<(), String> {
+        self.check()?;
+        self.context.tor().map(|_| ())
+    }
+
     pub fn take_http(&self, host: &str) -> Result<Option<HttpConnection>, String> {
         let inner = self.inner.upgrade().ok_or("private transport closed")?;
         let mut session = inner.lock()?;

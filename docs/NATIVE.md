@@ -12,7 +12,7 @@ The native build targets Windows, Linux, macOS, Android and iOS. Source support 
 
 Open [Download Shielded](https://shielded.mutinynet.arkade.sh/#download) and choose your platform. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If release information cannot be checked, the page offers **Retry downloads**. The install guides and this source build guide remain available while checking or retrying.
 
-When this build detects a newer native release, **Update available** opens the download page directly in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can point this action at their platform listing or update flow.
+When this build detects a newer native release, **Update available** opens the Android update dialog or, on other platforms, the download page in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can use their platform update flow; Google Play installs cannot use the sideload updater.
 
 The desktop and mobile apps register the standard `bitcoin:`, `lightning:` and `arkade:` URI schemes. Opening a payment link fills the Send form with its destination and amount, preserving required-parameter checks, but it never sends without the normal quote and confirmation steps. Links opened before the private wallet is ready remain queued until it opens.
 
@@ -46,10 +46,18 @@ macOS 11 or later is required. Both architecture slices are included in the same
 
 ### Android ARM64
 
-1. Download the **debug APK** on an ARM64 device. It is installable and signed with a build runner's development key. The separate unsigned release APK requires your own signing before installation.
+1. Download the **signed APK** on an ARM64 device. Current release builds use a permanent publisher certificate. Older releases offer an installable debug APK signed with a runner's development key. The separate unsigned release APK requires your own signing before installation.
 2. Open the APK from Downloads. If prompted, allow the browser or file manager opening that file to install unknown apps, then return to the installer. Follow [Google's instructions for apps from other sources](https://support.google.com/pixelphone/answer/7391672?hl=en-GB); labels can differ by device.
 3. Turn off that source's installation permission afterward. Leave Play Protect enabled. Open Shielded and wait for Tor before creating or restoring the wallet.
-4. Before updating, preserve verified recovery data and the existing app data for unresolved swaps. Android requires the same signing key for an in-place update. The runner's development key can change, so a new APK may be refused as an update. Keep the existing installation and its data while resolving a signing mismatch.
+4. In a signed release, tap **Update available** to download an update through embedded Tor. The app verifies its size and SHA-256, then checks the package identity, newer Android version and signing certificate before handing it to Android's installer. If Android asks to allow installs from Shielded, return afterward and explicitly choose **Install**. The installer can require confirmation and restart the app. An in-place update keeps the wallet vault, WebView data and pending-swap records.
+
+Android requires a compatible signing certificate for an in-place update. An older APK signed with a runner's changing development key cannot be upgraded using the new publisher key. Shielded refuses that mismatch rather than clearing data or replacing the wallet. Keep the existing installation and its data while resolving this; a recovery phrase alone does not preserve every pending swap. The updater does not provide an automatic migration between incompatible signing identities.
+
+Downloads use their own Tor isolation scope and remain in app-private update staging. A paused connection or interrupted download becomes retryable; partial packages are never installable. Retrying starts a fresh download. The update flow does not use the browser or Android DownloadManager to fetch the APK. Android performs its final package verification and installation; store-managed installation and future store update APIs are separate from this sideload channel.
+
+APK and release-metadata requests use embedded Tor. Android's installer and system verification services, including Play Protect, can perform their own network checks outside Shielded's transport. API 36 optional dependency downloads are disabled for this installation session.
+
+The signed APK also requires the private publisher key to reproduce. Use the retained unsigned APK when comparing independently rebuilt Android output; signing secrets are never published with reproducible build inputs.
 
 ### iPhone and iOS Simulator
 
@@ -102,7 +110,7 @@ Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iO
 
 Release inputs are pinned for reproduction. The workflow uses Node `24.22.2`, Rust `1.96.0`, immutable action commit SHAs, the committed npm and Cargo lockfiles, `SOURCE_DATE_EPOCH=1794240000`, and a Rust path remap. Each platform artifact records those inputs and SHA-256 hashes of both lockfiles. Publication rejects a mixed toolchain or mismatched reproduction metadata. `tools/reproducible-build.test.mjs` fails if a runtime or action becomes floating.
 
-Rebuild the published source commit on the same operating system and target, using the recorded inputs, then compare the rebuilt package SHA-256 with the release manifest. Reproducibility means the build can be independently checked. It does not replace publisher signing; these builds remain unsigned and unnotarized.
+Rebuild the published source commit on the same operating system and target, using the recorded inputs, then compare the rebuilt package SHA-256 with the release manifest. Reproducibility means the build can be independently checked. It does not replace publisher signing. The unsigned Android release APK remains available for independent build comparison; the separately signed APK adds a publisher signature that requires the private distribution key to reproduce. macOS packages are not notarized, and iPhone IPAs are unsigned.
 
 The **Native wallet** GitHub Actions workflow builds release packages on pushes to `master` or `main`, and on manual dispatch. Pull requests build debug packages. Every package uses the fixed Mutinynet pool, `https://shielded.mutinynet.arkade.sh`; collection fails if the native marker and Rust route policy disagree with it. These builds use test funds only.
 
@@ -115,10 +123,20 @@ Successful release runs on the default `main` or `master` branch publish all fiv
 | Windows x86_64 | NSIS `.exe` installer with offline WebView2 |
 | Linux x86_64 | `.deb` and `.AppImage` inside a `.tar.gz` that preserves executable permissions |
 | macOS Intel and Apple Silicon | Universal `.app.zip` and `.dmg`; CI verifies both architecture slices |
-| Android ARM64 | Debug APK for PRs; unsigned release APK plus an installable debug APK for release runs |
+| Android ARM64 | Debug APK for PRs; permanently signed release APK, unsigned release APK and a legacy debug APK for release runs |
 | iOS | Unsigned ARM64 iPhone `.ipa` and a simulator `.app.zip` for the CI host's simulator architecture |
 
-The device IPA needs your own Apple signing and provisioning before installation; the simulator archive is not an iPhone installer. Android release APKs also require signing. The additional Android debug APK uses the runner's development key, which is not a stable distribution identity. Updates require the same signing key: preserve verified recovery data and unresolved-swap app state before replacing an existing installation. Distribution signing credentials and macOS notarization are not configured by this workflow.
+The device IPA needs your own Apple signing and provisioning before installation; the simulator archive is not an iPhone installer. The legacy Android debug APK uses the runner's development key, which is not a stable distribution identity. Keep that installation and its data if Android refuses a differently signed update. macOS notarization is not configured by this workflow.
+
+### Stable Android signing
+
+`src-tauri/android-signing.json` records the public package identity, key alias and certificate SHA-256. The distribution certificate is `374219922ff53597fc064bd511f8af6475118ddc681d47f6b86bbc884a252855`. The private keystore and password are stored in the encrypted repository secrets `ANDROID_RELEASE_KEYSTORE_BASE64` and `ANDROID_RELEASE_KEYSTORE_PASSWORD`; they are never source files or build artifacts. Maintain a separate protected backup of that signing identity. Do not generate a replacement key to recover a failed CI run: a changed certificate breaks compatibility with installed wallets.
+
+The signing job runs only for this repository's primary-branch push or dispatch after the unprivileged Android build. It verifies the unsigned artifact's identity and hash, signs with the permanent key, verifies the resulting certificate and package, and uploads the signed APK with its own manifest. Pull requests do not receive the distribution key. Missing credentials or an unexpected certificate fail publication; there is no development-key fallback for the signed channel.
+
+Android `versionCode` is `100000 + GITHUB_RUN_NUMBER`, above the previous default `1000`. Reruns retain the same version code; a later workflow run advances it. Package identity remains `io.arkade.shielded`, and the storage origin and native vault identity stay unchanged. The installer accepts only a strictly newer version.
+
+The public release manifest remains schema 1 and retains its nine legacy packages. New clients read the optional `androidUpdate` entry for the separately signed APK; older clients continue reading the original package list. Publication uploads both sets completely before advancing the channel.
 
 ## Native boundary and storage
 

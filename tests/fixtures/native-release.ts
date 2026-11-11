@@ -1,4 +1,5 @@
 import type {NativePlatform} from '../../src/native-release.ts';
+import androidSigning from '../../src-tauri/android-signing.json' with {type:'json'};
 
 export function nativeReleaseFixture() {
   const commit = 'a'.repeat(40), tag = `native-mutinynet-${commit.slice(0, 12)}-run123-attempt1`;
@@ -13,4 +14,9 @@ export function nativeReleaseFixture() {
     return { platform, file, profile, requiresSigning, url: `https://github.com/arkade-os/shielded/releases/download/${tag}/${file}`, bytes: 100, sha256: 'b'.repeat(64) };
   });
   return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit, buildNumber: 123, version: '0.1.0', publishedAt: '2026-11-07T12:00:00Z', releaseUrl: `https://github.com/arkade-os/shielded/releases/tag/${tag}`, environment: { node: '24.22.2', rust: '1.96.0', sourceDateEpoch: 1794240000, lockfileSha256: 'c'.repeat(64), rustLockfileSha256: 'd'.repeat(64) }, packages };
+}
+
+export function androidUpdateFixture(release = nativeReleaseFixture()) {
+  const tag = release.releaseUrl.split('/').at(-1)!, file = `shielded-mutinynet-android-arm64-${tag.slice('native-mutinynet-'.length)}-mutinynet-release-signed.apk`;
+  return { platform: 'android-arm64', file, url: `https://github.com/arkade-os/shielded/releases/download/${tag}/${file}`, profile: 'release', requiresSigning: false, bytes: 100, sha256: 'e'.repeat(64), packageName: androidSigning.packageName, versionCode: 100000 + release.buildNumber, signerSha256: androidSigning.certificateSha256 };
 }

@@ -81,9 +81,10 @@ export function collectNativeArtifacts(projectRoot, platform, profile, commit) {
     'Wallet networking uses embedded Tor; this workflow does not configure a direct mode.',
     'macOS archives preserve the app bundle and executable permissions. These builds are not notarized by this workflow.',
     'The iPhone device IPA is unsigned and needs your own signing and provisioning before installation. The simulator archive runs only in an iOS simulator.',
-    'The Android release APK is unsigned. The additional debug APK uses the runner development key and is explicitly a debug build.',
-    'Debug signing is not a stable distribution identity. Updates require the same signing key; preserve your recovery phrase before replacing an existing installation.',
-    'Distribution signing credentials are not generated, stored or uploaded by this workflow.',
+    'These legacy Android artifacts contain an unsigned release APK and a debug APK using the runner development key.',
+    'The separate trusted signing job produces the production APK with a stable distribution certificate. Prefer that APK for new installations and in-place updates.',
+    'Updates require the same signing key. A different development key cannot update an existing installation. Keep that installation and its wallet data intact while resolving a certificate mismatch.',
+    'Private distribution signing credentials are never included in build artifacts.',
     '',
   ].join('\n'));
   return output;

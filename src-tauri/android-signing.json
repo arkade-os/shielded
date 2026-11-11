@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "packageName": "io.arkade.shielded",
+  "alias": "shielded-release",
+  "certificateSha256": "374219922ff53597fc064bd511f8af6475118ddc681d47f6b86bbc884a252855"
+}

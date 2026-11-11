@@ -38,6 +38,15 @@ test('unknown local native build identity never makes a metadata request or upda
  assert.equal(f.requests.length,0);assert.equal(f.latest(),undefined);
 });
 
+test('explicit direct mode never checks release metadata and preserves a previously validated badge',async t=>{
+ const f=fixture(t,identity,{phase:'ready',generation:1,mode:'direct'});await flush();f.monitor.check();assert.equal(f.requests.length,0);
+ f.emit({phase:'ready',generation:2,mode:'tor'});await flush();assert.equal(f.requests.length,1);
+ f.requests[0]!.result.resolve(Response.json(nativeReleaseFixture()));await flush();const validated=f.latest();assert.equal(validated?.buildNumber,123);
+ f.monitor.check();await flush();assert.equal(f.requests.length,2);f.emit({phase:'ready',generation:2,mode:'direct'});assert.equal(f.requests[1]!.signal.aborted,true);
+ f.requests[1]!.result.resolve(Response.json({...nativeReleaseFixture(),buildNumber:100}));await flush();assert.equal(f.latest(),validated);
+ t.mock.timers.tick(60*60_000);f.monitor.check();await flush();assert.equal(f.requests.length,2);
+});
+
 test('native offline and malformed responses are quiet and cannot become update notices',async t=>{
  const f=fixture(t);await flush();f.requests[0]!.result.reject(new Error('offline'));await flush();assert.equal(f.latest(),undefined);
  for(const response of [Response.json({schema:1}),Response.json(nativeReleaseFixture(),{status:503}),Response.json({...nativeReleaseFixture(),buildNumber:100})]){

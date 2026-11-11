@@ -1,2 +1,3 @@
 -keep class io.arkade.shielded.platform.ShieldedPlatformPlugin { *; }
 -keep class io.arkade.shielded.platform.SeedArgs { *; }
+-keep class io.arkade.shielded.platform.UpdateArgs { *; }

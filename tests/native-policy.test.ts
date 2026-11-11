@@ -15,9 +15,9 @@ test('native routes reject direct unknown traffic and encoded global streams',()
  const p=policy();
  for(const url of ['https://tracker.example/pixel','https://ark.example/v1/txs','https://ark.example/v1/tx%73','https://user:pass@ark.example/v1/info','http://ark.example/v1/info'])assert.throws(()=>p.classify(url,'GET'));
 });
-test('release metadata allows only the canonical query-free public GET route',()=>{
+test('release metadata uses a separate purpose for the canonical query-free GET route',()=>{
  const p=policy(),url='https://shielded.mutinynet.arkade.sh/api/native/releases';
- assert.equal(p.classify(url).purpose,'public');
+ assert.equal(p.classify(url).purpose,'release');
  assert.notEqual(p.classify(url).key,p.classify('https://pool.example/api/rollup/status').key);
  for(const method of ['POST','HEAD','PUT'])assert.throws(()=>p.classify(url,method));
  for(const denied of [url+'?',url+'?wallet=hidden',url+'/',url+'/latest',url.replace('/releases','/%72eleases'),url.replace('shielded.mutinynet.arkade.sh','pool.example'),url.replace('https:','wss:')])assert.throws(()=>p.classify(denied));
