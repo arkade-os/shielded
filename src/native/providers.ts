@@ -24,7 +24,7 @@ interface LogicalStream {queue:AsyncQueue<SubscriptionResponse>;attach:(script:s
 interface LogicalSubscription {entries:Map<string,string|null>;streams:Set<LogicalStream>;tail:Promise<unknown>;closed:boolean}
 export class IsolatedIndexerProvider extends RestIndexerProvider {
  private base:IndexerProvider;private subscriptions=new Map<string,LogicalSubscription>();
- constructor(url:string,eventSource?:EventSourceFactory,base?:IndexerProvider,private pollMs=20_000){super(url,{eventSource});this.base=base??new RestIndexerProvider(url,{eventSource});}
+ constructor(url:string,eventSource?:EventSourceFactory,base?:IndexerProvider,private pollMs=20_000,private streams=32){super(url,{eventSource});this.base=base??new RestIndexerProvider(url,{eventSource});}
  override async getVtxos(opts?:GetVtxosOptions):ReturnType<IndexerProvider['getVtxos']>{
   if(opts?.scripts&&opts?.outpoints)throw new Error('scripts and outpoints are mutually exclusive options');
   const items=opts?.scripts??opts?.outpoints;
@@ -61,7 +61,7 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
      if(record.closed||signal?.aborted)throw signal?.reason??new DOMException('Subscription cancelled','AbortError');
      if(record.entries.has(script))continue;
      let remote:string|null=null;
-     if(streamReservations<32){streamReservations++;try{remote=await this.base.subscribeForScripts([script],undefined,signal);}catch(error){streamReservations--;throw error;}}
+     if(streamReservations<this.streams){streamReservations++;try{remote=await this.base.subscribeForScripts([script],undefined,signal);}catch(error){streamReservations--;throw error;}}
      if(record.closed||signal?.aborted){if(remote){streamReservations--;await this.base.unsubscribeForScripts(remote).catch(()=>{});}throw signal?.reason??new DOMException('Subscription cancelled','AbortError');}
      record.entries.set(script,remote);added.push(script);for(const stream of record.streams)stream.attach(script,remote);
     }

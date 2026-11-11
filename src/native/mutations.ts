@@ -11,6 +11,7 @@ const REFUSED_BODY=new Set(['The request body is not valid JSON.','A spend id is
 const preAdmissionRefusal=(status:number,result:any)=>typeof result?.error==='string'&&(status===429?result.code==='admission-rate-limit'&&result.error==='Too many requests from this address; try again in a minute.':status===400&&(result.code===undefined?REFUSED_BODY.has(result.error):REFUSED_CODES.has(result.code)));
 const invalid=()=>new Error('The native payment journal is invalid; funds remain reserved.');
 const route=(raw:string)=>{const url=new URL(raw);return {origin:url.origin,path:decodeURIComponent(url.pathname).toLowerCase()};};
+export const journalledRoute=(url:string,method:string):boolean=>{const m=method.toUpperCase(),{path}=route(url);return m==='GET'&&/^\/api\/rollup\/spends\/[0-9a-f]{32}$/.test(path)||m==='POST'&&path==='/api/rollup/spends';};
 const parseBody=(body:string)=>{
  if(typeof body!=='string'||body.length>MAX_BYTES)throw invalid();
  let parsed:any;try{parsed=JSON.parse(body);}catch{throw invalid();}
@@ -109,7 +110,6 @@ export const beforeNativeMutation=(request:NativeMutation)=>{
 export const pendingPoolNullifiers=(poolOrigin:string)=>current().pendingPoolNullifiers(poolOrigin);
 export const pendingPoolOutpoints=(poolOrigin:string)=>current().pendingPoolOutpoints(poolOrigin);
 export const observeNativeResponse=(response:NativeMutationResponse)=>{
- const method=response.method.toUpperCase(),path=route(response.url).path;
- if(method==='GET'&&/^\/api\/rollup\/spends\/[0-9a-f]{32}$/.test(path)||method==='POST'&&path==='/api/rollup/spends')current().observeNativeResponse(response);
+ if(journalledRoute(response.url,response.method))current().observeNativeResponse(response);
 };
 export const reconcileNativeMutations=(fetcher:typeof fetch,poolOrigin:string)=>current().reconcileNativeMutations(fetcher,poolOrigin);
