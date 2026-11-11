@@ -23,11 +23,11 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
  const relays=config.relays??NOSTR_RELAYS,pinned=new Set(relays.map(normalizeURL)),policy=new NativePolicy(config.poolOrigin),{poolOrigin}=policy,pageOrigin=new URL(config.pageOrigin).origin;
  const journal=makeNativeMutationJournal(config.storage??globalThis.localStorage);
  const sealedFetch=createSealedFetch({config:config.config,gateway:config.gateway,origin:poolOrigin,relays,pool:new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000,websocketImplementation:Original})});
- const Guarded=class extends Original {constructor(url:string|URL,protocols?:string|string[]){if(!pinned.has(normalizeURL(String(url))))throw new Error('Private networking does not permit a WebSocket to '+url);super(url,protocols);}};
- // Order matters: a pool API path is sealed at the pinned origin even when the page is served from it, and a proving path on the page origin goes direct even when it is not.
+ const Guarded=class extends Original {constructor(url:string|URL,protocols?:string|string[]){const u=normalizeURL(String(url));if(!pinned.has(u))throw new Error('Private networking does not permit a WebSocket to '+url);super(u,protocols);}};
+ // Express routes ignore case, so these checks do. Order matters: a pool API path is sealed at the pinned origin even when the page is served from it, and a proving path on the page origin goes direct even when it is not.
  const route=(url:URL)=>{
-  const path=url.pathname,proving=/^\/api\/rollup\/proving\//.test(path),poolApi=/^\/api\/rollup\//.test(path)&&!proving;
-  if(url.origin===pageOrigin){if(proving||!path.startsWith('/api/'))return undefined;if(poolApi)return poolOrigin+path+url.search;}
+  const path=url.pathname,lower=path.toLowerCase(),proving=/^\/api\/rollup\/proving\//.test(lower),poolApi=/^\/api\/rollup\//.test(lower)&&!proving;
+  if(url.origin===pageOrigin){if(proving||!lower.startsWith('/api/'))return undefined;if(poolApi)return poolOrigin+path+url.search;}
   else if(url.origin!==poolOrigin||poolApi)return url.href;
   throw new Error('Private networking does not permit '+url.origin+path);
  };

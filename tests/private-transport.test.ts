@@ -9,7 +9,7 @@ import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {isPrivateFetch} from '../src/shielded/network-privacy.ts';
-import {installPrivateTransport} from '../src/shielded/private-transport.ts';
+import {installPrivateTransport,privateTransport} from '../src/shielded/private-transport.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
 const POOL='https://pool.example',PAGE='http://127.0.0.1:5173',LOOPBACK='http://127.0.0.1:9',ARK='https://ark.example',ESPLORA=ESPLORA_URL.mutinynet,ID='ab'.repeat(16);
@@ -17,6 +17,8 @@ const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const memory=()=>{const items=new Map<string,string>();return {getItem:(key:string)=>items.get(key)??null,setItem:(key:string,value:string)=>{items.set(key,value);},removeItem:(key:string)=>{items.delete(key);}};};
 
 async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.json({ok:true})}:{pageOrigin?:string;globals?:Record<string,unknown>;reply?:(url:string)=>Response}={}){
+ // Node's own WebSocket reaches the six public relays, so a pool that lost its websocketImplementation fails here instead.
+ const real=globalThis.WebSocket;globalThis.WebSocket=class {constructor(){throw new Error('a test reached for a public relay');}} as unknown as typeof WebSocket;t.after(()=>{globalThis.WebSocket=real;});
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,bus=createNostrBus(),calls:string[]=[],direct:string[]=[],made:unknown[]=[];
  const router=createOhttpGateway({key,upstreams:[{origin:ARK,prefix:'/v1/'},{origin:new URL(ESPLORA).origin,prefix:'/api/'}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:(async(url:string)=>{calls.push(url);return reply(url);}) as unknown as typeof fetch});
  // The relay pool hands each socket a normalized URL, so the gateway listens on the same strings.
@@ -61,6 +63,20 @@ test('the page assets and the proving files go direct, and nothing else under /a
  assert.deepEqual([g.requests().length,g.calls.length],[0,0]);
 });
 
+test('on a page origin other than the pool, the page assets and the proving files still go direct',async t=>{
+ const g=await rig(t,{pageOrigin:PAGE}),paths=['/assets/app.js','/api/rollup/proving/epoch-spend.wasm'];
+ for(const path of paths)assert.equal(await (await g.transport.fetch(path)).text(),'direct',path);
+ assert.deepEqual([g.direct,g.requests().length],[paths.map(path=>PAGE+path),0]);
+});
+
+test('a pool API path in any case is classified for sealing, never sent direct, and a proving path in any case goes direct',async t=>{
+ const g=await rig(t,{pageOrigin:PAGE});
+ await assert.rejects(g.transport.fetch('/API/rollup/status'),/not approved: GET https:\/\/pool\.example\/API\/rollup\/status$/,'rewritten to the pool origin in its own case, which the native policy refuses');
+ await assert.rejects(g.transport.fetch('/API/other'),/does not permit/);
+ assert.equal(await (await g.transport.fetch('/Api/Rollup/proving/epoch-spend.wasm')).text(),'direct');
+ assert.deepEqual([g.direct,g.requests().length],[[PAGE+'/Api/Rollup/proving/epoch-spend.wasm'],0]);
+});
+
 test('an absolute proving URL at the pool origin is refused rather than sealed',async t=>{
  const g=await rig(t,{pageOrigin:PAGE});
  await assert.rejects(g.transport.fetch(POOL+'/api/rollup/proving/epoch-spend.wasm'),/does not permit/);
@@ -83,11 +99,17 @@ test('the transport fetch is marked private',async t=>{
  assert.ok(isPrivateFetch(g.transport.fetch));assert.equal(g.globals.fetch,g.transport.fetch);
 });
 
+test('a second install returns the first transport',async t=>{
+ const g=await rig(t);
+ assert.equal(installPrivateTransport({config:new Uint8Array(),gateway:'',poolOrigin:'https://other.example',pageOrigin:PAGE,globals:g.globals}),g.transport);
+ assert.equal(privateTransport(),g.transport);
+});
+
 test('EventSource, XMLHttpRequest and WebRTC are refused, and WebSocket only reaches the pinned relays',async t=>{
- const g=await rig(t),G=g.globals as Record<string,new(url?:string)=>{close?():void}>;
+ const g=await rig(t),G=g.globals as Record<string,new(url?:string)=>{url?:string;close?():void}>;
  for(const name of ['EventSource','XMLHttpRequest','RTCPeerConnection'])assert.throws(()=>new G[name]!(ARK),/does not permit/,name);
  for(const name of ['fetch','EventSource','WebSocket','XMLHttpRequest','RTCPeerConnection']){const {writable,configurable}=Object.getOwnPropertyDescriptor(g.globals,name)!;assert.deepEqual({writable,configurable},{writable:false,configurable:false},name);}
- for(const url of ['wss://relay.snort.social','wss://relay.snort.social/']){const socket=new G.WebSocket!(url);assert.ok(socket instanceof g.Sentinel,url);socket.close!();}
+ for(const url of ['wss://relay.snort.social','wss://relay.snort.social/','relay.snort.social']){const socket=new G.WebSocket!(url);assert.ok(socket instanceof g.Sentinel,url);assert.equal(socket.url,'wss://relay.snort.social/',url);socket.close!();}
  for(const url of ['wss://nostr.arkade.sh','ws://relay.snort.social'])assert.throws(()=>new G.WebSocket!(url),/does not permit/,url);
 });
 
@@ -117,6 +139,7 @@ test('a pool spend POST is journalled before it goes out and resolved by its own
 });
 
 test('the module never imports the native entry point',()=>{
- assert.doesNotMatch(readFileSync('src/shielded/private-transport.ts','utf8'),/native\/index/);
- for(const file of ['policy','providers','mutations'])assert.doesNotMatch(readFileSync(`src/native/${file}.ts`,'utf8'),/@tauri-apps/,file);
+ const entry=/(?:from|import\(?)\s*'(?:\.\.\/native|\.)(?:\/index(?:\.[jt]s)?)?\/?'|@tauri-apps/;
+ for(const bad of ["import {x} from '../native';","import {x} from '../native/index.ts';","import {x} from '.';","import {x} from './index.js';","import '../native/';","await import('../native/index');","import {invoke} from '@tauri-apps/api/core';"])assert.match(bad,entry,bad);
+ for(const file of ['src/shielded/private-transport.ts','src/shielded/sealed-fetch.ts','src/shielded/network-privacy.ts','src/native/policy.ts','src/native/providers.ts','src/native/mutations.ts'])assert.doesNotMatch(readFileSync(file,'utf8'),entry,file);
 });
