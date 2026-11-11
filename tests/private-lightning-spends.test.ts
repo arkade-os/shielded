@@ -575,6 +575,16 @@ test('a wallet with batch swaps off refuses renewal and the on-chain exit before
  }finally{await off.dispose();await on.dispose();}
 });
 
+test('a wallet with batch swaps off refuses an on-chain send at quote time, whether a pool note or its Arkade coins would pay it',async()=>{
+ const off=await open(new Store(),undefined,prover,undefined,{batchSwaps:false}),on=await open(new Store()),BTC='tb1qmt3ue2senlg6ddgmr76hwsk0rdvdk4rgeaen7l';
+ try{
+  for(const wallet of [off,on]){await fund(wallet,[30_000n]);wallet.getSpendableVtxos=(async()=>[{value:60_000}]) as never;}
+  for(const amount of [20_000,50_000])await assert.rejects(off.router().route({raw:BTC,amount}),/batch stream/,`${amount} sats`);
+  await assert.rejects(on.router().route({raw:BTC,amount:20_000}),/needs the recoverable companion wallet/,'a note covers it');
+  assert.equal((await on.router().route({raw:BTC,amount:50_000})).railId,'onchain','the Arkade coins pay it');
+ }finally{await off.dispose();await on.dispose();}
+});
+
 test('a stale-anchor refusal still drops at once, on the pool verdict alone and without reading a batch',async()=>{
  const store=new Store(),{wallet,pool}=await funded(store);const reason='The spend opens against another previous-epoch root than the next batch does; prove it again.';let batches=0;
  try{

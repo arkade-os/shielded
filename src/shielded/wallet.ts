@@ -651,7 +651,7 @@ export class ShieldedWallet extends Wallet {
   void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
  private assertOpen(){if(this.stopped)throw new Error('The wallet was closed.');}
- private assertBatchSwaps(){if(this.batchSwaps===false)throw new Error('Renewal and on-chain exits need Arkade\'s live batch stream, which this private transport cannot carry.');}
+ assertBatchSwaps(){if(this.batchSwaps===false)throw new Error('Renewal and on-chain exits need Arkade\'s live batch stream, which this private transport cannot carry.');}
  private reserved(coin:{txid:string;vout:number},pending=this.pendingOutpoints?.()){const outpoint=`${coin.txid}:${coin.vout}`;return this.used.has(outpoint)||this.usedTxids.has(coin.txid)||pending?.has(outpoint)===true;}
  private async nativeSpend(inputs:readonly {txid:string;vout:number}[]|undefined,run:()=>Promise<string>){
   this.assertOpen();
