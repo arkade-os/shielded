@@ -4,7 +4,7 @@ import {setTimeout as sleep} from 'node:timers/promises';
 import {base64} from '@scure/base';
 import {finalizeEvent,generateSecretKey,type Event} from 'nostr-tools/pure';
 import {addressOf,NOSTR_ANSWER_KIND,NOSTR_REQUEST_KIND,readRequest,statusEvent} from '../packages/protocol/src/nostr-carrier.ts';
-import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
+import {createOhttpGateway,type OhttpOpen} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {createSealedFetch,SealedFetchError} from '../src/shielded/sealed-fetch.ts';
@@ -17,16 +17,19 @@ const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const holding=(reply=()=>Response.json({ok:true}))=>{let release=()=>{};const held=new Promise<Response>(resolve=>{release=()=>resolve(reply());});return {held,release};};
 const failsWith=(code:SealedFetchError['code'])=>(error:unknown)=>error instanceof SealedFetchError&&error.code===code;
 const timers=()=>process.getActiveResourcesInfo().filter(type=>type==='Timeout').length;
+const advance=async(t:TestContext,ms:number)=>{for(let at=0;at<ms;at+=1000){t.mock.timers.tick(1000);await settle();}};
+const FORBIDDEN=['accept-charset','accept-encoding','access-control-request-headers','access-control-request-method','connection','content-length','cookie','cookie2','date','dnt','expect','host','keep-alive','origin','referer','set-cookie','te','trailer','transfer-encoding','upgrade','via'];
 
-type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'attempts'|'random'>;
-async function rig(t:TestContext,{relays=[A,B],reply=()=>Response.json({ok:true}),gateway={},...options}:Rig={}){
+type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;open?:OhttpOpen}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'getTimeoutMs'|'attempts'|'random'>;
+async function rig(t:TestContext,{relays=[A,B],reply=()=>Response.json({ok:true}),gateway={},open,...options}:Rig={}){
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:{url:string;init:RequestInit}[]=[],bus=createNostrBus();
  const upstream=(async(url:string,init:RequestInit)=>{calls.push({url,init});return reply();}) as unknown as typeof fetch;
  const router=createOhttpGateway({key,upstreams:[{origin:'https://ark.example',prefix:'/v1/'}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:upstream,...gateway});
- const carrier=startNostrCarrier({open:router.open,secret:key.nostrSecret,relays,pool:bus.pool});t.after(()=>carrier.close());await settle();
+ const carrier=startNostrCarrier({open:open??router.open,secret:key.nostrSecret,relays,pool:bus.pool});t.after(()=>carrier.close());await settle();
  const sends=t.mock.method(bus.pool,'publish'),sealedFetch=createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,relays,pool:bus.pool,random:()=>0,...options});t.after(()=>sealedFetch.close());
  const answers=()=>bus.published.filter(event=>event.kind===NOSTR_ANSWER_KIND&&event.pubkey===key.nostrPublic),requests=()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND);
- return {key,calls,bus,fetch:sealedFetch,answers,requests,address:()=>addressOf(readRequest(requests()[0]!,key.nostrPublic)!),statuses:()=>answers().filter(event=>event.tags.some(tag=>tag[0]==='status')),
+ const inner=async(i=0)=>(await key.server.decapsulateRequest(new Request('http://gateway.test/',{method:'POST',headers:{'content-type':'message/ohttp-req'},body:Buffer.from(readRequest(requests()[i]!,key.nostrPublic)!)}))).request;
+ return {key,calls,bus,fetch:sealedFetch,answers,requests,inner,address:()=>addressOf(readRequest(requests()[0]!,key.nostrPublic)!),statuses:()=>answers().filter(event=>event.tags.some(tag=>tag[0]==='status')),
   sentTo:()=>sends.mock.calls.map(call=>call.arguments[0]),sent:()=>sends.mock.calls.map(call=>call.arguments[1])};
 }
 
@@ -38,12 +41,12 @@ test('a GET goes out sealed and comes back as a Response',async t=>{
  assert.deepEqual([g.bus.openSubscriptions(),timers()],before,'the answer closed every subscription and deadline the fetch opened');
 });
 
-test('relative URLs resolve against the origin and only content-type and accept leave the client',async t=>{
+test('relative URLs resolve against the origin and only content-type, accept and x-digest leave the client, with its own x-date',async t=>{
  const g=await rig(t);
  assert.equal((await g.fetch('/api/rollup/status',{headers:{'X-SDK-VERSION':'ts-sdk/0.5.3',Authorization:'x',Accept:'application/json'}})).status,200);
  assert.deepEqual(g.calls.map(call=>call.url),[LOOPBACK+'/api/rollup/status']);
- const sealed=Buffer.from(readRequest(g.requests()[0]!,g.key.nostrPublic)!),{request}=await g.key.server.decapsulateRequest(new Request('http://gateway.test/',{method:'POST',headers:{'content-type':'message/ohttp-req'},body:sealed}));
- assert.equal(request.url,POOL+'/api/rollup/status');assert.deepEqual([...request.headers],[['accept','application/json']]);
+ const request=await g.inner();
+ assert.equal(request.url,POOL+'/api/rollup/status');assert.deepEqual([...request.headers.keys()],['accept','x-date']);
 });
 
 test('a large answer is reassembled, from chunks in any order, past a chunk another key signed',async t=>{
@@ -77,7 +80,7 @@ test('a POST shed on two attempts within 30 s hears both statuses and runs on it
 });
 
 test('a GET whose relay never delivers is retried on another relay',async t=>{
- const g=await rig(t,{pick:1,timeoutMs:100});g.bus.relay(A).deliver=false;
+ const g=await rig(t,{pick:1,getTimeoutMs:100});g.bus.relay(A).deliver=false;
  assert.equal((await g.fetch(ARK)).status,200);
  assert.deepEqual(g.sentTo(),[[A],[B]]);assert.equal(g.requests().length,2);
  assert.notEqual(g.sent()[0]!.content,g.sent()[1]!.content,'each GET attempt is sealed afresh');
@@ -85,7 +88,7 @@ test('a GET whose relay never delivers is retried on another relay',async t=>{
 
 test('a late answer to an earlier attempt counts',async t=>{
  // Through A the request and its answer each wait 150 ms, so the answer lands near 300 ms; five attempts keep the fetch open to 500 ms.
- let replies=0;const g=await rig(t,{pick:1,timeoutMs:100,attempts:5,reply:()=>Response.json({reply:++replies})});
+ let replies=0;const g=await rig(t,{pick:1,getTimeoutMs:100,attempts:5,reply:()=>Response.json({reply:++replies})});
  g.bus.relay(A).delayMs=150;g.bus.relay(B).deliver=false;
  assert.deepEqual(await (await g.fetch(ARK)).json(),{reply:1},'the first attempt\'s answer, the first the gateway gave');
  assert.deepEqual(g.sentTo().slice(0,2),[[A],[B]]);
@@ -117,7 +120,7 @@ test('a POST through a relay that delivers what it says it never took runs once,
 });
 
 test('a pick that times out without delivering is hedged at once, and the answer comes from the next relay',{timeout:10_000},async t=>{
- const g=await rig(t,{pick:1,timeoutMs:60_000});Object.assign(g.bus.relay(A),{timesOut:true,deliver:false});
+ const g=await rig(t,{pick:1,getTimeoutMs:60_000});Object.assign(g.bus.relay(A),{timesOut:true,deliver:false});
  assert.equal((await g.fetch(ARK)).status,200);
  assert.deepEqual(g.sentTo(),[[A],[B]]);assert.equal(g.sent()[0]!.id,g.sent()[1]!.id,'the same event went to B');assert.equal(g.requests().length,1);
 });
@@ -162,13 +165,13 @@ test('a round whose OK is still out when a status ends its attempt hedges nothin
 });
 
 test('attempts run out as unavailable',async t=>{
- const g=await rig(t,{timeoutMs:50,attempts:3}),before=g.bus.openSubscriptions();for(const url of [A,B])g.bus.relay(url).deliver=false;
+ const g=await rig(t,{getTimeoutMs:50,attempts:3}),before=g.bus.openSubscriptions();for(const url of [A,B])g.bus.relay(url).deliver=false;
  await assert.rejects(g.fetch(ARK),failsWith('unavailable'));
  assert.equal(g.requests().length,3);assert.equal(g.bus.openSubscriptions(),before,'every attempt\'s subscription closed');
 });
 
 test('a status event cannot hold the client past its attempt deadline',{timeout:10_000},async t=>{
- let replies=0;const g=await rig(t,{relays:[A],timeoutMs:200,reply:()=>++replies===1?new Promise<Response>(()=>{}):Response.json({ok:true})});
+ let replies=0;const g=await rig(t,{relays:[A],getTimeoutMs:200,reply:()=>++replies===1?new Promise<Response>(()=>{}):Response.json({ok:true})});
  const started=performance.now(),pending=g.fetch(ARK);await until(()=>g.calls.length===1);
  await Promise.all(g.bus.pool.publish([A],statusEvent(503,3600,g.address(),g.sent()[0]!.id,g.key.nostrSecret,Date.now())));
  assert.equal((await pending).status,200);assert.ok(performance.now()-started<2000,'the hour the status asked for was cut to the deadline');
@@ -184,7 +187,7 @@ test('a stored status from an earlier attempt does not end a later one',async t=
 });
 
 test('a status for an earlier GET attempt does not end the current attempt',async t=>{
- const {held,release}=holding(),g=await rig(t,{pick:1,timeoutMs:500,attempts:2,reply:()=>held});g.bus.relay(A).deliver=false;
+ const {held,release}=holding(),g=await rig(t,{pick:1,getTimeoutMs:500,attempts:2,reply:()=>held});g.bus.relay(A).deliver=false;
  const pending=g.fetch(ARK);await until(()=>g.calls.length===1);
  g.bus.relay(A).deliver=true;await Promise.all(g.bus.pool.publish([A],statusEvent(503,1,g.address(),g.sent()[0]!.id,g.key.nostrSecret,Date.now())));await sleep(20);release();
  assert.equal((await pending).status,200,'the second, last attempt kept waiting for its own answer');assert.deepEqual(g.sentTo().slice(0,2),[[A],[B]]);
@@ -221,7 +224,7 @@ test('a request too large for one event is refused before publishing',async t=>{
 });
 
 test('close() refuses new fetches and stops one in flight before its next attempt goes out',async t=>{
- const g=await rig(t,{pick:1,timeoutMs:100});g.bus.relay(A).deliver=false;
+ const g=await rig(t,{pick:1,getTimeoutMs:100});g.bus.relay(A).deliver=false;
  const pending=g.fetch(ARK);await until(()=>g.sentTo().length===1);
  g.fetch.close();assert.equal(g.bus.openSubscriptions(),0,'the pool is destroyed');
  let refused=false;const late=g.fetch(ARK).catch(error=>{refused=true;throw error;});await null;
@@ -247,7 +250,7 @@ test('close() ends a POST that went out as outcome-unknown, and one that never d
 
 test('a sealed fetch with no relay, a relay that is not a ws:// or wss:// URL, or a pick, attempt count or timeout under one, is refused when it is made',async()=>{
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!;
- for(const options of [{relays:[]},{relays:[A,'not a url']},{relays:['https://relay.example']},{relays:['wss:a.example']},{relays:['wss:/a.example']},{pick:0},{attempts:0},{timeoutMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
+ for(const options of [{relays:[]},{relays:[A,'not a url']},{relays:['https://relay.example']},{relays:['wss:a.example']},{relays:['wss:/a.example']},{pick:0},{attempts:0},{timeoutMs:0},{getTimeoutMs:0},{sealedForMs:0},{pick:Number.NaN}])assert.throws(()=>createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,...options}),RangeError,JSON.stringify(options));
  createSealedFetch({config:key.config,gateway:key.nostrPublic,origin:POOL,relays:['ws://127.0.0.1:7777',A]}).close();
 });
 
@@ -260,4 +263,49 @@ test('abort closes the attempt',async t=>{
  const sealing=new AbortController(),early=g.fetch(ARK,{signal:sealing.signal});sealing.abort(reason);
  await assert.rejects(early,error=>error===reason);await assert.rejects(g.fetch(ARK,{signal:AbortSignal.abort(reason)}),error=>error===reason);await sleep(50);
  assert.deepEqual([g.requests().length,g.bus.openSubscriptions()],[1,before],'a fetch aborted before it published never publishes');release();
+});
+
+test('every sealed request carries an x-date rounded to the nearest 30 s, and x-digest crosses',async t=>{
+ const g=await rig(t);
+ assert.equal((await g.fetch(ARK,{headers:{'x-digest':'abc',authorization:'x','x-sdk-version':'ts-sdk/0.5.3'}})).status,200);
+ const {headers}=await g.inner(),at=Date.parse(headers.get('x-date')!);
+ assert.ok(at%30_000===0&&Math.abs(Date.now()-at)<=30_000,String(headers.get('x-date')));
+ assert.deepEqual([headers.get('x-digest'),headers.has('authorization'),headers.has('x-sdk-version')],['abc',false,false]);
+});
+
+test('the sealed request uses no header a browser would strip',async t=>{
+ const g=await rig(t),stripped=Object.fromEntries([...FORBIDDEN,'proxy-authorization','sec-fetch-mode'].map(name=>[name,'x']));
+ assert.equal((await g.fetch('/api/rollup/spends',{method:'POST',headers:{...stripped,'content-type':'application/json',accept:'application/json','x-digest':'abc'},body:'{"id":"ab"}'})).status,200);
+ const names=[...(await g.inner()).headers.keys()];
+ assert.deepEqual(names.filter(name=>FORBIDDEN.includes(name)||/^(proxy|sec)-/.test(name)),[],names.join());
+});
+
+test("a caller's own x-date is overwritten, not forwarded",async t=>{
+ const g=await rig(t);
+ assert.equal((await g.fetch(ARK,{headers:{'x-date':'Thu, 01 Jan 1970 00:00:00 GMT'}})).status,200);
+ assert.ok(Math.abs(Date.now()-Date.parse((await g.inner()).headers.get('x-date')!))<=30_000);
+});
+
+test('a GET attempt ends after 9 s and a POST attempt after 40 s',async t=>{
+ const {held}=holding(),g=await rig(t,{reply:()=>held});t.mock.timers.enable({apis:['setTimeout']});
+ const stop=new AbortController(),get=g.fetch(ARK,{signal:stop.signal});await until(()=>g.sentTo().length===1);
+ t.mock.timers.tick(8_999);await sleep(50);assert.equal(g.sentTo().length,1);
+ t.mock.timers.tick(1);await until(()=>g.sentTo().length===2);stop.abort();await assert.rejects(get);
+ let ended=false;const post=assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown')).finally(()=>{ended=true;});await until(()=>g.sentTo().length===3);
+ t.mock.timers.tick(39_999);await sleep(50);assert.equal(ended,false);
+ t.mock.timers.tick(1);await post;
+});
+
+test('a GET answered on its first attempt resolves well inside the SDK getInfo abort',async t=>{
+ const g=await rig(t),before=timers();
+ assert.equal((await g.fetch(ARK)).status,200);await sleep(20);
+ assert.deepEqual([g.requests().length,timers()],[1,before]);
+});
+
+test('a POST stops attempting 45 s after its sealing and ends outcome-unknown',async t=>{
+ const g=await rig(t,{attempts:3,open:async()=>({kind:'busy',status:503,retryAfter:30})});t.mock.timers.enable({apis:['setTimeout','Date'],now:Date.now()});
+ const spend=assert.rejects(g.fetch('/api/rollup/spends',SPEND),failsWith('outcome-unknown'));await until(()=>g.sentTo().length===1);
+ await advance(t,33_000);assert.equal(g.requests().length,2,'the second attempt went after the first 30 s back-off');
+ await advance(t,40_000);await spend;
+ assert.equal(g.requests().length,2,'the second back-off ended past 45 s, so no third attempt went out');assert.equal(new Set(g.requests().map(event=>event.content)).size,1);
 });

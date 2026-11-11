@@ -28,7 +28,7 @@ async function rig(t:TestContext,{relays=[A],reply=()=>Response.json({ok:true}),
  const carrier=startNostrCarrier({open:opener,secret:key.nostrSecret,relays,pool:bus.pool,...(now?{now}:{}),cacheBytes});t.after(()=>carrier.close());await settle();
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(key.config)),{maxMessageSize:5<<20});
  const ask=async(url:string,{to=[A],listen=to}:{to?:string[];listen?:string[]}={})=>{
-  const sealed=await client.encapsulateRequest(new Request(url)),bytes=sealed.init.body as Uint8Array,event=requestEvent(bytes,key.nostrPublic,Date.now()),x=addressOf(bytes),heard=new Map<string,Event[]>();
+  const sealed=await client.encapsulateRequest(new Request(url,{headers:{'x-date':new Date().toUTCString()}})),bytes=sealed.init.body as Uint8Array,event=requestEvent(bytes,key.nostrPublic,Date.now()),x=addressOf(bytes),heard=new Map<string,Event[]>();
   for(const relay of listen){heard.set(relay,[]);bus.pool.subscribeMany([relay],{kinds:[NOSTR_ANSWER_KIND],authors:[key.nostrPublic],'#x':[x]},{onevent:answer=>heard.get(relay)!.push(answer)});}
   await Promise.all(bus.pool.publish(to,event));
   const answer=(relay=listen[0]!)=>readAnswer(heard.get(relay)!,x,key.nostrPublic);

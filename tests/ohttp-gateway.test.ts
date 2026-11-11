@@ -26,7 +26,7 @@ async function gateway(t:TestContext,{reply=()=>Response.json({ok:true}),before,
  const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise(resolve=>server.close(resolve)));
  const base=`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/rollup`,keys=await fetch(base+'/ohttp-keys'),config=new Uint8Array(await keys.arrayBuffer()),client=clientOf(config);
  const post=(body:BodyInit,type='message/ohttp-req')=>fetch(base+'/ohttp',{method:'POST',headers:{'content-type':type},body});
- const seal=(url:string,init?:RequestInit)=>client.encapsulateRequest(new Request(url,init));
+ const seal=(url:string,init?:RequestInit)=>{const headers=new Headers(init?.headers);if(!headers.has('x-date'))headers.set('x-date',new Date().toUTCString());return client.encapsulateRequest(new Request(url,{...init,headers}));};
  const exchange=async({init,context}:Awaited<ReturnType<typeof seal>>)=>{
   const outer=await fetch(base+'/ohttp',init);
   assert.equal(outer.status,200);assert.equal(outer.headers.get('content-type'),'message/ohttp-res');assert.equal(outer.headers.get('cache-control'),'no-store');
@@ -74,7 +74,7 @@ test('a pool and an upstream on one origin are told apart by path',async t=>{
  assert.deepEqual(g.calls.map(({url,init})=>[url,new Headers(init.headers).get('x-shielded-gateway')]),[['https://shared.example/v1/info',null],[LOOPBACK+'/api/rollup/status',TOKEN],[LOOPBACK+'/api/ROLLUP/status',TOKEN],['https://shared.example/api/blocks/tip/height',null]],'the token goes to the pool alone, and no spelling of the gateway path leaves');
 });
 
-test('only content-type and accept reach the upstream',async t=>{
+test('hostile headers never reach the upstream',async t=>{
  const g=await gateway(t),hostile={'x-forwarded-for':'203.0.113.7',host:'evil.example',cookie:'session=1',authorization:'Bearer stolen','x-shielded-gateway':'guessed'};
  const headers={...hostile,'content-type':'application/json',accept:'application/json'},sealed=await g.seal('https://pool.example/api/rollup/spends',{method:'POST',headers,body:'{"id":"ab"}'});
  const carried=(await g.key.server.decapsulateRequest(new Request('http://gateway.test/',sealed.init))).request.headers;
@@ -305,4 +305,33 @@ test('http:false omits POST /ohttp and keeps the key config',async t=>{
  assert.deepEqual([g.keys.status,g.keys.headers.get('content-type')],[200,'application/ohttp-keys']);
  assert.equal((await g.post((await g.seal(ARK)).init.body!)).status,404);
  assert.equal((await through(g.router,await g.seal(ARK))).status,200,'open() still answers');
+});
+
+test('a sealed request with no x-date is refused silently, leaving no replay entry',async t=>{
+ const lines:string[]=[];t.mock.method(console,'log',(line:string)=>{lines.push(line);});
+ let clock=0;const g=await gateway(t,{now:()=>clock}),raw=clientOf(g.config),bare=await raw.encapsulateRequest(new Request(ARK));
+ for(const sealed of [bare,bare,await g.seal(ARK,{headers:{'x-date':'not a date'}}),await raw.encapsulateRequest(new Request(ARK,{headers:{date:new Date().toUTCString()}}))])assert.deepEqual(await g.router.open(bytesOf(sealed)),{kind:'refused'});
+ assert.equal((await g.post(bare.init.body!)).status,400,'the HTTP route shares the check');assert.equal(g.calls.length,0);
+ clock=60_000;assert.equal((await g.open(ARK)).status,200);
+ assert.deepEqual(lines,['[ohttp] stale 5, forwarded 1'],'the second copy is stale again, not a replay: a refusal records nothing');
+});
+
+test('an x-date more than 90 s from the gateway clock is refused',async t=>{
+ let clock=Date.UTC(2026,10,11,12);const g=await gateway(t,{clock:()=>clock});clock+=300_000; // so the start check is out of reach
+ const at=(offset:number)=>g.seal(ARK,{headers:{'x-date':new Date(clock+offset).toISOString()}});
+ for(const offset of [-91_000,91_000])assert.deepEqual(await g.router.open(bytesOf(await at(offset))),{kind:'refused'},String(offset));
+ assert.equal(g.calls.length,0);
+ for(const offset of [-89_000,89_000])assert.equal((await through(g.router,await at(offset))).status,200,String(offset));
+});
+
+test('an x-date before the gateway started is refused, with 15 s of rounding slack',async t=>{
+ const T=Date.UTC(2026,10,11,12),g=await gateway(t,{clock:()=>T}),at=(ms:number)=>g.seal(ARK,{headers:{'x-date':new Date(ms).toISOString()}});
+ assert.equal((await through(g.router,await at(T-15_000))).status,200);
+ assert.deepEqual(await g.router.open(bytesOf(await at(T-15_001))),{kind:'refused'});assert.equal(g.calls.length,1);
+});
+
+test('x-digest crosses to the upstream and x-date does not',async t=>{
+ const g=await gateway(t);
+ assert.equal((await g.open(ARK,{headers:{'x-digest':'abc','x-date':new Date().toUTCString(),'x-sdk-version':'ts-sdk/0.5.3'}})).status,200);
+ assert.deepEqual(Object.fromEntries(new Headers(g.calls[0]!.init.headers)),{'x-digest':'abc'});
 });
