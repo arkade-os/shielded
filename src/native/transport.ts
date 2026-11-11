@@ -1,7 +1,7 @@
 import {nativeUrl,NativePolicy,type NativeRoute} from './policy.ts';
 
 export type NativeMode='tor'|'direct';
-export interface NativeStatus {phase:string;generation:number;mode?:NativeMode;progress?:string;error?:string}
+export interface NativeStatus {phase:string;generation:number;mode?:NativeMode;progress?:string;error?:string;foreground?:boolean;warmFromGeneration?:number}
 export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number;sequence?:number}
 export interface NativeBackend {invoke:(command:string,args?:Record<string,unknown>)=>Promise<any>;channel:(receive:(event:NativeEvent)=>void)=>unknown}
 interface NativeRequest {generation:number;requestId:string;scope:string;url:string;method:string;headers:[string,string][];bodyBase64?:string}
@@ -71,9 +71,14 @@ export class NativeBridge {
   this.current={...status,mode};for(const fn of this.listeners)try{fn(this.current);}catch{}return this.current;
  }
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
+ acceptLifecycle(status:NativeStatus){if(!this.acceptsStatus(status))return this.current;++this.statusRevision;return this.acceptStatus(status);}
  async status(){
   const revision=this.statusRevision,status:NativeStatus=await this.backend.invoke('native_status');
-  if(revision!==this.statusRevision||this.pausePending||this.pauseIntent)return this.current;
+  if(revision!==this.statusRevision)return this.current;
+  if(this.pausePending||this.pauseIntent){
+   if(status.phase!=='paused'||!this.acceptsStatus(status))return this.current;
+   ++this.statusRevision;return this.acceptStatus(status);
+  }
   if(this.acceptsStatus(status)&&status.phase==='ready'&&(this.current.phase!=='ready'||status.generation!==this.current.generation))++this.statusRevision;
   return this.acceptStatus(status);
  }
@@ -91,11 +96,11 @@ export class NativeBridge {
    ++this.statusRevision;return this.acceptStatus(status);
   }finally{if(revision===this.statusRevision)++this.statusRevision;}
  }
- async pause(){
+ async pause(warm=false){
   const revision=++this.statusRevision;this.pauseIntent=true;this.pausePending++;
   this.acceptStatus({...this.current,phase:'paused'});
   try{
-   const status=await this.backend.invoke('native_pause');
+   const status=await this.backend.invoke('native_pause',warm?{warm:true}:undefined);
    return revision===this.statusRevision?this.acceptStatus({...status,phase:'paused'}):this.current;
   }finally{if(revision===this.statusRevision)++this.statusRevision;this.pausePending--;}
  }

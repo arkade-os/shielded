@@ -25,14 +25,20 @@ export function createWalletOpeningProgress(report:(line:string)=>void,{now=Date
  const timer=setInterval(tick,1000);return()=>clearInterval(timer);
 }}:ProgressClock={}){
  let stopped=false,progress:ShieldedSyncProgress|undefined,started=0,last='',cancel:(()=>void)|undefined;
+ let history:Extract<ShieldedSyncProgress,{stage:'history'}>|undefined;
  const publish=()=>{
   if(stopped||!progress)return;
-  const line=walletSyncProgressLabel(progress,now()-started);
+  const elapsed=now()-started;
+  let line=walletSyncProgressLabel(progress,elapsed);
+  if(history&&(progress.stage==='request'||progress.stage==='waiting')&&progress.request==='history')line=walletSyncProgressLabel(history,progress.stage==='request'?elapsed:0)+(progress.stage==='waiting'?` · ${line}`:'');
   if(line===last)return;last=line;report(line);
  };
  return {
   update(value:ShieldedSyncProgress){
-   if(stopped)return;progress=value;started=now();publish();
+   if(stopped)return;progress=value;started=now();
+   if(value.stage==='history')history=value;
+   else if(value.stage==='verified')history=undefined;
+   publish();
    if(value.stage==='verified'){cancel?.();cancel=undefined;}
    else if(!cancel)cancel=repeat(publish);
   },

@@ -577,3 +577,61 @@ Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 5
 Wider simulation passed 20,000 traces at depth 100 with four opaque failure codes instead of two, seed 20261111, checking 99,048 states. The checker retains the earlier 74 configurations and adds this base plus three mutants, for 78 expected configurations.
 
 The model has one operation and two failure callers, abstracts bridge and Android APIs, and assumes an available prepared file and accurate journal reads under the shared lock. It preserves opaque callback errors by equality rather than interpreting them. The broader recovery model owns file loss, subsequent status queries and explicit retry attempts. No eventual delivery, successful Android installation, cryptographic correctness or checked source refinement is claimed.
+
+## Warm Tor and a passive resume view
+
+`NativeWarmView.tla` permanently revokes the operation-owner generation on every native suspension or frontend hide. Old SDK graphs, providers, streams and callback continuations remain bound to that revoked generation. Returning creates a fresh graph after the cleanup/drain and full-readiness barriers. `FirstFetch` deliberately occurs separately from operation start: an old proof/signing continuation cannot borrow a current generation for its first POST after resume.
+
+Only a bounded frozen display projection and a local scanner intent may remain for a brief return. The display contains primitive balance/activity strings, with no SDK references, actions, key material or recovery phrase. Lock, reset, mode change, destruction, observed expiry and expired-return projection clear this presentation. Publishing the fresh wallet replaces the passive display. Scanner intent never authorizes a financial operation or revives an old graph.
+
+An already-ready Tor client may remain Normal for a fixed short grace while native request phase is paused. Duplicate pause notifications do not move that original monotonic deadline. A fresh native start consumes the warmth; native Resumed only changes foreground state and emits its event, while JavaScript separately requests a fresh open. Both visibility signals still gate readiness/publication and private dispatch. Client readiness is checked again before Ready even when the same Arti instance remains warm.
+
+Expiry capture and application are separate. Applying Soft dormancy must recheck the captured client/sequence ticket, paused phase and visibility, and serialize its effect against fresh startup's Normal transition. An old queued expiry cannot Soft-dormant a newer foreground client or clear a later warmth/presentation. Full pause/lock/mode/destruction use immediate Soft dormancy and invalidate the warmth ticket. Tor protocol maintenance while Normal is outside private application I/O.
+
+`NativeWarmViewStatus.tla` isolates event/poll ordering. A poll captures its generation, revision, foreground flag and phase before delivery. Native suspension revokes generation; Resumed changes foreground state without making the request phase Ready. A same-generation older poll cannot undo that newer event, so a generation check alone is insufficient for this ordering case.
+
+| Model actions | Source ownership |
+| --- | --- |
+| `Hide`, `HardStop`, `BeginFresh`, `ConfirmReady` | `src-tauri/src/transport/session.rs`: `Inner::suspend`, `pause`, `prepare_start`, `StartupWork::run_with_bootstrap` and `finish_start`; existing invalidation/drain barrier |
+| `NativeResume`, `ShowJS` | `src-tauri/src/lib.rs` emits an actual native foreground transition; `Inner::resumed` only sets visibility; `app/src/NativeWallet.tsx` separately guards visibility and fresh open |
+| `WantScanner`, `PublishWallet`, `ConsumeScanner`, `DropPresentation` | `app/src/native-resume-presentation.ts`: copied primitive projection, fixed expiry and scanner delivery; `NativeWallet.tsx` guards callbacks by fresh session/view; `RollupWallet.tsx` opens scanning only when promoted, ready and visible |
+| `ReadExpiry`, `ApplyExpiry` | `WarmPause` carries client, opaque ticket and monotonic deadline; `Inner::suspend` schedules a weak timer; `expire_warm` serializes the final client/ticket/phase/visibility check and dormancy transition with startup |
+| `BeginOperation`, `FirstFetch`, `Dispatch`, `Deliver` | `src/native/transport.ts`: `NativeBridge.sessionGuard` and `bindFetch` retain the immutable owner before awaits; existing provider/session closures and native generation fences reject retired work |
+| Status `Suspend`, `Resumed`, `ReadPoll`, `DeliverPoll` | `NativeBridge.acceptLifecycle` increments `statusRevision` before accepting the event; `status` rejects older polls; the native foreground flag gates startup and private dispatch |
+
+```mermaid
+stateDiagram-v2
+    [*] --> ReadyGraph
+    ReadyGraph --> Paused: either hide revokes owner generation
+    Paused --> Paused: duplicate hide preserves warmth deadline
+    Paused --> Soft: valid hidden expiry, lock, reset or mode change
+    Paused --> StartingFresh: JS open, visibility permits, warmth consumed
+    Soft --> StartingFresh: authorized foreground JS open
+    StartingFresh --> ReadyGraph: cleanup drained, full readiness, fresh graph
+    StartingFresh --> Paused: another hide revokes that generation
+    state Paused {
+        [*] --> FrozenDisplay
+        FrozenDisplay --> ClearedDisplay: expiry or hard retirement
+    }
+```
+
+Pinned TLC v1.7.4 checked the warm-view base on November 11, 2026 using two workers and a 512 MiB heap: 458,932 generated states, 111,470 distinct states, depth 27 and an empty queue. The status base generated 30 states, found 24 distinct states and completed at depth six. Every semantic action generated successors. `ConsumeScanner` and `Unlock` discovered no new unique states but generated 483 and 13,260 successors respectively.
+
+The warm-view base has five generations, two warmth tickets, two client identities, one abstract grace unit and clock bound two. It models one logical operation with an immutable graph owner and delayed first fetch. The status base permits three revisions, three generations and one captured poll. Ten separate guard mutations fail their intended invariant:
+
+| Configuration | Counterexample / expected invariant |
+| --- | --- |
+| `NativeWarmView_NoGraphBinding.cfg` | a prehide operation recaptures the current generation for its delayed first fetch; `NoOldGraphDispatch` |
+| `NativeWarmView_NoVisibility.cfg` | a fresh graph can dispatch while a visibility signal denies activity; `NoHiddenDispatch` |
+| `NativeWarmView_NoDrain.cfg` | Ready is published before old work drains; `FullDrainBeforeReady` |
+| `NativeWarmView_NoReadiness.cfg` | Ready is published without a successful full-readiness result; `FullReadinessBeforeReady` |
+| `NativeWarmView_NoSnapshotCapability.cfg` | display retention carries an old graph reference; `SnapshotNeverCapability` |
+| `NativeWarmView_NoPresentationClear.cfg` | hard retirement or observed expiry leaves presentation/intent behind; `PresentationCleared` |
+| `NativeWarmView_NoWarmDeadline.cfg` | duplicate pause extends the first deadline; `NoGraceExtension` |
+| `NativeWarmView_NoExpiryFence.cfg` | a captured expiry changes newer foreground dormancy or warmth; `NoStaleDormancy` |
+| `NativeWarmView_NoResumeStarts.cfg` | native Resumed starts work without a separate JS open; `NativeResumeOnlySignals` |
+| `NativeWarmViewStatus_NoPollFence.cfg` | an older paused poll undoes a same-generation Resumed event; `NoPollUndoNativeEvent` |
+
+All twelve configurations matched their expected outcomes. The checker retains the earlier 78 configurations and adds these twelve, for 90 expected configurations; the combined 90-configuration gate also passed on November 11, 2026. Wider simulations each passed 20,000 traces at depth 100 with seed 20261111. Warm-view bounds widened to eight generations, four warmth tickets, three clients, grace two and clock six, checking 386,013 states. Status bounds widened to eight revisions and six generations, checking 200,001 states.
+
+The models assume immutable owner binding at the SDK/provider boundary and existing native generation checks; `NativeSession` remains required for durable unknown reservations and no automatic native mutation replay. Warmth and display retention never update that journal. Frozen display values and client/readiness/drain acknowledgements are abstract, so source serializers, consumers, Arti behavior and socket closure still require implementation/runtime verification. No physical-device behavior, latency, eventual recovery, cryptographic isolation or checked refinement is claimed. Snapshot expiry on a return is a frontend projection effect; native Resumed still performs no private I/O or Ready transition.

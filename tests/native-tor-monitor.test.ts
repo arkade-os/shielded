@@ -164,3 +164,33 @@ test('stopping removes timers and subscriptions and ignores outstanding work',as
  t.mock.timers.tick(60_000);await flush();f.monitor.check();await flush();
  assert.equal(f.health.length,count);assert.equal(f.statusCalls(),polls);assert.equal(f.errors.length,0);assert.equal(f.checks.length,1);
 });
+
+test('a proven warm handoff reuses only recent successful diagnostic evidence',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();
+ t.mock.timers.tick(1000);f.visible(false);f.emit({phase:'paused',generation:2,mode:'tor',warmFromGeneration:1});
+ f.visible(true);f.emit({phase:'ready',generation:3,mode:'tor',warmFromGeneration:1});await flush();
+ assert.equal(f.latest().check,'ok');assert.equal(f.latest().checkedAt,0);assert.equal(f.checks.length,1);
+ t.mock.timers.tick(29_000);await flush();assert.equal(f.checks.length,2);
+});
+
+test('warm diagnostic reuse rejects expired evidence and another source generation',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();
+ f.visible(false);f.emit({phase:'paused',generation:2,mode:'tor',warmFromGeneration:1});
+ t.mock.timers.tick(30_000);f.visible(true);f.emit({phase:'ready',generation:3,mode:'tor',warmFromGeneration:1});await flush();assert.equal(f.checks.length,2);
+ f.checks[1]!.result.resolve();await flush();
+ f.emit({phase:'paused',generation:4,mode:'tor',warmFromGeneration:3});
+ f.emit({phase:'ready',generation:5,mode:'tor',warmFromGeneration:1});await flush();assert.equal(f.checks.length,3);
+});
+
+test('a backwards wall clock cannot extend warm diagnostic freshness',async t=>{
+ const f=fixture(t);await flush();t.mock.timers.tick(1000);f.checks[0]!.result.resolve();await flush();
+ f.visible(false);f.emit({phase:'paused',generation:2,mode:'tor',warmFromGeneration:1});
+ t.mock.timers.setTime(500);f.visible(true);f.emit({phase:'ready',generation:3,mode:'tor',warmFromGeneration:1});await flush();
+ assert.equal(f.checks.length,2);assert.equal(f.latest().check,'checking');
+});
+
+test('a direct-mode diagnostic can never stand in for a warm Tor check',async t=>{
+ const f=fixture(t,{phase:'ready',generation:1,mode:'direct'});await flush();f.checks[0]!.result.resolve();await flush();
+ f.emit({phase:'paused',generation:2,mode:'direct',warmFromGeneration:1});
+ f.emit({phase:'ready',generation:3,mode:'tor',warmFromGeneration:1});await flush();assert.equal(f.checks.length,2);
+});

@@ -33,8 +33,8 @@ async function main() {
     if (createHash('sha256').update(artifact).digest('hex') !== TLC_CHECKSUM) throw new Error('TLC artifact checksum mismatch');
     const jar = join(temporary, 'tla2tools.jar');
     writeFileSync(jar, artifact);
-    const configurations = readdirSync(directory).filter(name => /^(NativeSession|NativeViewHandoff|TorStatus|TorStartup|TorConnect|WalletStatus|HttpReuse|AndroidUpdate|UpdateRecovery).*\.cfg$/.test(name) && !name.endsWith('_Sim.cfg')).sort();
-    for (const model of ['NativeSession', 'NativeViewHandoff', 'TorStatus', 'TorStartup', 'TorConnect', 'WalletStatus', 'HttpReuse', 'AndroidUpdate', 'UpdateRecovery', 'UpdateRecoveryReceipts']) if (!configurations.includes(`${model}.cfg`)) throw new Error(`${model} base configuration is missing`);
+    const configurations = readdirSync(directory).filter(name => /^(NativeSession|NativeViewHandoff|TorStatus|TorStartup|TorConnect|WalletStatus|HttpReuse|AndroidUpdate|UpdateRecovery|NativeWarmView).*\.cfg$/.test(name) && !name.endsWith('_Sim.cfg')).sort();
+    for (const model of ['NativeSession', 'NativeViewHandoff', 'TorStatus', 'TorStartup', 'TorConnect', 'WalletStatus', 'HttpReuse', 'AndroidUpdate', 'UpdateRecovery', 'UpdateRecoveryReceipts', 'NativeWarmView', 'NativeWarmViewStatus']) if (!configurations.includes(`${model}.cfg`)) throw new Error(`${model} base configuration is missing`);
     for (const configuration of configurations) {
       const expected = readFileSync(join(directory, configuration), 'utf8').match(/^\\\* EXPECT: (.+)\r?$/m)?.[1];
       if (!expected || (expected !== 'GREEN' && !/^Invariant \w+ is violated$/.test(expected))) throw new Error(`Invalid EXPECT in ${configuration}`);

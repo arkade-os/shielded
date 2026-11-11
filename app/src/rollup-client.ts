@@ -28,8 +28,8 @@ export const isInvoice=(raw:string)=>/^(lightning:)?ln(bc|tb|bcrt)/i.test(raw.tr
 /** An invoice that pins its amount refuses a second one, even an equal one; the amount sits before bech32's last `1`. */
 export const invoiceCarriesAmount=(raw:string)=>{const t=raw.trim().replace(/^lightning:/i,'');return isInvoice(t)&&/\d/.test(t.slice(0,t.lastIndexOf('1')));};
 /** Open Send before filling, so selecting its view cannot clear the destination on the way in. */
-export function openPaymentRequest({docked,openPanel,selectTab,fill}:{docked:boolean;openPanel:()=>void;selectTab:()=>void;fill:()=>void}){
- if(docked)openPanel();else selectTab();fill();
+export function openPaymentRequest({docked,openPanel,selectTab,fill,closeScanner}:{docked:boolean;openPanel:()=>void;selectTab:()=>void;fill:()=>void;closeScanner?:()=>void}){
+ closeScanner?.();if(docked)openPanel();else selectTab();fill();
 }
 /** Upper case keeps the whole payload in QR's alphanumeric mode, which is denser than byte mode. */
 export const invoiceQr=(bolt11:string)=>'LIGHTNING:'+bolt11.toUpperCase();

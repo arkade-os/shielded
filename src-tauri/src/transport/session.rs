@@ -28,6 +28,7 @@ const MAX_IDLE_HTTP: usize = 16;
 const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CANCELLED: usize = 4096;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const WARM_PAUSE: Duration = Duration::from_secs(30);
 const DIRECTORY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const DIRECTORY_RETRY_ATTEMPTS: u32 = 8;
 const DIRECTORY_PARALLELISM: u8 = 8;
@@ -46,8 +47,20 @@ const PURPOSES: &[&str] = &[
     "release",
 ];
 
+#[derive(Clone)]
+struct WarmPause {
+    id: uuid::Uuid,
+    generation: u64,
+    deadline: Instant,
+    client: Client,
+}
+
 pub(super) struct Session {
     pub phase: &'static str,
+    native_foreground: bool,
+    js_active: bool,
+    warm: Option<WarmPause>,
+    warm_from_generation: Option<u64>,
     pub generation: u64,
     pub mode: NativeMode,
     pub error: Option<String>,
@@ -359,6 +372,10 @@ impl Inner {
             tls: Arc::new(tls),
             session: Mutex::new(Session {
                 phase: "locked",
+                native_foreground: true,
+                js_active: false,
+                warm: None,
+                warm_from_generation: None,
                 generation: 0,
                 mode: NativeMode::Tor,
                 error: None,
@@ -403,10 +420,86 @@ impl Inner {
         let mut session = self.lock()?;
         session.invalidate()?;
         session.phase = "paused";
+        session.js_active = false;
         session.error = None;
         if let Some(client) = &session.client {
             client.set_dormant(DormantMode::Soft);
         }
+        Ok(session.status())
+    }
+
+    pub fn suspend(self: &Arc<Self>, native: bool) -> Result<NativeStatus, String> {
+        let mut session = self.lock()?;
+        if native {
+            session.native_foreground = false;
+        }
+        let fresh = session.phase == "ready" && session.mode == NativeMode::Tor;
+        let warm = if fresh {
+            session.client.clone().map(|client| WarmPause {
+                id: uuid::Uuid::new_v4(),
+                generation: session.generation,
+                deadline: Instant::now() + WARM_PAUSE,
+                client,
+            })
+        } else if session.phase == "paused" {
+            session
+                .warm
+                .clone()
+                .filter(|warm| warm.deadline > Instant::now())
+        } else {
+            None
+        };
+        session.invalidate()?;
+        session.phase = "paused";
+        session.js_active = false;
+        session.error = None;
+        session.warm_from_generation = warm.as_ref().map(|warm| warm.generation);
+        session.warm = warm.clone();
+        if warm.is_none() {
+            if let Some(client) = &session.client {
+                client.set_dormant(DormantMode::Soft);
+            }
+        }
+        let status = session.status();
+        drop(session);
+        if let Some(warm) = warm.filter(|_| fresh) {
+            let weak = Arc::downgrade(self);
+            let (id, deadline) = (warm.id, warm.deadline);
+            let _ = tauri::async_runtime::spawn(async move {
+                tokio::time::sleep_until(deadline.into()).await;
+                if let Some(inner) = weak.upgrade() {
+                    inner.expire_warm(id, Instant::now());
+                }
+            });
+        }
+        Ok(status)
+    }
+
+    fn expire_warm(&self, id: uuid::Uuid, now: Instant) {
+        let Ok(mut session) = self.lock() else {
+            return;
+        };
+        let matches = session.warm.as_ref().is_some_and(|warm| {
+            warm.id == id
+                && now >= warm.deadline
+                && session
+                    .client
+                    .as_ref()
+                    .is_some_and(|client| Arc::ptr_eq(client, &warm.client))
+        }) && session.phase == "paused"
+            && (!session.native_foreground || !session.js_active);
+        if !matches {
+            return;
+        }
+        if let Some(warm) = session.warm.take() {
+            warm.client.set_dormant(DormantMode::Soft);
+        }
+        session.warm_from_generation = None;
+    }
+
+    pub fn resumed(&self) -> Result<NativeStatus, String> {
+        let mut session = self.lock()?;
+        session.native_foreground = true;
         Ok(session.status())
     }
 
@@ -449,6 +542,9 @@ impl Inner {
         initial_only: bool,
     ) -> Result<PreparedStart, String> {
         let mut session = self.lock()?;
+        if !session.native_foreground {
+            return Err("native activity is not in the foreground".into());
+        }
         if initial_only
             && (session.generation != 0
                 || session.phase != "locked"
@@ -471,7 +567,21 @@ impl Inner {
                 });
             }
         }
+        let warm_from = session
+            .warm
+            .as_ref()
+            .filter(|warm| {
+                mode == NativeMode::Tor
+                    && warm.deadline > Instant::now()
+                    && session
+                        .client
+                        .as_ref()
+                        .is_some_and(|client| Arc::ptr_eq(client, &warm.client))
+            })
+            .map(|warm| warm.generation);
         session.invalidate()?;
+        session.js_active = true;
+        session.warm_from_generation = warm_from;
         if session.mode != mode {
             if let Some(client) = session.client.take() {
                 client.set_dormant(DormantMode::Soft);
@@ -547,6 +657,7 @@ impl Inner {
                 Ok(()) => session.phase = "ready",
                 Err(error) => {
                     session.phase = "error";
+                    session.warm_from_generation = None;
                     session.error = Some(error);
                     if let Some(client) = &session.client {
                         client.set_dormant(DormantMode::Soft);
@@ -924,6 +1035,8 @@ impl Session {
             phase: self.phase.into(),
             generation: self.generation,
             mode: self.mode,
+            foreground: self.native_foreground,
+            warm_from_generation: self.warm_from_generation,
             error: self.error.clone(),
             progress: if self.mode == NativeMode::Tor && self.phase == "bootstrapping" {
                 self.client
@@ -936,7 +1049,7 @@ impl Session {
     }
 
     fn check(&self, generation: u64) -> Result<(), String> {
-        if self.generation != generation || self.phase != "ready" {
+        if self.generation != generation || self.phase != "ready" || !self.native_foreground {
             return Err("private transport is not ready for this session".into());
         }
         Ok(())
@@ -944,6 +1057,7 @@ impl Session {
 
     fn start_matches(&self, generation: u64, mode: NativeMode, completion: &Arc<Startup>) -> bool {
         self.generation == generation
+            && self.native_foreground
             && self.mode == mode
             && self.phase == "bootstrapping"
             && self
@@ -953,6 +1067,8 @@ impl Session {
     }
 
     fn invalidate(&mut self) -> Result<(), String> {
+        self.warm = None;
+        self.warm_from_generation = None;
         self.generation = self
             .generation
             .checked_add(1)
@@ -2523,5 +2639,141 @@ mod tests {
                 .unwrap(),
             &replacement
         ));
+    }
+
+    #[tokio::test]
+    async fn warm_suspend_retires_every_old_capability_without_extending_the_deadline() {
+        let inner = ready();
+        let client = inner.lock().unwrap().client.clone().unwrap();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id, "old")).unwrap();
+        let paused = inner.suspend(true).unwrap();
+        let first = inner.lock().unwrap().warm.clone().unwrap();
+        assert_eq!(paused.phase, "paused");
+        assert!(!paused.foreground);
+        assert_eq!(paused.warm_from_generation, Some(1));
+        assert!(lease.cancel.is_cancelled());
+        assert!(lease.check().is_err());
+        assert!(inner.lock().unwrap().scopes.is_empty());
+        inner.suspend(false).unwrap();
+        let session = inner.lock().unwrap();
+        let second = session.warm.as_ref().unwrap();
+        assert_eq!(first.id, second.id);
+        assert_eq!(first.deadline, second.deadline);
+        assert!(Arc::ptr_eq(&client, session.client.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn native_resume_only_reports_visibility_and_cannot_start_an_inactive_activity() {
+        let inner = ready();
+        inner.suspend(true).unwrap();
+        let paused = inner.status().unwrap();
+        assert!(inner.start(NativeMode::Tor).await.is_err());
+        let resumed = inner.resumed().unwrap();
+        assert!(resumed.foreground);
+        assert_eq!(resumed.phase, "paused");
+        assert_eq!(resumed.generation, paused.generation);
+        assert!(inner.scope(resumed.generation, "indexer").is_err());
+    }
+
+    #[tokio::test]
+    async fn warm_resume_still_drains_then_bootstraps_a_fresh_owner() {
+        let inner = ready();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let old_request = request(1, scope.id, "proof-finished-late");
+        let old = register(&inner, &old_request).unwrap();
+        inner.suspend(true).unwrap();
+        inner.resumed().unwrap();
+        let PreparedStart::Pending {
+            waiter,
+            work: Some(work),
+        } = inner
+            .prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, false)
+            .unwrap()
+        else {
+            panic!("fresh start required");
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let mut running = Box::pin(work.run_with_bootstrap(move |_, _, _, existing| {
+            assert!(existing.is_some());
+            count.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(()))
+        }));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut running)
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(old);
+        running.await;
+        let status = waiter.wait(&inner).await.unwrap();
+        assert_eq!(status.phase, "ready");
+        assert!(status.generation > 1);
+        assert_eq!(status.warm_from_generation, Some(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(register(&inner, &old_request).is_err());
+    }
+
+    #[tokio::test]
+    async fn delayed_warm_expiry_cannot_dormant_a_resumed_or_newly_paused_client() {
+        let inner = ready();
+        inner.suspend(false).unwrap();
+        let first = inner.lock().unwrap().warm.clone().unwrap();
+        let PreparedStart::Pending {
+            waiter,
+            work: Some(work),
+        } = inner
+            .prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, false)
+            .unwrap()
+        else {
+            panic!("fresh start required");
+        };
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        waiter.wait(&inner).await.unwrap();
+        inner.expire_warm(first.id, first.deadline);
+        assert_eq!(inner.status().unwrap().phase, "ready");
+        inner.suspend(false).unwrap();
+        let second = inner.lock().unwrap().warm.clone().unwrap();
+        inner.expire_warm(first.id, second.deadline);
+        assert_eq!(inner.lock().unwrap().warm.as_ref().unwrap().id, second.id);
+        inner.expire_warm(second.id, second.deadline);
+        assert!(inner.lock().unwrap().warm.is_none());
+        assert_eq!(inner.status().unwrap().warm_from_generation, None);
+    }
+
+    #[tokio::test]
+    async fn hard_pause_and_interrupted_startup_cannot_retain_warmth() {
+        let inner = ready();
+        inner.suspend(false).unwrap();
+        inner.pause().unwrap();
+        assert!(inner.lock().unwrap().warm.is_none());
+        assert_eq!(inner.status().unwrap().warm_from_generation, None);
+        let PreparedStart::Pending {
+            work: Some(work), ..
+        } = inner
+            .prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, false)
+            .unwrap()
+        else {
+            panic!("fresh start required");
+        };
+        inner.suspend(true).unwrap();
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        assert_eq!(inner.status().unwrap().phase, "paused");
+        assert!(inner.lock().unwrap().warm.is_none());
+    }
+    #[tokio::test]
+    async fn native_suspend_can_schedule_warm_expiry_from_an_unentered_ui_thread() {
+        let inner = ready();
+        let status = std::thread::spawn(move || inner.suspend(true))
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.phase, "paused");
+        assert!(!status.foreground);
+        assert_eq!(status.warm_from_generation, Some(1));
     }
 }

@@ -31,3 +31,16 @@ test('opening progress stops its clock and rejects late callbacks after its owne
  progress.stop();progress.update({stage:'request',request:'status',attempt:2});tick();
  assert.equal(lines.length,3);assert.equal(cancelled,1);
 });
+
+test('the last real percentage stays visible while the next page downloads or retries',()=>{
+ let now=0,tick=()=>{};const lines:string[]=[];
+ const progress=createWalletOpeningProgress(line=>lines.push(line),{now:()=>now,repeat:fn=>{tick=fn;return()=>{};}});
+ progress.update({stage:'history',from:128,through:178,total:228});
+ progress.update({stage:'request',request:'history',attempt:1});now=6100;tick();
+ assert.equal(lines.at(-1),'Reading private pool history · 50% · 50 of 100 updates · 5s');
+ progress.update({stage:'waiting',request:'history',attempt:2,retryInMs:4000});
+ assert.equal(lines.at(-1),'Reading private pool history · 50% · 50 of 100 updates · Retrying private pool history in 4s');
+ progress.update({stage:'verified',through:228,total:228});
+ progress.update({stage:'request',request:'history',attempt:1});
+ assert.equal(lines.at(-1),'Reading private pool history');progress.stop();
+});

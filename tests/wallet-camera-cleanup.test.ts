@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 import {test} from 'node:test';
 import {Children,isValidElement,type ReactNode} from 'react';
+import {openPaymentRequest} from '../app/src/rollup-client.ts';
 
 const key='__shieldedCameraTest';
 const state=globalThis as typeof globalThis&{[key]:Harness};
@@ -86,4 +87,13 @@ test('a successful scan stops resources and delivers its result once',async()=>{
  h.frame();h.reading.resolve('lightning:invoice');await h.stopped.promise;
  assert.equal(h.stopCalls,1);assert.equal(h.cancelCalls,1);assert.deepEqual(h.results,['lightning:invoice']);
  h.cleanup();assert.equal(h.stopCalls,1);assert.equal(h.cancelCalls,1);
+});
+
+test('an incoming payment closes the active camera before filling Send and ignores its pending frame',async()=>{
+ const h=mount(),events:string[]=[];await h.acquiring.promise;h.acquisition.resolve(h.camera);await h.started.promise;
+ h.frame!();
+ openPaymentRequest({docked:true,closeScanner:()=>{events.push('close');h.cleanup();},openPanel:()=>events.push('send'),selectTab:()=>events.push('tab'),fill:()=>events.push('lightning:new-request')});
+ h.reading.resolve('lightning:old-frame');await h.reading.promise;await Promise.resolve();
+ assert.deepEqual(events,['close','send','lightning:new-request']);assert.deepEqual(h.results,[]);
+ assert.equal(h.stopCalls,1);assert.equal(h.cancelCalls,1);
 });

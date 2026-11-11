@@ -67,12 +67,17 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            let pause = matches!(event, tauri::WindowEvent::Destroyed);
-            #[cfg(mobile)]
-            let pause = pause || matches!(event, tauri::WindowEvent::Suspended);
-            if pause {
-                if let Some(transport) = window.app_handle().try_state::<transport::PrivacyTransport>() {
-                    let _ = transport.pause();
+            if let Some(transport) = window.app_handle().try_state::<transport::PrivacyTransport>() {
+                if matches!(event, tauri::WindowEvent::Destroyed) { let _ = transport.pause(); }
+                #[cfg(mobile)]
+                {
+                    use tauri::Emitter;
+                    let status = match event {
+                        tauri::WindowEvent::Suspended => Some(transport.suspend(true)),
+                        tauri::WindowEvent::Resumed if transport.status().is_ok_and(|status| !status.foreground) => Some(transport.resumed()),
+                        _ => None,
+                    };
+                    if let Some(Ok(status)) = status { let _ = window.emit("shielded-native-lifecycle", status); }
                 }
             }
         })
