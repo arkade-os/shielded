@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
-const iconArguments = ['icon', 'src-tauri/icon.json', '--output', 'src-tauri/icons', '--ios-color', '#111f31'];
 
 export function androidVersionCode(env = process.env) {
   if (!env.GITHUB_RUN_NUMBER && env.GITHUB_ACTIONS !== 'true') return undefined;
@@ -39,9 +38,13 @@ export function protectAndroidManifest(source) {
   return source.replace(matches[0][0], () => application);
 }
 
-function run(args) {
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: root, shell: false, stdio: 'inherit' });
+function run(args, cwd = root) {
+  const result = spawnSync(process.execPath, [cli, ...args], { cwd, shell: false, stdio: 'inherit' });
   if (result.error || result.status !== 0) throw new Error(`Tauri command failed (exit ${result.status ?? 'unavailable'})`);
+}
+
+export function prepareIcons(projectRoot = root) {
+  run(['icon', resolve(projectRoot, 'src-tauri/icon.json'), '--output', resolve(projectRoot, 'src-tauri/icons'), '--ios-color', '#111f31'], projectRoot);
 }
 
 export function prepareAndroid(projectRoot = root) {
@@ -58,14 +61,15 @@ export function prepareAndroid(projectRoot = root) {
   const source = readFileSync(manifest, 'utf8');
   const prepared = protectAndroidManifest(source);
   if (prepared !== source) writeFileSync(manifest, prepared);
+  prepareIcons(projectRoot);
 }
 
 export function main([platform = 'desktop', action = 'dev', ...args] = process.argv.slice(2)) {
-  if (platform === 'icons') { run(iconArguments); return; }
+  if (platform === 'icons') { prepareIcons(); return; }
   if (args[0] === '--') args.shift();
   const command = nativeArguments(platform, action, args);
   if (args.some(arg => ['--help', '-h'].includes(arg))) { run(command); return; }
-  if (!existsSync(resolve(root, 'src-tauri/icons/icon.png'))) run(iconArguments);
+  if (!existsSync(resolve(root, 'src-tauri/icons/icon.png'))) prepareIcons();
   if (platform === 'android') {
     if (action === 'init') {
       if (!existsSync(resolve(root, 'src-tauri/gen/android/app'))) run(command);
@@ -77,8 +81,13 @@ export function main([platform = 'desktop', action = 'dev', ...args] = process.a
   }
   if (platform === 'ios') {
     const initialized = existsSync(resolve(root, 'src-tauri/gen/apple'));
-    if (action === 'init' && initialized) return;
+    if (action === 'init') {
+      if (!initialized) run(command);
+      prepareIcons();
+      return;
+    }
     if (action !== 'init' && !initialized) throw new Error('Initialize the local iOS project first');
+    prepareIcons();
     if (action === 'prepare') return;
   }
   run(command);
