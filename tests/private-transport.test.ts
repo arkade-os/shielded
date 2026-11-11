@@ -8,7 +8,7 @@ import {IsolatedOnchainProvider} from '../src/native/providers.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
-import {isPrivateFetch} from '../src/shielded/network-privacy.ts';
+import {isPrivateFetch,isSealedFetch} from '../src/shielded/network-privacy.ts';
 import {installPrivateTransport,privateTransport} from '../src/shielded/private-transport.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
@@ -94,9 +94,9 @@ test('arkd, indexer and Esplora requests are classified before they are sealed',
  assert.deepEqual(g.calls,[ARK+'/v1/indexer/vtxos?scripts=aa',utxos]);
 });
 
-test('the transport fetch is marked private',async t=>{
+test('the transport fetch is marked private and sealed',async t=>{
  const g=await rig(t);
- assert.ok(isPrivateFetch(g.transport.fetch));assert.equal(g.globals.fetch,g.transport.fetch);
+ assert.ok(isPrivateFetch(g.transport.fetch));assert.ok(isSealedFetch(g.transport.fetch));assert.equal(g.globals.fetch,g.transport.fetch);
 });
 
 test('a second install returns the first transport',async t=>{

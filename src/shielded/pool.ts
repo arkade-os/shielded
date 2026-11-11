@@ -3,7 +3,7 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
-import {PRIVATE_PAGE_DEFAULT,isPrivateFetch,markPrivatePoolApi,markPrivatePoolPage} from './network-privacy.ts';
+import {PRIVATE_PAGE_DEFAULT,isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage} from './network-privacy.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number;depositFee?:DepositFee}}
@@ -29,7 +29,7 @@ export const rejected=(error:unknown,code:string):boolean=>typeof error==='objec
 /** Retries outages and rate limits; definitive refusals surface at once. */
 export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{
  const key=new URL(origin||globalThis.location?.origin||'http://localhost').origin;
- const isPrivate=isPrivateFetch(fetcher),privateMutation=body!==undefined&&isPrivate;
+ const privateMutation=body!==undefined&&isPrivateFetch(fetcher);
  const admission=body!==undefined&&!/^\/spends\/[^/]+\/sign(?:\?|$)/.test(path);
  const request:RequestInit={method:body===undefined?'GET':'POST',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})};
  for(let attempt=0;;attempt++){
@@ -57,7 +57,8 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
    return json as T;
   }
   // A sealed 502 is the gateway's answer to an oversize page and to a dead pool alike; a repeat only repeats the first, so one try, and the 60 s tick reads again.
-  if(privateMutation||attempt>=4||isPrivate&&response?.status===502)throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
+  // Only the browser's sealed fetch: a private native fetch is not the gateway, and keeps its retries.
+  if(privateMutation||attempt>=4||response?.status===502&&isSealedFetch(fetcher))throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
   await sleep(pauseMs);
  }
 }

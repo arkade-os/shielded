@@ -1,4 +1,5 @@
 export const PRIVATE_FETCH=Symbol.for('shielded.private.fetch');
+export const SEALED_FETCH=Symbol.for('shielded.sealed.fetch');
 export const PRIVATE_POOL_API=Symbol.for('shielded.private.pool-api');
 export const PRIVATE_POOL_PAGE=Symbol.for('shielded.private.pool-page');
 export const PRIVATE_PAGE_DEFAULT=50;
@@ -8,6 +9,8 @@ const marked=(value:unknown,key:symbol)=>brandOf(value,key)===true;
 const mark=<T extends object>(value:T,key:symbol,brand:unknown=true):T=>{Object.defineProperty(value,key,{value:brand});return value;};
 export const isPrivateFetch=(value:unknown):boolean=>marked(value,PRIVATE_FETCH);
 export const markPrivateFetch=<T extends typeof fetch>(value:T):T=>mark(value,PRIVATE_FETCH);
+export const isSealedFetch=(value:unknown):boolean=>marked(value,SEALED_FETCH);
+export const markSealedFetch=<T extends typeof fetch>(value:T):T=>mark(value,SEALED_FETCH);
 export const isPrivatePoolApi=(value:unknown):boolean=>marked(value,PRIVATE_POOL_API);
 export const markPrivatePoolApi=<T extends object>(value:T):T=>mark(value,PRIVATE_POOL_API);
 export const markPrivatePoolPage=<T extends object>(value:T,size:number):T=>mark(value,PRIVATE_POOL_PAGE,size);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {setImmediate} from 'node:timers/promises';
 import {test} from 'node:test';
 import {poolApiOf,rollupApi,waitForSpend} from '../src/shielded/pool.ts';
-import {markPrivateFetch} from '../src/shielded/network-privacy.ts';
+import {markPrivateFetch,markSealedFetch} from '../src/shielded/network-privacy.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
@@ -178,12 +178,25 @@ test('definitive 400 and 409 refusals are never retried',async()=>{
  }
 });
 
-test('a private read does not repeat a sealed 502, and a direct read still does',async()=>{
- for(const [label,isPrivate,status,calls] of [['private 502',true,502,1],['direct 502',false,502,5],['private 503',true,503,5]] as const){
-  let count=0;
-  const raw=(async()=>{count++;return new Response('',{status});}) as typeof fetch;
-  await assert.rejects(rollupApi('/batches?from=0&limit=12',undefined,isPrivate?markPrivateFetch(raw):raw,0,'https://sealed-502.test'),(error:{status?:number})=>error.status===status,label);
-  assert.equal(count,calls,label);
+test('a sealed read gives up on a 502 at once, without waiting or asking again',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ let calls=0,settled=false;
+ const fetcher=markSealedFetch(markPrivateFetch((async()=>{calls++;return new Response('',{status:502});}) as typeof fetch));
+ const pending=outcome(rollupApi('/batches?from=0&limit=12',undefined,fetcher,1000,'https://sealed-502.test')).then(result=>{settled=true;return result;});
+ await flush();
+ assert.equal(settled,true);assert.equal(calls,1);assert.equal((await pending).error?.status,502);
+});
+
+test('a private read that is not sealed still repeats a 502, as does a direct one, and a sealed read still repeats a 503',async t=>{
+ for(const [label,priv,sealed,status] of [['private 502',true,false,502],['direct 502',false,false,502],['sealed 503',true,true,503]] as const){
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  let calls=0;
+  const raw=(async()=>{calls++;return new Response('',{status});}) as typeof fetch,fetcher=sealed?markSealedFetch(markPrivateFetch(raw)):priv?markPrivateFetch(raw):raw;
+  const pending=outcome(rollupApi('/batches?from=0&limit=12',undefined,fetcher,1000,'https://sealed-502.test'));
+  await flush();assert.equal(calls,1,label);
+  for(let i=1;i<5;i++){t.mock.timers.tick(1000);await flush();assert.equal(calls,i+1,label);}
+  assert.equal((await pending).error?.status,status,label);
+  t.mock.timers.reset();
  }
 });
 

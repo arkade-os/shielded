@@ -6,7 +6,7 @@ import {NOSTR_RELAYS} from '../../packages/protocol/src/nostr-carrier.ts';
 import {journalledRoute,makeNativeMutationJournal} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
-import {markPrivateFetch} from './network-privacy.ts';
+import {markPrivateFetch,markSealedFetch} from './network-privacy.ts';
 import {createSealedFetch} from './sealed-fetch.ts';
 
 export const PRIVATE_PAGE=12;
@@ -31,7 +31,7 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
   else if(url.origin!==poolOrigin||poolApi)return url.href;
   throw new Error('Private networking does not permit '+url.origin+path);
  };
- const privateFetch:typeof fetch=markPrivateFetch(async(input,init)=>{
+ const privateFetch:typeof fetch=markSealedFetch(markPrivateFetch(async(input,init)=>{
   const url=new URL(input instanceof Request?input.url:String(input),pageOrigin),href=route(url);
   if(href===undefined)return direct(input instanceof Request?input:url.href,init);
   const source=new Request(input instanceof Request?input:url,init),method=source.method,body=method==='GET'?undefined:await source.text();
@@ -41,7 +41,7 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
   const response=await sealedFetch(href,{method,headers:source.headers,body,signal:source.signal});
   if(journalled)journal.observeNativeResponse({url:href,method,status:response.status,body:await response.clone().text(),requestBody:body});
   return response;
- });
+ }));
  const transport:PrivateTransport={fetch:privateFetch,poolOrigin,pageSize:PRIVATE_PAGE,journal,
   providers(arkUrl,indexerUrl){
    policy.registerArk(arkUrl,indexerUrl);
