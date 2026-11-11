@@ -14,7 +14,7 @@ Pushes to `main` deploy automatically and do not wait for GitHub Actions. Confir
 
 ## App cache
 
-The web app runs from a service worker cache. A browser checks `/sw.js` about once a day, installs a new version in the background and switches to it when the user taps **Update** or when every tab using the old version has closed. Two build arguments change that. Set them in **Environment → Build Time Arguments**, not in the runtime environment, and redeploy. While either is on, the build log prints a `[plugin app-cache]` line naming it.
+The browser wallet runs from a service worker cache. Worker registrations revalidate `/sw.js` without using the HTTP cache; an installed version still waits for the user to tap **Update** in the wallet or close every tab using the old version. Public home and download navigations fetch fresh HTML, using the cached page only when offline. Public pages do not show an app-update prompt. The `/download` route also bypasses older workers that cached the home page. Two build arguments change activation. Set them in **Environment → Build Time Arguments**, not in the runtime environment, and redeploy. While either is on, the build log prints a `[plugin app-cache]` line naming it.
 
 **Forcing.** `SHIELDED_APP_CACHE_FORCE=1` is only for a release that crashes before the Update bar can show: a browser installs the forced build and reloads its tabs without asking. Set it as a build argument, deploy, then purge `/sw.js` in Cloudflare. Unset it before the next push to `main` deploys, or every later deploy skips consent too.
 
@@ -22,7 +22,7 @@ The web app runs from a service worker cache. A browser checks `/sw.js` about on
 
 **Removal.** `SHIELDED_APP_CACHE_OFF=1` ships a worker that deletes the app's caches, unregisters itself and reloads the tabs it controlled, and the page stops registering one. A browser removes its copy the next time it checks `/sw.js`, so keep the argument set for as long as the cache should stay off.
 
-**Reloading no longer fetches new code.** An open or returning tab keeps the version it has until the user taps Update or every tab using it has closed. A server change that breaks old clients needs about a day of compatibility, plus however long users wait to tap Update, or a forced build.
+**Wallet reloads stay on the installed version.** An open or returning wallet keeps its version until the user taps Update or every tab using it has closed. Server changes must remain compatible with those clients. Public `/` and `/download` pages use the current HTML without replacing the pinned wallet shell; no wallet storage needs clearing.
 
 ## Oblivious HTTP gateway
 

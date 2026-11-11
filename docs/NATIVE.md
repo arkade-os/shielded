@@ -10,7 +10,7 @@ The native build targets Windows, Linux, macOS, Android and iOS. Source support 
 
 ## Download and install
 
-Open [Download Shielded](https://shielded.mutinynet.arkade.sh/#download) and choose your platform. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If release information cannot be checked, the page offers **Retry downloads**. The install guides and this source build guide remain available while checking or retrying.
+Open [Download Shielded](https://shielded.mutinynet.arkade.sh/download#download). Your platform appears first; **Other systems** expands the remaining platforms. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If release information cannot be checked, the page offers **Retry downloads**. The install guides and this source build guide remain available while checking or retrying.
 
 When this build detects a newer native release, **Update available** opens the Android update dialog or, on other platforms, the download page in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can use their platform update flow; Google Play installs cannot use the sideload updater.
 

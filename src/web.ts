@@ -5,9 +5,8 @@ import {createNativeReleasesHandler} from './native-releases.ts';
 
 export function serveWeb(app:Express,web:string):void{
  app.get(NATIVE_RELEASE_ENDPOINT,createNativeReleasesHandler());
- app.get(['/','/wallet','/claim','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web}));
+ app.get(['/','/download','/index.html','/wallet','/claim','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web,headers:{'Cache-Control':'no-cache'}}));
  app.use('/assets',express.static(join(web,'assets'),{immutable:true,maxAge:'365d'}));
- // A day, paired with updateViaCache:'all' at registration, is how often a browser asks this server for a new worker; private keeps Cloudflare from adding a day of its own.
- app.get('/sw.js',(_req,res)=>res.sendFile('sw.js',{root:web,headers:{'Cache-Control':'private, max-age=86400'}}));
+ app.get('/sw.js',(_req,res)=>res.sendFile('sw.js',{root:web,headers:{'Cache-Control':'private, no-cache'}}));
  app.use(express.static(web));
 }

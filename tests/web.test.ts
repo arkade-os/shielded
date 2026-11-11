@@ -18,7 +18,9 @@ test('the web app is served with the cache rules the app cache relies on',async 
   const response=await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`,{method});
   return {status:response.status,cache:response.headers.get('cache-control'),body:await response.text()};
  };
- for(const method of ['GET','HEAD']){const {status,cache}=await get('/sw.js',method);assert.deepEqual([status,cache],[200,'private, max-age=86400'],`${method} /sw.js`);}
- for(const route of ['/','/wallet','/claim','/verify','/watch'])assert.equal((await get(route)).body,shell,route);
+ for(const method of ['GET','HEAD']){const {status,cache}=await get('/sw.js',method);assert.deepEqual([status,cache],[200,'private, no-cache'],`${method} /sw.js`);}
+ for(const route of ['/','/download','/download/','/index.html','/wallet','/claim','/verify','/watch']){
+  const response=await get(route);assert.deepEqual(response,{status:200,cache:'no-cache',body:shell},route);
+ }
  assert.match((await get('/assets/a.js')).cache!,/immutable/);
 });
