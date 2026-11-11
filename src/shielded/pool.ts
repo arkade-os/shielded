@@ -42,7 +42,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
    response=await fetcher(origin+'/api/rollup'+path,read?{...request,signal:read.signal}:request);
    // An unreadable GET is read again; an admitted POST is not resent (the pool refuses a duplicate id), its caller polls it by id.
    if(response.status<500)json=await response.json().catch((error:unknown)=>{if(response!.ok&&read)throw error;return {};});
-  }catch(error){response=undefined;if(privateMutation||attempt>=4)throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
+  }catch(error){response=undefined;if(privateMutation||attempt>=4||isSealedFetch(fetcher)&&rejected(error,'unavailable'))throw new PoolRequestError(error instanceof Error?error.message:'The pool did not answer (network error).',undefined,{cause:error});}
   finally{clearTimeout(timer);}
   if(response&&response.status<500){
    const metadata=json&&typeof json==='object'?json:{};
@@ -56,7 +56,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
    if(!response.ok)throw Object.assign(new PoolRequestError(metadata.error??`The pool answered ${response.status}.`,response.status),typeof metadata.code==='string'?{code:metadata.code}:{});
    return json as T;
   }
-  // A sealed 502 is the gateway's answer to an oversize page and to a dead pool alike; a repeat only repeats the first, so one try, and the 60 s tick reads again.
+  // A sealed 502 (an oversize page or a dead pool) and a sealed unavailable (its three relay attempts spent, caught above) would only repeat, so each gets one try.
   // Only the browser's sealed fetch: a private native fetch is not the gateway, and keeps its retries.
   if(privateMutation||attempt>=4||response?.status===502&&isSealedFetch(fetcher))throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
   await sleep(pauseMs);

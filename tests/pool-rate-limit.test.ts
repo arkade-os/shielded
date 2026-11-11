@@ -3,6 +3,7 @@ import {setImmediate} from 'node:timers/promises';
 import {test} from 'node:test';
 import {poolApiOf,rollupApi,waitForSpend} from '../src/shielded/pool.ts';
 import {markPrivateFetch,markSealedFetch} from '../src/shielded/network-privacy.ts';
+import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
@@ -196,6 +197,19 @@ test('a private read that is not sealed still repeats a 502, as does a direct on
   await flush();assert.equal(calls,1,label);
   for(let i=1;i<5;i++){t.mock.timers.tick(1000);await flush();assert.equal(calls,i+1,label);}
   assert.equal((await pending).error?.status,status,label);
+  t.mock.timers.reset();
+ }
+});
+
+test('a sealed read gives up on unavailable at once, and a private read that is not sealed still asks five times',async t=>{
+ for(const [label,sealed,calls] of [['sealed',true,1],['private',false,5]] as const){
+  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+  let count=0,settled=false;
+  const raw=(async()=>{count++;throw new SealedFetchError('unavailable','No relay brought an answer in time.');}) as typeof fetch;
+  const pending=outcome(rollupApi('/batches?from=0&limit=12',undefined,sealed?markSealedFetch(markPrivateFetch(raw)):markPrivateFetch(raw),1000,'https://sealed-unavailable.test')).then(result=>{settled=true;return result;});
+  await flush();assert.deepEqual([count,settled],[1,sealed],label);
+  for(let i=1;i<calls;i++){t.mock.timers.tick(1000);await flush();}
+  assert.equal(count,calls,label);assert.equal((await pending).error?.cause?.code,'unavailable',label);
   t.mock.timers.reset();
  }
 });
