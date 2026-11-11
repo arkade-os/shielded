@@ -63,11 +63,15 @@ test('a large answer is reassembled, from chunks in any order, past a chunk anot
 
 test('a status event delays the retry',async t=>{
  let replies=0;const {held,release}=holding(),g=await rig(t,{gateway:{maxInFlight:1},reply:()=>++replies===1?held:Response.json({ok:true})});
- const first=g.fetch(ARK);await until(()=>g.calls.length===1);
- const started=performance.now(),second=g.fetch('/api/rollup/spends',SPEND);
- await until(()=>g.statuses().length===1);release();
+ t.mock.timers.enable({apis:['setTimeout']});
+ const advance=async(ok:()=>boolean)=>{const deadline=performance.now()+5000;while(!ok()&&performance.now()<deadline){t.mock.timers.tick(0);await settle();}assert.ok(ok(),'the condition never held');};
+ let firstDone=false,secondDone=false;
+ const first=g.fetch(ARK).finally(()=>{firstDone=true;});await advance(()=>g.calls.length===1);
+ const second=g.fetch('/api/rollup/spends',SPEND).finally(()=>{secondDone=true;});
+ await advance(()=>g.statuses().length===1);release();await advance(()=>firstDone);
  assert.deepEqual(g.statuses()[0]!.tags.find(tag=>tag[0]==='status'),['status','503']);
- assert.equal((await second).status,200);assert.ok(performance.now()-started>=1000,'the retry waited the second the status asked for');
+ t.mock.timers.tick(999);await settle();assert.equal(g.requests().length,2,'the retry has not gone out before the requested second');
+ t.mock.timers.tick(1);await advance(()=>secondDone);assert.equal((await second).status,200);
  assert.equal((await first).status,200);assert.equal(g.calls.length,2);assert.equal(g.requests().length,3);
  const [,shed,retry]=g.sent();assert.equal(shed!.content,retry!.content,'the shed POST went out again with the same sealing, which the gateway had never recorded');
 });

@@ -59,5 +59,6 @@ jobs:
           sudo systemctl restart docker
           docker info --format '{{.RegistryConfig.Mirrors}}'
       - run: node tools/retry-command.mjs docker build --file Dockerfile.dokploy --tag shielded-dokploy:ci .
+      - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node --import tsx --input-type=module -e "await import('./src/web.ts')"
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci bin/shielded-vm -info
       - run: docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL shielded-dokploy:ci node -e "for(const f of ['src/server.ts','bin/rapidsnark','rollup-keys/manifest.json','rollup-keys/epoch-batch-join.zkey','app/dist/index.html'])require('fs').accessSync(f)"
