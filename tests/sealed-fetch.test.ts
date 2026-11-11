@@ -272,10 +272,10 @@ test('abort closes the attempt',async t=>{
 });
 
 test('every sealed request carries an x-date rounded to the nearest 30 s, and x-digest crosses',async t=>{
- const g=await rig(t);
+ const g=await rig(t),before=Date.now();
  assert.equal((await g.fetch(ARK,{headers:{'x-digest':'abc',authorization:'x','x-sdk-version':'ts-sdk/0.5.3'}})).status,200);
- const {headers}=await g.inner(),at=Date.parse(headers.get('x-date')!);
- assert.ok(at%30_000===0&&Math.abs(Date.now()-at)<=16_000,String(headers.get('x-date')));
+ const after=Date.now(),{headers}=await g.inner(),at=Date.parse(headers.get('x-date')!);
+ assert.ok(at%30_000===0&&at>=before-15_000&&at<=after+15_000,String(headers.get('x-date')));
  assert.deepEqual([headers.get('x-digest'),headers.has('authorization'),headers.has('x-sdk-version')],['abc',false,false]);
 });
 
