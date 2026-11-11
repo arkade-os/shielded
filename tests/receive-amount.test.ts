@@ -28,6 +28,12 @@ test('the shared amount form covers every receive tab',()=>{
  }
 });
 
+test('without unified, the portal offers shielded and arkade only',()=>{
+ const tabs=(unified?:boolean)=>{const rendered=renderToStaticMarkup(createElement(ReceivePortal,{...(unified===undefined?{}:{unified}),mode:'shielded',payload:'shielded',value:'shrol_example',description:'Test receive',onModeChange:()=>{}}));return [[...rendered.matchAll(/id="receive-tab-(\w+)"/g)].map(m=>m[1]),/--glass-count:(\d)/.exec(rendered)?.[1]];};
+ assert.deepEqual(tabs(false),[['shielded','arkade'],'2']);
+ assert.deepEqual(tabs(),[['unified','shielded','arkade'],'3']);
+});
+
 test('payment URIs encode exact sats as eight decimal BTC amounts',()=>{
  for(const [mode,address,parameter]of recipients){
   for(const [amount,btc]of amounts){

@@ -23,6 +23,13 @@ test('the transport is the first module main.tsx imports',()=>{
  assert.match(/^import\b.*$/m.exec(read('app/src/main.tsx'))?.[0]??'',/^import '\.\/private-boot(\.ts)?';/);
 });
 
+test('a private wallet, which has no Lightning, opens receive on shielded and offers no unified tab',()=>{
+ const wallet=read('app/src/RollupWallet.tsx'),lightning=/const (\w+)=nativeHost\|\|!PRIVATE;/.exec(wallet)?.[1];
+ assert.ok(lightning);
+ assert.ok(wallet.includes(`useState<ReceiveMode>(${lightning}?'unified':'shielded')`));
+ assert.match(wallet,new RegExp(`<ReceivePortal [^>]*unified=\\{${lightning}\\}`));
+});
+
 // Source-level: /watch and the wallet are read for their literals and branches, not rendered.
 test('the pool-reading pages take their page size and their links from the transport',()=>{
  const disclose=read('app/src/Disclose.tsx');
