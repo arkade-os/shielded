@@ -39,6 +39,7 @@ COPY --from=rapidsnark --chown=node:node /out/rapidsnark ./bin/rapidsnark
 COPY --from=vm-build --chown=node:node /out/shielded-vm ./bin/shielded-vm
 COPY --from=app-build --chown=node:node /app/node_modules ./node_modules
 COPY --from=app-build --chown=node:node /app/package.json ./package.json
+COPY --from=app-build --chown=node:node /app/src-tauri/android-signing.json ./src-tauri/android-signing.json
 COPY --from=app-build --chown=node:node /app/src ./src
 COPY --from=app-build --chown=node:node /app/packages ./packages
 COPY --from=app-build --chown=node:node /app/app/dist ./app/dist
