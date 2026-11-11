@@ -8,6 +8,7 @@ import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveWalletKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {ShieldedWallet,type ShieldedWalletConfig} from '../src/shielded/wallet.ts';
+import type {ShieldedSyncProgress} from '../src/shielded/sync-progress.ts';
 
 const secret='11'.repeat(32),origin='https://pool.example';
 const ready={phase:'ready',message:'',network:{network:'mutinynet',arkUrl:'https://ark.example'},proving:{spend:{wasm:'w',zkey:'z'},join:{wasm:'w',zkey:'z'}},pool:{token:'t',script:'s',address:'a',batches:3}};
@@ -30,6 +31,13 @@ test('a ready Mutinynet pool yields the reference page wallet configuration',asy
  assert.ok(config.shieldedRepository instanceof InMemoryShieldedNoteRepository);
  assert.equal(config.hash([1n,2n]),7853200120776062878684798364095072458815029376092732009249414926327459813530n);
  assert.equal(typeof config.prover.prove,'function');
+});
+
+test('the facade reports initial status work and forwards the same sync observer',async()=>{
+ const progress:ShieldedSyncProgress[]=[],observer=(p:ShieldedSyncProgress)=>{progress.push(p);};
+ const config=await shieldedWalletConfig({pool:origin,secret,fetch:serving(ready).fetch,onSyncProgress:observer});
+ assert.equal(config.onSyncProgress,observer);
+ assert.deepEqual(progress,[{stage:'request',request:'status',attempt:1}]);
 });
 
 test('reveal links name the pool, and fall back to the page only when the pool is the page',t=>{

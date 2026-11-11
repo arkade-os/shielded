@@ -7,11 +7,12 @@ import {BATCH_SLOTS,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constant
 import type {RollupEpochRecord,RollupEpochRecordSlot} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
-import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
+import {epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
+import type {ShieldedSyncProgress} from '../src/shielded/sync-progress.ts';
 import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
-import {waitForSpend,type ArkCoin,type PoolApi} from '../src/shielded/pool.ts';
+import {waitForSpend,type ArkCoin,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
 import {markPrivateFetch,markPrivatePoolPage,privatePoolPage,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
 import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
@@ -47,6 +48,40 @@ test('private catch-up never uses scan or matching-batch fetches when far behind
  assert.ok(asked.every(path=>!path.endsWith('limit=1')));
  assert.equal(asked[0],'/batches?from=0&limit=50');
  assert.equal(account.batchCount,600);
+});
+
+test('private history progress counts complete downloaded pages even for a caught-up account',async()=>{
+ const {account,api,asked,applied}=fakeHistory(127,127),progress:ShieldedSyncProgress[]=[];
+ await epochCatchUp(account,api,undefined,undefined,undefined,p=>{progress.push(p);});
+ assert.deepEqual(progress.filter(p=>p.stage==='history'),[
+  {stage:'history',from:0,through:0},
+  {stage:'history',from:0,through:50,total:127},
+  {stage:'history',from:0,through:100,total:127},
+  {stage:'history',from:0,through:127,total:127},
+ ]);
+ assert.deepEqual(asked,['/batches?from=0&limit=50','/batches?from=50&limit=50','/batches?from=100&limit=28']);
+ assert.deepEqual(applied,[]);
+ assert.ok(!progress.some(p=>p.stage==='verified'));
+});
+
+test('private history progress follows advancing public totals without skipping aligned reads',async()=>{
+ const {account,api,asked}=fakeHistory(90,101),progress:ShieldedSyncProgress[]=[];let page=0;
+ const advancing=privateApi((async(path:string)=>({...await api<EpochBatchPage>(path),total:++page===1?80:101})) as PoolApi);
+ await epochCatchUp(account,advancing,undefined,undefined,undefined,p=>{progress.push(p);});
+ assert.deepEqual(progress.filter(p=>p.stage==='history'),[
+  {stage:'history',from:0,through:0},
+  {stage:'history',from:0,through:50,total:80},
+  {stage:'history',from:0,through:100,total:101},
+  {stage:'history',from:0,through:101,total:101},
+ ]);
+ assert.equal(account.batchCount,101);
+ assert.deepEqual(asked,['/batches?from=0&limit=50','/batches?from=50&limit=50','/batches?from=100&limit=28']);
+});
+
+test('a failing history observer cannot stop or change private batch replay',async()=>{
+ const {account,api,applied}=fakeHistory(125,127);
+ assert.equal(await epochCatchUp(account,api,undefined,undefined,undefined,()=>{throw new Error('view closed');}),2);
+ assert.equal(account.batchCount,127);assert.deepEqual(applied,[125,126]);
 });
 
 test('private epochSyncAccount follows the same aligned history path',async()=>{
@@ -111,6 +146,16 @@ test('private fresh account avoids a birthday checkpoint and verifies the same f
  assert.ok(!asked.some(path=>path.startsWith('/checkpoints/')));
  assert.ok(asked.includes('/batches?from=0&limit=50'));
  assert.ok(!asked.some(path=>path.includes('from=130')));
+});
+
+test('a fresh private account can reuse initial status while replaying and verifying every public page',async()=>{
+ const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),{api,asked}=epochLeafPool(hash,256,140),status=await api<RollupPoolStatus>('/status');
+ status.pool!.token='g2';asked.length=0;
+ const progress:ShieldedSyncProgress[]=[],loaded=await loadAccount(hash,keys,{token:'g2',epochLen:256,bornAt:130,api:privateApi(api),status,onSyncProgress:p=>{progress.push(p);}});
+ assert.equal(loaded.account.batchCount,140);assert.equal(loaded.offline,undefined);
+ assert.deepEqual(asked,['/batches?from=0&limit=50','/batches?from=50&limit=50','/batches?from=100&limit=50']);
+ assert.deepEqual(progress.at(-1),{stage:'verified',through:140,total:140});
 });
 
 test('native bearer inspection and claim use a separate private history capability',async()=>{

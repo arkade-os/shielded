@@ -1,4 +1,4 @@
-import {useEffect,useId,useMemo,useState} from 'react';
+import {useCallback,useEffect,useId,useMemo,useReducer,useState} from 'react';
 import {spirograph,wave} from './guilloche.tsx';
 import NativeTorHealth from './NativeTorHealth.tsx';
 import {AppUpdateNotice} from './AppUpdates.tsx';
@@ -22,6 +22,11 @@ export interface WalletOnboardingProps {
  onToggleTor?:()=>void;
  transportBusy?:boolean;
  reconnectLabel?:string;
+}
+
+type PrivacyPanel='tor'|'privacy';
+export function walletPrivacyPanel(current:PrivacyPanel|null,action:{panel:PrivacyPanel;open:boolean}):PrivacyPanel|null{
+ return action.open?action.panel:current===action.panel?null:current;
 }
 
 function ShieldMark({small=false}:{small?:boolean}){
@@ -58,7 +63,8 @@ export function EngravedShield(){
 }
 
 export default function WalletOnboarding({transport,setup,busy,opening=false,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false,reconnectLabel}:WalletOnboardingProps){
- const [restoring,setRestoring]=useState(false),id=useId();
+ const [restoring,setRestoring]=useState(false),[privacyPanel,changePrivacyPanel]=useReducer(walletPrivacyPanel,null),id=useId();
+ const onTorOpenChange=useCallback((open:boolean)=>changePrivacyPanel({panel:'tor',open}),[]);
  const native=transport==='tor',direct=native&&(torHealth?.status.mode??'tor')==='direct',tor=native&&!direct;
  const titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`,privacyId=`${id}-privacy`;
  const restore=setup&&restoring;
@@ -91,8 +97,8 @@ export default function WalletOnboarding({transport,setup,busy,opening=false,pha
    </section>
   </main>
   <footer className="wallet-onboarding-footer">
-   <div className="app-header-status">{native?<NativeTorHealth health={torHealth} tone="dark" onToggleTor={onToggleTor} transportBusy={transportBusy}/>:<span className="wallet-onboarding-connection">Browser connection</span>}<AppUpdateNotice tone="dark"/></div>
-   <details className="wallet-onboarding-privacy" onKeyDown={event=>{if(event.key==='Escape'){event.currentTarget.open=false;event.currentTarget.querySelector('summary')?.focus();}}}><summary aria-controls={privacyId}>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><div className="wallet-onboarding-privacy-menu" id={privacyId} aria-label="About your privacy" role="region" tabIndex={0}><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':direct?'Tor is off. Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></div></details>
+   <div className="app-header-status">{native?<NativeTorHealth health={torHealth} tone="dark" onToggleTor={onToggleTor} transportBusy={transportBusy} open={privacyPanel==='tor'} onOpenChange={onTorOpenChange}/>:<span className="wallet-onboarding-connection">Browser connection</span>}<AppUpdateNotice tone="dark"/></div>
+   <details className="wallet-onboarding-privacy" open={privacyPanel==='privacy'} onToggle={event=>changePrivacyPanel({panel:'privacy',open:event.currentTarget.open})} onKeyDown={event=>{if(event.key==='Escape'){event.stopPropagation();changePrivacyPanel({panel:'privacy',open:false});event.currentTarget.querySelector('summary')?.focus();}}}><summary aria-controls={privacyId} aria-expanded={privacyPanel==='privacy'} onClick={event=>{event.preventDefault();changePrivacyPanel({panel:'privacy',open:privacyPanel!=='privacy'});}}>About your privacy<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg></summary><div className="wallet-onboarding-privacy-menu" id={privacyId} aria-label="About your privacy" role="region" tabIndex={0}><p>{tor?'Wallet traffic uses Tor. Repeated identifiers and timing can still reveal links.':direct?'Tor is off. Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'This wallet uses your browser’s network connection. It does not start Tor. Your browser and network determine your network privacy.'} Deposits into and withdrawals from the private pool are public.</p></div></details>
   </footer>
  </div>;
 }

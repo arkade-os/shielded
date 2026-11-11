@@ -22,6 +22,7 @@ import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
 import {pageSheet} from '../app/src/shielded-page.ts';
 import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
+import type {SyncProgressObserver} from '../src/shielded/sync-progress.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const TOKEN='2df7aa3628161299e03ef35e71916d68952490aa7b37423e358ab32bbe26a7de0000';
@@ -55,11 +56,11 @@ const fetcherOf=(api:PoolApi)=>(async(url:string)=>{
  try{return new Response(JSON.stringify(await api(String(url).replace('/api/rollup',''))),{status:200});}
  catch(error){return new Response(JSON.stringify({error:(error as Error).message}),{status:(error as {status?:number}).status??404});}
 }) as unknown as typeof fetch;
-const opening=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule;indexer?:object}={})=>
+const opening=(o:{batches?:number;repository?:InMemoryShieldedNoteRepository;fetcher?:typeof fetch;secret?:string;bornAt?:number;onArkAddress?:(address:string)=>void;depositFee?:DepositFee;maxDepositFee?:DepositFeeSchedule;indexer?:object;networkPrivacy?:boolean;onSyncProgress?:SyncProgressObserver}={})=>
  ShieldedWallet.create({identity:SingleKey.fromHex(o.secret??'11'.repeat(32)),arkProvider:ark,indexerProvider:(o.indexer??indexer) as never,onchainProvider:onchain,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},settlementConfig:false,walletMode:'static',
   pool:{origin:'',status:status(o.batches??0,undefined,o.depositFee)},secret:o.secret??'11'.repeat(32),hash,prover,
-  fetcher:o.fetcher??poolFetcher(o.batches??0,undefined,o.depositFee).fetcher,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{}),...(o.maxDepositFee?{maxDepositFee:o.maxDepositFee}:{})});
+  fetcher:o.fetcher??poolFetcher(o.batches??0,undefined,o.depositFee).fetcher,networkPrivacy:o.networkPrivacy,onSyncProgress:o.onSyncProgress,...(o.repository?{shieldedRepository:o.repository}:{}),...(o.bornAt?{bornAt:o.bornAt}:{}),...(o.onArkAddress?{onArkAddress:o.onArkAddress}:{}),...(o.maxDepositFee?{maxDepositFee:o.maxDepositFee}:{})});
 /** Start-up finished, which is what most tests assume; `opening` is for the few that watch it run. */
 const open=async(o:Parameters<typeof opening>[0]={})=>{const wallet=await opening(o);await wallet.started;return wallet;};
 
@@ -86,6 +87,39 @@ test('ShieldedWallet.create announces its Arkade address once, before it reads t
  const wallet=await open({fetcher,onArkAddress:address=>announced.push({address,reads:paths.length})});
  try{assert.deepEqual(announced,[{address:await wallet.getAddress(),reads:0}]);}
  finally{await wallet.dispose();}
+});
+
+test('private startup reuses its supplied status once, but later account reloads read fresh status',async()=>{
+ const {fetcher,paths}=poolFetcher(0),progress:Parameters<SyncProgressObserver>[0][]=[];
+ const wallet=await open({fetcher,networkPrivacy:true,onSyncProgress:p=>{progress.push(p);}});
+ try{
+  assert.equal(paths.filter(path=>path==='/status').length,0);
+  assert.ok(paths.some(path=>path.startsWith('/batches?from=0&')));
+  assert.ok(progress.some(p=>p.stage==='verified'));
+  paths.length=0;
+  await (wallet as unknown as {load():Promise<void>}).load();
+  assert.equal(paths.filter(path=>path==='/status').length,1);
+ }finally{await wallet.dispose();}
+});
+
+test('private startup resumes a compatible saved snapshot without another status circuit',async()=>{
+ const repository=new InMemoryShieldedNoteRepository(),first=await open({repository,networkPrivacy:true});
+ try{await first.save();}finally{await first.dispose();}
+ const {fetcher,paths}=poolFetcher(0),second=await open({repository,networkPrivacy:true,fetcher});
+ try{assert.equal(second.resumed,true);assert.equal(paths.filter(path=>path==='/status').length,0);}
+ finally{await second.dispose();}
+});
+
+test('a disposed wallet does not publish delayed sync progress',async()=>{
+ const served=poolFetcher(0),entered=deferred<void>(),release=deferred<void>(),progress:Parameters<SyncProgressObserver>[0][]=[];let hold=false;
+ const fetcher=(async(url:string)=>{if(hold&&String(url).includes('/batches?')){entered.resolve();await release.promise;}return served.fetcher(url);}) as typeof fetch;
+ const wallet=await open({fetcher,onSyncProgress:p=>{progress.push(p);}});
+ hold=true;const pending=wallet.sync();
+ try{
+  await entered.promise;await wallet.dispose();const before=progress.length;
+  release.resolve();await pending;
+  assert.equal(progress.length,before);
+ }finally{release.resolve();await pending;await wallet.dispose();}
 });
 
 test('ShieldedWallet.create starts its contract manager while it reads the pool',async()=>{
@@ -326,16 +360,24 @@ test('a wallet created while its pool is unreachable opens with the reason, and 
 });
 
 /** 500 sats at batch 6 of a 4-batch pool, opened from their snapshot while the pool 404s; `drift` corrupts the saved previous-epoch root. */
-const offlineWallet=async(drift=false,seen:(path:string)=>void=()=>{})=>{
+const offlineWallet=async(drift=false,seen:(path:string)=>void=()=>{},networkPrivacy=false)=>{
  const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository(),saved=EpochAccount.owning(hash,keys,{epochLen:4}),pool={down:true};
  fake.land('spend',[await fake.deposit(self,500n)]);
  while(fake.state.batchCount<6)fake.land();
  await epochCatchUp(saved,fake.api);
  await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:{...saved.snapshot(),...(drift?{prevNoteRoot:String(saved.prevNoteRoot()!+1n)}:{})},sent:{},listings:[],links:[]});
- const wallet=await open({repository,fetcher:fetcherOf((async(path:string)=>{if(pool.down)throw new Error('The pool did not answer.');seen(path);return fake.api(path);}) as PoolApi)});
+ const wallet=await open({repository,networkPrivacy,fetcher:fetcherOf((async(path:string)=>{if(pool.down)throw new Error('The pool did not answer.');seen(path);return fake.api(path);}) as PoolApi)});
  clearTimeout((wallet as any).timer);
  return {wallet,pool};
 };
+
+test('private offline startup retains a saved snapshot when supplied status has incompatible history metadata',async()=>{
+ const {wallet}=await offlineWallet(false,()=>{},true);
+ try{
+  assert.equal(wallet.resumed,true);assert.equal(wallet.account.epochLen,4);assert.equal(wallet.batchCount(),6);
+  assert.match(wallet.repositoryError!,/^Opened without the pool, so the saved notes are unchecked/);
+ }finally{await wallet.dispose();}
+});
 
 test('once the pool answers, an offline wallet whose saved previous-epoch root drifted reports it and is not adopted',async()=>{
  const {wallet,pool}=await offlineWallet(true);

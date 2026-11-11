@@ -22,6 +22,7 @@ import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageRe
 import WalletOnboarding from './WalletOnboarding.tsx';
 import WalletEntrance from './WalletEntrance.tsx';
 import WalletSyncStatus from './WalletSyncStatus.tsx';
+import {createWalletOpeningProgress} from './wallet-opening-progress.ts';
 import {AppUpdateNotice} from './AppUpdates.tsx';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
@@ -282,6 +283,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   let nativeOpened=false;
  let autoRestartTimer:ReturnType<typeof setTimeout>|undefined;
  let stopReceiveWatchdogs=()=>{};
+ let stopOpeningProgress=()=>{};
   const startController=new AbortController();
   unifiedStalledRef.current=false;setUnifiedStalled(false);setUnifiedStage('Starting the private Lightning service');
   let companion:Wallet|undefined,lnurl:ReturnType<typeof createLnurlReceive>|undefined;
@@ -304,6 +306,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     const privateFetch=nativeHost?nativeSessionFetch():undefined,lnurlFetch=nativeHost?nativeSessionFetch(nativeOperationFetch('lnurl',crypto.randomUUID(),lnurlPaymentScope.signal)):undefined,lnurlFetchFor=nativeHost?(signal:AbortSignal)=>nativeSessionFetch(nativeOperationFetch('lnurl',crypto.randomUUID(),signal)):undefined,claimFetch=nativeHost?nativeSessionFetch(nativeClaimFetch):undefined;
     const providers=nativeHost?nativeWalletProviders(network.arkUrl,network.indexerUrl??network.arkUrl):PRIVATE?PRIVATE.providers(network.arkUrl,network.indexerUrl??network.arkUrl):{arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl)};
     const pairing=PRIVATE&&!nativeHost?undefined:createLightningWallet(secret,{...providers,...(nativeHost?{lazyInitialization:true}:{})});pairing?.catch(()=>{});
+   const openingProgress=createWalletOpeningProgress(stage=>{if(session.active()&&mounted.current&&!restoring.current)reportStartupStage(stage);});
+   stopOpeningProgress=()=>openingProgress.stop();
    try{
     reportStartupStage('Connecting to the private wallet');
     if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
@@ -316,6 +320,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
      settlementConfig:false,walletMode:'static',
      pool:{origin:POOL_ORIGIN,status},secret,hash,prover:browserProver(()=>poolRef.current??status,privateFetch??PRIVATE?.fetch),
+     onSyncProgress:progress=>openingProgress.update(progress),
      ...(nativeHost?{networkPrivacy:true,fetcher:privateFetch,lnurlFetch,claimFetch,pendingNullifiers:()=>new Set(pendingPoolNullifiers(POOL_ORIGIN)),pendingOutpoints:()=>new Set(pendingPoolOutpoints(POOL_ORIGIN))}
       :PRIVATE?{networkPrivacy:true,fetcher:PRIVATE.fetch,claimFetch:PRIVATE.fetch,poolPage:PRIVATE.pageSize,batchSwaps:false,maxShieldCoins:PRIVATE_SHIELD_COINS,pendingNullifiers:()=>new Set(PRIVATE.journal.pendingPoolNullifiers(PRIVATE.poolOrigin)),pendingOutpoints:()=>new Set(PRIVATE.journal.pendingPoolOutpoints(PRIVATE.poolOrigin))}:{}),
      shieldedRepository:cacheRef.current!.repository,bornAt,lightningSpendStore:journal,
@@ -393,12 +398,13 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     try{if(created)await dispose(created);else await journal[Symbol.asyncDispose]();}
     catch(cleanup){throw new Error('The previous wallet could not be closed. Reload before trying again.',{cause:cleanup});}
     throw error;
-   }
+   }finally{openingProgress.stop();}
   },dispose,{shouldRetry:()=>!nativeOpened,onError:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupError(errorText(error));},onTerminal:error=>{if(session.active()&&!restoring.current&&mounted.current)setStartupFailure(errorText(error));}});
   let legacy=Promise.resolve();
   const unwatch:(()=>void)[]=[],current=()=>session.active()&&!restoring.current&&mounted.current;
   const finishClose=pageClose(async(closed:ReturnType<typeof session.close>)=>{const owned=await closed;await legacy;if(owned)await epochIdle(owned.account,()=>undefined);sessions.current.delete(close);});
   const close=()=>{
+   stopOpeningProgress();
    startController.abort();
    stopReceiveWatchdogs();
    if(autoRestartTimer)clearTimeout(autoRestartTimer);
