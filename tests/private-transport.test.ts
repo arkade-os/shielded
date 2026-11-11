@@ -156,6 +156,17 @@ test('a sealed 404 frees a journalled spend only once the 15-minute grace has pa
  }
 });
 
+test('a pending entry whose GET answers 404 clears at 900 001 ms of age through reconcile, which never runs twice at once',async t=>{
+ const g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json({error:'Unknown spend; it may have expired or the server restarted.'},{status:404})});
+ const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
+ assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(ID,'17'))).status,202);
+ at=start+899_999;assert.equal(await g.transport.reconcile(),true);
+ at=start+900_001;const first=g.transport.reconcile();assert.equal(g.transport.reconcile(),first);
+ assert.deepEqual([await first,g.transport.journal.pendingPoolNullifiers(POOL)],[false,[]]);
+ assert.equal(await g.transport.reconcile(),false);
+ assert.equal(g.calls.filter(url=>url.endsWith('/spends/'+ID)).length,2,'one read per reconcile that found the entry');
+});
+
 test('a spend POST that never went out frees its reservation at once, and one that may have run keeps it',async t=>{
  const g=await rig(t),fails=(code:string)=>(error:unknown)=>error instanceof SealedFetchError&&error.code===code;
  await assert.rejects(g.transport.fetch('/api/rollup/spends',spendPost(ID,'17','0'.repeat(NOSTR_CHUNK_BYTES))),fails('too-large'));

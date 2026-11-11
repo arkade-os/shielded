@@ -12,7 +12,7 @@ import {createSealedFetch,SealedFetchError} from './sealed-fetch.ts';
 export const PRIVATE_PAGE=12;
 export const PRIVATE_GRACE_MS=900_000;
 export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
-export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
+export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile():Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
 
 let installed:PrivateTransport|undefined;
 const refused=(what:string)=>class {constructor(){throw new Error('Private networking does not permit '+what);}};
@@ -45,7 +45,13 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
   if(journalled)journal.observeNativeResponse({url:href,method,status:response.status,body:await response.clone().text(),requestBody:body});
   return response;
  })),PRIVATE_PAGE);
+ const pending=()=>journal.pendingPoolNullifiers(poolOrigin).length>0||journal.pendingPoolOutpoints(poolOrigin).length>0;
+ let reconciling:Promise<boolean>|undefined;
  const transport:PrivateTransport={fetch:privateFetch,poolOrigin,pageSize:PRIVATE_PAGE,journal,
+  reconcile(){
+   reconciling??=(async()=>{if(pending())await journal.reconcileNativeMutations(privateFetch,poolOrigin);return pending();})().finally(()=>{reconciling=undefined;});
+   return reconciling;
+  },
   providers(arkUrl,indexerUrl){
    policy.registerArk(arkUrl,indexerUrl);
    return {arkProvider:new RestArkProvider(arkUrl),indexerProvider:new IsolatedIndexerProvider(indexerUrl,undefined,undefined,undefined,0),onchainProvider:network=>{const url=ESPLORA_URL[network];policy.registerEsplora(url);return new IsolatedOnchainProvider(url);}};

@@ -324,7 +324,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    try{
     reportStartupStage('Connecting to the private wallet');
     if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
-    else if(PRIVATE)await PRIVATE.journal.reconcileNativeMutations(PRIVATE.fetch,PRIVATE.poolOrigin);
+    else if(PRIVATE)await PRIVATE.reconcile();
     reportStartupStage('Catching up with the private pool');
     const bornAt=bornAtFor(storage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
     created=await ShieldedWallet.create({
@@ -466,8 +466,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
   if(!wallet||!nativeHost&&!PRIVATE)return;
-  const journal=nativeHost?{pendingPoolNullifiers,pendingPoolOutpoints}:PRIVATE!.journal,origin=nativeHost?POOL_ORIGIN:PRIVATE!.poolOrigin;
-  try{setNativePending(journal.pendingPoolNullifiers(origin).length>0||journal.pendingPoolOutpoints(origin).length>0);}
+  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(live)setNativePending(pending);},error=>{if(live)setPoolError(errorText(error));});return()=>{live=false;};}
+  try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
   catch(error){setPoolError(errorText(error));}
   },[wallet,tick,nativeHost]);
  // Local reads of the receive state: after every Lightning action, on a new receiver, and on each tick.
