@@ -10,7 +10,7 @@ import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
 import {poolApiOf} from '../src/shielded/pool.ts';
-import {installPrivateTransport,privateTransport,PRIVATE_GRACE_MS,PRIVATE_PAGE} from '../src/shielded/private-transport.ts';
+import {installPrivateTransport,privateTransport,PRIVATE_PAGE} from '../src/shielded/private-transport.ts';
 import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 
@@ -146,11 +146,11 @@ test('a pool spend POST is journalled before it goes out and resolved by its own
 });
 
 const spendPost=(id:string,nf:string,pad='')=>({method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,slot:{nullifiers:[nf]},pad})});
-test('a sealed 404 frees a journalled spend only once the grace has passed',async t=>{
+test('a sealed 404 frees a journalled spend only once the 15-minute grace has passed',async t=>{
  const g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json({error:'Unknown spend; it may have expired or the server restarted.'},{status:404})});
  const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
  assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(ID,'17'))).status,202);
- for(const [later,left] of [[PRIVATE_GRACE_MS-1,[17n]],[PRIVATE_GRACE_MS+1,[]]] as const){
+ for(const [later,left] of [[899_999,[17n]],[900_001,[]]] as const){
   at=start+later;assert.equal((await g.transport.fetch('/api/rollup/spends/'+ID)).status,404);
   assert.deepEqual(g.transport.journal.pendingPoolNullifiers(POOL),left,String(later));
  }

@@ -10,7 +10,7 @@ import {markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-pr
 import {createSealedFetch,SealedFetchError} from './sealed-fetch.ts';
 
 export const PRIVATE_PAGE=12;
-export const PRIVATE_GRACE_MS=180_000;
+export const PRIVATE_GRACE_MS=900_000;
 export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
 export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
 
