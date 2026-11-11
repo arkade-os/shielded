@@ -28,7 +28,7 @@ import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shie
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {isPrivatePoolApi,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
+import {isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
@@ -178,6 +178,7 @@ export class ShieldedWallet extends Wallet {
  private nativeOperations=0;
  private statusAt=Date.now();
  private networkPrivacy=false;
+ private sealedTransport=false;
  private batchSwaps?:boolean;
  private maxShieldCoins?:number;
  private pendingNullifiers?:()=>ReadonlySet<bigint>;
@@ -194,7 +195,7 @@ export class ShieldedWallet extends Wallet {
    void wallet.getContractManager().catch(()=>{});
    config.onArkAddress?.(await wallet.getAddress());
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher,config.poolPage);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch,config.poolPage):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
-   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);wallet.batchSwaps=config.batchSwaps;wallet.maxShieldCoins=config.maxShieldCoins;
+   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);wallet.sealedTransport=isSealedFetch(config.fetcher);wallet.batchSwaps=config.batchSwaps;wallet.maxShieldCoins=config.maxShieldCoins;
    if(wallet.networkPrivacy){
     const live=(api:PoolApi):PoolApi=>markPrivatePoolPage(markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
      wallet.assertOpen();
@@ -368,7 +369,8 @@ export class ShieldedWallet extends Wallet {
   if(this.stopped)return;
   let atHead=false;
   // Only a tick has just read the status; finish(), renew() and catchUpAfterEvent sync without one, so the skip is not in sync().
-  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.networkPrivacy||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
+  // Sealed browser transport only: a native wallet is private but not sealed, and reads every tick.
+  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.sealedTransport||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(!this.stopped&&this.operatorDown&&this.headExpiry===undefined){
    const revision=this.statusRevision,expiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;

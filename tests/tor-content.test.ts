@@ -12,7 +12,7 @@ import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
 import {waitForSpend,type ArkCoin,type PoolApi} from '../src/shielded/pool.ts';
-import {markPrivateFetch,markPrivatePoolPage,privatePoolPage,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
+import {markPrivateFetch,markPrivatePoolPage,markSealedFetch,privatePoolPage,isPrivateFetch,isPrivatePoolApi,isSealedFetch} from '../src/shielded/network-privacy.ts';
 import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
@@ -145,8 +145,9 @@ test('private wallet watchdog reads public status independently of private item 
  assert.deepEqual(asked,['/status']);
 });
 
-const tickRig=(held:number,reported:number,networkPrivacy=true)=>{
- const asked:string[]=[],ran:string[]=[],pool={batches:reported};let batchCount=held;
+const stub=()=>(async()=>Response.json({})) as typeof fetch,sealedStub=()=>markSealedFetch(markPrivateFetch(stub())),nativeStub=()=>markPrivateFetch(stub());
+const tickRig=(held:number,reported:number,fetcher:typeof fetch)=>{
+ const asked:string[]=[],ran:string[]=[],pool={batches:reported},networkPrivacy=isPrivateFetch(fetcher);let batchCount=held;
  const account={get batchCount(){return batchCount;},epochLen:128,async apply(batch:number){assert.equal(batch,batchCount++);}};
  const plain=(async(path:string)=>{
   asked.push(path);const url=new URL(path,'https://pool.test');
@@ -155,7 +156,7 @@ const tickRig=(held:number,reported:number,networkPrivacy=true)=>{
   return {total:pool.batches,batches:Array.from({length:Math.max(0,Math.min(limit,pool.batches-from))},(_,n)=>from+n)};
  }) as PoolApi;
  const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
-  stopped:false,offline:false,networkPrivacy,pool:{origin:'https://pool.test',status:{}},statusAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
+  stopped:false,offline:false,networkPrivacy,sealedTransport:isSealedFetch(fetcher),pool:{origin:'https://pool.test',status:{}},statusAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
   watchLinks(){},async autoShield(){},async merge(){},async renewNotes(){ran.push('renew');},async recoverNotes(){ran.push('recover');},changed(){this.stopped=true;},
  });
  // changed() stops the wallet, or tick() would arm its 60 s timer.
@@ -164,14 +165,14 @@ const tickRig=(held:number,reported:number,networkPrivacy=true)=>{
 };
 
 test('a private tick reads no batch page while the pool reports the count the account already holds',async()=>{
- const {asked,pages,ran,tick}=tickRig(140,140);
+ const {asked,pages,ran,tick}=tickRig(140,140,sealedStub());
  await tick();
  assert.ok(asked.includes('/status'));assert.deepEqual(pages(),[]);
  assert.deepEqual(ran.toSorted(),['recover','renew']);
 });
 
 test('a private tick syncs as soon as the pool count moves, including across an epoch rotation',async()=>{
- const {asked,pages,pool,account,tick}=tickRig(127,127);
+ const {asked,pages,pool,account,tick}=tickRig(127,127,sealedStub());
  // 128 closes epoch 0 (epochLen 128); 130 is two batches into epoch 1.
  pool.batches=128;await tick();
  assert.equal(account.batchCount,128);assert.equal(pages().at(-1),'/batches?from=120&limit=8');
@@ -180,9 +181,25 @@ test('a private tick syncs as soon as the pool count moves, including across an 
 });
 
 test('a direct tick still syncs on every tick',async()=>{
- const {pages,tick}=tickRig(140,140,false);
+ const {pages,tick}=tickRig(140,140,stub());
  await tick();await tick();
  assert.equal(pages().length,2);
+});
+
+test('a native tick, private but not sealed, still syncs at equal counts',async()=>{
+ const {pages,tick}=tickRig(140,140,nativeStub());
+ await tick();
+ assert.deepEqual(pages(),['/batches?from=128&limit=12']);
+});
+
+test('create marks only a sealed pool fetcher as a sealed transport',async t=>{
+ const seen:unknown[]=[],sentinel=new Error('creation inspected'),wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  stopped:false,unwatch:[],changeListeners:new Set(),actionListeners:new Set(),getContractManager:async()=>({}),getAddress:async()=>'unused',
+  async load(this:{sealedTransport:boolean}){seen.push(this.sealedTransport);throw sentinel;},
+ }) as ShieldedWallet;
+ t.mock.method(Wallet,'create',async()=>wallet as never);t.mock.method(Wallet.prototype,'dispose',async()=>{});
+ for(const fetcher of [sealedStub(),nativeStub(),stub()])await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,networkPrivacy:isPrivateFetch(fetcher)}),error=>error===sentinel);
+ assert.deepEqual(seen,[true,false,false]);
 });
 
 test('external uncertain reservations remain visible after local holds release',()=>{
