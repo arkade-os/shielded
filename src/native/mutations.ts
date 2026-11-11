@@ -75,7 +75,7 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   if(response.body===undefined)return;
   const method=response.method.toUpperCase(),{origin,path}=route(response.url),spend=method==='GET'?/^\/api\/rollup\/spends\/([0-9a-f]{32})$/.exec(path)?.[1]:undefined;
   // The pool forgets a spend an hour after admitting it, so only a 404 inside that hour proves it never arrived; its body may be empty.
-  if(spend&&response.status===404){if(graceMs!==undefined){const at=now();drop(row=>row.origin===origin&&row.id===spend&&at-row.createdAt>graceMs&&at-row.createdAt<TRACKED_MS);}return;}
+  if(spend&&response.status===404){if(graceMs!==undefined){const at=now();drop(row=>row.origin===origin&&row.id===spend&&at-row.createdAt>graceMs&&at-row.createdAt<TRACKED_MS-graceMs);}return;}
   let result:any;try{result=JSON.parse(response.body);}catch{return;}
   if(method==='POST'&&path==='/api/rollup/spends'){
    if(response.requestBody===undefined||!preAdmissionRefusal(response.status,result))return;

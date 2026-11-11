@@ -3,6 +3,7 @@ import {test} from 'node:test';
 import {rollupApi,poolApiOf} from '../src/shielded/pool.ts';
 import {isPrivatePoolApi,markPrivateFetch} from '../src/shielded/network-privacy.ts';
 import {makeNativeMutationJournal} from '../src/native/mutations.ts';
+import {PRIVATE_GRACE_MS} from '../src/shielded/private-transport.ts';
 import {ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 
 const origin='https://pool.test',id='a'.repeat(32),other='b'.repeat(32);
@@ -93,6 +94,15 @@ test('a 404 after the pool stops tracking leaves the entry pending',async()=>{
  journal.beforeNativeMutation(mutation());
  at+=3_600_001;await lost(journal,UNKNOWN);
  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n]);
+});
+
+test('with the browser grace, a 404 releases until 45 minutes after the POST and keeps the entry from then on',async()=>{
+ for(const [age,left] of [[2_699_999,[]],[2_700_000,[17n]]] as const){
+  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+  journal.beforeNativeMutation(mutation());
+  at+=age;await lost(journal,UNKNOWN);
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),left,String(age));
+ }
 });
 
 test('a journal built without a grace never releases on a 404',async t=>{
