@@ -5,7 +5,7 @@ use super::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Response, body::Incoming, client::conn::http1};
 use hyper_util::rt::TokioIo;
@@ -134,17 +134,19 @@ where
     Ok((response, connection.driver))
 }
 
-pub(super) async fn http(
+pub(super) fn http(
     lease: Lease,
     checked: CheckedRequest,
     tls: Arc<rustls::ClientConfig>,
-) -> Result<NativeResponse, String> {
-    let host = checked
-        .url
-        .host_str()
-        .ok_or("missing private HTTP host")?
-        .to_owned();
-    http_with(&lease, checked, || connect_http(&lease, &host, tls)).await
+) -> BoxFuture<'static, Result<NativeResponse, String>> {
+    Box::pin(async move {
+        let host = checked
+            .url
+            .host_str()
+            .ok_or("missing private HTTP host")?
+            .to_owned();
+        http_with(&lease, checked, || connect_http(&lease, &host, tls)).await
+    })
 }
 
 pub(super) async fn http_with<F, Fut>(
