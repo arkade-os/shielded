@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {setImmediate} from 'node:timers/promises';
-import {ArkAddress,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Transaction,VtxoScript,type ExtendedVirtualCoin} from '@arkade-os/sdk';
+import {ArkAddress,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,SingleKey,Transaction,VtxoScript,Wallet,type ExtendedVirtualCoin} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
 import {buildPoseidon} from 'circomlibjs';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {lightningSpendConflict,sameLightningSpendRequest,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from '../src/shielded/lightning-spend.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
-import {ShieldedWallet,shieldedKeysOf,type ShieldedProver} from '../src/shielded/wallet.ts';
+import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf,type ShieldedProver,type ShieldedWalletConfig} from '../src/shielded/wallet.ts';
 import {openRollupNotes} from '../packages/protocol/src/rollup/wallet.ts';
 import {rollupApi,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
 import {batchWitnessOutput} from './fixtures/batch-witness.ts';
@@ -38,14 +38,14 @@ class Store implements LightningSpendStore {
  async finish(owner:string,pool:string,id:string,result:{state:'included'|'dropped';txid?:string;reason?:string}){const r=(await this.get(owner,pool,id))!;this.rows.set(id,{...r,...result});}
 }
 /** `head` is the pool the fetcher serves, so a reopened wallet can meet the batch and root its snapshot saved. */
-async function open(store:LightningSpendStore,repository=new InMemoryShieldedNoteRepository(),p=prover,head={batches:0,root:genesis!.root}){
+async function open(store:LightningSpendStore,repository=new InMemoryShieldedNoteRepository(),p=prover,head={batches:0,root:genesis!.root},extra:Partial<ShieldedWalletConfig>={}){
  return ShieldedWallet.create({identity:SingleKey.fromHex('11'.repeat(32)),walletMode:'static',settlementConfig:false,
   storage:{walletRepository:new InMemoryWalletRepository(),contractRepository:new InMemoryContractRepository()},
   arkProvider:{serverUrl:'https://mutinynet.arkade.sh',getInfo:async()=>info} as never,
   indexerProvider:{getVtxos:async()=>({vtxos:[]}),getVirtualTxs:async()=>({txs:[]}),subscribeForScripts:async()=>'sub',getSubscription:async function*(){},unsubscribeForScripts:async()=>{}} as never,
   onchainProvider:{getCoins:async()=>[],getFeeRate:async()=>1,broadcastTransaction:async()=>'x',getChainTip:async()=>({height:1,time:1}),watchAddresses:async()=>()=>{}} as never,
   pool:{origin:'',status},secret:'11'.repeat(32),hash,prover:p,shieldedRepository:repository,lightningSpendStore:store,
-  fetcher:(async(url:string)=>new Response(JSON.stringify(url.endsWith('/status')?{...status,pool:{...status.pool!,...head}}:{total:head.batches,batches:[]}))) as unknown as typeof fetch});
+  fetcher:(async(url:string)=>new Response(JSON.stringify(url.endsWith('/status')?{...status,pool:{...status.pool!,...head}}:{total:head.batches,batches:[]}))) as unknown as typeof fetch,...extra});
 }
 async function fund(wallet:ShieldedWallet,amounts=[900n]){const deposits=await Promise.all(amounts.map(deposit=>wallet.account.spend({deposit},wallet.self)));await wallet.account.apply(epochPool(hash,EPOCH_LEN).land('spend',deposits.map(posted)));await wallet.save();}
 const missing=()=>Object.assign(new Error('Unknown spend after restart.'),{status:404});
@@ -559,6 +559,20 @@ test('a fee refusal on a Lightning shield reads the fee again, so the next attem
   await assert.rejects((await wallet.shieldLightning(coin,child,store,{id:'stale-fee',reference})).settled(),/owes a 100-sat deposit fee/);
   assert.deepEqual([store.rows.get('stale-fee')!.state,wallet.depositFee,wallet.depositFeePaused],['dropped',raised,raised],'200 is above the 100 accepted, so the next attempt waits for it');
  }finally{await wallet.dispose();}
+});
+
+test('a wallet with batch swaps off refuses renewal and the on-chain exit before any intent is registered',async t=>{
+ const settle=t.mock.method(Wallet.prototype,'settle',async()=>'renewed');t.mock.method(Wallet.prototype,'send',async()=>'sent');
+ const near=async()=>[{txid:TXID,vout:0,value:1000,expiresAt:Date.now()+SHIELD_FLOOR_MS-60_000}];
+ const off=await open(new Store(),undefined,prover,undefined,{batchSwaps:false}),on=await open(new Store());
+ try{
+  off.coins=near;on.coins=near;
+  for(const swap of [()=>off.renew(),()=>off.settle(),()=>off.sendSelectedVtxosToSelf([])])await assert.rejects(swap(),/batch stream/);
+  assert.throws(()=>off.exitFromPool(1000,'Sending 1,000 sats on-chain',async()=>{throw new Error('the exit ran');},{to:'tb1qexit',sats:1000}),/batch stream/,'before the pool pays a fresh key');
+  assert.equal(settle.mock.callCount(),0);
+  assert.equal(await off.send({recipients:[{address:destination,amount:330}]}),'sent');
+  assert.equal(await on.renew(),'renewed');assert.equal(settle.mock.callCount(),1);
+ }finally{await off.dispose();await on.dispose();}
 });
 
 test('a stale-anchor refusal still drops at once, on the pool verdict alone and without reading a batch',async()=>{

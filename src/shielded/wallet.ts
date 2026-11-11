@@ -32,7 +32,7 @@ import {isPrivatePoolApi,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage}
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;poolPage?:number;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;poolPage?:number;batchSwaps?:boolean;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;
  /** Called once with the Arkade address, synchronously and before the pool sync; a throw aborts create. */
  onArkAddress?:(address:string)=>void};
 
@@ -178,6 +178,7 @@ export class ShieldedWallet extends Wallet {
  private nativeOperations=0;
  private statusAt=Date.now();
  private networkPrivacy=false;
+ private batchSwaps?:boolean;
  private pendingNullifiers?:()=>ReadonlySet<bigint>;
  private pendingOutpoints?:()=>ReadonlySet<string>;
  private lnurlFetch?:typeof fetch;
@@ -192,7 +193,7 @@ export class ShieldedWallet extends Wallet {
    void wallet.getContractManager().catch(()=>{});
    config.onArkAddress?.(await wallet.getAddress());
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher,config.poolPage);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch,config.poolPage):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
-   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);
+   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);wallet.batchSwaps=config.batchSwaps;
    if(wallet.networkPrivacy){
     const live=(api:PoolApi):PoolApi=>markPrivatePoolPage(markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
      wallet.assertOpen();
@@ -650,6 +651,7 @@ export class ShieldedWallet extends Wallet {
   void handle.settled().then(release,error=>{if(canRelease(error))release();try{onFail?.();}catch{}});
  }
  private assertOpen(){if(this.stopped)throw new Error('The wallet was closed.');}
+ private assertBatchSwaps(){if(this.batchSwaps===false)throw new Error('Renewal and on-chain exits need Arkade\'s live batch stream, which this private transport cannot carry.');}
  private reserved(coin:{txid:string;vout:number},pending=this.pendingOutpoints?.()){const outpoint=`${coin.txid}:${coin.vout}`;return this.used.has(outpoint)||this.usedTxids.has(coin.txid)||pending?.has(outpoint)===true;}
  private async nativeSpend(inputs:readonly {txid:string;vout:number}[]|undefined,run:()=>Promise<string>){
   this.assertOpen();
@@ -666,8 +668,8 @@ export class ShieldedWallet extends Wallet {
  override send(...args:Parameters<Wallet['send']>){
   return this.nativeSpend('recipients' in args[0]?args[0].selectedVtxos:undefined,()=>super.send(...args));
  }
- override settle(...args:Parameters<Wallet['settle']>){return this.nativeSpend(args[0]?.inputs,()=>super.settle(...args));}
- override sendSelectedVtxosToSelf(...args:Parameters<Wallet['sendSelectedVtxosToSelf']>){return this.nativeSpend(args[0],()=>super.sendSelectedVtxosToSelf(...args));}
+ override async settle(...args:Parameters<Wallet['settle']>){this.assertBatchSwaps();return this.nativeSpend(args[0]?.inputs,()=>super.settle(...args));}
+ override async sendSelectedVtxosToSelf(...args:Parameters<Wallet['sendSelectedVtxosToSelf']>){this.assertBatchSwaps();return this.nativeSpend(args[0],()=>super.sendSelectedVtxosToSelf(...args));}
  override async getContractManager(){
   this.assertOpen();
   const manager=await super.getContractManager();
@@ -806,6 +808,8 @@ export class ShieldedWallet extends Wallet {
  canExitPrivately():boolean{return typeof this.swaps?.exitPayout==='function';}
  /** Withdraws `amount` to a fresh never-reused key, saved and watched before the withdrawal, so an interrupted exit still finds the payout. */
  exitFromPool(amount:number,title:string,exit:(coin:NormalizedExtendedVirtualCoin,payout:IWallet)=>Promise<PaymentHandle>,dest:{to:string;sats:number}):ShieldedPaymentHandle{
+  // Its batch swap runs on the companion's settle, so the guard on this wallet's would come after the pool paid the fresh key.
+  this.assertBatchSwaps();
   return this.announce(shieldedHandle({title,steps:shieldedSteps.exit,railId:'shielded-exit'},async step=>{
    this.assertOpen();
    const reserve=this.swaps?.exitPayout;
