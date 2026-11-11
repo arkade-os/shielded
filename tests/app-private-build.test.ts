@@ -38,6 +38,6 @@ test('the pool-reading pages take their page size and their links from the trans
  for(const file of ['app/src/RollupWallet.tsx','app/src/Disclose.tsx']){
   const links=read(file).split(/\r?\n/).filter(line=>line.includes('${EXPLORER}'));
   assert.ok(links.length,file);
-  for(const line of links)assert.match(line,/(PRIVATE|privateTransport\(\))\?(?!\.).*\$\{EXPLORER\}/,file);
+  for(const line of links)assert.match(line,/(PRIVATE|privateTransport\(\))\?<code>\{txid\}<\/code>:<a [^>]*\$\{EXPLORER\}/,file);
  }
 });

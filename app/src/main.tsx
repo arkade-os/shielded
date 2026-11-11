@@ -1,4 +1,4 @@
-// First, so the private transport's guards stand before any other module runs: nostr-tools/pool captures WebSocket as it loads.
+// First import: the bundler may still hoist shared chunks ahead of it, but the transport installs before any app code makes a request.
 import './private-boot';
 import React,{lazy,Suspense} from 'react';
 import {createRoot} from 'react-dom/client';
