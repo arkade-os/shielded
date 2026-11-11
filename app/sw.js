@@ -25,7 +25,7 @@ self.addEventListener('fetch',event=>{
  },()=>fetch(request)));
  if(url.pathname.startsWith('/api/'))return;
  const route=url.pathname.replace(/\/+$/,'')||'/';
- if(request.mode==='navigate'&&PUBLIC_ROUTES.includes(route))return event.respondWith(fetch(request).catch(()=>cacheFirst(request,'/index.html')));
+ if(request.mode==='navigate'&&PUBLIC_ROUTES.includes(route))return event.respondWith(fetch(request).then(response=>response.status>=500?cacheFirst(request,'/index.html'):response).catch(()=>cacheFirst(request,'/index.html')));
  if(request.mode==='navigate'&&ROUTES.includes(route))return event.respondWith(cacheFirst(request,'/index.html'));
  if(APP_CACHE.files.includes(url.pathname))event.respondWith(cacheFirst(request));
 });

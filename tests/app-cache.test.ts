@@ -92,6 +92,20 @@ test('offline public pages can still use the cached shell without changing walle
  assert.deepEqual(await sw.get('/wallet',{navigate:true}),{body:'cached /index.html',intercepted:true});
 });
 
+test('public pages fall back on server errors and preserve other network responses',async()=>{
+ const sw=worker();await sw.dispatch('install');
+ for(const status of [200,302,404,429,500,503,504])for(const path of ['/','/download','/index.html']){
+  sw.fetch.mock.mockImplementationOnce(async()=>new Response(`network ${status}`,{status}));
+  const request=new Request(origin+path);Object.defineProperty(request,'mode',{value:'navigate'});
+  const response=await sw.dispatch('fetch',{request});assert.ok(response);
+  assert.equal(response.status,status>=500?200:status,`${path}: ${status}`);
+  assert.equal(await response.text(),status>=500?'cached /index.html':`network ${status}`,`${path}: ${status}`);
+ }
+ assert.equal(sw.fetch.mock.callCount(),21);
+ assert.deepEqual(await sw.get('/wallet',{navigate:true}),{body:'cached /index.html',intercepted:true});
+ assert.equal(sw.skipWaiting.mock.callCount(),0);
+});
+
 test('anything but a same-origin GET reaches the network untouched',async()=>{
  const sw=worker();await sw.dispatch('install');
  assert.deepEqual(await sw.get('/wallet',{navigate:true,method:'POST'}),{body:'net',intercepted:false},'a POST navigation');
