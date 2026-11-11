@@ -1,4 +1,5 @@
 import {Channel,invoke} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
 import {ESPLORA_URL,RestArkProvider,RestIndexerProvider,type EventSourceFactory,type NetworkName,type OnchainProvider} from '@arkade-os/sdk';
 import type {SwapClientConfig} from '@arkade-os/swap';
 import {attesting} from '@arkade-os/swap/advanced';
@@ -21,6 +22,7 @@ function connection(){
  if(!bridge){
   bridge=new NativeBridge({invoke:(command,args)=>invoke(command,args),channel:receive=>new Channel<NativeEvent>(receive)},new NativePolicy(globalThis.__SHIELDED_NATIVE__!.poolOrigin));
   bridge.beforeMutation=beforeNativeMutation;bridge.observeResponse=observeNativeResponse;
+  const owned=bridge;void listen<NativeStatus>('shielded-native-lifecycle',event=>owned.acceptLifecycle(event.payload)).catch(()=>{});
   let generation=0;
   bridge.subscribe(status=>{if(status.generation!==generation||status.phase!=='ready'){for(const provider of indexers)provider.retire();indexers.clear();for(const pool of pools)pool.destroy();pools.clear();}generation=status.generation;});
  }
@@ -49,7 +51,7 @@ export const nativeLnurlFetch:typeof fetch=scopedFetch('lnurl');
 export const nativeClaimFetch:typeof fetch=scopedFetch('pool-sync');
 export const nativeReleaseFetch:typeof fetch=scopedFetch('release');
 export const nativeNetwork={
- status:():Promise<NativeStatus>=>connection().status(),start:(mode:NativeMode='tor'):Promise<NativeStatus>=>connection().start(mode),pause:():Promise<NativeStatus>=>connection().pause(),
+ status:():Promise<NativeStatus>=>connection().status(),start:(mode:NativeMode='tor'):Promise<NativeStatus>=>connection().start(mode),pause:(warm=false):Promise<NativeStatus>=>connection().pause(warm),
  subscribe:(fn:(status:NativeStatus)=>void)=>connection().subscribe(fn),
  async check(signal:AbortSignal):Promise<void>{
   const b=connection(),current=b.sessionGuard(),url=b.policy.poolOrigin+'/api/rollup/status',route={...b.policy.classify(url,'GET'),key:'tor-health:'+crypto.randomUUID()};

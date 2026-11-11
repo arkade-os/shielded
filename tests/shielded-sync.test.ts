@@ -6,6 +6,9 @@ import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {catchUpAfterEvent,epochCatchUp,epochIdle,WATCHDOG_MS} from '../src/shielded/epoch-sync.ts';
 import type {PoolApi} from '../src/shielded/pool.ts';
+import type {RollupPoolStatus} from '../src/shielded/pool.ts';
+import {epochMatchesPool} from '../src/shielded/epoch-checkpoint.ts';
+import type {ShieldedSyncProgress} from '../src/shielded/sync-progress.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {loadAccount} from '../src/shielded/wallet.ts';
 import {epochPool} from './fixtures/epoch-pool.ts';
@@ -88,6 +91,41 @@ test('online, a snapshot whose previous-epoch root drifted fails loudly rather t
  const {pool,account,saving}=await rotated();
  const repository=await saving({...account.snapshot(),prevNoteRoot:String(account.prevNoteRoot()!+1n)});
  await assert.rejects(loadAccount(hash,aliceKeys,{repository,token:'g2',epochLen:4,bornAt:0,api:pool.api}),/drifted across a rotation/);
+});
+
+test('opening reuses an already-fetched matching pool status and still verifies the root',async()=>{
+ const {pool,saving}=await rotated(),asked:string[]=[],progress:ShieldedSyncProgress[]=[];
+ const status=await pool.api<RollupPoolStatus>('/status');status.pool!.token='g2';
+ const api=((path:string)=>{asked.push(path);return pool.api(path);}) as PoolApi;
+ const loaded=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',bornAt:0,api,status,onSyncProgress:p=>{progress.push(p);}});
+ assert.equal(loaded.resumed,true);assert.equal(loaded.offline,undefined);
+ assert.deepEqual(asked,['/batches?from=6&limit=50']);
+ assert.deepEqual(progress.filter(p=>p.stage==='verifying'||p.stage==='verified'),[
+  {stage:'verifying',through:6,total:6},{stage:'verified',through:6,total:6},
+ ]);
+});
+
+test('an older count or another pool status still requires a fresh status read',async()=>{
+ const {pool,saving}=await rotated();
+ for(const change of [{batches:5,root:'1'},{token:'other',root:'1'},{epochLen:0,root:'1'}]){
+  const status=await pool.api<RollupPoolStatus>('/status');Object.assign(status.pool!,{token:'g2'},change);
+  const asked:string[]=[],api=((path:string)=>{asked.push(path);return pool.api(path);}) as PoolApi;
+  const loaded=await loadAccount(hash,aliceKeys,{repository:await saving(),token:'g2',bornAt:0,api,status});
+  assert.equal(loaded.resumed,true);assert.equal(loaded.offline,undefined);
+  assert.equal(asked.filter(path=>path==='/status').length,1);
+ }
+});
+
+test('history reaching the public total is not reported verified when the root disagrees',async()=>{
+ const {pool,account}=await rotated(),status=await pool.api<RollupPoolStatus>('/status'),progress:ShieldedSyncProgress[]=[];
+ assert.equal(await epochMatchesPool(account,pool.api,undefined,undefined,undefined,{...status.pool!,root:'1'},p=>{progress.push(p);}),false);
+ assert.ok(progress.some(p=>p.stage==='verifying'));
+ assert.ok(!progress.some(p=>p.stage==='verified'));
+});
+
+test('a failing progress listener cannot hide a contradicting previous-epoch root',async()=>{
+ const {pool,account}=await rotated(),status=await pool.api<RollupPoolStatus>('/status');
+ await assert.rejects(epochMatchesPool(account,pool.api,undefined,undefined,undefined,{...status.pool!,prevNoteRoot:String(account.prevNoteRoot()!+1n)},()=>{throw new Error('view closed');}),/drifted across a rotation/);
 });
 
 test('offline, a snapshot opens unchecked on its own epoch length, and says so',async()=>{

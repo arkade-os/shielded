@@ -4,14 +4,15 @@ import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
+import {reportSyncProgress,type SyncProgressObserver,type SyncRequest} from './sync-progress.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
  epoch?:number;epochLen?:number;batchesInEpoch?:number;prevNoteRoot?:string;erCount?:number;rsCount?:number;nullifiers?:number;heapBytes?:number;depositFee?:DepositFee}}
 export interface SpendStatus {status:'pending'|'signing'|'included'|'dropped';batch?:number;txid?:string;reason?:string;arkTx?:string;checkpoint?:string;checkpoints?:string[];vin?:number}
 export interface Groth16Proof {pi_a:unknown;pi_b:unknown;pi_c:unknown}
 export type PoolApi=<T>(path:string,body?:unknown,beforeRequest?:()=>void)=>Promise<T>;
-export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch,page?:number):PoolApi=>{
- const api:PoolApi=<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest);
+export const poolApiOf=(origin:string,fetcher:typeof fetch=fetch,page?:number,onSyncProgress?:SyncProgressObserver):PoolApi=>{
+ const api:PoolApi=<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>rollupApi<T>(path,body,fetcher,1000,origin,beforeRequest,onSyncProgress);
  return isPrivateFetch(fetcher)?markPrivatePoolPage(markPrivatePoolApi(api),page??privatePoolPage(fetcher)):api;
 };
 export const DUST=330;
@@ -27,13 +28,18 @@ class PoolRequestError extends Error {
 export const rejected=(error:unknown,code:string):boolean=>typeof error==='object'&&error!==null&&((error as {code?:unknown}).code===code||rejected((error as {cause?:unknown}).cause,code));
 
 /** Retries outages and rate limits; definitive refusals surface at once. */
-export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void):Promise<T>{
+export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetch=fetch,pauseMs=1000,origin='',beforeRequest?:()=>void,onSyncProgress?:SyncProgressObserver):Promise<T>{
  const key=new URL(origin||globalThis.location?.origin||'http://localhost').origin;
+ const progressRequest:SyncRequest|undefined=body!==undefined?undefined:path==='/status'?'status':/^\/(?:batches|scan)(?:\?|$)/.test(path)?'history':undefined;
  const privateMutation=body!==undefined&&isPrivateFetch(fetcher);
  const admission=body!==undefined&&!/^\/spends\/[^/]+\/sign(?:\?|$)/.test(path);
  const request:RequestInit={method:body===undefined?'GET':'POST',cache:'no-store',headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})};
  for(let attempt=0;;attempt++){
-  for(let remaining;(remaining=Math.max(rateLimitedUntil.get(key)??0,admission?admissionLimitedUntil.get(key)??0:0)-Date.now())>0;)await sleep(Math.min(remaining,2_147_483_647));
+  for(let remaining;(remaining=Math.max(rateLimitedUntil.get(key)??0,admission?admissionLimitedUntil.get(key)??0:0)-Date.now())>0;){
+   if(progressRequest)reportSyncProgress(onSyncProgress,{stage:'waiting',request:progressRequest,attempt:attempt+1,retryInMs:remaining,status:429});
+   await sleep(Math.min(remaining,2_147_483_647));
+  }
+  if(progressRequest)reportSyncProgress(onSyncProgress,{stage:'request',request:progressRequest,attempt:attempt+1});
   beforeRequest?.();
   let response:Response|undefined,json:any;
   // A batch page runs to ~0.5 MB, hence a minute; a POST gets no bound, since aborting it could resend a spend the pool is still admitting.
@@ -59,6 +65,7 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   // A sealed 502 (an oversize page or a dead pool) and a sealed unavailable (its three relay attempts spent, caught above) would only repeat, so each gets one try.
   // Only the browser's sealed fetch: a private native fetch is not the gateway, and keeps its retries.
   if(privateMutation||attempt>=4||response?.status===502&&isSealedFetch(fetcher))throw new PoolRequestError(`The pool did not answer (${response?.status??'network error'}).`,response?.status);
+  if(progressRequest)reportSyncProgress(onSyncProgress,{stage:'waiting',request:progressRequest,attempt:attempt+2,retryInMs:pauseMs,...(response?{status:response.status}:{})});
   await sleep(pauseMs);
  }
 }

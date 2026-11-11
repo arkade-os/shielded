@@ -24,15 +24,15 @@ export function Scanner({onResult,onClose}:{onResult:(text:string)=>void;onClose
   void import('qr/dom.js').then(async({QRCanvas,frameLoop,rearCamera})=>{
    const player=video.current;
    if(!live||!player)return;
-   const camera=await rearCamera(player);
-   if(!live)return camera.stop();
+   const camera=await rearCamera(player);let stopped=false,cancel=()=>{};
+   stop=()=>{if(stopped)return;stopped=true;try{cancel();}finally{camera.stop();}};
+   if(!live)return stop();
    const canvas=new QRCanvas();let reading=false;
-   const cancel=frameLoop(()=>{
+   cancel=frameLoop(()=>{
     if(reading)return;reading=true;
     void camera.readFrame(canvas,true).then(found=>{reading=false;if(live&&typeof found==='string'){live=false;stop();done.current(found);}},()=>{reading=false;});
    });
-   stop=()=>{cancel();camera.stop();};
-  }).catch((error:unknown)=>{if(live)setProblem(cameraProblem(error));});
+  }).catch((error:unknown)=>{stop();if(live)setProblem(cameraProblem(error));});
   return()=>{live=false;stop();};
  },[]);
  // Escape must close only the scanner, not the sheet listening on window behind it.
