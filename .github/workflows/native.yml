@@ -146,7 +146,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      ANDROID_AVD_HOME: ${{ runner.temp }}/shielded-update-avd
       SHIELDED_TEST_EMULATOR_SERIAL: emulator-5554
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -162,6 +161,8 @@ jobs:
       - name: Prepare disposable Android update emulator
         shell: bash
         run: |
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/shielded-update-avd"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           sdkmanager 'platform-tools' 'emulator' 'build-tools;36.0.0' 'platforms;android-36' 'system-images;android-35;google_apis;x86_64'
           mkdir -p "$ANDROID_AVD_HOME"
           echo no | avdmanager create avd --name ShieldedUpdateCI --package 'system-images;android-35;google_apis;x86_64' --device pixel_6
