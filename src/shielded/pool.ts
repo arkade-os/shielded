@@ -142,13 +142,13 @@ export const shieldableWithFee=(plan:ShieldPlan,fee:DepositFeeSchedule|undefined
  const carrier=BigInt(plan.coin.value),free=BigInt(CARRIER_FREE_SATS);
  return carrier<=free||carrier-owed>=free;
 };
-/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry, and a deposit the fee would eat is left out. While a fee charges, pool payouts (`exempt`) go one at a time: a merged coin is a plain send and would pay. Past `maxCoins` plain coins, the soonest to expire go first, or the largest when only they cover the fee. */
+/** What auto-shield moves next: every plain coin as one deposit, else one coin of a listed asset. The pool refuses coins near expiry, and a deposit the fee would eat is left out. While a fee charges, pool payouts (`exempt`) go one at a time: a merged coin is a plain send and would pay. Past `maxCoins` plain coins, the soonest to expire go first, or the largest when only they cover the fee. When no merged group nets past the fee, the largest payout goes alone. */
 export function shieldPlan(coins:readonly ArkCoin[],listed:ReadonlySet<string>,now:number,floorMs:number,fee:{schedule?:DepositFeeSchedule;exempt?:(coin:ArkCoin)=>boolean}={},maxCoins=Infinity):ShieldPlan|undefined {
  const {schedule,exempt}=fee,usable=coins.filter(c=>c.expiresAt===undefined||c.expiresAt-now>floorMs),plain=usable.filter(c=>!c.assets?.length);
- const expiry=(c:ArkCoin)=>c.expiresAt??Number.MAX_SAFE_INTEGER;
- for(const order of plain.length>maxCoins?[(a:ArkCoin,b:ArkCoin)=>expiry(a)-expiry(b),(a:ArkCoin,b:ArkCoin)=>b.value-a.value]:[undefined]){
-  let picked=order?[...plain].sort(order).slice(0,maxCoins):plain;
-  if(exempt&&picked.length>1&&(schedule?.fixedSats||schedule?.bps)&&picked.every(exempt))picked=[picked.reduce((a,b)=>b.value>a.value?b:a)];
+ const expiry=(c:ArkCoin)=>c.expiresAt??Number.MAX_SAFE_INTEGER,largest=(group:ArkCoin[])=>group.reduce((a,b)=>b.value>a.value?b:a),payouts=exempt?plain.filter(exempt):[];
+ const groups=[...(plain.length>maxCoins?[[...plain].sort((a,b)=>expiry(a)-expiry(b)),[...plain].sort((a,b)=>b.value-a.value)].map(group=>group.slice(0,maxCoins)):[plain]),...(payouts.length?[[largest(payouts)]]:[])];
+ for(let picked of groups){
+  if(exempt&&picked.length>1&&(schedule?.fixedSats||schedule?.bps)&&picked.every(exempt))picked=[largest(picked)];
   const btc:ShieldPlan={kind:'btc',coins:picked,amount:picked.reduce((sum,c)=>sum+c.value,0)};
   if(shieldableWithFee(btc,schedule,exempt))return btc;
  }

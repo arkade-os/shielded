@@ -112,6 +112,13 @@ test('past the coin cap, a fee the soonest coins cannot cover takes the largest 
  assert.deepEqual(shieldPlan([...soon,big],new Set(),0,0,{},20),{kind:'btc',coins:soon,amount:6_600},'with no fee, the soonest to expire still go first');
 });
 
+test('when no merged group nets past the fee, the largest pool payout goes alone, fee-free',()=>{
+ const early=Array.from({length:20},(_,i)=>({...coinOf(i+10,400),expiresAt:1_000})),payout={...coinOf(9,330),expiresAt:2_000};
+ assert.deepEqual(shieldPlan([...early,payout],new Set(),0,0,{schedule:{fixedSats:8_000,bps:0},exempt:c=>c===payout},20),{kind:'btc',coins:[payout],amount:330},'past the cap');
+ const large={...coinOf(8,5_000)},plainCoin=coinOf(7,400);
+ assert.deepEqual(shieldPlan([large,plainCoin],new Set(),0,0,{schedule:{fixedSats:10_000,bps:0},exempt:c=>c===large}),{kind:'btc',coins:[large],amount:5_000},'and uncapped');
+});
+
 test('with a fee on, a plan whose coins are all pool payouts deposits the largest alone, so it keeps its exemption',()=>{
  const [a,b,c]=[coinOf(1,500),coinOf(2,900),coinOf(3,700)],exempt=()=>true;
  assert.deepEqual(planned([a,b,c],{schedule:flat,exempt}),{kind:'btc',coins:[b],amount:900});
