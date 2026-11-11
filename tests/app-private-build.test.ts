@@ -30,6 +30,15 @@ test('a private wallet, which has no Lightning, opens receive on shielded and of
  assert.match(wallet,new RegExp(`<ReceivePortal [^>]*unified=\\{${lightning}\\}`));
 });
 
+test('a private wallet offers no Lightning, Bitcoin or renewal action its transport cannot carry',()=>{
+ const wallet=read('app/src/RollupWallet.tsx'),live=/const (\w+)=nativeHost\|\|!PRIVATE;/.exec(wallet)?.[1];
+ assert.ok(live);
+ assert.ok(wallet.includes(`placeholder={${live}?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'}`));
+ assert.ok(wallet.includes(`{${live}?' A Bitcoin address leaves the pool`));
+ assert.ok(wallet.includes(`{${live}&&to.trim()&&`));
+ assert.match(wallet,new RegExp(`expiring>0&&\\(${live}\\?<button[^\\n]*?>Renew expiring sats</button>:`));
+});
+
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
  const wallet=read('app/src/RollupWallet.tsx'),effect=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/.exec(wallet);
  assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(\)/);
