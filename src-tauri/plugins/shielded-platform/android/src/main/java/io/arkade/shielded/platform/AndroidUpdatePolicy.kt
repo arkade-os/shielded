@@ -7,6 +7,19 @@ import java.security.MessageDigest
 
 internal class UpdateRejected(message: String) : Exception(message)
 
+// Production access is serialized by AndroidUpdater's companion lock.
+internal class AndroidUpdateJournal<T : Any> {
+    private var receipt: T? = null
+
+    fun read(load: () -> T?): T? = receipt ?: load()
+
+    fun write(record: T, persist: (T) -> Unit) {
+        receipt = record
+        persist(record)
+        receipt = null
+    }
+}
+
 internal object AndroidUpdatePolicy {
     const val MAX_BYTES = 128L * 1024 * 1024
     private val digest = Regex("[a-f0-9]{64}")
@@ -56,6 +69,25 @@ internal object AndroidUpdatePolicy {
 
     fun callback(token: String, session: Int, expectedToken: String, expectedSession: Int) =
         token.isNotEmpty() && session >= 0 && token == expectedToken && session == expectedSession
+
+    fun mayHaveCommitted(commitStarted: Boolean, error: Exception) = commitStarted || error is AmbiguousUpdateAuthorization
+
+    fun terminalResult(token: String, session: Int, target: Long, recordToken: String, recordSession: Int,
+        recordTarget: Long, status: String, error: String?): Pair<String, String?>? =
+        if (target == recordTarget && callback(token, session, recordToken, recordSession) && status in listOf("installed", "failed"))
+            status to error else null
+
+    fun recoverInstallFailure(possibleCommit: Boolean, ownsAttempt: Boolean, persist: (String) -> Unit): String {
+        val status = if (possibleCommit) "confirmation-required" else "failed"
+        if (ownsAttempt) try { persist(status) } catch (_: Exception) { }
+        return status
+    }
+
+    fun afterAbandon(abandoned: Boolean, sessionExists: Boolean, currentVersion: Long?, targetVersion: Long): String = when {
+        currentVersion != null && targetVersion > 0 && currentVersion >= targetVersion -> "installed"
+        currentVersion == null || !abandoned || sessionExists -> "confirmation-required"
+        else -> "failed"
+    }
 
     fun reconcile(status: String, currentVersion: Long, targetVersion: Long, sessionExists: Boolean, inProcess: Boolean): String = when {
         targetVersion > 0 && currentVersion >= targetVersion -> "installed"

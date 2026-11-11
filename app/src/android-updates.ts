@@ -6,7 +6,7 @@ import androidSigning from '../../src-tauri/android-signing.json' with {type:'js
 export type AndroidInstallStatus='idle'|'installing'|'confirmation-required'|'failed'|'installed';
 export interface AndroidUpdateInfo {
  packageName:string;versionCode:number;signerSha256:string;installerPackageName:string|null;canRequestInstalls:boolean;
- installStatus:AndroidInstallStatus;installError:string|null;staged?:{id:string;versionCode:number};downloading?:{id:string};
+ installStatus:AndroidInstallStatus;installError:string|null;staged?:{id:string;versionCode:number;ready?:boolean};downloading?:{id:string};
 }
 export interface AndroidInstallResult {installStatus:AndroidInstallStatus|'permission-required';installError?:string|null}
 export interface AndroidUpdateBackend {
@@ -41,6 +41,7 @@ export function androidUpdateBackend():AndroidUpdateBackend {
   install:id=>invoke('native_android_update_install',{id}),confirm:()=>invoke('native_android_update_confirm'),
  };
 }
+// IPC may outlive this deadline; reconcile native status before another install.
 const bounded=<T>(work:Promise<T>,milliseconds=10_000)=>new Promise<T>((resolve,reject)=>{
  const timer=setTimeout(()=>reject(new Error('Android did not respond. Check the update status and try again.')),milliseconds);
  work.then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});
@@ -68,6 +69,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
  const listeners=new Set<()=>void>();
  const publish=(change:Partial<AndroidUpdateState>)=>{if(stopped)return;state={...state,...change};for(const listener of listeners)listener();};
  const active=(owner:number)=>!stopped&&revision===owner;
+ const installable=()=>!!state.staged&&(state.phase==='ready'||state.phase==='failed'&&state.info?.installStatus==='failed');
  const schedule=()=>{
   clearTimeout(poll);poll=undefined;
   if(!stopped&&isVisible()&&['installing','confirmation-required','unknown'].includes(state.phase))poll=setTimeout(()=>void refresh(),2500);
@@ -77,19 +79,23 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   publish({info,release:latest,phase:latest?(error?'blocked':'available'):'idle',staged:undefined,error,received:0,total:latest?.androidUpdate?.bytes??0});
  };
  const reconcile=(info:AndroidUpdateInfo)=>{
-  if(info.installStatus==='installed'){publish({info,phase:'installed',error:'',staged:undefined});return;}
+  const installed=info.installStatus==='installed',target=state.staged?.versionCode??state.release?.androidUpdate?.versionCode??latest?.androidUpdate?.versionCode;
+  const staged=installed?(info.staged&&info.staged.versionCode>info.versionCode?info.staged:state.staged&&state.staged.versionCode>info.versionCode?state.staged:undefined):info.staged;
+  const retryReady=info.staged?.ready===true&&info.staged.versionCode>info.versionCode;
+  const newer=Math.max(staged?.versionCode??0,latest?.androidUpdate?.versionCode??0,target??0)>info.versionCode;
+  if(installed&&!newer){publish({info,phase:'installed',error:'',staged:undefined});return;}
   if(info.installStatus==='installing'||info.installStatus==='confirmation-required'){
    publish({info,phase:info.installStatus,error:info.installError??'',staged:info.staged??state.staged});return;
   }
   if(info.installStatus==='failed'){publish({info,phase:'failed',staged:info.staged,error:info.installError??'Android did not install the update. Your wallet data stays on this device.'});return;}
-  if(['installing','confirmation-required','unknown'].includes(state.phase)){
+  if(['installing','confirmation-required','unknown'].includes(state.phase)&&!retryReady&&!(installed&&(target===undefined||info.versionCode>=target))){
    publish({info,phase:'unknown',error:'Android has not confirmed the install status. Check again before starting another installation.'});return;
   }
-  if(info.staged){
-   const release=state.staged?.id===info.staged.id?state.release:latest;
+  if(staged){
+   const release=state.staged?.id===staged.id?state.release:latest;
    const error=conflict(info,release?.androidUpdate);
-   if(error||release?.androidUpdate?.versionCode!==info.staged.versionCode){publish({info,phase:'blocked',staged:info.staged,error:error||'A different update is saved. Discard it before downloading this release.'});return;}
-   publish({info,phase:'ready',release,staged:info.staged,received:release.androidUpdate.bytes,total:release.androidUpdate.bytes,error:''});return;
+   if(error||release?.androidUpdate?.versionCode!==staged.versionCode){publish({info,phase:'blocked',staged,error:error||'A different update is saved. Discard it before downloading this release.'});return;}
+   publish({info,phase:'ready',release,staged,received:release.androidUpdate.bytes,total:release.androidUpdate.bytes,error:''});return;
   }
   available(info);
  };
@@ -165,7 +171,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    catch(error){if(active(owner))publish({phase:'ready',error:message(error)});}
   },
   async permission(){
-   if(stopped||permissionOpening||!state.staged||state.phase!=='ready')return;
+   if(stopped||permissionOpening||!installable())return;
    permissionOpening=true;const owner=++revision;publish({error:''});
    try{await bounded(backend.permission());if(active(owner)&&isVisible())await refresh();}
    catch(error){if(active(owner))publish({error:message(error)});}
@@ -173,10 +179,11 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   },
   async install(confirm=false){
    const saved=state.staged;
-   if(stopped||!isVisible()||(confirm?state.phase!=='confirmation-required':!saved||!(state.phase==='ready'||state.phase==='failed'&&state.info?.installStatus==='failed')))return;
+   if(stopped||!isVisible()||(confirm?state.phase!=='confirmation-required':!installable()))return;
    const owner=++revision;let submitted=false;publish({phase:'preparing',error:''});
    try{
     const info=await bounded(backend.info());if(!active(owner))return;
+    if(!confirm&&info.installStatus==='failed'&&!info.staged){reconcile(info);return;}
     const blocked=confirm?installationConflict(info):conflict(info,state.release?.androidUpdate);if(blocked)throw new Error(blocked);
     publish({info});
     if(confirm&&info.installStatus!=='confirmation-required'){reconcile(info);return;}

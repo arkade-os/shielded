@@ -12,6 +12,8 @@ use tauri::{AppHandle, State, WebviewWindow, ipc::Channel};
 
 const UNAVAILABLE: &str = "Android updater unavailable";
 const MAX_APK_BYTES: u64 = 128 * 1024 * 1024;
+const MISSING_PACKAGE: &str =
+    "The saved update is unavailable. Download it again before installing.";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -57,7 +59,18 @@ struct Prepared {
     file: Arc<StagedFile>,
     request: UpdateRequest,
 }
+impl Prepared {
+    fn available(&self) -> bool {
+        std::fs::symlink_metadata(&self.file.path)
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+    }
 
+    fn same_file(&self, other: &Self) -> bool {
+        self.info.id == other.info.id && Arc::ptr_eq(&self.file, &other.file)
+    }
+}
+
+#[derive(Clone)]
 enum Phase {
     Idle,
     Downloading {
@@ -68,8 +81,66 @@ enum Phase {
     Ready(Prepared),
     Installing {
         prepared: Prepared,
+        attempt: String,
         calling: bool,
     },
+    Failed {
+        info: StagedUpdate,
+        error: String,
+    },
+}
+
+#[derive(Debug)]
+enum BeginInstallError {
+    Invalid(String),
+    Failed(String),
+}
+
+struct InfoQueryTicket(Phase);
+impl InfoQueryTicket {
+    fn check(&self, current: &Phase) -> Result<(), String> {
+        let unchanged = match (&self.0, current) {
+            (Phase::Idle, Phase::Idle) => true,
+            (
+                Phase::Downloading {
+                    id: old_id,
+                    generation: old_generation,
+                    cancelled: old_cancelled,
+                },
+                Phase::Downloading {
+                    id,
+                    generation,
+                    cancelled,
+                },
+            ) => old_id == id && old_generation == generation && old_cancelled == cancelled,
+            (Phase::Ready(old), Phase::Ready(prepared)) => old.same_file(prepared),
+            (
+                Phase::Installing {
+                    prepared: old,
+                    attempt: old_attempt,
+                    calling: old_calling,
+                },
+                Phase::Installing {
+                    prepared,
+                    attempt,
+                    calling,
+                },
+            ) => old.same_file(prepared) && old_attempt == attempt && old_calling == calling,
+            (
+                Phase::Failed {
+                    info: old,
+                    error: old_error,
+                },
+                Phase::Failed { info, error },
+            ) => old.id == info.id && old.version_code == info.version_code && old_error == error,
+            _ => false,
+        };
+        if unchanged {
+            Ok(())
+        } else {
+            Err("Android update state changed. Check its status again.".into())
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -90,9 +161,7 @@ impl AndroidUpdates {
 
     fn prepare_directory(&self) -> Result<(), String> {
         let mut ready = self.directory_ready.lock().map_err(|_| UNAVAILABLE)?;
-        if *ready {
-            return Ok(());
-        }
+        // Android can evict this cache after initialization; recreate it and reject substituted symlinks.
         let directory = &self.directory;
         std::fs::create_dir_all(&directory).map_err(|_| UNAVAILABLE)?;
         if std::fs::symlink_metadata(&directory)
@@ -101,6 +170,9 @@ impl AndroidUpdates {
             .is_symlink()
         {
             return Err(UNAVAILABLE.into());
+        }
+        if *ready {
+            return Ok(());
         }
         for entry in std::fs::read_dir(&directory).map_err(|_| UNAVAILABLE)? {
             let entry = entry.map_err(|_| UNAVAILABLE)?;
@@ -130,7 +202,7 @@ impl AndroidUpdates {
         }
         self.prepare_directory()?;
         let mut state = self.lock()?;
-        if !matches!(*state, Phase::Idle) {
+        if !matches!(*state, Phase::Idle | Phase::Failed { .. }) {
             return Err("An Android update is already prepared or running".into());
         }
         let partial = Arc::new(StagedFile::new(
@@ -151,45 +223,141 @@ impl AndroidUpdates {
         })
     }
 
+    fn info_ticket(&self) -> Result<InfoQueryTicket, String> {
+        Ok(InfoQueryTicket(self.lock()?.clone()))
+    }
+
+    #[cfg(test)]
     fn snapshot(&self, info: &mut Value) -> Result<(), String> {
-        let mut state = self.lock()?;
-        if let Phase::Installing {
-            prepared,
-            calling: false,
-        } = &*state
-        {
-            if info["installStatus"] == "installed" {
-                *state = Phase::Idle;
-            } else if matches!(info["installStatus"].as_str(), Some("idle" | "failed")) {
-                *state = Phase::Ready(prepared.clone());
+        self.snapshot_for(info, &self.info_ticket()?)
+    }
+
+    fn snapshot_for(&self, info: &mut Value, ticket: &InfoQueryTicket) -> Result<(), String> {
+        let version = info["versionCode"].as_u64();
+        let status = info["installStatus"].as_str().unwrap_or("").to_owned();
+        let checked = {
+            let state = self.lock()?;
+            ticket.check(&state)?;
+            match &*state {
+                Phase::Ready(prepared) => Some(prepared.clone()),
+                Phase::Installing {
+                    prepared,
+                    calling: false,
+                    ..
+                } if matches!(status.as_str(), "idle" | "failed") => Some(prepared.clone()),
+                _ => None,
             }
+        };
+        let completed = |target| version.is_some_and(|version| version >= target);
+        let available = checked
+            .as_ref()
+            .is_some_and(|prepared| completed(prepared.info.version_code) || prepared.available());
+        let fields = info.as_object_mut().ok_or(UNAVAILABLE)?;
+        fields.remove("staged");
+        fields.remove("downloading");
+        let mut state = self.lock()?;
+        ticket.check(&state)?;
+        let transition = match &*state {
+            Phase::Ready(prepared)
+            | Phase::Installing {
+                prepared,
+                calling: false,
+                ..
+            } if completed(prepared.info.version_code) => Some(Phase::Idle),
+            Phase::Failed { info, .. } if completed(info.version_code) => Some(Phase::Idle),
+            Phase::Ready(prepared) if !available => Some(Phase::Failed {
+                info: prepared.info.clone(),
+                error: MISSING_PACKAGE.into(),
+            }),
+            Phase::Installing {
+                prepared,
+                calling: false,
+                ..
+            } if matches!(status.as_str(), "idle" | "failed") => Some(if available {
+                Phase::Ready(prepared.clone())
+            } else {
+                Phase::Failed {
+                    info: prepared.info.clone(),
+                    error: MISSING_PACKAGE.into(),
+                }
+            }),
+            _ => None,
+        };
+        if let Some(next) = transition {
+            if matches!(next, Phase::Idle) {
+                info["installStatus"] = json!("installed");
+                info["installError"] = Value::Null;
+            }
+            *state = next;
         }
         match &*state {
             Phase::Downloading { id, .. } => info["downloading"] = json!({ "id": id }),
             Phase::Ready(prepared) | Phase::Installing { prepared, .. } => {
                 info["staged"] = serde_json::to_value(&prepared.info).map_err(|_| UNAVAILABLE)?;
+                info["staged"]["ready"] = json!(matches!(*state, Phase::Ready(_)));
+                if matches!(*state, Phase::Installing { calling: true, .. }) {
+                    info["installStatus"] = json!("installing");
+                    info["installError"] = Value::Null;
+                }
+            }
+            Phase::Failed { error, .. } => {
+                info["installStatus"] = json!("failed");
+                info["installError"] = json!(error);
             }
             Phase::Idle => {}
         }
         Ok(())
     }
 
-    fn begin_install(&self, id: &str) -> Result<InstallOwner, String> {
-        let mut state = self.lock()?;
-        let Phase::Ready(prepared) = &*state else {
-            return Err("The verified update is not ready to install".into());
+    async fn query_info(
+        &self,
+        query: impl std::future::Future<Output = Result<Value, String>>,
+    ) -> Result<Value, String> {
+        let ticket = self.info_ticket()?;
+        let mut info = query.await?;
+        self.snapshot_for(&mut info, &ticket)?;
+        Ok(info)
+    }
+
+    fn begin_install(&self, id: &str) -> Result<InstallOwner, BeginInstallError> {
+        let prepared = {
+            let state = self.lock().map_err(BeginInstallError::Invalid)?;
+            match &*state {
+                Phase::Ready(prepared) if prepared.info.id == id => prepared.clone(),
+                Phase::Failed { info, error } if info.id == id => {
+                    return Err(BeginInstallError::Failed(error.clone()));
+                }
+                _ => {
+                    return Err(BeginInstallError::Invalid(
+                        "The verified update is not ready to install or has been replaced".into(),
+                    ));
+                }
+            }
         };
-        if prepared.info.id != id {
-            return Err("This update has been replaced".into());
+        let available = prepared.available();
+        let mut state = self.lock().map_err(BeginInstallError::Invalid)?;
+        if !matches!(&*state, Phase::Ready(current) if current.same_file(&prepared)) {
+            return Err(BeginInstallError::Invalid(
+                "This update has been replaced or is already running".into(),
+            ));
         }
-        let prepared = prepared.clone();
+        if !available {
+            *state = Phase::Failed {
+                info: prepared.info.clone(),
+                error: MISSING_PACKAGE.into(),
+            };
+            return Err(BeginInstallError::Failed(MISSING_PACKAGE.into()));
+        }
+        let attempt = uuid::Uuid::new_v4().to_string();
         *state = Phase::Installing {
             prepared: prepared.clone(),
+            attempt: attempt.clone(),
             calling: true,
         };
         Ok(InstallOwner {
             updates: self.clone(),
             prepared,
+            attempt,
         })
     }
 
@@ -205,6 +373,12 @@ impl AndroidUpdates {
                 Ok(Some(*generation))
             }
             Phase::Ready(prepared) if prepared.info.id == id => {
+                let previous = std::mem::replace(&mut *state, Phase::Idle);
+                drop(state);
+                drop(previous);
+                Ok(None)
+            }
+            Phase::Failed { info, .. } if info.id == id => {
                 *state = Phase::Idle;
                 Ok(None)
             }
@@ -274,19 +448,31 @@ impl Drop for DownloadOwner {
 struct InstallOwner {
     updates: AndroidUpdates,
     prepared: Prepared,
+    attempt: String,
 }
 impl InstallOwner {
     fn finish(&self, result: &Result<Value, String>) -> Result<(), String> {
+        let known_failure = result.as_ref().is_ok_and(|value| {
+            matches!(
+                value["installStatus"].as_str(),
+                Some("failed" | "permission-required")
+            )
+        });
+        let available = known_failure && self.prepared.available();
         let mut state = self.updates.lock()?;
-        if !matches!(&*state, Phase::Installing { prepared, .. } if prepared.info.id == self.prepared.info.id)
+        if !matches!(&*state, Phase::Installing { prepared, attempt, .. } if prepared.same_file(&self.prepared) && attempt == &self.attempt)
         {
             return Err(UNAVAILABLE.into());
         }
-        if result
-            .as_ref()
-            .is_ok_and(|value| value["installStatus"] == "permission-required")
-        {
-            *state = Phase::Ready(self.prepared.clone());
+        if known_failure {
+            *state = if available {
+                Phase::Ready(self.prepared.clone())
+            } else {
+                Phase::Failed {
+                    info: self.prepared.info.clone(),
+                    error: MISSING_PACKAGE.into(),
+                }
+            };
         }
         Ok(())
     }
@@ -294,8 +480,13 @@ impl InstallOwner {
 impl Drop for InstallOwner {
     fn drop(&mut self) {
         if let Ok(mut state) = self.updates.lock() {
-            if let Phase::Installing { prepared, calling } = &mut *state {
-                if prepared.info.id == self.prepared.info.id {
+            if let Phase::Installing {
+                prepared,
+                attempt,
+                calling,
+            } = &mut *state
+            {
+                if prepared.same_file(&self.prepared) && attempt == &self.attempt {
                     *calling = false;
                 }
             }
@@ -356,9 +547,9 @@ pub async fn native_android_update_info(
     updates: State<'_, AndroidUpdates>,
 ) -> Result<Value, String> {
     crate::ensure_local(&window)?;
-    let mut info = tauri_plugin_shielded_platform::android_update_info(&app).await?;
-    updates.snapshot(&mut info)?;
-    Ok(info)
+    updates
+        .query_info(tauri_plugin_shielded_platform::android_update_info(&app))
+        .await
 }
 
 #[tauri::command]
@@ -453,10 +644,18 @@ pub async fn native_android_update_install(
 ) -> Result<Value, String> {
     crate::ensure_local(&window)?;
     let info = tauri_plugin_shielded_platform::android_update_info(&app).await?;
-    let owner = updates.begin_install(&id)?;
-    check_candidate(&owner.prepared.request, &info)?;
+    let owner = match updates.begin_install(&id) {
+        Ok(owner) => owner,
+        Err(BeginInstallError::Failed(error)) => {
+            return Ok(json!({ "installStatus": "failed", "installError": error }));
+        }
+        Err(BeginInstallError::Invalid(error)) => return Err(error),
+    };
     let request = &owner.prepared.request;
-    let result = tauri_plugin_shielded_platform::android_install_update(&app, json!({ "path": owner.prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code })).await;
+    let result = match check_candidate(request, &info) {
+        Ok(()) => tauri_plugin_shielded_platform::android_install_update(&app, json!({ "path": owner.prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code })).await,
+        Err(error) => Ok(json!({ "installStatus": "failed", "installError": error })),
+    };
     owner.finish(&result)?;
     result
 }
@@ -490,9 +689,10 @@ mod tests {
         updates
     }
     fn ready(updates: &AndroidUpdates) -> StagedUpdate {
-        let mut owner = updates
-            .reserve(&uuid::Uuid::new_v4().to_string(), 1)
-            .unwrap();
+        ready_with_id(updates, &uuid::Uuid::new_v4().to_string())
+    }
+    fn ready_with_id(updates: &AndroidUpdates, id: &str) -> StagedUpdate {
+        let mut owner = updates.reserve(id, 1).unwrap();
         let file = Arc::new(StagedFile::new(
             owner.partial.path.with_extension("apk"),
             true,
@@ -623,6 +823,7 @@ mod tests {
         assert!(updates.begin_install(&prepared.id).is_err());
         let mut installed = info();
         installed["installStatus"] = json!("installed");
+        installed["versionCode"] = json!(prepared.version_code);
         updates.snapshot(&mut installed).unwrap();
         assert!(path.exists());
         drop(owner);
@@ -704,6 +905,425 @@ mod tests {
         );
         assert_eq!(std::fs::read(&blocked).unwrap(), b"retain");
         std::fs::remove_file(blocked).unwrap();
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+
+    fn prepared_path(updates: &AndroidUpdates) -> PathBuf {
+        let state = updates.lock().unwrap();
+        match &*state {
+            Phase::Ready(prepared) | Phase::Installing { prepared, .. } => {
+                prepared.file.path.clone()
+            }
+            _ => panic!("No prepared file"),
+        }
+    }
+
+    #[test]
+    fn an_old_installed_marker_preserves_the_newer_install_and_its_file() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let path = prepared_path(&updates);
+        drop(updates.begin_install(&prepared.id).unwrap());
+        let mut old_completion = info();
+        old_completion["installStatus"] = json!("installed");
+        updates.snapshot(&mut old_completion).unwrap();
+        assert!(path.exists());
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: false, .. }
+        ));
+        assert_eq!(old_completion["staged"]["id"], prepared.id);
+        assert!(updates.begin_install(&prepared.id).is_err());
+        let mut completed = info();
+        completed["versionCode"] = json!(prepared.version_code);
+        completed["installStatus"] = json!("installed");
+        updates.snapshot(&mut completed).unwrap();
+        assert!(!path.exists());
+        assert!(completed.get("staged").is_none());
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+
+    #[test]
+    fn a_known_precommit_failure_restores_only_an_available_package_for_explicit_retry() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        owner.finish(&Ok(json!({"installStatus":"failed","installError":"Could not save the installer record"}))).unwrap();
+        assert!(matches!(*updates.lock().unwrap(), Phase::Ready(_)));
+        drop(owner);
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["staged"]["id"], prepared.id);
+        assert!(updates.begin_install(&prepared.id).is_ok());
+    }
+
+    #[test]
+    fn an_evicted_ready_package_reports_authoritative_failure_and_allows_a_new_download() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        std::fs::remove_file(prepared_path(&updates)).unwrap();
+        for _ in 0..2 {
+            let mut native = info();
+            updates.snapshot(&mut native).unwrap();
+            assert_eq!(native["installStatus"], "failed");
+            assert!(
+                native["installError"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Download")
+            );
+            assert!(native.get("staged").is_none());
+        }
+        assert!(
+            updates
+                .reserve(&uuid::Uuid::new_v4().to_string(), 2)
+                .is_ok()
+        );
+        assert_eq!(updates.cancel(&prepared.id).unwrap(), None);
+    }
+
+    #[test]
+    fn a_package_evicted_between_preflight_and_begin_install_is_a_known_failure() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert!(native.get("staged").is_some());
+        std::fs::remove_file(prepared_path(&updates)).unwrap();
+        let attempt = updates.begin_install(&prepared.id);
+        assert!(matches!(attempt, Err(BeginInstallError::Failed(_))));
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["installStatus"], "failed");
+        assert!(native.get("staged").is_none());
+    }
+
+    #[test]
+    fn native_failure_recovery_cannot_restore_an_evicted_package_to_ready() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        drop(updates.begin_install(&prepared.id).unwrap());
+        std::fs::remove_file(prepared_path(&updates)).unwrap();
+        let mut failed = info();
+        failed["installStatus"] = json!("failed");
+        failed["installError"] = json!("The installer failed");
+        updates.snapshot(&mut failed).unwrap();
+        assert_eq!(failed["installStatus"], "failed");
+        assert!(failed.get("staged").is_none());
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["installStatus"], "failed");
+        assert!(native.get("staged").is_none());
+    }
+
+    #[test]
+    fn known_failure_and_permission_replies_do_not_restore_a_missing_file() {
+        for status in ["failed", "permission-required"] {
+            let updates = fixture();
+            let prepared = ready(&updates);
+            let owner = updates.begin_install(&prepared.id).unwrap();
+            std::fs::remove_file(prepared_path(&updates)).unwrap();
+            owner.finish(&Ok(json!({"installStatus":status}))).unwrap();
+            drop(owner);
+            let mut native = info();
+            updates.snapshot(&mut native).unwrap();
+            assert_eq!(native["installStatus"], "failed");
+            assert!(native.get("staged").is_none());
+        }
+    }
+
+    #[test]
+    fn an_active_install_retains_ownership_until_call_and_os_session_settle() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        std::fs::remove_file(prepared_path(&updates)).unwrap();
+        let mut failed = info();
+        failed["installStatus"] = json!("failed");
+        updates.snapshot(&mut failed).unwrap();
+        assert_eq!(failed["staged"]["id"], prepared.id);
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: true, .. }
+        ));
+        drop(owner);
+        for status in ["installing", "confirmation-required", "installed"] {
+            let mut pending = info();
+            pending["installStatus"] = json!(status);
+            updates.snapshot(&mut pending).unwrap();
+            assert_eq!(pending["staged"]["id"], prepared.id);
+            assert!(matches!(
+                *updates.lock().unwrap(),
+                Phase::Installing { calling: false, .. }
+            ));
+            assert!(updates.cancel(&prepared.id).is_err());
+        }
+        let mut complete = info();
+        complete["installStatus"] = json!("installed");
+        complete["versionCode"] = json!(prepared.version_code);
+        updates.snapshot(&mut complete).unwrap();
+        assert!(matches!(*updates.lock().unwrap(), Phase::Idle));
+        assert!(complete.get("staged").is_none());
+    }
+
+    #[test]
+    fn an_old_install_owner_cannot_finish_or_drop_the_replacement_attempt() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        owner
+            .finish(&Ok(json!({"installStatus":"permission-required"})))
+            .unwrap();
+        let replacement = updates.begin_install(&prepared.id).unwrap();
+        assert!(
+            owner
+                .finish(&Ok(json!({"installStatus":"failed"})))
+                .is_err()
+        );
+        drop(owner);
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: true, .. }
+        ));
+        let mut stale = info();
+        stale["installStatus"] = json!("idle");
+        updates.snapshot(&mut stale).unwrap();
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: true, .. }
+        ));
+        assert!(updates.begin_install(&prepared.id).is_err());
+        drop(replacement);
+    }
+
+    #[test]
+    fn an_old_id_or_owner_cannot_clear_a_newly_prepared_package() {
+        let updates = fixture();
+        let first = ready(&updates);
+        let old_owner = updates.begin_install(&first.id).unwrap();
+        old_owner
+            .finish(&Ok(json!({"installStatus":"permission-required"})))
+            .unwrap();
+        updates.cancel(&first.id).unwrap();
+        let next = ready(&updates);
+        let next_path = prepared_path(&updates);
+        assert_eq!(updates.cancel(&first.id).unwrap(), None);
+        assert!(updates.begin_install(&first.id).is_err());
+        assert!(
+            old_owner
+                .finish(&Ok(json!({"installStatus":"failed"})))
+                .is_err()
+        );
+        drop(old_owner);
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["staged"]["id"], next.id);
+        assert!(next_path.exists());
+    }
+
+    #[test]
+    fn only_an_available_ready_package_advertises_an_explicit_install_retry() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        assert!(
+            serde_json::to_value(&prepared)
+                .unwrap()
+                .get("ready")
+                .is_none()
+        );
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["staged"]["ready"], true);
+        assert_eq!(native["staged"].as_object().unwrap().len(), 3);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["installStatus"], "installing");
+        assert_eq!(native["staged"]["ready"], false);
+        drop(owner);
+        for status in ["installed", "installing", "confirmation-required"] {
+            let mut pending = info();
+            pending["installStatus"] = json!(status);
+            updates.snapshot(&mut pending).unwrap();
+            assert_eq!(pending["staged"]["ready"], false);
+        }
+        let mut failed = info();
+        failed["installStatus"] = json!("failed");
+        updates.snapshot(&mut failed).unwrap();
+        assert_eq!(failed["staged"]["ready"], true);
+        std::fs::remove_file(prepared_path(&updates)).unwrap();
+        let mut missing = info();
+        updates.snapshot(&mut missing).unwrap();
+        assert_eq!(missing["installStatus"], "failed");
+        assert!(missing.get("staged").is_none());
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+
+    #[test]
+    fn actual_completion_wins_over_eviction_and_clears_a_known_cache_failure() {
+        for previously_failed in [false, true] {
+            let updates = fixture();
+            let prepared = ready(&updates);
+            std::fs::remove_file(prepared_path(&updates)).unwrap();
+            if previously_failed {
+                let mut native = info();
+                updates.snapshot(&mut native).unwrap();
+                assert_eq!(native["installStatus"], "failed");
+            }
+            let mut completed = info();
+            completed["versionCode"] = json!(prepared.version_code);
+            completed["installStatus"] = json!(if previously_failed {
+                "failed"
+            } else {
+                "installed"
+            });
+            updates.snapshot(&mut completed).unwrap();
+            assert_eq!(completed["installStatus"], "installed");
+            assert!(completed.get("staged").is_none());
+            assert!(matches!(*updates.lock().unwrap(), Phase::Idle));
+            assert!(
+                updates
+                    .reserve(&uuid::Uuid::new_v4().to_string(), 2)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn a_directory_cannot_become_a_retryable_prepared_package() {
+        let updates = fixture();
+        ready(&updates);
+        let path = prepared_path(&updates);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["installStatus"], "failed");
+        assert!(native.get("staged").is_none());
+        assert!(path.is_dir());
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+
+    #[test]
+    fn an_evicted_cache_directory_is_recreated_for_an_explicit_download() {
+        let updates = fixture();
+        ready(&updates);
+        std::fs::remove_file(prepared_path(&updates)).unwrap();
+        std::fs::remove_dir(&updates.directory).unwrap();
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["installStatus"], "failed");
+        let owner = updates
+            .reserve(&uuid::Uuid::new_v4().to_string(), 2)
+            .unwrap();
+        assert!(updates.directory.is_dir());
+        drop(owner);
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_info_query_started_before_an_install_cannot_unlock_it_later() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let query_updates = updates.clone();
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let query = tokio::spawn(async move {
+            query_updates
+                .query_info(async {
+                    started.send(()).unwrap();
+                    receive.await.unwrap()
+                })
+                .await
+        });
+        entered.await.unwrap();
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        owner
+            .finish(&Ok(json!({"installStatus":"installing"})))
+            .unwrap();
+        drop(owner);
+        send.send(Ok(info())).unwrap();
+        assert!(query.await.unwrap().is_err());
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: false, .. }
+        ));
+        assert!(updates.begin_install(&prepared.id).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_info_query_with_an_old_calling_ticket_cannot_reconcile_a_settled_call() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        let query_updates = updates.clone();
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let query = tokio::spawn(async move {
+            query_updates
+                .query_info(async {
+                    started.send(()).unwrap();
+                    receive.await.unwrap()
+                })
+                .await
+        });
+        entered.await.unwrap();
+        drop(owner);
+        let mut stale = info();
+        stale["installStatus"] = json!("failed");
+        send.send(Ok(stale)).unwrap();
+        assert!(query.await.unwrap().is_err());
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: false, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_old_info_query_cannot_match_a_reused_public_id_with_a_new_file() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let old_path = prepared_path(&updates);
+        let query_updates = updates.clone();
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let query = tokio::spawn(async move {
+            query_updates
+                .query_info(async {
+                    started.send(()).unwrap();
+                    receive.await.unwrap()
+                })
+                .await
+        });
+        entered.await.unwrap();
+        updates.cancel(&prepared.id).unwrap();
+        ready_with_id(&updates, &prepared.id);
+        let replacement_path = prepared_path(&updates);
+        assert_ne!(old_path, replacement_path);
+        send.send(Ok(info())).unwrap();
+        assert!(query.await.unwrap().is_err());
+        assert!(replacement_path.exists());
+        assert!(!old_path.exists());
+        assert!(matches!(*updates.lock().unwrap(), Phase::Ready(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_staging_symlink_never_follows_or_deletes_its_target() {
+        let updates = fixture();
+        ready(&updates);
+        let path = prepared_path(&updates);
+        let target = updates.directory.join("retained-data");
+        std::fs::write(&target, b"retain").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert_eq!(native["installStatus"], "failed");
+        assert!(native.get("staged").is_none());
+        assert_eq!(std::fs::read(&target).unwrap(), b"retain");
+        std::fs::remove_file(&target).unwrap();
         std::fs::remove_dir(&updates.directory).unwrap();
     }
 }

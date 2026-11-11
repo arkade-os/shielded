@@ -114,7 +114,7 @@ test('an ambiguous installation is reconciled without a second install or automa
  await f.controller.refresh();assert.equal(f.state().phase,'unknown');assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
  f.setInfo({installStatus:'confirmation-required'});await f.controller.refresh();assert.equal(f.state().phase,'confirmation-required');assert.equal(f.events.includes('confirm'),false);
  await f.controller.install(true);assert.deepEqual(f.events.filter(event=>event==='prepare'||event==='confirm'),['prepare','prepare','confirm']);assert.equal(f.state().phase,'installing');
- f.setInfo({installStatus:'installed'});await f.controller.refresh();assert.equal(f.state().phase,'installed');assert.equal(f.state().staged,undefined);
+ f.setInfo({installStatus:'installed',versionCode:update.versionCode});await f.controller.refresh();assert.equal(f.state().phase,'installed');assert.equal(f.state().staged,undefined);
 });
 
 test('a native installer failure is shown explicitly and cannot silently become an automatic retry',async t=>{
@@ -143,4 +143,92 @@ test('a retired preflight cannot start a download after a new generation is read
  const f=fixture(t);await flush();const checking=deferred<AndroidUpdateInfo>();f.read(()=>checking.promise);const pending=f.controller.download();await flush();
  f.emit({phase:'ready',mode:'tor',generation:2});checking.resolve({packageName:update.packageName,versionCode:update.versionCode-1,signerSha256:update.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null});await pending;
  assert.equal(f.downloads.length,0);assert.equal(f.state().staged,undefined);
+});
+
+test('an older completed installation cannot hide a newer release after a status refresh',async t=>{
+ const f=fixture(t,{withoutRelease:true,info:{installStatus:'installed'}});await flush();assert.equal(f.state().phase,'installed');
+ f.controller.setRelease(release);assert.equal(f.state().phase,'available');await f.controller.refresh();
+ assert.equal(f.state().phase,'available');assert.equal(f.state().release,release);
+ const pending=f.controller.download();await flush();assert.equal(f.downloads.length,1);await f.finish();await pending;
+});
+
+test('an older installed status retains a newer verified file across refresh and background return',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const staged=f.state().staged!;
+ f.setInfo({installStatus:'installed'});await f.controller.refresh();
+ assert.equal(f.state().phase,'ready');assert.equal(f.state().staged?.id,staged.id);
+ f.visible(false);f.visible(true);await flush();assert.equal(f.state().phase,'ready');assert.equal(f.state().staged?.id,staged.id);
+ assert.equal(f.cancelled.length,0);assert.equal(f.events.some(event=>event.startsWith('install:')),false);
+ f.setInfo({staged:undefined});await f.controller.refresh();assert.equal(f.state().phase,'ready');assert.equal(f.state().staged?.id,staged.id);
+});
+
+test('a newer file discovered with an older installed record stays ready for explicit installation',async t=>{
+ const staged={id:crypto.randomUUID(),versionCode:update.versionCode},f=fixture(t,{info:{installStatus:'installed',staged}});await flush();
+ assert.equal(f.state().phase,'ready');assert.deepEqual(f.state().staged,staged);assert.equal(f.events.some(event=>event.startsWith('install:')),false);
+});
+
+test('an older installed record cannot release a newer pending installation for retry',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const staged=f.state().staged!;
+ await f.controller.install();assert.equal(f.state().phase,'installing');f.setInfo({installStatus:'installed'});await f.controller.refresh();
+ assert.equal(f.state().phase,'unknown');assert.equal(f.state().staged?.id,staged.id);await f.controller.install();
+ assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);assert.equal(f.events.includes('confirm'),false);
+ f.setInfo({installStatus:'installed',versionCode:update.versionCode,staged:undefined});await f.controller.refresh();assert.equal(f.state().phase,'installed');
+});
+
+test('a failed staged install can open settings and requires another explicit install after permission returns',async t=>{
+ const staged={id:crypto.randomUUID(),versionCode:update.versionCode},f=fixture(t,{info:{installStatus:'failed',installError:'Installation was declined',staged,canRequestInstalls:false}});await flush();
+ assert.equal(f.state().phase,'failed');await f.controller.permission();assert.equal(f.events.filter(event=>event==='permission').length,1);
+ f.visible(false);f.setInfo({canRequestInstalls:true});f.visible(true);await flush();assert.equal(f.state().phase,'failed');assert.equal(f.state().staged?.id,staged.id);
+ assert.equal(f.events.some(event=>event.startsWith('install:')),false);await f.controller.install();assert.equal(f.state().phase,'installing');assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+});
+
+test('a known precommit failure retains native failed status and the verified file for explicit recovery',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const staged=f.state().staged!;
+ f.install(async()=>{f.setInfo({installStatus:'failed',installError:'Android could not prepare the installer',canRequestInstalls:false});return {installStatus:'failed',installError:'Android could not prepare the installer'};});
+ await f.controller.install();assert.equal(f.state().phase,'failed');assert.equal(f.state().info?.installStatus,'failed');assert.equal(f.state().staged?.id,staged.id);assert.match(f.state().error,/could not prepare/);
+ await f.controller.refresh();assert.equal(f.state().phase,'failed');assert.equal(f.state().staged?.id,staged.id);assert.equal(androidUpdateNotice(f.state()),'Update needs attention');
+ assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+ await f.controller.discard();assert.equal(f.state().staged,undefined);assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+});
+
+test('completion of the selected update exposes a later release without retaining its completed install fence',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;await f.controller.install();
+ const later={...release,buildNumber:release.buildNumber+1,androidUpdate:{...update,versionCode:update.versionCode+1}};f.controller.setRelease(later);
+ f.setInfo({installStatus:'installed',versionCode:update.versionCode});await f.controller.refresh();
+ assert.equal(f.state().phase,'available');assert.equal(f.state().release,later);assert.equal(f.state().staged,undefined);assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+});
+
+test('install preflight reconciles an evicted verified file before allowing an explicit new download',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;
+ f.setInfo({installStatus:'failed',installError:'The downloaded update is missing. Download it again.',staged:undefined});await f.controller.install();
+ assert.equal(f.state().phase,'failed');assert.equal(f.state().staged,undefined);assert.match(f.state().error,/downloaded update is missing/);
+ assert.equal(f.events.some(event=>event.startsWith('install:')),false);assert.equal(f.downloads.length,1);
+ const retry=f.controller.download();await flush();assert.equal(f.downloads.length,2);await f.finish();await retry;assert.equal(f.state().phase,'ready');
+});
+
+for(const installStatus of ['idle','installed'] as const)test(`native Ready recovers a pre-owner failure despite an older ${installStatus} record and waits for explicit retry`,async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const saved=f.state().staged!;
+ f.install(async()=>{throw new Error('Platform identity is temporarily unavailable');});await f.controller.install();assert.equal(f.state().phase,'unknown');
+ const staged={...saved,ready:true};f.setInfo({installStatus,staged});await f.controller.refresh();
+ assert.equal(f.state().phase,'ready');assert.equal(f.state().staged?.id,saved.id);assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+ f.install(async()=>({installStatus:'installing'}));await f.controller.install();assert.equal(f.state().phase,'installing');assert.equal(f.events.filter(event=>event.startsWith('install:')).length,2);
+});
+
+for(const ready of [undefined,false])test(`ambiguous native ownership remains fenced when Ready is ${String(ready)}`,async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const saved=f.state().staged!;
+ f.install(async()=>{throw new Error('Install reply lost');});await f.controller.install();const staged={...saved,...(ready===undefined?{}:{ready})};f.setInfo({installStatus:'idle',staged});await f.controller.refresh();
+ assert.equal(f.state().phase,'unknown');await f.controller.install();assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+});
+
+for(const installStatus of ['installing','confirmation-required'] as const)test(`native ${installStatus} takes precedence over a Ready marker`,async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const saved=f.state().staged!;
+ f.install(async()=>{throw new Error('Install reply lost');});await f.controller.install();const staged={...saved,ready:true};f.setInfo({installStatus,staged});await f.controller.refresh();
+ assert.equal(f.state().phase,installStatus);await f.controller.install();assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);assert.equal(f.events.includes('confirm'),false);
+});
+
+test('native Ready cannot bypass the pinned identity or the newer-version check',async t=>{
+ for(const changed of [{signerSha256:'0'.repeat(64)},{versionCode:update.versionCode}]){
+  const f=fixture(t);await flush();const pending=f.controller.download();await flush();await f.finish();await pending;const saved=f.state().staged!;
+  f.install(async()=>{throw new Error('Install reply lost');});await f.controller.install();const staged={...saved,ready:true};f.setInfo({...changed,installStatus:'idle',staged});await f.controller.refresh();
+  assert.notEqual(f.state().phase,'ready');await f.controller.install();assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
+ }
 });

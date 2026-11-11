@@ -475,3 +475,105 @@ Pinned TLC v1.7.4 checked the exhaustive base on November 11, 2026 with two work
 The CI checker includes these fourteen configurations, increasing its gate from 51 to 65 without dropping previous coverage. Wider simulation passed 20,000 traces at depth 100 with four attempts, three generation advances, two crashes and seed 20261111, checking 331,245 states.
 
 The model abstracts actual HTTP/TLS and redirect parsing, digest/signature algorithms, Android package parsing, file-system durability, permission UI and the installer service. It assumes the native verification results accurately describe the bytes. It checks bounded safety, not eventual connectivity, download speed, store eligibility, on-device installation or preservation of a particular device's wallet data. The source boundaries above are review anchors, not a checked refinement mapping.
+
+## Android update recovery
+
+`UpdateRecovery.tla` checks reconciliation around an existing update receipt. Version A is installed, the app owns a prepared version B, and metadata may advertise C while B is still pending. The UI and native file owner interpret an older `installed` receipt independently. Neither may declare B complete or remove its prepared file until the actual installed version reaches B. Completing owned B releases its pending fence and exposes C as available.
+
+An offered Android-settings action must work for both ready and retryable failed updates. Each installation attempt still requires a fresh explicit action. Precommit failures return a definitive failed receipt; a volatile journal keeps that outcome authoritative for later status reads if preferences cannot persist it. A possible postcommit failure retains uncertainty and cannot start another installation.
+
+The authorization worker posts a queued main-thread action and waits. Timeout or interruption cancels a queued action atomically, preventing a late handler from executing it. Once the handler is running, timeout is ambiguous: its current-attempt journal and ownership remain until Android provides a definitive result. Lost confirmation cannot release that fence when abandoning the old session fails or the session still exists. Installer ownership also carries an attempt identity, so a delayed owner from a failed attempt cannot change a replacement attempt's `calling` flag.
+
+Cache eviction can remove an APK before installation. A later native snapshot or install check reports a known failure without a prepared stage, allowing a fresh download. It does not release a call in progress or a pending Android session that already owns copied bytes. Version-qualified installation success takes precedence over an absent cache file.
+
+A native info query captures the coordinator ticket before awaiting Android. Its reply may mutate only the same phase, prepared-stage incarnation, attempt and `calling` state. A reply captured before a later install, or before a call changes from active to returned, cannot unlock that newer owner even when JavaScript discards its own stale reply.
+
+The API's `staged.ready` marker projects that fenced native Ready state. Recovering an unknown UI presentation through this marker still requires a valid future target; native busy status wins, and installing requires a new explicit action. The model checks installation eligibility, not eventual UI recovery.
+
+| Model actions | Source anchors |
+| --- | --- |
+| `AdvanceLatest`, `UIReconcile`, `ClickSettings`, `ReturnSettings`, `Deliver` | `app/src/android-updates.ts`: `createAndroidUpdateController`, its `reconcile`, `setRelease`, `permission`, `install` and `visibilityChanged` paths |
+| `HostSnapshot`, `RejectMissingFile`, `Claim`, `DropOwner` | `src-tauri/src/android_updates.rs`: `AndroidUpdates::snapshot_for`, `AndroidUpdates::begin_install`, `InstallOwner::finish`, `InstallOwner::drop` |
+| `ReadInfo`, `ReplyInfo` | `android_updates.rs`: `native_android_update_info`, `AndroidUpdates::query_info`, `AndroidUpdates::info_ticket`, `AndroidUpdates::snapshot_for`, `InfoQueryTicket`; fenced `staged.ready` projection |
+| `PrepareRecord`, `PrecommitFailure`, `QueueAuthorization`, `Commit` | `AndroidUpdater.kt`: `install`, `info`; `AndroidUpdatePolicy.kt`: `AndroidUpdateJournal::read`, `AndroidUpdateJournal::write`, `mayHaveCommitted` |
+| `RunAuthorization`, `AuthorizationTimeout` | `AndroidUpdateAuthorization.kt`: `AndroidUpdateAuthorization::run`, `AmbiguousUpdateAuthorization` |
+| `TryAbandon`, `OSComplete`, `OSFailure` | `AndroidUpdater.kt`: `confirm`, `receive`, `reconcile`; `AndroidUpdatePolicy.kt`: `afterAbandon` |
+| `CacheEvict` | External cache removal; native file checks before reconciliation or installation |
+
+```mermaid
+stateDiagram-v2
+    [*] --> ReadyB: older receipt cannot complete B
+    ReadyB --> Settings: explicit action, including retryable failed B
+    Settings --> ReadyB: permission granted, new install action still required
+    ReadyB --> Preparing: explicit install attempt owns staged file
+    Preparing --> Queued: current-attempt journal precedes authorization
+    Preparing --> Failed: known precommit error, failed receipt survives preference failure
+    Queued --> Running: atomic start gate
+    Queued --> Failed: timeout cancels queued handler
+    Running --> Unknown: timeout retains possible commit and owner
+    Running --> PendingAndroid: commit once
+    Unknown --> PendingAndroid: main action finishes its owned attempt
+    PendingAndroid --> Unknown: confirmation lost or abandonment unconfirmed
+    PendingAndroid --> Failed: definitive failure or confirmed abandonment with no session
+    PendingAndroid --> AvailableC: actual installed version reaches B, C advertised
+    ReadyB --> MissingFile: cache evicts APK
+    MissingFile --> FailedNoStage: native recheck clears stale stage
+    FailedNoStage --> ReadyB: download again
+    Failed --> Preparing: fresh explicit action with a new attempt identity
+```
+
+Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 512 MiB heap: 3,131,642 generated states, 632,544 distinct states, depth 30 and an empty queue. Every semantic action fired. The base bounds two explicit installation attempts, two stage incarnations and one captured info query, begun before or during the first attempt; `UpdateRecovery_Sim.cfg` widens installation attempts to four. Eight individual guard mutations fail their intended invariant:
+
+| Configuration | Counterexample |
+| --- | --- |
+| `UpdateRecovery_NoVersionGuard.cfg` | an older success completes B or removes its file; `NoStaleInstalledCompletion` fails |
+| `UpdateRecovery_NoPermissionRetry.cfg` | the settings button offered for failed B is ignored; `NoIgnoredPermissionAction` fails |
+| `UpdateRecovery_NoKnownFailure.cfg` | precommit rejection plus stale persisted state leaves reconciliation unknown; `NoStrandedKnownFailure` fails |
+| `UpdateRecovery_NoAuthFence.cfg` | a cancelled queued handler starts later; `NoCancelledAuthorization` fails |
+| `UpdateRecovery_NoMissingFile.cfg` | native reconciliation keeps an evicted APK ready; `NoReadyMissingFile` fails |
+| `UpdateRecovery_NoAbandonFence.cfg` | failed or unconfirmed abandonment permits another attempt while the old session is unresolved; `NoRetryWithUnresolvedSession` fails |
+| `UpdateRecovery_NoAttemptFence.cfg` | an old owner's drop changes a replacement call; `NoRetiredOwnerChangesNewAttempt` fails |
+| `UpdateRecovery_NoInfoFence.cfg` | a retired query reply mutates a newer coordinator phase, stage or attempt; `NoStaleInfoMutation` fails |
+
+The checker retains all 65 earlier configurations and adds these nine, for 74 expected configurations. Wider simulation passed 20,000 traces at depth 100 with four attempts and seed 20261111, checking 2,000,024 states. C is advertised metadata in this model; installing C is outside its boundary.
+
+The model abstracts package bytes, disk and preference APIs, Android process/service internals, actual file checks and wall-clock time. Cache inspection and subsequent state publication represent the native guarded transition, not unguarded file IO under a mutex. A missing file is reported after observation rather than treated as immediately known to every actor. No fairness, eventual recovery, physical-device behavior or checked refinement relationship is claimed.
+
+## Terminal receipts and operation dispatch
+
+`UpdateRecoveryReceipts.tla` isolates two callback/bridge boundaries without multiplying the larger query model's states. A terminal Android callback can arrive before a possible-commit error reaches the install catch. If its token, session and target match this attempt, the catch preserves the exact installed/failed status and error in both the journal and its response. An older attempt's terminal record cannot replace the current attempt's failure.
+
+The plugin dispatch gate distinguishes Queued, Started and Cancelled. A failed install request is definitively retryable only after cancellation wins before dispatch. Started failures retain generic error semantics because the operation might have run. Confirm and read-only requests keep generic errors even when dispatch never starts. Two failure callers classify and publish separately: the caller that cancelled the queue can lose the response race, so the other caller must classify the stable Cancelled state rather than its own failed compare-and-set. Cancelled work never starts later, and a response already claimed cannot be overwritten.
+
+| Model actions | Source anchors |
+| --- | --- |
+| `ReceiveTerminal`, `Recover` | `AndroidUpdater.kt`: `receive`, `install` catch under the shared lock; `AndroidUpdatePolicy.kt`: `terminalResult` |
+| `ClassifyFailure`, `PublishFailure`, `BeginOperation`, `CompleteOperation` | `AndroidUpdateDispatch.kt`: `fail`, `begin`, `complete`; `ShieldedPlatformPlugin.kt`: `update`, install-only `updateInstall` |
+| `Deliver` | `src-tauri/src/android_updates.rs`: `InstallOwner::finish` accepts a definitive failed install result |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued
+    Queued --> Cancelled: failure wins cancellation
+    Cancelled --> Retryable: install-only failed receipt, one response
+    Queued --> Started: operation atomically claims dispatch
+    Started --> Unknown: bridge failure may follow dispatched work
+    Started --> PossibleCommit: current attempt journal and session
+    PossibleCommit --> TerminalCallback: Android reports installed or failed
+    PossibleCommit --> RecoveryCatch: timeout or operation error
+    TerminalCallback --> RecoveryCatch: callback arrived before catch
+    RecoveryCatch --> PreservedTerminal: matching token, session and target
+    RecoveryCatch --> Unknown: possible commit without matching terminal result
+```
+
+Pinned TLC v1.7.4 checked the base on November 11, 2026 with two workers and a 512 MiB heap: 1,044 generated states, 468 distinct states, depth 12 and an empty queue. Every semantic action fired. Three separate guard mutations fail their intended invariant:
+
+| Configuration | Counterexample |
+| --- | --- |
+| `UpdateRecoveryReceipts_NoTerminalReceipt.cfg` | callback saves a matching terminal result, then generic catch recovery overwrites it; `TerminalReceiptRetained` fails |
+| `UpdateRecoveryReceipts_NoCancelledReceipt.cfg` | the first failure cancels Queued but the second failure wins the response and uses its lost compare-and-set to reject a definitely unstarted install; `DefiniteInstallRejectionRetryable` fails |
+| `UpdateRecoveryReceipts_NoDispatchFence.cfg` | a classified cancelled request starts its operation later; `NoCancelledDispatch` fails |
+
+Wider simulation passed 20,000 traces at depth 100 with four opaque failure codes instead of two, seed 20261111, checking 99,048 states. The checker retains the earlier 74 configurations and adds this base plus three mutants, for 78 expected configurations.
+
+The model has one operation and two failure callers, abstracts bridge and Android APIs, and assumes an available prepared file and accurate journal reads under the shared lock. It preserves opaque callback errors by equality rather than interpreting them. The broader recovery model owns file loss, subsequent status queries and explicit retry attempts. No eventual delivery, successful Android installation, cryptographic correctness or checked source refinement is claimed.

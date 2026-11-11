@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { androidVersionCode, nativeArguments, prepareAndroid, protectAndroidManifest } from './native-build.mjs';
+import * as nativeBuild from './native-build.mjs';
 
 const root = new URL('../src-tauri/', import.meta.url);
 const json = name => JSON.parse(readFileSync(new URL(name, root), 'utf8'));
+const iconSources = workspace => {
+  mkdirSync(resolve(workspace, 'src-tauri'), { recursive: true });
+  for (const name of ['icon.json', 'icon.svg', 'icon-background.svg', 'icon-foreground.svg', 'icon-monochrome.svg']) copyFileSync(new URL(name, root), resolve(workspace, 'src-tauri', name));
+};
 
 test('Windows setup bundles WebView2 without a first-run download', () => {
   assert.deepEqual(json('tauri.conf.json').bundle.windows.webviewInstallMode, { type: 'offlineInstaller', silent: true });
@@ -120,7 +125,7 @@ test('Android preparation refuses a stale generated identifier before changing i
   t.after(() => rmSync(workspace, { recursive: true, force: true }));
   const app = resolve(workspace, 'src-tauri/gen/android/app');
   const manifest = resolve(app, 'src/main/AndroidManifest.xml');
-  mkdirSync(resolve(app, 'src/main'), { recursive: true });
+  mkdirSync(resolve(app, 'src/main/res'), { recursive: true });
   writeFileSync(resolve(workspace, 'src-tauri/tauri.conf.json'), JSON.stringify({ identifier: 'io.arkade.shielded' }));
   writeFileSync(manifest, '<manifest><application android:allowBackup="true" /></manifest>');
   for (const [namespace, applicationId] of [['io.old.wallet', 'io.arkade.shielded'], ['io.arkade.shielded', 'io.old.wallet']]) {
@@ -129,6 +134,37 @@ test('Android preparation refuses a stale generated identifier before changing i
     assert.equal(readFileSync(manifest, 'utf8'), '<manifest><application android:allowBackup="true" /></manifest>');
   }
   writeFileSync(resolve(app, 'build.gradle.kts'), 'android {\n namespace = "io.arkade.shielded"\n defaultConfig {\n applicationId = "io.arkade.shielded"\n }\n}');
+  iconSources(workspace);
   prepareAndroid(workspace);
   assert.ok(readFileSync(manifest, 'utf8').includes('android:allowBackup="false"'));
+  assert.ok(readFileSync(resolve(app, 'src/main/res/mipmap-anydpi-v26/ic_launcher.xml'), 'utf8').includes('@mipmap/ic_launcher_monochrome'));
+});
+
+test('icon preparation updates initialized mobile projects from source and preserves asset metadata', t => {
+  const workspace = mkdtempSync(fileURLToPath(new URL('./.native-icons-', import.meta.url)));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  iconSources(workspace);
+  const android = resolve(workspace, 'src-tauri/gen/android/app/src/main/res');
+  const ios = resolve(workspace, 'src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset');
+  mkdirSync(resolve(android, 'mipmap-xxxhdpi'), { recursive: true });
+  mkdirSync(ios, { recursive: true });
+  const contents = '{"images":[{"filename":"AppIcon-512@2x.png"}],"info":{"author":"fixture","version":1}}';
+  writeFileSync(resolve(ios, 'Contents.json'), contents);
+  writeFileSync(resolve(android, 'mipmap-xxxhdpi/ic_launcher.png'), 'template icon');
+  nativeBuild.prepareIcons(workspace);
+  assert.equal(readFileSync(resolve(ios, 'Contents.json'), 'utf8'), contents);
+  const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  for (const name of ['ic_launcher', 'ic_launcher_round', 'ic_launcher_foreground', 'ic_launcher_background', 'ic_launcher_monochrome']) {
+    assert.deepEqual(readFileSync(resolve(android, `mipmap-xxxhdpi/${name}.png`)).subarray(0, 8), signature);
+  }
+  const adaptive = readFileSync(resolve(android, 'mipmap-anydpi-v26/ic_launcher.xml'), 'utf8');
+  for (const name of ['foreground', 'background', 'monochrome']) assert.ok(adaptive.includes(`@mipmap/ic_launcher_${name}`));
+  assert.deepEqual(readFileSync(resolve(ios, 'AppIcon-512@2x.png')).subarray(0, 8), signature);
+  const previous = readFileSync(resolve(android, 'mipmap-xxxhdpi/ic_launcher.png'));
+  const previousIos = readFileSync(resolve(ios, 'AppIcon-512@2x.png'));
+  for (const name of ['icon.svg', 'icon-foreground.svg']) writeFileSync(resolve(workspace, 'src-tauri', name), '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><path fill="#a12345" d="M0 0h512v512H0Z"/></svg>');
+  nativeBuild.prepareIcons(workspace);
+  assert.notDeepEqual(readFileSync(resolve(android, 'mipmap-xxxhdpi/ic_launcher.png')), previous);
+  assert.notDeepEqual(readFileSync(resolve(ios, 'AppIcon-512@2x.png')), previousIos);
+  assert.equal(readFileSync(resolve(ios, 'Contents.json'), 'utf8'), contents);
 });

@@ -1,1 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#182622"/><path d="M256 68 396 124v116c0 93-59 155-140 204-81-49-140-111-140-204V124Z" fill="none" stroke="#d5e5cf" stroke-width="24"/><path d="M256 135 334 167v73c0 56-29 98-78 133-49-35-78-77-78-133v-73Z" fill="none" stroke="#a5b7a0" stroke-width="12"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="brass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff0c8"/><stop offset=".3" stop-color="#c29a60"/><stop offset=".55" stop-color="#f3dfb5"/><stop offset=".8" stop-color="#8c6b3e"/><stop offset="1" stop-color="#e0be83"/></linearGradient>
+    <linearGradient id="navy" x1="0" y1="0" x2=".8" y2="1"><stop stop-color="#2d4b60"/><stop offset=".5" stop-color="#162c40"/><stop offset="1" stop-color="#112234"/></linearGradient>
+  </defs>
+  <path fill="#111f31" d="M0 0h512v512H0Z"/>
+  <path d="M256 48 416 108v132c0 100-72 172-160 224C168 412 96 340 96 240V108Z" fill="url(#navy)" stroke="url(#brass)" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M256 72 394 124v116c0 88-61 153-138 200-77-47-138-112-138-200V124Z" fill="none" stroke="#afc4d4" stroke-opacity=".28" stroke-width="3"/>
+  <g transform="translate(256 248) scale(3.6)" fill="none" stroke-linecap="round">
+    <path d="M15-14C6-24-16-19-16-7c0 14 31 6 31 21C15 27-7 30-19 17" stroke="#f1e5cd" stroke-width="6"/>
+    <path d="M0-29v8m0 46v8" stroke="#d2ae75" stroke-width="2"/>
+  </g>
+</svg>
