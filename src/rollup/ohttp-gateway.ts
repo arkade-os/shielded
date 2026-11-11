@@ -9,11 +9,11 @@ const MAX_RESPONSE=4<<20,REMEMBERED=100_000;
 const STREAMS=['/v1/txs','/v1/batch/events','/v1/indexer/script/subscription','/v1/indexer/subscription'];
 const copied=(from:Headers,names:string[])=>{const kept=new Headers();for(const name of names){const value=from.get(name);if(value!==null)kept.set(name,value);}return kept;};
 
-export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,http=true,fetch:send=fetch,now=()=>performance.now()}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;http?:boolean;fetch?:typeof fetch;now?:()=>number}){
+export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,http=true,fetch:send=fetch,now=()=>performance.now(),clock=()=>Date.now(),windowMs=90_000}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;http?:boolean;fetch?:typeof fetch;now?:()=>number;clock?:()=>number;windowMs?:number}){
  if(![rate,maxInFlight].every(count=>Number.isSafeInteger(count)&&count>=1))throw new Error('The Oblivious HTTP rate and in-flight cap are whole numbers of at least 1.');
  const allowed=upstreams.map(({origin,prefix})=>{const url=new URL(origin);if(url.protocol!=='https:'||!prefix.startsWith('/')||!prefix.endsWith('/'))throw new Error(`An Oblivious HTTP upstream is https with a path prefix that starts and ends with /, not ${origin} ${prefix}.`);return {origin:url.origin,prefix};});
  const pool=new URL(poolOrigin).origin,loopback=new URL(poolLoopback).origin,tally=new Map<string,number>(),seen=new Set<string>();
- let since=now(),second=0,used=0,inFlight=0;
+ let since=now(),second=0,used=0,inFlight=0,startedAt=clock();
  const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[ohttp] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
  const answer=(status:number,kind:string)=>{note(kind);return new Response(null,{status});};
  const forward=async(request:Request,gone:AbortSignal,cap:number)=>{
@@ -24,7 +24,7 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   const lower=routed.toLowerCase(),toPool=url.origin===pool&&lower.startsWith('/api/rollup/'),listed=toPool?!lower.startsWith('/api/rollup/ohttp'):allowed.some(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix));
   if(!listed||!['GET','POST'].includes(request.method)||/%2f|%5c/i.test(path)||path.includes('//'))return answer(403,'refused');
   if(/text\/event-stream/i.test(request.headers.get('accept')??'')||STREAMS.some(stream=>lower.startsWith(stream)))return answer(400,'stream');
-  const headers=copied(request.headers,['content-type','accept']),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);
+  const headers=copied(request.headers,['content-type','accept','x-digest']),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);
   if(toPool)headers.set('x-shielded-gateway',gatewayToken);
   try{
    const upstream=await send((toPool?loopback:url.origin)+path+url.search,{method:request.method,headers,redirect:'error',signal,...(request.method==='POST'?{body:await request.arrayBuffer()}:{})});
@@ -46,9 +46,12 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
  const unseal=async(body:Uint8Array,type:string,gone:AbortSignal,cap:number)=>{
   const opened=await key.server.decapsulateRequest(new Request('http://gateway.invalid/',{method:'POST',headers:{'content-type':type},body:body as Uint8Array<ArrayBuffer>})).catch(()=>undefined);
   if(!opened){note('unopened');return;}
+  // Checked before seen.add, so a stale copy records nothing. The 15 s is the client's rounding: a request sealed just after the start can round to before it.
+  const at=Date.parse(opened.request.headers.get('x-date')??'');
+  if(!Number.isFinite(at)||Math.abs(clock()-at)>windowMs||at<startedAt-15_000){note('stale');return;}
   const enc=encOf(body);
   if(seen.has(enc)){note('replayed');return;}
-  seen.add(enc);if(seen.size>REMEMBERED)seen.delete(seen.values().next().value!); // ponytail: in memory, so a restart or 100 000 newer requests forget a value; an inner Date check (RFC 9458 section 6.5.1) bounds replays for good
+  seen.add(enc);if(seen.size>REMEMBERED)seen.delete(seen.values().next().value!); // ponytail: in memory, so a restart or 100 000 newer requests forget a value, which can then run once more inside its x-date window
   return new Uint8Array(await (await opened.context.encapsulateResponse(await forward(opened.request,gone,cap))).arrayBuffer());
  };
  // No upload and no late reader here, so the upstream deadline alone bounds the slot.
@@ -77,5 +80,6 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   res.status(200).setHeader('Content-Type','message/ohttp-res').setHeader('Cache-Control','no-store').end(sealed);
  });
  router.use((error:{status?:number},_req:express.Request,res:express.Response,_next:express.NextFunction)=>{note(error.status===413?'too-large':'failed');res.sendStatus(error.status??500);});
- return Object.assign(router,{open});
+ // Call as the carrier starts: a request dated before then may have run on the previous instance, whose replay register this one lacks.
+ return Object.assign(router,{open,listen(){startedAt=clock();}});
 }

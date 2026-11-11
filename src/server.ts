@@ -57,7 +57,7 @@ const step=async()=>{
  await service!.step();
  if(service!.ready()){
   // Listening starts only now, so a request is never opened while another instance still owns the pool.
-  if(gateway&&ohttpKey&&!carrier&&!stopping){carrier=startNostrCarrier({open:gateway.open,secret:ohttpKey.nostrSecret,relays:nostrRelays});console.log(`Nostr carrier listening on ${nostrRelays.length} relays.`);}
+  if(gateway&&ohttpKey&&!carrier&&!stopping){gateway.listen();carrier=startNostrCarrier({open:gateway.open,secret:ohttpKey.nostrSecret,relays:nostrRelays});console.log(`Nostr carrier listening on ${nostrRelays.length} relays.`);}
   // v1 data goes only once this instance owns the pool, so the previous instance has stopped using it.
   try{const removed=dropLegacyData(data);if(removed.length)console.log('Removed retired v1 data: '+removed.join(', '));}catch(error){console.error('Could not remove retired v1 data: '+(error as Error).message);}
   return;

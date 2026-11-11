@@ -3,20 +3,24 @@ import {test} from 'node:test';
 import {DefaultVtxo,SingleKey,Wallet} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
-import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-record.ts';
+import {BATCH_SLOTS,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
+import type {RollupEpochRecord,RollupEpochRecordSlot} from '../packages/protocol/src/rollup/epoch-record.ts';
+import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
-import {ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
+import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
-import {waitForSpend,type PoolApi} from '../src/shielded/pool.ts';
-import {markPrivateFetch,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
+import {waitForSpend,type ArkCoin,type PoolApi} from '../src/shielded/pool.ts';
+import {markPrivateFetch,markPrivatePoolPage,privatePoolPage,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
+import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
+import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
 import {makeNativeMutationJournal} from '../src/native/mutations.ts';
 import {decodeClaimToken,encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 
 const privateApi=(api:PoolApi)=>Object.assign(api,{[Symbol.for('shielded.private.pool-api')]:true});
-const fakeHistory=(cursor:number,total:number,epochLen=128)=>{
+const fakeHistory=(cursor:number,total:number,epochLen=128,page?:number)=>{
  const asked:string[]=[],applied:number[]=[],records=Array.from({length:total},(_,n)=>n as unknown as RollupEpochRecord);
  let batchCount=cursor;
  const account={get batchCount(){return batchCount;},epochLen,canSkip:true,async apply(batch:RollupEpochRecord){assert.equal(batch as unknown as number,batchCount);applied.push(batchCount++);}} as unknown as EpochAccount;
@@ -25,7 +29,7 @@ const fakeHistory=(cursor:number,total:number,epochLen=128)=>{
   const from=Number(url.searchParams.get('from')),limit=Number(url.searchParams.get('limit'));
   return {total,batches:records.slice(from,from+limit)};
  }) as PoolApi);
- return {account,api,asked,applied};
+ return {account,api:page===undefined?api:markPrivatePoolPage(api,page),asked,applied};
 };
 
 test('private catch-up reads complete aligned pages and applies unseen batches with their true cursors',async()=>{
@@ -58,6 +62,44 @@ test('a truncated private page cannot force a tagged follow-up cursor',async()=>
  await assert.rejects(epochCatchUp(account,api),/incomplete page/);
  assert.deepEqual(asked,['/batches?from=0&limit=50']);
  assert.equal(account.batchCount,83);
+});
+
+test('a private catch-up pages at the size its pool api carries, and the default stays 50',async()=>{
+ const sized=fakeHistory(0,40,128,12),plain=fakeHistory(0,40,128);
+ assert.equal(await epochCatchUp(sized.account,sized.api),40);
+ assert.deepEqual(sized.asked,[0,12,24,36].map(from=>`/batches?from=${from}&limit=12`));
+ await epochCatchUp(plain.account,plain.api);
+ assert.deepEqual(plain.asked,['/batches?from=0&limit=50']);
+});
+
+test('a private page never crosses an epoch boundary',async()=>{
+ const {account,api,asked}=fakeHistory(120,135,128,12);
+ await epochCatchUp(account,api);
+ assert.deepEqual(asked.slice(-3),['/batches?from=108&limit=12','/batches?from=120&limit=8','/batches?from=128&limit=12']);
+});
+
+test('a size outside 1 to 100 reads back as 50, and a branded one as itself',()=>{
+ for(const size of [0,-1,1.5,101,NaN,Infinity,2**53])assert.equal(privatePoolPage(markPrivatePoolPage(()=>{},size)),50,String(size));
+ assert.deepEqual([1,12,100].map(size=>privatePoolPage(markPrivatePoolPage(()=>{},size))),[1,12,100]);
+ assert.equal(privatePoolPage(()=>{}),50);assert.equal(privatePoolPage(undefined),50);
+});
+
+test('a re-wrapped private pool api keeps its page size, and create keeps the shield cap',async t=>{
+ const sizes:(number|undefined)[]=[],sentinel=new Error('creation inspected'),wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  stopped:false,unwatch:[],changeListeners:new Set(),actionListeners:new Set(),getContractManager:async()=>({}),getAddress:async()=>'unused',
+  async load(this:{api:PoolApi;claimApi:PoolApi;maxShieldCoins?:number}){sizes.push(privatePoolPage(this.api),privatePoolPage(this.claimApi),this.maxShieldCoins);throw sentinel;},
+ }) as ShieldedWallet;
+ t.mock.method(Wallet,'create',async()=>wallet as never);t.mock.method(Wallet.prototype,'dispose',async()=>{});
+ const fetcher=markPrivateFetch((async()=>Response.json({})) as typeof fetch);
+ await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,claimFetch:fetcher,networkPrivacy:true,poolPage:12,maxShieldCoins:PRIVATE_SHIELD_COINS}),error=>error===sentinel);
+ assert.deepEqual(sizes,[12,12,PRIVATE_SHIELD_COINS]);
+});
+
+test('a worst-case page of 12 batches stays inside the gateway answer cap',()=>{
+ const f='9'.repeat(String(ROLLUP_FIELD).length),slot:RollupEpochRecordSlot={anchor:f,rCur:{epoch:99_999,root:f},nullifiers:[f,f],commitments:[f,f],ctDigest:f,groupId:f,groupSize:10,publics:Array(7).fill(f),ciphertext:'f'.repeat(2*ROLLUP_RECORD_BYTES)};
+ const record:RollupEpochRecord={kind:'spend',slots:Array(BATCH_SLOTS).fill(slot),noteBlockRoot:f,txid:'f'.repeat(64),at:1_700_000_000_000};
+ const page=(n:number)=>JSON.stringify({from:0,total:n,batches:Array(n).fill(record)}).length,cap=ANSWER_BYTES;
+ assert.ok(page(PRIVATE_PAGE)<=cap,String(page(PRIVATE_PAGE)));assert.ok(page(16)>cap,String(page(16)));
 });
 
 test('private fresh account avoids a birthday checkpoint and verifies the same final root',async()=>{
@@ -131,6 +173,14 @@ test('a restarted native wallet reserves uncertain deposit outpoints for every s
  journal.observeNativeResponse({url:origin+'/api/rollup/spends/'+id,method:'GET',status:200,body:JSON.stringify({status:'included',txid:'ab'.repeat(32)})});
  assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:true}),[input,other]);
  assert.equal(await wallet.send({recipients:[{address:'unused',amount:330}],selectedVtxos:[input] as never}),'sent');
+});
+
+test('a 30-coin plan in private mode takes at most the cap, the soonest to expire first and coins without expiry last, and a direct plan takes all',()=>{
+ const now=Date.now(),coins:ArkCoin[]=Array.from({length:30},(_,i)=>({txid:i.toString(16).padStart(64,'0'),vout:0,value:1000,...(i%2?{}:{expiresAt:now+SHIELD_FLOOR_MS+(100-i)*60_000})}));
+ const plan=(cap?:number)=>(Object.assign(Object.create(ShieldedWallet.prototype),{used:new Set(),usedTxids:new Set(),pool:{status:{pool:{reserves:{}}}},isPoolPayout:()=>false,maxShieldCoins:cap}) as ShieldedWallet).planFor(coins,false);
+ const soonest=[...coins.filter(coin=>coin.expiresAt).reverse(),...coins.filter(coin=>!coin.expiresAt).slice(0,PRIVATE_SHIELD_COINS-15)];
+ assert.deepEqual(plan(PRIVATE_SHIELD_COINS),{kind:'btc',coins:soonest,amount:1000*PRIVATE_SHIELD_COINS});
+ assert.deepEqual(plan(),{kind:'btc',coins,amount:30_000});
 });
 
 test('real SDK automatic send and settlement exclude restarted uncertain deposits',async t=>{

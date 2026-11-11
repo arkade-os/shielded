@@ -10,10 +10,12 @@ import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {epochMatchesPool,epochPoolOf} from '../../src/shielded/epoch-checkpoint.ts';
 import {epochIncomingNotes} from '../../src/shielded/epoch-disclosure.ts';
+import {privateTransport} from '../../src/shielded/private-transport.ts';
 import {epochSyncAccount,poolApiOf,rollupApi,type PoolApi,type RollupPoolStatus} from './rollup-client.ts';
 
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
+const TxLink=({txid}:{txid:string})=>privateTransport()?<code>{txid}</code>:<a className="stock-txlink" href={`${EXPLORER}/tx/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'';
 const unit=(asset:bigint)=>asset===0n?'sats':'asset units';
 const totals=(items:{asset:bigint;amount:bigint}[])=>{const m=new Map<bigint,bigint>();for(const i of items)m.set(i.asset,(m.get(i.asset)??0n)+i.amount);return [...m].map(([asset,amount])=>`${sats(amount)} ${unit(asset)}`).join(' + ');};
@@ -51,19 +53,19 @@ export function Results({checked,watched}:{checked?:Checked;watched?:Watched}){
    <p className="stock-muted">{checked.ok.every(Boolean)?'Every note below is exactly the one the pool published at its position, owned by this address.':'At least one note differs from what the pool published, so this payment is not proven. A link minted against a different pool, such as an earlier genesis, cannot verify here.'}</p>
    <dl className="stock-facts"><dt>Pool</dt><dd>{checked.pool?<code>{checked.pool}</code>:'Not reported'}</dd><dt>To</dt><dd><code>{checked.disclosure.to}</code></dd>
     {checked.disclosure.notes.map((note,i)=>{const batch=Math.floor(note.index/32),record=checked.batches[batch];
-     return <div key={i} className="stock-fact-row"><dt>Note {i+1}</dt><dd>{checked.ok[i]?'✓':'✗'} {sats(note.amount)} {unit(note.asset)} · batch #{batch}{record?.at?` · ${when(record.at)}`:''}{record?.txid&&<> · <a className="stock-txlink" href={`${EXPLORER}/tx/${record.txid}`} target="_blank" rel="noreferrer">{short(record.txid)} ↗</a></>}</dd></div>;})}
+     return <div key={i} className="stock-fact-row"><dt>Note {i+1}</dt><dd>{checked.ok[i]?'✓':'✗'} {sats(note.amount)} {unit(note.asset)} · batch #{batch}{record?.at?` · ${when(record.at)}`:''}{record?.txid&&<> · <TxLink txid={record.txid}/></>}</dd></div>;})}
    </dl>
   </section>}
   {watched&&'entries' in watched&&<section className="stock-card stock-history"><h2>{watched.entries.length?'Notes and spends':'No activity yet'}</h2>
    <p className="stock-muted">For <code>{watched.address}</code></p>
    <ul>{watched.entries.slice().reverse().map(e=><li key={`${e.batch}-${e.slots[0]}`}><details><summary><span className={'stock-kind '+e.kind}>{kinds[e.kind]}</span><b className={e.kind==='shield'||e.kind==='receive'?'in':'out'}>{e.amounts.length?totals(e.amounts):'No net change'}</b><time>{when(e.at)}</time></summary>
-    <dl><dt>Batch</dt><dd>#{e.batch}{e.txid&&<> · <a className="stock-txlink" href={`${EXPLORER}/tx/${e.txid}`} target="_blank" rel="noreferrer">{short(e.txid)} ↗</a></>}</dd>
+    <dl><dt>Batch</dt><dd>#{e.batch}{e.txid&&<> · <TxLink txid={e.txid}/></>}</dd>
      {e.created.map(n=><div key={n.index} className="stock-fact-row"><dt>Note {n.epoch}/{n.index}</dt><dd>{sats(n.amount)} {unit(n.asset)} · {watched.state(n)}</dd></div>)}</dl></details></li>)}</ul>
   </section>}
   {watched&&'notes' in watched&&<section className="stock-card stock-history"><h2>{watched.notes.length?`${watched.notes.length} ${watched.notes.length===1?'note':'notes'} seen`:'No notes seen yet'}</h2>
    <p className="stock-muted">For <code>{watched.address}</code>. A refreshed or recovered note appears again as a new note, so this list does not add up to a balance.</p>
    <ul>{watched.notes.slice().reverse().map(note=><li key={note.index}><details><summary><span className={'stock-kind '+(note.deposit?'shield':'receive')}>{note.deposit?'Shielded':'Received'}</span><b className="in">+{sats(note.amount)} {unit(note.asset)}</b><time>{when(note.at)}</time></summary>
-    <dl><dt>Batch</dt><dd>#{note.batch}{note.txid&&<> · <a className="stock-txlink" href={`${EXPLORER}/tx/${note.txid}`} target="_blank" rel="noreferrer">{short(note.txid)} ↗</a></>}</dd><dt>Position</dt><dd>{note.index}</dd></dl></details></li>)}</ul>
+    <dl><dt>Batch</dt><dd>#{note.batch}{note.txid&&<> · <TxLink txid={note.txid}/></>}</dd><dt>Position</dt><dd>{note.index}</dd></dl></details></li>)}</ul>
   </section>}
  </>;
 }
@@ -83,7 +85,7 @@ export default function Disclose(){
     if(live())setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),entries:[...account.history],state:noteStateOf(account)});
    }else if(watch){
     const key=parseViewKey(value),all:RollupEpochRecord[]=[];
-    for(;;){const page=await rollupApi<{total:number;batches:RollupEpochRecord[]}>(`/batches?from=${all.length}&limit=100`);all.push(...page.batches);if(all.length>=page.total||!page.batches.length)break;}
+    for(;;){const page=await rollupApi<{total:number;batches:RollupEpochRecord[]}>(`/batches?from=${all.length}&limit=${privateTransport()?.pageSize??100}`);all.push(...page.batches);if(all.length>=page.total||!page.batches.length)break;}
     const notes=await epochIncomingNotes(hash,all,key);
     if(live())setWatched({address:rollupAddressOf({owner:key.owner,viewPublic:x25519.getPublicKey(key.viewSecret)}),notes});
    }else{const result=await checkDisclosure(hash,decodeDisclosure(value.includes('#')?value.slice(value.indexOf('#')+1):value));if(live())setChecked(result);}

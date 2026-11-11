@@ -3,7 +3,7 @@ import {randomBytes} from 'node:crypto';
 import {cpSync,existsSync,readFileSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {after,test,type TestContext} from 'node:test';
-import {CSVMultisigTapscript,MultisigTapscript,scriptFromTapLeafScript,SingleKey,VtxoScript} from '@arkade-os/sdk';
+import {CSVMultisigTapscript,MultisigTapscript,scriptFromTapLeafScript,SingleKey,Transaction,UnknownPacket,VtxoScript} from '@arkade-os/sdk';
 import {x25519} from '@noble/curves/ed25519.js';
 import {base64,hex} from '@scure/base';
 import {randomField} from '../packages/protocol/src/rollup/account.ts';
@@ -18,15 +18,16 @@ import {decodeEpochScan,rotatesAt} from '../packages/protocol/src/rollup/epoch-s
 import {statementOf} from '../packages/protocol/src/rollup/notes.ts';
 import {nullifierHint} from '../packages/protocol/src/rollup/scan.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
-import {rollupEpochPoolTree} from '../src/rollup/covenant.ts';
+import {buildRollupBatchTx,rollupEpochPoolTree,rollupWitness,type SnarkProof} from '../src/rollup/covenant.ts';
 import {openRollupEpochOperator} from '../src/rollup/epoch-operator.ts';
 import {DEFAULT_VM_BINARY,loadRollupEpochLeaves} from '../src/rollup/leaves.ts';
-import {EPOCH_KEY_FILES,openRollupService,rollupDepositFeeFromEnv,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,type RollupService} from '../src/rollup/service.ts';
+import {EPOCH_KEY_FILES,openRollupService,rollupDepositFeeFromEnv,rollupEpochLenOf,rollupEpochPin,rollupGenesisOf,rollupProvingOf,rollupSpecOf,type RollupService} from '../src/rollup/service.ts';
 import {encodeEpochSpend,openSpendStore} from '../src/rollup/spend-store.ts';
 import {signDeposit} from '../src/shielded/pool.ts';
 import {stockJournalFingerprint} from '../src/stock/journal.ts';
-import type {StockNativeReceipt,StockWireRequest} from '../src/stock/transport.ts';
+import {stockCustomerSigned,stockSignedWeights,verifyStockCustomerSignatures,type StockNativeReceipt,type StockWireRequest} from '../src/stock/transport.ts';
 import {epochHarness,rejection} from './fixtures/epoch.ts';
+import {offlineNativeFixture} from './fixtures/native.ts';
 import {bakedPool,checkpoint,emulatorKey,EPOCH_POOL_KEYS,epochRecord,exitDelay,hash,keySet,le32,listen,offline,pendingOnDisk,POOL_KEYS,proof,ready,scratch,serverKey,sha,STATUS_KEYS,token,until} from './fixtures/epoch-service.ts';
 
 const {deposit,dummyInput,recovery}=epochHarness(hash);
@@ -456,4 +457,34 @@ test('the environment asks for a deposit fee whenever any part of one is set, an
   assert.match(problem({[name]:bad}),new RegExp(`SHIELDED_DEPOSIT_FEE_${name} must be plain decimal digits`),`${name}=${bad} is refused by name, not read as a number`);
  assert.match(problem({SATS:'0x64',BPS:'1e2'}),/SHIELDED_DEPOSIT_FEE_SATS and SHIELDED_DEPOSIT_FEE_BPS must be plain decimal digits/);
  assert.deepEqual(asked({SATS:'007'}),{...none,fixedSats:7},'plain digits are plain digits');
+});
+
+test("a stripped sign request is accepted, keeps only the depositor's signature, and the merged batch still verifies",async()=>{
+ const dir=scratch('rollup-sign-');cpSync(keySet('epoch'),join(dir,'keys'),{recursive:true});writeFileSync(join(dir,'spec.json'),JSON.stringify(rollupSpecOf(token,serverKey)));
+ const leaves=await loadRollupEpochLeaves(DEFAULT_VM_BINARY,join(dir,'spec.json')),pool=rollupEpochPoolTree(hex.decode(serverKey),hex.decode(emulatorKey),leaves,exitDelay);
+ const fixture=JSON.parse(readFileSync('tools/vm/testdata/rollup-covenant-snarkjs.json','utf8')) as {newPacket:string;slots:{proof:SnarkProof;publicSignals:string[]}[];batch:{proof:SnarkProof}};
+ const depositors=await Promise.all(Array.from({length:BATCH_SLOTS},async(_,i)=>{
+  const key=SingleKey.fromHex((0x40+i).toString(16).repeat(32)),user=await key.xOnlyPublicKey(),collab=MultisigTapscript.encode({pubkeys:[user,hex.decode(serverKey)]}).script;
+  return {key,collab,tree:new VtxoScript([collab,CSVMultisigTapscript.encode({timelock:{type:'seconds',value:2048n},pubkeys:[user]}).script])};
+ }));
+ // About 5.7 KB, as a pool payout's batch transaction is with its witness: the full request then carries one copy per deposit.
+ const head=offlineNativeFixture([{script:pool.tree.pkScript,amount:100_330n}]),payout=offlineNativeFixture(depositors.map(d=>({script:d.tree.pkScript,amount:1000n})),[new UnknownPacket(0x7e,new Uint8Array(5_200))]);
+ const built=buildRollupBatchTx({head:{txid:head.id,vout:0,value:100_330,sourceTx:head.toBytes(),tapTree:pool.tree.encode(),leaf:pool.tree.findLeaf(hex.encode(pool.batch))},token,leaves,checkpoint,
+  deposits:depositors.map((d,vout)=>({txid:payout.id,vout,value:1000,sourceTx:payout.toBytes(),tapTree:d.tree.encode(),leaf:d.tree.findLeaf(hex.encode(d.collab))})),legs:depositors.map(()=>({deposit:1000n,withdraw:0n,asset:false})),
+  witness:rollupWitness(fixture.batch.proof,fixture.slots.map(s=>({proof:s.proof,publics:s.publicSignals.map(BigInt)}))),newPacket:hex.decode(fixture.newPacket)});
+ const arkTx=base64.encode(built.arkTx.toPSBT()),checkpoints=built.checkpoints.map(tx=>base64.encode(tx.toPSBT())),idOf=(psbt:string)=>Transaction.fromPSBT(base64.decode(psbt)).id;
+ const merged=Transaction.fromPSBT(base64.decode(arkTx)),fromFull=Transaction.fromPSBT(base64.decode(arkTx)),signed=[...checkpoints],first=merged.inputsLength-depositors.length;
+ for(const [i,{key}] of depositors.entries()){
+  const vin=first+i,payload=await signDeposit(key,{status:'signing',arkTx,checkpoint:checkpoints[vin],checkpoints,vin}),stripped=Transaction.fromPSBT(base64.decode(payload.arkTx));
+  const full=await key.sign(Transaction.fromPSBT(base64.decode(arkTx)),[vin]);
+  assert.ok(Buffer.byteLength(JSON.stringify(payload))<=16_384,String(Buffer.byteLength(JSON.stringify(payload))));
+  assert.ok(Buffer.byteLength(JSON.stringify({arkTx:base64.encode(full.toPSBT()),checkpoint:payload.checkpoint}))>65_536);
+  assert.deepEqual([idOf(payload.arkTx),idOf(payload.checkpoint)],[idOf(arkTx),idOf(checkpoints[vin]!)]);
+  assert.deepEqual(Array.from({length:stripped.inputsLength},(_,n)=>stripped.getInput(n).tapScriptSig?.map(([,sig])=>sig.length)),Array.from({length:stripped.inputsLength},(_,n)=>n===vin?[64]:undefined));
+  merged.updateInput(vin,{tapScriptSig:stripped.getInput(vin).tapScriptSig});fromFull.updateInput(vin,{tapScriptSig:full.getInput(vin).tapScriptSig});signed[vin]=payload.checkpoint;
+ }
+ const request={arkTx:base64.encode(merged.toPSBT()),checkpoints:signed};
+ assert.deepEqual(depositors.map((_,i)=>stockCustomerSigned(request,serverKey,first+i)),depositors.map(()=>true));
+ verifyStockCustomerSignatures(request,serverKey);
+ assert.equal(stockSignedWeights(request,true).ark,stockSignedWeights({arkTx:base64.encode(fromFull.toPSBT()),checkpoints:signed},true).ark);
 });

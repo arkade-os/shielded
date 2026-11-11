@@ -1,3 +1,5 @@
+// First import: the bundler may still hoist shared chunks ahead of it, but the transport installs before any app code makes a request.
+import './private-boot';
 import React,{lazy,Suspense} from 'react';
 import {createRoot} from 'react-dom/client';
 import {AppUpdatesProvider,NativeUpdateLink} from './AppUpdates.tsx';
