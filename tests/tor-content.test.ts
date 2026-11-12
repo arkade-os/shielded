@@ -158,24 +158,24 @@ const tickRig=(held:number,reported:number,fetcher:typeof fetch)=>{
  }) as PoolApi;
  const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
   stopped:false,offline:false,networkPrivacy,sealedTransport:isSealedFetch(fetcher),pool:{origin:'https://pool.test',status:{}},statusAt:0,statusReadAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
-  watchLinks(){},async autoShield(){},async merge(){},async renewNotes(){ran.push('renew');},async recoverNotes(){ran.push('recover');},changed(){this.stopped=true;},
+  watchLinks(){},async shield(){ran.push('shield');},async merge(){},async renewNotes(){ran.push('renew');},async recoverNotes(){ran.push('recover');},changed(){this.stopped=true;},
  });
  // changed() stops the wallet, or tick() would arm its 60 s timer.
- const tick=async()=>{wallet.stopped=false;await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);};
+ const tick=async()=>{wallet.stopped=false;await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);await flush();};
  return {asked,ran,pool,account,wallet,tick,pages:()=>asked.filter(path=>path.startsWith('/batches'))};
 };
 const timers=(t:TestContext)=>{const armed:{ms:number;run:()=>void}[]=[];t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>armed.push({ms,run})) as never);return armed;};
 const spread=(t:TestContext)=>{let n=0;t.mock.method(Math,'random',()=>(++n%9+1)/10);};
 const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
 
-test('a private tick reads no batch page while the pool reports the count the account already holds',async()=>{
+test('a sealed tick reads no batch page while the pool reports the count the account already holds, nor does its auto-shield',async()=>{
  const {asked,pages,ran,tick}=tickRig(140,140,sealedStub());
  await tick();
  assert.ok(asked.includes('/status'));assert.deepEqual(pages(),[]);
- assert.deepEqual(ran.toSorted(),['recover','renew']);
+ assert.deepEqual(ran.toSorted(),['recover','renew','shield']);
 });
 
-test('a private tick syncs as soon as the pool count moves, including across an epoch rotation',async()=>{
+test('a sealed tick syncs as soon as the pool count moves, including across an epoch rotation',async()=>{
  const {asked,pages,pool,account,tick}=tickRig(127,127,sealedStub());
  // 128 closes epoch 0 (epochLen 128); 130 is two batches into epoch 1.
  pool.batches=128;await tick();
@@ -184,16 +184,16 @@ test('a private tick syncs as soon as the pool count moves, including across an 
  assert.equal(account.batchCount,130);assert.deepEqual(pages(),['/batches?from=128&limit=12']);
 });
 
-test('a direct tick still syncs on every tick',async()=>{
+test('a direct tick still syncs on every tick, and so does its auto-shield',async()=>{
  const {pages,tick}=tickRig(140,140,stub());
  await tick();await tick();
- assert.equal(pages().length,2);
+ assert.deepEqual(pages(),Array(4).fill('/batches?from=140&limit=50'));
 });
 
-test('a native tick, private but not sealed, still syncs at equal counts',async()=>{
+test('a native tick, private but not sealed, still syncs at equal counts, and so does its auto-shield',async()=>{
  const {pages,tick}=tickRig(140,140,nativeStub());
  await tick();
- assert.deepEqual(pages(),['/batches?from=128&limit=12']);
+ assert.deepEqual(pages(),Array(2).fill('/batches?from=128&limit=12'));
 });
 
 test('create marks only a sealed pool fetcher as a sealed transport',async t=>{
@@ -262,6 +262,19 @@ test('a sealed spend round whose catch-up fails keeps waiting, and a closed wall
  const {landedBy}=depsOf(wallet);
  assert.equal(await landedBy!([7n]),undefined);
  wallet.stopped=true;await assert.rejects(landedBy!([7n]),/wallet was closed/);
+});
+
+const included=(batch:number)=>({status:'included',batch,txid:'ab'.repeat(32)});
+test('a sealed finish at the pool\'s count reads no page for a spend the account already holds, and a direct or native finish still syncs',async()=>{
+ for(const [fetcher,read] of [[sealedStub(),[]],[stub(),['/batches?from=140&limit=50']],[nativeStub(),['/batches?from=128&limit=12']]] as const){
+  const {wallet,pages}=tickRig(140,140,fetcher);await wallet.refreshPoolStatus();
+  await wallet.finish(included(139));assert.deepEqual(pages(),read);
+ }
+});
+test('a sealed finish still syncs when the pool count it last read predates the spend\'s own batch, as after a deposit\'s id poll',async()=>{
+ const {wallet,pool,account}=tickRig(140,140,sealedStub());await wallet.refreshPoolStatus();
+ pool.batches=141;await wallet.finish(included(140));
+ assert.equal(account.batchCount,141);
 });
 
 const statusRig=()=>{

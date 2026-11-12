@@ -396,7 +396,7 @@ export class ShieldedWallet extends Wallet {
    if(!this.stopped&&revision===this.statusRevision)this.headExpiry=expiry;
   }}
   if(this.stopped)return;
-  void this.autoShield().catch(()=>{});
+  void this.autoShield(this.sealedTransport&&atHead).catch(()=>{});
   void this.merge().catch(()=>{});
   // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
   if(atHead){void this.renewNotes().catch(()=>{});void this.recoverNotes().catch(()=>{});}
@@ -677,7 +677,8 @@ export class ShieldedWallet extends Wallet {
  /** One place where a dropped spend becomes an error and a landed one triggers sync. */
  private async finish(final:SpendStatus){
   if(final.status==='dropped')throw new Error(final.reason??'The pool dropped this spend.');
-  await this.sync();
+  // A sealed landedBy has just synced; an id poll (a deposit, a verdict) reads no status, so a matching count can predate the spend's batch.
+  if(!(this.sealedTransport&&this.pool.status.pool?.batches===this.account.batchCount&&(final.batch??Infinity)<this.account.batchCount))await this.sync();
   return {...(final.txid?{txid:final.txid}:{})};
  }
  private hold(nullifiers:readonly bigint[],handle:{settled():Promise<unknown>},onFail?:()=>void){
@@ -760,9 +761,10 @@ export class ShieldedWallet extends Wallet {
   });
   return this.announce(handle);
  }
- private async autoShield(){
+ /** `current`: tick() has just shown the account at the pool's count. Every other caller syncs first, for planFor's payout skip. */
+ private async autoShield(current=false){
   if(this.stopped||this.offline||Date.now()<this.retryAt)return;
-  await this.sync();
+  if(!current)await this.sync();
   if(this.stopped||Date.now()<this.retryAt||this.depositFeePaused)return;
   await this.shield();
  }
