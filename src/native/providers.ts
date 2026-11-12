@@ -120,7 +120,7 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
 export class IsolatedOnchainProvider extends EsploraProvider {
  constructor(url:string,pollMs?:number){
   super(url,pollMs===undefined?{forcePolling:true}:{forcePolling:true,pollingInterval:pollMs});
-  // The SDK's poll loop re-reads this at every round; an accessor on the class would make the base constructor's assignment throw.
+  // The SDK re-reads this every round; its own class field would shadow an accessor declared on this class.
   if(pollMs!==undefined)Object.defineProperty(this,'pollingInterval',{get:()=>privateInterval(pollMs)});
  }
  override async watchAddresses(addresses:string[],callback:(txs:ExplorerTransaction[])=>void):Promise<()=>void>{

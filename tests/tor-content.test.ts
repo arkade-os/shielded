@@ -309,7 +309,7 @@ const headRig=(t:TestContext,fetcher:typeof fetch,answer:(ask:number,poolUp:bool
  return {wallet,asks:()=>asks,later:(ms:number)=>{at+=ms;},
   refresh:async()=>{await wallet.refreshPoolStatus();await flush();},
   ticks:async(rounds:number)=>{for(let round=0;round<rounds;round++){at+=WATCHDOG_MS;await tick();await flush();}},
-  // Two sealed rounds at the 1.25x jitter ceiling, so the outage threshold is passed whatever the draws.
+  // Already past operatorDown's fixed 2*WATCHDOG_MS before the outage's first hand-driven tick; the 1.25 is margin, not a jitter bound.
   stop:()=>{poolUp=false;wallet.api=()=>Promise.reject(new Error('fetch failed'));at+=2*1.25*WATCHDOG_MS;}};
 };
 test('a sealed wallet reads the pool head expiry once while the pool answers, and shows it when the pool stops',async t=>{
