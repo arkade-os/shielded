@@ -6,7 +6,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {ARCHIVE_DEPTH,EPOCH_NULLIFIER_DEPTH,EPOCH_SLOTS,RECOVERED_DEPTH} from '../packages/protocol/src/rollup/constants.ts';
-import {decodeDisclosure,fullViewKeyOf,parseFullViewKey,parseViewKey,viewKeyOf} from '../packages/protocol/src/rollup/disclosure.ts';
+import {decodeDisclosure,fullViewKeyOf,parseFullViewKey,parseViewKey,viewKeyOf,type Disclosure} from '../packages/protocol/src/rollup/disclosure.ts';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {akOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
@@ -14,6 +14,7 @@ import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {Results,checkDisclosure,fullViewOf,noteStateOf,type Checked} from '../app/src/Disclose.tsx';
 import {epochIncomingNotes,epochRevealLinkOf} from '../src/shielded/epoch-disclosure.ts';
 import type {EpochBatchPage} from '../src/shielded/epoch-sync.ts';
+import {markPrivateFetch,markPrivatePoolPage,markSealedFetch} from '../src/shielded/network-privacy.ts';
 import type {PoolApi} from '../src/shielded/pool.ts';
 import {epochPool,posted} from './fixtures/epoch-pool.ts';
 
@@ -68,6 +69,50 @@ test('the verify page names the pool it checked against, on a verified link and 
  assert.match(page(bad),new RegExp(`This does not match the pool.*link minted against a different pool.*cannot verify here.*${OTHER}`));
  assert.match(page(unnamed),/Verified: 100 sats.*Not reported/);
 });
+
+const sealed=(raw:typeof fetch)=>markPrivatePoolPage(markSealedFetch(markPrivateFetch(raw)),12);
+// checkDisclosure's default api reads the page's global fetch, so that is what each transport replaces.
+async function verifyOver(pool:{api:PoolApi},disclosure:Disclosure,transport:(raw:typeof fetch)=>typeof fetch=raw=>raw){
+ const asked:string[]=[],real=globalThis.fetch;
+ globalThis.fetch=transport((async(url:string)=>{const path=url.replace('/api/rollup','');asked.push(path);return Response.json(await pool.api(path));}) as unknown as typeof fetch);
+ try{return {checked:await checkDisclosure(hash,disclosure),asked};}finally{globalThis.fetch=real;}
+}
+async function spread(){
+ const pool=epochPool(hash,EPOCH_LEN);
+ for(const [batch,amount] of [[0,500n],[13,300n],[19,200n]] as const){while(pool.state.batchCount<batch)pool.land();pool.land('spend',[await pool.deposit(aliceTo,amount)]);}
+ const shields=(await replay(fresh(aliceKeys),pool.api)).history.filter(e=>e.kind==='shield'),notesIn=(batch:number)=>decodeDisclosure(epochRevealLinkOf('https://pool.test',shields.find(e=>e.batch===batch)!,{self:aliceAddress,sentOf:()=>undefined})!.split('#')[1]!).notes;
+ return {pool,disclose:(...batches:number[]):Disclosure=>({v:1,to:aliceAddress,notes:batches.flatMap(notesIn)})};
+}
+
+let spreading:ReturnType<typeof spread>|undefined;
+const spreadOnce=()=>spreading??=spread();
+
+test('a private verify reads an aligned window of batches, never the one batch of interest',async()=>{
+ const {pool,disclose}=await spreadOnce(),good=disclose(13,19),forged={...good,notes:good.notes.map(n=>({...n,amount:n.amount+1n}))};
+ for(const [disclosure,verdict] of [[good,[true,true]],[forged,[false,false]]] as const){
+  const windowed=await verifyOver(pool,disclosure,sealed),direct=await verifyOver(pool,disclosure);
+  assert.deepEqual(windowed.asked,['/batches?from=12&limit=12','/status']);
+  assert.deepEqual(windowed.checked.ok,verdict);
+  assert.deepEqual(windowed.checked,direct.checked);
+ }
+});
+
+test('a private verify of batch 0 and of the newest batch stays inside the pool\'s range',async()=>{
+ const {pool,disclose}=await spreadOnce(),{checked,asked}=await verifyOver(pool,disclose(0,19),sealed);
+ assert.equal(pool.records.length,20);
+ const reads=asked.filter(path=>path!=='/status').map(path=>/^\/batches\?from=(\d+)&limit=(\d+)$/.exec(path)!.slice(1).map(Number) as [number,number]);
+ assert.equal(reads.length,2);
+ assert.ok(reads.every(([from,limit])=>from>=0&&limit>1&&limit<=100&&from%limit===0),asked.join(' '));
+ assert.deepEqual(checked.ok,[true,true]);
+});
+
+async function readsOneBatchAtATime(transport?:(raw:typeof fetch)=>typeof fetch){
+ const {pool,disclose}=await spreadOnce(),{checked,asked}=await verifyOver(pool,disclose(13,19),transport);
+ assert.deepEqual(asked,['/batches?from=13&limit=1','/batches?from=19&limit=1','/status']);
+ assert.deepEqual(checked.ok,[true,true]);
+}
+test('a direct verify still reads one batch at a time',()=>readsOneBatchAtATime());
+test('a native verify, private but not sealed, still reads one batch at a time',()=>readsOneBatchAtATime(markPrivateFetch));
 
 test('/watch refuses a pool that is not an open epoch pool in words, not with a TypeError',async()=>{
  const key=parseFullViewKey(hash,fullViewKeyOf(akOf(hash,aliceKeys.ask),aliceKeys.nk,aliceKeys.viewSecret));

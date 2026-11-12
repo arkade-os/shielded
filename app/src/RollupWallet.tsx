@@ -468,7 +468,11 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const wantsInvoice=receiveMode==='unified'&&receiveAmount(lnAmount)!==undefined;
  useEffect(()=>{if(wantsInvoice&&!suspended)readLnBounds();},[wantsInvoice,wallet,wallet?.swaps,suspended]);
 
- useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool,'spend','',sessionFetch);},[tab,pool,sessionFetch]);
+ useEffect(()=>{
+  if(!pool)return;
+  if(PRIVATE){prefetchProvingKeys(pool,'spend','',sessionFetch);prefetchProvingKeys(pool,'join','',sessionFetch);return;}
+  if(tab==='send')prefetchProvingKeys(pool,'spend','',sessionFetch);
+ },[tab,pool,sessionFetch]);
  const docked=narrow&&pool?.phase==='ready';
  useEffect(()=>{
   if(!nativeHost)return;

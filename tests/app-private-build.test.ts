@@ -60,6 +60,17 @@ test('every tick hands the wallet\'s own verdict to the journal',()=>{
  assert.match(effect?.[2]??'',/\bwallet\b/);
 });
 
+const PREFETCH_EFFECT=/useEffect\(\(\)=>\{\s*if\(!pool\)return;([\s\S]*?)\},\[([^\]]*)\]\);/;
+test('a private wallet prefetches both proving circuits on open, not on the send tab',()=>{
+ const effect=PREFETCH_EFFECT.exec(read('app/src/RollupWallet.tsx')),body=effect?.[1]??'',branch=/if\(PRIVATE\)\{([^}]*)\}/.exec(body);
+ assert.ok(branch,'the prefetch effect has a private branch');
+ for(const circuit of ['spend','join'])assert.ok(branch[1]!.includes(`prefetchProvingKeys(pool,'${circuit}','',sessionFetch);`),circuit);
+ assert.match(branch[1]!,/return;$/,'a private open leaves before the send-tab condition');
+ assert.doesNotMatch(branch[1]!,/\btab\b/);
+ assert.equal(body.slice(body.indexOf(branch[0])+branch[0].length).trim(),"if(tab==='send')prefetchProvingKeys(pool,'spend','',sessionFetch);");
+ assert.match(effect?.[2]??'',/^tab,pool,sessionFetch$/);
+});
+
 // Source-level: /watch and the wallet are read for their literals and branches, not rendered.
 test('the pool-reading pages take their page size and their links from the transport',()=>{
  const disclose=read('app/src/Disclose.tsx');

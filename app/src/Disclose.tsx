@@ -10,6 +10,7 @@ import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf} from '../../packages/protocol/src/rollup/wallet.ts';
 import {epochMatchesPool,epochPoolOf} from '../../src/shielded/epoch-checkpoint.ts';
 import {epochIncomingNotes} from '../../src/shielded/epoch-disclosure.ts';
+import {isPrivatePoolApi,isSealedFetch,privatePoolPage} from '../../src/shielded/network-privacy.ts';
 import {privateTransport} from '../../src/shielded/private-transport.ts';
 import {epochSyncAccount,poolApiOf,rollupApi,type PoolApi,type RollupPoolStatus} from './rollup-client.ts';
 
@@ -36,8 +37,13 @@ export function noteStateOf(account:EpochAccount){
 }
 /** /verify: the disclosure resolves against whichever pool answers, so the verdict carries that pool's token. */
 export async function checkDisclosure(hash:Hash,disclosure:Disclosure,api:PoolApi=poolApiOf('')):Promise<Checked>{
- const batches:Record<number,RollupEpochRecord|undefined>={};
- for(const n of new Set(disclosure.notes.map(note=>Math.floor(note.index/32))))batches[n]=(await api<{batches:RollupEpochRecord[]}>(`/batches?from=${n}&limit=1`)).batches[0];
+ // Windows only on the browser's sealed transport. An api carries no sealed brand (its fetcher does) and the default api is built on the global fetch; native's is private but unsealed, and reads one batch at a time.
+ const batches:Record<number,RollupEpochRecord|undefined>={},size=isPrivatePoolApi(api)&&isSealedFetch(fetch)?privatePoolPage(api):1,windows=new Map<number,RollupEpochRecord[]>();
+ for(const n of new Set(disclosure.notes.map(note=>Math.floor(note.index/32)))){
+  const from=Math.floor(n/size)*size;
+  if(!windows.has(from))windows.set(from,(await api<{batches:RollupEpochRecord[]}>(`/batches?from=${from}&limit=${size}`)).batches);
+  batches[n]=windows.get(from)![n-from];
+ }
  const ok=await verifyDisclosure(hash,disclosure,index=>batches[Math.floor(index/32)]?.slots[Math.floor((index%32)/2)]?.commitments[index%2]);
  return {disclosure,ok,batches,pool:(await api<RollupPoolStatus>('/status').catch(()=>undefined))?.pool?.token};
 }
