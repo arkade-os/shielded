@@ -111,6 +111,37 @@ test('a journal built without a grace never releases on a 404',async t=>{
  for(const later of [300_001,3_599_999]){at=1_000_000+later;await lost(journal,UNKNOWN);assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(later));}
 });
 
+const settle=(journal:ReturnType<typeof makeNativeMutationJournal>,verdict:boolean|undefined)=>journal.settleLandedMutations(origin,()=>verdict);
+test('a landed nullifier settles its journal entry at once',()=>{
+ const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS}),elsewhere='https://other.test',asked:bigint[][]=[];
+ journal.beforeNativeMutation(mutation());journal.beforeNativeMutation({...mutation(other,['23']),url:elsewhere+'/api/rollup/spends'});
+ journal.settleLandedMutations(origin,nullifiers=>{asked.push([...nullifiers]);return true;});
+ assert.deepEqual([asked,journal.pendingPoolNullifiers(origin),journal.pendingPoolNullifiers(elsewhere)],[[[17n]],[],[23n]]);
+});
+
+test('an unlanded entry is released only once the pool can no longer admit it',()=>{
+ for(const [age,left] of [[3_600_000+PRIVATE_GRACE_MS,[17n]],[3_600_001+PRIVATE_GRACE_MS,[]]] as const){
+  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+  journal.beforeNativeMutation(mutation());
+  at+=age;settle(journal,false);
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),left,String(age));
+ }
+});
+
+test('a wallet that has not caught up settles nothing',()=>{
+ let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+ journal.beforeNativeMutation(mutation());
+ at+=3_600_001+PRIVATE_GRACE_MS;settle(journal,undefined);
+ assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n]);
+});
+
+test('the native journal settles nothing, because it is built with no grace',t=>{
+ let at=1_000_000;t.mock.method(Date,'now',()=>at);
+ const journal=makeNativeMutationJournal(storage());journal.beforeNativeMutation(mutation());
+ at+=3_600_001+PRIVATE_GRACE_MS;settle(journal,true);
+ assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n]);
+});
+
 test('only a matching definitive status response retires a reservation durably',async()=>{
  for(const answer of [{status:'included',txid:'d'.repeat(64),batch:1},{status:'included',txid:'d'.repeat(64)}]){
   const persisted=storage(),journal=makeNativeMutationJournal(persisted);journal.beforeNativeMutation(mutation());

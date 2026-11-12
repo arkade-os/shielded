@@ -627,6 +627,8 @@ export class ShieldedWallet extends Wallet {
   const landedBy=async(nullifiers:readonly bigint[])=>{await this.refreshPoolStatus().catch(()=>{});if(this.pool.status.pool?.batches!==this.account.batchCount)await this.sync().catch(()=>{});this.assertOpen();return this.landedSpend(nullifiers);};
   return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript,...(this.sealedTransport?{jitterMs:PRIVATE_SUBMIT_JITTER_MS,landedBy}:{})};
  }
+ /** undefined unless the account is at the pool's published count: behind it, it has not looked, so the journal must not age an entry out on its word. */
+ settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined{return this.pool.status.pool?.batches===this.account.batchCount?!!this.landedSpend(nullifiers):undefined;}
  private landedSpend(nullifiers:readonly bigint[]):SpendStatus|undefined{
   const entry=this.account.history.find(e=>nullifiers.every(n=>e.spent.includes(n)));
   return entry&&{status:'included',batch:entry.batch,...(entry.txid?{txid:entry.txid}:{})};

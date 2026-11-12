@@ -14,7 +14,7 @@ export const PRIVATE_PAGE=12;
 export const PRIVATE_GRACE_MS=900_000;
 export const PRIVATE_SHIELD_COINS=20;
 export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
-export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile():Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
+export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile(settled?:(nullifiers:readonly bigint[])=>boolean|undefined):Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
 
 let installed:PrivateTransport|undefined;
 const refused=(what:string)=>class {constructor(){throw new Error('Private networking does not permit '+what);}};
@@ -50,8 +50,8 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
  const pending=()=>journal.pendingPoolNullifiers(poolOrigin).length>0||journal.pendingPoolOutpoints(poolOrigin).length>0;
  let reconciling:Promise<boolean>|undefined;
  const transport:PrivateTransport={fetch:privateFetch,poolOrigin,pageSize:PRIVATE_PAGE,journal,
-  reconcile(){
-   reconciling??=(async()=>{if(pending())await journal.reconcileNativeMutations(privateFetch,poolOrigin);return pending();})().finally(()=>{reconciling=undefined;});
+  reconcile(settled){
+   reconciling??=(async()=>{if(pending()){await journal.reconcileNativeMutations(privateFetch,poolOrigin);if(settled)journal.settleLandedMutations(poolOrigin,settled);}return pending();})().finally(()=>{reconciling=undefined;});
    return reconciling;
   },
   providers(arkUrl,indexerUrl){

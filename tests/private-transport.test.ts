@@ -182,6 +182,15 @@ test('a pending entry whose GET answers 404 clears at 900 001 ms of age through 
  assert.equal(g.calls.filter(url=>url.endsWith('/spends/'+ID)).length,2,'one read per reconcile that found the entry');
 });
 
+test('reconcile passes the caller\'s verdict to the journal and still reports what is pending',async t=>{
+ const landed='cd'.repeat(16),g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json(url.endsWith(landed)?{status:'included',txid:'d'.repeat(64)}:{status:'pending'})});
+ for(const [id,nf] of [[ID,'17'],[landed,'23']])assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(id,nf))).status,202);
+ const asked:bigint[][]=[];
+ assert.equal(await g.transport.reconcile(nullifiers=>{asked.push([...nullifiers]);return undefined;}),true);
+ assert.deepEqual([asked,g.transport.journal.pendingPoolNullifiers(POOL)],[[[17n]],[17n]],'asked after the id round, of what it left');
+ assert.equal(await g.transport.reconcile(()=>true),false);
+});
+
 test('a spend POST that never went out frees its reservation at once, and one that may have run keeps it',async t=>{
  const g=await rig(t),fails=(code:string)=>(error:unknown)=>error instanceof SealedFetchError&&error.code===code;
  await assert.rejects(g.transport.fetch('/api/rollup/spends',spendPost(ID,'17','0'.repeat(NOSTR_CHUNK_BYTES))),fails('too-large'));

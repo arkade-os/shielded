@@ -104,7 +104,13 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
- return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations};
+ /** Browser only: a sealed copy can still be admitted graceMs after the POST and the pool queues it for at most an hour, so only past both is an unseen spend out of the queue. */
+ const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined)=>{
+  if(graceMs===undefined)return;
+  const origin=new URL(poolOrigin).origin,at=now();
+  drop(row=>{if(row.origin!==origin)return false;const verdict=settled(row.nullifiers.map(BigInt));return verdict===true||verdict===false&&at-row.createdAt>TRACKED_MS+graceMs;});
+ };
+ return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations,settleLandedMutations};
 }
 
 const current=()=>{if(!globalThis.localStorage)throw new Error('The native payment journal is unavailable; no payment was sent.');return makeNativeMutationJournal(globalThis.localStorage);};

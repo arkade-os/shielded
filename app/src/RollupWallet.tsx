@@ -449,7 +449,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
   if(!wallet||!nativeHost&&!PRIVATE)return;
-  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(!live)return;setNativePending(pending);setJournalError('');},error=>{if(!live)return;setNativePending(true);setJournalError(errorText(error));});return()=>{live=false;};}
+  if(!nativeHost){let live=true;void PRIVATE!.reconcile(n=>wallet.settledNullifiers(n)).then(pending=>{if(!live)return;setNativePending(pending);setJournalError('');},error=>{if(!live)return;setNativePending(true);setJournalError(errorText(error));});return()=>{live=false;};}
   try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
   catch(error){setPoolError(errorText(error));}
   },[wallet,tick,nativeHost]);

@@ -264,6 +264,12 @@ test('a sealed spend round whose catch-up fails keeps waiting, and a closed wall
  wallet.stopped=true;await assert.rejects(landedBy!([7n]),/wallet was closed/);
 });
 
+test('a wallet gives the journal a verdict only at the pool\'s published count',()=>{
+ const {account,wallet}=tickRig(140,140,sealedStub()),verdict=(batches:number,nullifiers:bigint[])=>{wallet.pool={origin:'https://pool.test',status:{pool:{batches}}};return (wallet as ShieldedWallet).settledNullifiers(nullifiers);};
+ Object.assign(account,{history:[{batch:139,spent:[7n,8n]}]});
+ assert.deepEqual([verdict(141,[7n]),verdict(140,[7n,8n]),verdict(140,[7n,9n])],[undefined,true,false]);
+});
+
 test('external uncertain reservations remain visible after local holds release',()=>{
  const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};
  const read=()=>Object.getOwnPropertyDescriptor(ShieldedWallet.prototype,'inFlight')!.get!.call(wallet) as ReadonlySet<bigint>;

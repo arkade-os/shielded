@@ -42,15 +42,22 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
  assert.ok(read('app/src/private-boot.ts').includes("To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage, then open this page again without ?private=1 in its address."),'a link with ?private=1 sets the flag again on reload');
 });
 
+const TICK_EFFECT=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/;
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
- const wallet=read('app/src/RollupWallet.tsx'),effect=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/.exec(wallet);
- assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(\)/);
+ const wallet=read('app/src/RollupWallet.tsx'),effect=TICK_EFFECT.exec(wallet);
+ assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(/);
  const privateBranch=/if\(!nativeHost\)\{[^\n]*/.exec(effect?.[1]??'')?.[0]??'';
  assert.match(privateBranch,/setNativePending\(pending\);setJournalError\(''\)[^\n]*setNativePending\(true\);setJournalError\(errorText\(error\)\)/,'a failed reconcile keeps the unresolved line and its own error; a later success clears only that');
  assert.doesNotMatch(privateBranch,/setPoolError/,'a journal error never replaces a startup error');
  assert.match(wallet,/\{ready&&journalError&&<p className="stock-blocked">\{journalError\}<\/p>\}/);
  assert.match(effect?.[2]??'',/\btick\b/);
  assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
+});
+
+test('every tick hands the wallet\'s own verdict to the journal',()=>{
+ const effect=TICK_EFFECT.exec(read('app/src/RollupWallet.tsx'));
+ assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\((\w+)=>wallet\.settledNullifiers\(\1\)\)\.then\(/);
+ assert.match(effect?.[2]??'',/\bwallet\b/);
 });
 
 // Source-level: /watch and the wallet are read for their literals and branches, not rendered.
