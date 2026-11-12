@@ -305,15 +305,23 @@ test('a nullifier-watched spend asks for a verdict on its fifth round, never on 
  const delays=paced(t),seen:string[]=[],reason='The operator dropped this spend before it reached a batch; build it again.';
  const final=await waitForSpend('a',async()=>{},(async(path:string)=>{seen.push(path);return {status:'dropped',reason};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>{seen.push('landed');return undefined;});
  assert.deepEqual(final,{status:'dropped',reason});
- assert.deepEqual(seen,[...Array(PRIVATE_VERDICT_EVERY+1).fill('landed'),'/spends/a']);
+ assert.deepEqual(seen,[...Array(PRIVATE_VERDICT_EVERY).fill('landed'),'/spends/a']);
  assert.ok(delays.length===PRIVATE_VERDICT_EVERY&&delays.every(ms=>ms>PRIVATE_SPEND_POLL_MS),delays.join());
 });
 
 test('a nullifier-watched round is jittered and never backs off',async t=>{
  const delays=paced(t);let rounds=0;
- await waitForSpend('a',async()=>{},(async()=>({status:'pending'})) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>++rounds>8?{status:'included'}:undefined);
+ await waitForSpend('a',async()=>{},(async()=>({status:'pending'})) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>++rounds>=8?{status:'included'}:undefined);
  assert.equal(delays.length,8);
  assert.ok(delays.every(ms=>ms>PRIVATE_SPEND_POLL_MS&&ms<=1.25*PRIVATE_SPEND_POLL_MS)&&new Set(delays).size>1,delays.join());
+});
+
+test('a nullifier-watched spend asks the pool nothing before its first jittered round, and sees there a spend that landed meanwhile',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const seen:string[]=[],pending=waitForSpend('a',async()=>{},(async(path:string)=>{seen.push(path);return {status:'pending'};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>{seen.push('landed');return {status:'included',batch:7};});
+ await flush();assert.deepEqual(seen,[]);
+ t.mock.timers.tick(1.25*PRIVATE_SPEND_POLL_MS);await flush();
+ assert.deepEqual(await pending,{status:'included',batch:7});assert.deepEqual(seen,['landed']);
 });
 
 test('a direct spend keeps its one-second poll and its backoff',async t=>{

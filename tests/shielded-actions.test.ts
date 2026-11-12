@@ -91,12 +91,13 @@ test('a deposit is still polled for its signing request, at the private interval
  const pool=hex.decode('5120'+'aa'.repeat(32)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
  const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
  const signing=(statements:bigint[])=>{const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);ark.addOutput(batchWitnessOutput(statements));return {status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};};
- const replies=[{status:'pending'},signing([1n]),signing([1n]),signing([2n,1n]),{status:'included',txid:'t'}],signs:string[]=[],delays:number[]=[];let reads=0,looked=0;
+ const replies=[...Array(4).fill({status:'pending'}),signing([1n]),signing([1n]),signing([2n,1n]),{status:'included',txid:'t'}],signs:string[]=[],delays:number[]=[];let reads=0,looked=0,n=0;
+ t.mock.method(Math,'random',()=>(++n%9+1)/10);
  t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>{if(delays.push(ms)>50)throw new Error('The poll never ended.');run();}) as never);
  const api=(async(path:string,body?:{arkTx:string})=>{if(path==='/spends')return {};if(path.endsWith('/sign')){signs.push(body!.arkTx);return {};}reads++;return replies.shift();}) as never;
  const final=await submitAll([{built:built([11n]),coin}],{api,prover,identity,poolScript:hex.encode(pool),step:()=>{},first:0,landedBy:async()=>{looked++;return undefined;}});
- assert.equal(final.status,'included');assert.deepEqual([reads,looked,signs.length],[5,0,2]);
- assert.ok(delays.length===4&&delays.every(ms=>ms>=PRIVATE_SIGN_POLL_MS&&ms<=1.25*PRIVATE_SIGN_POLL_MS),delays.join());
+ assert.equal(final.status,'included');assert.deepEqual([reads,looked,signs.length],[8,0,2]);
+ assert.ok(delays.length===7&&delays.every(ms=>ms>=PRIVATE_SIGN_POLL_MS&&ms<=1.25*PRIVATE_SIGN_POLL_MS)&&new Set(delays).size>1,delays.join());
 });
 
 test('a private submit waits a random time under ten seconds before its first spend POST, and a direct one does not wait',async t=>{
@@ -112,7 +113,8 @@ test('a private submit waits a random time under ten seconds before its first sp
  assert.equal((await sealed.run).status,'included');
 });
 
-test('a private unit watches each spend by its own nullifiers and asks the pool for no spend id',async()=>{
+test('a private unit watches each spend by its own nullifiers and asks the pool for no spend id',async t=>{
+ t.mock.method(globalThis,'setTimeout',((run:()=>void)=>{run();}) as never);
  const watched:bigint[][]=[],api=(async(path:string)=>{if(path!=='/spends')throw new Error(`The pool was asked for ${path}.`);return {};}) as never;
  const final=await submitAll([{built:built([11n],9n,2)},{built:built([21n,22n],9n,2)}],{...deps(api),step:()=>{},first:0,landedBy:async nullifiers=>{watched.push([...nullifiers]);return {status:'included',batch:3};}});
  assert.deepEqual([final,watched],[{status:'included',batch:3},[[11n],[21n,22n]]]);

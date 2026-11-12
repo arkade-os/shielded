@@ -27,7 +27,7 @@ export async function submitAll(members:SubmitMember[],o:SubmitDeps&{step:(n:num
    const coin=members[i]!.coin;if(!coin)throw new Error('The pool asked to sign a spend with no deposit coin.');
    checkSigningRequest(request,coin,o.poolScript,members[i]!.built.witness.publicSignals[0]!);o.step(o.first+3);
    await o.api(`/spends/${id}/sign`,await signDeposit(o.identity,request));
-  },o.api,!priv?1000:deposit?PRIVATE_SIGN_POLL_MS:PRIVATE_SPEND_POLL_MS,o.deadlineMs??Infinity,landed);
+  },o.api,!priv?1000:deposit?PRIVATE_SIGN_POLL_MS:PRIVATE_SPEND_POLL_MS,o.deadlineMs??Infinity,landed,priv);
  }));
  return finals.find(f=>f.status==='dropped')??finals[0]!;
 }

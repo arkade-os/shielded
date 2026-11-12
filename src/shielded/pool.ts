@@ -111,12 +111,12 @@ export async function signDeposit(identity:Identity,request:SpendStatus){
 }
 
 /** Polls a spend until it is settled or the deadline passes; a rebuilt batch asks the depositor to sign again. */
-export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=poolApiOf(''),pollMs=1000,deadlineMs=Infinity,landed?:()=>Promise<SpendStatus|undefined>):Promise<SpendStatus>{
+export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=poolApiOf(''),pollMs=1000,deadlineMs=Infinity,landed?:()=>Promise<SpendStatus|undefined>,paced=!!landed):Promise<SpendStatus>{
  let signed='',interval=pollMs;
  for(let round=0,end=Date.now()+deadlineMs;;round++){
   if(Date.now()>end)throw new Error('The spend did not settle in time; the pool may still include it.');
-  if(landed){const found=await landed();if(found)return found;}
-  // A drop never shows in the batches, so a watched spend still reads its id, but never just after the POST it would link to.
+  // A watched spend asks nothing just after the POST it would link to; a drop never shows in the batches, so its id is still read.
+  if(landed&&round>0){const found=await landed();if(found)return found;}
   if(!landed||round>0&&round%PRIVATE_VERDICT_EVERY===0){
    let status:SpendStatus|undefined;
    try{status=await api<SpendStatus>('/spends/'+id);}
@@ -127,8 +127,8 @@ export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Pr
     interval=pollMs;
    }
   }
-  await sleep(landed?privateInterval(pollMs):interval);
-  if(!landed)interval=Math.min(5*pollMs,2*interval);
+  await sleep(paced?privateInterval(pollMs):interval);
+  if(!paced)interval=Math.min(5*pollMs,2*interval);
  }
 }
 
