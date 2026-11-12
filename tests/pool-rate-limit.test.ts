@@ -309,6 +309,14 @@ test('a nullifier-watched spend asks for a verdict on its fifth round, never on 
  assert.ok(delays.length===PRIVATE_VERDICT_EVERY&&delays.every(ms=>ms>PRIVATE_SPEND_POLL_MS),delays.join());
 });
 
+test('a nullifier-watched spend that stays pending reads its id on rounds 5 and 10, and on no other round',async t=>{
+ const seen:string[]=[],stop=new Error('stopped after round 11');let sleeps=0;
+ t.mock.method(globalThis,'setTimeout',((run:()=>void)=>{if(++sleeps>2*PRIVATE_VERDICT_EVERY+1)throw stop;run();}) as never);
+ await assert.rejects(waitForSpend('a',async()=>{},(async(path:string)=>{seen.push(path);return {status:'pending'};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>{seen.push('landed');return undefined;}),error=>error===stop);
+ const rounds=seen.flatMap((event,i)=>event==='landed'?[]:[seen.slice(0,i).filter(e=>e==='landed').length]);
+ assert.deepEqual([seen.filter(e=>e==='landed').length,rounds],[2*PRIVATE_VERDICT_EVERY+1,[PRIVATE_VERDICT_EVERY,2*PRIVATE_VERDICT_EVERY]]);
+});
+
 test('a nullifier-watched round is jittered and never backs off',async t=>{
  const delays=paced(t);let rounds=0;
  await waitForSpend('a',async()=>{},(async()=>({status:'pending'})) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>++rounds>=8?{status:'included'}:undefined);
