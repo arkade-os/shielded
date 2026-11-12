@@ -91,6 +91,14 @@ test('an unresponsive update preflight remains bounded while the app is visible'
  assert.equal(f.state().phase,'failed');assert.match(f.state().error,/Android did not respond/);assert.equal(f.downloads.length,0);
 });
 
+test('app switches cannot reset the visible-time budget of an unresponsive preflight',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date']});const f=fixture(t);await flush();f.read(()=>new Promise(()=>{}));
+ const pending=f.controller.download();await flush();t.mock.timers.tick(6_000);
+ f.visible(false);t.mock.timers.tick(60_000);f.visible(true);await flush();t.mock.timers.tick(3_999);await flush();
+ assert.equal(f.state().phase,'downloading');t.mock.timers.tick(1);await pending;
+ assert.equal(f.state().phase,'failed');assert.match(f.state().error,/Android did not respond/);
+});
+
 test('explicit cancellation fences the old transfer after a replacement has begun',async t=>{
  const f=fixture(t);await flush();const first=f.controller.download();await flush();const old=f.downloads[0]!;
  f.visible(false);f.controller.cancel();await first;f.visible(true);await flush();const second=f.controller.download();await flush();const current=f.downloads[1]!;

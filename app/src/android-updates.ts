@@ -116,8 +116,11 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
  };
  // Android freezes renderer timers while hidden, so the preflight deadline counts foreground time only.
  const visiblyBounded=<T>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
-  let timer:ReturnType<typeof setTimeout>|undefined;
-  const arm=()=>{clearTimeout(timer);timer=isVisible()?setTimeout(()=>reject(new Error('Android did not respond. Check the update status and try again.')),10_000):undefined;};
+  let timer:ReturnType<typeof setTimeout>|undefined,left=10_000,since=0;
+  const arm=()=>{
+   if(timer!==undefined){clearTimeout(timer);timer=undefined;left-=Date.now()-since;}
+   if(isVisible()){since=Date.now();timer=setTimeout(()=>reject(new Error('Android did not respond. Check the update status and try again.')),Math.max(0,left));}
+  };
   const settle=()=>{clearTimeout(timer);if(rearmPreflight===arm)rearmPreflight=undefined;};
   rearmPreflight=arm;arm();
   work.then(value=>{settle();resolve(value);},error=>{settle();reject(error);});

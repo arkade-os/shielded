@@ -136,7 +136,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    closeSheet:()=>setSheetOpen(false),
    closeScanner:()=>setScanning(false),
    closeAbout:()=>setAboutOpen(false),
-   closeSecurity:()=>setSecurityView(null),
+   closeSecurity:()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);},
  },mode),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);

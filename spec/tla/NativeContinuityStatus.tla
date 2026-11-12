@@ -3,8 +3,8 @@ EXTENDS Naturals, Sequences
 
 (* Flip: lib.rs window Suspended/Resumed -> Inner::suspend(true)/resumed.
    Accept: NativeBridge.acceptLifecycle receives the emitted event in order.
-   Issue/Read/Deliver: NativeBridge.status; native reads follow issue order,
-   responses may resolve in any order. *)
+   Issue/Read/Deliver: NativeBridge.status. ASSUMES native reads follow issue
+   order, which Tauri does not document; responses may resolve in any order. *)
 CONSTANTS MaxFlips, MaxPolls, BreakPollFence, BreakPollOrder
 Polls == {1, 2}
 VARIABLE s

@@ -226,6 +226,7 @@ export default function NativeWallet(){
   let live=true;
   const resume=(mine:number)=>{
    const current=()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden&&nativeForeground.current;
+   // A retained return keeps its open sheets, so only a rebuild may clear their document locks.
    return resumeNativeForeground(Promise.all([closed.current,openingOperation.current]),current,async()=>{
     clearTransientDocument();const shown=handoff.current.snapshot.shown;
     if(shown&&!shown.retired)await suspend();

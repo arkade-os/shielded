@@ -640,16 +640,16 @@ The models assume immutable owner binding at the SDK/provider boundary and exist
 
 ## Soft background continuity
 
-`NativeContinuity.tla` replaces "every hide revokes" for a session that is already Ready. An ordinary background keeps the same generation, mounted graph, scopes, operations and update owner; native Resumed and JavaScript visibility only change visibility. Hides before Ready, renderer retirement, lock, reset, mode change and destruction keep the hard path above: a new generation, drain and full readiness before a fresh graph. Startup and installer consent stay foreground-only; hidden work may finish only under its own unrevoked owner.
+`NativeContinuity.tla` replaces "every hide revokes" for a session that is already Ready with a live shown view. An ordinary background keeps the same generation, mounted graph, scopes, operations and update owner; native Resumed and JavaScript visibility only change visibility. Hides before Ready or before a view is mounted (`HideUnbound`), renderer retirement, lock, reset, mode change and destruction keep the hard path above: a new generation, drain and full readiness before a fresh graph. Startup and installer consent stay foreground-only; hidden work may finish only under its own unrevoked owner.
 
 `RetireGraph` is the renderer retiring its own graph (startup failure, reload, mismatch on return). Paired with native invalidation it equals a same-mode `HardStop`, so it adds no distinct states (306 successors). Its mutant keeps the generation, and the generation-based bridge guard then lets the retired graph's delayed first fetch through. That is why `native_pause{warm:true}` stays generation-retiring while native `Suspended` on a Ready session does not.
 
-`NativeContinuityStatus.tla` orders foreground metadata. Native reads follow issue order; responses may resolve in any order. A poll is accepted only when no lifecycle event arrived after it was issued and no later-issued poll was already accepted.
+`NativeContinuityStatus.tla` orders foreground metadata. It assumes native reads follow issue order; responses may resolve in any order. A poll is accepted only when no lifecycle event arrived after it was issued and no later-issued poll was already accepted.
 
 | Model actions | Source ownership |
 | --- | --- |
 | `SoftHide`, `Show` | `Inner::suspend(true)` on a Ready session keeps owner and leases; `Inner::resumed`; `NativeWallet.tsx` keeps a live shown view and reconciles through `resumeNativeForeground` |
-| `HideStarting`, `HardStop`, `RetireGraph`, `Drain`, `Start`, `Bootstrap`, `Ready` | `Inner::suspend` before Ready or with `native=false`, `pause`, `invalidate`, `prepare_start`; `NativeWallet` `pause`, `suspend` and `open` |
+| `HideStarting`, `HideUnbound`, `HardStop`, `RetireGraph`, `Drain`, `Start`, `Bootstrap`, `Ready` | `Inner::suspend` before Ready or with `native=false`, `pause`, `invalidate`, `prepare_start`; `NativeWallet` `pause`, `suspend` (also on a hide without `liveShown()`) and `open` |
 | `Mount`, `BeginOperation`, `FirstFetch` | `NativeWallet.open`; `NativeBridge.sessionGuard`; `Session::check` requires generation and Ready, not foreground |
 | `BeginUpdate`, `Receive`, `Verify`, `Publish`, `Cancel`, `Install` | `createAndroidUpdateController`; `Inner::finish_update`; the Android installer foreground guard |
 | Status `Flip`, `Accept`, `Issue`, `Read`, `Deliver` | `lib.rs` window lifecycle; `NativeBridge.acceptLifecycle` and `NativeBridge.status` |
@@ -661,7 +661,7 @@ stateDiagram-v2
     Background --> Ready: resume or show, no start or vault read
     Background --> Stopped: lock, reset, mode change or destroy
     Ready --> Stopped: lock, reset, mode change or renderer retirement
-    Starting --> Stopped: hide before Ready revokes the generation
+    Starting --> Stopped: hide before a live view revokes the generation
     Stopped --> Starting: foreground open
     Starting --> Ready: drained, full readiness, fresh graph
 ```
@@ -681,6 +681,6 @@ stateDiagram-v2
 | `NativeContinuityStatus_NoPollFence.cfg` | a poll older than a lifecycle event wins; `NoStalePollObservation` |
 | `NativeContinuityStatus_NoPollOrder.cfg` | an older-issued poll overwrites a newer one; `NoStalePollObservation` |
 
-`NoSoftOwner`, `NoSoftDownload` and `NoResumeStarts` state the contract rather than prove a guard. Pinned TLC v1.7.4 on November 12, 2026: the continuity base generated 7,506 states (3,106 distinct, depth 25) and the status base 24,243 (11,418 distinct, depth 16); every action fired. `node tools/check-native-model.mjs` matched all 105 configurations. Simulation passed 20,000 traces at depth 100: continuity with five generations and four bytes (2,000,001 states), status with six flips and six polls (600,001 states).
+`NoSoftOwner`, `NoSoftDownload` and `NoResumeStarts` state the contract rather than prove a guard. Pinned TLC v1.7.4 on November 12, 2026: the continuity base generated 6,714 states (2,806 distinct, depth 24) and the status base 24,243 (11,418 distinct, depth 16); every action fired. `node tools/check-native-model.mjs` matched all 105 configurations. Simulation passed 20,000 traces at depth 100: continuity with five generations and four bytes (2,000,001 states), status with six flips and six polls (600,001 states).
 
 FIFO native reads are an assumption; if IPC reorders them, a stale foreground flag can persist until the next poll or lifecycle event, and opening still requires the document to be visible. Arti circuit health after a long Android freeze, OEM task killing and process death are outside these models.

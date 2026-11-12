@@ -2,6 +2,7 @@
 EXTENDS Naturals
 
 (* SoftHide/Show: Inner::suspend(true)/resumed and NativeWallet visibility handling.
+   HideUnbound: NativeWallet hides without a live shown view and calls suspend().
    HardStop/Drain/Start/Bootstrap/Ready: Session::invalidate and native startup.
    RetireGraph: NativeWallet.pause/suspend, paired with native_pause invalidation.
    Mount/BeginOperation/FirstFetch: NativeWallet.open, NativeBridge.sessionGuard.
@@ -26,7 +27,7 @@ Init == s = [gen |-> 1, mode |-> "tor", phase |-> "ready", visible |-> TRUE,
     bad |-> {}]
 
 SoftHide ==
-    /\ s.visible /\ s.phase = "ready"
+    /\ s.visible /\ s.phase = "ready" /\ s.graph # 0
     /\ LET graph == IF BreakSoftOwner THEN 0 ELSE s.graph
            update == IF BreakSoftDownload /\ s.update.stage \in NetworkStages
                      THEN [s.update EXCEPT !.cancelled = TRUE, !.bytes = 0]
@@ -42,6 +43,12 @@ HideStarting ==
         !.gen = IF s.phase = "starting" THEN @ + 1 ELSE @,
         !.drained = IF s.phase = "starting" THEN FALSE ELSE @,
         !.bootstrapped = FALSE]
+
+HideUnbound ==
+    /\ s.visible /\ s.phase = "ready" /\ s.graph = 0 /\ s.gen < MaxGeneration
+    /\ s' = [s EXCEPT !.visible = FALSE, !.phase = "stopped", !.gen = @ + 1,
+        !.drained = FALSE, !.bootstrapped = FALSE, !.op.live = FALSE,
+        !.update.cancelled = @ \/ s.update.stage \in NetworkStages]
 
 Show ==
     /\ ~s.visible
@@ -115,6 +122,7 @@ Receive ==
     /\ ~s.update.cancelled /\ s.update.owner = s.gen /\ s.phase = "ready"
     /\ s' = [s EXCEPT !.update.bytes = @ + 1]
 
+\* Over-approximates: a cancelled transfer may verify; Publish carries the fence.
 Verify ==
     /\ s.update.stage = "receiving" /\ s.update.bytes = MaxBytes
     /\ s' = [s EXCEPT !.update.stage = "checked"]
@@ -136,7 +144,8 @@ Install ==
     /\ s' = [s EXCEPT !.update.stage = "installed",
         !.bad = @ \cup (IF ~s.visible THEN {"hidden-install"} ELSE {})]
 
-Next == SoftHide \/ HideStarting \/ Show \/ (\E mode \in Modes: HardStop(mode)) \/ Drain
+Next == SoftHide \/ HideStarting \/ HideUnbound \/ Show
+    \/ (\E mode \in Modes: HardStop(mode)) \/ Drain
     \/ RetireGraph \/ Start \/ Bootstrap \/ Ready \/ Mount \/ BeginOperation \/ FirstFetch
     \/ BeginUpdate \/ Receive \/ Verify \/ Publish \/ Cancel \/ Install
 
