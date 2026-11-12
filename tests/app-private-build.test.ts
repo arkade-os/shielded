@@ -65,6 +65,7 @@ test('a private wallet prefetches both proving circuits on open, not on the send
  const effect=PREFETCH_EFFECT.exec(read('app/src/RollupWallet.tsx')),body=effect?.[1]??'',branch=/if\(PRIVATE\)\{([^}]*)\}/.exec(body);
  assert.ok(branch,'the prefetch effect has a private branch');
  for(const circuit of ['spend','join'])assert.ok(branch[1]!.includes(`prefetchProvingKeys(pool,'${circuit}','',sessionFetch);`),circuit);
+ assert.ok(branch[1]!.includes("if(pool.proving?.join)prefetchProvingKeys(pool,'join','',sessionFetch);"),'a status that names no join circuit gets no join prefetch, which would throw inside the effect');
  assert.match(branch[1]!,/return;$/,'a private open leaves before the send-tab condition');
  assert.doesNotMatch(branch[1]!,/\btab\b/);
  assert.equal(body.slice(body.indexOf(branch[0])+branch[0].length).trim(),"if(tab==='send')prefetchProvingKeys(pool,'spend','',sessionFetch);");

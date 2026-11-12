@@ -470,7 +470,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
  useEffect(()=>{
   if(!pool)return;
-  if(PRIVATE){prefetchProvingKeys(pool,'spend','',sessionFetch);prefetchProvingKeys(pool,'join','',sessionFetch);return;}
+  if(PRIVATE){prefetchProvingKeys(pool,'spend','',sessionFetch);if(pool.proving?.join)prefetchProvingKeys(pool,'join','',sessionFetch);return;}
   if(tab==='send')prefetchProvingKeys(pool,'spend','',sessionFetch);
  },[tab,pool,sessionFetch]);
  const docked=narrow&&pool?.phase==='ready';

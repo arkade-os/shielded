@@ -71,6 +71,14 @@ test('the verify page names the pool it checked against, on a verified link and 
 });
 
 const sealed=(raw:typeof fetch)=>markPrivatePoolPage(markSealedFetch(markPrivateFetch(raw)),12);
+// The fixture's epochs are 4 batches long; the pool's are 128, which a page of 12 does not divide.
+const epochOf=(pool:{api:PoolApi},epochLen?:number)=>({api:(async(path:string)=>{const body=await pool.api<{pool?:object}>(path);return path==='/status'?{...body,pool:{...body.pool,epochLen}}:body;}) as PoolApi});
+const sparse=(total:number,epochLen:number,planted:Record<number,string>)=>(async(path:string)=>{
+ const url=new URL(path,'http://pool');
+ if(url.pathname==='/status')return {pool:{token:TOKEN,batches:total,epochLen}};
+ const from=Number(url.searchParams.get('from')),to=Math.min(total,from+Number(url.searchParams.get('limit')));
+ return {from,total,batches:Array.from({length:Math.max(0,to-from)},(_,i)=>({slots:[{commitments:[planted[from+i]??'0','0']}]}))};
+}) as PoolApi;
 // checkDisclosure's default api reads the page's global fetch, so that is what each transport replaces.
 async function verifyOver(pool:{api:PoolApi},disclosure:Disclosure,transport:(raw:typeof fetch)=>typeof fetch=raw=>raw){
  const asked:string[]=[],real=globalThis.fetch;
@@ -90,20 +98,39 @@ const spreadOnce=()=>spreading??=spread();
 test('a private verify reads an aligned window of batches, never the one batch of interest',async()=>{
  const {pool,disclose}=await spreadOnce(),good=disclose(13,19),forged={...good,notes:good.notes.map(n=>({...n,amount:n.amount+1n}))};
  for(const [disclosure,verdict] of [[good,[true,true]],[forged,[false,false]]] as const){
-  const windowed=await verifyOver(pool,disclosure,sealed),direct=await verifyOver(pool,disclosure);
-  assert.deepEqual(windowed.asked,['/batches?from=12&limit=12','/status']);
+  const windowed=await verifyOver(epochOf(pool,128),disclosure,sealed),direct=await verifyOver(pool,disclosure);
+  assert.deepEqual(windowed.asked,['/status','/batches?from=12&limit=12']);
   assert.deepEqual(windowed.checked.ok,verdict);
   assert.deepEqual(windowed.checked,direct.checked);
  }
 });
 
 test('a private verify of batch 0 and of the newest batch stays inside the pool\'s range',async()=>{
- const {pool,disclose}=await spreadOnce(),{checked,asked}=await verifyOver(pool,disclose(0,19),sealed);
+ const {pool,disclose}=await spreadOnce(),{checked,asked}=await verifyOver(epochOf(pool,128),disclose(0,19),sealed);
  assert.equal(pool.records.length,20);
  const reads=asked.filter(path=>path!=='/status').map(path=>/^\/batches\?from=(\d+)&limit=(\d+)$/.exec(path)!.slice(1).map(Number) as [number,number]);
  assert.equal(reads.length,2);
  assert.ok(reads.every(([from,limit])=>from>=0&&limit>1&&limit<=100&&from%limit===0),asked.join(' '));
  assert.deepEqual(checked.ok,[true,true]);
+});
+
+test('a private verify reads the page a catch-up reads: the last of an epoch clamped to its end, and the first of the next',async()=>{
+ const {pool,disclose}=await spreadOnce(),good=disclose(13),[note]=good.notes,at=note!.index%32,commitment=pool.records[13]!.slots[Math.floor(at/2)]!.commitments[at%2]!;
+ for(const [batch,page] of [[125,'from=120&limit=8'],[130,'from=128&limit=12']] as const){
+  const {checked,asked}=await verifyOver({api:sparse(135,128,{[batch]:commitment})},{...good,notes:[{...note!,index:batch*32}]},sealed);
+  assert.deepEqual([asked,checked.ok],[['/status',`/batches?${page}`],[true]],String(batch));
+ }
+});
+
+test('a private verify takes its grid from the pool\'s epoch length, and without a usable one reads plain pages',async()=>{
+ const {pool,disclose}=await spreadOnce(),good=disclose(13,19),reads=(...pages:string[])=>['/status',...pages.map(page=>`/batches?${page}`)];
+ assert.deepEqual((await verifyOver(pool,good,sealed)).asked,reads('from=12&limit=4','from=16&limit=4'));
+ for(const epochLen of [undefined,0,-4,1.5]){
+  const {checked,asked}=await verifyOver(epochOf(pool,epochLen),good,sealed);
+  assert.deepEqual([asked,checked.ok],[reads('from=12&limit=12'),[true,true]],String(epochLen));
+ }
+ const down={api:(async(path:string)=>{if(path==='/status')throw Object.assign(new Error('down'),{code:'unavailable'});return pool.api(path);}) as PoolApi},lost=await verifyOver(down,good,sealed);
+ assert.deepEqual([lost.asked,lost.checked.ok,lost.checked.pool],[reads('from=12&limit=12'),[true,true],undefined]);
 });
 
 async function readsOneBatchAtATime(transport?:(raw:typeof fetch)=>typeof fetch){
