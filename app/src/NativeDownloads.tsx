@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState,type ReactNode} from 'react';
-import {NATIVE_RELEASE_ENDPOINT,type NativePlatform,type NativeRelease,type NativeReleasePackage} from '../../src/native-release.ts';
+import {NATIVE_RELEASE_ENDPOINT,nativeDownloadUrl,type NativePlatform,type NativeRelease,type NativeReleasePackage} from '../../src/native-release.ts';
 import {readNativeReleaseResponse} from '../../src/native-release-response.ts';
 import {QrCode} from './wallet-qr.tsx';
 import './native-downloads.css';
@@ -116,8 +116,7 @@ export function NativeDownloadsContent({release,state=release?'ready':'loading',
   <div className="nd-release" role="status" aria-busy={state==='loading'}>{release?<><p>Version {release.version}<span>Build {release.buildNumber}</span><a href={release.releaseUrl}>Release notes</a></p><p><a href={source}>Source <code>{release.commit.slice(0,12)}</code></a><time dateTime={release.publishedAt}>Published {release.publishedAt.slice(0,10)}</time></p></>:<><div className="nd-release-message"><p>{state==='error'?'Downloads are unavailable right now.':'Checking downloads…'}</p><p>The install guides are ready below. {state==='error'?'Try again or ':'You can also '}<a href={buildGuide}>build from source</a>.</p></div>{state==='error'&&<button className="nd-retry" type="button" onClick={onRetry}>Retry downloads</button>}</>}</div>
   <div className="nd-system-choice"><p>{selected?`Downloads for ${selected.name}`:'Choose your system'}</p>{platform&&<button type="button" aria-expanded={showOthers} aria-controls="nd-platforms" onClick={()=>setShowOthers(value=>!value)}>{showOthers?'Show fewer':'Other systems'}</button>}</div>
   <div className="nd-platforms" id="nd-platforms">{platforms.map(platform=>{const guide=guides.find(guide=>guide.platform===platform)!;
-   const packages=release?.packages.filter(item=>item.platform===guide.platform)??[];
-   if(guide.platform==='android-arm64'&&release?.androidUpdate)packages.unshift(release.androidUpdate);
+   const packages=release?[...(guide.platform==='android-arm64'&&release.androidUpdate?[release.androidUpdate]:[]),...release.packages.filter(item=>item.platform===guide.platform)].map(item=>({...item,url:nativeDownloadUrl(release,item)})):[];
    const description=guide.platform==='android-arm64'&&release?(release.androidUpdate?'Signed Android app with in-place updates over Tor.':'Debug APK signed with a development key.'):guide.description;
    return <article className="nd-platform" key={guide.platform} aria-labelledby={'nd-'+guide.platform}>
     <div className="nd-platform-heading"><h3 id={'nd-'+guide.platform}>{guide.name}<span>{guide.architecture}</span></h3><p>{description}</p></div>

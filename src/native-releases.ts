@@ -2,7 +2,7 @@ import type {RequestHandler} from 'express';
 import {NATIVE_RELEASE_ENDPOINT,NATIVE_RELEASE_MANIFEST_URL,type NativeRelease} from './native-release.ts';
 import {readNativeReleaseResponse} from './native-release-response.ts';
 
-export function createNativeReleasesHandler({fetchImpl=fetch,now=Date.now}:{fetchImpl?:typeof fetch;now?:()=>number}={}):RequestHandler{
+export function createNativeReleasesHandler({fetchImpl=fetch,now=Date.now,onRelease}:{fetchImpl?:typeof fetch;now?:()=>number;onRelease?:(release:NativeRelease)=>void}={}):RequestHandler{
  let cached:{release:NativeRelease;expires:number;staleUntil:number}|undefined,pending:Promise<NativeRelease>|undefined,retryAfter=0;
  const load=async()=>{
   const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
@@ -10,7 +10,7 @@ export function createNativeReleasesHandler({fetchImpl=fetch,now=Date.now}:{fetc
   try{
    const request=async()=>readNativeReleaseResponse(await fetchImpl(NATIVE_RELEASE_MANIFEST_URL,{method:'GET',signal:controller.signal,credentials:'omit',cache:'no-store',redirect:'follow',headers:{Accept:'application/json'}}));
    const release=await Promise.race([request(),timeout]);
-   cached={release,expires:now()+300_000,staleUntil:now()+3_600_000};retryAfter=0;return release;
+   cached={release,expires:now()+300_000,staleUntil:now()+3_600_000};retryAfter=0;onRelease?.(release);return release;
   }finally{clearTimeout(timer);}
  };
  return (req,res)=>{

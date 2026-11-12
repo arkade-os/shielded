@@ -4,7 +4,7 @@ import {test} from 'node:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import decodeQR from 'qr/decode.js';
-import {parseNativeRelease,type NativePlatform,type NativeReleasePackage} from '../src/native-release.ts';
+import {nativeDownloadUrl,parseNativeRelease,type NativePlatform,type NativeReleasePackage} from '../src/native-release.ts';
 import type {NativeDownloadsState} from '../app/src/NativeDownloads.tsx';
 import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-release.ts';
 
@@ -61,7 +61,7 @@ test('public packages keep their signing requirements and exact build identity v
  assert.match(rows[3]!,/Unsigned release APK/);assert.match(rows[3]!,/development key can change/);assert.match(rows[3]!,/Keep the existing installation and its data/);
  assert.match(rows[3]!.match(/<div class="nd-platform-heading">[\s\S]*?<p>([\s\S]*?)<\/p>/)![1]!,/Debug APK signed with a development key/);
  assert.match(rows[4]!,/Device IPA \(signing required\)/);assert.match(rows[4]!,/Simulator ZIP/);assert.match(rows[4]!,/unsigned and cannot be tapped to install/);
- for(const item of packages){assert.ok(html.includes(item.url),item.file);assert.ok(html.includes(`SHA-256 ${item.sha256}`),item.file);}
+ for(const item of packages){assert.ok(html.includes(nativeDownloadUrl(release,item)),item.file);assert.ok(!html.includes(item.url),item.file);assert.ok(html.includes(`SHA-256 ${item.sha256}`),item.file);}
  assert.equal([...html.matchAll(/>Source<\/a>/g)].length,9);
  assert.doesNotMatch(html,/href=""|\/actions\/|releases\/latest|uninstall|disable Gatekeeper|xattr/);
 });
@@ -77,7 +77,7 @@ test('a legacy release remains downloadable and says its reproducibility metadat
 test('Android downloads prefer the stable signed APK while preserving every legacy checksum',()=>{
  const base=nativeReleaseFixture(),update=androidUpdateFixture(base),signed=parseNativeRelease({...base,androidUpdate:update}),html=render(signed);
  const android=[...html.matchAll(/<article class="nd-platform"[\s\S]*?<\/article>/g)][3]![0],primary=android.match(/<div class="nd-package-links">([\s\S]*?)<\/div>/)![1]!;
- assert.match(primary,/Signed APK/);assert.ok(primary.includes(update.url));assert.doesNotMatch(primary,/Debug APK|Unsigned release APK/);
+ assert.match(primary,/Signed APK/);assert.ok(primary.includes(nativeDownloadUrl(signed,signed.androidUpdate!)));assert.doesNotMatch(primary,/Debug APK|Unsigned release APK/);
  assert.match(android.match(/<div class="nd-platform-heading">[\s\S]*?<p>([\s\S]*?)<\/p>/)![1]!,/Signed Android app with in-place updates over Tor/);
  assert.ok(html.indexOf('class="nd-package-links"')<html.indexOf('class="nd-reproducible"'),'download controls precede technical build details');
  assert.ok(android.includes(`SHA-256 ${update.sha256}`));assert.equal([...android.matchAll(/>Source<\/a>/g)].length,3);
@@ -189,11 +189,11 @@ test('every primary and alternative binary has an adjacent QR control, including
  const base=nativeReleaseFixture(),signed=parseNativeRelease({...base,androidUpdate:androidUpdateFixture(base)}),html=render(signed);
  const all=[...signed.packages,signed.androidUpdate!];
  for(const item of all){
-  const at=html.indexOf(`<a href="${item.url}">`);assert.ok(at>=0,item.file);const end=html.indexOf('</a>',at)+4;
+  const at=html.indexOf(`<a href="${nativeDownloadUrl(signed,item)}">`);assert.ok(at>=0,item.file);const end=html.indexOf('</a>',at)+4;
   assert.match(html.slice(end,end+220),/^<button[^>]*class="nd-qr-button"[^>]*aria-label="Show QR code for /,item.file);
  }
  const primary=[...html.matchAll(/<a class="nd-download" href="([^"]+)">[\s\S]*?<\/a><button[^>]*class="nd-qr-button"/g)];
- assert.equal(primary.length,8);assert.ok(primary.some(match=>match[1]===signed.androidUpdate!.url));
+ assert.equal(primary.length,8);assert.ok(primary.some(match=>match[1]===nativeDownloadUrl(signed,signed.androidUpdate!)));
  assert.equal([...html.matchAll(/class="nd-qr-button"/g)].length,18);
  assert.doesNotMatch(html,/api\.qrserver|quickchart|chart\.googleapis/);
 });

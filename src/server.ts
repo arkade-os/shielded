@@ -43,7 +43,7 @@ if(ohttpKey&&gatewayToken){
 console.log(ohttpKey?`Oblivious HTTP gateway on (key id ${ohttpKey.keyId}, Nostr ${ohttpKey.nostrPublic.slice(0,8)}…, ${nostrRelays.length} relays, HTTP route ${ohttpHttp?'on':'off'}).`:'Oblivious HTTP gateway off.');
 app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean),gatewayToken}));
 for(const old of ['/stock-wallet','/rollup','/lab'])app.get(old,(_req,res)=>res.redirect(301,'/wallet'));
-serveWeb(app,web);
+serveWeb(app,web,data);
 const listener=app.listen(port,host,()=>console.log(`Shielded listening on port ${port}.`));
 
 const stop=async()=>{if(stopping)return;stopping=true;if(timer)clearTimeout(timer);carrier?.close();service?.close();listener.close();await (globalThis as {curve_bn128?:{terminate():Promise<void>}}).curve_bn128?.terminate();process.exit(0);};
