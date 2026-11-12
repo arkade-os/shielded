@@ -344,6 +344,12 @@ test('a wallet opened offline on a cached status gives no verdict, though the co
  assert.equal(wallet.operatorDown,undefined);assert.equal(verdict([7n,9n]),undefined);
 });
 
+test('a wallet still offline gives no verdict after a fresh status read, though the counts match, and gives it once it is checked',async()=>{
+ const {wallet,read,verdict}=statusRig();Object.assign(wallet,{offline:true});
+ await read();assert.equal(verdict([7n,9n]),undefined);
+ Object.assign(wallet,{offline:false});assert.deepEqual([verdict([7n,8n]),verdict([7n,9n])],[true,false]);
+});
+
 const HEAD='ee'.repeat(32),EXPIRES=Date.parse('2026-11-20T00:00:00Z');
 const headOf=(expiresAt?:number)=>({vtxos:[{assets:[{assetId:HEAD,amount:1n}],...(expiresAt===undefined?{}:{expiresAt:new Date(expiresAt)})}]});
 const refused=():never=>{throw new Error('gateway down');};
