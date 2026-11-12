@@ -7,7 +7,7 @@ import {registerHooks} from 'node:module';
 import {payTarget} from '../app/src/rollup-client.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
-const {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount}=await import('../app/src/wallet-receive.tsx');
+const {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount}=await import('../app/src/wallet-receive.tsx');
 const recipients=[
  ['shielded','shrol_example','shielded','shrol_example'],
  ['arkade','tark_example','ark','tark_example'],
@@ -116,4 +116,20 @@ for(const [mode,address,,to]of recipients)test(`${mode} amount QRs roundtrip thr
   assert.ok(uri);
   assert.deepEqual(payTarget(uri),{to,amount:Number(amount)});
  }
+});
+
+test('an exact amount gets an invoice unless one for it is still in play or just failed to be made',()=>{
+ const at=(amount:bigint,outcome:string)=>({amount,outcome});
+ assert.equal(needsInvoice(undefined,undefined,undefined),false);
+ assert.equal(needsInvoice(1000n,undefined,undefined),true);
+ assert.equal(needsInvoice(1000n,at(2000n,'open'),undefined),true);
+ assert.equal(needsInvoice(1000n,at(1000n,'lapsed'),undefined),true);
+ for(const outcome of ['open','accepted','funding','funded','claimed','failed','needs_recovery'])assert.equal(needsInvoice(1000n,at(1000n,outcome),undefined),false,outcome);
+ assert.equal(needsInvoice(1000n,undefined,1000n),false);
+});
+
+test('editing the amount keeps a payable invoice and forgets a finished one, so the same amount can be asked again',()=>{
+ for(const outcome of ['open','accepted'])assert.equal(keptInvoice({amount:1000n,outcome})?.outcome,outcome);
+ for(const outcome of ['funding','funded','claimed','lapsed','failed','needs_recovery'])assert.equal(keptInvoice({amount:1000n,outcome}),undefined,outcome);
+ assert.equal(needsInvoice(1000n,keptInvoice({amount:1000n,outcome:'claimed'}),undefined),true);
 });
