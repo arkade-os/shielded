@@ -1,6 +1,7 @@
 use super::{
     NativeMode, NativeRequest, PrivacyTransport, UpdateDownload,
     policy::{check_request, http_request},
+    routes::POOL,
     session::{Inner, Lease},
     update::{MAX_APK_BYTES, initial_url, redirect_url},
     wire::{download_with, send_http},
@@ -19,8 +20,10 @@ use tokio::{
     sync::oneshot,
     task::JoinHandle,
 };
+use url::Url;
 
 const ASSET: &str = "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-c4f30bb1be18-run98-attempt1/shielded-mutinynet-android-arm64-c4f30bb1be18-run98-attempt1.apk";
+const MIRROR: &str = "https://shielded.mutinynet.arkade.sh/downloads/native/native-mutinynet-c4f30bb1be18-run98-attempt1/shielded-mutinynet-android-arm64-c4f30bb1be18-run98-attempt1.apk";
 const CDN: &str = "https://release-assets.githubusercontent.com/github-production-release-asset/1398591288/e2d7640e-e4f8-4c70-ada3-e77e51cedb3b?sig=private-server-token";
 const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
 
@@ -33,6 +36,21 @@ fn asset(body: &[u8]) -> UpdateDownload {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     }
+}
+
+fn github() -> Vec<Url> {
+    vec![initial_url(ASSET).unwrap()]
+}
+
+fn sources() -> Vec<Url> {
+    asset(b"ok").sources().unwrap()
+}
+
+fn served(bytes: &[u8]) -> Vec<u8> {
+    let mut response =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", bytes.len()).into_bytes();
+    response.extend_from_slice(bytes);
+    response
 }
 
 struct Staging(PathBuf);
@@ -151,14 +169,55 @@ fn package_metadata_is_bounded_and_pinned_to_our_release_repository() {
         format!("{ASSET}?token=renderer"),
         format!("{ASSET}#fragment"),
         CDN.into(),
+        MIRROR.into(),
     ] {
         assert!(initial_url(&value).is_err(), "{value}");
     }
 }
 
 #[test]
+fn the_host_mirror_is_derived_from_the_pinned_release_and_accepted_for_nothing_else() {
+    let package = asset(b"ok");
+    assert_eq!(package.mirror().unwrap().as_str(), MIRROR);
+    assert_eq!(
+        package.sources().unwrap(),
+        vec![Url::parse(MIRROR).unwrap(), Url::parse(ASSET).unwrap()]
+    );
+    for value in [MIRROR, ASSET] {
+        assert!(
+            package.start(&Url::parse(value).unwrap()).is_ok(),
+            "{value}"
+        );
+    }
+    for value in [
+        MIRROR.replace("native-mutinynet-", "native-mutinynet-other-"),
+        MIRROR.replace(
+            "shielded-mutinynet-android-arm64-",
+            "shielded-mutinynet-android-arm64-other-",
+        ),
+        MIRROR.replace("/downloads/native/", "/downloads/"),
+        MIRROR.replace("/downloads/native/", "/api/native/"),
+        format!("{MIRROR}?token=renderer"),
+        MIRROR.replace("shielded.mutinynet.arkade.sh", "mutinynet.arkade.sh"),
+        MIRROR.replace(
+            "shielded.mutinynet.arkade.sh",
+            "shielded.mutinynet.arkade.sh.evil.example",
+        ),
+        MIRROR.replace("https:", "http:"),
+        CDN.into(),
+    ] {
+        assert!(
+            package.start(&Url::parse(&value).unwrap()).is_err(),
+            "{value}"
+        );
+    }
+}
+
+#[test]
 fn only_native_github_redirects_to_our_asset_repository_are_allowed() {
     assert!(redirect_url(CDN).is_ok());
+    // The host mirror answers 302 to the pinned release when it holds no copy yet.
+    assert!(redirect_url(ASSET).is_ok());
     for value in [
         CDN.replace("https:", "http:"),
         CDN.replace("1398591288", "12345"),
@@ -172,9 +231,10 @@ fn only_native_github_redirects_to_our_asset_repository_are_allowed() {
         CDN.replace(".com/", ".com:8443/"),
         CDN.replace(".com/", ".com./"),
         format!("{CDN}#fragment"),
-        ASSET.into(),
+        MIRROR.into(),
+        format!("{ASSET}?token=renderer"),
     ] {
-        assert!(redirect_url(&value).is_err());
+        assert!(redirect_url(&value).is_err(), "{value}");
     }
 }
 
@@ -239,7 +299,8 @@ async fn a_complete_verified_package_is_written_without_a_renderer_body_or_cache
     bounded(download_with(
         &lease,
         &asset(b"ok"),
-        destination.create().await,
+        &github(),
+        &mut destination.create().await,
         &|event| progress.lock().unwrap().push(event.received),
         |checked| {
             let stream = lease.test_stream(client.take().unwrap());
@@ -297,11 +358,19 @@ async fn package_bytes_reach_the_private_file_before_the_response_finishes() {
         assert_eq!(bounded(peer.read(&mut [0])).await.unwrap(), 0);
     });
     let task = tokio::spawn(async move {
+        let mut file = file;
         let mut client = Some(client);
-        download_with(&lease, &expected, file, &|_| {}, |checked| {
-            let stream = lease.test_stream(client.take().unwrap());
-            async move { send_http(stream, http_request(checked)?).await }
-        })
+        download_with(
+            &lease,
+            &expected,
+            &github(),
+            &mut file,
+            &|_| {},
+            |checked| {
+                let stream = lease.test_stream(client.take().unwrap());
+                async move { send_http(stream, http_request(checked)?).await }
+            },
+        )
         .await
     });
     bounded(received_half).await.unwrap();
@@ -364,7 +433,8 @@ async fn incomplete_oversized_encoded_or_changed_packages_never_finish() {
             bounded(download_with(
                 &lease,
                 &expected,
-                destination.create().await,
+                &github(),
+                &mut destination.create().await,
                 &|event| progress.lock().unwrap().push(event.received),
                 |checked| {
                     let stream = lease.test_stream(client.take().unwrap());
@@ -414,7 +484,8 @@ async fn redirects_remain_in_one_fresh_operation_and_stop_at_the_approved_host_a
         let result = bounded(download_with(
             &lease,
             &asset(b"ok"),
-            destination.create().await,
+            &github(),
+            &mut destination.create().await,
             &|_| {},
             |checked| {
                 targets
@@ -442,6 +513,179 @@ async fn redirects_remain_in_one_fresh_operation_and_stop_at_the_approved_host_a
 }
 
 #[tokio::test]
+async fn the_host_mirror_serves_the_package_without_reaching_github() {
+    let inner = ready();
+    let lease = register(&inner, "mirror-direct");
+    let destination = Staging::new();
+    let (client, peer) = serve(OK.into());
+    let mut client = Some(client);
+    let targets = Mutex::new(Vec::new());
+    bounded(download_with(
+        &lease,
+        &asset(b"ok"),
+        &sources(),
+        &mut destination.create().await,
+        &|_| {},
+        |checked| {
+            targets
+                .lock()
+                .unwrap()
+                .push(checked.url.host_str().unwrap().to_owned());
+            let stream = lease.test_stream(client.take().unwrap());
+            async move { send_http(stream, http_request(checked)?).await }
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&destination.0).unwrap(), b"ok");
+    assert_eq!(*targets.lock().unwrap(), vec![POOL]);
+    let headers = String::from_utf8(bounded(peer).await.unwrap()).unwrap();
+    assert!(headers.starts_with("GET /downloads/native/"), "{headers}");
+}
+
+#[tokio::test]
+async fn a_host_mirror_redirect_reaches_the_release_asset_within_the_limit() {
+    let inner = ready();
+    let lease = register(&inner, "mirror-redirect");
+    let destination = Staging::new();
+    let mut servers = Vec::new();
+    let mut clients = VecDeque::new();
+    for response in [
+        format!("HTTP/1.1 302 Found\r\nLocation: {ASSET}\r\nContent-Length: 0\r\n\r\n")
+            .into_bytes(),
+        format!("HTTP/1.1 302 Found\r\nLocation: {CDN}\r\nContent-Length: 0\r\n\r\n").into_bytes(),
+        OK.to_vec(),
+    ] {
+        let (client, peer) = serve(response);
+        clients.push_back(client);
+        servers.push(peer);
+    }
+    let targets = Mutex::new(Vec::new());
+    let progress = Mutex::new(Vec::new());
+    bounded(download_with(
+        &lease,
+        &asset(b"ok"),
+        &sources(),
+        &mut destination.create().await,
+        &|event| progress.lock().unwrap().push(event.received),
+        |checked| {
+            targets
+                .lock()
+                .unwrap()
+                .push(checked.url.host_str().unwrap().to_owned());
+            let stream = lease.test_stream(clients.pop_front().unwrap());
+            async move { send_http(stream, http_request(checked)?).await }
+        },
+    ))
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&destination.0).unwrap(), b"ok");
+    // One attempt, so progress never restarts: the host's redirects were followed, not retried.
+    assert_eq!(*progress.lock().unwrap(), vec![0, 2]);
+    assert_eq!(
+        *targets.lock().unwrap(),
+        vec![POOL, "github.com", "release-assets.githubusercontent.com"]
+    );
+    for server in servers {
+        bounded(server).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_failing_host_mirror_falls_back_to_exactly_the_github_package() {
+    let package = b"shielded-apk";
+    for failure in [
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        served(b"wrong-bytes!"),
+    ] {
+        let inner = ready();
+        let lease = register(&inner, "mirror-fallback");
+        let destination = Staging::new();
+        let (mirror, mirror_peer) = serve(failure);
+        let (github, github_peer) = serve(served(package));
+        let mut clients = VecDeque::from([mirror, github]);
+        let targets = Mutex::new(Vec::new());
+        let progress = Mutex::new(Vec::new());
+        bounded(download_with(
+            &lease,
+            &asset(package),
+            &sources(),
+            &mut destination.create().await,
+            &|event| progress.lock().unwrap().push(event.received),
+            |checked| {
+                targets
+                    .lock()
+                    .unwrap()
+                    .push(checked.url.host_str().unwrap().to_owned());
+                let stream = lease.test_stream(clients.pop_front().unwrap());
+                async move { send_http(stream, http_request(checked)?).await }
+            },
+        ))
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&destination.0).unwrap(), package);
+        assert_eq!(*targets.lock().unwrap(), vec![POOL, "github.com"]);
+        assert_eq!(
+            *progress.lock().unwrap(),
+            vec![0, 0, package.len() as u64],
+            "{targets:?}"
+        );
+        bounded(mirror_peer).await.unwrap();
+        bounded(github_peer).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_host_mirror_attempt_never_falls_back_to_github() {
+    let inner = ready();
+    let lease = register(&inner, "mirror-cancel");
+    let destination = Staging::new();
+    let file = destination.create().await;
+    let (client, server) = tokio::io::duplex(4096);
+    let (started, ready_body) = oneshot::channel();
+    let peer = tokio::spawn(async move {
+        let mut peer = BufReader::new(server);
+        headers(&mut peer).await;
+        peer.get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\no")
+            .await
+            .unwrap();
+        started.send(()).unwrap();
+        assert_eq!(bounded(peer.read(&mut [0])).await.unwrap(), 0);
+    });
+    let targets = Arc::new(Mutex::new(Vec::new()));
+    let task = tokio::spawn({
+        let targets = targets.clone();
+        async move {
+            let mut file = file;
+            let mut client = Some(client);
+            download_with(
+                &lease,
+                &asset(b"ok"),
+                &sources(),
+                &mut file,
+                &|_| {},
+                |checked| {
+                    targets
+                        .lock()
+                        .unwrap()
+                        .push(checked.url.host_str().unwrap().to_owned());
+                    let stream = lease.test_stream(client.take().unwrap());
+                    async move { send_http(stream, http_request(checked)?).await }
+                },
+            )
+            .await
+        }
+    });
+    bounded(ready_body).await.unwrap();
+    inner.cancel(1, "mirror-cancel").unwrap();
+    let error = bounded(task).await.unwrap().unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert_eq!(*targets.lock().unwrap(), vec![POOL]);
+    bounded(peer).await.unwrap();
+}
+
+#[tokio::test]
 async fn cancellation_and_generation_retirement_close_the_physical_body_driver() {
     for pause in [false, true] {
         let inner = ready();
@@ -461,11 +705,19 @@ async fn cancellation_and_generation_retirement_close_the_physical_body_driver()
             assert_eq!(bounded(peer.read(&mut [0])).await.unwrap(), 0);
         });
         let task = tokio::spawn(async move {
+            let mut file = file;
             let mut client = Some(client);
-            download_with(&lease, &asset(b"ok"), file, &|_| {}, |checked| {
-                let stream = lease.test_stream(client.take().unwrap());
-                async move { send_http(stream, http_request(checked)?).await }
-            })
+            download_with(
+                &lease,
+                &asset(b"ok"),
+                &github(),
+                &mut file,
+                &|_| {},
+                |checked| {
+                    let stream = lease.test_stream(client.take().unwrap());
+                    async move { send_http(stream, http_request(checked)?).await }
+                },
+            )
             .await
         });
         bounded(ready_body).await.unwrap();
@@ -503,11 +755,19 @@ async fn a_stalled_update_body_fails_at_the_native_idle_timeout() {
         let _ = peer.read(&mut [0]).await;
     });
     let started = tokio::time::Instant::now();
+    let mut file = file;
     let mut client = Some(client);
-    let error = download_with(&lease, &asset(b"ok"), file, &|_| {}, |checked| {
-        let stream = lease.test_stream(client.take().unwrap());
-        async move { send_http(stream, http_request(checked)?).await }
-    })
+    let error = download_with(
+        &lease,
+        &asset(b"ok"),
+        &github(),
+        &mut file,
+        &|_| {},
+        |checked| {
+            let stream = lease.test_stream(client.take().unwrap());
+            async move { send_http(stream, http_request(checked)?).await }
+        },
+    )
     .await
     .unwrap_err();
     assert!(error.contains("stopped responding"), "{error}");
@@ -526,7 +786,8 @@ async fn cancellation_at_final_progress_cannot_publish_a_ready_result() {
     let result = bounded(download_with(
         &lease,
         &asset(b"ok"),
-        destination.create().await,
+        &github(),
+        &mut destination.create().await,
         &|event| {
             if event.received == event.total {
                 inner.cancel(1, "cancel-final").unwrap();

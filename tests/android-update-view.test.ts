@@ -23,8 +23,8 @@ test('download progress shows percent, received bytes, total bytes and a cancel 
  assert.match(html,/40%/);assert.match(html,/20.0 MB of 50.0 MB/);assert.match(html,/<progress max="100" value="40" aria-label="Update download"/);assert.match(html,/Cancel download/);assert.doesNotMatch(html,/Install update/);
 });
 
-test('with Tor off the download stays available and says it goes to GitHub directly',()=>{
- const html=render({torReady:false});assert.match(html,/<button type="button">Download update/);assert.match(html,/Tor is off, so the download connects to GitHub directly/);assert.doesNotMatch(html,/through Tor|<a\b/);
+test('with Tor off the download stays available and names the Shielded download server',()=>{
+ const html=render({torReady:false});assert.match(html,/<button type="button">Download update/);assert.match(html,/Tor is off, so the download connects directly to the Shielded download server/);assert.doesNotMatch(html,/through Tor|GitHub|<a\b/);
 });
 
 test('a connecting wallet disables downloading until it is ready',()=>{

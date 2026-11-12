@@ -65,6 +65,10 @@ pub(super) fn initial_url(value: &str) -> Result<Url, String> {
 }
 
 pub(super) fn redirect_url(value: &str) -> Result<Url, String> {
+    // The host mirror answers 302 to the pinned release when it holds no copy yet.
+    if let Ok(url) = initial_url(value) {
+        return Ok(url);
+    }
     let url = tls_url(value)?;
     let parts: Vec<_> = url.path().trim_start_matches('/').split('/').collect();
     if url.host_str() != Some("release-assets.githubusercontent.com")
@@ -92,6 +96,30 @@ impl UpdateDownload {
             return Err("Update package size or checksum is invalid".into());
         }
         initial_url(&self.url)
+    }
+
+    /// The host serves verified copies of this exact release asset under one derived path.
+    pub(super) fn mirror(&self) -> Result<Url, String> {
+        let url = self.validate()?;
+        let asset = url
+            .path()
+            .strip_prefix("/arkade-os/shielded/releases/download/")
+            .ok_or("Update package is not a Shielded release path")?;
+        tls_url(&format!(
+            "https://{}/downloads/native/{asset}",
+            super::routes::POOL
+        ))
+    }
+
+    pub(super) fn sources(&self) -> Result<Vec<Url>, String> {
+        Ok(vec![self.mirror()?, self.validate()?])
+    }
+
+    pub(super) fn start(&self, url: &Url) -> Result<Url, String> {
+        self.sources()?
+            .into_iter()
+            .find(|source| source == url)
+            .ok_or_else(|| "Update package must come from Shielded's Mutinynet releases".into())
     }
 }
 
@@ -121,10 +149,10 @@ impl PrivacyTransport {
         generation: u64,
         request_id: String,
         asset: UpdateDownload,
-        file: tokio::fs::File,
+        mut file: tokio::fs::File,
         on_progress: impl Fn(UpdateProgress) + Send + Sync + 'static,
     ) -> Result<(), String> {
-        asset.validate()?;
+        let sources = asset.sources()?;
         let scope = self.inner.scope(generation, "update")?;
         let _scope = UpdateScope {
             transport: self.clone(),
@@ -142,6 +170,14 @@ impl PrivacyTransport {
         };
         let checked = check_request(&request, false)?;
         let lease = self.inner.register(&request, &checked, None)?;
-        super::wire::download(&lease, &asset, file, self.inner.tls.clone(), &on_progress).await
+        super::wire::download(
+            &lease,
+            &asset,
+            &sources,
+            &mut file,
+            self.inner.tls.clone(),
+            &on_progress,
+        )
+        .await
     }
 }
