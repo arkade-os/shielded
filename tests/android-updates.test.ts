@@ -25,12 +25,12 @@ function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?
  return {controller,downloads,cancelled,events,finish,state:controller.getSnapshot,setInfo:(change:Partial<AndroidUpdateInfo>)=>{info={...info,...change};},read:(read:typeof infoRead)=>{infoRead=read;},install:(fn:typeof install)=>{install=fn;},visible:(value:boolean)=>{visible=value;controller.visibilityChanged();},emit:(next:NativeStatus)=>{status=next;listener(next);}};
 }
 
-test('Android downloads require a ready Tor generation and never change direct mode',async t=>{
- const f=fixture(t,{status:{phase:'ready',generation:3,mode:'direct'}});await flush();await f.controller.download();
- assert.equal(f.downloads.length,0);assert.match(f.state().error,/Connect to Tor/);
- f.emit({phase:'bootstrapping',generation:4,mode:'tor'});await f.controller.download();assert.equal(f.downloads.length,0);
- f.emit({phase:'ready',generation:4,mode:'tor'});const pending=f.controller.download();await flush();assert.equal(f.downloads.length,1);assert.equal(f.downloads[0]!.generation,4);
+test('Android downloads need a ready generation, with Tor on or off',async t=>{
+ const f=fixture(t,{status:{phase:'ready',generation:3,mode:'direct'}});await flush();assert.equal(f.state().torReady,false);
+ const pending=f.controller.download();await flush();assert.equal(f.downloads.length,1);assert.equal(f.downloads[0]!.generation,3);
  await f.finish();await pending;assert.equal(f.state().phase,'ready');
+ const g=fixture(t,{status:{phase:'bootstrapping',generation:4,mode:'tor'}});await flush();await g.controller.download();
+ assert.equal(g.downloads.length,0);assert.match(g.state().error,/Wait for the wallet to connect/);
 });
 
 test('a download owns progress, rejects double clicks and becomes installable only after native verification',async t=>{
@@ -46,7 +46,7 @@ test('Tor pause or generation replacement cancels the owner and fences late prog
   const f=fixture(t);await flush();const pending=f.controller.download();await flush();const work=f.downloads[0]!;
   f.emit(next);await pending;assert.equal(f.state().phase,'failed');assert.ok(f.cancelled.includes(work.id));
   work.progress({received:update.bytes,total:update.bytes});work.result.resolve({id:work.id,versionCode:update.versionCode});await flush();
-  assert.equal(f.state().staged,undefined);assert.equal(f.state().received,0);assert.match(f.state().error,/Tor connection changed/);
+  assert.equal(f.state().staged,undefined);assert.equal(f.state().received,0);assert.match(f.state().error,/connection changed/);
  }
 });
 

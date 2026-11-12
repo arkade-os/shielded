@@ -179,28 +179,33 @@ fn only_native_github_redirects_to_our_asset_repository_are_allowed() {
 }
 
 #[tokio::test]
-async fn direct_mode_and_pre_cancelled_operations_write_nothing_and_leave_no_scope() {
+async fn direct_mode_can_check_download_and_publish_updates_until_revoked() {
     let inner = Arc::new(Inner::new(PathBuf::from("shielded-update-direct-unused")));
-    let status = inner.start(NativeMode::Direct).await.unwrap();
-    assert!(inner.scope(status.generation, "release").is_err());
-    let transport = PrivacyTransport {
-        inner: inner.clone(),
-    };
-    let destination = Staging::new();
-    assert!(
-        transport
-            .download_update(
-                status.generation,
-                "direct".into(),
-                asset(b"ok"),
-                destination.create().await,
-                |_| {}
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(std::fs::metadata(&destination.0).unwrap().len(), 0);
-    assert!(inner.lock().unwrap().scopes.is_empty());
+    let generation = inner.start(NativeMode::Direct).await.unwrap().generation;
+    for (purpose, url) in [
+        ("release", "https://shielded.mutinynet.arkade.sh/api/native/releases"),
+        ("update", ASSET),
+    ] {
+        let request = NativeRequest {
+            generation,
+            request_id: purpose.into(),
+            scope: inner.scope(generation, purpose).unwrap().id,
+            url: url.into(),
+            method: "GET".into(),
+            headers: Vec::new(),
+            body_base64: None,
+        };
+        let checked = check_request(&request, false).unwrap();
+        inner.register(&request, &checked, None).unwrap().check().unwrap();
+    }
+    inner.finish_update(generation, || Ok(())).unwrap();
+    inner.pause().unwrap();
+    assert!(inner.finish_update(generation, || Ok(())).is_err());
+    assert!(inner.scope(generation, "update").is_err());
+}
+
+#[tokio::test]
+async fn pre_cancelled_operations_write_nothing_and_leave_no_scope() {
     let inner = ready();
     inner.cancel(1, "cancel-first").unwrap();
     let destination = Staging::new();
@@ -538,7 +543,7 @@ async fn cancellation_at_final_progress_cannot_publish_a_ready_result() {
 }
 
 #[tokio::test]
-async fn publication_fence_rejects_a_retired_generation_and_direct_mode() {
+async fn publication_fence_rejects_a_retired_generation_in_any_mode() {
     let inner = ready();
     let transport = PrivacyTransport {
         inner: inner.clone(),
@@ -553,10 +558,11 @@ async fn publication_fence_rejects_a_retired_generation_and_direct_mode() {
             .is_err()
     );
     let started = inner.start(NativeMode::Direct).await.unwrap();
+    assert_eq!(transport.finish_update(started.generation, || Ok(8)).unwrap(), 8);
     assert!(
         transport
-            .finish_update(started.generation, || -> Result<(), String> {
-                panic!("direct publication ran")
+            .finish_update(1, || -> Result<(), String> {
+                panic!("a Tor-era publication ran in direct mode")
             })
             .is_err()
     );
@@ -578,7 +584,7 @@ async fn release_scopes_only_allow_the_pinned_metadata_endpoint() {
     let lease = inner
         .register(&request, &check_request(&request, false).unwrap(), None)
         .unwrap();
-    lease.require_tor().unwrap();
+    lease.check().unwrap();
     drop(lease);
     for path in ["/api/rollup/status", "/api/native/releases?item=wallet"] {
         request.request_id = uuid::Uuid::new_v4().to_string();

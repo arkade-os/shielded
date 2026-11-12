@@ -16,7 +16,7 @@ export interface AndroidUpdateBackend {
 }
 export type AndroidUpdatePhase='idle'|'checking'|'available'|'blocked'|'downloading'|'ready'|'preparing'|'installing'|'confirmation-required'|'failed'|'unknown'|'installed';
 export interface AndroidUpdateState {
- phase:AndroidUpdatePhase;release?:NativeRelease;info?:AndroidUpdateInfo;staged?:{id:string;versionCode:number};received:number;total:number;torReady:boolean;error:string;
+ phase:AndroidUpdatePhase;release?:NativeRelease;info?:AndroidUpdateInfo;staged?:{id:string;versionCode:number};received:number;total:number;networkReady:boolean;torReady:boolean;error:string;
 }
 interface UpdateNetwork {status():Promise<NativeStatus>;subscribe(listener:(status:NativeStatus)=>void):()=>void}
 export function androidUpdateNotice(state:AndroidUpdateState){
@@ -62,7 +62,7 @@ const conflict=(info:AndroidUpdateInfo,update?:AndroidUpdatePackage)=>{
 };
 
 export function createAndroidUpdateController(backend:AndroidUpdateBackend,network:UpdateNetwork,prepare:()=>Promise<void>=prepareAndroidInstall,isVisible:()=>boolean=()=>!document.hidden){
- let state:AndroidUpdateState={phase:'checking',received:0,total:0,torReady:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0;
+ let state:AndroidUpdateState={phase:'checking',received:0,total:0,networkReady:false,torReady:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0;
  let status:NativeStatus={phase:'idle',generation:0},poll:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|undefined;
  type Download={id:string;generation:number;revision:number;cancel:(error:Error)=>void};
  let downloading:Download|undefined,permissionOpening=false,rearmPreflight:(()=>void)|undefined;
@@ -127,8 +127,8 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
  });
  const accept=(next:NativeStatus)=>{
   if(stopped||next.generation<status.generation)return;
-  networkRevision++;status=next;const ready=next.phase==='ready'&&(next.mode??'tor')==='tor';publish({torReady:ready});
-  if(downloading&&(!ready||next.generation!==downloading.generation))cancelDownload('The Tor connection changed. Reconnect to Tor, then retry the download.');
+  networkRevision++;status=next;const ready=next.phase==='ready';publish({networkReady:ready,torReady:ready&&(next.mode??'tor')==='tor'});
+  if(downloading&&(!ready||next.generation!==downloading.generation))cancelDownload('The connection changed. Reconnect, then retry the download.');
  };
  const unsubscribe=network.subscribe(accept),initialNetwork=networkRevision;
  void network.status().then(next=>{if(!stopped&&networkRevision===initialNetwork)accept(next);},()=>{});
@@ -147,7 +147,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    const release=latest,update=release?.androidUpdate;
    if(stopped||downloading||state.staged||['preparing','installing','confirmation-required','unknown','installed'].includes(state.phase))return;
    if(!update){publish({phase:'blocked',error:'This release does not include an installable Android update yet.'});return;}
-   if(!isVisible()||!state.torReady){publish({error:'Connect to Tor before downloading this update. Turn Tor on in the connection menu.'});return;}
+   if(!isVisible()||!state.networkReady){publish({error:'Wait for the wallet to connect before downloading this update.'});return;}
    const owner:Download={id:crypto.randomUUID(),generation:status.generation,revision:++revision,cancel:()=>{}};
    const cancelled=new Promise<never>((_,reject)=>{owner.cancel=reject;});void cancelled.catch(()=>{});downloading=owner;
    publish({phase:'downloading',release,staged:undefined,received:0,total:update.bytes,error:''});
