@@ -13,6 +13,8 @@ type TransientWalletControls={
  closeAbout:()=>void;
  closeSecurity:()=>void;
 };
+/** A background switch keeps the same session; the camera stops on its own when the scanner unmounts. */
+export type TransientWalletDismissal='teardown'|'background';
 
 const stages:UnifiedReceiveStage[]=[
  'Reading your saved receiver',
@@ -72,10 +74,8 @@ export function shouldAutoDismissPaymentResult(state:{done?:boolean}|undefined,v
  return visible&&!!state?.done;
 }
 
-export function dismissTransientWalletViews(controls:TransientWalletControls){
- controls.closeScanner();
- controls.closeSheet();
- controls.closeAbout();
+export function dismissTransientWalletViews(controls:TransientWalletControls,mode:TransientWalletDismissal='teardown'){
+ if(mode!=='background'){controls.closeScanner();controls.closeSheet();controls.closeAbout();}
  controls.closeSecurity();
 }
 

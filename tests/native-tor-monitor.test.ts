@@ -194,3 +194,38 @@ test('a direct-mode diagnostic can never stand in for a warm Tor check',async t=
  f.emit({phase:'paused',generation:2,mode:'direct',warmFromGeneration:1});
  f.emit({phase:'ready',generation:3,mode:'tor',warmFromGeneration:1});await flush();assert.equal(f.checks.length,2);
 });
+
+test('a brief soft background preserves same-owner healthy evidence and its scheduled check',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();
+ t.mock.timers.tick(1000);f.visible(false);t.mock.timers.tick(1500);await flush();
+ assert.equal(f.latest().check,'ok');assert.equal(f.latest().checkedAt,0);
+ f.visible(true);t.mock.timers.tick(1500);await flush();
+ assert.equal(f.latest().check,'ok');assert.equal(f.latest().checkedAt,0);assert.equal(f.checks.length,1);
+ t.mock.timers.tick(25_999);await flush();assert.equal(f.checks.length,1);
+ t.mock.timers.tick(1);await flush();assert.equal(f.checks.length,2);
+});
+
+test('a long background retains diagnostic evidence and checks only once when due on return',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();
+ f.visible(false);const published=f.health.length;t.mock.timers.tick(90_000);await flush();
+ assert.equal(f.health.length,published+1);
+ assert.equal(f.latest().check,'ok');assert.equal(f.latest().checkedAt,0);assert.equal(f.checks.length,1);
+ f.visible(true);t.mock.timers.tick(1500);await flush();
+ assert.equal(f.checks.length,2);assert.equal(f.latest().check,'checking');
+ f.monitor.check();f.monitor.check();await flush();assert.equal(f.checks.length,2);
+});
+
+test('aborting a hidden diagnostic does not discard earlier same-owner successful evidence',async t=>{
+ const f=fixture(t);await flush();f.checks[0]!.result.resolve();await flush();
+ t.mock.timers.tick(1000);f.monitor.check();await flush();assert.equal(f.checks.length,2);
+ f.visible(false);t.mock.timers.tick(1500);await flush();
+ assert.equal(f.checks[1]!.signal.aborted,true);assert.equal(f.latest().check,'ok');assert.equal(f.latest().checkedAt,0);
+ f.checks[1]!.result.reject(new Error('aborted diagnostic'));await flush();assert.equal(f.latest().check,'ok');
+ f.visible(true);t.mock.timers.tick(1500);await flush();assert.equal(f.checks.length,2);assert.equal(f.latest().check,'ok');
+});
+
+test('same-generation network-mode metadata cannot retain a different mode diagnostic',async t=>{
+ const f=fixture(t,{phase:'ready',generation:1,mode:'tor'});await flush();f.checks[0]!.result.resolve();await flush();
+ f.emit({phase:'ready',generation:1,mode:'direct'});await flush();
+ assert.equal(f.latest().status.mode,'direct');assert.equal(f.latest().check,'checking');assert.equal(f.latest().checkedAt,undefined);assert.equal(f.checks.length,2);
+});

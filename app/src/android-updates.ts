@@ -64,8 +64,8 @@ const conflict=(info:AndroidUpdateInfo,update?:AndroidUpdatePackage)=>{
 export function createAndroidUpdateController(backend:AndroidUpdateBackend,network:UpdateNetwork,prepare:()=>Promise<void>=prepareAndroidInstall,isVisible:()=>boolean=()=>!document.hidden){
  let state:AndroidUpdateState={phase:'checking',received:0,total:0,torReady:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0;
  let status:NativeStatus={phase:'idle',generation:0},poll:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|undefined;
- type Download={id:string;generation:number;revision:number;cancel:(error:Error)=>void;idle?:ReturnType<typeof setTimeout>;deadline?:ReturnType<typeof setTimeout>};
- let downloading:Download|undefined,permissionOpening=false;
+ type Download={id:string;generation:number;revision:number;cancel:(error:Error)=>void};
+ let downloading:Download|undefined,permissionOpening=false,rearmPreflight:(()=>void)|undefined;
  const listeners=new Set<()=>void>();
  const publish=(change:Partial<AndroidUpdateState>)=>{if(stopped)return;state={...state,...change};for(const listener of listeners)listener();};
  const active=(owner:number)=>!stopped&&revision===owner;
@@ -111,9 +111,17 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
  }
  const cancelDownload=(reason:string)=>{
   const previous=downloading;if(!previous)return;
-  downloading=undefined;++revision;clearTimeout(previous.idle);clearTimeout(previous.deadline);previous.cancel(new Error(reason));
+  downloading=undefined;rearmPreflight=undefined;++revision;previous.cancel(new Error(reason));
   publish({phase:'failed',received:0,error:reason});void backend.cancel(previous.id).catch(()=>{});
  };
+ // Android freezes renderer timers while hidden, so the preflight deadline counts foreground time only.
+ const visiblyBounded=<T>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const arm=()=>{clearTimeout(timer);timer=isVisible()?setTimeout(()=>reject(new Error('Android did not respond. Check the update status and try again.')),10_000):undefined;};
+  const settle=()=>{clearTimeout(timer);if(rearmPreflight===arm)rearmPreflight=undefined;};
+  rearmPreflight=arm;arm();
+  work.then(value=>{settle();resolve(value);},error=>{settle();reject(error);});
+ });
  const accept=(next:NativeStatus)=>{
   if(stopped||next.generation<status.generation)return;
   networkRevision++;status=next;const ready=next.phase==='ready'&&(next.mode??'tor')==='tor';publish({torReady:ready});
@@ -140,10 +148,8 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    const owner:Download={id:crypto.randomUUID(),generation:status.generation,revision:++revision,cancel:()=>{}};
    const cancelled=new Promise<never>((_,reject)=>{owner.cancel=reject;});void cancelled.catch(()=>{});downloading=owner;
    publish({phase:'downloading',release,staged:undefined,received:0,total:update.bytes,error:''});
-   const fail=()=>cancelDownload('The update stopped downloading. Keep Shielded open with Tor connected, then retry.');
-   const resetIdle=()=>{clearTimeout(owner.idle);owner.idle=setTimeout(fail,45_000);};resetIdle();owner.deadline=setTimeout(fail,10*60_000);
    try{
-    const info=await Promise.race([bounded(backend.info()),cancelled]);
+    const info=await Promise.race([visiblyBounded(backend.info()),cancelled]);
     if(downloading!==owner||!active(owner.revision))return;
     const blocked=conflict(info,update);if(blocked)throw new Error(blocked);
     if(info.installStatus==='installing'||info.installStatus==='confirmation-required')throw new Error('An Android installation is already pending. Check its status before downloading another update.');
@@ -153,7 +159,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
     const work=backend.download(owner.generation,owner.id,update,progress=>{
      if(downloading!==owner||!active(owner.revision))return;
      if(!Number.isSafeInteger(progress.received)||progress.received<0||progress.total!==update.bytes||progress.received>progress.total){cancelDownload('Android reported invalid download progress. Retry the update.');return;}
-     if(progress.received>state.received){resetIdle();publish({received:progress.received});}
+     if(progress.received>state.received)publish({received:progress.received});
     });
     void work.then(saved=>{if(downloading!==owner||!active(owner.revision))void backend.cancel(saved.id).catch(()=>{});},()=>{});
     const saved=await Promise.race([work,cancelled]);
@@ -161,7 +167,6 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
     if(saved.versionCode!==update.versionCode||!saved.id)throw new Error('The saved update does not match this release. Retry the download.');
     downloading=undefined;publish({phase:'ready',staged:saved,received:update.bytes,error:''});
    }catch(error){if(downloading===owner&&active(owner.revision)){downloading=undefined;publish({phase:'failed',error:message(error)});void backend.cancel(owner.id).catch(()=>{});}}
-   finally{clearTimeout(owner.idle);clearTimeout(owner.deadline);}
   },
   cancel(){cancelDownload('Download cancelled. Your wallet is unchanged.');},
   async discard(){
@@ -200,8 +205,9 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   },
   visibilityChanged(){
    if(stopped)return;
+   rearmPreflight?.();
    if(!isVisible()){
-    clearTimeout(poll);poll=undefined;cancelDownload('Download paused when Shielded went into the background. Retry with the app open.');
+    clearTimeout(poll);poll=undefined;
     if(state.phase==='preparing'){++revision;publish({phase:state.info?.installStatus==='confirmation-required'?'confirmation-required':'ready',error:'Installation paused. Return to Shielded and tap Install update when you are ready.'});}
    }
    else void refresh();

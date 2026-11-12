@@ -11,7 +11,9 @@ export async function openNativeVault(start:()=>Promise<NativeStatus>,read:()=>P
  return {status,secret};
 }
 
-export async function resumeNativeForeground(pending:Promise<unknown>,current:()=>boolean,open:()=>Promise<void>){
+export async function resumeNativeForeground(pending:Promise<unknown>,current:()=>boolean,open:()=>Promise<void>,retained?:()=>Promise<boolean>){
  await pending;
+ if(!current())return;
+ if(retained&&await retained())return;
  if(current())await open();
 }

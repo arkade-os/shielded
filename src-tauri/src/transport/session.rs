@@ -432,6 +432,10 @@ impl Inner {
         let mut session = self.lock()?;
         if native {
             session.native_foreground = false;
+            // An app switch keeps the ready owner; revocation goes through pause() or suspend(false).
+            if session.phase == "ready" {
+                return Ok(session.status());
+            }
         }
         let fresh = session.phase == "ready" && session.mode == NativeMode::Tor;
         let warm = if fresh {
@@ -1049,7 +1053,7 @@ impl Session {
     }
 
     fn check(&self, generation: u64) -> Result<(), String> {
-        if self.generation != generation || self.phase != "ready" || !self.native_foreground {
+        if self.generation != generation || self.phase != "ready" {
             return Err("private transport is not ready for this session".into());
         }
         Ok(())
@@ -2642,12 +2646,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_background_keeps_the_ready_owner_and_its_existing_leases() {
+        let inner = ready();
+        let client = inner.lock().unwrap().client.clone().unwrap();
+        let scope = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, scope.id.clone(), "background")).unwrap();
+        let background = inner.suspend(true).unwrap();
+        assert_eq!(background.phase, "ready");
+        assert_eq!(background.generation, 1);
+        assert!(!background.foreground);
+        assert!(!lease.cancel.is_cancelled());
+        lease.check().unwrap();
+        assert!(inner.lock().unwrap().warm.is_none());
+        assert!(inner.start(NativeMode::Tor).await.is_err());
+        inner.finish_update(1, || Ok(())).unwrap();
+        assert!(Arc::ptr_eq(&client, inner.lock().unwrap().client.as_ref().unwrap()));
+        inner.resumed().unwrap();
+        assert_eq!(inner.status().unwrap().generation, 1);
+        lease.check().unwrap();
+        inner.pause().unwrap();
+        assert!(lease.check().is_err());
+        assert!(inner.finish_update(1, || Ok(())).is_err());
+    }
+
+    #[tokio::test]
     async fn warm_suspend_retires_every_old_capability_without_extending_the_deadline() {
         let inner = ready();
         let client = inner.lock().unwrap().client.clone().unwrap();
         let scope = inner.scope(1, "indexer").unwrap();
         let lease = register(&inner, &request(1, scope.id, "old")).unwrap();
-        let paused = inner.suspend(true).unwrap();
+        inner.suspend(true).unwrap();
+        let paused = inner.suspend(false).unwrap();
         let first = inner.lock().unwrap().warm.clone().unwrap();
         assert_eq!(paused.phase, "paused");
         assert!(!paused.foreground);
@@ -2667,6 +2696,7 @@ mod tests {
     async fn native_resume_only_reports_visibility_and_cannot_start_an_inactive_activity() {
         let inner = ready();
         inner.suspend(true).unwrap();
+        inner.suspend(false).unwrap();
         let paused = inner.status().unwrap();
         assert!(inner.start(NativeMode::Tor).await.is_err());
         let resumed = inner.resumed().unwrap();
@@ -2683,6 +2713,7 @@ mod tests {
         let old_request = request(1, scope.id, "proof-finished-late");
         let old = register(&inner, &old_request).unwrap();
         inner.suspend(true).unwrap();
+        inner.suspend(false).unwrap();
         inner.resumed().unwrap();
         let PreparedStart::Pending {
             waiter,
@@ -2766,9 +2797,10 @@ mod tests {
         assert!(inner.lock().unwrap().warm.is_none());
     }
     #[tokio::test]
-    async fn native_suspend_can_schedule_warm_expiry_from_an_unentered_ui_thread() {
+    async fn warm_pause_can_schedule_warm_expiry_from_an_unentered_ui_thread() {
         let inner = ready();
-        let status = std::thread::spawn(move || inner.suspend(true))
+        inner.suspend(true).unwrap();
+        let status = std::thread::spawn(move || inner.suspend(false))
             .join()
             .unwrap()
             .unwrap();

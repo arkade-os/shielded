@@ -67,3 +67,14 @@ test('foreground recovery clears stale document-level sheet locks and inert attr
  clearNativeTransientDocument(root,[{removeAttribute:name=>calls.push(`attr:${name}`)},{removeAttribute:name=>calls.push(`attr:${name}`)}]);
  assert.deepEqual(calls,['class:native-sheet-open','style:overflow','attr:inert','attr:inert']);
 });
+
+test('soft background hides the recovery phrase but keeps scanner intent, sheets and About',()=>{
+ const calls:string[]=[];
+ dismissTransientWalletViews({
+  closeSheet:()=>calls.push('sheet'),
+  closeScanner:()=>calls.push('scanner'),
+  closeAbout:()=>calls.push('about'),
+  closeSecurity:()=>calls.push('security'),
+ },'background');
+ assert.deepEqual(calls,['security']);
+});

@@ -50,12 +50,53 @@ test('Tor pause or generation replacement cancels the owner and fences late prog
  }
 });
 
-test('hiding cancels active downloads but preserves verified updates across settings and backgrounding',async t=>{
+test('app switches retain the same download, progress and verified package without restarting',async t=>{
  const f=fixture(t);await flush();const pending=f.controller.download();await flush();const work=f.downloads[0]!;
- f.visible(false);await pending;assert.ok(f.cancelled.includes(work.id));work.result.reject(new Error('cancelled'));
- f.visible(true);await flush();const retry=f.controller.download();await flush();await f.finish();await retry;
+ work.progress({received:35,total:update.bytes});f.visible(false);f.emit({phase:'ready',generation:1,mode:'tor',foreground:false});
+ assert.equal(f.state().phase,'downloading');assert.equal(f.state().received,35);assert.deepEqual(f.cancelled,[]);
+ f.visible(true);f.emit({phase:'ready',generation:1,mode:'tor',foreground:true});await flush();
+ assert.equal(f.downloads.length,1);assert.equal(f.state().received,35);await f.finish();await pending;
  const saved=f.state().staged!,cancelCount=f.cancelled.length;f.visible(false);assert.equal(f.state().phase,'ready');assert.equal(f.state().staged,saved);assert.equal(f.cancelled.length,cancelCount);
  f.visible(true);await flush();assert.equal(f.state().staged?.id,saved.id);assert.equal(f.state().phase,'ready');
+});
+
+test('an existing download can complete while hidden without opening the Android installer',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();f.visible(false);
+ assert.equal(f.state().phase,'downloading');await f.finish();await pending;
+ assert.equal(f.state().phase,'ready');assert.equal(f.state().received,update.bytes);assert.deepEqual(f.cancelled,[]);
+ f.visible(true);await flush();assert.equal(f.state().phase,'ready');assert.equal(f.downloads.length,1);
+ assert.equal(f.events.some(event=>event==='confirm'||event.startsWith('install:')),false);
+});
+
+test('frozen renderer watchdogs cannot cancel a native transfer after a background switch',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t);await flush();const pending=f.controller.download();await flush();
+ const work=f.downloads[0]!;work.progress({received:35,total:update.bytes});f.visible(false);t.mock.timers.tick(11*60_000);await flush();
+ assert.equal(f.state().phase,'downloading');assert.equal(f.state().received,35);assert.deepEqual(f.cancelled,[]);
+ f.visible(true);await flush();t.mock.timers.tick(45_000);await flush();assert.equal(f.state().phase,'downloading');
+ work.progress({received:70,total:update.bytes});assert.equal(f.state().received,70);await f.finish();await pending;assert.equal(f.state().phase,'ready');
+});
+
+test('a preflight already started in the foreground retains its owner across a soft app switch',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture(t);await flush();const checking=deferred<AndroidUpdateInfo>();f.read(()=>checking.promise);
+ const pending=f.controller.download();await flush();f.visible(false);t.mock.timers.tick(45_000);await flush();
+ assert.equal(f.state().phase,'downloading');f.visible(true);
+ checking.resolve({packageName:update.packageName,versionCode:update.versionCode-1,signerSha256:update.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null});await flush();
+ assert.equal(f.downloads.length,1);assert.equal(f.downloads[0]!.generation,1);assert.deepEqual(f.cancelled,[]);await f.finish();await pending;
+});
+
+test('an unresponsive update preflight remains bounded while the app is visible',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t);await flush();f.read(()=>new Promise(()=>{}));
+ const pending=f.controller.download();await flush();t.mock.timers.tick(10_000);await pending;
+ assert.equal(f.state().phase,'failed');assert.match(f.state().error,/Android did not respond/);assert.equal(f.downloads.length,0);
+});
+
+test('explicit cancellation fences the old transfer after a replacement has begun',async t=>{
+ const f=fixture(t);await flush();const first=f.controller.download();await flush();const old=f.downloads[0]!;
+ f.visible(false);f.controller.cancel();await first;f.visible(true);await flush();const second=f.controller.download();await flush();const current=f.downloads[1]!;
+ current.progress({received:70,total:update.bytes});old.progress({received:update.bytes,total:update.bytes});old.result.resolve({id:old.id,versionCode:update.versionCode});await flush();
+ assert.equal(f.state().phase,'downloading');assert.equal(f.state().received,70);assert.equal(f.state().staged,undefined);
+ await f.finish();await second;assert.equal(f.state().staged?.id,current.id);assert.ok(f.cancelled.includes(old.id));assert.equal(f.cancelled.includes(current.id),false);
 });
 
 test('preflight refuses store-managed, signer, app and version mismatches without downloading',async t=>{
@@ -69,10 +110,10 @@ test('fresh preflight catches signing changes after release detection',async t=>
  assert.equal(f.downloads.length,0);assert.match(f.state().error,/Keep this installation and its wallet data/);
 });
 
-test('invalid progress cancels the download and a stalled transfer leaves retry available',async t=>{
- t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t);await flush();const pending=f.controller.download();await flush();
+test('invalid progress cancels the download and a native transfer timeout leaves retry available',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();
  f.downloads[0]!.progress({received:1,total:update.bytes+1});await pending;assert.equal(f.state().phase,'failed');assert.match(f.state().error,/invalid download progress/);
- const retry=f.controller.download();await flush();t.mock.timers.tick(45_000);await retry;assert.equal(f.state().phase,'failed');assert.match(f.state().error,/stopped downloading/);
+ const retry=f.controller.download();await flush();f.downloads.at(-1)!.result.reject(new Error('Tor download timed out'));await retry;assert.equal(f.state().phase,'failed');assert.match(f.state().error,/Tor download timed out/);
 });
 
 test('restored verified updates are reconciled after metadata arrives and are never downloaded twice',async t=>{

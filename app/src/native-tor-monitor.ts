@@ -37,16 +37,22 @@ export function createNativeTorMonitor(
   const previous=probe;probe=undefined;
   if(previous){clearTimeout(previous.deadline);previous.controller.abort();}
  };
+ const owned=(status:NativeStatus)=>!!warmEvidence&&warmEvidence.status.generation===status.generation&&(warmEvidence.status.mode??'tor')===(status.mode??'tor');
+ // Hidden renderer timers never fire: only the hidden edge withdraws retained health, and a return re-derives the cadence.
  const foreground=()=>{
   const next=isVisible();
   if(!next){
-   if(visible||health.check!=='idle'){
-    revision++;invalidate();publish({status:health.status,check:'idle'});
+   if(visible||probe){
+    revision++;invalidate();
+    publish(owned(health.status)?{...warmEvidence!,status:health.status}:{status:health.status,check:'idle'});
    }
    visible=false;return false;
   }
   const resumed=!visible;visible=true;
-  if(resumed&&health.check!=='ok')runCheck();
+  if(resumed){
+   const due=health.check==='ok'&&health.checkedAt!==undefined?health.checkedAt+TOR_CHECK_INTERVAL_MS-Date.now():0;
+   if(due<=0)runCheck();else schedule(due);
+  }
   return true;
  };
  const schedule=(delay=TOR_CHECK_INTERVAL_MS+Math.floor(Math.random()*TOR_CHECK_JITTER_MS))=>{
@@ -91,14 +97,14 @@ export function createNativeTorMonitor(
   if(stopped||!Number.isSafeInteger(status.generation)||status.generation<health.status.generation)return;
  statusFailures=0;
   revision++;
-  const changed=status.generation!==health.status.generation||status.phase!=='ready'||health.status.phase!=='ready';
+  const changed=status.generation!==health.status.generation||status.phase!=='ready'||health.status.phase!=='ready'||(status.mode??'tor')!==(health.status.mode??'tor');
   if(changed)failures=0;
   if(changed){
    invalidate();
    const age=warmEvidence?.checkedAt===undefined?undefined:Date.now()-warmEvidence.checkedAt;
    const reuse=status.phase==='ready'&&(status.mode??'tor')==='tor'&&(warmEvidence?.status.mode??'tor')==='tor'&&status.warmFromGeneration===warmEvidence?.status.generation&&age!==undefined&&age>=0&&age<TOR_CHECK_INTERVAL_MS;
    if(reuse){warmEvidence={...warmEvidence!,status};publish(warmEvidence);schedule(TOR_CHECK_INTERVAL_MS-(Date.now()-warmEvidence.checkedAt!));}
-   else{if(status.generation!==warmEvidence?.status.generation&&status.warmFromGeneration!==warmEvidence?.status.generation)warmEvidence=undefined;publish({status,check:'idle'});}
+   else{if((status.mode??'tor')!==(warmEvidence?.status.mode??'tor')||status.generation!==warmEvidence?.status.generation&&status.warmFromGeneration!==warmEvidence?.status.generation)warmEvidence=undefined;publish({status,check:'idle'});}
   }
   else publish({...health,status});
   if(foreground()&&status.phase==='ready'&&health.check==='idle')runCheck();
