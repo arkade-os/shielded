@@ -3,7 +3,7 @@ import {CHECKPOINT_EVERY,NOTE_DEPTH,SUBTREE_DEPTH} from '../../packages/protocol
 import type {FrontierCheckpoint} from '../../packages/protocol/src/rollup/frontier.ts';
 import type {Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import type {PoolApi,RollupPoolStatus} from './pool.ts';
-import {epochCatchUp,type EpochOnBatch,type EpochOnPage} from './epoch-sync.ts';
+import {epochCatchUp,type EpochOnBatch} from './epoch-sync.ts';
 import {isPrivatePoolApi} from './network-privacy.ts';
 import {reportSyncProgress,type SyncProgressObserver} from './sync-progress.ts';
 
@@ -30,9 +30,9 @@ const confirmed=new WeakMap<EpochAccount,number>();
 export const epochConfirmed=(account:EpochAccount)=>confirmed.get(account)===account.batchCount;
 
 /** Caught up, an account must have the pool's accepted root. A previous-epoch root that contradicts the account's throws: a quiet replay would hide the drift. */
-export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>,known?:RollupPoolStatus['pool'],onSyncProgress?:SyncProgressObserver,onPage?:EpochOnPage):Promise<boolean>{
+export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>,known?:RollupPoolStatus['pool'],onSyncProgress?:SyncProgressObserver):Promise<boolean>{
  for(let i=0;i<tries;i++){
-  await epochCatchUp(account,api,onBatch,onPage,watched,onSyncProgress);
+  await epochCatchUp(account,api,onBatch,undefined,watched,onSyncProgress);
   reportSyncProgress(onSyncProgress,{stage:'verifying',through:account.batchCount,...(i===0&&known?.batches===account.batchCount?{total:known.batches}:{})});
   // A count's root never changes, so a status the caller just read answers for its own count.
   const pool=i===0&&known?.batches===account.batchCount?known:(await api<RollupPoolStatus>('/status')).pool;
@@ -50,17 +50,17 @@ export async function epochMatchesPool(account:EpochAccount,api:PoolApi,tries=3,
  * An account for keys that hold nothing before `bornAt`. Born in the pool's current epoch at or past a checkpoint, it starts at the last one not
  * after its birthday, with the pool's previous-epoch root; otherwise it replays from the start of the epoch before its birthday, whose rotation teaches it that root.
  */
-export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:PoolApi,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>,onSyncProgress?:SyncProgressObserver,known?:RollupPoolStatus['pool'],onPage?:EpochOnPage):Promise<EpochAccount>{
+export async function epochFreshAccount(hash:Hash,keys:Keys,bornAt:number,api:PoolApi,onBatch?:EpochOnBatch,watched?:()=>Iterable<bigint>,onSyncProgress?:SyncProgressObserver,known?:RollupPoolStatus['pool']):Promise<EpochAccount>{
  const pool=await epochPoolOf(api,known),{epochLen}=pool,epoch=Math.floor(bornAt/epochLen),blocks=Math.floor((bornAt-epoch*epochLen)/CHECKPOINT_EVERY)*CHECKPOINT_EVERY;
  // pool.epoch is the last accepted batch's: at an epoch's end the count alone names the next epoch, whose checkpoint 404s.
  if(!isPrivatePoolApi(api)&&epoch===pool.epoch&&blocks>0&&pool.prevNoteRoot!==undefined)try{
   const checkpoint=await api<FrontierCheckpoint&{epoch:number}>(`/checkpoints/${epoch}/${blocks}`);
   const account=checkpoint.epoch===epoch&&checkpoint.blocks===blocks?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint,prevNoteRoot:BigInt(pool.prevNoteRoot),bornAt}):undefined;
-  if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched,pool,onSyncProgress,onPage))return account;
+  if(account&&await epochMatchesPool(account,api,undefined,onBatch,watched,pool,onSyncProgress))return account;
  }catch{/* the checkpoint start is only a shortcut, so any failure confirming it (a 404, a checkpoint that does not parse, a 429, an onBatch that threw) falls back instead of rejecting: the replay start below needs none of it and is always right */}
  const start=Math.max(epoch-1,0);
  const account=start?EpochAccount.atCheckpoint(hash,keys,{epochLen,checkpoint:{epoch:start,blocks:0,filled:Array<string>(NOTE_DEPTH-SUBTREE_DEPTH).fill('0')},bornAt}):EpochAccount.owning(hash,keys,{epochLen,bornAt});
- if(isPrivatePoolApi(api)&&!await epochMatchesPool(account,api,undefined,onBatch,watched,pool,onSyncProgress,onPage))throw new Error('The pool history does not match its published root.');
+ if(isPrivatePoolApi(api)&&!await epochMatchesPool(account,api,undefined,onBatch,watched,pool,onSyncProgress))throw new Error('The pool history does not match its published root.');
  return account;
 }
 

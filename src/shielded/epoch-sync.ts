@@ -10,8 +10,6 @@ export const WATCHDOG_MS=60_000,EVENT_RETRY_MS=[0,1000,2000,4000,8000],SCAN_FROM
 export interface ScanPage {from:number;total:number;data:string}
 export interface EpochBatchPage {total:number;batches:RollupEpochRecord[]}
 export type EpochOnBatch=(cursor:number,batch:RollupEpochRecord,account:EpochAccount)=>Promise<void>|void;
-/** The account is passed because a load-time saver has no other handle on it: the wallet only publishes `this.account` once load() returns. */
-export type EpochOnPage=(cursor:number,account:EpochAccount)=>Promise<void>|void;
 const running=new WeakMap<EpochAccount,Promise<unknown>>();
 
 export async function epochIdle<T>(account:EpochAccount,use:()=>T|Promise<T>):Promise<T>{
@@ -32,7 +30,7 @@ export function epochExclusive<T>(account:EpochAccount,job:()=>Promise<T>):Promi
 }
 
 /** Single-flight per account: a skipped scan entry still rotates the account on its own count. */
-export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:EpochOnPage,watched?:()=>Iterable<bigint>,onSyncProgress?:SyncProgressObserver):Promise<number>{
+export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void,watched?:()=>Iterable<bigint>,onSyncProgress?:SyncProgressObserver):Promise<number>{
  return epochExclusive(account,async()=>{
   if(isPrivatePoolApi(api))return privateCatchUp(account,api,onBatch,onPage,onSyncProgress);
   const from=account.batchCount;
@@ -56,7 +54,7 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
      }else account.skip(entry);
      applied++;
     }
-    await onPage?.(account.batchCount,account);
+    await onPage?.(account.batchCount);
     continue;
    }
    const page=await api<EpochBatchPage>(`/batches?from=${account.batchCount}&limit=50`);
@@ -65,13 +63,13 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
    const paint=paintSyncProgress(onSyncProgress);if(paint)await paint;
    if(!page.batches.length)return applied;
    for(const batch of page.batches){await account.apply(batch);applied++;await onBatch?.(account.batchCount,batch,account);}
-   await onPage?.(account.batchCount,account);
+   await onPage?.(account.batchCount);
    if(account.batchCount>=page.total)return applied;
   }
  });
 }
 
-async function privateCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:EpochOnPage,onSyncProgress?:SyncProgressObserver):Promise<number>{
+async function privateCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void,onSyncProgress?:SyncProgressObserver):Promise<number>{
  let from=Math.floor(account.batchCount/account.epochLen)*account.epochLen,applied=0;
  // The re-read starts at the epoch, but the account has applied up to its own count, so only the rest is work to report.
  const start=account.batchCount;
@@ -89,7 +87,7 @@ async function privateCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnB
    if(number!==account.batchCount)throw new Error('The pool history has a gap.');
    await account.apply(batch);applied++;await onBatch?.(account.batchCount,batch,account);
   }
-  await onPage?.(account.batchCount,account);
+  await onPage?.(account.batchCount);
   from+=page.batches.length;
   if(from>=page.total||!page.batches.length)return applied;
  }

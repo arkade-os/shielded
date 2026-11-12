@@ -159,13 +159,6 @@ test('private fresh account avoids a birthday checkpoint and verifies the same f
  assert.ok(!asked.some(path=>path.includes('from=130')));
 });
 
-test('a fresh private account saves every page it replays at load, on the account it is catching up',async()=>{
- const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
- const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),{api}=epochLeafPool(hash,256,140),pages:number[]=[],seen=new Set<EpochAccount>();
- const loaded=await loadAccount(hash,keys,{token:'g2',epochLen:256,bornAt:130,api:privateApi(api),onPage:(cursor,account)=>{pages.push(cursor);seen.add(account);}});
- assert.deepEqual(pages,[50,100,140]);
- assert.deepEqual([...seen],[loaded.account],'the account the hook is handed is the one load() goes on to publish');
-});
 
 test('a fresh private account can reuse initial status while replaying and verifying every public page',async()=>{
  const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
