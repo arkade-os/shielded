@@ -236,9 +236,9 @@ where
     P: Fn(UpdateProgress) + Sync,
 {
     let mut url = asset.validate()?;
-    lease.require_tor()?;
+    lease.check()?;
     let work = async {
-        lease.require_tor()?;
+        lease.check()?;
         progress(UpdateProgress {
             received: 0,
             total: asset.bytes,
@@ -256,11 +256,11 @@ where
                 },
                 false,
             )?;
-            lease.require_tor()?;
+            lease.check()?;
             let (response, driver) = tokio::time::timeout(CONNECT_TIMEOUT, exchange(checked))
                 .await
                 .map_err(|_| "Update connection timed out; retry the download")??;
-            lease.require_tor()?;
+            lease.check()?;
             check_encoding(&response)?;
             if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 if redirects == 2 {
@@ -301,7 +301,7 @@ where
                     frame.map_err(|_| "Update download was interrupted; retry the download")?;
                 if let Ok(bytes) = frame.into_data() {
                     for chunk in bytes.chunks(MAX_CHUNK) {
-                        lease.require_tor()?;
+                        lease.check()?;
                         received = received
                             .checked_add(chunk.len() as u64)
                             .filter(|received| *received <= asset.bytes)
@@ -310,7 +310,7 @@ where
                             .await
                             .map_err(|_| "Could not write the private update file")?;
                         digest.update(chunk);
-                        lease.require_tor()?;
+                        lease.check()?;
                         if received < asset.bytes
                             && last_progress.elapsed() >= UPDATE_PROGRESS_INTERVAL
                         {
@@ -340,13 +340,13 @@ where
             file.sync_all()
                 .await
                 .map_err(|_| "Could not save the private update file")?;
-            lease.require_tor()?;
+            lease.check()?;
             progress(UpdateProgress {
                 received,
                 total: asset.bytes,
             });
             drop(driver);
-            lease.require_tor()?;
+            lease.check()?;
             return Ok(());
         }
         Err("Update redirect limit exceeded".into())

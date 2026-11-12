@@ -142,7 +142,6 @@ impl PrivacyTransport {
         };
         let checked = check_request(&request, false)?;
         let lease = self.inner.register(&request, &checked, None)?;
-        lease.require_tor()?;
         super::wire::download(&lease, &asset, file, self.inner.tls.clone(), &on_progress).await
     }
 }

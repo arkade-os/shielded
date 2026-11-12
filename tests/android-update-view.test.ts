@@ -11,7 +11,7 @@ import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-relea
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {AndroidAppUpdateDialog}=await import('../app/src/AndroidAppUpdate.tsx');
 const raw=nativeReleaseFixture(),release=parseNativeRelease({...raw,androidUpdate:androidUpdateFixture(raw)});
-const defaults:AndroidUpdateState={phase:'available',release,received:0,total:50*1024*1024,torReady:true,error:'',info:{packageName:'io.arkade.shielded',versionCode:100122,signerSha256:release.androidUpdate!.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null}};
+const defaults:AndroidUpdateState={phase:'available',release,received:0,total:50*1024*1024,networkReady:true,torReady:true,error:'',info:{packageName:'io.arkade.shielded',versionCode:100122,signerSha256:release.androidUpdate!.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null}};
 const render=(state:Partial<AndroidUpdateState>)=>renderToStaticMarkup(createElement(AndroidAppUpdateDialog,{state:{...defaults,...state},onClose:()=>{},onDownload:()=>{},onCancel:()=>{},onDiscard:()=>{},onPermission:()=>{},onInstall:()=>{},onConfirm:()=>{},onRefresh:()=>{}}));
 
 test('Android update is an accessible in-app dialog with its version and build',()=>{
@@ -23,8 +23,12 @@ test('download progress shows percent, received bytes, total bytes and a cancel 
  assert.match(html,/40%/);assert.match(html,/20.0 MB of 50.0 MB/);assert.match(html,/<progress max="100" value="40" aria-label="Update download"/);assert.match(html,/Cancel download/);assert.doesNotMatch(html,/Install update/);
 });
 
-test('direct or connecting modes explain how to enable Tor and disable downloading',()=>{
- const html=render({torReady:false});assert.match(html,/Turn Tor on in the connection menu/);assert.match(html,/<button type="button" disabled="">Download update/);assert.doesNotMatch(html,/Use direct|Continue without Tor|<a\b/);
+test('with Tor off the download stays available and says it goes to GitHub directly',()=>{
+ const html=render({torReady:false});assert.match(html,/<button type="button">Download update/);assert.match(html,/Tor is off, so the download connects to GitHub directly/);assert.doesNotMatch(html,/through Tor|<a\b/);
+});
+
+test('a connecting wallet disables downloading until it is ready',()=>{
+ const html=render({networkReady:false,torReady:false});assert.match(html,/Wait for the wallet to connect/);assert.match(html,/<button type="button" disabled="">Download update/);
 });
 
 test('Android settings permission is a separate action and the install remains disabled',()=>{

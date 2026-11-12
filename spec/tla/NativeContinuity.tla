@@ -10,7 +10,7 @@ EXTENDS Naturals
    Install: createAndroidUpdateController.install and Android foreground guard. *)
 
 CONSTANTS MaxGeneration, MaxBytes, BreakSoftOwner, BreakSoftDownload,
-    BreakGraphBinding, BreakUpdateFence, BreakUpdateTor, BreakStartVisibility,
+    BreakGraphBinding, BreakUpdateFence, BreakStartVisibility,
     BreakInstallVisibility, BreakDrain, BreakReadiness, BreakResumeStarts,
     BreakRetireInvalidates
 
@@ -112,10 +112,8 @@ FirstFetch ==
 
 BeginUpdate ==
     /\ s.phase = "ready" /\ s.visible /\ s.update.stage = "idle"
-    /\ (s.mode = "tor" \/ BreakUpdateTor)
     /\ s' = [s EXCEPT !.update = [stage |-> "receiving", owner |-> s.gen,
-        mode |-> s.mode, bytes |-> 0, cancelled |-> FALSE],
-        !.bad = @ \cup (IF s.mode # "tor" THEN {"update-tor"} ELSE {})]
+        mode |-> s.mode, bytes |-> 0, cancelled |-> FALSE]]
 
 Receive ==
     /\ s.update.stage = "receiving" /\ s.update.bytes < MaxBytes
@@ -129,11 +127,11 @@ Verify ==
 
 Publish ==
     /\ s.update.stage = "checked"
-    /\ ((s.update.owner = s.gen /\ s.phase = "ready" /\ s.mode = "tor"
-        /\ ~s.update.cancelled) \/ BreakUpdateFence)
+    /\ ((s.update.owner = s.gen /\ s.phase = "ready" /\ ~s.update.cancelled)
+        \/ BreakUpdateFence)
     /\ s' = [s EXCEPT !.update.stage = "ready",
         !.bad = @ \cup (IF s.update.owner # s.gen \/ s.phase # "ready"
-            \/ s.mode # "tor" \/ s.update.cancelled THEN {"update-publish"} ELSE {})]
+            \/ s.update.cancelled THEN {"update-publish"} ELSE {})]
 
 Cancel ==
     /\ s.update.stage \in NetworkStages /\ ~s.update.cancelled
@@ -157,12 +155,11 @@ TypeOK == s \in [gen: 1..MaxGeneration, mode: Modes,
     update: [stage: {"idle", "receiving", "checked", "ready", "installed"},
         owner: 0..MaxGeneration, mode: Modes, bytes: 0..MaxBytes, cancelled: BOOLEAN],
     bad: SUBSET {"soft-owner", "soft-download", "resume", "hidden-start",
-        "hidden-install", "drain", "readiness", "dispatch", "update-tor", "update-publish"}]
+        "hidden-install", "drain", "readiness", "dispatch", "update-publish"}]
 SoftOwnerRetained == "soft-owner" \notin s.bad
 SoftDownloadRetained == "soft-download" \notin s.bad
 NoRevokedGraphDispatch == "dispatch" \notin s.bad
 NoRevokedUpdatePublication == "update-publish" \notin s.bad
-UpdateUsesTor == "update-tor" \notin s.bad
 StartupNeedsForeground == "hidden-start" \notin s.bad
 InstallerNeedsForeground == "hidden-install" \notin s.bad
 FullDrainBeforeReady == "drain" \notin s.bad

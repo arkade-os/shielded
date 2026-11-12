@@ -415,9 +415,9 @@ The CI checker includes all thirteen exhaustive configurations, bringing the com
 
 The model abstracts DNS, TLS internals, actual body bytes, HTTP parsing, cache-age wall time, server keepalive policy and scheduler behavior. It treats checkout, cache return, expiry comparison and session invalidation as the corresponding session-lock atomic steps. It provides no fairness, latency, termination, cryptographic-isolation or physical-device proof, and the source-symbol anchors are not a checked refinement mapping. SSE and WebSockets remain outside this HTTP reuse model and retain dedicated connections.
 
-## Android updates through Tor
+## Android in-app updates
 
-`AndroidUpdate.tla` separates the update controller, native download completion and Android installer callback. The controller reserves one update owner before awaiting network work. A download captures its Tor generation; cancellation and pause can happen between byte completion, verification and publication. Only complete bytes with the advertised hash, the same application and signing certificate, and a strictly newer Android version may become prepared. A prepared file can remain ready while the Tor session changes.
+`AndroidUpdate.tla` separates the update controller, native download completion and Android installer callback. The controller reserves one update owner before awaiting network work. A download captures its session generation, over Tor or a direct connection; cancellation and pause can happen between byte completion, verification and publication. Only complete bytes with the advertised hash, the same application and signing certificate, and a strictly newer Android version may become prepared. A prepared file can remain ready while the session changes.
 
 Installation requires a fresh explicit action. Returning from Android's unknown-source permission settings returns to ready and consumes the earlier action. The native installer rechecks the prepared archive and retains exclusive ownership while copying its bytes into a package-install session. One attempt can commit that session once. A pending-user-action callback is not success; a lost callback becomes unknown and must be reconciled before another attempt. A bounded process crash discards unsubmitted staging and preserves the identity of an already committed attempt. None of these actions changes wallet storage.
 
@@ -432,10 +432,10 @@ Installation requires a fresh explicit action. Returning from Android's unknown-
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Downloading: reserve sole owner, ready Tor generation
+    [*] --> Downloading: reserve sole owner, ready session generation
     Downloading --> Received: native private file, bounded stream complete
     Received --> Checked: length, hash, app, signer and newer version match
-    Checked --> Ready: owner, cancellation and Tor generation still current
+    Checked --> Ready: owner, cancellation and session generation still current
     Downloading --> Failed: error, cancel or transport retirement
     Received --> Failed: invalid bytes or identity
     Checked --> Failed: stale generation or cancellation
@@ -454,12 +454,12 @@ stateDiagram-v2
     Unknown --> UserConfirmation: reconcile required user action
 ```
 
-Pinned TLC v1.7.4 checked the exhaustive base on November 11, 2026 with two workers and a 2 GiB heap: 403,208 generated states, 170,816 distinct states, depth 28 and an empty queue. Every semantic action fired. The base bounds two update attempts, two transport-generation advances and one process crash. All thirteen individual guard mutations exit 12 with the named invariant:
+Pinned TLC v1.7.4 checked the exhaustive base on November 12, 2026, after updates were allowed over a direct connection: 557,057 generated states, 238,140 distinct states, depth 28 and an empty queue. Every semantic action fired. The base bounds two update attempts, two transport-generation advances and one process crash. All thirteen individual guard mutations exit 12 with the named invariant:
 
 | Configuration | Counterexample condition |
 | --- | --- |
 | `AndroidUpdate_NoOwner.cfg` | two update downloads overlap; `OneDownloader` fails |
-| `AndroidUpdate_NoTor.cfg` | an update starts in direct or paused mode; `TorOnly` fails |
+| `AndroidUpdate_NoTransport.cfg` | an update starts while the session is paused; `ReadyTransportOnly` fails |
 | `AndroidUpdate_NoFence.cfg` | a cancelled or retired completion becomes ready; `FreshPublication` fails |
 | `AndroidUpdate_NoLength.cfg` | truncated bytes become ready; `CompleteBytes` fails |
 | `AndroidUpdate_NoHash.cfg` | bytes with the wrong digest become ready; `MatchingHash` fails |
@@ -472,7 +472,7 @@ Pinned TLC v1.7.4 checked the exhaustive base on November 11, 2026 with two work
 | `AndroidUpdate_NoCommitOnce.cfg` | a repeated call commits the same attempt twice; `OneInstallerCommit` fails |
 | `AndroidUpdate_NoPending.cfg` | pending user confirmation is reported as installed; `PendingRequiresUser` fails |
 
-The CI checker includes these fourteen configurations, increasing its gate from 51 to 65 without dropping previous coverage. Wider simulation passed 20,000 traces at depth 100 with four attempts, three generation advances, two crashes and seed 20261111, checking 331,245 states.
+The CI checker includes these fourteen configurations, increasing its gate from 51 to 65 without dropping previous coverage. Wider simulation passed 20,000 traces at depth 100 with four attempts, three generation advances and two crashes; after the direct-connection change it checked 458,911 states with no violation.
 
 The model abstracts actual HTTP/TLS and redirect parsing, digest/signature algorithms, Android package parsing, file-system durability, permission UI and the installer service. It assumes the native verification results accurately describe the bytes. It checks bounded safety, not eventual connectivity, download speed, store eligibility, on-device installation or preservation of a particular device's wallet data. The source boundaries above are review anchors, not a checked refinement mapping.
 
@@ -674,13 +674,12 @@ stateDiagram-v2
 | `NativeContinuity_NoRetireInvalidates.cfg` | renderer retirement keeps the generation; `NoRevokedGraphDispatch` |
 | `NativeContinuity_NoGraphBinding.cfg` | a first fetch rebinds to a newer generation; `NoRevokedGraphDispatch` |
 | `NativeContinuity_NoUpdateFence.cfg` | a revoked update publishes; `NoRevokedUpdatePublication` |
-| `NativeContinuity_NoUpdateTor.cfg` | an update starts without Tor; `UpdateUsesTor` |
 | `NativeContinuity_NoStartVisibility.cfg` | startup completes while hidden; `StartupNeedsForeground` |
 | `NativeContinuity_NoInstallVisibility.cfg` | the installer opens while hidden; `InstallerNeedsForeground` |
 | `NativeContinuity_NoDrain.cfg`, `NativeContinuity_NoReadiness.cfg` | Ready before drain or readiness; `FullDrainBeforeReady`, `FullReadinessBeforeReady` |
 | `NativeContinuityStatus_NoPollFence.cfg` | a poll older than a lifecycle event wins; `NoStalePollObservation` |
 | `NativeContinuityStatus_NoPollOrder.cfg` | an older-issued poll overwrites a newer one; `NoStalePollObservation` |
 
-`NoSoftOwner`, `NoSoftDownload` and `NoResumeStarts` state the contract rather than prove a guard. Pinned TLC v1.7.4 on November 12, 2026: the continuity base generated 6,714 states (2,806 distinct, depth 24) and the status base 24,243 (11,418 distinct, depth 16); every action fired. `node tools/check-native-model.mjs` matched all 105 configurations. Simulation passed 20,000 traces at depth 100: continuity with five generations and four bytes (2,000,001 states), status with six flips and six polls (600,001 states).
+`NoSoftOwner`, `NoSoftDownload` and `NoResumeStarts` state the contract rather than prove a guard. Pinned TLC v1.7.4 on November 12, 2026: the continuity base generated 9,180 states (3,894 distinct, depth 24) and the status base 24,243 (11,418 distinct, depth 16); every action fired. `node tools/check-native-model.mjs` matched all 104 configurations; the Tor-only update mutant was retired when updates were allowed over a direct connection. `BeginUpdate` still needs a Ready session here, and `AndroidUpdate_NoTransport.cfg` covers an update that starts while paused. Simulation passed 20,000 traces at depth 100: continuity with five generations and four bytes (2,000,001 states), status with six flips and six polls (600,001 states).
 
 FIFO native reads are an assumption; if IPC reorders them, a stale foreground flag can persist until the next poll or lifecycle event, and opening still requires the document to be visible. Arti circuit health after a long Android freeze, OEM task killing and process death are outside these models.
