@@ -187,6 +187,9 @@ export class ShieldedWallet extends Wallet {
  private lnurlFetch?:typeof fetch;
  /** undefined = not looked up this outage; null = looked up but unavailable (head gone); number = the expiry. */
  private headExpiry?:number|null;
+ /** Read while the pool answered: a sealed wallet reaches the indexer through the pool server, so an outage read cannot. */
+ private lastHeadExpiry?:number;
+ private headRead?:Promise<void>;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const maxDepositFee=config.maxDepositFee===undefined?undefined:validSchedule(config.maxDepositFee,'maxDepositFee');
@@ -340,11 +343,15 @@ export class ShieldedWallet extends Wallet {
  }
  /** Set once the pool has missed two refreshes. Only the operator renews the head, so its expiry is the deadline to exit. */
  get operatorDown():{since:number;headExpiresAt?:number}|undefined{
-  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry??undefined}:undefined;
+  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry??this.lastHeadExpiry}:undefined;
  }
  private async fetchHeadExpiry(){
   const {vtxos}=await this.indexerProvider.getVtxos({scripts:[this.poolScript],spendableOnly:true});
   return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
+ }
+ private rememberHeadExpiry(){
+  if(!this.sealedTransport||this.lastHeadExpiry!==undefined||this.headRead)return;
+  this.headRead=this.fetchHeadExpiry().then(expiry=>{if(!this.stopped&&Number.isFinite(expiry))this.lastHeadExpiry=expiry;},()=>{}).then(()=>{this.headRead=undefined;});
  }
  private refreshPoolStatus():Promise<boolean>{
   if(this.stopped)return Promise.resolve(false);
@@ -354,6 +361,7 @@ export class ShieldedWallet extends Wallet {
    if(this.stopped)return false;
    const recovered=!!this.operatorDown,was=this.depositFeePaused;
    this.pool={...this.pool,status};this.statusAt=this.statusReadAt=Date.now();this.headExpiry=undefined;this.statusRevision++;
+   this.rememberHeadExpiry();
    const now=this.depositFeePaused;
    return recovered||was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps;
   })().finally(()=>{if(this.statusRead===run)this.statusRead=undefined;});

@@ -286,6 +286,56 @@ test('a wallet opened offline on a cached status gives no verdict, though the co
  assert.equal(wallet.operatorDown,undefined);assert.equal(verdict([7n,9n]),undefined);
 });
 
+const HEAD='ee'.repeat(32),EXPIRES=Date.parse('2026-11-20T00:00:00Z');
+const headOf=(expiresAt?:number)=>({vtxos:[{assets:[{assetId:HEAD,amount:1n}],...(expiresAt===undefined?{}:{expiresAt:new Date(expiresAt)})}]});
+const refused=():never=>{throw new Error('gateway down');};
+// A sealed wallet reaches the indexer through the pool server's gateway, so `answer` is told whether the pool still answers.
+const headRig=(t:TestContext,fetcher:typeof fetch,answer:(ask:number,poolUp:boolean)=>unknown=()=>headOf(EXPIRES))=>{
+ let at=1_700_000_000_000,asks=0,poolUp=true;t.mock.method(Date,'now',()=>at);timers(t);
+ const {wallet,tick}=tickRig(140,140,fetcher);Object.assign(wallet,{token:HEAD,poolScript:'5120',changed(){},indexerProvider:{getVtxos:async()=>answer(++asks,poolUp)}});
+ return {wallet,asks:()=>asks,
+  refresh:async()=>{await wallet.refreshPoolStatus();await flush();},
+  ticks:async(rounds:number)=>{for(let round=0;round<rounds;round++){at+=WATCHDOG_MS;await tick();await flush();}},
+  // Two sealed rounds at the 1.25x jitter ceiling, so the outage threshold is passed whatever the draws.
+  stop:()=>{poolUp=false;wallet.api=()=>Promise.reject(new Error('fetch failed'));at+=2*1.25*WATCHDOG_MS;}};
+};
+test('a sealed wallet reads the pool head expiry once while the pool answers, and shows it when the pool stops',async t=>{
+ const {wallet,asks,refresh,ticks,stop}=headRig(t,sealedStub(),(_ask,poolUp)=>poolUp?headOf(EXPIRES):refused());
+ await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(3);
+ assert.deepEqual([whileUp,asks()-whileUp,wallet.operatorDown!.headExpiresAt],[1,1,EXPIRES]);
+});
+for(const [what,whileUp] of [['rejects',refused],['finds no head coin',()=>({vtxos:[]})],['finds an invalid expiry',()=>headOf(NaN)]] as const)test(`a sealed wallet whose head expiry read ${what} reports no deadline rather than a wrong one`,async t=>{
+ const {wallet,refresh,ticks,stop}=headRig(t,sealedStub(),(_ask,poolUp)=>poolUp?whileUp():refused());
+ await refresh();stop();await ticks(1);
+ assert.equal(wallet.operatorDown!.headExpiresAt,undefined);
+});
+for(const [kind,fetcher] of [['direct',stub],['native',nativeStub]] as const)test(`a ${kind} wallet still looks the head expiry up during its outage, and reads nothing before one`,async t=>{
+ const {wallet,asks,refresh,ticks,stop}=headRig(t,fetcher());
+ await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(3);
+ assert.deepEqual([whileUp,asks()-whileUp,wallet.operatorDown!.headExpiresAt],[0,1,EXPIRES]);
+});
+test('a sealed wallet shows the outage read over the deadline it remembered, when that read answers',async t=>{
+ const {wallet,refresh,ticks,stop}=headRig(t,sealedStub(),ask=>headOf(ask===1?EXPIRES:EXPIRES+86_400_000));
+ await refresh();stop();await ticks(1);
+ assert.equal(wallet.operatorDown!.headExpiresAt,EXPIRES+86_400_000);
+});
+test('a sealed wallet never has two head expiry reads in flight, and a failed one is retried by a later refresh',async t=>{
+ let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),ask=>ask===1?gate.then(refused):headOf(EXPIRES));
+ for(let i=0;i<4;i++)await refresh();
+ const inFlight=asks();open();await flush();
+ await refresh();await refresh();
+ assert.deepEqual([inFlight,asks(),wallet.lastHeadExpiry],[1,2,EXPIRES]);
+});
+test('a head expiry that arrives after the wallet closed is not kept',async t=>{
+ let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),()=>gate.then(()=>headOf(EXPIRES)));
+ await refresh();wallet.stopped=true;open();await flush();
+ assert.deepEqual([asks(),wallet.lastHeadExpiry],[1,undefined]);
+});
+
 test('external uncertain reservations remain visible after local holds release',()=>{
  const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};
  const read=()=>Object.getOwnPropertyDescriptor(ShieldedWallet.prototype,'inFlight')!.get!.call(wallet) as ReadonlySet<bigint>;
