@@ -1,4 +1,4 @@
-import {useEffect,useId,useLayoutEffect,useRef,useState,type CSSProperties} from 'react';
+import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState,type CSSProperties} from 'react';
 import {createPortal} from 'react-dom';
 import type {NativeTorHealthState} from './native-tor-monitor.ts';
 import './native-tor-health.css';
@@ -11,13 +11,21 @@ export function torPanelPosition(rect:{left:number;top:number;bottom:number},vie
  return openAbove?{left,width,bottom:Math.max(edge,viewport.height-rect.top+gap),maxHeight:above}:{left,width,top:rect.bottom+gap,maxHeight:below};
 }
 
-export default function NativeTorHealth({health=initialTorHealth,tone='light',onToggleTor,transportBusy=false}:{health?:NativeTorHealthState;tone?:'light'|'dark';onToggleTor?:()=>void;transportBusy?:boolean}){
- const [open,setOpen]=useState(false),[position,setPosition]=useState<CSSProperties>({}),host=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null),panelId=useId();
+export function bindTorPanelDismiss(target:EventTarget,inside:(node:EventTarget|null)=>boolean,close:()=>void,focus:()=>void){
+ const outside=(event:Event)=>{if(!inside(event.target))close();},key=(event:Event)=>{if((event as KeyboardEvent).key==='Escape'){close();focus();}};
+ target.addEventListener('pointerdown',outside);target.addEventListener('keydown',key);
+ return()=>{target.removeEventListener('pointerdown',outside);target.removeEventListener('keydown',key);};
+}
+
+export default function NativeTorHealth({health=initialTorHealth,tone='light',onToggleTor,transportBusy=false,open:controlledOpen,onOpenChange}:{health?:NativeTorHealthState;tone?:'light'|'dark';onToggleTor?:()=>void;transportBusy?:boolean;open?:boolean;onOpenChange?:(open:boolean)=>void}){
+ const [localOpen,setLocalOpen]=useState(false),[position,setPosition]=useState<CSSProperties>({}),host=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null),panelId=useId();
+ const controlled=controlledOpen!==undefined,open=controlledOpen??localOpen,setOpen=useCallback((value:boolean)=>{if(!controlled)setLocalOpen(value);onOpenChange?.(value);},[controlled,onOpenChange]);
  const {status,check,checkedAt,latencyMs,attempt,retryAt}=health;
  const direct=(status.mode??'tor')==='direct';
  const ready=status.phase==='ready',connected=ready&&check==='ok';
  const retryingFirstTorCheck=!direct&&ready&&check==='failed'&&(attempt??1)<=1;
- const label=direct?status.phase==='error'||check==='failed'?'Direct service check failed · Tor off':status.phase==='paused'?'Direct paused':ready?(connected?'Tor off · Direct connection':check==='checking'?`Checking direct connection · try ${attempt??1}`:'Direct ready'):'Connecting directly':status.phase==='paused'?'Tor paused':status.phase==='error'?'Tor unavailable':status.phase==='bootstrapping'?'Building Tor circuits':ready?(connected?'Tor connected':retryingFirstTorCheck?'Tor connected · retrying service check':check==='failed'?'Private route unavailable · retrying':check==='checking'?`Verifying private route · try ${attempt??1}`:'Tor ready'):'Starting Tor';
+ const attemptSuffix=(attempt??1)>1?` · try ${attempt}`:'';
+ const label=direct?status.phase==='error'||check==='failed'?'Direct service check failed · Tor off':status.phase==='paused'?'Direct paused':ready?(connected?'Tor off · Direct connection':check==='checking'?`Checking direct connection${attemptSuffix}`:'Direct ready'):'Connecting directly':status.phase==='paused'?'Tor paused':status.phase==='error'?'Tor unavailable':status.phase==='bootstrapping'?'Building Tor circuits':ready?(connected?'Tor connected':retryingFirstTorCheck?'Tor connected · retrying service check':check==='failed'?'Private route unavailable · retrying':check==='checking'?`Verifying private route${attemptSuffix}`:'Tor ready'):'Starting Tor';
  const state=direct&&(status.phase==='error'||ready&&check==='failed')?'error':direct?'direct':connected?'connected':retryingFirstTorCheck?'connecting':status.phase==='error'||ready&&check==='failed'?'error':status.phase==='paused'?'paused':'connecting';
  const progress=!direct&&status.phase==='bootstrapping'&&status.progress&&/^\d{1,3}%$/.test(status.progress)?status.progress:undefined;
  const now=Date.now(),retryIn=retryAt===undefined||retryAt<=now?undefined:Math.ceil((retryAt-now)/1000);
@@ -29,7 +37,7 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
  };
  const toggle=()=>{
   if(!open)setPosition(place());
-  setOpen(value=>!value);
+  setOpen(!open);
  };
  useLayoutEffect(()=>{
   if(!open)return;
@@ -39,10 +47,8 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
  },[open,tone]);
  useEffect(()=>{
   if(!open)return;
-  const outside=(event:PointerEvent)=>{const target=event.target as Node;if(!host.current?.contains(target)&&!panel.current?.contains(target))setOpen(false);},key=(event:KeyboardEvent)=>{if(event.key==='Escape'){setOpen(false);trigger.current?.focus();}};
-  addEventListener('pointerdown',outside);addEventListener('keydown',key);
-  return()=>{removeEventListener('pointerdown',outside);removeEventListener('keydown',key);};
- },[open]);
+  return bindTorPanelDismiss(window,target=>!!host.current?.contains(target as Node)||!!panel.current?.contains(target as Node),()=>setOpen(false),()=>trigger.current?.focus());
+ },[open,setOpen]);
  useEffect(()=>{
   if(!open)return;
   const frame=requestAnimationFrame(()=>panel.current?.querySelector<HTMLButtonElement>('[role=switch]')?.focus({preventScroll:true}));
@@ -53,7 +59,7 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
   const root=document.documentElement,sync=()=>{if(root.classList.contains('native-sheet-open'))setOpen(false);};
   sync();const observer=new MutationObserver(sync);observer.observe(root,{attributes:true,attributeFilter:['class']});
   return()=>observer.disconnect();
- },[]);
+ },[setOpen]);
  const body=<><strong>{label}</strong><p>{detail}</p>
   {progress&&<progress max={100} value={Math.min(100,parseInt(progress,10))} aria-label="Tor bootstrap progress"/>}
   {ready&&checkedAt&&<p className="native-tor-checked">Last checked {new Date(checkedAt).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'})}{latencyMs!==undefined?` · ${(latencyMs/1000).toFixed(1)}s`:''}</p>}

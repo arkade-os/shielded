@@ -6,8 +6,10 @@ import {poolApiOf,type RollupPoolStatus} from '../../../src/shielded/pool.ts';
 import {snarkjsProver} from '../../../src/shielded/prover.ts';
 import {IndexedDBShieldedNoteRepository,InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../../../src/shielded/repository.ts';
 import {ShieldedWallet,type ShieldedProver,type ShieldedWalletConfig} from '../../../src/shielded/wallet.ts';
+import type {SyncProgressObserver} from '../../../src/shielded/sync-progress.ts';
 
 export {ShieldedWallet,type ShieldedPoolConfig,type ShieldedProver,type ShieldedWalletConfig} from '../../../src/shielded/wallet.ts';
+export type {ShieldedSyncProgress,SyncProgressObserver} from '../../../src/shielded/sync-progress.ts';
 export type {ShieldedPaymentHandle} from '../../../src/shielded/handle.ts';
 export type {RollupPoolStatus} from '../../../src/shielded/pool.ts';
 export {IndexedDBShieldedNoteRepository,InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../../../src/shielded/repository.ts';
@@ -27,6 +29,7 @@ export interface CreateShieldedWalletOptions {
  prover?:ShieldedProver;
  hash?:Hash;
  fetch?:typeof fetch;
+ onSyncProgress?:SyncProgressObserver;
  /** The most deposit fee to accept; `fixedSats` and `bps` are each compared. Without it a pool that charges a fee still opens, but deposits wait for `acceptDepositFee`. */
  maxDepositFee?:DepositFeeSchedule;
 }
@@ -37,15 +40,15 @@ export async function loadPoseidon():Promise<Hash>{
  return v=>BigInt(poseidon.F.toObject(poseidon(v)));
 }
 
-export async function fetchPoolStatus(pool:string,fetcher:typeof fetch=fetch):Promise<RollupPoolStatus>{
- const origin=new URL(pool).origin,status=await poolApiOf(origin,fetcher)<RollupPoolStatus>('/status');
+export async function fetchPoolStatus(pool:string,fetcher:typeof fetch=fetch,onSyncProgress?:SyncProgressObserver):Promise<RollupPoolStatus>{
+ const origin=new URL(pool).origin,status=await poolApiOf(origin,fetcher,undefined,onSyncProgress)<RollupPoolStatus>('/status');
  if(status.phase!=='ready'||!status.pool||!status.proving)throw new Error(`The shielded pool at ${origin} is not open: ${status.message||status.phase}`);
  if(status.network?.network!==MUTINYNET_KEY_NETWORK)throw new Error(`The shielded pool at ${origin} runs on ${status.network?.network??'an unknown network'}; this wallet derives Mutinynet keys only.`);
  return status;
 }
 
 export async function shieldedWalletConfig(o:CreateShieldedWalletOptions):Promise<ShieldedWalletConfig>{
- const origin=new URL(o.pool).origin,fetcher=o.fetch??fetch,status=await fetchPoolStatus(origin,fetcher),network=status.network;
+ const origin=new URL(o.pool).origin,fetcher=o.fetch??fetch,status=await fetchPoolStatus(origin,fetcher,o.onSyncProgress),network=status.network;
  return {
   identity:o.identity??SingleKey.fromHex(deriveWalletKeyMaterial(o.secret,MUTINYNET_KEY_NETWORK).nativeSecret),
   arkProvider:new RestArkProvider(network.arkUrl),indexerProvider:new RestIndexerProvider(network.indexerUrl??network.arkUrl),
@@ -55,7 +58,7 @@ export async function shieldedWalletConfig(o:CreateShieldedWalletOptions):Promis
   // Proving files are pinned per pool token, and a new token needs a new wallet, so the status at create is enough.
   prover:o.prover??snarkjsProver({status:()=>status,origin}),
   shieldedRepository:o.repository??(typeof indexedDB==='undefined'?new InMemoryShieldedNoteRepository():new IndexedDBShieldedNoteRepository()),
-  bornAt:o.bornAt??0,fetcher,maxDepositFee:o.maxDepositFee,
+  bornAt:o.bornAt??0,fetcher,maxDepositFee:o.maxDepositFee,onSyncProgress:o.onSyncProgress,
  };
 }
 

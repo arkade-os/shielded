@@ -46,6 +46,21 @@ export function amountQrValue(mode:Exclude<ReceiveMode,'unified'>,value:string,a
  return `bitcoin:?${mode==='shielded'?'shielded':'ark'}=${value}&amount=${btc}`;
 }
 
+export function ReceiveQrButton({value,label,disabled=false}:{value:string;label:string;disabled?:boolean}){
+ const [copyState,setCopyState]=useState<'idle'|'copying'|'copied'|'failed'>('idle'),busy=useRef(false),live=useRef(true),timer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+ useEffect(()=>{live.current=true;return()=>{live.current=false;clearTimeout(timer.current);};},[]);
+ const copy=async()=>{
+  if(disabled||busy.current)return;
+  busy.current=true;setCopyState('copying');
+  let result:'copied'|'failed';
+  try{await navigator.clipboard.writeText(value);result='copied';}catch{result='failed';}
+  busy.current=false;
+  if(!live.current)return;
+  setCopyState(result);clearTimeout(timer.current);timer.current=setTimeout(()=>{if(live.current)setCopyState('idle');},2000);
+ };
+ return <div className="receive-qr-control"><button type="button" className="receive-qr-wrap" aria-label={`Copy ${label} from QR code`} title={`Copy ${label}`} disabled={disabled||copyState==='copying'} aria-busy={copyState==='copying'} onClick={copy}><QrCode value={value} label={`QR code for your ${label}`}/></button>{(copyState==='copied'||copyState==='failed')&&<span className={'receive-qr-feedback'+(copyState==='failed'?' is-error':'')} role="status" aria-live="polite">{copyState==='copied'?'Copied':'Couldn’t copy. Try again.'}</span>}</div>;
+}
+
 export function ReceivePortal({active=true,unified=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,loading,description,action,children}:ReceivePortalProps){
  const [expanded,setExpanded]=useState(false);
  const buttons=useRef<(HTMLButtonElement|null)[]>([]);
@@ -101,7 +116,7 @@ export function ReceivePortal({active=true,unified=true,mode,payload,onModeChang
   <div id="receive-display" className="receive-display" role="tabpanel" aria-labelledby={`receive-tab-${mode}`} onTouchStart={touchStart} onTouchEnd={touchEnd} onTouchCancel={()=>{start.current=null;}}>
    <div key={mode} className="receive-stage">
     <div className="receive-stage-copy"><span className="receive-stage-mark" aria-hidden="true"><Icon name={payload==='invoice'?'bolt':modes[selected]?.[2]??'shield'} size={17}/></span><h2>{TITLES[payload]}</h2></div>
-    {displayValue?<div className="receive-qr-wrap"><QrCode value={qrValue??displayValue} label={`QR code for your ${LABELS[payload].toLowerCase()}`}/></div>
+    {displayValue?<ReceiveQrButton key={qrValue??displayValue} value={qrValue??displayValue} label={LABELS[payload].toLowerCase()} disabled={!active}/>
      :<div className="receive-empty" role="status"><Icon name={modes[selected]?.[2]??'shield'} size={34}/><span>{invalidAmount?'Enter a valid amount to show your payment QR.':loading??'Your address will appear here.'}</span></div>}
     {displayValue&&<div className="receive-address"><span>{LABELS[payload]}</span>{short(displayValue)===displayValue?<code>{displayValue}</code>:<button type="button" className="receive-address-value" aria-expanded={expanded} title={expanded?'Show less':'Show full address'} onClick={()=>setExpanded(open=>!open)}><code>{expanded?displayValue:short(displayValue)}</code></button>}</div>}
    </div>

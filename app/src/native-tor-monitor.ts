@@ -28,7 +28,7 @@ export function createNativeTorMonitor(
  isVisible:()=>boolean
 ){
  type Probe={controller:AbortController;generation:number;started:number;attempt:number;deadline?:ReturnType<typeof setTimeout>};
- let health:NativeTorHealthState={status:{phase:'idle',generation:0},check:'idle'};
+ let health:NativeTorHealthState={status:{phase:'idle',generation:0},check:'idle'},warmEvidence:NativeTorHealthState|undefined;
  let stopped=false,polling=false,revision=0,visible=isVisible(),probe:Probe|undefined,failures=0,statusFailures=0;
  let scheduled:ReturnType<typeof setTimeout>|undefined;
  const publish=(value:NativeTorHealthState)=>{health=value;if(!stopped)onHealth(value);};
@@ -46,7 +46,7 @@ export function createNativeTorMonitor(
    visible=false;return false;
   }
   const resumed=!visible;visible=true;
-  if(resumed)runCheck();
+  if(resumed&&health.check!=='ok')runCheck();
   return true;
  };
  const schedule=(delay=TOR_CHECK_INTERVAL_MS+Math.floor(Math.random()*TOR_CHECK_JITTER_MS))=>{
@@ -60,11 +60,11 @@ export function createNativeTorMonitor(
   const checkedAt=Date.now(),latencyMs=checkedAt-owner.started;
   if(ok){
    failures=0;
-   publish({status:health.status,check:'ok',checkedAt,latencyMs});
+   warmEvidence={status:health.status,check:'ok',checkedAt,latencyMs};publish(warmEvidence);
    schedule();
    return;
   }
-  failures++;
+  warmEvidence=undefined;failures++;
   const delay=Math.min(TOR_CHECK_RETRY_MS*2**(failures-1),TOR_CHECK_INTERVAL_MS);
   publish({status:health.status,check:'failed',checkedAt,latencyMs,attempt:owner.attempt,retryAt:checkedAt+delay,
    error:error instanceof Error?error.message:String(error??'Tor connection check failed')});
@@ -93,7 +93,13 @@ export function createNativeTorMonitor(
   revision++;
   const changed=status.generation!==health.status.generation||status.phase!=='ready'||health.status.phase!=='ready';
   if(changed)failures=0;
-  if(changed){invalidate();publish({status,check:'idle'});}
+  if(changed){
+   invalidate();
+   const age=warmEvidence?.checkedAt===undefined?undefined:Date.now()-warmEvidence.checkedAt;
+   const reuse=status.phase==='ready'&&(status.mode??'tor')==='tor'&&(warmEvidence?.status.mode??'tor')==='tor'&&status.warmFromGeneration===warmEvidence?.status.generation&&age!==undefined&&age>=0&&age<TOR_CHECK_INTERVAL_MS;
+   if(reuse){warmEvidence={...warmEvidence!,status};publish(warmEvidence);schedule(TOR_CHECK_INTERVAL_MS-(Date.now()-warmEvidence.checkedAt!));}
+   else{if(status.generation!==warmEvidence?.status.generation&&status.warmFromGeneration!==warmEvidence?.status.generation)warmEvidence=undefined;publish({status,check:'idle'});}
+  }
   else publish({...health,status});
   if(foreground()&&status.phase==='ready'&&health.check==='idle')runCheck();
  };
@@ -107,7 +113,7 @@ export function createNativeTorMonitor(
    if(!stopped&&foreground()&&captured===revision){
     statusFailures++;
     if(statusFailures<TOR_STATUS_FAILURE_LIMIT)return;
-    revision++;invalidate();
+    revision++;invalidate();warmEvidence=undefined;
     publish({status:{...health.status,phase:'error',error:'Network status unavailable'},check:'idle'});
     onStatusError(error);
    }

@@ -14,7 +14,7 @@ import {MUTINYNET_KEY_NETWORK,deriveRollupKeys2,parseMasterSecret} from '../../p
 import {walletIntentLeafScriptHex} from '../stock/ark-wallet.ts';
 import {entryForActivity,shieldedActivityResolver,shieldedRows,type ShieldedRowIndex} from './activity.ts';
 import {bearerAccount,bearerKeysOf,bearerOf,linkOf,type LinkRecord} from './bearer.ts';
-import {epochConfirmed,epochFreshAccount,epochMatchesPool} from './epoch-checkpoint.ts';
+import {epochConfirmed,epochFreshAccount,epochMatchesPool,knownEpochPool} from './epoch-checkpoint.ts';
 import {epochRevealLinkOf} from './epoch-disclosure.ts';
 import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
@@ -29,10 +29,12 @@ import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 import {PRIVATE_SUBMIT_JITTER_MS,isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
+import type {SyncProgressObserver} from './sync-progress.ts';
+export type {ShieldedSyncProgress,SyncProgressObserver} from './sync-progress.ts';
 
 export interface ShieldedPoolConfig {origin:string;status:RollupPoolStatus}
 export interface ShieldedProver {prove(built:EpochBuiltSpend,circuit:'spend'|'join'):Promise<Groth16Proof>;joinReady?():boolean}
-export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;poolPage?:number;batchSwaps?:boolean;maxShieldCoins?:number;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;
+export type ShieldedWalletConfig=WalletConfig&{pool:ShieldedPoolConfig;secret:string;hash:Hash;prover:ShieldedProver;shieldedRepository?:ShieldedNoteRepository;lightningSpendStore?:LightningSpendStore;bornAt?:number;maxDepositFee?:DepositFeeSchedule;fetcher?:typeof fetch;networkPrivacy?:boolean;poolPage?:number;batchSwaps?:boolean;maxShieldCoins?:number;pendingNullifiers?:()=>ReadonlySet<bigint>;pendingOutpoints?:()=>ReadonlySet<string>;lnurlFetch?:typeof fetch;claimFetch?:typeof fetch;onSyncProgress?:SyncProgressObserver;
  /** Called once with the Arkade address, synchronously and before the pool sync; a throw aborts create. */
  onArkAddress?:(address:string)=>void};
 
@@ -66,13 +68,14 @@ const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(err
  * An unreadable cache or an unreachable pool still opens, reported once. Throws when the pool contradicts a saved epoch's root, or
  * names no epoch length to open with. `links` receives the saved links before the pool check replays batches through the hooks.
  */
-export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>}):Promise<LoadedAccount>{
+export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>;status?:RollupPoolStatus;onSyncProgress?:SyncProgressObserver}):Promise<LoadedAccount>{
+ const known=knownEpochPool(o.status,o.token);
  const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot,offline=false):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,feeAccepted:parseDepositFeeSchedule(kept?.feeAccepted),...(error?{error}:{}),...(offline?{offline:true as const}:{})});
  const unsynced=(cause:unknown)=>{if(!o.epochLen)throw cause;return EpochAccount.owning(hash,keys,{epochLen:o.epochLen,bornAt:o.bornAt});};
  const unchecked=(cause:unknown)=>`Opened without the pool, so the saved notes are unchecked: ${reasonOf(cause)}`;
  const fresh=async(error?:string):Promise<LoadedAccount>=>{
   if(!o.api)return opened(unsynced(new Error('That pool is not an open epoch pool.')),error);
-  try{return opened(await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched),error);}
+  try{return opened(await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched,o.onSyncProgress,known),error);}
   catch(cause){return opened(unsynced(cause),`Opened without the pool, so the wallet is empty until it syncs: ${reasonOf(cause)}`,undefined,true);}
  };
  if(!o.repository)return fresh();
@@ -85,14 +88,14 @@ export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecre
   // An older client saves no `links`, and its cursor is past the mints; replaying finds them again.
   if(found.links===undefined&&found.account.history.some(e=>e.kind==='send'))return await fresh();
   let epochLen=o.epochLen;
-  if(o.api)try{pool=(await o.api<RollupPoolStatus>('/status')).pool;epochLen=pool?.epochLen;if(!epochLen)throw new Error('That pool is not an open epoch pool.');}
+  if(o.api)try{pool=known&&known.epochLen===found.account.epochLen&&known.batches>=found.account.batch?known:(await o.api<RollupPoolStatus>('/status')).pool;epochLen=pool?.epochLen;if(!epochLen)throw new Error('That pool is not an open epoch pool.');}
   catch(cause){epochLen=found.account.epochLen;offline=unchecked(cause);}
   account=EpochAccount.fromSnapshot(hash,keys,found.account,epochLen??0);stored=found;
  }catch(error){return fresh(reasonOf(error));}
  for(const link of stored.links??[])o.links?.set(link.key,link);
  // loadEpochAccount's check: a previous-epoch root the pool contradicts throws, where a quiet replay would hide the drift.
  let matches=true;
- if(o.api&&!offline)try{matches=await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched,pool);}
+ if(o.api&&!offline)try{matches=await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched,pool,o.onSyncProgress);}
  catch(cause){if(rejected(cause,'root-drift'))throw cause;offline=unchecked(cause);}
  if(!matches){o.links?.clear();return fresh('The saved wallet does not match the pool; syncing from the pool.');}
  return opened(account,offline,stored,!!offline);
@@ -185,6 +188,7 @@ export class ShieldedWallet extends Wallet {
  private pendingNullifiers?:()=>ReadonlySet<bigint>;
  private pendingOutpoints?:()=>ReadonlySet<string>;
  private lnurlFetch?:typeof fetch;
+ private onSyncProgress?:SyncProgressObserver;
  /** undefined = not looked up this outage; null = looked up but unavailable (head gone); number = the expiry. */
  private headExpiry?:number|null;
  /** Read while the pool answered: a sealed wallet reaches the indexer through the pool server, so an outage read cannot. */
@@ -200,7 +204,8 @@ export class ShieldedWallet extends Wallet {
    // The manager starts up against the indexer while load() reads the pool; start() awaits this same start-up.
    void wallet.getContractManager().catch(()=>{});
    config.onArkAddress?.(await wallet.getAddress());
-   wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher,config.poolPage);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch,config.poolPage):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
+   const observer=config.onSyncProgress;wallet.onSyncProgress=observer?(progress=>{if(!wallet.stopped)return observer(progress);}):undefined;
+   wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher,config.poolPage,wallet.onSyncProgress);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch,config.poolPage):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
    wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);wallet.sealedTransport=isSealedFetch(config.fetcher);wallet.batchSwaps=config.batchSwaps;wallet.maxShieldCoins=config.maxShieldCoins;
    if(wallet.networkPrivacy){
     const live=(api:PoolApi):PoolApi=>markPrivatePoolPage(markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
@@ -213,7 +218,7 @@ export class ShieldedWallet extends Wallet {
    wallet.pendingNullifiers=config.pendingNullifiers;wallet.pendingOutpoints=config.pendingOutpoints;wallet.lnurlFetch=config.lnurlFetch;
    wallet.derived=shieldedKeysOf(config.hash,config.secret);wallet.self=wallet.derived.self;wallet.repository=config.shieldedRepository;wallet.token=config.pool.status.pool!.token;
    wallet.poolScript=config.pool.status.pool!.script;wallet.ownPoolAddress=config.pool.status.pool!.address;wallet.master=parseMasterSecret(config.secret);wallet.bornAt=config.bornAt??0;wallet.maxDepositFee=maxDepositFee;
-   await wallet.load();
+   await wallet.load(wallet.networkPrivacy?config.pool.status:undefined);
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())));
    wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),
@@ -303,10 +308,10 @@ export class ShieldedWallet extends Wallet {
  private persist(strict=false){return epochIdle(this.account,()=>{this.assertOpen();return this.save(strict);});}
  recordSent(entries:[bigint,SentRecord][]){for(const [nullifier,record] of entries)this.sent[String(nullifier)]=record;}
  /** Opens the account, checked when the pool answers. tick() runs it again after an offline open and swallows its throw, so a drift is reported here. */
- private async load(){
+ private async load(status?:RollupPoolStatus){
   let loaded:LoadedAccount;
   // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
-  try{loaded=await loadAccount(this.hash,this.derived.keys,{repository:this.repository,token:this.token,epochLen:this.pool.status.pool?.epochLen??this.account?.epochLen,bornAt:this.bornAt,api:this.api,onBatch:(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),watched:()=>this.openLinkNullifiers(),links:this.linkRecords});}
+  try{loaded=await loadAccount(this.hash,this.derived.keys,{repository:this.repository,token:this.token,epochLen:this.pool.status.pool?.epochLen??this.account?.epochLen,bornAt:this.bornAt,api:this.api,onBatch:(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),watched:()=>this.openLinkNullifiers(),links:this.linkRecords,status,onSyncProgress:this.onSyncProgress});}
   catch(error){this.repositoryError=reasonOf(error);throw error;}
   this.account=loaded.account;this.sent={...loaded.sent,...this.sent};this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;this.feeAccepted=maxDepositFeeOf(this.feeAccepted,loaded.feeAccepted);
   for(const txid of loaded.listings)this.listings.add(txid);
@@ -426,7 +431,7 @@ export class ShieldedWallet extends Wallet {
  /** Offline, only tick()'s checked load() moves the account, so a first-run open never replays from batch 0. */
  async sync():Promise<number>{
   if(this.offline)return 0;
-  const applied=await epochCatchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save(),()=>this.openLinkNullifiers());
+  const applied=await epochCatchUp(this.account,this.api,(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),()=>this.save(),()=>this.openLinkNullifiers(),this.onSyncProgress);
   if(applied)this.changed();
   return applied;
  }
@@ -897,7 +902,7 @@ export class ShieldedWallet extends Wallet {
   throw new Error('The deposit coin did not appear in your Arkade wallet.');
  }
  override async dispose():Promise<void>{
-  this.stopped=true;
+  this.stopped=true;this.onSyncProgress=undefined;
   if(this.timer)clearTimeout(this.timer);
   this.timer=undefined;
   if(this.statusTimer)clearTimeout(this.statusTimer);

@@ -31,6 +31,9 @@ pub struct NativeStatus {
     pub phase: String,
     pub generation: u64,
     pub mode: NativeMode,
+    pub foreground: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warm_from_generation: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +100,12 @@ impl PrivacyTransport {
     pub fn pause(&self) -> Result<NativeStatus, String> {
         self.inner.pause()
     }
+    pub fn suspend(&self, native: bool) -> Result<NativeStatus, String> {
+        self.inner.suspend(native)
+    }
+    pub fn resumed(&self) -> Result<NativeStatus, String> {
+        self.inner.resumed()
+    }
     pub fn status(&self) -> Result<NativeStatus, String> {
         self.inner.status()
     }
@@ -150,9 +159,14 @@ pub async fn native_start(
 pub fn native_pause(
     window: WebviewWindow,
     state: State<'_, PrivacyTransport>,
+    warm: Option<bool>,
 ) -> Result<NativeStatus, String> {
     crate::ensure_local(&window)?;
-    state.pause()
+    if warm.unwrap_or(false) {
+        state.suspend(false)
+    } else {
+        state.pause()
+    }
 }
 
 #[tauri::command]
