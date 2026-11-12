@@ -3,7 +3,7 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
-import {PRIVATE_VERDICT_EVERY,isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
+import {PRIVATE_VERDICT_EVERY,RATE_LIMIT_FALLBACK_MS,RATE_LIMIT_MIN_MS,isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage,retryAfterMs} from './network-privacy.ts';
 import {reportSyncProgress,type SyncProgressObserver,type SyncRequest} from './sync-progress.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
@@ -53,10 +53,9 @@ export async function rollupApi<T>(path:string,body?:unknown,fetcher:typeof fetc
   if(response&&response.status<500){
    const metadata=json&&typeof json==='object'?json:{};
    if(response.status===429){
-    const retryAfter=response.headers.get('Retry-After')?.trim();
-    const delay=retryAfter&&/^\d+$/.test(retryAfter)?Number(retryAfter)*1000:retryAfter&&/^[A-Za-z]/.test(retryAfter)?Date.parse(retryAfter)-Date.now():NaN;
+    const delay=retryAfterMs(response.headers.get('Retry-After'));
     const cooldown=admission&&(metadata.code==='admission-rate-limit'||metadata.error==='Too many requests from this address; try again in a minute.')?admissionLimitedUntil:rateLimitedUntil;
-    cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(Number.isSafeInteger(delay)&&delay>=0?Math.max(1000,delay):60_000)));
+    cooldown.set(key,Math.max(cooldown.get(key)??0,Date.now()+(delay===undefined?RATE_LIMIT_FALLBACK_MS:Math.max(RATE_LIMIT_MIN_MS,delay))));
     if(!privateMutation&&attempt<4)continue;
    }
    if(!response.ok)throw Object.assign(new PoolRequestError(metadata.error??`The pool answered ${response.status}.`,response.status),typeof metadata.code==='string'?{code:metadata.code}:{});

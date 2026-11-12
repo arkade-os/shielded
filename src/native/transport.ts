@@ -1,3 +1,4 @@
+import {awaitRateLimit,reportRateLimit} from '../shielded/network-privacy.ts';
 import {nativeUrl,NativePolicy,type NativeRoute} from './policy.ts';
 
 export type NativeMode='tor'|'direct';
@@ -11,6 +12,7 @@ export interface NativeHandle {id:string;ready:Promise<void>;close():void;send(d
 export const encode64=(bytes:Uint8Array)=>{let result='';for(let i=0;i<bytes.length;i+=8192)result+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(result);};
 export const decode64=(value:string)=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
 const cancelled=()=>new DOMException('Native request was cancelled','AbortError');
+const admissionLimited=(body:string)=>{try{return JSON.parse(body)?.code==='admission-rate-limit';}catch{return false;}};
 const SESSION_PATH='/.shielded-native-session/';
 
 function abortable<T>(pending:Promise<T>,signal:AbortSignal):Promise<T>{
@@ -140,7 +142,10 @@ export class NativeBridge {
  private trimScopes(){for(const [key,entry] of this.scopes){if(this.scopes.size<=512)break;if(!entry.users)this.closeScope(key,entry);}}
  private async request(url:string,method:string,headers:[string,string][],body:Uint8Array|undefined,requestId:string,explicit?:NativeRoute,signal?:AbortSignal):Promise<{request:NativeRequest;release:()=>void}>{
   const generation=this.current.generation,bodyText=body&&new TextDecoder('utf-8',{fatal:true}).decode(body);
-  const route=explicit??this.policy.classify(url,method,bodyText),lease=await this.scope(route,generation,signal);
+  const route=explicit??this.policy.classify(url,method,bodyText);
+  // Ahead of the scope lease, so a cooling-off period holds no native circuit open.
+  if(!route.probe)await awaitRateLimit(url,signal);
+  const lease=await this.scope(route,generation,signal);
   try{this.check(generation);return {request:{generation,requestId,scope:lease.scope.id,url,method,headers,...(body?.length?{bodyBase64:encode64(body)}:{})},release:lease.release};}catch(error){lease.release();throw error;}
  }
  private cancel(generation:number,id:string){void this.backend.invoke('native_cancel',{generation,id}).catch(()=>{});}
@@ -171,7 +176,10 @@ export class NativeBridge {
    }
    if(response.status>=200&&response.status<300&&request.method==='POST'&&new URL(url).pathname==='/v1/indexer/script/unsubscribe')this.policy.forgetSubscription(JSON.parse(body!).subscriptionId,new URL(url).origin);
    this.observeResponse?.({url,method:request.method,status:response.status,body:responseBody,requestBody:body});
-   return new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,headers:response.headers});
+   const answer=new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,headers:response.headers});
+   // The pool's own admission limit keeps a sharper cooldown that leaves status reads open, so only an edge limit holds the whole origin back.
+   if(response.status===429&&!admissionLimited(responseBody))reportRateLimit(url,answer.headers.get('Retry-After'));
+   return answer;
   }finally{request.signal.removeEventListener('abort',abort);release?.();if(oneShot)await this.release(oneShot);}
  }
  open(command:'native_stream'|'native_socket',input:string,receive:(event:NativeEvent)=>void,explicit?:NativeRoute):NativeHandle {
