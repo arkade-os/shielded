@@ -109,3 +109,16 @@ test('a delayed empty vault cannot publish setup after hide and show retires its
  secret.resolve(null);await resumed;
  assert.equal(reads,2);assert.deepEqual(published,[{generation:2,secret:null}]);
 });
+
+test('returning to the same live wallet reconciles it without reopening the vault or network',async()=>{
+ let starts=0,checks=0;
+ await resumeNativeForeground(Promise.resolve(),()=>true,async()=>{starts++;},async()=>{checks++;return true;});
+ assert.equal(checks,1);assert.equal(starts,0);
+});
+
+test('locking during foreground reconciliation cannot open a replacement wallet',async()=>{
+ const status=deferred<boolean>();let current=true,starts=0;
+ const resumed=resumeNativeForeground(Promise.resolve(),()=>current,async()=>{starts++;},()=>status.promise);
+ await Promise.resolve();current=false;status.resolve(false);await resumed;
+ assert.equal(starts,0);
+});

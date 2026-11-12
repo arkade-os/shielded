@@ -57,3 +57,13 @@ test('paused status polling recovers a missed native resume event without releas
  const current=await bridge.status();assert.equal(current.foreground,true);assert.equal(current.phase,'paused');
  assert.throws(()=>bridge.sessionGuard(),/retired|paused/);
 });
+
+test('a newer ready foreground observation fences an older hidden poll without retiring its owner',async()=>{
+ const polls:((status:NativeStatus)=>void)[]=[];
+ const bridge=new NativeBridge({invoke:()=>new Promise(resolve=>polls.push(resolve)),channel:()=>({})},new NativePolicy('https://pool.example'));
+ bridge.acceptLifecycle({phase:'ready',generation:1,foreground:false});const owner=bridge.sessionGuard();
+ const older=bridge.status(),newer=bridge.status();
+ polls[1]!({phase:'ready',generation:1,foreground:true});await newer;
+ polls[0]!({phase:'ready',generation:1,foreground:false});await older;
+ assert.equal(bridge.current.foreground,true);assert.doesNotThrow(owner);
+});

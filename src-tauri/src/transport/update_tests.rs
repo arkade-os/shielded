@@ -481,6 +481,36 @@ async fn cancellation_and_generation_retirement_close_the_physical_body_driver()
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stalled_update_body_fails_at_the_native_idle_timeout() {
+    let inner = ready();
+    let lease = register(&inner, "stalled-body");
+    let destination = Staging::new();
+    let file = destination.create().await;
+    let (client, server) = tokio::io::duplex(4096);
+    let peer = tokio::spawn(async move {
+        let mut peer = BufReader::new(server);
+        headers(&mut peer).await;
+        peer.get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\no")
+            .await
+            .unwrap();
+        let _ = peer.read(&mut [0]).await;
+    });
+    let started = tokio::time::Instant::now();
+    let mut client = Some(client);
+    let error = download_with(&lease, &asset(b"ok"), file, &|_| {}, |checked| {
+        let stream = lease.test_stream(client.take().unwrap());
+        async move { send_http(stream, http_request(checked)?).await }
+    })
+    .await
+    .unwrap_err();
+    assert!(error.contains("stopped responding"), "{error}");
+    assert!(started.elapsed() >= Duration::from_secs(180));
+    assert!(started.elapsed() < Duration::from_secs(30 * 60));
+    peer.await.unwrap();
+}
+
 #[tokio::test]
 async fn cancellation_at_final_progress_cannot_publish_a_ready_result() {
     let inner = ready();

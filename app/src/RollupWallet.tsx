@@ -30,7 +30,7 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
-import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS} from './wallet-recovery.ts';
+import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS,type TransientWalletDismissal} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindPullToRefresh,bindSheetGesture,bindSwipeGesture,type PullToRefreshState} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
@@ -132,19 +132,19 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const sheetOwner=sheetRef.current;
  const reportStartupStage=useCallback((stage:string)=>{if(mounted.current)setStartupStage(stage);onStartupStage?.(stage);},[onStartupStage]);
 
-  const closeTransient=useCallback(()=>dismissTransientWalletViews({
+  const closeTransient=useCallback((mode?:TransientWalletDismissal)=>dismissTransientWalletViews({
    closeSheet:()=>setSheetOpen(false),
    closeScanner:()=>setScanning(false),
    closeAbout:()=>setAboutOpen(false),
-   closeSecurity:()=>setSecurityView(null),
- }),[]);
+   closeSecurity:()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);},
+ },mode),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
    useEffect(()=>{
     setPageVisible(!document.hidden);
-    const visibility=()=>{const visible=!document.hidden;setPageVisible(visible);if(!visible)closeTransient();};
-    const hidden=()=>{setPageVisible(false);closeTransient();};
-    const visible=()=>{setPageVisible(true);closeTransient();};
+    const visibility=()=>{const visible=!document.hidden;setPageVisible(visible);if(!visible)closeTransient('background');};
+    const hidden=()=>{setPageVisible(false);closeTransient('background');};
+    const visible=()=>{setPageVisible(!document.hidden);};
     document.addEventListener('visibilitychange',visibility);
     addEventListener('pagehide',hidden);addEventListener('freeze',hidden);
     addEventListener('pageshow',visible);addEventListener('resume',visible);

@@ -6,7 +6,7 @@ import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {installNativeTransport,nativeNetwork,type NativeMode} from '../../src/native/index.ts';
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
-import {createNativeViewHandoff,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
+import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
 import {openNativeVault,resumeNativeForeground} from './native-open.ts';
 import {saveNativeSetup} from './native-setup.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
@@ -61,6 +61,15 @@ export default function NativeWallet(){
  const handoff=useRef(createNativeViewHandoff<Session>(shutdown=>{
   const closing=cleanup.current.add(shutdown);closed.current=Promise.all([closed.current.catch(()=>{}),closing]).then(()=>{});void closed.current.catch(fail);
  }));
+ const liveShown=useCallback(()=>{
+  const {shown,candidate}=handoff.current.snapshot,view=currentNativeWalletView(shown);
+  return view&&!candidate&&active.current===view.session&&!openingOperation.current?view:undefined;
+ },[]);
+ const retained=useCallback(async()=>{
+  const view=liveShown();if(!view)return false;
+  const status=await nativeNetwork.status().catch(()=>undefined);
+  return !!status&&status.phase==='ready'&&status.generation===view.session.generation&&(status.mode??'tor')===selectedMode.current&&liveShown()===view;
+ },[liveShown]);
  const pause=useCallback(()=>{
   clearResume();clearTransientDocument();
   ++attempt.current;
@@ -215,19 +224,20 @@ export default function NativeWallet(){
  },[]);
  useEffect(()=>{
   let live=true;
+  const resume=(mine:number)=>{
+   const current=()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden&&nativeForeground.current;
+   // A retained return keeps its open sheets, so only a rebuild may clear their document locks.
+   return resumeNativeForeground(Promise.all([closed.current,openingOperation.current]),current,async()=>{
+    clearTransientDocument();const shown=handoff.current.snapshot.shown;
+    if(shown&&!shown.retired)await suspend();
+    if(current())await open();
+   },retained);
+  };
   const visibility=()=>{
-   clearTransientDocument();
    const mine=++resumeRevision.current;
    if(document.hidden){
-    void suspend();
-   }else if(!manualLock.current){
-    const restart=async()=>{
-     const shown=handoff.current.snapshot.shown;
-     if(shown&&!shown.retired)await suspend();
-     if(live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden&&nativeForeground.current)await open();
-    };
-    void resumeNativeForeground(Promise.all([closed.current,openingOperation.current]),()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden&&nativeForeground.current,restart).catch(fail);
-   }
+    if(!liveShown())void suspend();
+   }else if(!manualLock.current)void resume(mine).catch(fail);
   };
   document.addEventListener('visibilitychange',visibility);
   visibility();
@@ -250,12 +260,11 @@ export default function NativeWallet(){
    if(observed&&!connectionPending.current&&(health.status.phase!=='ready'||health.status.generation!==observed.generation)){
     void suspend().then(()=>{if(live&&!manualLock.current&&!document.hidden&&nativeForeground.current)return open();}).catch(fail);
    }else if(!wasForeground&&nativeForeground.current&&!manualLock.current&&!document.hidden){
-    const mine=++resumeRevision.current;
-    void resumeNativeForeground(Promise.all([closed.current,openingOperation.current]),()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden&&nativeForeground.current,open).catch(fail);
+    void resume(++resumeRevision.current).catch(fail);
    }
   },cause=>{if(live){fail(cause);if(active.current&&!connectionPending.current)void suspend();}},()=>!document.hidden);
   return()=>{live=false;monitor.stop();document.removeEventListener('visibilitychange',visibility);document.removeEventListener('click',external,true);void pause();};
- },[open,pause,suspend,clearResume]);
+ },[open,pause,suspend,clearResume,liveShown,retained]);
  const reload=useCallback(()=>{
   const current=active.current,mine=attempt.current;if(!current)return;
   void current.cache.flush().then(async()=>{

@@ -580,11 +580,11 @@ The model has one operation and two failure callers, abstracts bridge and Androi
 
 ## Warm Tor and a passive resume view
 
-`NativeWarmView.tla` permanently revokes the operation-owner generation on every native suspension or frontend hide. Old SDK graphs, providers, streams and callback continuations remain bound to that revoked generation. Returning creates a fresh graph after the cleanup/drain and full-readiness barriers. `FirstFetch` deliberately occurs separately from operation start: an old proof/signing continuation cannot borrow a current generation for its first POST after resume.
+`NativeWarmView.tla` permanently revokes the operation-owner generation on every native suspension or frontend hide. Since soft background continuity, this hard path covers hides before Ready and renderer-initiated pauses; `NativeContinuity.tla` owns an ordinary background of a Ready session. Old SDK graphs, providers, streams and callback continuations remain bound to that revoked generation. Returning creates a fresh graph after the cleanup/drain and full-readiness barriers. `FirstFetch` deliberately occurs separately from operation start: an old proof/signing continuation cannot borrow a current generation for its first POST after resume.
 
 Only a bounded frozen display projection and a local scanner intent may remain for a brief return. The display contains primitive balance/activity strings, with no SDK references, actions, key material or recovery phrase. Lock, reset, mode change, destruction, observed expiry and expired-return projection clear this presentation. Publishing the fresh wallet replaces the passive display. Scanner intent never authorizes a financial operation or revives an old graph.
 
-An already-ready Tor client may remain Normal for a fixed short grace while native request phase is paused. Duplicate pause notifications do not move that original monotonic deadline. A fresh native start consumes the warmth; native Resumed only changes foreground state and emits its event, while JavaScript separately requests a fresh open. Both visibility signals still gate readiness/publication and private dispatch. Client readiness is checked again before Ready even when the same Arti instance remains warm.
+An already-ready Tor client may remain Normal for a fixed short grace while native request phase is paused. Duplicate pause notifications do not move that original monotonic deadline. A fresh native start consumes the warmth; native Resumed only changes foreground state and emits its event, while JavaScript separately requests a fresh open. Both visibility signals still gate readiness/publication; an existing Ready generation's dispatch is no longer visibility-gated. Client readiness is checked again before Ready even when the same Arti instance remains warm.
 
 Expiry capture and application are separate. Applying Soft dormancy must recheck the captured client/sequence ticket, paused phase and visibility, and serialize its effect against fresh startup's Normal transition. An old queued expiry cannot Soft-dormant a newer foreground client or clear a later warmth/presentation. Full pause/lock/mode/destruction use immediate Soft dormancy and invalidate the warmth ticket. Tor protocol maintenance while Normal is outside private application I/O.
 
@@ -597,7 +597,7 @@ Expiry capture and application are separate. Applying Soft dormancy must recheck
 | `WantScanner`, `PublishWallet`, `ConsumeScanner`, `DropPresentation` | `app/src/native-resume-presentation.ts`: copied primitive projection, fixed expiry and scanner delivery; `NativeWallet.tsx` guards callbacks by fresh session/view; `RollupWallet.tsx` opens scanning only when promoted, ready and visible |
 | `ReadExpiry`, `ApplyExpiry` | `WarmPause` carries client, opaque ticket and monotonic deadline; `Inner::suspend` schedules a weak timer; `expire_warm` serializes the final client/ticket/phase/visibility check and dormancy transition with startup |
 | `BeginOperation`, `FirstFetch`, `Dispatch`, `Deliver` | `src/native/transport.ts`: `NativeBridge.sessionGuard` and `bindFetch` retain the immutable owner before awaits; existing provider/session closures and native generation fences reject retired work |
-| Status `Suspend`, `Resumed`, `ReadPoll`, `DeliverPoll` | `NativeBridge.acceptLifecycle` increments `statusRevision` before accepting the event; `status` rejects older polls; the native foreground flag gates startup and private dispatch |
+| Status `Suspend`, `Resumed`, `ReadPoll`, `DeliverPoll` | `NativeBridge.acceptLifecycle` increments `statusRevision` before accepting the event; `status` rejects older polls; the native foreground flag gates startup |
 
 ```mermaid
 stateDiagram-v2
@@ -637,3 +637,50 @@ All twelve configurations matched their expected outcomes on November 12, 2026: 
 Reachability checks at the base bounds found an expired duplicate pause taking the Soft branch in four states, and two successive valid ticket expiries in fourteen states. After applying an expiry, its capture slot resets to `none`; each timer's `fired` flag prevents reuse while allowing the next ticket to be captured. Both witness searches checked all normal safety invariants before stopping at the requested witness.
 
 The models assume immutable owner binding at the SDK/provider boundary and existing native generation checks; `NativeSession` remains required for durable unknown reservations and no automatic native mutation replay. Warmth and display retention never update that journal. Frozen display values and client/readiness/drain acknowledgements are abstract, so source serializers, consumers, Arti behavior and socket closure still require implementation/runtime verification. No physical-device behavior, latency, eventual recovery, cryptographic isolation or checked refinement is claimed. Snapshot expiry on a return is a frontend projection effect; native Resumed still performs no private I/O or Ready transition.
+
+## Soft background continuity
+
+`NativeContinuity.tla` replaces "every hide revokes" for a session that is already Ready with a live shown view. An ordinary background keeps the same generation, mounted graph, scopes, operations and update owner; native Resumed and JavaScript visibility only change visibility. Hides before Ready or before a view is mounted (`HideUnbound`), renderer retirement, lock, reset, mode change and destruction keep the hard path above: a new generation, drain and full readiness before a fresh graph. Startup and installer consent stay foreground-only; hidden work may finish only under its own unrevoked owner.
+
+`RetireGraph` is the renderer retiring its own graph (startup failure, reload, mismatch on return). Paired with native invalidation it equals a same-mode `HardStop`, so it adds no distinct states (306 successors). Its mutant keeps the generation, and the generation-based bridge guard then lets the retired graph's delayed first fetch through. That is why `native_pause{warm:true}` stays generation-retiring while native `Suspended` on a Ready session does not.
+
+`NativeContinuityStatus.tla` orders foreground metadata. It assumes native reads follow issue order; responses may resolve in any order. A poll is accepted only when no lifecycle event arrived after it was issued and no later-issued poll was already accepted.
+
+| Model actions | Source ownership |
+| --- | --- |
+| `SoftHide`, `Show` | `Inner::suspend(true)` on a Ready session keeps owner and leases; `Inner::resumed`; `NativeWallet.tsx` keeps a live shown view and reconciles through `resumeNativeForeground` |
+| `HideStarting`, `HideUnbound`, `HardStop`, `RetireGraph`, `Drain`, `Start`, `Bootstrap`, `Ready` | `Inner::suspend` before Ready or with `native=false`, `pause`, `invalidate`, `prepare_start`; `NativeWallet` `pause`, `suspend` (also on a hide without `liveShown()`) and `open` |
+| `Mount`, `BeginOperation`, `FirstFetch` | `NativeWallet.open`; `NativeBridge.sessionGuard`; `Session::check` requires generation and Ready, not foreground |
+| `BeginUpdate`, `Receive`, `Verify`, `Publish`, `Cancel`, `Install` | `createAndroidUpdateController`; `Inner::finish_update`; the Android installer foreground guard |
+| Status `Flip`, `Accept`, `Issue`, `Read`, `Deliver` | `lib.rs` window lifecycle; `NativeBridge.acceptLifecycle` and `NativeBridge.status` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> Ready
+    Ready --> Background: native suspend or hide keeps the owner
+    Background --> Ready: resume or show, no start or vault read
+    Background --> Stopped: lock, reset, mode change or destroy
+    Ready --> Stopped: lock, reset, mode change or renderer retirement
+    Starting --> Stopped: hide before a live view revokes the generation
+    Stopped --> Starting: foreground open
+    Starting --> Ready: drained, full readiness, fresh graph
+```
+
+| Configuration | Counterexample / expected invariant |
+| --- | --- |
+| `NativeContinuity_NoSoftOwner.cfg` | a hide retires the Ready graph; `SoftOwnerRetained` |
+| `NativeContinuity_NoSoftDownload.cfg` | a hide cancels the update transfer; `SoftDownloadRetained` |
+| `NativeContinuity_NoResumeStarts.cfg` | a return restarts the session; `ResumeOnlyChangesVisibility` |
+| `NativeContinuity_NoRetireInvalidates.cfg` | renderer retirement keeps the generation; `NoRevokedGraphDispatch` |
+| `NativeContinuity_NoGraphBinding.cfg` | a first fetch rebinds to a newer generation; `NoRevokedGraphDispatch` |
+| `NativeContinuity_NoUpdateFence.cfg` | a revoked update publishes; `NoRevokedUpdatePublication` |
+| `NativeContinuity_NoUpdateTor.cfg` | an update starts without Tor; `UpdateUsesTor` |
+| `NativeContinuity_NoStartVisibility.cfg` | startup completes while hidden; `StartupNeedsForeground` |
+| `NativeContinuity_NoInstallVisibility.cfg` | the installer opens while hidden; `InstallerNeedsForeground` |
+| `NativeContinuity_NoDrain.cfg`, `NativeContinuity_NoReadiness.cfg` | Ready before drain or readiness; `FullDrainBeforeReady`, `FullReadinessBeforeReady` |
+| `NativeContinuityStatus_NoPollFence.cfg` | a poll older than a lifecycle event wins; `NoStalePollObservation` |
+| `NativeContinuityStatus_NoPollOrder.cfg` | an older-issued poll overwrites a newer one; `NoStalePollObservation` |
+
+`NoSoftOwner`, `NoSoftDownload` and `NoResumeStarts` state the contract rather than prove a guard. Pinned TLC v1.7.4 on November 12, 2026: the continuity base generated 6,714 states (2,806 distinct, depth 24) and the status base 24,243 (11,418 distinct, depth 16); every action fired. `node tools/check-native-model.mjs` matched all 105 configurations. Simulation passed 20,000 traces at depth 100: continuity with five generations and four bytes (2,000,001 states), status with six flips and six polls (600,001 states).
+
+FIFO native reads are an assumption; if IPC reorders them, a stale foreground flag can persist until the next poll or lifecycle event, and opening still requires the document to be visible. Arti circuit health after a long Android freeze, OEM task killing and process death are outside these models.

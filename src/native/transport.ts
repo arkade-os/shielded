@@ -53,6 +53,8 @@ export class NativeBridge {
  private handles=new Set<NativeHandle>();
  private listeners=new Set<(status:NativeStatus)=>void>();
  private statusRevision=0;
+ private pollSequence=0;
+ private pollAccepted=0;
  private pausePending=0;
  private pauseIntent=false;
  private requestedMode:NativeMode='tor';
@@ -73,13 +75,14 @@ export class NativeBridge {
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
  acceptLifecycle(status:NativeStatus){if(!this.acceptsStatus(status))return this.current;++this.statusRevision;return this.acceptStatus(status);}
  async status(){
-  const revision=this.statusRevision,status:NativeStatus=await this.backend.invoke('native_status');
-  if(revision!==this.statusRevision)return this.current;
+  const revision=this.statusRevision,poll=++this.pollSequence,status:NativeStatus=await this.backend.invoke('native_status');
+  if(revision!==this.statusRevision||poll<this.pollAccepted||!this.acceptsStatus(status))return this.current;
   if(this.pausePending||this.pauseIntent){
-   if(status.phase!=='paused'||!this.acceptsStatus(status))return this.current;
-   ++this.statusRevision;return this.acceptStatus(status);
+   if(status.phase!=='paused')return this.current;
+   this.pollAccepted=poll;++this.statusRevision;return this.acceptStatus(status);
   }
-  if(this.acceptsStatus(status)&&status.phase==='ready'&&(this.current.phase!=='ready'||status.generation!==this.current.generation))++this.statusRevision;
+  if(status.phase==='ready'&&(this.current.phase!=='ready'||status.generation!==this.current.generation))++this.statusRevision;
+  this.pollAccepted=poll;
   return this.acceptStatus(status);
  }
  async start(mode:NativeMode='tor'){
