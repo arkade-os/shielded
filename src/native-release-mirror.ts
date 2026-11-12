@@ -32,17 +32,22 @@ async function download(fetchImpl:typeof fetch,item:NativeReleasePackage,target:
  }catch(error){await rm(part,{force:true});throw error;}
 }
 
+// Only a killed process leaves a temp file older than the download timeout; a live writer's file is kept.
+async function removeStaleParts(directory:string){
+ for(const name of await readdir(directory))if(name.endsWith('.part')){
+  const temp=join(directory,name),found=await stat(temp).catch(()=>undefined);
+  if(found&&Date.now()-found.mtimeMs>DOWNLOAD_TIMEOUT_MS)await rm(temp,{force:true});
+ }
+}
+
 /** Keeps a verified copy of the current native release on the host volume; only fully verified releases are served. */
 export function createNativeReleaseMirror({root,fetchImpl=fetch,warn=(message:string)=>console.warn(message)}:{root:string;fetchImpl?:typeof fetch;warn?:(message:string)=>void}){
  let ready:{tag:string;files:Set<string>}|undefined,wanted:NativeRelease|undefined,current:string|undefined,running:Promise<void>|undefined;
+ const report=(error:unknown)=>warn(`Native release mirror: ${error instanceof Error?error.message:String(error)}`);
  async function mirror(release:NativeRelease){
   const tag=nativeReleaseTag(release),directory=join(root,tag),files=new Set<string>();
   await mkdir(directory,{recursive:true});
-  // Only a killed process leaves a temp file older than the download timeout; a live writer's file is kept.
-  for(const name of await readdir(directory))if(name.endsWith('.part')){
-   const temp=join(directory,name),found=await stat(temp).catch(()=>undefined);
-   if(found&&Date.now()-found.mtimeMs>DOWNLOAD_TIMEOUT_MS)await rm(temp,{force:true});
-  }
+  await removeStaleParts(directory);
   for(const item of [...release.packages,...(release.androidUpdate?[release.androidUpdate]:[])]){
    const target=join(directory,item.file);
    const held=await stat(target).then(found=>found.size===item.bytes,()=>false);
@@ -56,12 +61,12 @@ export function createNativeReleaseMirror({root,fetchImpl=fetch,warn=(message:st
   sync(release:NativeRelease):Promise<void>{
    const tag=nativeReleaseTag(release);
    if(tag!==ready?.tag&&tag!==current)wanted=release;
-   if(!wanted)return running??Promise.resolve();
+   if(!wanted)return running??(tag===ready?.tag?removeStaleParts(join(root,tag)).catch(report):Promise.resolve());
    return running??=(async()=>{
     try{
      while(wanted){
       const next=wanted;wanted=undefined;current=nativeReleaseTag(next);
-      await mirror(next).catch(error=>warn(`Native release mirror: ${error instanceof Error?error.message:String(error)}`));
+      await mirror(next).catch(report);
       current=undefined;
      }
     }finally{running=undefined;}

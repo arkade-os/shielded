@@ -74,6 +74,10 @@ test('temp files left by a killed container are cleaned up, while a live downloa
  mkdirSync(directory,{recursive:true});
  const stale=join(directory,'orphan.part'),live=join(directory,'live.part'),hourAgo=new Date(Date.now()-60*60_000);
  writeFileSync(stale,'killed');utimesSync(stale,hourAgo,hourAgo);writeFileSync(live,'in progress');
- await createNativeReleaseMirror({root,fetchImpl,warn:()=>{}}).sync(current);
+ const mirror=createNativeReleaseMirror({root,fetchImpl,warn:()=>{}});
+ await mirror.sync(current);
+ assert.equal(existsSync(stale),false);assert.equal(existsSync(live),true);
+ writeFileSync(stale,'killed after the first pass');utimesSync(stale,hourAgo,hourAgo);
+ await mirror.sync(current);
  assert.equal(existsSync(stale),false);assert.equal(existsSync(live),true);
 });
