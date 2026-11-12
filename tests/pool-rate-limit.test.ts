@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import {setImmediate} from 'node:timers/promises';
-import {test} from 'node:test';
-import {poolApiOf,rollupApi,waitForSpend} from '../src/shielded/pool.ts';
-import {markPrivateFetch,markSealedFetch} from '../src/shielded/network-privacy.ts';
+import {test,type TestContext} from 'node:test';
+import {poolApiOf,rollupApi,waitForSpend,type SpendStatus} from '../src/shielded/pool.ts';
+import {PRIVATE_SPEND_POLL_MS,PRIVATE_VERDICT_EVERY,markPrivateFetch,markSealedFetch} from '../src/shielded/network-privacy.ts';
 import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 const outcome=<T,>(promise:Promise<T>)=>promise.then(value=>({value,error:undefined}),error=>({value:undefined,error}));
+// Draws are never zero, so a delay left unjittered sits exactly on its base and fails a strict bound.
+const paced=(t:TestContext)=>{const delays:number[]=[];let n=0;t.mock.method(Math,'random',()=>(++n%9+1)/10);t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>{if(delays.push(ms)>50)throw new Error('The poll never ended.');run();}) as never);return delays;};
 
 test('a rate-limited GET waits for Retry-After seconds before reading again',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
@@ -291,4 +293,47 @@ test('status outages retain the original polling deadline and never imply the sp
  const pending=outcome(waitForSpend('a',async()=>{},poolApiOf('https://status-deadline.test',fetcher),1000,4500));
  await flush();for(let i=0;i<6;i++){t.mock.timers.tick(1000);await flush();}
  assert.match((await pending).error?.message??'',/did not settle in time; the pool may still include it/);assert.equal(reads,5);
+});
+
+test('a spend watched by its nullifier returns on the account, asking the pool for no spend id',async t=>{
+ paced(t);const asked:string[]=[],landed:(SpendStatus|undefined)[]=[undefined,undefined,{status:'included',txid:'ab'.repeat(32),batch:7}];
+ const final=await waitForSpend('a',async()=>{},(async(path:string)=>{asked.push(path);return {status:'pending'};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>landed.shift());
+ assert.deepEqual(final,{status:'included',txid:'ab'.repeat(32),batch:7});assert.deepEqual(asked,[]);
+});
+
+test('a nullifier-watched spend asks for a verdict on its fifth round, never on its first',async t=>{
+ const delays=paced(t),seen:string[]=[],reason='The operator dropped this spend before it reached a batch; build it again.';
+ const final=await waitForSpend('a',async()=>{},(async(path:string)=>{seen.push(path);return {status:'dropped',reason};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>{seen.push('landed');return undefined;});
+ assert.deepEqual(final,{status:'dropped',reason});
+ assert.deepEqual(seen,[...Array(PRIVATE_VERDICT_EVERY).fill('landed'),'/spends/a']);
+ assert.ok(delays.length===PRIVATE_VERDICT_EVERY&&delays.every(ms=>ms>PRIVATE_SPEND_POLL_MS),delays.join());
+});
+
+test('a nullifier-watched spend that stays pending reads its id on rounds 5 and 10, and on no other round',async t=>{
+ const seen:string[]=[],stop=new Error('stopped after round 11');let sleeps=0;
+ t.mock.method(globalThis,'setTimeout',((run:()=>void)=>{if(++sleeps>2*PRIVATE_VERDICT_EVERY+1)throw stop;run();}) as never);
+ await assert.rejects(waitForSpend('a',async()=>{},(async(path:string)=>{seen.push(path);return {status:'pending'};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>{seen.push('landed');return undefined;}),error=>error===stop);
+ const rounds=seen.flatMap((event,i)=>event==='landed'?[]:[seen.slice(0,i).filter(e=>e==='landed').length]);
+ assert.deepEqual([seen.filter(e=>e==='landed').length,rounds],[2*PRIVATE_VERDICT_EVERY+1,[PRIVATE_VERDICT_EVERY,2*PRIVATE_VERDICT_EVERY]]);
+});
+
+test('a nullifier-watched round is jittered and never backs off',async t=>{
+ const delays=paced(t);let rounds=0;
+ await waitForSpend('a',async()=>{},(async()=>({status:'pending'})) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>++rounds>=8?{status:'included'}:undefined);
+ assert.equal(delays.length,8);
+ assert.ok(delays.every(ms=>ms>PRIVATE_SPEND_POLL_MS&&ms<=1.25*PRIVATE_SPEND_POLL_MS)&&new Set(delays).size>1,delays.join());
+});
+
+test('a nullifier-watched spend asks the pool nothing before its first jittered round, and sees there a spend that landed meanwhile',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const seen:string[]=[],pending=waitForSpend('a',async()=>{},(async(path:string)=>{seen.push(path);return {status:'pending'};}) as never,PRIVATE_SPEND_POLL_MS,Infinity,async()=>{seen.push('landed');return {status:'included',batch:7};});
+ await flush();assert.deepEqual(seen,[]);
+ t.mock.timers.tick(1.25*PRIVATE_SPEND_POLL_MS);await flush();
+ assert.deepEqual(await pending,{status:'included',batch:7});assert.deepEqual(seen,['landed']);
+});
+
+test('a direct spend keeps its one-second poll and its backoff',async t=>{
+ const delays=paced(t);let reads=0;
+ const final=await waitForSpend('a',async()=>{},(async()=>++reads>6?{status:'included'}:{status:'pending'}) as never);
+ assert.equal(final.status,'included');assert.equal(reads,7);assert.deepEqual(delays,[1000,2000,4000,5000,5000,5000]);
 });

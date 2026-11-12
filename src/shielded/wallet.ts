@@ -18,7 +18,7 @@ import {epochConfirmed,epochFreshAccount,epochMatchesPool,knownEpochPool} from '
 import {epochRevealLinkOf} from './epoch-disclosure.ts';
 import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
-import {WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
+import {EVENT_RETRY_MS,WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
@@ -28,7 +28,7 @@ import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shie
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {isPrivatePoolApi,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
+import {PRIVATE_SUBMIT_JITTER_MS,isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
 import type {SyncProgressObserver} from './sync-progress.ts';
 export type {ShieldedSyncProgress,SyncProgressObserver} from './sync-progress.ts';
 
@@ -180,7 +180,9 @@ export class ShieldedWallet extends Wallet {
  private selfSending=false;
  private nativeOperations=0;
  private statusAt=Date.now();
+ private statusReadAt=0;
  private networkPrivacy=false;
+ private sealedTransport=false;
  private batchSwaps?:boolean;
  private maxShieldCoins?:number;
  private pendingNullifiers?:()=>ReadonlySet<bigint>;
@@ -189,6 +191,12 @@ export class ShieldedWallet extends Wallet {
  private onSyncProgress?:SyncProgressObserver;
  /** undefined = not looked up this outage; null = looked up but unavailable (head gone); number = the expiry. */
  private headExpiry?:number|null;
+ /** Read while the pool answered: a sealed wallet reaches the indexer through the pool server, so an outage read cannot. */
+ private lastHeadExpiry?:number;
+ private lastHead?:string;
+ private headRead?:Promise<void>;
+ /** When the last read began, for lastHead, until one found a deadline still ahead or the pool named another head; the next waits ten watchdog rounds from it. */
+ private headReadAt?:number;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const maxDepositFee=config.maxDepositFee===undefined?undefined:validSchedule(config.maxDepositFee,'maxDepositFee');
@@ -199,7 +207,7 @@ export class ShieldedWallet extends Wallet {
    config.onArkAddress?.(await wallet.getAddress());
    const observer=config.onSyncProgress;wallet.onSyncProgress=observer?(progress=>{if(!wallet.stopped)return observer(progress);}):undefined;
    wallet.pool=config.pool;wallet.api=poolApiOf(config.pool.origin,config.fetcher,config.poolPage,wallet.onSyncProgress);wallet.claimApi=config.claimFetch?poolApiOf(config.pool.origin,config.claimFetch,config.poolPage):undefined;wallet.hash=config.hash;wallet.prover=config.prover;
-   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);wallet.batchSwaps=config.batchSwaps;wallet.maxShieldCoins=config.maxShieldCoins;
+   wallet.networkPrivacy=config.networkPrivacy??isPrivatePoolApi(wallet.api);wallet.sealedTransport=isSealedFetch(config.fetcher);wallet.batchSwaps=config.batchSwaps;wallet.maxShieldCoins=config.maxShieldCoins;
    if(wallet.networkPrivacy){
     const live=(api:PoolApi):PoolApi=>markPrivatePoolPage(markPrivatePoolApi(async<T,>(path:string,body?:unknown,beforeRequest?:()=>void)=>{
      wallet.assertOpen();
@@ -312,13 +320,15 @@ export class ShieldedWallet extends Wallet {
  }
  /** The watch registration, the incoming-funds watch and the first auto-shield, which run behind `create()`; rejects with the watch setup's first error. */
  get started():Promise<void>{return this.startup;}
+ /** Only the sealed browser transport re-draws its timers; native is private too but keeps its fixed ones. */
+ private pace(ms:number){return this.sealedTransport?privateInterval(ms):ms;}
  async start():Promise<void>{
   // A confirmed account is already at the pool's count; autoShield's sync below runs once the watches are up, so nothing lands unseen.
   if(!epochConfirmed(this.account))await this.sync();
   if(this.stopped)return;
   // Armed before the watch setup, so the tick runs even when that setup fails or stalls on a POST with no deadline.
-  this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
-  this.statusTimer=setTimeout(()=>void this.statusTick(),WATCHDOG_MS);
+  this.timer=setTimeout(()=>void this.tick().catch(()=>{}),this.pace(WATCHDOG_MS));
+  this.statusTimer=setTimeout(()=>void this.statusTick(),this.pace(WATCHDOG_MS));
   this.startup=this.finishStart();
   // A caller that never reads `started` must not turn its rejection into an unhandled one.
   this.startup.catch(()=>{});
@@ -331,7 +341,7 @@ export class ShieldedWallet extends Wallet {
   this.unwatch.push(manager.onContractEvent(event=>{
    // A watch-only event carries no contract, which is the point: the pool script is not ours. Any movement on it
    // means the head moved, and `connection_reset` means an event may have been missed.
-   if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void catchUpAfterEvent(()=>this.sync(),()=>this.stopped).catch(()=>{});
+   if(event.type==='vtxo_received'||event.type==='vtxo_spent'||event.type==='connection_reset')void catchUpAfterEvent(()=>this.sync(),()=>this.stopped,EVENT_RETRY_MS.map(ms=>this.pace(ms))).catch(()=>{});
   }));
   const off=await this.notifyIncomingFunds(()=>{this.changed();void this.autoShield().catch(()=>{});});
   // dispose() has already drained `unwatch`, so a watch that arrives after it is stopped here rather than kept.
@@ -341,11 +351,25 @@ export class ShieldedWallet extends Wallet {
  }
  /** Set once the pool has missed two refreshes. Only the operator renews the head, so its expiry is the deadline to exit. */
  get operatorDown():{since:number;headExpiresAt?:number}|undefined{
-  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry??undefined}:undefined;
+  return Date.now()-this.statusAt>=2*WATCHDOG_MS?{since:this.statusAt,headExpiresAt:this.headExpiry??this.lastHeadExpiry}:undefined;
  }
  private async fetchHeadExpiry(){
   const {vtxos}=await this.indexerProvider.getVtxos({scripts:[this.poolScript],spendableOnly:true});
   return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
+ }
+ private poolHead(){const head=this.pool.status.pool?.head;return head&&`${head.txid}:${head.vout}`;}
+ private rememberHeadExpiry(){
+  const head=this.poolHead();if(head!==undefined&&head!==this.lastHead){this.lastHeadExpiry=undefined;this.headReadAt=undefined;}
+  const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
+  if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
+  this.headReadAt=now;this.lastHead=head;
+  this.headRead=this.fetchHeadExpiry().then(expiry=>{
+   if(this.stopped||expiry===undefined||!Number.isFinite(expiry))return;
+   // A read begun for a head the pool has since replaced says nothing of the new head's deadline, nor that reads should back off.
+   if(head!==this.poolHead()){this.headReadAt=undefined;return;}
+   this.lastHeadExpiry=expiry;
+   if(expiry>Date.now())this.headReadAt=undefined;
+  },()=>{}).then(()=>{this.headRead=undefined;});
  }
  private refreshPoolStatus():Promise<boolean>{
   if(this.stopped)return Promise.resolve(false);
@@ -354,7 +378,8 @@ export class ShieldedWallet extends Wallet {
    const status=await this.api<RollupPoolStatus>('/status');
    if(this.stopped)return false;
    const recovered=!!this.operatorDown,was=this.depositFeePaused;
-   this.pool={...this.pool,status};this.statusAt=Date.now();this.headExpiry=undefined;this.statusRevision++;
+   this.pool={...this.pool,status};this.statusAt=this.statusReadAt=Date.now();this.headExpiry=undefined;this.statusRevision++;
+   this.rememberHeadExpiry();
    const now=this.depositFeePaused;
    return recovered||was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps;
   })().finally(()=>{if(this.statusRead===run)this.statusRead=undefined;});
@@ -366,25 +391,27 @@ export class ShieldedWallet extends Wallet {
   try{await this.refreshPoolStatus();}catch{}
   if(this.stopped)return;
   this.changed();
-  if(!this.stopped)this.statusTimer=setTimeout(()=>void this.statusTick(),WATCHDOG_MS);
+  if(!this.stopped)this.statusTimer=setTimeout(()=>void this.statusTick(),this.pace(WATCHDOG_MS));
  }
  /** The safety net behind the stream: refresh the pool, catch up, then start anything waiting. Never awaits a batch. */
  private async tick():Promise<void>{
   if(this.stopped)return;
   let atHead=false;
-  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}await this.sync();if(this.stopped)return;atHead=!this.offline;}
+  // Only a tick has just read the status; finish(), renew() and catchUpAfterEvent sync without one, so the skip is not in sync().
+  // Sealed browser transport only: a native wallet is private but not sealed, and reads every tick.
+  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.sealedTransport||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(!this.stopped&&this.operatorDown&&this.headExpiry===undefined){
    const revision=this.statusRevision,expiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;
    if(!this.stopped&&revision===this.statusRevision)this.headExpiry=expiry;
   }}
   if(this.stopped)return;
-  void this.autoShield().catch(()=>{});
+  void this.autoShield(this.sealedTransport&&atHead).catch(()=>{});
   void this.merge().catch(()=>{});
   // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
   if(atHead){void this.renewNotes().catch(()=>{});void this.recoverNotes().catch(()=>{});}
   this.changed();
-  if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),WATCHDOG_MS);
+  if(!this.stopped)this.timer=setTimeout(()=>void this.tick().catch(()=>{}),this.pace(WATCHDOG_MS));
  }
  /** One renewal plan at a time, over every held asset; epochIdle keeps a replay from moving the window the targets are drawn in. */
  private async renewNotes(){
@@ -621,7 +648,18 @@ export class ShieldedWallet extends Wallet {
   const pending=this.pendingOutpoints?.(),used=pending?new Set([...this.used,...pending]):this.used;
   return nextShieldPlan(coins,{skip:c=>this.usedTxids.has(c.txid)||(skipPayouts&&this.isPoolPayout(c)),used,listed:new Set(Object.keys(this.pool.status.pool?.reserves??{})),now:Date.now(),floorMs:SHIELD_FLOOR_MS,fee:{schedule:this.depositFee,exempt:c=>this.isPoolPayout(c)},maxCoins:this.maxShieldCoins});
  }
- private deps():SubmitDeps{return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript};}
+ /** Sealed only, like pace(): native is private too but keeps the 1 s id poll and posts at once. */
+ private deps():SubmitDeps{
+  // Nothing new can land while the count holds; a failed catch-up, as in tick(), is looked at again next round.
+  const landedBy=async(nullifiers:readonly bigint[])=>{await this.refreshPoolStatus().catch(()=>{});if(this.pool.status.pool?.batches!==this.account.batchCount)await this.sync().catch(()=>{});this.assertOpen();return this.landedSpend(nullifiers);};
+  return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript,...(this.sealedTransport?{jitterMs:PRIVATE_SUBMIT_JITTER_MS,landedBy}:{})};
+ }
+ /** undefined unless a status read this session, under two watchdog rounds old, shows the account at the pool's count: otherwise it has not looked, so the journal must not age an entry out on its word. */
+ settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined{return !this.offline&&Date.now()-this.statusReadAt<2*WATCHDOG_MS&&this.pool.status.pool?.batches===this.account.batchCount?!!this.landedSpend(nullifiers):undefined;}
+ private landedSpend(nullifiers:readonly bigint[]):SpendStatus|undefined{
+  const entry=this.account.history.find(e=>nullifiers.every(n=>e.spent.includes(n)));
+  return entry&&{status:'included',batch:entry.batch,...(entry.txid?{txid:entry.txid}:{})};
+ }
  /** Every held note of `assets` but `mine`, as an in-flight set: a rebuild can then choose only the notes its action already holds. */
  private others(mine:readonly bigint[],assets:readonly bigint[]){return new Set(assets.flatMap(asset=>this.account.notes(asset)).map(n=>n.nullifier).filter(nf=>!mine.includes(nf)));}
  private async submit(members:SubmitMember[],step:(n:number)=>void,deadlineMs=30*60_000,rebuild?:(cause:unknown)=>Promise<SubmitMember[]>){
@@ -649,7 +687,8 @@ export class ShieldedWallet extends Wallet {
  /** One place where a dropped spend becomes an error and a landed one triggers sync. */
  private async finish(final:SpendStatus){
   if(final.status==='dropped')throw new Error(final.reason??'The pool dropped this spend.');
-  await this.sync();
+  // A sealed landedBy has just synced; an id poll (a deposit, a verdict) reads no status, so a matching count can predate the spend's batch.
+  if(!(this.sealedTransport&&this.pool.status.pool?.batches===this.account.batchCount&&(final.batch??Infinity)<this.account.batchCount))await this.sync();
   return {...(final.txid?{txid:final.txid}:{})};
  }
  private hold(nullifiers:readonly bigint[],handle:{settled():Promise<unknown>},onFail?:()=>void){
@@ -732,9 +771,10 @@ export class ShieldedWallet extends Wallet {
   });
   return this.announce(handle);
  }
- private async autoShield(){
+ /** `current`: tick() has just shown the account at the pool's count. Every other caller syncs first, for planFor's payout skip. */
+ private async autoShield(current=false){
   if(this.stopped||this.offline||Date.now()<this.retryAt)return;
-  await this.sync();
+  if(!current)await this.sync();
   if(this.stopped||Date.now()<this.retryAt||this.depositFeePaused)return;
   await this.shield();
  }

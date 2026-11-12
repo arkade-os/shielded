@@ -3,7 +3,7 @@ import {base64,hex} from '@scure/base';
 import {RawWitness} from '@scure/btc-signer';
 import type {OwnedNote} from '../../packages/protocol/src/rollup/account.ts';
 import {CARRIER_FREE_SATS,carrierFeeOf,depositFeeOf,parseDepositFee,type DepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
-import {isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privatePoolPage} from './network-privacy.ts';
+import {PRIVATE_VERDICT_EVERY,isPrivateFetch,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
 import {reportSyncProgress,type SyncProgressObserver,type SyncRequest} from './sync-progress.ts';
 
 export interface RollupPoolStatus {phase:'starting'|'keys'|'funding'|'genesis'|'ready'|'blocked';message:string;network?:any;proving?:Record<'spend'|'join'|'batch'|'batchJoin',{wasm:string;zkey:string}>&{batchRecover?:{wasm:string;zkey:string}};pool?:{token:string;notice?:string;address:string;script:string;batches:number;root:string;head:{txid:string;vout:number;value:number};pending:number;padding:number;reserves?:Record<string,string>;maxReserves?:number;
@@ -118,20 +118,24 @@ export async function signDeposit(identity:Identity,request:SpendStatus){
 }
 
 /** Polls a spend until it is settled or the deadline passes; a rebuilt batch asks the depositor to sign again. */
-export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=poolApiOf(''),pollMs=1000,deadlineMs=Infinity):Promise<SpendStatus>{
+export async function waitForSpend(id:string,onSigning:(request:SpendStatus)=>Promise<void>,api:PoolApi=poolApiOf(''),pollMs=1000,deadlineMs=Infinity,landed?:()=>Promise<SpendStatus|undefined>,paced=!!landed):Promise<SpendStatus>{
  let signed='',interval=pollMs;
- for(const end=Date.now()+deadlineMs;;){
+ for(let round=0,end=Date.now()+deadlineMs;;round++){
   if(Date.now()>end)throw new Error('The spend did not settle in time; the pool may still include it.');
-  let status:SpendStatus|undefined;
-  try{status=await api<SpendStatus>('/spends/'+id);}
-  catch(error){if(!(error instanceof PoolRequestError)||!error.transient)throw error;}
-  if(status?.status==='included'||status?.status==='dropped')return status;
-  if(status?.status==='signing'){
-   if(status.arkTx!==signed){await onSigning(status);signed=status.arkTx!;}
-   interval=pollMs;
+  // A watched spend asks nothing just after the POST it would link to; a drop never shows in the batches, so its id is still read.
+  if(landed&&round>0){const found=await landed();if(found)return found;}
+  if(!landed||round>0&&round%PRIVATE_VERDICT_EVERY===0){
+   let status:SpendStatus|undefined;
+   try{status=await api<SpendStatus>('/spends/'+id);}
+   catch(error){if(!(error instanceof PoolRequestError)||!error.transient)throw error;}
+   if(status?.status==='included'||status?.status==='dropped')return status;
+   if(status?.status==='signing'){
+    if(status.arkTx!==signed){await onSigning(status);signed=status.arkTx!;}
+    interval=pollMs;
+   }
   }
-  await sleep(interval);
-  interval=Math.min(5*pollMs,2*interval);
+  await sleep(paced?privateInterval(pollMs):interval);
+  if(!paced)interval=Math.min(5*pollMs,2*interval);
  }
 }
 
