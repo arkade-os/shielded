@@ -359,7 +359,7 @@ export class ShieldedWallet extends Wallet {
  }
  private poolHead(){const head=this.pool.status.pool?.head;return head&&`${head.txid}:${head.vout}`;}
  private rememberHeadExpiry(){
-  const head=this.poolHead();if(head!==this.lastHead)this.lastHeadExpiry=undefined;
+  const head=this.poolHead();if(head!==undefined&&head!==this.lastHead)this.lastHeadExpiry=undefined;
   const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
   if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
   this.headReadAt=now;

@@ -436,6 +436,12 @@ test('a head expiry read that answers after the pool named a new head is not kep
  await refresh();
  assert.deepEqual([kept,asks(),wallet.lastHeadExpiry],[undefined,2,MOVED]);
 });
+test('a sealed wallet keeps the head deadline it remembered, with no read, through a status that names no pool, as while the server restarts, and when the same head is named again',async t=>{
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),ask=>ask===1?headOf(EXPIRES):refused());named(wallet);const live=wallet.api;
+ await refresh();wallet.api=async()=>({phase:'starting',message:'Starting the rollup pool.'});await refresh();const restarting=[asks(),wallet.lastHeadExpiry];
+ wallet.api=live;await refresh();
+ assert.deepEqual([restarting,asks(),wallet.lastHeadExpiry],[[1,EXPIRES],1,EXPIRES]);
+});
 
 test('external uncertain reservations remain visible after local holds release',()=>{
  const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};

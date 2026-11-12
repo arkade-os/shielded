@@ -104,7 +104,7 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
- /** Browser only: a sealed copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this account's own batches are left to say, once the pool has made one since the entry was first judged, as a stalled operator still answers /status. */
+ /** Browser only: a sealed copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this account's own batches are left to say, once the pool count differs from the one the entry was first judged at: a stalled operator still answers /status, and a new genesis restarts the count lower. */
  const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined,count:number)=>{
   if(graceMs===undefined||!Number.isSafeInteger(count)||count<0)return;
   const origin=new URL(poolOrigin).origin,at=now(),entries=load();let marked=false;
