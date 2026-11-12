@@ -41,6 +41,14 @@ test('a download owns progress, rejects double clicks and becomes installable on
  await f.finish();await pending;assert.equal(f.state().phase,'ready');assert.equal(f.state().staged?.id,work.id);assert.equal(f.state().received,update.bytes);
 });
 
+test('a fallback to GitHub restarts the shown progress after a partial host download',async t=>{
+ const f=fixture(t);await flush();const pending=f.controller.download();await flush();const work=f.downloads[0]!;
+ work.progress({received:0,total:update.bytes});work.progress({received:70,total:update.bytes});assert.equal(f.state().received,70);
+ work.progress({received:0,total:update.bytes});assert.equal(f.state().received,0);
+ work.progress({received:20,total:update.bytes});work.progress({received:10,total:update.bytes});assert.equal(f.state().received,20);
+ await f.finish();await pending;assert.equal(f.state().phase,'ready');assert.equal(f.state().received,update.bytes);
+});
+
 test('Tor pause or generation replacement cancels the owner and fences late progress and saved files',async t=>{
  for(const next of [{phase:'paused',generation:2},{phase:'ready',generation:2,mode:'tor'}] as NativeStatus[]){
   const f=fixture(t);await flush();const pending=f.controller.download();await flush();const work=f.downloads[0]!;
