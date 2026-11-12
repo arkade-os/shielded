@@ -12,7 +12,8 @@ import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
 import {waitForSpend,type ArkCoin,type PoolApi} from '../src/shielded/pool.ts';
-import {markPrivateFetch,markPrivatePoolPage,markSealedFetch,privatePoolPage,isPrivateFetch,isPrivatePoolApi,isSealedFetch} from '../src/shielded/network-privacy.ts';
+import {PRIVATE_SUBMIT_JITTER_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch,privatePoolPage,isPrivateFetch,isPrivatePoolApi,isSealedFetch} from '../src/shielded/network-privacy.ts';
+import type {SubmitDeps} from '../src/shielded/submit.ts';
 import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
@@ -235,6 +236,32 @@ test('a sealed catch-up after an indexer event re-draws its retry delays, and a 
  assert.deepEqual([sealed.syncs,sealed.delays.length],[EVENT_RETRY_MS.length,EVENT_RETRY_MS.length-1],'a zero delay stays zero and arms no timer');
  assert.ok(sealed.delays.every((ms,i)=>ms>EVENT_RETRY_MS[i+1]!&&ms<=1.25*EVENT_RETRY_MS[i+1]!),sealed.delays.join());
  for(const fetcher of [stub(),nativeStub()])assert.deepEqual(await retries(fetcher),{syncs:EVENT_RETRY_MS.length,delays:EVENT_RETRY_MS.slice(1)});
+});
+
+const depsOf=(wallet:object)=>(wallet as {deps():SubmitDeps}).deps();
+test('only a sealed wallet delays its submit and watches a spend off the account; a native or direct one keeps the id poll',()=>{
+ const sealed=depsOf(tickRig(140,140,sealedStub()).wallet);
+ assert.equal(sealed.jitterMs,PRIVATE_SUBMIT_JITTER_MS);assert.equal(typeof sealed.landedBy,'function');
+ for(const fetcher of [nativeStub(),stub()]){const {jitterMs,landedBy}=depsOf(tickRig(140,140,fetcher).wallet);assert.deepEqual([jitterMs,landedBy],[undefined,undefined]);}
+});
+
+test('a sealed spend round reads only /status while the pool count holds, and pages to find the spend once the head moves',async()=>{
+ const {asked,pool,account,wallet}=tickRig(140,140,sealedStub()),history:{batch:number;spent:bigint[];txid:string}[]=[],apply=account.apply.bind(account);
+ Object.assign(account,{history,async apply(batch:number){await apply(batch);history.push({batch,spent:[7n,8n],txid:'ab'.repeat(32)});}});Object.assign(wallet,{changed(){}});
+ const {landedBy}=depsOf(wallet);
+ assert.equal(await landedBy!([7n,8n]),undefined);assert.deepEqual(asked,['/status']);
+ pool.batches=141;
+ assert.deepEqual(await landedBy!([7n,8n]),{status:'included',batch:140,txid:'ab'.repeat(32)});
+ assert.deepEqual(asked.slice(1),['/status','/batches?from=128&limit=12','/batches?from=140&limit=12']);
+ assert.equal(await landedBy!([7n,9n]),undefined);
+});
+
+test('a sealed spend round whose catch-up fails keeps waiting, and a closed wallet ends it',async()=>{
+ const {account,wallet}=tickRig(140,141,sealedStub());
+ Object.assign(account,{history:[],async apply(){throw new Error('No relay brought an answer in time.');}});Object.assign(wallet,{changed(){}});
+ const {landedBy}=depsOf(wallet);
+ assert.equal(await landedBy!([7n]),undefined);
+ wallet.stopped=true;await assert.rejects(landedBy!([7n]),/wallet was closed/);
 });
 
 test('external uncertain reservations remain visible after local holds release',()=>{
