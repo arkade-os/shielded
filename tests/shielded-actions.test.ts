@@ -9,6 +9,7 @@ import type {EpochBuiltSpend} from '../packages/protocol/src/rollup/epoch-circui
 import {rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import type {ShieldPlan} from '../src/shielded/pool.ts';
+import {PRIVATE_SIGN_POLL_MS,PRIVATE_SUBMIT_JITTER_MS} from '../src/shielded/network-privacy.ts';
 import {submitAll} from '../src/shielded/submit.ts';
 import {NoteReservation,coversWithdrawal,mergeAssetFields,needsRenewal,nextShieldPlan,programOf,shieldTitle,shieldedSteps,topThree} from '../src/shielded/wallet.ts';
 import {batchWitnessOutput} from './fixtures/batch-witness.ts';
@@ -84,6 +85,56 @@ test('ordinary deposits poll slowly while still signing within the server round'
  for(let elapsed=250;elapsed<=15_000;elapsed+=250){t.mock.timers.tick(250);await setImmediate();}
  assert.equal((await pending).status,'included');assert.ok(polls<=6,String(polls));
  assert.ok(signedAt>=1_006_001&&signedAt<=1_011_001,String(signedAt));
+});
+
+test('a deposit is still polled for its signing request, at the private interval',async t=>{
+ const pool=hex.decode('5120'+'aa'.repeat(32)),user=hex.decode('0014'+'bb'.repeat(20)),coin={txid:'cc'.repeat(32),vout:1};
+ const head=tx([{txid:'dd'.repeat(32),index:0,script:pool}]),mine=tx([{txid:coin.txid,index:coin.vout,script:user}]);
+ const signing=(statements:bigint[])=>{const ark=tx([{txid:head.id,index:0,script:pool},{txid:mine.id,index:0,script:user}]);ark.addOutput(batchWitnessOutput(statements));return {status:'signing',arkTx:base64.encode(ark.toPSBT()),checkpoints:[base64.encode(head.toPSBT()),base64.encode(mine.toPSBT())],checkpoint:base64.encode(mine.toPSBT()),vin:1};};
+ const replies=[...Array(4).fill({status:'pending'}),signing([1n]),signing([1n]),signing([2n,1n]),{status:'included',txid:'t'}],signs:string[]=[],delays:number[]=[];let reads=0,looked=0,n=0;
+ t.mock.method(Math,'random',()=>(++n%9+1)/10);
+ t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>{if(delays.push(ms)>50)throw new Error('The poll never ended.');run();}) as never);
+ const api=(async(path:string,body?:{arkTx:string})=>{if(path==='/spends')return {};if(path.endsWith('/sign')){signs.push(body!.arkTx);return {};}reads++;return replies.shift();}) as never;
+ const final=await submitAll([{built:built([11n]),coin}],{api,prover,identity,poolScript:hex.encode(pool),step:()=>{},first:0,landedBy:async()=>{looked++;return undefined;}});
+ assert.equal(final.status,'included');assert.deepEqual([reads,looked,signs.length],[8,0,2]);
+ assert.ok(delays.length===7&&delays.every(ms=>ms>=PRIVATE_SIGN_POLL_MS&&ms<=1.25*PRIVATE_SIGN_POLL_MS)&&new Set(delays).size>1,delays.join());
+});
+
+test('a private submit waits a random time under ten seconds before its first spend POST, and a direct one does not wait',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0.99995);
+ const unit=(o:{jitterMs?:number})=>{
+  const posted:number[]=[],api=(async(path:string)=>path==='/spends'?(posted.push(Date.now()),{}):{status:'included',txid:'t'}) as never;
+  return {posted,run:submitAll([{built:built([11n],9n,2)},{built:built([21n],9n,2)}],{...deps(api),step:()=>{},first:0,...o})};
+ };
+ const direct=unit({});await setImmediate();assert.deepEqual(direct.posted,[1_000_000,1_000_000]);await direct.run;
+ const sealed=unit({jitterMs:PRIVATE_SUBMIT_JITTER_MS});await setImmediate();
+ t.mock.timers.tick(PRIVATE_SUBMIT_JITTER_MS-2);await setImmediate();assert.deepEqual(sealed.posted,[]);
+ t.mock.timers.tick(1);await setImmediate();assert.deepEqual(sealed.posted,[1_009_999,1_009_999]);
+ assert.equal((await sealed.run).status,'included');
+});
+
+test('a private unit watches each spend by its own nullifiers and asks the pool for no spend id',async t=>{
+ t.mock.method(globalThis,'setTimeout',((run:()=>void)=>{run();}) as never);
+ const watched:bigint[][]=[],api=(async(path:string)=>{if(path!=='/spends')throw new Error(`The pool was asked for ${path}.`);return {};}) as never;
+ const final=await submitAll([{built:built([11n],9n,2)},{built:built([21n,22n],9n,2)}],{...deps(api),step:()=>{},first:0,landedBy:async nullifiers=>{watched.push([...nullifiers]);return {status:'included',batch:3};}});
+ assert.deepEqual([final,watched],[{status:'included',batch:3},[[11n],[21n,22n]]]);
+});
+
+test('a sealed unit with a coin leg and a coin-less leg watches neither by nullifier and polls both ids at the paced signing interval, and a direct one keeps its backed-off poll',async t=>{
+ const delays:number[]=[];let n=0;
+ t.mock.method(Math,'random',()=>(++n%9+1)/10);
+ t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>{if(delays.push(ms)>50)throw new Error('The poll never ended.');run();}) as never);
+ const unit=async(sealed:boolean)=>{
+  const posted:string[]=[],reads:string[]=[];let looked=0;delays.length=0;
+  const api=(async(path:string,body?:{id:string})=>{if(path==='/spends'){posted.push(body!.id);return {};}reads.push(path);return reads.filter(p=>p===path).length>2?{status:'included',batch:3}:{status:'pending'};}) as never;
+  const final=await submitAll([{built:built([11n],9n,2),coin:{txid:'cc'.repeat(32),vout:1}},{built:built([21n],9n,2)}],{...deps(api),step:()=>{},first:0,...(sealed?{landedBy:async()=>{looked++;return undefined;}}:{})});
+  return {status:final.status,looked,polled:posted.map(id=>reads.filter(p=>p===`/spends/${id}`).length),delays:[...delays]};
+ };
+ const sealed=await unit(true);
+ assert.deepEqual([sealed.status,sealed.looked,sealed.polled],['included',0,[3,3]]);
+ assert.ok(sealed.delays.length===4&&sealed.delays.every(ms=>ms>PRIVATE_SIGN_POLL_MS&&ms<=1.25*PRIVATE_SIGN_POLL_MS)&&new Set(sealed.delays).size>1,sealed.delays.join());
+ const direct=await unit(false);
+ assert.deepEqual([direct.status,direct.looked,direct.polled,direct.delays.toSorted((a,b)=>a-b)],['included',0,[3,3],[1000,1000,2000,2000]]);
 });
 
 test('a dropped member is the answer even when a sibling was included',async()=>{

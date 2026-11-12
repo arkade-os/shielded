@@ -42,15 +42,34 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
  assert.ok(read('app/src/private-boot.ts').includes("To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage, then open this page again without ?private=1 in its address."),'a link with ?private=1 sets the flag again on reload');
 });
 
+const TICK_EFFECT=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/;
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
- const wallet=read('app/src/RollupWallet.tsx'),effect=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/.exec(wallet);
- assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(\)/);
+ const wallet=read('app/src/RollupWallet.tsx'),effect=TICK_EFFECT.exec(wallet);
+ assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(/);
  const privateBranch=/if\(!nativeHost\)\{[^\n]*/.exec(effect?.[1]??'')?.[0]??'';
  assert.match(privateBranch,/setNativePending\(pending\);setJournalError\(''\)[^\n]*setNativePending\(true\);setJournalError\(errorText\(error\)\)/,'a failed reconcile keeps the unresolved line and its own error; a later success clears only that');
  assert.doesNotMatch(privateBranch,/setPoolError/,'a journal error never replaces a startup error');
  assert.match(wallet,/\{ready&&journalError&&<p className="stock-blocked">\{journalError\}<\/p>\}/);
  assert.match(effect?.[2]??'',/\btick\b/);
  assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
+});
+
+test('every tick hands the journal the wallet itself, for its own verdict and the count it judged at',()=>{
+ const effect=TICK_EFFECT.exec(read('app/src/RollupWallet.tsx'));
+ assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(wallet\)\.then\(/);
+ assert.match(effect?.[2]??'',/\bwallet\b/);
+});
+
+const PREFETCH_EFFECT=/useEffect\(\(\)=>\{\s*if\(!pool\)return;([\s\S]*?)\},\[([^\]]*)\]\);/;
+test('a private wallet prefetches both proving circuits on open, not on the send tab',()=>{
+ const effect=PREFETCH_EFFECT.exec(read('app/src/RollupWallet.tsx')),body=effect?.[1]??'',branch=/if\(PRIVATE\)\{([^}]*)\}/.exec(body);
+ assert.ok(branch,'the prefetch effect has a private branch');
+ for(const circuit of ['spend','join'])assert.ok(branch[1]!.includes(`prefetchProvingKeys(pool,'${circuit}','',sessionFetch);`),circuit);
+ assert.ok(branch[1]!.includes("if(pool.proving?.join)prefetchProvingKeys(pool,'join','',sessionFetch);"),'a status that names no join circuit gets no join prefetch, which would throw inside the effect');
+ assert.match(branch[1]!,/return;$/,'a private open leaves before the send-tab condition');
+ assert.doesNotMatch(branch[1]!,/\btab\b/);
+ assert.equal(body.slice(body.indexOf(branch[0])+branch[0].length).trim(),"if(tab==='send')prefetchProvingKeys(pool,'spend','',sessionFetch);");
+ assert.match(effect?.[2]??'',/^tab,pool,sessionFetch$/);
 });
 
 // Source-level: /watch and the wallet are read for their literals and branches, not rendered.

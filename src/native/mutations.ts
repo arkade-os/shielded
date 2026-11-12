@@ -3,7 +3,7 @@ import {ROLLUP_FIELD} from '../../packages/protocol/src/rollup/constants.ts';
 type JournalStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
 export interface NativeMutation {url:string;method:string;body?:string}
 export interface NativeMutationResponse extends NativeMutation {status:number;requestBody?:string}
-interface PendingMutation {origin:string;id:string;body:string;nullifiers:string[];coin?:string;createdAt:number}
+interface PendingMutation {origin:string;id:string;body:string;nullifiers:string[];coin?:string;createdAt:number;batchAt?:number}
 const KEY='shielded-native-pool-mutations-v1',MAX_BYTES=4*1024*1024,MAX_ENTRIES=256,TRACKED_MS=3_600_000;
 const REFUSED_CODES=new Set(['slot-shape','group-invalid','recover-unarchived','window-tag','nullifier-range','stale-anchor','fee-missing']);
 const REFUSED_BODY=new Set(['The request body is not valid JSON.','A spend id is 8 to 32 random bytes in hex.','A spend carries its seven public inputs.','Malformed epoch slot.','An epoch slot names its anchor, not a root.','An epoch slot names exactly one of rCur, for a fast-path spend, and origin, for a recovery.','A recovery names its origin epoch as a whole number.','A window leaf names a whole epoch and its root.','A group has a nonzero id and two or three members; a lone spend has neither.','Expected a decimal field element.','An asset id is 68 lowercase hex characters.','Expected lowercase hex of the right length.','Malformed Groth16 proof.']);
@@ -35,12 +35,12 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   if(data?.v!==1||!Array.isArray(data.entries)||data.entries.length>MAX_ENTRIES)throw invalid();
   const entries:PendingMutation[]=[],ids=new Set<string>();
   for(const value of data.entries){
-   if(!value||typeof value.origin!=='string'||typeof value.body!=='string'||!Number.isSafeInteger(value.createdAt)||value.createdAt<0)throw invalid();
+   if(!value||typeof value.origin!=='string'||typeof value.body!=='string'||!Number.isSafeInteger(value.createdAt)||value.createdAt<0||value.batchAt!==undefined&&(!Number.isSafeInteger(value.batchAt)||value.batchAt<0))throw invalid();
    let origin:string;try{origin=new URL(value.origin).origin;}catch{throw invalid();}
    if(origin!==value.origin||!value.origin.startsWith('https://'))throw invalid();
    const parsed=parseBody(value.body),key=origin+'/'+parsed.id;
    if(value.id!==parsed.id||JSON.stringify(value.nullifiers)!==JSON.stringify(parsed.nullifiers)||value.coin!==parsed.coin||ids.has(key))throw invalid();
-   ids.add(key);entries.push({origin,...parsed,body:value.body,createdAt:value.createdAt});
+   ids.add(key);entries.push({origin,...parsed,body:value.body,createdAt:value.createdAt,...(value.batchAt===undefined?{}:{batchAt:value.batchAt})});
   }
   return entries;
  };
@@ -104,7 +104,19 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
- return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations};
+ /** Browser only: a sealed copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this account's own batches are left to say, once the pool count differs from the one the entry was first judged at: a stalled operator still answers /status, and a new genesis restarts the count lower. */
+ const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined,count:number)=>{
+  if(graceMs===undefined||!Number.isSafeInteger(count)||count<0)return;
+  const origin=new URL(poolOrigin).origin,at=now(),entries=load();let marked=false;
+  const remaining=entries.filter(row=>{
+   const verdict=row.origin===origin?settled(row.nullifiers.map(BigInt)):undefined;
+   if(verdict!==false)return verdict!==true;
+   if(row.batchAt===undefined){row.batchAt=count;marked=true;}
+   return at-row.createdAt<=TRACKED_MS+graceMs||count===row.batchAt;
+  });
+  if(marked||remaining.length!==entries.length)save(remaining);
+ };
+ return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations,settleLandedMutations};
 }
 
 const current=()=>{if(!globalThis.localStorage)throw new Error('The native payment journal is unavailable; no payment was sent.');return makeNativeMutationJournal(globalThis.localStorage);};

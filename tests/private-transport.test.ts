@@ -9,9 +9,9 @@ import {IsolatedOnchainProvider} from '../src/native/providers.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
-import {isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
+import {PRIVATE_ONCHAIN_POLL_MS,isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
 import {poolApiOf} from '../src/shielded/pool.ts';
-import {installPrivateTransport,privateTransport,PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
+import {installPrivateTransport,privateTransport,PRIVATE_GRACE_MS,PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 import info from './fixtures/ark-info.json' with {type:'json'};
@@ -146,6 +146,11 @@ test('providers carry no event source and an onchain provider that polls',async 
  assert.deepEqual(sent,[],'a watched script is polled, never subscribed');
 });
 
+test('the private transport builds its onchain provider on the slow poll interval',async t=>{
+ const g=await rig(t),interval=(g.transport.providers(ARK,ARK).onchainProvider('mutinynet') as IsolatedOnchainProvider).pollingInterval;
+ assert.ok(interval>=PRIVATE_ONCHAIN_POLL_MS&&interval<=1.25*PRIVATE_ONCHAIN_POLL_MS,String(interval));
+});
+
 test('a pool spend POST is journalled before it goes out and resolved by its own GET',async t=>{
  let reserved:bigint[]=[];
  const g=await rig(t,{reply:url=>{if(url.endsWith('/spends')){reserved=g.transport.journal.pendingPoolNullifiers(POOL);return Response.json({id:ID},{status:202});}return Response.json({status:'included',txid:'d'.repeat(64)});}});
@@ -175,6 +180,24 @@ test('a pending entry whose GET answers 404 clears at 900 001 ms of age through 
  assert.deepEqual([await first,g.transport.journal.pendingPoolNullifiers(POOL)],[false,[]]);
  assert.equal(await g.transport.reconcile(),false);
  assert.equal(g.calls.filter(url=>url.endsWith('/spends/'+ID)).length,2,'one read per reconcile that found the entry');
+});
+
+test('reconcile passes the caller\'s verdict to the journal and still reports what is pending',async t=>{
+ const landed='cd'.repeat(16),g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json(url.endsWith(landed)?{status:'included',txid:'d'.repeat(64)}:{status:'pending'})});
+ for(const [id,nf] of [[ID,'17'],[landed,'23']])assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(id,nf))).status,202);
+ const asked:bigint[][]=[];
+ assert.equal(await g.transport.reconcile({settledNullifiers:nullifiers=>{asked.push([...nullifiers]);return undefined;},batchCount:()=>0}),true);
+ assert.deepEqual([asked,g.transport.journal.pendingPoolNullifiers(POOL)],[[[17n]],[17n]],'asked after the id round, of what it left');
+ assert.equal(await g.transport.reconcile({settledNullifiers:()=>true,batchCount:()=>0}),false);
+});
+
+test('reconcile hands the journal the wallet\'s count as it stands once the id round is done',async t=>{
+ let count=5;const g=await rig(t,{reply:url=>{if(url.endsWith('/spends'))return Response.json({id:ID},{status:202});count=Math.max(count,6);return Response.json({status:'pending'});}});
+ const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
+ assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(ID,'17'))).status,202);
+ at=start+3_600_001+PRIVATE_GRACE_MS;const wallet={settledNullifiers:()=>false,batchCount:()=>count};
+ assert.deepEqual([await g.transport.reconcile(wallet),await g.transport.reconcile(wallet)],[true,true]);
+ count=7;assert.equal(await g.transport.reconcile(wallet),false);
 });
 
 test('a spend POST that never went out frees its reservation at once, and one that may have run keeps it',async t=>{

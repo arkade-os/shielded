@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {test} from 'node:test';
+import {test,type TestContext} from 'node:test';
 import {DefaultVtxo,SingleKey,Wallet} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -7,13 +7,14 @@ import {BATCH_SLOTS,ROLLUP_FIELD} from '../packages/protocol/src/rollup/constant
 import type {RollupEpochRecord,RollupEpochRecordSlot} from '../packages/protocol/src/rollup/epoch-record.ts';
 import {ROLLUP_RECORD_BYTES} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
-import {epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
+import {EVENT_RETRY_MS,WATCHDOG_MS,epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
 import type {ShieldedSyncProgress} from '../src/shielded/sync-progress.ts';
 import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
 import {waitForSpend,type ArkCoin,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
-import {markPrivateFetch,markPrivatePoolPage,privatePoolPage,isPrivatePoolApi} from '../src/shielded/network-privacy.ts';
+import {PRIVATE_SUBMIT_JITTER_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch,privatePoolPage,isPrivateFetch,isPrivatePoolApi,isSealedFetch} from '../src/shielded/network-privacy.ts';
+import type {SubmitDeps} from '../src/shielded/submit.ts';
 import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
@@ -188,6 +189,264 @@ test('private wallet watchdog reads public status independently of private item 
  });
  await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);
  assert.deepEqual(asked,['/status']);
+});
+
+const stub=()=>(async()=>Response.json({})) as typeof fetch,sealedStub=()=>markSealedFetch(markPrivateFetch(stub())),nativeStub=()=>markPrivateFetch(stub());
+const tickRig=(held:number,reported:number,fetcher:typeof fetch)=>{
+ const asked:string[]=[],ran:string[]=[],pool={batches:reported},networkPrivacy=isPrivateFetch(fetcher);let batchCount=held;
+ const account={get batchCount(){return batchCount;},epochLen:128,async apply(batch:number){assert.equal(batch,batchCount++);}};
+ const plain=(async(path:string)=>{
+  asked.push(path);const url=new URL(path,'https://pool.test');
+  if(url.pathname==='/status')return {phase:'ready',pool:{batches:pool.batches}};
+  const from=Number(url.searchParams.get('from')),limit=Number(url.searchParams.get('limit'));
+  return {total:pool.batches,batches:Array.from({length:Math.max(0,Math.min(limit,pool.batches-from))},(_,n)=>from+n)};
+ }) as PoolApi;
+ const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  stopped:false,offline:false,networkPrivacy,sealedTransport:isSealedFetch(fetcher),pool:{origin:'https://pool.test',status:{}},statusAt:0,statusReadAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
+  watchLinks(){},async shield(){ran.push('shield');},async merge(){},async renewNotes(){ran.push('renew');},async recoverNotes(){ran.push('recover');},changed(){this.stopped=true;},
+ });
+ // changed() stops the wallet, or tick() would arm its 60 s timer.
+ const tick=async()=>{wallet.stopped=false;await (ShieldedWallet.prototype as unknown as {tick(this:typeof wallet):Promise<void>}).tick.call(wallet);await flush();};
+ return {asked,ran,pool,account,wallet,tick,pages:()=>asked.filter(path=>path.startsWith('/batches'))};
+};
+const timers=(t:TestContext)=>{const armed:{ms:number;run:()=>void}[]=[];t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>armed.push({ms,run})) as never);return armed;};
+const spread=(t:TestContext)=>{let n=0;t.mock.method(Math,'random',()=>(++n%9+1)/10);};
+const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
+
+test('a sealed tick reads no batch page while the pool reports the count the account already holds, nor does its auto-shield',async()=>{
+ const {asked,pages,ran,tick}=tickRig(140,140,sealedStub());
+ await tick();
+ assert.ok(asked.includes('/status'));assert.deepEqual(pages(),[]);
+ assert.deepEqual(ran.toSorted(),['recover','renew','shield']);
+});
+
+test('a sealed tick syncs as soon as the pool count moves, including across an epoch rotation',async()=>{
+ const {asked,pages,pool,account,tick}=tickRig(127,127,sealedStub());
+ // 128 closes epoch 0 (epochLen 128); 130 is two batches into epoch 1.
+ pool.batches=128;await tick();
+ assert.equal(account.batchCount,128);assert.equal(pages().at(-1),'/batches?from=120&limit=8');
+ asked.length=0;pool.batches=130;await tick();
+ assert.equal(account.batchCount,130);assert.deepEqual(pages(),['/batches?from=128&limit=12']);
+});
+
+test('a direct tick still syncs on every tick, and so does its auto-shield',async()=>{
+ const {pages,tick}=tickRig(140,140,stub());
+ await tick();await tick();
+ assert.deepEqual(pages(),Array(4).fill('/batches?from=140&limit=50'));
+});
+
+test('a native tick, private but not sealed, still syncs at equal counts, and so does its auto-shield',async()=>{
+ const {pages,tick}=tickRig(140,140,nativeStub());
+ await tick();
+ assert.deepEqual(pages(),Array(2).fill('/batches?from=128&limit=12'));
+});
+
+test('create marks only a sealed pool fetcher as a sealed transport',async t=>{
+ const seen:unknown[]=[],sentinel=new Error('creation inspected'),wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
+  stopped:false,unwatch:[],changeListeners:new Set(),actionListeners:new Set(),getContractManager:async()=>({}),getAddress:async()=>'unused',
+  async load(this:{sealedTransport:boolean}){seen.push(this.sealedTransport);throw sentinel;},
+ }) as ShieldedWallet;
+ t.mock.method(Wallet,'create',async()=>wallet as never);t.mock.method(Wallet.prototype,'dispose',async()=>{});
+ for(const fetcher of [sealedStub(),nativeStub(),stub()])await assert.rejects(ShieldedWallet.create({identity:undefined as never,pool:{origin:'https://pool.test',status:{pool:{token:'pool',script:'5120',address:'unused'}} as never},secret:'11'.repeat(32),hash:()=>1n,prover:undefined as never,fetcher,networkPrivacy:isPrivateFetch(fetcher)}),error=>error===sentinel);
+ assert.deepEqual(seen,[true,false,false]);
+});
+
+test('a sealed wallet re-draws its watchdog and status intervals every round, and a direct or native one keeps them at 60 s',async t=>{
+ spread(t);const armed=timers(t),proto=ShieldedWallet.prototype as unknown as {start(this:unknown):Promise<void>;statusTick(this:unknown):Promise<void>};
+ const delays=async(fetcher:typeof fetch)=>{
+  const {wallet,tick}=tickRig(140,140,fetcher);Object.assign(wallet,{changed(){},finishStart:async()=>{}});armed.length=0;
+  await proto.start.call(wallet);
+  for(let round=0;round<5;round++){await tick();await proto.statusTick.call(wallet);}
+  return armed.map(timer=>timer.ms);
+ };
+ const sealed=await delays(sealedStub());
+ assert.equal(sealed.length,12);
+ assert.ok(sealed.every(ms=>ms>WATCHDOG_MS&&ms<=1.25*WATCHDOG_MS)&&new Set(sealed).size>1,sealed.join());
+ for(const fetcher of [stub(),nativeStub()])assert.deepEqual(await delays(fetcher),Array(12).fill(WATCHDOG_MS));
+});
+
+test('a sealed catch-up after an indexer event re-draws its retry delays, and a direct or native one keeps them',async t=>{
+ spread(t);const armed=timers(t);
+ const retries=async(fetcher:typeof fetch)=>{
+  let notify:(event:{type:string})=>void=()=>{},syncs=0;armed.length=0;
+  const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{networkPrivacy:isPrivateFetch(fetcher),sealedTransport:isSealedFetch(fetcher),stopped:false,unwatch:[],poolScript:'script',
+   getContractManager:async()=>({watchScript:async()=>{},onContractEvent:(listener:typeof notify)=>{notify=listener;return ()=>{};}}),notifyIncomingFunds:async()=>()=>{},autoShield:async()=>{},sync:async()=>{syncs++;return 0;}});
+  await (ShieldedWallet.prototype as unknown as {finishStart(this:unknown):Promise<void>}).finishStart.call(wallet);
+  notify({type:'vtxo_received'});
+  for(let i=0;i<EVENT_RETRY_MS.length-1;i++){await flush();armed[i]!.run();}
+  await flush();
+  return {syncs,delays:armed.map(timer=>timer.ms)};
+ };
+ const sealed=await retries(sealedStub());
+ assert.deepEqual([sealed.syncs,sealed.delays.length],[EVENT_RETRY_MS.length,EVENT_RETRY_MS.length-1],'a zero delay stays zero and arms no timer');
+ assert.ok(sealed.delays.every((ms,i)=>ms>EVENT_RETRY_MS[i+1]!&&ms<=1.25*EVENT_RETRY_MS[i+1]!),sealed.delays.join());
+ for(const fetcher of [stub(),nativeStub()])assert.deepEqual(await retries(fetcher),{syncs:EVENT_RETRY_MS.length,delays:EVENT_RETRY_MS.slice(1)});
+});
+
+const depsOf=(wallet:object)=>(wallet as {deps():SubmitDeps}).deps();
+test('only a sealed wallet delays its submit and watches a spend off the account; a native or direct one keeps the id poll',()=>{
+ const sealed=depsOf(tickRig(140,140,sealedStub()).wallet);
+ assert.equal(sealed.jitterMs,PRIVATE_SUBMIT_JITTER_MS);assert.equal(typeof sealed.landedBy,'function');
+ for(const fetcher of [nativeStub(),stub()]){const {jitterMs,landedBy}=depsOf(tickRig(140,140,fetcher).wallet);assert.deepEqual([jitterMs,landedBy],[undefined,undefined]);}
+});
+
+test('a sealed spend round reads only /status while the pool count holds, and pages to find the spend once the head moves',async()=>{
+ const {asked,pool,account,wallet}=tickRig(140,140,sealedStub()),history:{batch:number;spent:bigint[];txid:string}[]=[],apply=account.apply.bind(account);
+ Object.assign(account,{history,async apply(batch:number){await apply(batch);history.push({batch,spent:[7n,8n],txid:'ab'.repeat(32)});}});Object.assign(wallet,{changed(){}});
+ const {landedBy}=depsOf(wallet);
+ assert.equal(await landedBy!([7n,8n]),undefined);assert.deepEqual(asked,['/status']);
+ pool.batches=141;
+ assert.deepEqual(await landedBy!([7n,8n]),{status:'included',batch:140,txid:'ab'.repeat(32)});
+ assert.deepEqual(asked.slice(1),['/status','/batches?from=128&limit=12','/batches?from=140&limit=12']);
+ assert.equal(await landedBy!([7n,9n]),undefined);
+});
+
+test('a sealed spend round whose catch-up fails keeps waiting, and a closed wallet ends it',async()=>{
+ const {account,wallet}=tickRig(140,141,sealedStub());
+ Object.assign(account,{history:[],async apply(){throw new Error('No relay brought an answer in time.');}});Object.assign(wallet,{changed(){}});
+ const {landedBy}=depsOf(wallet);
+ assert.equal(await landedBy!([7n]),undefined);
+ wallet.stopped=true;await assert.rejects(landedBy!([7n]),/wallet was closed/);
+});
+
+const included=(batch:number)=>({status:'included',batch,txid:'ab'.repeat(32)});
+test('a sealed finish at the pool\'s count reads no page for a spend the account already holds, and a direct or native finish still syncs',async()=>{
+ for(const [fetcher,read] of [[sealedStub(),[]],[stub(),['/batches?from=140&limit=50']],[nativeStub(),['/batches?from=128&limit=12']]] as const){
+  const {wallet,pages}=tickRig(140,140,fetcher);await wallet.refreshPoolStatus();
+  await wallet.finish(included(139));assert.deepEqual(pages(),read);
+ }
+});
+test('a sealed finish still syncs when the pool count it last read predates the spend\'s own batch, as after a deposit\'s id poll',async()=>{
+ const {wallet,pool,account}=tickRig(140,140,sealedStub());await wallet.refreshPoolStatus();
+ pool.batches=141;await wallet.finish(included(140));
+ assert.equal(account.batchCount,141);
+});
+
+const statusRig=()=>{
+ const rig=tickRig(140,140,sealedStub());Object.assign(rig.account,{history:[{batch:139,spent:[7n,8n]}]});
+ return {...rig,read:()=>(rig.wallet as {refreshPoolStatus():Promise<boolean>}).refreshPoolStatus(),verdict:(nullifiers:bigint[])=>(rig.wallet as ShieldedWallet).settledNullifiers(nullifiers)};
+};
+test('after a fresh status read, a wallet gives the journal a verdict only at the pool\'s published count',async()=>{
+ const {pool,read,verdict}=statusRig();
+ await read();assert.deepEqual([verdict([7n,8n]),verdict([7n,9n])],[true,false]);
+ pool.batches=141;await read();assert.equal(verdict([7n,8n]),undefined);
+});
+
+test('a wallet whose last status read is two watchdog rounds old gives no verdict, though the counts match',async t=>{
+ let at=1_000_000;t.mock.method(Date,'now',()=>at);
+ const {read,verdict}=statusRig();await read();
+ at+=2*WATCHDOG_MS-1;assert.equal(verdict([7n,9n]),false);
+ at+=1;assert.equal(verdict([7n,9n]),undefined);
+});
+
+test('a wallet opened offline on a cached status gives no verdict, though the counts match and the operator reads as up',()=>{
+ const {wallet,verdict}=statusRig();Object.assign(wallet,{statusAt:Date.now(),pool:{origin:'https://pool.test',status:{pool:{batches:140}}}});
+ assert.equal(wallet.operatorDown,undefined);assert.equal(verdict([7n,9n]),undefined);
+});
+
+test('a wallet still offline gives no verdict after a fresh status read, though the counts match, and gives it once it is checked',async()=>{
+ const {wallet,read,verdict}=statusRig();Object.assign(wallet,{offline:true});
+ await read();assert.equal(verdict([7n,9n]),undefined);
+ Object.assign(wallet,{offline:false});assert.deepEqual([verdict([7n,8n]),verdict([7n,9n])],[true,false]);
+});
+
+const HEAD='ee'.repeat(32),EXPIRES=Date.parse('2026-11-20T00:00:00Z');
+const headOf=(expiresAt?:number)=>({vtxos:[{assets:[{assetId:HEAD,amount:1n}],...(expiresAt===undefined?{}:{expiresAt:new Date(expiresAt)})}]});
+const refused=():never=>{throw new Error('gateway down');};
+// A sealed wallet reaches the indexer through the pool server's gateway, so `answer` is told whether the pool still answers.
+const headRig=(t:TestContext,fetcher:typeof fetch,answer:(ask:number,poolUp:boolean)=>unknown=()=>headOf(EXPIRES))=>{
+ let at=1_700_000_000_000,asks=0,poolUp=true;t.mock.method(Date,'now',()=>at);timers(t);
+ const {wallet,tick}=tickRig(140,140,fetcher);Object.assign(wallet,{token:HEAD,poolScript:'5120',changed(){},indexerProvider:{getVtxos:async()=>answer(++asks,poolUp)}});
+ return {wallet,asks:()=>asks,later:(ms:number)=>{at+=ms;},
+  refresh:async()=>{await wallet.refreshPoolStatus();await flush();},
+  ticks:async(rounds:number)=>{for(let round=0;round<rounds;round++){at+=WATCHDOG_MS;await tick();await flush();}},
+  // Already past operatorDown's fixed 2*WATCHDOG_MS before the outage's first hand-driven tick; the 1.25 is margin, not a jitter bound.
+  stop:()=>{poolUp=false;wallet.api=()=>Promise.reject(new Error('fetch failed'));at+=2*1.25*WATCHDOG_MS;}};
+};
+test('a sealed wallet reads the pool head expiry once while the pool answers, and shows it when the pool stops',async t=>{
+ const {wallet,asks,refresh,ticks,stop}=headRig(t,sealedStub(),(_ask,poolUp)=>poolUp?headOf(EXPIRES):refused());
+ await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(3);
+ assert.deepEqual([whileUp,asks()-whileUp,wallet.operatorDown!.headExpiresAt],[1,1,EXPIRES]);
+});
+const unusable=[['rejects',refused],['finds no head coin',()=>({vtxos:[]})],['finds an invalid expiry',()=>headOf(NaN)]] as const;
+for(const [what,whileUp] of unusable)test(`a sealed wallet whose head expiry read ${what} reports no deadline rather than a wrong one`,async t=>{
+ const {wallet,refresh,ticks,stop}=headRig(t,sealedStub(),(_ask,poolUp)=>poolUp?whileUp():refused());
+ await refresh();stop();await ticks(1);
+ assert.equal(wallet.operatorDown!.headExpiresAt,undefined);
+});
+for(const [kind,fetcher] of [['direct',stub],['native',nativeStub]] as const)test(`a ${kind} wallet still looks the head expiry up during its outage, and reads nothing before one`,async t=>{
+ const {wallet,asks,refresh,ticks,stop}=headRig(t,fetcher());
+ await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(3);
+ assert.deepEqual([whileUp,asks()-whileUp,wallet.operatorDown!.headExpiresAt],[0,1,EXPIRES]);
+});
+test('a sealed wallet shows the outage read over the deadline it remembered, when that read answers',async t=>{
+ const {wallet,refresh,ticks,stop}=headRig(t,sealedStub(),ask=>headOf(ask===1?EXPIRES:EXPIRES+86_400_000));
+ await refresh();stop();await ticks(1);
+ assert.equal(wallet.operatorDown!.headExpiresAt,EXPIRES+86_400_000);
+});
+test('a sealed wallet never has two head expiry reads in flight, even past its back-off, and retries a failed one after it',async t=>{
+ let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
+ const {wallet,asks,refresh,later}=headRig(t,sealedStub(),ask=>ask===1?gate.then(refused):headOf(EXPIRES));
+ for(let i=0;i<4;i++)await refresh();
+ later(10*WATCHDOG_MS);await refresh();
+ const inFlight=asks();open();await flush();
+ await refresh();await refresh();
+ assert.deepEqual([inFlight,asks(),wallet.lastHeadExpiry],[1,2,EXPIRES]);
+});
+test('a head expiry that arrives after the wallet closed is not kept',async t=>{
+ let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),()=>gate.then(()=>headOf(EXPIRES)));
+ await refresh();wallet.stopped=true;open();await flush();
+ assert.deepEqual([asks(),wallet.lastHeadExpiry],[1,undefined]);
+});
+test('a sealed wallet re-reads the head expiry once the one it remembered has passed, and shows the renewed one when the pool stops',async t=>{
+ const renewed=EXPIRES+7*86_400_000,{wallet,asks,refresh,ticks,later,stop}=headRig(t,sealedStub(),(ask,poolUp)=>poolUp?headOf(ask===1?EXPIRES:renewed):refused());
+ await refresh();await ticks(3);const before=asks();
+ later(EXPIRES+1-Date.now());await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(1);
+ assert.deepEqual([before,whileUp,wallet.operatorDown!.headExpiresAt],[1,2,renewed]);
+});
+for(const [what,answer] of [...unusable,['finds a deadline that has already passed',()=>headOf(Date.now()-1)]] as const)test(`a sealed wallet whose head expiry read ${what} waits ten watchdog rounds before reading again`,async t=>{
+ const {asks,refresh,later}=headRig(t,sealedStub(),answer);
+ await refresh();later(WATCHDOG_MS);await refresh();later(9*WATCHDOG_MS-1);await refresh();
+ const inside=asks();
+ later(1);await refresh();await refresh();
+ assert.deepEqual([inside,asks()],[1,2]);
+});
+test('a head expiry read that finds a deadline ahead clears the back-off, so one passing within ten rounds is re-read at once',async t=>{
+ const {asks,refresh,later}=headRig(t,sealedStub(),ask=>headOf(Date.now()+(ask===1?5*60_000:7*86_400_000)));
+ await refresh();later(6*60_000);await refresh();
+ assert.equal(asks(),2);
+});
+const MOVED=EXPIRES-86_400_000,named=(wallet:{api:unknown})=>{const pool={batches:140,head:{txid:'aa'.repeat(32),vout:0}};wallet.api=async()=>({phase:'ready',pool});return (txid:string)=>{pool.head={txid,vout:0};};};
+test('a sealed wallet re-reads the head expiry once the pool names a new head, and shows that head\'s deadline when the pool stops',async t=>{
+ const {wallet,asks,refresh,ticks,stop}=headRig(t,sealedStub(),(ask,poolUp)=>poolUp?headOf(ask===1?EXPIRES:MOVED):refused()),rename=named(wallet);
+ await refresh();await ticks(3);const same=asks();
+ rename('bb'.repeat(32));await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(1);
+ assert.deepEqual([same,whileUp,wallet.operatorDown!.headExpiresAt],[1,2,MOVED]);
+});
+test('a head expiry read that answers after the pool named a new head is not kept, and the next refresh reads the new one at once',async t=>{
+ let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),ask=>ask===1?gate.then(()=>headOf(EXPIRES)):headOf(MOVED)),rename=named(wallet);
+ await refresh();rename('bb'.repeat(32));await refresh();
+ open();await flush();const kept=wallet.lastHeadExpiry;
+ await refresh();
+ assert.deepEqual([kept,asks(),wallet.lastHeadExpiry],[undefined,2,MOVED]);
+});
+test('a sealed wallet keeps the head deadline it remembered, with no read, through a status that names no pool, as while the server restarts, and when the same head is named again',async t=>{
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),ask=>ask===1?headOf(EXPIRES):refused());named(wallet);const live=wallet.api;
+ await refresh();wallet.api=async()=>({phase:'starting',message:'Starting the rollup pool.'});await refresh();const restarting=[asks(),wallet.lastHeadExpiry];
+ wallet.api=live;await refresh();
+ assert.deepEqual([restarting,asks(),wallet.lastHeadExpiry],[[1,EXPIRES],1,EXPIRES]);
+});
+for(const [what,answer] of [...unusable,['finds a deadline that has already passed',()=>headOf(Date.now()-1)]] as const)test(`a sealed wallet whose head expiry read ${what} keeps backing off that head, and reads the next head the pool names at once`,async t=>{
+ const {wallet,asks,refresh,later}=headRig(t,sealedStub(),ask=>ask===1?answer():headOf(MOVED)),rename=named(wallet);
+ await refresh();later(WATCHDOG_MS);await refresh();
+ rename('bb'.repeat(32));later(WATCHDOG_MS);await refresh();
+ assert.deepEqual([asks(),wallet.lastHeadExpiry],[2,MOVED]);
 });
 
 test('external uncertain reservations remain visible after local holds release',()=>{

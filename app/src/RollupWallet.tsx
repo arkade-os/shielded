@@ -457,7 +457,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
  useEffect(()=>{
   if(!wallet||!nativeHost&&!PRIVATE)return;
-  if(!nativeHost){let live=true;void PRIVATE!.reconcile().then(pending=>{if(!live)return;setNativePending(pending);setJournalError('');},error=>{if(!live)return;setNativePending(true);setJournalError(errorText(error));});return()=>{live=false;};}
+  if(!nativeHost){let live=true;void PRIVATE!.reconcile(wallet).then(pending=>{if(!live)return;setNativePending(pending);setJournalError('');},error=>{if(!live)return;setNativePending(true);setJournalError(errorText(error));});return()=>{live=false;};}
   try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
   catch(error){setPoolError(errorText(error));}
   },[wallet,tick,nativeHost]);
@@ -476,7 +476,11 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const wantsInvoice=receiveMode==='unified'&&receiveAmount(lnAmount)!==undefined;
  useEffect(()=>{if(wantsInvoice&&!suspended)readLnBounds();},[wantsInvoice,wallet,wallet?.swaps,suspended]);
 
- useEffect(()=>{if(tab==='send'&&pool)prefetchProvingKeys(pool,'spend','',sessionFetch);},[tab,pool,sessionFetch]);
+ useEffect(()=>{
+  if(!pool)return;
+  if(PRIVATE){prefetchProvingKeys(pool,'spend','',sessionFetch);if(pool.proving?.join)prefetchProvingKeys(pool,'join','',sessionFetch);return;}
+  if(tab==='send')prefetchProvingKeys(pool,'spend','',sessionFetch);
+ },[tab,pool,sessionFetch]);
  const docked=narrow&&pool?.phase==='ready';
  useEffect(()=>{
   if(!nativeHost)return;
