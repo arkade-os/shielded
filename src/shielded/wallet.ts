@@ -193,6 +193,7 @@ export class ShieldedWallet extends Wallet {
  private headExpiry?:number|null;
  /** Read while the pool answered: a sealed wallet reaches the indexer through the pool server, so an outage read cannot. */
  private lastHeadExpiry?:number;
+ private lastHead?:string;
  private headRead?:Promise<void>;
  /** When the last read began, until one found a deadline still ahead; the next waits ten watchdog rounds from it. */
  private headReadAt?:number;
@@ -356,13 +357,17 @@ export class ShieldedWallet extends Wallet {
   const {vtxos}=await this.indexerProvider.getVtxos({scripts:[this.poolScript],spendableOnly:true});
   return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
  }
+ private poolHead(){const head=this.pool.status.pool?.head;return head&&`${head.txid}:${head.vout}`;}
  private rememberHeadExpiry(){
+  const head=this.poolHead();if(head!==this.lastHead)this.lastHeadExpiry=undefined;
   const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
   if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
   this.headReadAt=now;
   this.headRead=this.fetchHeadExpiry().then(expiry=>{
    if(this.stopped||expiry===undefined||!Number.isFinite(expiry))return;
-   this.lastHeadExpiry=expiry;
+   // A read begun for a head the pool has since replaced says nothing of the new head's deadline, nor that reads should back off.
+   if(head!==this.poolHead()){this.headReadAt=undefined;return;}
+   this.lastHeadExpiry=expiry;this.lastHead=head;
    if(expiry>Date.now())this.headReadAt=undefined;
   },()=>{}).then(()=>{this.headRead=undefined;});
  }

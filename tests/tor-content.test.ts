@@ -420,6 +420,22 @@ test('a head expiry read that finds a deadline ahead clears the back-off, so one
  await refresh();later(6*60_000);await refresh();
  assert.equal(asks(),2);
 });
+const MOVED=EXPIRES-86_400_000,named=(wallet:{api:unknown})=>{const pool={batches:140,head:{txid:'aa'.repeat(32),vout:0}};wallet.api=async()=>({phase:'ready',pool});return (txid:string)=>{pool.head={txid,vout:0};};};
+test('a sealed wallet re-reads the head expiry once the pool names a new head, and shows that head\'s deadline when the pool stops',async t=>{
+ const {wallet,asks,refresh,ticks,stop}=headRig(t,sealedStub(),(ask,poolUp)=>poolUp?headOf(ask===1?EXPIRES:MOVED):refused()),rename=named(wallet);
+ await refresh();await ticks(3);const same=asks();
+ rename('bb'.repeat(32));await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(1);
+ assert.deepEqual([same,whileUp,wallet.operatorDown!.headExpiresAt],[1,2,MOVED]);
+});
+test('a head expiry read that answers after the pool named a new head is not kept, and the next refresh reads the new one at once',async t=>{
+ let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
+ const {wallet,asks,refresh}=headRig(t,sealedStub(),ask=>ask===1?gate.then(()=>headOf(EXPIRES)):headOf(MOVED)),rename=named(wallet);
+ await refresh();rename('bb'.repeat(32));await refresh();
+ open();await flush();const kept=wallet.lastHeadExpiry;
+ await refresh();
+ assert.deepEqual([kept,asks(),wallet.lastHeadExpiry],[undefined,2,MOVED]);
+});
 
 test('external uncertain reservations remain visible after local holds release',()=>{
  const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};
