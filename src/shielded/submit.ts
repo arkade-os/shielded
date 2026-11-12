@@ -19,10 +19,10 @@ export async function submitAll(members:SubmitMember[],o:SubmitDeps&{step:(n:num
  const ids:string[]=[];
  for(const [i,m] of members.entries()){const id=randomSubmissionId(),body:EpochSpendBody=epochTransferBody(id,m.built,proofs[i]!,m.extra);await o.api('/spends',body);ids.push(id);}
  o.step(o.first+2);
+ // A deposit unit's slots spend dummy nullifiers that no batch records against us, a coin-less carrier's too, and its signing round needs the id anyway.
+ const deposit=members.some(m=>!!m.coin),priv=o.landedBy!==undefined;
  const finals=await Promise.all(ids.map((id,i)=>{
-  // A deposit's slot spends a dummy nullifier that no batch records against us, and its signing round needs the id anyway.
-  const nullifiers=members[i]!.built.witness.slot.nullifiers,deposit=!!members[i]!.coin,priv=o.landedBy!==undefined;
-  const landed=priv&&!deposit?()=>o.landedBy!(nullifiers):undefined;
+  const nullifiers=members[i]!.built.witness.slot.nullifiers,landed=priv&&!deposit?()=>o.landedBy!(nullifiers):undefined;
   return waitForSpend(id,async request=>{
    const coin=members[i]!.coin;if(!coin)throw new Error('The pool asked to sign a spend with no deposit coin.');
    checkSigningRequest(request,coin,o.poolScript,members[i]!.built.witness.publicSignals[0]!);o.step(o.first+3);
