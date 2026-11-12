@@ -4,7 +4,7 @@ Create a Dokploy **Application** from this repository and its `main` branch. Cho
 
 Add the variables from [`dokploy.env.example`](../dokploy.env.example) to the runtime environment. Only Mutinynet is supported. Read [FEE-WALLET.md](FEE-WALLET.md) before setting the deposit fee variables.
 
-Use a single-node host. In **Advanced → Volumes/Mounts**, mount one persistent volume at `/data` and set the container port to `8792`. Keep one replica: the pool journal allows a single writer. The default Swarm update order works: a replacement reports healthy while it waits for the previous container to release the pool, then takes over. Keep the volume across updates. It holds the operator keys, the proving keys and the pool journal; losing it loses the pool.
+Use a single-node host. In **Advanced → Volumes/Mounts**, mount one persistent volume at `/data` and set the container port to `8792`. Keep one replica: the pool journal allows a single writer. The default Swarm update order works: a replacement reports healthy while it waits for the previous container to release the pool, then takes over. Keep the volume across updates. It holds the operator keys, the proving keys and the pool journal; losing it loses the pool. It also keeps a verified copy of the current native app release under `native-releases/` (about 500 MB, briefly twice that while a new release replaces it); the download page serves that copy and falls back to GitHub until it is complete.
 
 On first start the service copies those keys onto the volume and verifies them. It then shows an operator funding address in `/api/rollup/status`. Send at least 2,000 sats there and the service creates the pool.
 

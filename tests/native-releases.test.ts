@@ -73,3 +73,10 @@ test('release reader rejects declared and streamed oversize data, HTTP errors an
  await assert.rejects(readNativeReleaseResponse(new Response(stream)),/too large/);assert.equal(cancelled,true);
  await assert.rejects(readNativeReleaseResponse(new Response(new Uint8Array([0xff]))));
 });
+
+test('each freshly loaded release is handed to the host mirror, cached responses are not',async()=>{
+ let now=0;const seen:string[]=[];
+ const handler=createNativeReleasesHandler({fetchImpl:async()=>Response.json(nativeReleaseFixture()),now:()=>now,onRelease:release=>seen.push(release.commit)});
+ await request(handler);await request(handler);assert.deepEqual(seen,['a'.repeat(40)]);
+ now+=300_000;await request(handler);assert.equal(seen.length,2);
+});

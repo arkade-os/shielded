@@ -52,7 +52,10 @@ export interface NativeBuildEnvironment {
 export const NATIVE_PLATFORMS: readonly NativePlatform[] = ['windows-x86_64', 'linux-x86_64', 'macos-universal', 'android-arm64', 'ios'];
 export const NATIVE_PACKAGE_MAX_BYTES = 2_147_483_647;
 export const ANDROID_UPDATE_MAX_BYTES = 128 * 1024 * 1024;
-const releasesBase = 'https://github.com/arkade-os/shielded/releases';
+export const NATIVE_RELEASES_BASE = 'https://github.com/arkade-os/shielded/releases';
+export const NATIVE_DOWNLOAD_PATH = '/downloads/native';
+export const NATIVE_RELEASE_TAG = /^native-mutinynet-[a-f0-9]{12,40}-run[1-9]\d*-attempt[1-9]\d*$/;
+export const nativePackageFile = (name: string) => /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,239}$/.test(name) && !name.includes('..');
 const formats: Record<NativePlatform, readonly string[]> = {
   'windows-x86_64': ['.exe'], 'linux-x86_64': ['.deb', '.AppImage'],
   'macos-universal': ['.dmg', '.app.zip'], 'android-arm64': ['release.apk', 'debug.apk'],
@@ -85,17 +88,17 @@ export function parseNativeRelease(input: unknown): NativeRelease {
   if (typeof value.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(value.version) || value.version.length > 64) throw new Error('Invalid native release version');
   if (typeof value.publishedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value.publishedAt) || !Number.isFinite(Date.parse(value.publishedAt)) || new Date(value.publishedAt).toISOString().replace('.000Z', 'Z') !== value.publishedAt.replace('.000Z', 'Z')) throw new Error('Invalid native release publication time');
   const releaseUrl = safeUrl(value.releaseUrl);
-  const tag = releaseUrl.slice(`${releasesBase}/tag/`.length);
-  if (releaseUrl !== `${releasesBase}/tag/${tag}` || !/^native-mutinynet-[a-f0-9]{12,40}-run[1-9]\d*-attempt[1-9]\d*$/.test(tag) || !value.commit.startsWith(tag.split('-')[2])) throw new Error('Invalid native release repository or tag');
+  const tag = releaseUrl.slice(`${NATIVE_RELEASES_BASE}/tag/`.length);
+  if (releaseUrl !== `${NATIVE_RELEASES_BASE}/tag/${tag}` || !NATIVE_RELEASE_TAG.test(tag) || !value.commit.startsWith(tag.split('-')[2])) throw new Error('Invalid native release repository or tag');
   if (!Array.isArray(value.packages) || value.packages.length < 9 || value.packages.length > 32) throw new Error('Incomplete native release packages');
   const files = new Set<string>(), urls = new Set<string>(), covered = new Set<string>();
   const packages = value.packages.map((raw): NativeReleasePackage => {
     const item = record(raw);
     if (!NATIVE_PLATFORMS.includes(item.platform as NativePlatform) || !['release', 'debug'].includes(item.profile as string) || typeof item.requiresSigning !== 'boolean') throw new Error('Invalid native package platform or profile');
-    if (typeof item.file !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,239}$/.test(item.file) || item.file.includes('..') || !item.file.includes('mutinynet-') || !item.file.includes(item.platform as string) || !item.file.includes(`-${item.profile}-`)) throw new Error('Invalid native package filename');
+    if (typeof item.file !== 'string' || !nativePackageFile(item.file) || !item.file.includes('mutinynet-') || !item.file.includes(item.platform as string) || !item.file.includes(`-${item.profile}-`)) throw new Error('Invalid native package filename');
     if (!positive(item.bytes, NATIVE_PACKAGE_MAX_BYTES) || typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new Error('Invalid native package size or SHA256');
     const url = safeUrl(item.url);
-    if (url !== `${releasesBase}/download/${tag}/${item.file}` || files.has(item.file) || urls.has(url)) throw new Error('Invalid or duplicate native package download');
+    if (url !== `${NATIVE_RELEASES_BASE}/download/${tag}/${item.file}` || files.has(item.file) || urls.has(url)) throw new Error('Invalid or duplicate native package download');
     const result = { platform: item.platform, file: item.file, url, profile: item.profile, requiresSigning: item.requiresSigning, bytes: item.bytes, sha256: item.sha256 } as NativeReleasePackage;
     const format = packageFormat(result);
     const signing = (result.platform === 'android-arm64' && result.profile === 'release') || (result.platform === 'ios' && format === '.ipa');
@@ -110,7 +113,7 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     if (item.platform !== 'android-arm64' || item.profile !== 'release' || item.requiresSigning !== false || item.packageName !== 'io.arkade.shielded' || item.signerSha256 !== androidSigning.certificateSha256 || !positive(item.versionCode, 2_100_000_000) || item.versionCode !== 100000 + value.buildNumber) throw new Error('Invalid signed Android update identity');
     if (item.file !== file || files.has(file) || !positive(item.bytes, ANDROID_UPDATE_MAX_BYTES) || typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new Error('Invalid signed Android update package');
     const url = safeUrl(item.url);
-    if (url !== `${releasesBase}/download/${tag}/${file}` || urls.has(url)) throw new Error('Invalid signed Android update download');
+    if (url !== `${NATIVE_RELEASES_BASE}/download/${tag}/${file}` || urls.has(url)) throw new Error('Invalid signed Android update download');
     androidUpdate = { platform: 'android-arm64', file, url, profile: 'release', requiresSigning: false, bytes: item.bytes, sha256: item.sha256, packageName: 'io.arkade.shielded', versionCode: item.versionCode, signerSha256: item.signerSha256 };
   }
   let environment: NativeBuildEnvironment | undefined;
@@ -122,4 +125,13 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     environment = candidate as unknown as NativeBuildEnvironment;
   }
   return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages, ...(androidUpdate ? { androidUpdate } : {}) };
+}
+
+export function nativeReleaseTag(release: NativeRelease): string {
+  return release.releaseUrl.slice(`${NATIVE_RELEASES_BASE}/tag/`.length);
+}
+
+/** The host serves its verified copy, or redirects to the pinned GitHub asset until it has one. */
+export function nativeDownloadUrl(release: NativeRelease, item: NativeReleasePackage): string {
+  return `${NATIVE_RELEASE_ORIGIN}${NATIVE_DOWNLOAD_PATH}/${nativeReleaseTag(release)}/${item.file}`;
 }

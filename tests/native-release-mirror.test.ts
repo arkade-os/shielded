@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {test} from 'node:test';
+import {createNativeReleaseMirror} from '../src/native-release-mirror.ts';
+import {nativeReleaseTag,parseNativeRelease,type NativeRelease} from '../src/native-release.ts';
+import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-release.ts';
+
+const sha=(body:string)=>createHash('sha256').update(body).digest('hex');
+function release(build:number):{release:NativeRelease;bodies:Map<string,string>}{
+ const base=nativeReleaseFixture(),commit=String(build%10).repeat(40),tag=`native-mutinynet-${commit.slice(0,12)}-run${build}-attempt1`;
+ const raw={...base,commit,buildNumber:build,releaseUrl:base.releaseUrl.replace(/native-mutinynet-[^/]+$/,tag),packages:base.packages.map(item=>({...item,url:item.url.replace(/native-mutinynet-[^/]+\//,`${tag}/`)}))};
+ const parsed=parseNativeRelease({...raw,androidUpdate:androidUpdateFixture(raw)}),bodies=new Map<string,string>();
+ const withBodies=[...parsed.packages,parsed.androidUpdate!].map(item=>{const body=`${build}:${item.file}`;bodies.set(item.url,body);return {...item,bytes:Buffer.byteLength(body),sha256:sha(body)};});
+ const {bytes,sha256}=withBodies.at(-1)!;
+ return {release:{...parsed,packages:withBodies.slice(0,-1),androidUpdate:{...parsed.androidUpdate!,bytes,sha256}},bodies};
+}
+function server(bodies:Map<string,string>,tamper?:string){
+ const calls:string[]=[];
+ const fetchImpl:typeof fetch=async input=>{const url=String(input);calls.push(url);const body=bodies.get(url);return body===undefined?new Response(null,{status:404}):new Response(url===tamper?body.toUpperCase():body);};
+ return {calls,fetchImpl};
+}
+
+test('the host serves only files it verified against the current release',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-mirror-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const {release:current,bodies}=release(145),{calls,fetchImpl}=server(bodies),mirror=createNativeReleaseMirror({root,fetchImpl,warn:()=>{}});
+ const tag=nativeReleaseTag(current),apk=current.androidUpdate!;
+ assert.equal(mirror.path(tag,apk.file),undefined);
+ await mirror.sync(current);
+ for(const item of [...current.packages,apk])assert.equal(readFileSync(mirror.path(tag,item.file)!,'utf8'),bodies.get(item.url));
+ assert.equal(calls.length,10);assert.equal(mirror.path(tag,'other.apk'),undefined);assert.equal(mirror.path('native-mutinynet-000000000000-run1-attempt1',apk.file),undefined);
+ await mirror.sync(current);assert.equal(calls.length,10);
+});
+
+test('a download that differs from its release entry is never served',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-mirror-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const {release:current,bodies}=release(145),bad=current.packages[2]!,{fetchImpl}=server(bodies,bad.url),warnings:string[]=[];
+ const mirror=createNativeReleaseMirror({root,fetchImpl,warn:message=>warnings.push(message)}),tag=nativeReleaseTag(current);
+ await mirror.sync(current);
+ assert.equal(mirror.path(tag,current.packages[0]!.file),undefined);assert.match(warnings.join('\n'),/does not match its release size and SHA-256/);
+ assert.deepEqual(readdirSync(join(root,tag)).filter(name=>name.endsWith('.part')),[]);assert.equal(existsSync(join(root,tag,bad.file)),false);
+});
+
+test('a newer release replaces the old copy once it is complete, and a restart reuses verified files',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-mirror-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const first=release(145),second=release(146),bodies=new Map([...first.bodies,...second.bodies]),{calls,fetchImpl}=server(bodies);
+ const mirror=createNativeReleaseMirror({root,fetchImpl,warn:()=>{}});
+ await mirror.sync(first.release);await mirror.sync(second.release);
+ const oldTag=nativeReleaseTag(first.release),newTag=nativeReleaseTag(second.release),file=second.release.packages[0]!.file;
+ assert.equal(existsSync(join(root,oldTag)),false);assert.equal(mirror.path(oldTag,first.release.packages[0]!.file),undefined);assert.ok(mirror.path(newTag,file));
+ const fetched=calls.length,restarted=createNativeReleaseMirror({root,fetchImpl,warn:()=>{}});
+ await restarted.sync(second.release);assert.equal(calls.length,fetched);assert.ok(restarted.path(newTag,file));
+});
