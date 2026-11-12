@@ -635,6 +635,42 @@ async fn a_failing_host_mirror_falls_back_to_exactly_the_github_package() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_silent_host_mirror_falls_back_to_github_at_the_connect_timeout() {
+    let package = b"shielded-apk";
+    let inner = ready();
+    let lease = register(&inner, "mirror-silent");
+    let destination = Staging::new();
+    let (github, github_peer) = serve(served(package));
+    let mut github = Some(github);
+    let targets = Mutex::new(Vec::new());
+    let started = tokio::time::Instant::now();
+    download_with(
+        &lease,
+        &asset(package),
+        &sources(),
+        &mut destination.create().await,
+        &|_| {},
+        |checked| {
+            let host = checked.url.host_str().unwrap().to_owned();
+            targets.lock().unwrap().push(host.clone());
+            let stream = (host != POOL).then(|| lease.test_stream(github.take().unwrap()));
+            async move {
+                let Some(stream) = stream else {
+                    return std::future::pending().await;
+                };
+                send_http(stream, http_request(checked)?).await
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&destination.0).unwrap(), package);
+    assert_eq!(*targets.lock().unwrap(), vec![POOL, "github.com"]);
+    assert!(started.elapsed() >= Duration::from_secs(90));
+    github_peer.await.unwrap();
+}
+
 #[tokio::test]
 async fn a_cancelled_host_mirror_attempt_never_falls_back_to_github() {
     let inner = ready();
