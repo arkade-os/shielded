@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {createReadStream,createWriteStream} from 'node:fs';
 import {mkdir,readdir,rename,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -16,7 +16,8 @@ async function sha256File(path:string){
 }
 
 async function download(fetchImpl:typeof fetch,item:NativeReleasePackage,target:string){
- const part=`${target}.part`,hash=createHash('sha256');let received=0;
+ // A rolling deploy can run two containers on one volume; each download needs its own temp file.
+ const part=`${target}.${randomUUID()}.part`,hash=createHash('sha256');let received=0;
  try{
   const response=await fetchImpl(item.url,{redirect:'follow',signal:AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)});
   if(!response.ok||!response.body)throw new Error(`${item.file} returned HTTP ${response.status}`);

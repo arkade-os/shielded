@@ -40,6 +40,10 @@ test('native downloads serve the verified host copy or redirect to the pinned re
  const range=await fetch(url(`/downloads/native/${tag}/${file}`),{headers:{Range:'bytes=0-2'}});assert.equal(range.status,206);assert.equal(await range.text(),'apk');
  const other='shielded-mutinynet-windows-x86_64-release.exe',redirect=await fetch(url(`/downloads/native/${tag}/${other}`),{redirect:'manual'});
  assert.equal(redirect.status,302);assert.equal(redirect.headers.get('location'),`https://github.com/arkade-os/shielded/releases/download/${tag}/${other}`);
+ assert.equal(redirect.headers.get('cache-control'),'no-store');
+ rmSync(local);
+ const pruned=await fetch(url(`/downloads/native/${tag}/${file}`),{redirect:'manual'});
+ assert.equal(pruned.status,302);assert.equal(pruned.headers.get('location'),`https://github.com/arkade-os/shielded/releases/download/${tag}/${file}`);assert.equal(pruned.headers.get('cache-control'),'no-store');
  for(const path of [`/downloads/native/not-a-release/${file}`,`/downloads/native/${tag}/..%2F..%2Fsecret`,`/downloads/native/${tag}/.hidden`]){
   const response=await fetch(url(path),{redirect:'manual'});assert.equal(response.status,404,path);
  }

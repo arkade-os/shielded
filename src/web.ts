@@ -9,13 +9,15 @@ export function serveWeb(app:Express,web:string,data:string,mirror:NativeRelease
  app.get(`${NATIVE_DOWNLOAD_PATH}/:tag/:file`,(req,res)=>{
   const {tag,file}=req.params;
   if(!NATIVE_RELEASE_TAG.test(tag)||!nativePackageFile(file)){res.status(404).end();return;}
+  // Uncached, so the CDN stops redirecting as soon as this host has the file.
+  const toGitHub=()=>{res.set('Cache-Control','no-store').redirect(302,`${NATIVE_RELEASES_BASE}/download/${tag}/${file}`);};
   const local=mirror.path(tag,file);
-  if(!local){res.redirect(302,`${NATIVE_RELEASES_BASE}/download/${tag}/${file}`);return;}
+  if(!local){toGitHub();return;}
   res.sendFile(local,{headers:{
    'Cache-Control':'public, max-age=31536000, immutable',
    'Content-Type':file.endsWith('.apk')?'application/vnd.android.package-archive':'application/octet-stream',
    'Content-Disposition':`attachment; filename="${file}"`,
-  }});
+  }},error=>{if(error&&!res.headersSent)toGitHub();});
  });
  app.get(['/','/download','/index.html','/wallet','/claim','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web,headers:{'Cache-Control':'no-cache'}}));
  app.use('/assets',express.static(join(web,'assets'),{immutable:true,maxAge:'365d'}));
