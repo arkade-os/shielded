@@ -111,28 +111,52 @@ test('a journal built without a grace never releases on a 404',async t=>{
  for(const later of [300_001,3_599_999]){at=1_000_000+later;await lost(journal,UNKNOWN);assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(later));}
 });
 
-const settle=(journal:ReturnType<typeof makeNativeMutationJournal>,verdict:boolean|undefined)=>journal.settleLandedMutations(origin,()=>verdict);
+const settle=(journal:ReturnType<typeof makeNativeMutationJournal>,verdict:boolean|undefined,count=0)=>journal.settleLandedMutations(origin,()=>verdict,count);
+const BOUND=3_600_000+PRIVATE_GRACE_MS;
 test('a landed nullifier settles its journal entry at once',()=>{
  const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS}),elsewhere='https://other.test',asked:bigint[][]=[];
  journal.beforeNativeMutation(mutation());journal.beforeNativeMutation({...mutation(other,['23']),url:elsewhere+'/api/rollup/spends'});
- journal.settleLandedMutations(origin,nullifiers=>{asked.push([...nullifiers]);return true;});
+ journal.settleLandedMutations(origin,nullifiers=>{asked.push([...nullifiers]);return true;},0);
  assert.deepEqual([asked,journal.pendingPoolNullifiers(origin),journal.pendingPoolNullifiers(elsewhere)],[[[17n]],[],[23n]]);
 });
 
-test('an unlanded entry is released only once the pool can no longer admit it',()=>{
- for(const [age,left] of [[3_600_000+PRIVATE_GRACE_MS,[17n]],[3_600_001+PRIVATE_GRACE_MS,[]]] as const){
-  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
-  journal.beforeNativeMutation(mutation());
-  at+=age;settle(journal,false);
-  assert.deepEqual(journal.pendingPoolNullifiers(origin),left,String(age));
+test('an unlanded entry is released only once the pool can no longer admit it and has batched since it was first judged',()=>{
+ for(const [age,left] of [[BOUND,[17n]],[BOUND+1,[]]] as const){
+  let at=1_000_000;const persisted=storage(),journal=()=>makeNativeMutationJournal(persisted,{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+  journal().beforeNativeMutation(mutation());settle(journal(),false,140);
+  at+=age;settle(journal(),false,141);
+  assert.deepEqual(journal().pendingPoolNullifiers(origin),left,String(age));
  }
 });
 
-test('a wallet that has not caught up settles nothing',()=>{
+test('a stalled pool, whose count never passes the one an entry was first judged at, keeps it past the bound, and a landing still releases it at once',()=>{
+ let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+ journal.beforeNativeMutation(mutation());settle(journal,false,140);
+ for(const age of [BOUND+1,24*3_600_000]){at=1_000_000+age;settle(journal,false,140);assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(age));}
+ settle(journal,true,140);assert.deepEqual(journal.pendingPoolNullifiers(origin),[]);
+});
+
+test('an entry\'s first judgment marks the count and keeps it, even past the bound, and a pass that changes nothing or has no whole count writes nothing',()=>{
+ let at=1_000_000,writes=0;const persisted=storage(),journal=makeNativeMutationJournal({...persisted,setItem:(key:string,value:string)=>{writes++;persisted.setItem(key,value);}},{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+ journal.beforeNativeMutation(mutation());at+=BOUND+1;settle(journal,false,NaN);settle(journal,false,140);
+ assert.deepEqual([journal.pendingPoolNullifiers(origin),JSON.parse([...persisted.rows.values()][0]!).entries[0].batchAt,writes],[[17n],140,2]);
+ settle(journal,false,140);settle(journal,undefined,141);assert.equal(writes,2);
+ settle(journal,false,141);assert.deepEqual([journal.pendingPoolNullifiers(origin),writes],[[],3]);
+});
+
+test('a wallet that has not caught up settles nothing and marks nothing',()=>{
  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
  journal.beforeNativeMutation(mutation());
- at+=3_600_001+PRIVATE_GRACE_MS;settle(journal,undefined);
+ at+=BOUND+1;settle(journal,undefined,140);settle(journal,false,141);
  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n]);
+});
+
+test('a stored entry loads with no count mark, as an older build wrote it, or with a whole one, and any other mark makes the journal invalid',()=>{
+ const persisted=storage();makeNativeMutationJournal(persisted).beforeNativeMutation(mutation());
+ const [key,raw]=[...persisted.rows][0]!,stored=JSON.parse(raw),marked=(batchAt:unknown)=>{persisted.rows.set(key,JSON.stringify({...stored,entries:[{...stored.entries[0],batchAt}]}));return makeNativeMutationJournal(persisted);};
+ assert.equal('batchAt' in stored.entries[0],false);assert.deepEqual(makeNativeMutationJournal(persisted).pendingPoolNullifiers(origin),[17n]);
+ for(const batchAt of [0,140])assert.deepEqual(marked(batchAt).pendingPoolNullifiers(origin),[17n],String(batchAt));
+ for(const batchAt of [-1,1.5,'140',null,2**53])assert.throws(()=>marked(batchAt).pendingPoolNullifiers(origin),/journal is invalid/,String(batchAt));
 });
 
 test('the native journal settles nothing, because it is built with no grace',t=>{

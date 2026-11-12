@@ -54,9 +54,9 @@ test('a private wallet reconciles its journal on every tick and caps its shields
  assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
 });
 
-test('every tick hands the wallet\'s own verdict to the journal',()=>{
+test('every tick hands the journal the wallet itself, for its own verdict and the count it judged at',()=>{
  const effect=TICK_EFFECT.exec(read('app/src/RollupWallet.tsx'));
- assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\((\w+)=>wallet\.settledNullifiers\(\1\)\)\.then\(/);
+ assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(wallet\)\.then\(/);
  assert.match(effect?.[2]??'',/\bwallet\b/);
 });
 

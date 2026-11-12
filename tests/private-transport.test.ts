@@ -11,7 +11,7 @@ import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {startNostrCarrier} from '../src/rollup/nostr-carrier.ts';
 import {PRIVATE_ONCHAIN_POLL_MS,isPrivateFetch,isSealedFetch,markPrivateFetch,privatePoolPage} from '../src/shielded/network-privacy.ts';
 import {poolApiOf} from '../src/shielded/pool.ts';
-import {installPrivateTransport,privateTransport,PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
+import {installPrivateTransport,privateTransport,PRIVATE_GRACE_MS,PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 import info from './fixtures/ark-info.json' with {type:'json'};
@@ -186,9 +186,18 @@ test('reconcile passes the caller\'s verdict to the journal and still reports wh
  const landed='cd'.repeat(16),g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json(url.endsWith(landed)?{status:'included',txid:'d'.repeat(64)}:{status:'pending'})});
  for(const [id,nf] of [[ID,'17'],[landed,'23']])assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(id,nf))).status,202);
  const asked:bigint[][]=[];
- assert.equal(await g.transport.reconcile(nullifiers=>{asked.push([...nullifiers]);return undefined;}),true);
+ assert.equal(await g.transport.reconcile({settledNullifiers:nullifiers=>{asked.push([...nullifiers]);return undefined;},batchCount:()=>0}),true);
  assert.deepEqual([asked,g.transport.journal.pendingPoolNullifiers(POOL)],[[[17n]],[17n]],'asked after the id round, of what it left');
- assert.equal(await g.transport.reconcile(()=>true),false);
+ assert.equal(await g.transport.reconcile({settledNullifiers:()=>true,batchCount:()=>0}),false);
+});
+
+test('reconcile hands the journal the wallet\'s count as it stands once the id round is done',async t=>{
+ let count=5;const g=await rig(t,{reply:url=>{if(url.endsWith('/spends'))return Response.json({id:ID},{status:202});count=Math.max(count,6);return Response.json({status:'pending'});}});
+ const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
+ assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(ID,'17'))).status,202);
+ at=start+3_600_001+PRIVATE_GRACE_MS;const wallet={settledNullifiers:()=>false,batchCount:()=>count};
+ assert.deepEqual([await g.transport.reconcile(wallet),await g.transport.reconcile(wallet)],[true,true]);
+ count=7;assert.equal(await g.transport.reconcile(wallet),false);
 });
 
 test('a spend POST that never went out frees its reservation at once, and one that may have run keeps it',async t=>{
