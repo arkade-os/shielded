@@ -18,7 +18,7 @@ import {epochConfirmed,epochFreshAccount,epochMatchesPool,knownEpochPool} from '
 import {epochRevealLinkOf} from './epoch-disclosure.ts';
 import {epochTransferBody} from './epoch-pool.ts';
 import {claimRecovery,needsRecovery} from './epoch-recovery.ts';
-import {EVENT_RETRY_MS,WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch} from './epoch-sync.ts';
+import {EVENT_RETRY_MS,WATCHDOG_MS,catchUpAfterEvent,epochCatchUp,epochIdle,type EpochOnBatch,type EpochOnPage} from './epoch-sync.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from './handle.ts';
 import type {ExitPayout,PrivateLightningService} from './lightning-wallet.ts';
 import type {LightningRepository} from './lightning-repository.ts';
@@ -68,14 +68,14 @@ const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(err
  * An unreadable cache or an unreachable pool still opens, reported once. Throws when the pool contradicts a saved epoch's root, or
  * names no epoch length to open with. `links` receives the saved links before the pool check replays batches through the hooks.
  */
-export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>;status?:RollupPoolStatus;onSyncProgress?:SyncProgressObserver}):Promise<LoadedAccount>{
+export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;onPage?:EpochOnPage;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>;status?:RollupPoolStatus;onSyncProgress?:SyncProgressObserver}):Promise<LoadedAccount>{
  const known=knownEpochPool(o.status,o.token);
  const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot,offline=false):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,feeAccepted:parseDepositFeeSchedule(kept?.feeAccepted),...(error?{error}:{}),...(offline?{offline:true as const}:{})});
  const unsynced=(cause:unknown)=>{if(!o.epochLen)throw cause;return EpochAccount.owning(hash,keys,{epochLen:o.epochLen,bornAt:o.bornAt});};
  const unchecked=(cause:unknown)=>`Opened without the pool, so the saved notes are unchecked: ${reasonOf(cause)}`;
  const fresh=async(error?:string):Promise<LoadedAccount>=>{
   if(!o.api)return opened(unsynced(new Error('That pool is not an open epoch pool.')),error);
-  try{return opened(await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched,o.onSyncProgress,known),error);}
+  try{return opened(await epochFreshAccount(hash,keys,o.bornAt,o.api,o.onBatch,o.watched,o.onSyncProgress,known,o.onPage),error);}
   catch(cause){return opened(unsynced(cause),`Opened without the pool, so the wallet is empty until it syncs: ${reasonOf(cause)}`,undefined,true);}
  };
  if(!o.repository)return fresh();
@@ -95,7 +95,7 @@ export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecre
  for(const link of stored.links??[])o.links?.set(link.key,link);
  // loadEpochAccount's check: a previous-epoch root the pool contradicts throws, where a quiet replay would hide the drift.
  let matches=true;
- if(o.api&&!offline)try{matches=await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched,pool,o.onSyncProgress);}
+ if(o.api&&!offline)try{matches=await epochMatchesPool(account,o.api,undefined,o.onBatch,o.watched,pool,o.onSyncProgress,o.onPage);}
  catch(cause){if(rejected(cause,'root-drift'))throw cause;offline=unchecked(cause);}
  if(!matches){o.links?.clear();return fresh('The saved wallet does not match the pool; syncing from the pool.');}
  return opened(account,offline,stored,!!offline);
@@ -288,11 +288,11 @@ export class ShieldedWallet extends Wallet {
  onAction(cb:(handle:ShieldedPaymentHandle)=>void):()=>void{this.actionListeners.add(cb);if(this.latestAction)try{cb(this.latestAction);}catch{}return()=>{this.actionListeners.delete(cb);};}
  changed(){for(const cb of [...this.changeListeners])try{cb();}catch{/* a listener's fault is not the wallet's */}}
  private announce(handle:ShieldedPaymentHandle){this.latestAction=handle;for(const cb of [...this.actionListeners])try{cb(handle);}catch{}return handle;}
- async save(strict=false):Promise<void>{
+ async save(strict=false,on:EpochAccount=this.account):Promise<void>{
   if(!this.repository)return;
   const {token}=this;
   try{
-   const account=this.account.snapshot(),found=await this.repository.getAccount(token);
+   const account=on.snapshot(),found=await this.repository.getAccount(token);
    // A row another key wrote (a tab restored to another phrase) is replaced, never merged in.
    const stored=found?.account.owner===account.owner?found:undefined;
    // ponytail: read-merge-write keeps other tabs' entries but is not atomic; merge inside saveAccount's transaction if tabs ever race.
@@ -312,7 +312,8 @@ export class ShieldedWallet extends Wallet {
  private async load(status?:RollupPoolStatus){
   let loaded:LoadedAccount;
   // A checkpoint start catches up before sync() runs; if the pool refutes it, the genesis replay re-detects the same links.
-  try{loaded=await loadAccount(this.hash,this.derived.keys,{repository:this.repository,token:this.token,epochLen:this.pool.status.pool?.epochLen??this.account?.epochLen,bornAt:this.bornAt,api:this.api,onBatch:(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),watched:()=>this.openLinkNullifiers(),links:this.linkRecords,status,onSyncProgress:this.onSyncProgress});}
+  // onPage saves each page as sync()'s hook does: start() skips sync() once this load confirms the account, so otherwise nothing persists until a tick.
+  try{loaded=await loadAccount(this.hash,this.derived.keys,{repository:this.repository,token:this.token,epochLen:this.pool.status.pool?.epochLen??this.account?.epochLen,bornAt:this.bornAt,api:this.api,onBatch:(cursor,batch,account)=>this.watchLinks(cursor-1,batch,account),onPage:(_cursor,account)=>this.save(false,account),watched:()=>this.openLinkNullifiers(),links:this.linkRecords,status,onSyncProgress:this.onSyncProgress});}
   catch(error){this.repositoryError=reasonOf(error);throw error;}
   this.account=loaded.account;this.sent={...loaded.sent,...this.sent};this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;this.feeAccepted=maxDepositFeeOf(this.feeAccepted,loaded.feeAccepted);
   for(const txid of loaded.listings)this.listings.add(txid);

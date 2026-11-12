@@ -10,6 +10,7 @@ import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {EVENT_RETRY_MS,WATCHDOG_MS,epochCatchUp,type EpochBatchPage} from '../src/shielded/epoch-sync.ts';
 import type {ShieldedSyncProgress} from '../src/shielded/sync-progress.ts';
 import {epochSyncAccount} from '../src/shielded/epoch-pool.ts';
+import {walletSyncProgressLabel} from '../app/src/wallet-opening-progress.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,loadAccount} from '../src/shielded/wallet.ts';
 import {lightningRails} from '../src/shielded/lightning.ts';
 import {waitForSpend,type ArkCoin,type PoolApi,type RollupPoolStatus} from '../src/shielded/pool.ts';
@@ -51,14 +52,14 @@ test('private catch-up never uses scan or matching-batch fetches when far behind
  assert.equal(account.batchCount,600);
 });
 
-test('private history progress counts complete downloaded pages even for a caught-up account',async()=>{
+test('private history progress still downloads complete pages for a caught-up account, and counts none of them as work',async()=>{
  const {account,api,asked,applied}=fakeHistory(127,127),progress:ShieldedSyncProgress[]=[];
  await epochCatchUp(account,api,undefined,undefined,undefined,p=>{progress.push(p);});
  assert.deepEqual(progress.filter(p=>p.stage==='history'),[
-  {stage:'history',from:0,through:0},
-  {stage:'history',from:0,through:50,total:127},
-  {stage:'history',from:0,through:100,total:127},
-  {stage:'history',from:0,through:127,total:127},
+  {stage:'history',from:127,through:127},
+  {stage:'history',from:127,through:127,total:127},
+  {stage:'history',from:127,through:127,total:127},
+  {stage:'history',from:127,through:127,total:127},
  ]);
  assert.deepEqual(asked,['/batches?from=0&limit=50','/batches?from=50&limit=50','/batches?from=100&limit=28']);
  assert.deepEqual(applied,[]);
@@ -70,13 +71,22 @@ test('private history progress follows advancing public totals without skipping 
  const advancing=privateApi((async(path:string)=>({...await api<EpochBatchPage>(path),total:++page===1?80:101})) as PoolApi);
  await epochCatchUp(account,advancing,undefined,undefined,undefined,p=>{progress.push(p);});
  assert.deepEqual(progress.filter(p=>p.stage==='history'),[
-  {stage:'history',from:0,through:0},
-  {stage:'history',from:0,through:50,total:80},
-  {stage:'history',from:0,through:100,total:101},
-  {stage:'history',from:0,through:101,total:101},
+  {stage:'history',from:90,through:90},
+  {stage:'history',from:90,through:90,total:80},
+  {stage:'history',from:90,through:100,total:101},
+  {stage:'history',from:90,through:101,total:101},
  ]);
  assert.equal(account.batchCount,101);
  assert.deepEqual(asked,['/batches?from=0&limit=50','/batches?from=50&limit=50','/batches?from=100&limit=28']);
+});
+
+test('the opening label counts only what a resumed account still has to apply, and all of it for a fresh one',async()=>{
+ const label=(o:ReturnType<typeof fakeHistory>)=>{const lines:string[]=[];return {lines,run:epochCatchUp(o.account,o.api,undefined,undefined,undefined,p=>{lines.push(walletSyncProgressLabel(p));})};};
+ const resumed=label(fakeHistory(90,101));await resumed.run;
+ assert.equal(resumed.lines.at(-1),'Reading private pool history · 99% · 11 of 11 updates');
+ assert.ok(!resumed.lines.some(line=>line.includes('of 101 updates')),`never the batches it already holds: ${resumed.lines.join(' | ')}`);
+ const fresh=label(fakeHistory(0,101));await fresh.run;
+ assert.equal(fresh.lines.at(-1),'Reading private pool history · 99% · 101 of 101 updates');
 });
 
 test('a failing history observer cannot stop or change private batch replay',async()=>{
@@ -147,6 +157,14 @@ test('private fresh account avoids a birthday checkpoint and verifies the same f
  assert.ok(!asked.some(path=>path.startsWith('/checkpoints/')));
  assert.ok(asked.includes('/batches?from=0&limit=50'));
  assert.ok(!asked.some(path=>path.includes('from=130')));
+});
+
+test('a fresh private account saves every page it replays at load, on the account it is catching up',async()=>{
+ const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
+ const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet'),{api}=epochLeafPool(hash,256,140),pages:number[]=[],seen=new Set<EpochAccount>();
+ const loaded=await loadAccount(hash,keys,{token:'g2',epochLen:256,bornAt:130,api:privateApi(api),onPage:(cursor,account)=>{pages.push(cursor);seen.add(account);}});
+ assert.deepEqual(pages,[50,100,140]);
+ assert.deepEqual([...seen],[loaded.account],'the account the hook is handed is the one load() goes on to publish');
 });
 
 test('a fresh private account can reuse initial status while replaying and verifying every public page',async()=>{
