@@ -8,7 +8,7 @@ EXTENDS Naturals, FiniteSets
    Submit/Reply/Reconcile: AndroidUpdater.install/receive/reconcile; InstallOwner::finish. *)
 
 CONSTANTS WorkerCount, MaxGeneration, MaxCrashes,
-    BreakOwner, BreakTor, BreakFence, BreakLength, BreakHash,
+    BreakOwner, BreakTransport, BreakFence, BreakLength, BreakHash,
     BreakCertificate, BreakPackage, BreakVersion, BreakRecheck,
     BreakConsent, BreakFileLease, BreakCommitOnce, BreakPending
 
@@ -27,13 +27,13 @@ Init ==
     /\ generation = 0 /\ mode = "tor" /\ owner = 0 /\ staged = 0
     /\ permission = FALSE /\ crashes = 0
     /\ jobs = [w \in Workers |-> [phase |-> "idle", ticket |-> 0,
-        throughTor |-> TRUE, bytes |-> "good", identity |-> "good",
+        throughReady |-> TRUE, bytes |-> "good", identity |-> "good",
         cancelled |-> FALSE, published |-> FALSE, publishCurrent |-> FALSE,
         file |-> FALSE, archiveValid |-> TRUE, click |-> FALSE,
         afterSettings |-> FALSE, rechecked |-> FALSE, installConsent |-> FALSE,
         commits |-> 0, os |-> "none", approved |-> FALSE]]
 
-Current(w) == jobs[w].ticket = generation /\ mode = "tor" /\ ~jobs[w].cancelled
+Current(w) == jobs[w].ticket = generation /\ mode # "paused" /\ ~jobs[w].cancelled
 BytesGood(w) == jobs[w].bytes = "good"
 IdentityGood(w) == jobs[w].identity = "good"
 AllowedChecks(w) ==
@@ -45,9 +45,9 @@ AllowedChecks(w) ==
 
 Begin(w) ==
     /\ jobs[w].phase = "idle" /\ staged = 0
-    /\ (owner = 0 \/ BreakOwner) /\ (mode = "tor" \/ BreakTor)
+    /\ (owner = 0 \/ BreakOwner) /\ (mode # "paused" \/ BreakTransport)
     /\ jobs' = [jobs EXCEPT ![w].phase = "downloading",
-        ![w].ticket = generation, ![w].throughTor = (mode = "tor")]
+        ![w].ticket = generation, ![w].throughReady = (mode # "paused")]
     /\ owner' = w
     /\ UNCHANGED <<generation, mode, staged, permission, crashes>>
 
@@ -206,14 +206,14 @@ TypeOK ==
     /\ owner \in Workers \cup {0} /\ staged \in Workers \cup {0}
     /\ permission \in BOOLEAN /\ crashes \in 0..MaxCrashes
     /\ jobs \in [Workers -> [phase: Phases, ticket: 0..MaxGeneration,
-        throughTor: BOOLEAN, bytes: Bytes, identity: Identities, cancelled: BOOLEAN,
+        throughReady: BOOLEAN, bytes: Bytes, identity: Identities, cancelled: BOOLEAN,
         published: BOOLEAN, publishCurrent: BOOLEAN, file: BOOLEAN,
         archiveValid: BOOLEAN, click: BOOLEAN, afterSettings: BOOLEAN,
         rechecked: BOOLEAN, installConsent: BOOLEAN, commits: 0..2,
         os: OSStates, approved: BOOLEAN]]
 
 OneDownloader == Cardinality({w \in Workers : jobs[w].phase \in NetworkPhases}) <= 1
-TorOnly == \A w \in Workers : jobs[w].throughTor
+ReadyTransportOnly == \A w \in Workers : jobs[w].throughReady
 FreshPublication == \A w \in Workers : jobs[w].published => jobs[w].publishCurrent
 CompleteBytes == \A w \in Workers : jobs[w].published => jobs[w].bytes # "short"
 MatchingHash == \A w \in Workers : jobs[w].published => jobs[w].bytes # "hash"

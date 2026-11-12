@@ -410,9 +410,6 @@ impl Inner {
     ) -> Result<T, String> {
         let session = self.lock()?;
         session.check(generation)?;
-        if session.mode != NativeMode::Tor {
-            return Err("Connect Tor before completing an update download".into());
-        }
         publish()
     }
 
@@ -725,9 +722,6 @@ impl Inner {
         }
         let mut session = self.lock()?;
         session.check(generation)?;
-        if ["update", "release"].contains(&purpose) && session.mode != NativeMode::Tor {
-            return Err("Connect Tor before downloading an update".into());
-        }
         if session.scopes.len() >= MAX_SCOPES {
             return Err("too many private scopes".into());
         }
@@ -1111,11 +1105,6 @@ impl Lease {
             io: Box::new(io),
             _retirement: self.retirement.clone(),
         }
-    }
-
-    pub fn require_tor(&self) -> Result<(), String> {
-        self.check()?;
-        self.context.tor().map(|_| ())
     }
 
     pub fn take_http(&self, host: &str) -> Result<Option<HttpConnection>, String> {

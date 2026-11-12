@@ -27,7 +27,7 @@ const guides:PlatformGuide[]=[
  {platform:'android-arm64',name:'Android',architecture:'ARM64',description:'Android app for ARM64 phones.',steps:[
   <>On your ARM64 phone, download the signed APK when offered. Older releases offer a debug APK instead. The unsigned release APK is for people who will sign it themselves; it cannot be installed as downloaded.</>,
   <>Open the APK from Downloads. If prompted, allow only the browser or file manager opening it to install unknown apps. Return to the installer and follow its prompts.</>,
-  <>After installation, turn off that source’s installation permission. Open Shielded and wait for Tor before creating or restoring your wallet. Signed releases can download updates inside Shielded through Tor and use Android’s installer without clearing wallet data.</>,
+  <>After installation, turn off that source’s installation permission. Open Shielded and wait for Tor before creating or restoring your wallet. Signed releases can download updates inside Shielded, through Tor unless you turn it off, and use Android’s installer without clearing wallet data.</>,
   <>Before an update, preserve verified recovery data and app data for unresolved swaps. The build runner’s development key can change, and Android can then refuse an in-place update. Keep the existing installation and its data while you resolve this.</>,
  ],reference:<>See <a href="https://support.google.com/pixelphone/answer/7391672?hl=en-GB">Google’s instructions for apps from other sources</a>. Names vary by device; leave Play Protect enabled.</>},
  {platform:'ios',name:'iOS',architecture:'iPhone & Simulator',description:'The device IPA needs your own Apple signing and provisioning. A Mac and Xcode are required.',steps:[
@@ -118,7 +118,7 @@ export function NativeDownloadsContent({release,state=release?'ready':'loading',
   <div className="nd-platforms" id="nd-platforms">{platforms.map(platform=>{const guide=guides.find(guide=>guide.platform===platform)!;
    const packages=release?.packages.filter(item=>item.platform===guide.platform)??[];
    if(guide.platform==='android-arm64'&&release?.androidUpdate)packages.unshift(release.androidUpdate);
-   const description=guide.platform==='android-arm64'&&release?(release.androidUpdate?'Signed Android app with in-place updates over Tor.':'Debug APK signed with a development key.'):guide.description;
+   const description=guide.platform==='android-arm64'&&release?(release.androidUpdate?'Signed Android app with in-place updates over Tor by default.':'Debug APK signed with a development key.'):guide.description;
    return <article className="nd-platform" key={guide.platform} aria-labelledby={'nd-'+guide.platform}>
     <div className="nd-platform-heading"><h3 id={'nd-'+guide.platform}>{guide.name}<span>{guide.architecture}</span></h3><p>{description}</p></div>
     <PackageLinks packages={packages} unavailable={state==='error'} onQr={setQrPackage}/>
