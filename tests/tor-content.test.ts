@@ -157,7 +157,7 @@ const tickRig=(held:number,reported:number,fetcher:typeof fetch)=>{
   return {total:pool.batches,batches:Array.from({length:Math.max(0,Math.min(limit,pool.batches-from))},(_,n)=>from+n)};
  }) as PoolApi;
  const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
-  stopped:false,offline:false,networkPrivacy,sealedTransport:isSealedFetch(fetcher),pool:{origin:'https://pool.test',status:{}},statusAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
+  stopped:false,offline:false,networkPrivacy,sealedTransport:isSealedFetch(fetcher),pool:{origin:'https://pool.test',status:{}},statusAt:0,statusReadAt:0,statusRevision:0,headExpiry:undefined,account,api:networkPrivacy?markPrivatePoolPage(privateApi(plain),12):plain,
   watchLinks(){},async autoShield(){},async merge(){},async renewNotes(){ran.push('renew');},async recoverNotes(){ran.push('recover');},changed(){this.stopped=true;},
  });
  // changed() stops the wallet, or tick() would arm its 60 s timer.
@@ -264,10 +264,26 @@ test('a sealed spend round whose catch-up fails keeps waiting, and a closed wall
  wallet.stopped=true;await assert.rejects(landedBy!([7n]),/wallet was closed/);
 });
 
-test('a wallet gives the journal a verdict only at the pool\'s published count',()=>{
- const {account,wallet}=tickRig(140,140,sealedStub()),verdict=(batches:number,nullifiers:bigint[])=>{wallet.pool={origin:'https://pool.test',status:{pool:{batches}}};return (wallet as ShieldedWallet).settledNullifiers(nullifiers);};
- Object.assign(account,{history:[{batch:139,spent:[7n,8n]}]});
- assert.deepEqual([verdict(141,[7n]),verdict(140,[7n,8n]),verdict(140,[7n,9n])],[undefined,true,false]);
+const statusRig=()=>{
+ const rig=tickRig(140,140,sealedStub());Object.assign(rig.account,{history:[{batch:139,spent:[7n,8n]}]});
+ return {...rig,read:()=>(rig.wallet as {refreshPoolStatus():Promise<boolean>}).refreshPoolStatus(),verdict:(nullifiers:bigint[])=>(rig.wallet as ShieldedWallet).settledNullifiers(nullifiers)};
+};
+test('after a fresh status read, a wallet gives the journal a verdict only at the pool\'s published count',async()=>{
+ const {pool,read,verdict}=statusRig();
+ await read();assert.deepEqual([verdict([7n,8n]),verdict([7n,9n])],[true,false]);
+ pool.batches=141;await read();assert.equal(verdict([7n,8n]),undefined);
+});
+
+test('a wallet whose last status read is two watchdog rounds old gives no verdict, though the counts match',async t=>{
+ let at=1_000_000;t.mock.method(Date,'now',()=>at);
+ const {read,verdict}=statusRig();await read();
+ at+=2*WATCHDOG_MS-1;assert.equal(verdict([7n,9n]),false);
+ at+=1;assert.equal(verdict([7n,9n]),undefined);
+});
+
+test('a wallet opened offline on a cached status gives no verdict, though the counts match and the operator reads as up',()=>{
+ const {wallet,verdict}=statusRig();Object.assign(wallet,{statusAt:Date.now(),pool:{origin:'https://pool.test',status:{pool:{batches:140}}}});
+ assert.equal(wallet.operatorDown,undefined);assert.equal(verdict([7n,9n]),undefined);
 });
 
 test('external uncertain reservations remain visible after local holds release',()=>{

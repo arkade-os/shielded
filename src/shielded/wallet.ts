@@ -177,6 +177,7 @@ export class ShieldedWallet extends Wallet {
  private selfSending=false;
  private nativeOperations=0;
  private statusAt=Date.now();
+ private statusReadAt=0;
  private networkPrivacy=false;
  private sealedTransport=false;
  private batchSwaps?:boolean;
@@ -352,7 +353,7 @@ export class ShieldedWallet extends Wallet {
    const status=await this.api<RollupPoolStatus>('/status');
    if(this.stopped)return false;
    const recovered=!!this.operatorDown,was=this.depositFeePaused;
-   this.pool={...this.pool,status};this.statusAt=Date.now();this.headExpiry=undefined;this.statusRevision++;
+   this.pool={...this.pool,status};this.statusAt=this.statusReadAt=Date.now();this.headExpiry=undefined;this.statusRevision++;
    const now=this.depositFeePaused;
    return recovered||was?.fixedSats!==now?.fixedSats||was?.bps!==now?.bps;
   })().finally(()=>{if(this.statusRead===run)this.statusRead=undefined;});
@@ -627,8 +628,8 @@ export class ShieldedWallet extends Wallet {
   const landedBy=async(nullifiers:readonly bigint[])=>{await this.refreshPoolStatus().catch(()=>{});if(this.pool.status.pool?.batches!==this.account.batchCount)await this.sync().catch(()=>{});this.assertOpen();return this.landedSpend(nullifiers);};
   return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript,...(this.sealedTransport?{jitterMs:PRIVATE_SUBMIT_JITTER_MS,landedBy}:{})};
  }
- /** undefined unless the account is at the pool's published count: behind it, it has not looked, so the journal must not age an entry out on its word. */
- settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined{return this.pool.status.pool?.batches===this.account.batchCount?!!this.landedSpend(nullifiers):undefined;}
+ /** undefined unless a status read this session, under two watchdog rounds old, shows the account at the pool's count: otherwise it has not looked, so the journal must not age an entry out on its word. */
+ settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined{return Date.now()-this.statusReadAt<2*WATCHDOG_MS&&this.pool.status.pool?.batches===this.account.batchCount?!!this.landedSpend(nullifiers):undefined;}
  private landedSpend(nullifiers:readonly bigint[]):SpendStatus|undefined{
   const entry=this.account.history.find(e=>nullifiers.every(n=>e.spent.includes(n)));
   return entry&&{status:'included',batch:entry.batch,...(entry.txid?{txid:entry.txid}:{})};
