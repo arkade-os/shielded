@@ -104,7 +104,7 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
- /** Browser only: a sealed copy can still be admitted graceMs after the POST and the pool queues it for at most an hour, so only past both is an unseen spend out of the queue. */
+ /** Browser only: a sealed copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this account's own batches are left to say. */
  const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined)=>{
   if(graceMs===undefined)return;
   const origin=new URL(poolOrigin).origin,at=now();
