@@ -6,7 +6,7 @@ import {createNativeReleasesHandler} from './native-releases.ts';
 
 export function serveWeb(app:Express,web:string,data:string,mirror:NativeReleaseMirror=createNativeReleaseMirror({root:join(data,'native-releases')})):void{
  app.get(NATIVE_RELEASE_ENDPOINT,createNativeReleasesHandler({onRelease:release=>void mirror.sync(release)}));
- app.get(`${NATIVE_DOWNLOAD_PATH}/:tag/:file`,(req,res)=>{
+ app.get(`${NATIVE_DOWNLOAD_PATH}/:tag/:file`,(req,res,next)=>{
   const {tag,file}=req.params;
   if(!NATIVE_RELEASE_TAG.test(tag)||!nativePackageFile(file)){res.status(404).end();return;}
   // Uncached, so the CDN stops redirecting as soon as this host has the file.
@@ -17,7 +17,7 @@ export function serveWeb(app:Express,web:string,data:string,mirror:NativeRelease
    'Cache-Control':'public, max-age=31536000, immutable',
    'Content-Type':file.endsWith('.apk')?'application/vnd.android.package-archive':'application/octet-stream',
    'Content-Disposition':`attachment; filename="${file}"`,
-  }},error=>{if(error&&!res.headersSent)toGitHub();});
+  }},error=>{if(!error)return;if(res.headersSent)next(error);else toGitHub();});
  });
  app.get(['/','/download','/index.html','/wallet','/claim','/verify','/watch'],(_req,res)=>res.sendFile('index.html',{root:web,headers:{'Cache-Control':'no-cache'}}));
  app.use('/assets',express.static(join(web,'assets'),{immutable:true,maxAge:'365d'}));
