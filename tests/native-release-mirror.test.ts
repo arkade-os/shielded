@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,utimesSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
@@ -52,4 +52,32 @@ test('a newer release replaces the old copy once it is complete, and a restart r
  assert.equal(existsSync(join(root,oldTag)),false);assert.equal(mirror.path(oldTag,first.release.packages[0]!.file),undefined);assert.ok(mirror.path(newTag,file));
  const fetched=calls.length,restarted=createNativeReleaseMirror({root,fetchImpl,warn:()=>{}});
  await restarted.sync(second.release);assert.equal(calls.length,fetched);assert.ok(restarted.path(newTag,file));
+});
+
+test('a failing concurrent writer on the same volume cannot remove another download in progress',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-mirror-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const {release:current,bodies}=release(145),first=current.packages[0]!,body=Buffer.from(bodies.get(first.url)!),half=body.subarray(0,body.length>>1);
+ let resume!:()=>void;const resumed=new Promise<void>(yes=>{resume=yes;});
+ const stalled:typeof fetch=async input=>String(input)!==first.url?new Response(bodies.get(String(input))):new Response(new ReadableStream({async start(controller){controller.enqueue(half);await resumed;controller.enqueue(body.subarray(half.length));controller.close();}}));
+ const failing:typeof fetch=async input=>new Response(new ReadableStream({start(controller){controller.enqueue(half);controller.error(new Error('connection reset'));}}));
+ const writer=createNativeReleaseMirror({root,fetchImpl:stalled,warn:()=>{}}),tag=nativeReleaseTag(current);
+ const writing=writer.sync(current);
+ for(let tries=0;!(existsSync(join(root,tag))&&readdirSync(join(root,tag)).some(name=>name.endsWith('.part')));tries++){assert.ok(tries<10_000);await new Promise(resolve=>setImmediate(resolve));}
+ await createNativeReleaseMirror({root,fetchImpl:failing,warn:()=>{}}).sync(current);
+ resume();await writing;
+ assert.equal(readFileSync(writer.path(tag,first.file)!,'utf8'),bodies.get(first.url));
+ assert.deepEqual(readdirSync(join(root,tag)).filter(name=>name.endsWith('.part')),[]);
+});
+test('temp files left by a killed container are cleaned up, while a live download is left alone',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-mirror-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const {release:current,bodies}=release(145),{fetchImpl}=server(bodies),tag=nativeReleaseTag(current),directory=join(root,tag);
+ mkdirSync(directory,{recursive:true});
+ const stale=join(directory,'orphan.part'),live=join(directory,'live.part'),hourAgo=new Date(Date.now()-60*60_000);
+ writeFileSync(stale,'killed');utimesSync(stale,hourAgo,hourAgo);writeFileSync(live,'in progress');
+ const mirror=createNativeReleaseMirror({root,fetchImpl,warn:()=>{}});
+ await mirror.sync(current);
+ assert.equal(existsSync(stale),false);assert.equal(existsSync(live),true);
+ writeFileSync(stale,'killed after the first pass');utimesSync(stale,hourAgo,hourAgo);
+ await mirror.sync(current);
+ assert.equal(existsSync(stale),false);assert.equal(existsSync(live),true);
 });

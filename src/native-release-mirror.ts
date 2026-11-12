@@ -1,4 +1,4 @@
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {createReadStream,createWriteStream} from 'node:fs';
 import {mkdir,readdir,rename,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -16,7 +16,8 @@ async function sha256File(path:string){
 }
 
 async function download(fetchImpl:typeof fetch,item:NativeReleasePackage,target:string){
- const part=`${target}.part`,hash=createHash('sha256');let received=0;
+ // A rolling deploy can run two containers on one volume; each download needs its own temp file.
+ const part=`${target}.${randomUUID()}.part`,hash=createHash('sha256');let received=0;
  try{
   const response=await fetchImpl(item.url,{redirect:'follow',signal:AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)});
   if(!response.ok||!response.body)throw new Error(`${item.file} returned HTTP ${response.status}`);
@@ -31,12 +32,22 @@ async function download(fetchImpl:typeof fetch,item:NativeReleasePackage,target:
  }catch(error){await rm(part,{force:true});throw error;}
 }
 
+// Only a killed process leaves a temp file older than the download timeout; a live writer's file is kept.
+async function removeStaleParts(directory:string){
+ for(const name of await readdir(directory))if(name.endsWith('.part')){
+  const temp=join(directory,name),found=await stat(temp).catch(()=>undefined);
+  if(found&&Date.now()-found.mtimeMs>DOWNLOAD_TIMEOUT_MS)await rm(temp,{force:true});
+ }
+}
+
 /** Keeps a verified copy of the current native release on the host volume; only fully verified releases are served. */
 export function createNativeReleaseMirror({root,fetchImpl=fetch,warn=(message:string)=>console.warn(message)}:{root:string;fetchImpl?:typeof fetch;warn?:(message:string)=>void}){
  let ready:{tag:string;files:Set<string>}|undefined,wanted:NativeRelease|undefined,current:string|undefined,running:Promise<void>|undefined;
+ const report=(error:unknown)=>warn(`Native release mirror: ${error instanceof Error?error.message:String(error)}`);
  async function mirror(release:NativeRelease){
   const tag=nativeReleaseTag(release),directory=join(root,tag),files=new Set<string>();
   await mkdir(directory,{recursive:true});
+  await removeStaleParts(directory);
   for(const item of [...release.packages,...(release.androidUpdate?[release.androidUpdate]:[])]){
    const target=join(directory,item.file);
    const held=await stat(target).then(found=>found.size===item.bytes,()=>false);
@@ -50,12 +61,12 @@ export function createNativeReleaseMirror({root,fetchImpl=fetch,warn=(message:st
   sync(release:NativeRelease):Promise<void>{
    const tag=nativeReleaseTag(release);
    if(tag!==ready?.tag&&tag!==current)wanted=release;
-   if(!wanted)return running??Promise.resolve();
+   if(!wanted)return running??(tag===ready?.tag?removeStaleParts(join(root,tag)).catch(report):Promise.resolve());
    return running??=(async()=>{
     try{
      while(wanted){
       const next=wanted;wanted=undefined;current=nativeReleaseTag(next);
-      await mirror(next).catch(error=>warn(`Native release mirror: ${error instanceof Error?error.message:String(error)}`));
+      await mirror(next).catch(report);
       current=undefined;
      }
     }finally{running=undefined;}
