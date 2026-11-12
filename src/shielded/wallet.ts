@@ -190,6 +190,8 @@ export class ShieldedWallet extends Wallet {
  /** Read while the pool answered: a sealed wallet reaches the indexer through the pool server, so an outage read cannot. */
  private lastHeadExpiry?:number;
  private headRead?:Promise<void>;
+ /** When the last read began, until one found a deadline still ahead; the next waits ten watchdog rounds from it. */
+ private headReadAt?:number;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
   const maxDepositFee=config.maxDepositFee===undefined?undefined:validSchedule(config.maxDepositFee,'maxDepositFee');
@@ -350,8 +352,14 @@ export class ShieldedWallet extends Wallet {
   return vtxos.find(v=>v.assets?.some(a=>a.assetId===this.token))?.expiresAt?.getTime();
  }
  private rememberHeadExpiry(){
-  if(!this.sealedTransport||this.lastHeadExpiry!==undefined||this.headRead)return;
-  this.headRead=this.fetchHeadExpiry().then(expiry=>{if(!this.stopped&&Number.isFinite(expiry))this.lastHeadExpiry=expiry;},()=>{}).then(()=>{this.headRead=undefined;});
+  const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
+  if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
+  this.headReadAt=now;
+  this.headRead=this.fetchHeadExpiry().then(expiry=>{
+   if(this.stopped||expiry===undefined||!Number.isFinite(expiry))return;
+   this.lastHeadExpiry=expiry;
+   if(expiry>Date.now())this.headReadAt=undefined;
+  },()=>{}).then(()=>{this.headRead=undefined;});
  }
  private refreshPoolStatus():Promise<boolean>{
   if(this.stopped)return Promise.resolve(false);

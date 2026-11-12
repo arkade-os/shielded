@@ -293,7 +293,7 @@ const refused=():never=>{throw new Error('gateway down');};
 const headRig=(t:TestContext,fetcher:typeof fetch,answer:(ask:number,poolUp:boolean)=>unknown=()=>headOf(EXPIRES))=>{
  let at=1_700_000_000_000,asks=0,poolUp=true;t.mock.method(Date,'now',()=>at);timers(t);
  const {wallet,tick}=tickRig(140,140,fetcher);Object.assign(wallet,{token:HEAD,poolScript:'5120',changed(){},indexerProvider:{getVtxos:async()=>answer(++asks,poolUp)}});
- return {wallet,asks:()=>asks,
+ return {wallet,asks:()=>asks,later:(ms:number)=>{at+=ms;},
   refresh:async()=>{await wallet.refreshPoolStatus();await flush();},
   ticks:async(rounds:number)=>{for(let round=0;round<rounds;round++){at+=WATCHDOG_MS;await tick();await flush();}},
   // Two sealed rounds at the 1.25x jitter ceiling, so the outage threshold is passed whatever the draws.
@@ -305,7 +305,8 @@ test('a sealed wallet reads the pool head expiry once while the pool answers, an
  stop();await ticks(3);
  assert.deepEqual([whileUp,asks()-whileUp,wallet.operatorDown!.headExpiresAt],[1,1,EXPIRES]);
 });
-for(const [what,whileUp] of [['rejects',refused],['finds no head coin',()=>({vtxos:[]})],['finds an invalid expiry',()=>headOf(NaN)]] as const)test(`a sealed wallet whose head expiry read ${what} reports no deadline rather than a wrong one`,async t=>{
+const unusable=[['rejects',refused],['finds no head coin',()=>({vtxos:[]})],['finds an invalid expiry',()=>headOf(NaN)]] as const;
+for(const [what,whileUp] of unusable)test(`a sealed wallet whose head expiry read ${what} reports no deadline rather than a wrong one`,async t=>{
  const {wallet,refresh,ticks,stop}=headRig(t,sealedStub(),(_ask,poolUp)=>poolUp?whileUp():refused());
  await refresh();stop();await ticks(1);
  assert.equal(wallet.operatorDown!.headExpiresAt,undefined);
@@ -321,10 +322,11 @@ test('a sealed wallet shows the outage read over the deadline it remembered, whe
  await refresh();stop();await ticks(1);
  assert.equal(wallet.operatorDown!.headExpiresAt,EXPIRES+86_400_000);
 });
-test('a sealed wallet never has two head expiry reads in flight, and a failed one is retried by a later refresh',async t=>{
+test('a sealed wallet never has two head expiry reads in flight, even past its back-off, and retries a failed one after it',async t=>{
  let open!:()=>void;const gate=new Promise<void>(resolve=>{open=resolve;});
- const {wallet,asks,refresh}=headRig(t,sealedStub(),ask=>ask===1?gate.then(refused):headOf(EXPIRES));
+ const {wallet,asks,refresh,later}=headRig(t,sealedStub(),ask=>ask===1?gate.then(refused):headOf(EXPIRES));
  for(let i=0;i<4;i++)await refresh();
+ later(10*WATCHDOG_MS);await refresh();
  const inFlight=asks();open();await flush();
  await refresh();await refresh();
  assert.deepEqual([inFlight,asks(),wallet.lastHeadExpiry],[1,2,EXPIRES]);
@@ -334,6 +336,25 @@ test('a head expiry that arrives after the wallet closed is not kept',async t=>{
  const {wallet,asks,refresh}=headRig(t,sealedStub(),()=>gate.then(()=>headOf(EXPIRES)));
  await refresh();wallet.stopped=true;open();await flush();
  assert.deepEqual([asks(),wallet.lastHeadExpiry],[1,undefined]);
+});
+test('a sealed wallet re-reads the head expiry once the one it remembered has passed, and shows the renewed one when the pool stops',async t=>{
+ const renewed=EXPIRES+7*86_400_000,{wallet,asks,refresh,ticks,later,stop}=headRig(t,sealedStub(),(ask,poolUp)=>poolUp?headOf(ask===1?EXPIRES:renewed):refused());
+ await refresh();await ticks(3);const before=asks();
+ later(EXPIRES+1-Date.now());await refresh();await ticks(3);const whileUp=asks();
+ stop();await ticks(1);
+ assert.deepEqual([before,whileUp,wallet.operatorDown!.headExpiresAt],[1,2,renewed]);
+});
+for(const [what,answer] of [...unusable,['finds a deadline that has already passed',()=>headOf(Date.now()-1)]] as const)test(`a sealed wallet whose head expiry read ${what} waits ten watchdog rounds before reading again`,async t=>{
+ const {asks,refresh,later}=headRig(t,sealedStub(),answer);
+ await refresh();later(WATCHDOG_MS);await refresh();later(9*WATCHDOG_MS-1);await refresh();
+ const inside=asks();
+ later(1);await refresh();await refresh();
+ assert.deepEqual([inside,asks()],[1,2]);
+});
+test('a head expiry read that finds a deadline ahead clears the back-off, so one passing within ten rounds is re-read at once',async t=>{
+ const {asks,refresh,later}=headRig(t,sealedStub(),ask=>headOf(Date.now()+(ask===1?5*60_000:7*86_400_000)));
+ await refresh();later(6*60_000);await refresh();
+ assert.equal(asks(),2);
 });
 
 test('external uncertain reservations remain visible after local holds release',()=>{
