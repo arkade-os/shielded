@@ -38,6 +38,11 @@ export function createNativeReleaseMirror({root,fetchImpl=fetch,warn=(message:st
  async function mirror(release:NativeRelease){
   const tag=nativeReleaseTag(release),directory=join(root,tag),files=new Set<string>();
   await mkdir(directory,{recursive:true});
+  // Only a killed process leaves a temp file older than the download timeout; a live writer's file is kept.
+  for(const name of await readdir(directory))if(name.endsWith('.part')){
+   const temp=join(directory,name),found=await stat(temp).catch(()=>undefined);
+   if(found&&Date.now()-found.mtimeMs>DOWNLOAD_TIMEOUT_MS)await rm(temp,{force:true});
+  }
   for(const item of [...release.packages,...(release.androidUpdate?[release.androidUpdate]:[])]){
    const target=join(directory,item.file);
    const held=await stat(target).then(found=>found.size===item.bytes,()=>false);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,rmSync,utimesSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
@@ -67,4 +67,13 @@ test('a failing concurrent writer on the same volume cannot remove another downl
  resume();await writing;
  assert.equal(readFileSync(writer.path(tag,first.file)!,'utf8'),bodies.get(first.url));
  assert.deepEqual(readdirSync(join(root,tag)).filter(name=>name.endsWith('.part')),[]);
+});
+test('temp files left by a killed container are cleaned up, while a live download is left alone',async t=>{
+ const root=mkdtempSync(join(tmpdir(),'shielded-mirror-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+ const {release:current,bodies}=release(145),{fetchImpl}=server(bodies),tag=nativeReleaseTag(current),directory=join(root,tag);
+ mkdirSync(directory,{recursive:true});
+ const stale=join(directory,'orphan.part'),live=join(directory,'live.part'),hourAgo=new Date(Date.now()-60*60_000);
+ writeFileSync(stale,'killed');utimesSync(stale,hourAgo,hourAgo);writeFileSync(live,'in progress');
+ await createNativeReleaseMirror({root,fetchImpl,warn:()=>{}}).sync(current);
+ assert.equal(existsSync(stale),false);assert.equal(existsSync(live),true);
 });
