@@ -112,7 +112,7 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
    const verdict=row.origin===origin?settled(row.nullifiers.map(BigInt)):undefined;
    if(verdict!==false)return verdict!==true;
    if(row.batchAt===undefined){row.batchAt=count;marked=true;}
-   return at-row.createdAt<=TRACKED_MS+graceMs||count<=row.batchAt;
+   return at-row.createdAt<=TRACKED_MS+graceMs||count===row.batchAt;
   });
   if(marked||remaining.length!==entries.length)save(remaining);
  };

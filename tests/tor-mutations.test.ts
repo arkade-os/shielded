@@ -136,6 +136,15 @@ test('a stalled pool, whose count never passes the one an entry was first judged
  settle(journal,true,140);assert.deepEqual(journal.pendingPoolNullifiers(origin),[]);
 });
 
+test('a new genesis on the same origin, whose count restarts below an entry\'s mark, releases it past the bound and keeps it at or below',()=>{
+ for(const [age,left] of [[BOUND,[17n]],[BOUND+1,[]]] as const){
+  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:PRIVATE_GRACE_MS,now:()=>at});
+  journal.beforeNativeMutation(mutation());settle(journal,false,140);
+  at+=age;settle(journal,false,3);
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),left,String(age));
+ }
+});
+
 test('an entry\'s first judgment marks the count and keeps it, even past the bound, and a pass that changes nothing or has no whole count writes nothing',()=>{
  let at=1_000_000,writes=0;const persisted=storage(),journal=makeNativeMutationJournal({...persisted,setItem:(key:string,value:string)=>{writes++;persisted.setItem(key,value);}},{graceMs:PRIVATE_GRACE_MS,now:()=>at});
  journal.beforeNativeMutation(mutation());at+=BOUND+1;settle(journal,false,NaN);settle(journal,false,140);
