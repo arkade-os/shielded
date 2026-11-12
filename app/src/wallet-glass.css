@@ -210,8 +210,8 @@
  .stock-page .receive-display{gap:9px}
  .stock-page .receive-stage{gap:10px;padding:2px 4px 7px}
  .stock-page .receive-stage-copy{display:none}
- .stock-page .receive-portal .receive-qr-wrap{width:min(100%,240px,32dvh);padding:9px;border-radius:20px}
- .stock-page .receive-empty{width:min(100%,240px,32dvh);min-height:200px}
+ .stock-page .receive-portal .receive-qr-wrap{width:min(100%,240px,max(32dvh,200px));padding:9px;border-radius:20px}
+ .stock-page .receive-empty{width:min(100%,240px,max(32dvh,200px));min-height:200px}
  .stock-page .receive-description{max-width:36ch}
 }
 @media(max-width:380px){.stock-page .stock-shell{width:calc(100% - 22px)}.stock-page .stock-card{padding:16px}.stock-page .stock-balance{padding:22px 20px}.stock-page .stock-history summary{grid-template-columns:1fr}.stock-page .stock-history summary b{text-align:left}}
