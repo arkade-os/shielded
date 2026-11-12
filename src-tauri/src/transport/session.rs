@@ -796,9 +796,6 @@ impl Inner {
             .scopes
             .get_mut(&request.scope)
             .ok_or("unknown private scope")?;
-        if ["update", "release"].contains(&scope.purpose.as_str()) {
-            scope.context.tor()?;
-        }
         let binding =
             super::routes::binding(&scope.purpose, checked, scope.subscription.as_deref())?;
         if binding == "subscription" {

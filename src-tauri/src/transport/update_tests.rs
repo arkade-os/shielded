@@ -182,8 +182,22 @@ fn only_native_github_redirects_to_our_asset_repository_are_allowed() {
 async fn direct_mode_can_check_download_and_publish_updates_until_revoked() {
     let inner = Arc::new(Inner::new(PathBuf::from("shielded-update-direct-unused")));
     let generation = inner.start(NativeMode::Direct).await.unwrap().generation;
-    assert!(inner.scope(generation, "release").is_ok());
-    assert!(inner.scope(generation, "update").is_ok());
+    for (purpose, url) in [
+        ("release", "https://shielded.mutinynet.arkade.sh/api/native/releases"),
+        ("update", ASSET),
+    ] {
+        let request = NativeRequest {
+            generation,
+            request_id: purpose.into(),
+            scope: inner.scope(generation, purpose).unwrap().id,
+            url: url.into(),
+            method: "GET".into(),
+            headers: Vec::new(),
+            body_base64: None,
+        };
+        let checked = check_request(&request, false).unwrap();
+        inner.register(&request, &checked, None).unwrap().check().unwrap();
+    }
     inner.finish_update(generation, || Ok(())).unwrap();
     inner.pause().unwrap();
     assert!(inner.finish_update(generation, || Ok(())).is_err());
