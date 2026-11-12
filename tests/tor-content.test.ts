@@ -442,6 +442,12 @@ test('a sealed wallet keeps the head deadline it remembered, with no read, throu
  wallet.api=live;await refresh();
  assert.deepEqual([restarting,asks(),wallet.lastHeadExpiry],[[1,EXPIRES],1,EXPIRES]);
 });
+for(const [what,answer] of [...unusable,['finds a deadline that has already passed',()=>headOf(Date.now()-1)]] as const)test(`a sealed wallet whose head expiry read ${what} keeps backing off that head, and reads the next head the pool names at once`,async t=>{
+ const {wallet,asks,refresh,later}=headRig(t,sealedStub(),ask=>ask===1?answer():headOf(MOVED)),rename=named(wallet);
+ await refresh();later(WATCHDOG_MS);await refresh();
+ rename('bb'.repeat(32));later(WATCHDOG_MS);await refresh();
+ assert.deepEqual([asks(),wallet.lastHeadExpiry],[2,MOVED]);
+});
 
 test('external uncertain reservations remain visible after local holds release',()=>{
  const external=new Set([2n]),wallet={notes:{inFlight:new Set([1n])},pendingNullifiers:()=>external};

@@ -195,7 +195,7 @@ export class ShieldedWallet extends Wallet {
  private lastHeadExpiry?:number;
  private lastHead?:string;
  private headRead?:Promise<void>;
- /** When the last read began, until one found a deadline still ahead; the next waits ten watchdog rounds from it. */
+ /** When the last read began, for lastHead, until one found a deadline still ahead or the pool named another head; the next waits ten watchdog rounds from it. */
  private headReadAt?:number;
 
  static override async create(config:ShieldedWalletConfig):Promise<ShieldedWallet>{
@@ -359,15 +359,15 @@ export class ShieldedWallet extends Wallet {
  }
  private poolHead(){const head=this.pool.status.pool?.head;return head&&`${head.txid}:${head.vout}`;}
  private rememberHeadExpiry(){
-  const head=this.poolHead();if(head!==undefined&&head!==this.lastHead)this.lastHeadExpiry=undefined;
+  const head=this.poolHead();if(head!==undefined&&head!==this.lastHead){this.lastHeadExpiry=undefined;this.headReadAt=undefined;}
   const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
   if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
-  this.headReadAt=now;
+  this.headReadAt=now;this.lastHead=head;
   this.headRead=this.fetchHeadExpiry().then(expiry=>{
    if(this.stopped||expiry===undefined||!Number.isFinite(expiry))return;
    // A read begun for a head the pool has since replaced says nothing of the new head's deadline, nor that reads should back off.
    if(head!==this.poolHead()){this.headReadAt=undefined;return;}
-   this.lastHeadExpiry=expiry;this.lastHead=head;
+   this.lastHeadExpiry=expiry;
    if(expiry>Date.now())this.headReadAt=undefined;
   },()=>{}).then(()=>{this.headRead=undefined;});
  }
