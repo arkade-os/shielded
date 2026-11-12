@@ -1,4 +1,5 @@
 import React from 'react';
+import type {ActivityNotice} from './shielded-page.ts';
 
 export function Icon({name,size=20,className=''}:{name:string;size?:number;className?:string}) {
  const paths:Record<string,React.ReactNode> = {
@@ -33,3 +34,12 @@ export function Hash({value,full=false}:{value?:string;full?:boolean}) { if(!val
 export function Badge({children,tone='neutral'}:{children:React.ReactNode;tone?:string}) {return <span className={`badge ${tone}`}>{children}</span>}
 export function Empty({icon='layers',title,description}:{icon?:string;title:string;description:string}){return <div className="empty-state"><div className="empty-icon"><Icon name={icon} size={23}/></div><strong>{title}</strong><p>{description}</p></div>}
 export function CopyButton({value,label}:{value:string;label?:string}) {const[copied,setCopied]=React.useState(false);return <button type="button" className={label?'stock-ghost stock-mini':'icon-button'} aria-label={label?undefined:'Copy to clipboard'} onClick={async()=>{await navigator.clipboard.writeText(value);setCopied(true);setTimeout(()=>setCopied(false),1500)}}>{label?(copied?'Copied':label):<Icon name={copied?'check':'copy'} size={16}/>}</button>}
+/** A money-moved toast. The dismiss button carries no handler of its own: its click, from a tap or from the keyboard, bubbles to the surface. */
+export function WalletBalanceNotice({notice,onDismiss}:{notice:ActivityNotice;onDismiss:()=>void}) {
+ React.useEffect(()=>{const timer=setTimeout(onDismiss,6000);return()=>clearTimeout(timer);},[notice.id,onDismiss]);
+ return <div className="wallet-balance-notice" role="status" aria-live="polite" onClick={onDismiss}>
+  <Icon name={notice.received?'download':'share'} size={16}/>
+  <span><b className={notice.received?'in':'out'}>{notice.text}</b>{notice.more>0&&<i>and {notice.more} more</i>}{notice.detail&&<em>{notice.detail}</em>}</span>
+  <button type="button" className="icon-button" aria-label="Dismiss"><Icon name="close" size={14}/></button>
+ </div>
+}

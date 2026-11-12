@@ -6,7 +6,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
-import {pausedErrorText} from './rollup-client.ts';
+import {pausedErrorText,satsText} from './rollup-client.ts';
 import {restoreNativeStorage} from './native-storage.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
@@ -41,6 +41,19 @@ export function pageActivityHistory(history:Activity[],lightning:Activity[]){
   return {...row,intent:{...row.intent!,label:'Paid via Lightning',outcome:'paid'}};
  });
  return [...rows,...lightning.filter(row=>row.intent?.kind!=='lightning-send')].sort((a,b)=>b.createdAt-a.createdAt);
+}
+
+export type ActivityNotice={id:string;text:string;detail:string;received:boolean;more:number};
+/** The newest money movement these rows added, for a toast. An absent `seen` is a session's first load, which seeds silently so startup and restore never announce old history. */
+export function pageActivityNotice(rows:readonly Activity[],seen:ReadonlySet<string>|undefined):{seen:ReadonlySet<string>;notice?:ActivityNotice}{
+ const next=new Set(seen??[]);for(const row of rows)next.add(row.id);
+ if(!seen)return {seen:next};
+ const fresh=rows.filter(row=>!seen.has(row.id)&&row.amount!==0&&historyDirection(row)!=='own').sort((a,b)=>b.createdAt-a.createdAt);
+ const newest=fresh[0];if(!newest)return {seen:next};
+ const received=historyDirection(newest)==='in';
+ return {seen:next,notice:{id:newest.id,received,more:fresh.length-1,
+  text:`${received?'Received':'Sent'} ${satsText(Math.abs(newest.amount))}`,
+  detail:newest.settled?'':received?'Arriving; not settled yet':'Not settled yet'}};
 }
 
 export function pageCache(source:ShieldedNoteRepository){
