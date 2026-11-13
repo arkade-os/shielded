@@ -53,6 +53,17 @@ impl Drop for StagedFile {
     }
 }
 
+/// Android's SELinux policy denies apps the `link` permission, so the verified
+/// download is moved into place rather than hard-linked, and the move hands over ownership.
+async fn stage_verified(partial: &StagedFile) -> Result<Arc<StagedFile>, String> {
+    let completed = partial.path.with_extension("apk");
+    tokio::fs::rename(&partial.path, &completed)
+        .await
+        .map_err(|_| "Could not stage the verified update")?;
+    partial.owned.store(false, Ordering::Release);
+    Ok(Arc::new(StagedFile::new(completed, true)))
+}
+
 #[derive(Clone)]
 struct Prepared {
     info: StagedUpdate,
@@ -594,11 +605,7 @@ pub async fn native_android_update_download(
             },
         )
         .await?;
-    let completed_path = path.with_extension("apk");
-    tokio::fs::hard_link(&path, &completed_path)
-        .await
-        .map_err(|_| "Could not stage the verified update")?;
-    let completed = Arc::new(StagedFile::new(completed_path, true));
+    let completed = stage_verified(&owner.partial).await?;
     tauri_plugin_shielded_platform::android_verify_update(
         &app,
         json!({
@@ -801,6 +808,27 @@ mod tests {
         assert!(task.await.unwrap().is_err());
         assert!(!path.exists());
         assert!(matches!(*updates.lock().unwrap(), Phase::Idle));
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+    #[tokio::test]
+    async fn a_verified_download_is_moved_into_place_not_hard_linked() {
+        let updates = fixture();
+        let owner = updates
+            .reserve(&uuid::Uuid::new_v4().to_string(), 1)
+            .unwrap();
+        std::fs::write(&owner.partial.path, b"verified test package").unwrap();
+        owner.partial.owned.store(true, Ordering::Release);
+        let staged = stage_verified(&owner.partial).await.unwrap();
+        assert!(!owner.partial.path.exists());
+        assert_eq!(
+            std::fs::read(&staged.path).unwrap(),
+            b"verified test package"
+        );
+        let path = staged.path.clone();
+        drop(owner);
+        assert!(path.exists());
+        drop(staged);
+        assert!(!path.exists());
         std::fs::remove_dir(&updates.directory).unwrap();
     }
     #[test]
