@@ -60,7 +60,7 @@ export class NoteReservation {
  release(nullifiers:readonly bigint[]){for(const n of nullifiers)this.inFlight.delete(n);}
 }
 
-export interface LoadedAccount {account:EpochAccount;sent:Record<string,SentRecord>;listings:string[];links:LinkRecord[];resumed:boolean;feeAccepted?:DepositFeeSchedule;error?:string;offline?:true}
+export interface LoadedAccount {account:EpochAccount;sent:Record<string,SentRecord>;listings:string[];links:LinkRecord[];resumed:boolean;storedBatch?:number;feeAccepted?:DepositFeeSchedule;error?:string;offline?:true}
 export type LinkState='unclaimed'|'claimed'|'taken-back';
 export interface ClaimLink extends LinkRecord {token:string;state:LinkState}
 const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(error))||'unreadable';
@@ -70,7 +70,7 @@ const reasonOf=(error:unknown)=>(error instanceof Error?error.message:String(err
  */
 export async function loadAccount(hash:Hash,keys:{ask:bigint;nk:bigint;viewSecret:Uint8Array},o:{repository?:ShieldedNoteRepository;token:string;epochLen?:number;bornAt:number;api?:PoolApi;onBatch?:EpochOnBatch;watched?:()=>Iterable<bigint>;links?:Map<string,LinkRecord>;status?:RollupPoolStatus;onSyncProgress?:SyncProgressObserver}):Promise<LoadedAccount>{
  const known=knownEpochPool(o.status,o.token);
- const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot,offline=false):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,feeAccepted:parseDepositFeeSchedule(kept?.feeAccepted),...(error?{error}:{}),...(offline?{offline:true as const}:{})});
+ const opened=(account:EpochAccount,error?:string,kept?:ShieldedSnapshot,offline=false):LoadedAccount=>({account,sent:{...kept?.sent},listings:[...(kept?.listings??[])],links:[...(kept?.links??[])],resumed:!!kept,...(kept?{storedBatch:kept.account.batch}:{}),feeAccepted:parseDepositFeeSchedule(kept?.feeAccepted),...(error?{error}:{}),...(offline?{offline:true as const}:{})});
  const unsynced=(cause:unknown)=>{if(!o.epochLen)throw cause;return EpochAccount.owning(hash,keys,{epochLen:o.epochLen,bornAt:o.bornAt});};
  const unchecked=(cause:unknown)=>`Opened without the pool, so the saved notes are unchecked: ${reasonOf(cause)}`;
  const fresh=async(error?:string):Promise<LoadedAccount>=>{
@@ -317,6 +317,8 @@ export class ShieldedWallet extends Wallet {
   this.account=loaded.account;this.sent={...loaded.sent,...this.sent};this.resumed=loaded.resumed;this.repositoryError=loaded.error;this.offline=!!loaded.offline;this.feeAccepted=maxDepositFeeOf(this.feeAccepted,loaded.feeAccepted);
   for(const txid of loaded.listings)this.listings.add(txid);
   for(const link of loaded.links)this.linkRecords.set(link.key,link);
+  // start() skips sync() for a confirmed account, so this is the only save before the first tick; an unconfirmed catch-up is never kept.
+  if(epochConfirmed(this.account)&&this.account.batchCount!==loaded.storedBatch)await this.save();
  }
  /** The watch registration, the incoming-funds watch and the first auto-shield, which run behind `create()`; rejects with the watch setup's first error. */
  get started():Promise<void>{return this.startup;}

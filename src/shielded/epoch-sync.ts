@@ -71,14 +71,15 @@ export function epochCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBa
 
 async function privateCatchUp(account:EpochAccount,api:PoolApi,onBatch?:EpochOnBatch,onPage?:(cursor:number)=>Promise<void>|void,onSyncProgress?:SyncProgressObserver):Promise<number>{
  let from=Math.floor(account.batchCount/account.epochLen)*account.epochLen,applied=0;
- const start=from;
+ // The re-read starts at the epoch, but the account has applied up to its own count, so only the rest is work to report.
+ const start=account.batchCount;
  reportSyncProgress(onSyncProgress,{stage:'history',from:start,through:start});
  for(;;){
   const limit=Math.min(privatePoolPage(api),account.epochLen-from%account.epochLen),page=await api<EpochBatchPage>(`/batches?from=${from}&limit=${limit}`);
   if(!Number.isSafeInteger(page.total)||page.total<0)throw new Error('The pool returned an invalid batch count.');
   if(page.batches.length>limit)throw new Error('The pool returned more batches than requested.');
   if(page.batches.length<limit&&from+page.batches.length<page.total)throw new Error('The pool returned an incomplete page.');
-  reportSyncProgress(onSyncProgress,{stage:'history',from:start,through:from+page.batches.length,total:page.total});
+  reportSyncProgress(onSyncProgress,{stage:'history',from:start,through:Math.max(start,from+page.batches.length),total:page.total});
   const paint=paintSyncProgress(onSyncProgress);if(paint)await paint;
   for(const [offset,batch] of page.batches.entries()){
    const number=from+offset;

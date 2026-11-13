@@ -321,6 +321,41 @@ test('a second open resumes from the repository and does not re-read the publish
  }finally{await second.dispose();}
 });
 
+for(const networkPrivacy of [false,true])test(`the catch-up at load is saved, so a ${networkPrivacy?'private':'public'} wallet killed before any tick or action does not replay it`,async()=>{
+ const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository();
+ const stale=EpochAccount.owning(hash,keys,{epochLen:4});
+ fake.land('spend',[await fake.deposit(self,500n)]);
+ while(fake.state.batchCount<3)fake.land();
+ await epochCatchUp(stale,fake.api);
+ await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:stale.snapshot(),sent:{},listings:[],links:[]});
+ while(fake.state.batchCount<6)fake.land();
+ const asked:string[]=[],api=(async(path:string)=>{asked.push(path);return fake.api(path);}) as PoolApi;
+ // opening(), not open(): start() skips sync() for a confirmed account and no tick has fired, so only load() can have saved.
+ const first=await opening({repository,networkPrivacy,fetcher:fetcherOf(api)});
+ await first.dispose();
+ assert.equal(first.batchCount(),6,'the load caught the stale snapshot up');
+ assert.equal((await repository.getAccount(TOKEN))?.account.batch,6,'and saved it, rather than waiting for the first watchdog tick');
+ asked.length=0;
+ const second=await opening({repository,networkPrivacy,fetcher:fetcherOf(api)});
+ try{
+  assert.deepEqual([second.resumed,second.batchCount(),second.shieldedBalance()],[true,6,500n]);
+  assert.ok(!asked.some(path=>path.includes('from=3')),`the saved batches are not read again: ${asked.join(' ')}`);
+ }finally{await second.dispose();}
+});
+
+test('a private load the pool\'s root does not confirm leaves the saved account untouched',async()=>{
+ const fake=epochPool(hash,4),{keys,self}=shieldedKeysOf(hash,'11'.repeat(32)),repository=new InMemoryShieldedNoteRepository();
+ const stale=EpochAccount.owning(hash,keys,{epochLen:4});
+ fake.land('spend',[await fake.deposit(self,500n)]);
+ while(fake.state.batchCount<3)fake.land();
+ await epochCatchUp(stale,fake.api);
+ await repository.saveAccount(TOKEN,{v:2,token:TOKEN,account:stale.snapshot(),sent:{},listings:[],links:[]});
+ while(fake.state.batchCount<6)fake.land();
+ const api=(async(path:string)=>{const result=await fake.api<RollupPoolStatus>(path);return path.startsWith('/status')?{...result,pool:{...result.pool,root:'1'}}:result;}) as PoolApi;
+ await (await opening({repository,networkPrivacy:true,fetcher:fetcherOf(api)})).dispose();
+ assert.equal((await repository.getAccount(TOKEN))?.account.batch,3);
+});
+
 test('a snapshot from another seed is ignored, reported once, and the wallet syncs instead',async()=>{
  const repository=new InMemoryShieldedNoteRepository();
  const theirs=await open({repository,secret:'22'.repeat(32)});
