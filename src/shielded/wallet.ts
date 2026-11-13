@@ -656,6 +656,13 @@ export class ShieldedWallet extends Wallet {
   const landedBy=async(nullifiers:readonly bigint[])=>{await this.refreshPoolStatus().catch(()=>{});if(this.pool.status.pool?.batches!==this.account.batchCount)await this.sync().catch(()=>{});this.assertOpen();return this.landedSpend(nullifiers);};
   return {api:this.api,prover:this.prover,identity:this.identity,poolScript:this.poolScript,...(this.sealedTransport?{jitterMs:PRIVATE_SUBMIT_JITTER_MS,landedBy}:{})};
  }
+ /** A deposit spends no note of ours, so no history row ever carries its nullifiers and only its coin can say; the indexer holds that, past any stalled operator. */
+ async settledDeposit(outpoint:string):Promise<boolean|undefined>{
+  const parts=outpoint.split(':');
+  if(parts.length!==2||!/^[0-9a-f]{64}$/.test(parts[0]!)||!/^\d{1,10}$/.test(parts[1]!))return undefined;
+  const landed=await this.landedDeposit({txid:parts[0]!,vout:Number(parts[1])});
+  return landed===undefined?undefined:!!landed;
+ }
  /** undefined unless a status read this session, under two watchdog rounds old, shows the account at the pool's count: otherwise it has not looked, so the journal must not age an entry out on its word. */
  settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined{return !this.offline&&Date.now()-this.statusReadAt<2*WATCHDOG_MS&&this.pool.status.pool?.batches===this.account.batchCount?!!this.landedSpend(nullifiers):undefined;}
  private landedSpend(nullifiers:readonly bigint[]):SpendStatus|undefined{

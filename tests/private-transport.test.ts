@@ -186,18 +186,31 @@ test('reconcile passes the caller\'s verdict to the journal and still reports wh
  const landed='cd'.repeat(16),g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json(url.endsWith(landed)?{status:'included',txid:'d'.repeat(64)}:{status:'pending'})});
  for(const [id,nf] of [[ID,'17'],[landed,'23']])assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(id,nf))).status,202);
  const asked:bigint[][]=[];
- assert.equal(await g.transport.reconcile({settledNullifiers:nullifiers=>{asked.push([...nullifiers]);return undefined;},batchCount:()=>0}),true);
+ assert.equal(await g.transport.reconcile({settledNullifiers:nullifiers=>{asked.push([...nullifiers]);return undefined;},settledDeposit:async()=>undefined,batchCount:()=>0}),true);
  assert.deepEqual([asked,g.transport.journal.pendingPoolNullifiers(POOL)],[[[17n]],[17n]],'asked after the id round, of what it left');
- assert.equal(await g.transport.reconcile({settledNullifiers:()=>true,batchCount:()=>0}),false);
+ assert.equal(await g.transport.reconcile({settledNullifiers:()=>true,settledDeposit:async()=>undefined,batchCount:()=>0}),false);
 });
 
 test('reconcile hands the journal the wallet\'s count as it stands once the id round is done',async t=>{
  let count=5;const g=await rig(t,{reply:url=>{if(url.endsWith('/spends'))return Response.json({id:ID},{status:202});count=Math.max(count,6);return Response.json({status:'pending'});}});
  const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
  assert.equal((await g.transport.fetch('/api/rollup/spends',spendPost(ID,'17'))).status,202);
- at=start+3_600_001+PRIVATE_GRACE_MS;const wallet={settledNullifiers:()=>false,batchCount:()=>count};
+ at=start+3_600_001+PRIVATE_GRACE_MS;const wallet={settledNullifiers:()=>false,settledDeposit:async()=>undefined,batchCount:()=>count};
  assert.deepEqual([await g.transport.reconcile(wallet),await g.transport.reconcile(wallet)],[true,true]);
  count=7;assert.equal(await g.transport.reconcile(wallet),false);
+});
+
+test('the sealed path asks a shield\'s coin, not its nullifiers, and releases on the coin alone',async t=>{
+ const coin={txid:'c'.repeat(64),vout:1},g=await rig(t,{reply:url=>url.endsWith('/spends')?Response.json({id:ID},{status:202}):Response.json({error:'Unknown spend.'},{status:404})});
+ const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
+ const post={method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:ID,slot:{nullifiers:['17']},coin})};
+ assert.equal((await g.transport.fetch('/api/rollup/spends',post)).status,202);
+ at=start+3_600_001+PRIVATE_GRACE_MS;const asked:string[]=[];
+ const wallet=(verdict:boolean|undefined)=>({settledNullifiers:()=>{throw new Error('a deposit has no history row');},settledDeposit:async(outpoint:string)=>{asked.push(outpoint);return verdict;},batchCount:()=>9});
+ assert.equal(await g.transport.reconcile(wallet(undefined)),true);
+ assert.deepEqual([asked,g.transport.journal.pendingPoolOutpoints(POOL)],[[`${coin.txid}:1`],[`${coin.txid}:1`]]);
+ assert.equal(await g.transport.reconcile(wallet(false)),false);
+ assert.deepEqual(g.transport.journal.pendingPoolOutpoints(POOL),[]);
 });
 
 test('a spend POST that never went out frees its reservation at once, and one that may have run keeps it',async t=>{

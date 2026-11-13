@@ -4,7 +4,7 @@ import {verifyEvent} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
 import {NOSTR_RELAYS} from '../../packages/protocol/src/nostr-carrier.ts';
 import {NATIVE_RELEASE_ENDPOINT} from '../native-release.ts';
-import {journalledRoute,makeNativeMutationJournal} from '../native/mutations.ts';
+import {journalledRoute,makeNativeMutationJournal,reconcileJournal,type JournalWallet} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
 import {PRIVATE_ONCHAIN_POLL_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
@@ -14,7 +14,7 @@ export const PRIVATE_PAGE=12;
 export const PRIVATE_GRACE_MS=900_000;
 export const PRIVATE_SHIELD_COINS=20;
 export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
-export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile(wallet?:{settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined;batchCount():number}):Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
+export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile(wallet?:JournalWallet):Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
 
 let installed:PrivateTransport|undefined;
 const refused=(what:string)=>class {constructor(){throw new Error('Private networking does not permit '+what);}};
@@ -47,12 +47,10 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
   if(journalled)journal.observeNativeResponse({url:href,method,status:response.status,body:await response.clone().text(),requestBody:body});
   return response;
  })),PRIVATE_PAGE);
- const pending=()=>journal.pendingPoolNullifiers(poolOrigin).length>0||journal.pendingPoolOutpoints(poolOrigin).length>0;
  let reconciling:Promise<boolean>|undefined;
  const transport:PrivateTransport={fetch:privateFetch,poolOrigin,pageSize:PRIVATE_PAGE,journal,
-  // The count is read beside the verdicts, after the id round: read before it, a batch the wallet synced meanwhile would be missing from it.
   reconcile(wallet){
-   reconciling??=(async()=>{if(pending()){await journal.reconcileNativeMutations(privateFetch,poolOrigin);if(wallet)journal.settleLandedMutations(poolOrigin,n=>wallet.settledNullifiers(n),wallet.batchCount());}return pending();})().finally(()=>{reconciling=undefined;});
+   reconciling??=reconcileJournal(journal,privateFetch,poolOrigin,wallet).finally(()=>{reconciling=undefined;});
    return reconciling;
   },
   providers(arkUrl,indexerUrl){

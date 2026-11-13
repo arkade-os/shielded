@@ -5,10 +5,15 @@ export interface NativeMutation {url:string;method:string;body?:string}
 export interface NativeMutationResponse extends NativeMutation {status:number;requestBody?:string}
 interface PendingMutation {origin:string;id:string;body:string;nullifiers:string[];coin?:string;createdAt:number;batchAt?:number}
 const KEY='shielded-native-pool-mutations-v1',MAX_BYTES=4*1024*1024,MAX_ENTRIES=256,TRACKED_MS=3_600_000;
+/** Native posts direct through Tor, with no relay holding a sealed copy: a POST outlives neither the 90 s connect nor the 30 s idle bound of src-tauri/src/transport/session.rs. */
+export const NATIVE_GRACE_MS=180_000;
 const REFUSED_CODES=new Set(['slot-shape','group-invalid','recover-unarchived','window-tag','nullifier-range','stale-anchor','fee-missing']);
 const REFUSED_BODY=new Set(['The request body is not valid JSON.','A spend id is 8 to 32 random bytes in hex.','A spend carries its seven public inputs.','Malformed epoch slot.','An epoch slot names its anchor, not a root.','An epoch slot names exactly one of rCur, for a fast-path spend, and origin, for a recovery.','A recovery names its origin epoch as a whole number.','A window leaf names a whole epoch and its root.','A group has a nonzero id and two or three members; a lone spend has neither.','Expected a decimal field element.','An asset id is 68 lowercase hex characters.','Expected lowercase hex of the right length.','Malformed Groth16 proof.']);
 // http.ts refuses these before service.submit; named operator refusals remove their tentative admission before throwing.
-const preAdmissionRefusal=(status:number,result:any)=>typeof result?.error==='string'&&(status===429?result.code==='admission-rate-limit'&&result.error==='Too many requests from this address; try again in a minute.':status===400&&(result.code===undefined?REFUSED_BODY.has(result.error):REFUSED_CODES.has(result.code)));
+// A 429 carrying no pool envelope at all was written by a hop in front of the pool — Cloudflare's edge limit (body `error code: 1015`) or the gateway's admit() — and both answer before they forward, so the pool never saw the spend. One that does carry an envelope but not the pool's exact words may come from a hop that already forwarded, and stays uncertain.
+const preAdmissionRefusal=(status:number,result:any)=>status===429
+ ?typeof result?.error!=='string'||result.code==='admission-rate-limit'&&result.error==='Too many requests from this address; try again in a minute.'
+ :typeof result?.error==='string'&&status===400&&(result.code===undefined?REFUSED_BODY.has(result.error):REFUSED_CODES.has(result.code));
 const invalid=()=>new Error('The native payment journal is invalid; funds remain reserved.');
 const route=(raw:string)=>{const url=new URL(raw);return {origin:url.origin,path:decodeURIComponent(url.pathname).toLowerCase()};};
 export const journalledRoute=(url:string,method:string):boolean=>{const m=method.toUpperCase(),{path}=route(url);return m==='GET'&&/^\/api\/rollup\/spends\/[0-9a-f]{32}$/.test(path)||m==='POST'&&path==='/api/rollup/spends';};
@@ -76,12 +81,12 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   const method=response.method.toUpperCase(),{origin,path}=route(response.url),spend=method==='GET'?/^\/api\/rollup\/spends\/([0-9a-f]{32})$/.exec(path)?.[1]:undefined;
   // The pool forgets a spend an hour after admitting it, so only a 404 inside that hour proves it never arrived; its body may be empty.
   if(spend&&response.status===404){if(graceMs!==undefined){const at=now();drop(row=>row.origin===origin&&row.id===spend&&at-row.createdAt>graceMs&&at-row.createdAt<TRACKED_MS-graceMs);}return;}
-  let result:any;try{result=JSON.parse(response.body);}catch{return;}
+  let result:any;try{result=JSON.parse(response.body);}catch{result=undefined;}
   if(method==='POST'&&path==='/api/rollup/spends'){
    if(response.requestBody===undefined||!preAdmissionRefusal(response.status,result))return;
    let parsed:ReturnType<typeof parseBody>;try{parsed=parseBody(response.requestBody);}catch{return;}
    const entries=load(),refused=entries.find(row=>row.origin===origin&&row.id===parsed.id&&row.body===response.requestBody);if(!refused)return;
-   const group=result.code==='fee-missing'?feeGroup(refused.body):undefined;
+   const group=result?.code==='fee-missing'?feeGroup(refused.body):undefined;
    const remaining=entries.filter(row=>row.origin!==origin||row.id!==refused.id&&(!group||feeGroup(row.body)!==group));
    save(remaining);return;
   }
@@ -104,22 +109,40 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   }))]);}finally{clearTimeout(deadline);controller.abort();}
   return {pending:load().filter(row=>row.origin===origin).length};
  };
- /** Browser only: a sealed copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this account's own batches are left to say, once the pool count differs from the one the entry was first judged at: a stalled operator still answers /status, and a new genesis restarts the count lower. */
- const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined,count:number)=>{
+ /**
+  * A copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this wallet is left to say.
+  * A deposit spends no note of ours, so `settled` is blind to one and `deposited` answers from its coin, which no stalled operator can fake.
+  * For a note spend the account's history answers, trusted once the pool count differs from the one the entry was first judged at: a stalled operator still answers /status, and a new genesis restarts the count lower.
+  */
+ const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined,count:number,deposited?:(coin:string)=>boolean|undefined)=>{
   if(graceMs===undefined||!Number.isSafeInteger(count)||count<0)return;
   const origin=new URL(poolOrigin).origin,at=now(),entries=load();let marked=false;
   const remaining=entries.filter(row=>{
-   const verdict=row.origin===origin?settled(row.nullifiers.map(BigInt)):undefined;
+   const verdict=row.origin!==origin?undefined:row.coin!==undefined?deposited?.(row.coin):settled(row.nullifiers.map(BigInt));
    if(verdict!==false)return verdict!==true;
    if(row.batchAt===undefined){row.batchAt=count;marked=true;}
-   return at-row.createdAt<=TRACKED_MS+graceMs||count===row.batchAt;
+   if(at-row.createdAt<=TRACKED_MS+graceMs)return true;
+   return row.coin===undefined&&count===row.batchAt;
   });
   if(marked||remaining.length!==entries.length)save(remaining);
  };
  return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations,settleLandedMutations};
 }
 
-const current=()=>{if(!globalThis.localStorage)throw new Error('The native payment journal is unavailable; no payment was sent.');return makeNativeMutationJournal(globalThis.localStorage);};
+export interface JournalWallet {settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined;settledDeposit(coin:string):Promise<boolean|undefined>;batchCount():number}
+/** One round for either private path: the ids the pool still answers for, then the verdicts only this wallet can give. The count is read last, so a batch synced while the coins were read cannot be missing from it. */
+export const reconcileJournal=async(journal:ReturnType<typeof makeNativeMutationJournal>,fetcher:typeof fetch,poolOrigin:string,wallet?:JournalWallet):Promise<boolean>=>{
+ const pending=()=>journal.pendingPoolNullifiers(poolOrigin).length>0||journal.pendingPoolOutpoints(poolOrigin).length>0;
+ if(!pending())return false;
+ await journal.reconcileNativeMutations(fetcher,poolOrigin);
+ if(wallet){
+  const coins=new Map(await Promise.all(journal.pendingPoolOutpoints(poolOrigin).map(async coin=>[coin,await wallet.settledDeposit(coin)] as const)));
+  journal.settleLandedMutations(poolOrigin,nullifiers=>wallet.settledNullifiers(nullifiers),wallet.batchCount(),coin=>coins.get(coin));
+ }
+ return pending();
+}
+
+const current=()=>{if(!globalThis.localStorage)throw new Error('The native payment journal is unavailable; no payment was sent.');return makeNativeMutationJournal(globalThis.localStorage,{graceMs:NATIVE_GRACE_MS});};
 export const beforeNativeMutation=(request:NativeMutation)=>{
  if(request.method.toUpperCase()==='POST'&&route(request.url).path==='/api/rollup/spends')current().beforeNativeMutation(request);
 };
@@ -128,4 +151,4 @@ export const pendingPoolOutpoints=(poolOrigin:string)=>current().pendingPoolOutp
 export const observeNativeResponse=(response:NativeMutationResponse)=>{
  if(journalledRoute(response.url,response.method))current().observeNativeResponse(response);
 };
-export const reconcileNativeMutations=(fetcher:typeof fetch,poolOrigin:string)=>current().reconcileNativeMutations(fetcher,poolOrigin);
+export const reconcileNativeJournal=(fetcher:typeof fetch,poolOrigin:string,wallet?:JournalWallet)=>reconcileJournal(current(),fetcher,poolOrigin,wallet);
