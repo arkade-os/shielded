@@ -3,6 +3,7 @@ import {setImmediate} from 'node:timers/promises';
 import test from 'node:test';
 import {NativeBridge,SseDecoder,encode64,type NativeBackend,type NativeEvent,type NativeStatus} from '../src/native/transport.ts';
 import {NativePolicy} from '../src/native/policy.ts';
+import {retryAfterMs} from '../src/shielded/network-privacy.ts';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
@@ -323,6 +324,10 @@ test('changing mode retires old handles and guards before its native start compl
  await assert.rejects(bridge.fetch('https://pool.example/api/rollup/status'),/paused|retired/);
  assert.ok(b.calls.some(call=>call.command==='native_cancel'&&call.args.id==='remote'));
  pending.resolve({phase:'ready',generation:2,mode:'direct'});await next;assert.throws(guard,/paused|retired/);
+});
+
+test('Retry-After accepts delta-seconds with a fraction',()=>{
+ assert.deepEqual(['30','1.5','soon',''].map(retryAfterMs),[30_000,1_500,undefined,undefined]);
 });
 
 test('a rate-limited native response paces that origin and leaves others alone',async t=>{

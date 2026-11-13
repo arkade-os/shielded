@@ -10,7 +10,7 @@ export const privateInterval=(ms:number):number=>Math.round(ms*(1+Math.random()/
 export const RATE_LIMIT_MIN_MS=1_000,RATE_LIMIT_FALLBACK_MS=60_000,RATE_LIMIT_MAX_MS=60_000;
 export const retryAfterMs=(header:string|null|undefined):number|undefined=>{
  const value=header?.trim();if(!value)return undefined;
- const delay=/^\d+$/.test(value)?Number(value)*1000:/^[A-Za-z]/.test(value)?Date.parse(value)-Date.now():NaN;
+ const delay=/^\d+(\.\d+)?$/.test(value)?Math.round(Number(value)*1000):/^[A-Za-z]/.test(value)?Date.parse(value)-Date.now():NaN;
  return Number.isSafeInteger(delay)&&delay>=0?delay:undefined;
 };
 const limitedUntil=new Map<string,number>();
