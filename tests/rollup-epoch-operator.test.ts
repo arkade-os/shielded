@@ -302,6 +302,18 @@ test('admission checks a double-spend before the anchor, so stale-anchor never h
  }
 });
 
+test('a second deposit of a coin already queued is refused as double-spend, even with a stale anchor, and the first still lands',async t=>{
+ const w=await world(64),op=await w.open(t),first=spendOf(deposit(op.state,1000n),{coin:w.coin(1)});
+ await op.submit(first);
+ const again=spendOf(deposit(op.state,1000n),{coin:w.coin(1)});
+ await assert.rejects(op.submit(again),rejection('double-spend'));
+ await assert.rejects(op.submit({...again,slot:{...again.slot,anchor:again.slot.anchor+1n}}),rejection('double-spend'));
+ assert.deepEqual(op.pendingIds(),[first.id]);
+ op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ await op.tick();
+ assert.equal(op.state.batchCount,1);
+});
+
 test('a pad whose rCur has no root is refused once, and the next tick still builds a batch',async t=>{
  const w=await world(2),op=await w.open(t),good=fastSpend(op.state);
  const bad:[string,unknown][]=[['no root',{epoch:0}],['a root outside the field',{epoch:0,root:ROLLUP_FIELD}],['a fractional epoch',{epoch:0.5,root:1n}]];
@@ -1011,9 +1023,9 @@ test('an asset deposit\'s carrier pays nothing at the free allowance and the fee
  const drops:string[][]=[],w=await world(64),op=await w.open(t,{...w.fee(),onDrop:ids=>drops.push(ids)});
  await listed(op);
  const [free,allowance]=assetDeposit(w,op,330n),[waiting,carrier]=assetDeposit(w,op,1000n);
+ await assert.rejects(op.submit(spendOf(deposit(op.state,330n),{coin:w.cash(330n)})),owes(330n,100n,0n),'a plain deposit of the allowance, before `free` queues the same fixture coin');
  for(const s of [free,allowance,waiting])await op.submit(s);
  await assert.rejects(op.submit(carrier),owes(1000n,100n,0n));
- await assert.rejects(op.submit(spendOf(deposit(op.state,330n),{coin:w.cash(330n)})),owes(330n,100n,0n),'a plain deposit of the allowance');
  assert.deepEqual([op.pendingIds(),drops],[[free.id,allowance.id],[[waiting.id]]],'the refused group leaves whole, its asset leg reported dropped');
 });
 

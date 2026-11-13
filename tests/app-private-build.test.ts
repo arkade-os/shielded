@@ -65,6 +65,8 @@ test('the unresolved-outcomes banner offers a release behind a confirm, on eithe
  assert.match(banner,/coin can be spent only once[\s\S]*?A payment is never released here/,'the confirm says why a shield is safe and a payment is not offered');
  assert.equal((banner.match(/>Release reserved shields<\/button>/g)??[]).length,2,'one button opens the confirm, one does the release');
  assert.match(banner,/onClick=\{releaseReserved\}/);
+ assert.doesNotMatch(banner,/releaseNote&&/);
+ assert.match(wallet,/<\/section>\}\s*\{releaseNote&&<section className="stock-warning" role="status"><span>\{releaseNote\}<\/span>[\s\S]*?onClick=\{\(\)=>setReleaseNote\(''\)\}>Dismiss</,'the result outlives the banner, which unmounts once nothing is reserved');
  const handler=/const releaseReserved=\(\)=>\{([\s\S]*?)\n \};/.exec(wallet)?.[1]??'';
  assert.match(handler,/nativeHost\?forceReleaseNativeJournal\(POOL_ORIGIN\):PRIVATE!\.journal\.forceRelease\(PRIVATE!\.poolOrigin\)/,'both paths release through the journal, never the component');
  assert.doesNotMatch(handler,/settledNullifiers/,'a payment is never released by hand, whatever the wallet would say');

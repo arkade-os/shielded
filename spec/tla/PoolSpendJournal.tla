@@ -3,7 +3,7 @@ EXTENDS Naturals
 
 CONSTANTS MaxClock, MaxBatches,
           BreakGrace, BreakTrackedWindow, BreakForeignRefusal, BreakEdgeRefusal,
-          BreakRetention, BreakCoinProof, BreakForceNotes
+          BreakRetention, BreakCoinProof, BreakForceNotes, BreakUnreadableCoin
 
 VARIABLES journal, inFlight, answer, pool, tracked, clock, batches, seen,
           batchAt, marked, deposit, coinSpent, freed, retry, paid, stranded
@@ -24,10 +24,9 @@ CanLand == tracked /\ pool \in {"admitted", "dropped"}
 IdAnswer == IF ~tracked \/ pool = "none" THEN "missing"
             ELSE IF pool = "admitted" THEN "pending"
             ELSE IF pool = "landed" THEN "included" ELSE "dropped"
-\* A deposit spends no note of ours, so the account's history never carries one and only its coin answers.
-Verdict == IF deposit THEN (IF pool = "landed" THEN "landed" ELSE "nothing")
-           ELSE IF seen # batches THEN "unknown"
-           ELSE IF pool = "landed" THEN "landed" ELSE "nothing"
+\* A deposit spends no note of ours, so the account's history never carries one and only its coin answers, unless that read fails.
+Verdicts == IF deposit THEN {IF pool = "landed" THEN "landed" ELSE "nothing", "unknown"}
+            ELSE {IF seen # batches THEN "unknown" ELSE IF pool = "landed" THEN "landed" ELSE "nothing"}
 NewBatchAt == IF marked THEN batchAt ELSE seen
 \* What a pass must release: a deposit past the pool's retention whatever its coin says, since the coin bounds what a retry can do; a note spend only once it is proven dead on a current view.
 SettleProven == IF deposit THEN clock >= Retention
@@ -140,21 +139,22 @@ ReconcileId ==
 
 Settle ==
     /\ journal = "open"
-    /\ LET dead == Verdict = "nothing"
+    /\ \E verdict \in Verdicts :
+       LET dead == verdict = "nothing" \/ (deposit /\ verdict = "unknown" /\ ~BreakUnreadableCoin)
            noted == dead /\ ~deposit
-           release == \/ Verdict = "landed"
+           release == \/ verdict = "landed"
                       \/ /\ dead
                          /\ (BreakRetention \/ clock >= Retention)
                          /\ ((deposit /\ ~BreakCoinProof) \/ seen # NewBatchAt)
        IN /\ journal' = IF release THEN "gone" ELSE "open"
-          /\ freed' = (freed \/ (release /\ Verdict # "landed"))
+          /\ freed' = (freed \/ (release /\ verdict # "landed"))
           /\ stranded' = (stranded \/ (~release /\ SettleProven))
           /\ batchAt' = IF noted THEN NewBatchAt ELSE batchAt
           /\ marked' = (marked \/ noted)
     /\ UNCHANGED <<inFlight, answer, pool, tracked, clock, batches, seen,
                    deposit, coinSpent, retry, paid>>
 
-\* The user's own release from the banner: a deposit at any age, since its coin bounds what a retry can do. A note spend is never offered here; only Settle, which also weighs the pool count, may free one.
+\* The user's own release from the banner: a deposit at any age, looser than the app, which also waits out the grace, since its coin bounds what a retry can do. A note spend is never offered here; only Settle, which also weighs the pool count, may free one.
 ForceRelease ==
     /\ journal = "open"
     /\ LET free == deposit \/ (BreakForceNotes /\ clock >= Retention)

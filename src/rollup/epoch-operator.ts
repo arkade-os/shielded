@@ -288,6 +288,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   const [pub,,,deposit,withdraw,assetField,destination]=spend.publics;
   const {anchor,rCur,nullifiers,commitments,ctDigest,groupId,groupSize}=spend.slot;
   if([...queued(pending),...inflight].some(s=>s.id===spend.id))throw new Error('Duplicate rollup spend id.');
+  // Two slots on one coin make a batch the network refuses; first, like the nullifier check, so a queued copy never answers a code its client frees on.
+  if(spend.coin&&[...queued(pending),...inflight].some(s=>s.coin?.txid===spend.coin!.txid&&s.coin.vout===spend.coin!.vout))throw new RollupRejection('double-spend','The deposit coin is already pending in a batch.');
   const kind=kindOf(spend);
   if(kind==='join'){
    if(deposit||withdraw||assetField||spend.coin||spend.asset||spend.program)throw new RollupRejection('slot-shape','A join carries no deposit, withdrawal, coin or asset.');

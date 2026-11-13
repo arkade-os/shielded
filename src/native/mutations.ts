@@ -129,12 +129,12 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   if(marked||remaining.length!==entries.length)save(remaining);
  };
  /**
-  * The reader's own release, from the banner: shields only, at any age, since one coin can be spent once and a retry cannot pay what the first attempt did.
+  * The reader's own release, from the banner: shields only, once past their grace, since one coin can be spent once and a retry cannot pay what the first attempt did.
   * A payment keeps settleLandedMutations alone, which also waits for a pool count that has moved since the entry was first judged; no hand on a button stands in for that proof.
   */
  const forceRelease=(poolOrigin:string)=>{
   const origin=new URL(poolOrigin).origin,at=now(),entries=load();
-  // A shield younger than the grace may still be in flight; freeing it would let a retry put the same coin in a second slot.
+  // A shield younger than the grace may still be in flight, and a pool without the queued-coin check would batch it beside its retry.
   const fresh=(row:PendingMutation)=>graceMs===undefined||at-row.createdAt<graceMs;
   const remaining=entries.filter(row=>row.origin!==origin||row.coin===undefined||fresh(row));
   if(remaining.length!==entries.length)save(remaining);
