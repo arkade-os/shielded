@@ -659,7 +659,7 @@ export class ShieldedWallet extends Wallet {
  /** A deposit spends no note of ours, so no history row ever carries its nullifiers and only its coin can say; the indexer holds that, past any stalled operator. */
  async settledDeposit(outpoint:string):Promise<boolean|undefined>{
   const parts=outpoint.split(':');
-  if(parts.length!==2||!/^[0-9a-f]{64}$/.test(parts[0]!)||!/^\d{1,10}$/.test(parts[1]!))return undefined;
+  if(parts.length!==2||!/^[0-9a-f]{64}$/.test(parts[0]!)||!/^\d{1,10}$/.test(parts[1]!)||Number(parts[1])>0xffffffff)return undefined;
   const landed=await this.landedDeposit({txid:parts[0]!,vout:Number(parts[1])});
   return landed===undefined?undefined:!!landed;
  }
