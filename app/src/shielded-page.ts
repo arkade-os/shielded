@@ -6,7 +6,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
-import {pausedErrorText} from './rollup-client.ts';
+import {pausedErrorText,satsText} from './rollup-client.ts';
 import {restoreNativeStorage} from './native-storage.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
@@ -41,6 +41,20 @@ export function pageActivityHistory(history:Activity[],lightning:Activity[]){
   return {...row,intent:{...row.intent!,label:'Paid via Lightning',outcome:'paid'}};
  });
  return [...rows,...lightning.filter(row=>row.intent?.kind!=='lightning-send')].sort((a,b)=>b.createdAt-a.createdAt);
+}
+
+export type ActivityNotice={id:string;text:string;detail:string;received:boolean;more:number};
+export type ActivitySeen={ids:ReadonlySet<string>;sources:number};
+/** The newest money movement these rows added, for a toast. `sources` flags the history readers that have answered; the first answer from any of them seeds silently, so startup, restore and a late Lightning start never announce old history. */
+export function pageActivityNotice(rows:readonly Activity[],seen:ActivitySeen|undefined,sources:number):{seen:ActivitySeen;notice?:ActivityNotice}{
+ const ids=new Set(seen?.ids??[]);for(const row of rows)ids.add(row.id);
+ if(!seen||seen.sources!==sources)return {seen:{ids,sources}};
+ const fresh=rows.filter(row=>!seen.ids.has(row.id)&&row.amount!==0&&historyDirection(row)!=='own').sort((a,b)=>b.createdAt-a.createdAt);
+ const newest=fresh[0];if(!newest)return {seen:{ids,sources}};
+ const received=historyDirection(newest)==='in';
+ return {seen:{ids,sources},notice:{id:newest.id,received,more:fresh.length-1,
+  text:`${received?'Received':'Sent'} ${satsText(Math.abs(newest.amount))}`,
+  detail:newest.settled?'':received?'Arriving; not settled yet':'Not settled yet'}};
 }
 
 export function pageCache(source:ShieldedNoteRepository){

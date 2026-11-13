@@ -22,6 +22,11 @@ function pointer(target:EventTarget,type:string,x:number,y:number,time:number,ex
  target.dispatchEvent(event);return event;
 }
 function click(target:EventTarget,time:number,detail=1){const event=new Event('click',{cancelable:true});Object.defineProperties(event,{timeStamp:{value:time},detail:{value:detail}});target.dispatchEvent(event);return event;}
+function touchmove(target:EventTarget,x:number,y:number,cancelable=true,contacts=1){
+ const event=new Event('touchmove',{cancelable});
+ Object.defineProperty(event,'touches',{value:Array.from({length:contacts},()=>({clientX:x,clientY:y}))});
+ target.dispatchEvent(event);return event;
+}
 function sheet(){const doc=new TestDocument(),handle=new TestElement(doc),surface=new TestElement(doc);let dismissed=0;const dispose=bindSheetGesture(element(handle),element(surface),()=>dismissed++,{distance:100});return {doc,handle,surface,dispose,dismissed:()=>dismissed};}
 
 test('a sheet follows a downward drag, snaps back below threshold and dismisses only once beyond it',()=>{
@@ -168,6 +173,26 @@ test('disposing a pending pull clears its state and an old completion cannot rep
  pointer(surface,'pointerdown',0,0,200);pointer(doc,'pointermove',0,70,300);pointer(doc,'pointerup',0,70,320);
  assert.equal(states.at(-1),true);finishOld();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),true);
  finishNew();await new Promise(resolve=>setImmediate(resolve));assert.equal(states.at(-1),false);second();
+});
+
+test('a downward pull claims the native pan, leaving scrolling, pinching and scrolled content to the browser',()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc);
+ const dispose=bindPullToRefresh(element(surface),()=>{},{distance:60});
+ assert.equal(touchmove(doc,0,20).defaultPrevented,false);
+ pointer(surface,'pointerdown',0,0,0);
+ assert.equal(touchmove(doc,0,4).defaultPrevented,true);
+ assert.equal(touchmove(doc,0,20).defaultPrevented,true);
+ assert.equal(touchmove(doc,0,20,false).defaultPrevented,false);
+ assert.equal(touchmove(doc,0,20,true,2).defaultPrevented,false);
+ assert.equal(touchmove(doc,0,-20).defaultPrevented,false);
+ assert.equal(touchmove(doc,40,4).defaultPrevented,false);
+ pointer(doc,'pointerup',0,0,200);
+ const page=new TestElement(doc,'div',surface);page.classList.add('stock-page');page.classList.add('has-dock');
+ const panel=new TestElement(doc,'div',page);panel.classList.add('stock-panel');panel.scrollTop=100;const content=new TestElement(doc,'p',panel);
+ pointer(surface,'pointerdown',0,0,300,{target:content});
+ assert.equal(touchmove(doc,0,20).defaultPrevented,false);
+ dispose();
+ pointer(surface,'pointerdown',0,0,400);assert.equal(touchmove(doc,0,20).defaultPrevented,false);
 });
 
 test('a pull refresh failure reaches the explicit error channel and releases its state',async()=>{

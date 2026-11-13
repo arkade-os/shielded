@@ -126,6 +126,14 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
   publish({distance:current.distance,ready:current.distance>=threshold,refreshing:false});
   if(event.cancelable)event.preventDefault();
  };
+ // Android hands a vertical touch drag to native panning and then fires pointercancel, so the pull claims the first cancelable move itself; preventDefault() in pointermove cannot.
+ const panning=(event:TouchEvent)=>{
+  const current=pointer,touch=event.touches.length===1?event.touches[0]:undefined;
+  if(!current||!touch||!event.cancelable)return;
+  const dy=touch.clientY-current.y,dx=touch.clientX-current.x;
+  if(dy<=0||Math.abs(dx)>=8&&Math.abs(dx)>=dy)return;
+  event.preventDefault();
+ };
  const up=(event:PointerEvent)=>{
   const current=pointer;if(!current||event.pointerId!==current.id)return;
   const commit=current.distance>=threshold;
@@ -153,14 +161,14 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
  };
  const hidden=()=>{if(doc.visibilityState==='hidden')cancel();};
  surface.addEventListener('pointerdown',down);surface.addEventListener('lostpointercapture',cancel);surface.addEventListener('click',click,true);
- doc.addEventListener('pointermove',move,{passive:false});doc.addEventListener('pointerup',up);doc.addEventListener('pointercancel',cancel);
+ doc.addEventListener('pointermove',move,{passive:false});doc.addEventListener('touchmove',panning,{passive:false});doc.addEventListener('pointerup',up);doc.addEventListener('pointercancel',cancel);
  doc.addEventListener('visibilitychange',hidden);doc.defaultView?.addEventListener('blur',cancel);
  return()=>{
   if(disposed)return;disposed=true;refreshing=false;suppressUntil=0;if(pointer)reset(pointer.id);
   surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);flag('is-pull-refreshing',false);
   options.onState?.({distance:0,ready:false,refreshing:false});
   surface.removeEventListener('pointerdown',down);surface.removeEventListener('lostpointercapture',cancel);surface.removeEventListener('click',click,true);
-  doc.removeEventListener('pointermove',move);doc.removeEventListener('pointerup',up);doc.removeEventListener('pointercancel',cancel);
+  doc.removeEventListener('pointermove',move);doc.removeEventListener('touchmove',panning);doc.removeEventListener('pointerup',up);doc.removeEventListener('pointercancel',cancel);
   doc.removeEventListener('visibilitychange',hidden);doc.defaultView?.removeEventListener('blur',cancel);
  };
 }
