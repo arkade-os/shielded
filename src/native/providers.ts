@@ -27,6 +27,12 @@ const pollRead=async<T>(signal:AbortSignal,read:()=>Promise<T>):Promise<T|undefi
 const pollDelay=(signal:AbortSignal,ms:number)=>new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();},timer=setTimeout(done,ms);if(signal.aborted)done();else signal.addEventListener('abort',done,{once:true});});
 const outpointOf=(coin:{txid:string;vout:number})=>coin.txid+':'+coin.vout;
 const fingerprint=(coin:VirtualCoin)=>JSON.stringify(coin,(_key,value)=>typeof value==='bigint'?String(value):value);
+type Snapshots=Map<string,Map<string,VirtualCoin>>;
+// Keeps a streamed script's snapshot current. Spent and swept coins are kept rather than dropped: the indexer still returns them, so dropping one would re-announce it and would disarm the lost-coin check.
+const absorb=(snapshots:Snapshots,script:string,event:SubscriptionResponse)=>{
+ const known=snapshots.get(script);if(!known)return;
+ for(const coin of [...event.newVtxos,...event.spentVtxos,...event.sweptVtxos])known.set(outpointOf(coin),coin);
+};
 export const isolatedBackoff=(attempt:number)=>privateInterval(Math.min(ISOLATED_RETRY_MS*2**attempt,ISOLATED_RETRY_CAP_MS));
 interface LogicalStream {queue:AsyncQueue<SubscriptionResponse>;attach:(script:string,id:string|null)=>void;detach:(script:string)=>void}
 interface LogicalSubscription {entries:Map<string,string|null>;streams:Set<LogicalStream>;tail:Promise<unknown>;closed:boolean}
@@ -93,16 +99,17 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
    void (async()=>{
     // One script's transport failure backs that script off alone; the siblings keep streaming. Only an undescribable gap or an exhausted budget fails the logical stream, which is what makes the SDK reset and re-read.
     for(let attempt=0;;attempt++){
-     if(attempt>0){
-      await pollDelay(controller.signal,isolatedBackoff(attempt-1));
-      if(!live())return;
-      try{const caught=await this.readScript(script,controller.signal,snapshots);if(!live())return;if(caught)queue.push(caught);}
-      catch(error){if(error instanceof MissedScriptEvent||attempt>=ISOLATED_RETRIES)return void queue.fail(error);continue;}
-     }
+     const recovering=attempt>0;
+     if(recovering){await pollDelay(controller.signal,isolatedBackoff(attempt-1));if(!live())return;}
+     if(remote!==null&&recovering&&!snapshots.has(script))return void queue.fail(new MissedScriptEvent('An isolated stream has no snapshot to catch up against; catch up before reconnecting'));
      let failure:unknown;
      try{
-      const iterator=remote===null?this.pollScript(script,controller.signal,snapshots):this.base.getSubscription(remote,controller.signal);iterators.set(script,iterator);
-      for await(const event of iterator){if(!live())return;queue.push(event);attempt=0;}
+      const iterator=remote===null?this.pollScript(script,controller.signal,snapshots,()=>{attempt=0;}):this.base.getSubscription(remote,controller.signal);iterators.set(script,iterator);
+      // Reopened before the re-read, so an event landing during the read arrives on the stream instead of in a gap; the snapshot keeps the overlap from being announced twice.
+      if(remote!==null)void this.readScript(script,controller.signal,snapshots).then(
+       caught=>{if(live()&&caught&&recovering)queue.push(caught);},
+       error=>{if(live()&&error instanceof MissedScriptEvent)queue.fail(error);});
+      for await(const event of iterator){if(!live())return;absorb(snapshots,script,event);queue.push(event);attempt=0;}
      }catch(error){failure=error;}
      if(!live())return;
      if(failure instanceof MissedScriptEvent||attempt>=ISOLATED_RETRIES)return void queue.fail(failure??new Error('An isolated subscription closed; catch up before reconnecting'));
@@ -122,19 +129,22 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
  }
  override getFilteredSubscription(_filter:SubscriptionFilter,_signal:AbortSignal):AsyncIterableIterator<SubscriptionEvent|SubscriptionHeartbeat>{throw new Error('Native privacy uses individual script subscriptions, not global filters');}
  /** One script's own state, as the delta against the last snapshot this stream kept for it. */
- private async readScript(script:string,signal:AbortSignal,snapshots:Map<string,Map<string,VirtualCoin>>):Promise<SubscriptionResponse|undefined>{
+ private async readScript(script:string,signal:AbortSignal,snapshots:Snapshots):Promise<SubscriptionResponse|undefined>{
   const result=await pollRead(signal,()=>this.getVtxos({scripts:[script]}));if(signal.aborted||!result)return undefined;
   const current=new Map(result.vtxos.map(coin=>[outpointOf(coin),coin])),previous=snapshots.get(script);
-  if(previous&&[...previous.keys()].some(key=>!current.has(key)))throw new MissedScriptEvent('An isolated polling snapshot lost a coin; catch up before reconnecting');
+  if(previous&&[...previous.keys()].some(key=>!current.has(key)))throw new MissedScriptEvent('An isolated snapshot lost a coin; catch up before reconnecting');
   const changed=result.vtxos.filter(coin=>{const before=previous?.get(outpointOf(coin));return !before||fingerprint(before)!==fingerprint(coin);});
-  snapshots.set(script,current);
+  if(signal.aborted)return undefined;
+  // Folded in rather than replaced, so a stream event delivered while this read was in flight is not rolled back.
+  if(previous)for(const [key,coin] of current)previous.set(key,coin);else snapshots.set(script,current);
   // SDK watchers consume removals from spentVtxos; keep the actual swept/unrolled flags.
   return changed.length?{scripts:[script],newVtxos:changed.filter(coin=>!isVtxoSpent(coin)&&!coin.isSwept&&!coin.isUnrolled),spentVtxos:changed.filter(coin=>isVtxoSpent(coin)||coin.isUnrolled||coin.isSwept),sweptVtxos:changed.filter(coin=>coin.isSwept)}:undefined;
  }
- private async* pollScript(script:string,signal:AbortSignal,snapshots:Map<string,Map<string,VirtualCoin>>):AsyncIterableIterator<SubscriptionResponse>{
+ private async* pollScript(script:string,signal:AbortSignal,snapshots:Snapshots,onRead:()=>void):AsyncIterableIterator<SubscriptionResponse>{
   while(!signal.aborted){
    const event=await this.readScript(script,signal,snapshots);
    if(signal.aborted)return;
+   onRead();
    if(event)yield event;
    await pollDelay(signal,this.pollMs*(1+Math.random()/4));
   }

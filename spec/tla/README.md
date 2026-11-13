@@ -778,7 +778,9 @@ With that last assumption dropped — a frozen replica serving a count the walle
 | --- | --- |
 | `Fail` | `src/native/providers.ts`: the per-script loop in `IsolatedIndexerProvider::getSubscription` (`stream.attach`) |
 | `Backoff` | `src/native/providers.ts`: `isolatedBackoff`, `pollDelay` |
-| `CatchUp`, `CatchUpFails` | `src/native/providers.ts`: `IsolatedIndexerProvider::readScript` against the per-stream snapshots |
+| `Reopen`, `ReopenReplays` | `src/native/providers.ts`: the `base.getSubscription` re-open at the head of the per-script loop |
+| `CatchUpRead`, `CatchUpFails` | `src/native/providers.ts`: `IsolatedIndexerProvider::readScript` against the per-stream snapshots |
+| `LoseBaseline` | `src/native/providers.ts`: a failed seed read, leaving `snapshots` without an entry for the script |
 | `Escalate` | `src/native/providers.ts`: `queue.fail` after `ISOLATED_RETRIES`, or on `MissedScriptEvent` |
 | `SdkReset` | SDK `ContractWatcher.listenLoop` to `emitConnectionReset` to `ContractManager.reconcileWatched` |
 | `Event` | An arkd indexer change for one script; off-stream it is lost at the server until a read recovers it |
@@ -790,9 +792,10 @@ stateDiagram-v2
     live --> broken: Fail [this script alone]
     broken --> backoff: Backoff [attempts < bound] / jittered, growing
     broken --> handed: Escalate [attempts >= bound] / fail the logical stream
-    backoff --> live: CatchUp [no lost coin] / re-read own state, report the gap
-    backoff --> handed: CatchUp [lost coin] / only the SDK reset reaches back
-    backoff --> broken: CatchUpFails
+    backoff --> reopened: Reopen / stream back BEFORE the re-read
+    reopened --> live: CatchUpRead [snapshot, no lost coin] / report the gap
+    reopened --> handed: CatchUpRead [lost coin or no snapshot] / only the SDK reset reaches back
+    reopened --> broken: CatchUpFails
     handed --> live: SdkReset / clear watermarks, re-read every script
 ```
 
@@ -800,11 +803,13 @@ stateDiagram-v2
 
 | Configuration | Counterexample / expected invariant |
 | --- | --- |
-| `IndexerStreams_NoCatchUp.cfg` | Fail, Backoff, Event, then CatchUp resumes owing the event; `NoMissedEvent` |
+| `IndexerStreams_NoCatchUp.cfg` | Fail, Backoff, Event, then the read resumes owing the event; `NoMissedEvent` |
 | `IndexerStreams_NoLostEscalation.cfg` | a coin that vanished during the gap resumes undescribed; `NoMissedEvent` |
 | `IndexerStreams_NoRetryBound.cfg` | a dead script is retried past the budget with nothing handed over; `BoundedIsolatedRetry` |
 | `IndexerStreams_NoIsolation.cfg` | one script's failure detaches its sibling; `NoCollateralTeardown` |
+| `IndexerStreams_NoReopenOrder.cfg` | the read answers, an event lands, then the stream reopens; `NoMissedEvent` |
+| `IndexerStreams_NoBaseline.cfg` | a script with no snapshot resumes, so a vanished coin goes unseen; `NoMissedEvent` |
 
-Pinned TLC v1.7.4 and Java 25 on November 13, 2026: the base generated 2,571 states (562 distinct, depth 13) and every action fired (`Escalate` 14 firings, `SdkReset` 98, `Fail` 166); each mutation violated its named invariant; `node tools/check-native-model.mjs` matched all 109 configurations. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget (2,000,001 states). `trace-NoCatchUp.md`, `trace-NoLostEscalation.md`, `trace-NoRetryBound.md` and `trace-NoIsolation.md` hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
+Pinned TLC v1.7.4 and Java 25 on November 13, 2026: every action fired in the base run (`Escalate` 18 firings, `SdkReset` 600, `ReopenReplays` 1,100), and each of the six mutations violated its named invariant; `node tools/check-native-model.mjs` matched all 111 configurations. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget. The `trace-No*.md` files hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
 
-The catch-up read is modeled as atomic with the resume. The implementation awaits it before re-attaching, so an event landing between its response and the stream re-opening relies on arkd holding events for a still-registered subscription id, which is the same assumption the SDK's own reconnect makes, now for one script instead of all of them. Per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.
+The read is ordered AFTER the stream reopens, so the model needs no assumption about arkd replaying a still-registered subscription id: `ReopenReplays` is optional and `NoMissedEvent` holds without it. `IndexerStreams_NoReopenOrder.cfg` is the read-first ordering, whose `read` phase is the window an event falls into. For a polled script the read IS the stream, so `Reopen` and `CatchUpRead` coincide and that window does not exist. Snapshot staleness beyond what the stream events and the reads fold in, per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.
