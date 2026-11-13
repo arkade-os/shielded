@@ -44,6 +44,14 @@ test('About renders as a modal dialog rather than a route',()=>{
  assert.doesNotMatch(html,/href=/);
 });
 
+test('About names the installed build when the build defines one, and nothing otherwise',()=>{
+ const about=()=>renderToStaticMarkup(createElement(NativeAbout,{onClose:()=>{}}));
+ assert.doesNotMatch(about(),/native-about-build/);
+ Object.assign(globalThis,{__NATIVE_BUILD_NUMBER__:190,__APP_COMMIT__:'e62f3c944ad1fd9358601c68829c9176c0283fe3'});
+ try{assert.match(about(),/<p class="native-about-build">Build 190 · e62f3c9<\/p>/);}
+ finally{delete (globalThis as Record<string,unknown>).__NATIVE_BUILD_NUMBER__;delete (globalThis as Record<string,unknown>).__APP_COMMIT__;}
+});
+
 test('a wallet without a creation timestamp renders no stray zero',()=>{
  assert.equal(renderToStaticMarkup(createElement(WalletCreatedNotice,{created:0})),'');
  assert.match(renderToStaticMarkup(createElement(WalletCreatedNotice,{created:Date.UTC(2026,10,10)})),/Created .*2026/);

@@ -1,6 +1,7 @@
 import {useEffect,useRef,useSyncExternalStore} from 'react';
 import {createPortal} from 'react-dom';
 import type {AndroidUpdateController,AndroidUpdateState} from './android-updates.ts';
+import {installedBuild} from './NativeAbout.tsx';
 import './android-app-update.css';
 
 const size=(bytes:number)=>`${(bytes/1024/1024).toFixed(1)} MB`;
@@ -26,6 +27,7 @@ export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDisc
    <header><span className="android-update-mark" aria-hidden="true">S</span><button ref={close} type="button" className="android-update-close" onClick={onClose} aria-label="Close update">Close</button></header>
    <h2 id="android-update-title">{headings[phase]}</h2>
    {release&&<p className="android-update-version">Shielded {release.version}<span>Build {release.buildNumber}</span></p>}
+   {installedBuild()&&<p className="android-update-installed">This wallet is {installedBuild()}</p>}
    <p id="android-update-description">{phase==='downloading'?'The download keeps going if you switch apps while your wallet is unlocked. Closing Shielded stops it.':phase==='preparing'?'Finishing wallet writes before opening Android’s installer.':phase==='installing'?'Android is handling this update. Your wallet stays on this device.':phase==='confirmation-required'?'Android needs your confirmation to finish installing Shielded.':phase==='unknown'?'An installation may still be pending. Check its status before trying another install.':phase==='installed'?'The Android installation completed. Your wallet data stays on this device.':(torReady?'Download inside Shielded through Tor.':'Download inside Shielded.')+' Android installs the update over this app and keeps your wallet data.'}</p>
    {phase==='downloading'&&<div className="android-update-progress" role="status" aria-live="polite"><div><strong>{percent}%</strong><span>{size(state.received)} of {size(state.total)}</span></div><progress max={100} value={percent} aria-label="Update download"/></div>}
    {phase==='ready'&&<p className="android-update-verified">Download verified. Your wallet will lock and finish saving before installation.</p>}
