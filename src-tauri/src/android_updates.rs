@@ -59,7 +59,7 @@ async fn stage_verified(partial: &StagedFile) -> Result<Arc<StagedFile>, String>
     let completed = partial.path.with_extension("apk");
     tokio::fs::rename(&partial.path, &completed)
         .await
-        .map_err(|_| "Could not stage the verified update")?;
+        .map_err(|error| format!("Could not stage the verified update: {error}"))?;
     partial.owned.store(false, Ordering::Release);
     Ok(Arc::new(StagedFile::new(completed, true)))
 }
@@ -830,6 +830,28 @@ mod tests {
         drop(staged);
         assert!(!path.exists());
         std::fs::remove_dir(&updates.directory).unwrap();
+    }
+    #[tokio::test]
+    async fn a_failed_staging_keeps_and_still_owns_the_download() {
+        let updates = fixture();
+        let owner = updates
+            .reserve(&uuid::Uuid::new_v4().to_string(), 1)
+            .unwrap();
+        std::fs::write(&owner.partial.path, b"verified test package").unwrap();
+        owner.partial.owned.store(true, Ordering::Release);
+        let blocked = owner.partial.path.with_extension("apk");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::write(blocked.join("occupied"), b"").unwrap();
+        let error = stage_verified(&owner.partial).await.err().unwrap();
+        assert!(
+            error.starts_with("Could not stage the verified update: "),
+            "{error}"
+        );
+        assert!(owner.partial.path.exists());
+        let partial = owner.partial.path.clone();
+        drop(owner);
+        assert!(!partial.exists());
+        std::fs::remove_dir_all(&updates.directory).unwrap();
     }
     #[test]
     fn a_failed_exclusive_creation_cannot_delete_an_existing_file() {
