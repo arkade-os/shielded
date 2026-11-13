@@ -1,8 +1,9 @@
 import {useEffect,useRef} from 'react';
+import {installedBuild} from './installed-build.ts';
 import './native-about.css';
 
 export default function NativeAbout({onClose}:{onClose:()=>void}){
- const close=useRef<HTMLButtonElement>(null);
+ const close=useRef<HTMLButtonElement>(null),build=installedBuild();
  useEffect(()=>{
   close.current?.focus();
   const previous=document.body.style.overflow,key=(event:KeyboardEvent)=>{
@@ -24,6 +25,7 @@ export default function NativeAbout({onClose}:{onClose:()=>void}){
    <h2 id="native-about-title">Your keys stay with you.</h2>
    <p>Shielded is a private Bitcoin wallet on Arkade. Payments inside the pool keep their amount, sender and recipient private. Deposits and withdrawals are public.</p>
    <p>This Mutinynet build is for testing with test funds only. Wallet traffic uses Tor by default, and Tor can be turned off. Repeated identifiers and timing can still reveal links.</p>
+   {build&&<p className="native-about-build">{build}</p>}
    <button ref={close} type="button" onClick={onClose}>Close</button>
   </section>
  </div>;

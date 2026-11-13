@@ -50,3 +50,10 @@ test('the update dialog stays above the wallet with mobile safe areas and reduce
  const css=readFileSync(new URL('../app/src/android-app-update.css',import.meta.url),'utf8');assert.match(css,/z-index:160/);assert.match(css,/env\(safe-area-inset-top\)/);assert.match(css,/env\(safe-area-inset-bottom\)/);assert.match(css,/max-height:calc\(100dvh/);assert.match(css,/overflow:auto/);assert.match(css,/prefers-reduced-motion:reduce/);
  const provider=readFileSync(new URL('../app/src/AppUpdates.tsx',import.meta.url),'utf8');assert.match(provider,/\{children\}\{androidOpen&&androidController/);
 });
+
+test('the update dialog names the installed build beside the release it offers',()=>{
+ Object.assign(globalThis,{__NATIVE_BUILD_NUMBER__:187,__APP_COMMIT__:'53aedc5c7cb6157bb23ad50efbb0e9913aa98ffe'});
+ try{const html=render({});assert.match(html,/Build 123/);assert.match(html,/<p class="android-update-installed">This wallet is Build 187 · 53aedc5<\/p>/);}
+ finally{delete (globalThis as Record<string,unknown>).__NATIVE_BUILD_NUMBER__;delete (globalThis as Record<string,unknown>).__APP_COMMIT__;}
+ assert.doesNotMatch(render({}),/android-update-installed/);
+});

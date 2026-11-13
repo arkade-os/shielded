@@ -6,3 +6,4 @@
 .native-about button{width:100%;min-height:46px;margin-top:8px;border:1px solid #173b54;border-radius:999px;background:#173b54;color:white;font:600 13px 'DM Sans',sans-serif;cursor:pointer}
 .native-about button:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
 @media(prefers-reduced-transparency:reduce){.native-about-layer{background:#102c4bdb;-webkit-backdrop-filter:none;backdrop-filter:none}}
+.native-about .native-about-build{color:#5b6b78;font-size:12px;font-variant-numeric:tabular-nums}
