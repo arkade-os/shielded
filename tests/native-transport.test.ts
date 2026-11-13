@@ -3,7 +3,7 @@ import {setImmediate} from 'node:timers/promises';
 import test from 'node:test';
 import {NativeBridge,SseDecoder,encode64,type NativeBackend,type NativeEvent,type NativeStatus} from '../src/native/transport.ts';
 import {NativePolicy} from '../src/native/policy.ts';
-import {retryAfterMs} from '../src/shielded/network-privacy.ts';
+import {rateLimitRemainingMs,retryAfterMs} from '../src/shielded/network-privacy.ts';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
@@ -12,7 +12,7 @@ function backend(){
  const api:NativeBackend={invoke:async(command,args)=>{calls.push({command,args});if(command==='native_status'||command==='native_start')return {phase:'ready',generation:1};if(command==='native_scope')return {id:'scope',generation:1};if(command==='native_stream')return opened.promise;return undefined;},channel:handler=>{receive=handler;return {};}};
  return {api,calls,opened,emit:(event:NativeEvent)=>receive(event)};
 }
-type NativeAnswer={generation:number;status:number;headers:[string,string][];bodyBase64?:string};
+type NativeAnswer={generation:number;status:number;statusText?:string;headers:[string,string][];bodyBase64?:string};
 function httpBackend(answer:(request:any)=>Promise<NativeAnswer>=async()=>({generation:1,status:200,headers:[],bodyBase64:'e30='})){
  const b=backend(),invoke=b.api.invoke;let scopes=0;
  b.api.invoke=async(command,args)=>{
@@ -397,4 +397,43 @@ test('a liveness probe is not held behind a rate-limit cooldown that still paces
  assert.equal(answered,2);
  t.mock.timers.tick(60_000);await flush();
  assert.equal((await paced).status,200);assert.equal(answered,3);
+});
+
+test('a refused native response carries its reason phrase to the page',async()=>{
+ const b=httpBackend(async()=>({generation:1,status:429,statusText:'Too Many Requests',headers:[]}));
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://reason.example'));await bridge.status();
+ const response=await bridge.fetch('https://reason.example/api/rollup/status');
+ assert.equal(response.status,429);assert.equal(response.statusText,'Too Many Requests');
+});
+
+test('a refused native stream open backs its whole origin off',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:6_000_000});t.mock.method(Math,'random',()=>0);
+ let answered=0;
+ const b=httpBackend(async()=>{answered++;return {generation:1,status:200,headers:[],bodyBase64:'e30='};});
+ const policy=new NativePolicy('https://streamlimit.example');policy.registerArk('https://streamlimit.example','https://streamlimit.example');
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ const stream=bridge.open('native_stream','https://streamlimit.example/v1/batch/events?topics=x',()=>{});
+ b.opened.resolve({id:'remote',generation:1});await stream.ready;
+ b.emit({id:'remote',generation:1,type:'open',status:429,retryAfter:'30'});
+ assert.equal(rateLimitRemainingMs('https://streamlimit.example/v1/info'),30_000);
+ const paced=bridge.fetch('https://streamlimit.example/v1/info');
+ await flush();assert.equal(answered,0);
+ t.mock.timers.tick(30_000);await flush();
+ assert.equal((await paced).status,200);assert.equal(answered,1);
+ stream.close();
+});
+
+test('closing a native stream during a cooldown never takes a scope',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:7_000_000});t.mock.method(Math,'random',()=>0);
+ const b=httpBackend(async()=>({generation:1,status:429,headers:[['Retry-After','40']]}));
+ const policy=new NativePolicy('https://closewait.example');policy.registerArk('https://closewait.example','https://closewait.example');
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ assert.equal((await bridge.fetch('https://closewait.example/v1/info')).status,429);
+ const scopes=()=>b.calls.filter(call=>call.command==='native_scope').length,taken=scopes();
+ const stream=bridge.open('native_stream','https://closewait.example/v1/batch/events?topics=y',()=>{});
+ await flush();stream.close();await flush();
+ t.mock.timers.tick(40_000);await flush();
+ assert.equal(scopes(),taken);
+ assert.equal(b.calls.filter(call=>call.command==='native_stream').length,0);
+ await stream.ready;
 });

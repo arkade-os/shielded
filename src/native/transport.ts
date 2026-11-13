@@ -3,7 +3,7 @@ import {nativeUrl,NativePolicy,type NativeRoute} from './policy.ts';
 
 export type NativeMode='tor'|'direct';
 export interface NativeStatus {phase:string;generation:number;mode?:NativeMode;progress?:string;error?:string;foreground?:boolean;warmFromGeneration?:number}
-export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number;sequence?:number}
+export interface NativeEvent {id:string;generation:number;type:'open'|'data'|'error'|'close';data?:string;error?:string;status?:number;retryAfter?:string;sequence?:number}
 export interface NativeBackend {invoke:(command:string,args?:Record<string,unknown>)=>Promise<any>;channel:(receive:(event:NativeEvent)=>void)=>unknown}
 interface NativeRequest {generation:number;requestId:string;scope:string;url:string;method:string;headers:[string,string][];bodyBase64?:string}
 interface ScopeEntry {generation:number;users:number;pending:Promise<{id:string;generation:number}>;dispose?:boolean}
@@ -176,7 +176,7 @@ export class NativeBridge {
    }
    if(response.status>=200&&response.status<300&&request.method==='POST'&&new URL(url).pathname==='/v1/indexer/script/unsubscribe')this.policy.forgetSubscription(JSON.parse(body!).subscriptionId,new URL(url).origin);
    this.observeResponse?.({url,method:request.method,status:response.status,body:responseBody,requestBody:body});
-   const answer=new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,headers:response.headers});
+   const answer=new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,statusText:response.statusText??'',headers:response.headers});
    // The pool's own admission limit keeps a sharper cooldown that leaves status reads open, so only an edge limit holds the whole origin back.
    if(response.status===429&&!admissionLimited(responseBody))reportRateLimit(url,answer.headers.get('Retry-After'));
    return answer;
@@ -185,9 +185,13 @@ export class NativeBridge {
  open(command:'native_stream'|'native_socket',input:string,receive:(event:NativeEvent)=>void,explicit?:NativeRoute):NativeHandle {
   const url=this.target(input),id=crypto.randomUUID(),generation=this.current.generation;
   let closed=false,dispatched=false,remote:string|undefined,release:(()=>void)|undefined;
-  const finish=()=>{if(closed)return;closed=true;this.handles.delete(handle);if(dispatched){this.cancel(generation,id);if(remote&&remote!==id)this.cancel(generation,remote);}release?.();};
+  // Owned by the handle, so closing while a cooldown holds the open ends the wait instead of
+  // leaving it to take and drop a scope a minute later.
+  const stopping=new AbortController();
+  const finish=()=>{if(closed)return;closed=true;stopping.abort(cancelled());this.handles.delete(handle);if(dispatched){this.cancel(generation,id);if(remote&&remote!==id)this.cancel(generation,remote);}release?.();};
   const channel=this.backend.channel(event=>{
    if(closed||event.generation!==generation||this.current.phase!=='ready'||this.current.generation!==generation||remote&&event.id!==remote)return;
+   if(event.type==='open'&&event.status===429&&!explicit?.probe)reportRateLimit(url,event.retryAfter);
    remote??=event.id;try{receive(event);}catch{finish();}finally{
     if(!closed&&event.type==='data'&&Number.isSafeInteger(event.sequence)&&event.sequence!>0)void this.backend.invoke('native_stream_ack',{generation,id:event.id,sequence:event.sequence}).catch(()=>{if(!closed){receive({id:event.id,generation,type:'error',error:'Native stream acknowledgement failed'});finish();}});
     if(event.type==='close'||event.type==='error')finish();
@@ -200,7 +204,7 @@ export class NativeBridge {
   this.handles.add(handle);
   handle.ready=(async()=>{
    try{
-    const prepared=await this.request(url,'GET',command==='native_stream'?[['Accept','text/event-stream']]:[],undefined,id,explicit);release=prepared.release;if(closed){release();return;}
+    const prepared=await this.request(url,'GET',command==='native_stream'?[['Accept','text/event-stream']]:[],undefined,id,explicit,stopping.signal);release=prepared.release;if(closed){release();return;}
     dispatched=true;const opened=await this.backend.invoke(command,{request:prepared.request,channel});
     if(closed||this.current.generation!==generation||this.current.phase!=='ready'){this.cancel(generation,opened.id);return;}
     if(opened.generation!==generation||remote&&remote!==opened.id)throw new Error('Native stream generation or identifier mismatch');remote=opened.id;
