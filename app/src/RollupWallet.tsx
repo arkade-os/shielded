@@ -674,7 +674,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const receiveAction=privateReceiveRecovery?<button type="button" className="stock-primary stock-mini" disabled={lnBusy||busy||actions.current.busy||unifiedStage==='Restarting private receive'} onClick={retryPrivateReceive}>Restart private receive</button>:undefined;
  const receiveLoading=receiveBlocked?'Restoring wallet…':receivePayload==='arkade'?'Preparing your Arkade address…':receivePayload==='shielded'?'Preparing your shielded address…'
   :receivePayload==='invoice'?!wallet?.swaps?'Lightning is still starting…':lnBoundsError?'Invoice limits are unavailable.':!lnBounds?'Checking invoice limits…':lnOutside?invoiceLimitsLine(lnBounds):shownInvoice&&shownInvoice.outcome!=='lapsed'?invoiceLine(shownInvoice,fee):lnError&&!lnBusy?'No invoice for this amount.':'Creating a Lightning invoice…'
-  :unifiedStage==='Restarting private receive'?'Restarting private receive…':lnError?'Lightning address unavailable':`${privateReceiveStageLabel(unifiedStage)}…`;
+  :unifiedStage==='Restarting private receive'?'Restarting private receive…':lnError?'Unified address unavailable':`${privateReceiveStageLabel(unifiedStage)}…`;
  const historyItems=rows.map(item=>{
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');

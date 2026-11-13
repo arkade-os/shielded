@@ -30,8 +30,8 @@ const MODES:[ReceiveMode,string,string][]=[
  ['shielded','Shielded','shield'],
  ['arkade','Arkade','wallet'],
 ];
-const TITLES:Record<ReceivePayload,string>={unified:'Unified address',shielded:'Shielded address',lightning:'Lightning address',invoice:'Lightning invoice',arkade:'Arkade address'};
-const LABELS:Record<ReceivePayload,string>={unified:'Unified address',shielded:'Shielded address',lightning:'Lightning address',invoice:'Lightning invoice',arkade:'Arkade address'};
+const TITLES:Record<ReceivePayload,string>={unified:'Unified address',shielded:'Shielded address',lightning:'Unified address',invoice:'Lightning invoice',arkade:'Arkade address'};
+const LABELS:Record<ReceivePayload,string>={unified:'Unified address',shielded:'Shielded address',lightning:'Unified address',invoice:'Lightning invoice',arkade:'Arkade address'};
 const short=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
 
 export const receiveAmount=(amount:string):bigint|undefined=>/^[1-9]\d{0,9}$/.test(amount)?BigInt(amount):undefined;
