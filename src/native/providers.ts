@@ -102,14 +102,15 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
    if(signal.aborted||controllers.has(script))return;
    const controller=new AbortController();controllers.set(script,controller);
    const live=()=>!controller.signal.aborted&&!signal.aborted;
-   let catching:Promise<void>|undefined,announce=false;
-   // A catch-up read that fails leaves the gap uncovered, so it is owed: it retries on the same budget and hands the stream to the SDK once that runs out.
+   let catching:Promise<void>|undefined,owed=false;
+   // A recovery read owes a gap, so exhausting its budget hands the stream to the SDK. A seed read owes none — the SDK has just read every script itself — so it leaves the script without a baseline, which is what the no-snapshot guard catches at the first real failure.
    const catchUp=async(from:number)=>{
     for(let tries=from;;tries++){
-     try{const caught=await this.readScript(script,controller.signal,snapshots);if(!live())return;if(caught&&announce)queue.push(caught);announce=false;return;}
+     try{const caught=await this.readScript(script,controller.signal,snapshots);if(!live())return;if(caught&&owed)queue.push(caught);owed=false;return;}
      catch(error){
       if(!live())return;
-      if(error instanceof MissedScriptEvent||tries>=ISOLATED_RETRIES)return void queue.fail(error);
+      if(error instanceof MissedScriptEvent)return void queue.fail(error);
+      if(tries>=ISOLATED_RETRIES){if(owed)queue.fail(error);return;}
       await pollDelay(controller.signal,isolatedBackoff(tries));
      }
     }
@@ -124,7 +125,7 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
      try{
       const iterator=remote===null?this.pollScript(script,controller.signal,snapshots,()=>{attempt=0;}):this.base.getSubscription(remote,controller.signal);iterators.set(script,iterator);
       // Reopened before the re-read, so an event landing during the read arrives on the stream instead of in a gap; the snapshot keeps the overlap from being announced twice.
-      if(remote!==null){if(recovering)announce=true;catching??=catchUp(attempt).finally(()=>{catching=undefined;});}
+      if(remote!==null){if(recovering)owed=true;catching??=catchUp(attempt).finally(()=>{catching=undefined;});}
       for await(const event of iterator){if(!live())return;absorb(snapshots,script,event);queue.push(event);attempt=0;}
      }catch(error){failure=error;}
      if(!live())return;

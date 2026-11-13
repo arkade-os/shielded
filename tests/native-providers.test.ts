@@ -117,6 +117,8 @@ test('isolated reads accept an empty terminal page after the server result shrin
 });
 test('a live logical subscription receives scripts added later on separate server ids',async()=>{
  const subscribed:any[]=[],removed:string[]=[],sources=new Map<string,AsyncQueue<SubscriptionResponse>>(),base=new RestIndexerProvider('https://ark.example');
+ // Stubbed so the seed read answers here: a real one leaves the SDK's own 250 ms indexer retry arming timers that no teardown can cancel.
+ base.getVtxos=async()=>({vtxos:[]});
  base.subscribeForScripts=async(scripts,existing)=>{subscribed.push({scripts,existing});const id='remote-'+scripts[0];sources.set(id,new AsyncQueue());return id;};
  base.unsubscribeForScripts=async id=>{removed.push(id);sources.get(id)?.end();};
  base.getSubscription=(id,signal)=>{const source=sources.get(id)!;signal.addEventListener('abort',()=>source.end(),{once:true});return source;};
@@ -133,7 +135,7 @@ test('an aborted subscription creation cleans up its late server id',async()=>{
  await new Promise(r=>setTimeout(r,0));abort.abort();release('late');await assert.rejects(pending,/abort|cancel/i);assert.deepEqual(removed,['late']);
 });
 test('retiring a logical stream rejects an already waiting next call',async()=>{
- const base=new RestIndexerProvider('https://ark.example');base.subscribeForScripts=async()=> 'remote';base.getSubscription=(_id,signal)=>{const queue=new AsyncQueue<SubscriptionResponse>();signal.addEventListener('abort',()=>queue.end(),{once:true});return queue;};
+ const base=new RestIndexerProvider('https://ark.example');base.getVtxos=async()=>({vtxos:[]});base.subscribeForScripts=async()=> 'remote';base.getSubscription=(_id,signal)=>{const queue=new AsyncQueue<SubscriptionResponse>();signal.addEventListener('abort',()=>queue.end(),{once:true});return queue;};
  const p=new IsolatedIndexerProvider('https://ark.example',undefined,base),id=await p.subscribeForScripts(['a']),stream=p.getSubscription(id,new AbortController().signal),next=stream.next();p.retire();await assert.rejects(next,/retired/i);
 });
 test('a large multi-item read limits concurrent requests',async()=>{
