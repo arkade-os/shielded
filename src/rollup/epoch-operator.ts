@@ -288,8 +288,6 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   const [pub,,,deposit,withdraw,assetField,destination]=spend.publics;
   const {anchor,rCur,nullifiers,commitments,ctDigest,groupId,groupSize}=spend.slot;
   if([...queued(pending),...inflight].some(s=>s.id===spend.id))throw new Error('Duplicate rollup spend id.');
-  // Two slots on one coin make a batch the network refuses; first, like the nullifier check, so a queued copy never answers a code its client frees on.
-  if(spend.coin&&[...queued(pending),...inflight].some(s=>s.coin?.txid===spend.coin!.txid&&s.coin.vout===spend.coin!.vout))throw new RollupRejection('double-spend','The deposit coin is already pending in a batch.');
   const kind=kindOf(spend);
   if(kind==='join'){
    if(deposit||withdraw||assetField||spend.coin||spend.asset||spend.program)throw new RollupRejection('slot-shape','A join carries no deposit, withdrawal, coin or asset.');
@@ -369,7 +367,9 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   }
   let taken:RollupEpochSpend[]=[];
   const pad=(count:number)=>{if(padding[kind].length<count)throw new Error('padding');taken=padding[kind].splice(0,count);return taken;};
-  const ready=pending[kind].filter(selectable);
+  // One slot per coin, as a batch spending an outpoint twice is refused. Admission cannot tell the coin's owner, so a twin waits, and signing drops whichever slot the owner did not sign.
+  const held=new Set<string>(),first=(outpoint:string)=>!held.has(outpoint)&&!!held.add(outpoint);
+  const ready=pending[kind].filter(s=>selectable(s)&&(!s.coin||first(s.coin.txid+':'+s.coin.vout)));
   // A recover batch is one slot wide: it takes no padding and waits for no company.
   const selection=kind==='recover'?select(ready.slice(0,1),()=>[],undefined,0,lastBatchAt.recover)
    :select(ready,pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS,lastBatchAt[kind]);

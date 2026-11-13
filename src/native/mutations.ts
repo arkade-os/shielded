@@ -134,7 +134,7 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   */
  const forceRelease=(poolOrigin:string)=>{
   const origin=new URL(poolOrigin).origin,at=now(),entries=load();
-  // A shield younger than the grace may still be in flight, and a pool without the queued-coin check would batch it beside its retry.
+  // A shield younger than the grace may still be in flight, and an operator without one-slot-per-coin selection would batch it beside its retry.
   const fresh=(row:PendingMutation)=>graceMs===undefined||at-row.createdAt<graceMs;
   const remaining=entries.filter(row=>row.origin!==origin||row.coin===undefined||fresh(row));
   if(remaining.length!==entries.length)save(remaining);
