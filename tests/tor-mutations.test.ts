@@ -116,13 +116,21 @@ const shield=()=>({...mutation(),body:body(id,['17'],COIN)});
 const unknownFetch=(async()=>new Response(UNKNOWN,{status:404})) as typeof fetch;
 const NATIVE_BOUND=3_600_000+NATIVE_GRACE_MS;
 
-test('a 429 carrying no pool envelope was written in front of the pool, so it retires the reservation the pool never saw',()=>{
- for(const edge of ['error code: 1015','','<html>error code: 1015</html>','null','{}','[]']){
+test('Cloudflare\'s edge limit answers in front of the pool, so it retires the reservation the pool never saw',()=>{
+ for(const edge of ['error code: 1015','<html>error code: 1015</html>']){
   const journal=makeNativeMutationJournal(storage()),request=mutation();journal.beforeNativeMutation(request);
   journal.observeNativeResponse({...request,status:429,body:edge,requestBody:body(id,['99'])});
   assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],edge);
   journal.observeNativeResponse({...request,status:429,body:edge,requestBody:request.body});
   assert.deepEqual(journal.pendingPoolNullifiers(origin),[],edge);
+ }
+});
+
+test('a 429 with no recognised refusal may have been forwarded, so it stays reserved',()=>{
+ for(const unknown of ['','null','{}','[]','Too Many Requests']){
+  const journal=makeNativeMutationJournal(storage()),request=mutation();journal.beforeNativeMutation(request);
+  journal.observeNativeResponse({...request,status:429,body:unknown,requestBody:request.body});
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],unknown);
  }
 });
 
