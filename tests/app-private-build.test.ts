@@ -44,19 +44,18 @@ test('a private wallet offers no Lightning, Bitcoin or renewal action its transp
 
 const TICK_EFFECT=/useEffect\(\(\)=>\{\s*if\(!wallet\|\|!nativeHost&&!PRIVATE\)return;([\s\S]*?)\},\[([^\]]*)\]\);/;
 test('a private wallet reconciles its journal on every tick and caps its shields',()=>{
- const wallet=read('app/src/RollupWallet.tsx'),effect=TICK_EFFECT.exec(wallet);
- assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(/);
- const privateBranch=/if\(!nativeHost\)\{[^\n]*/.exec(effect?.[1]??'')?.[0]??'';
- assert.match(privateBranch,/setNativePending\(pending\);setJournalError\(''\)[^\n]*setNativePending\(true\);setJournalError\(errorText\(error\)\)/,'a failed reconcile keeps the unresolved line and its own error; a later success clears only that');
- assert.doesNotMatch(privateBranch,/setPoolError/,'a journal error never replaces a startup error');
+ const wallet=read('app/src/RollupWallet.tsx'),effect=TICK_EFFECT.exec(wallet),body=effect?.[1]??'';
+ assert.match(body,/nativeHost\?reconcileNativeJournal\([^\n]*POOL_ORIGIN,wallet\):PRIVATE!\.reconcile\(wallet\)/);
+ assert.match(body,/setNativePending\(pending\);setJournalError\(''\)[^\n]*setNativePending\(true\);setJournalError\(errorText\(error\)\)/,'a failed reconcile keeps the unresolved line and its own error; a later success clears only that');
+ assert.doesNotMatch(body,/setPoolError/,'a journal error never replaces a startup error');
  assert.match(wallet,/\{ready&&journalError&&<p className="stock-blocked">\{journalError\}<\/p>\}/);
  assert.match(effect?.[2]??'',/\btick\b/);
  assert.match(wallet,/:PRIVATE\?\{[^\n]*maxShieldCoins:PRIVATE_SHIELD_COINS/);
 });
 
-test('every tick hands the journal the wallet itself, for its own verdict and the count it judged at',()=>{
+test('every tick hands the journal the wallet itself, on the native path as much as the sealed one',()=>{
  const effect=TICK_EFFECT.exec(read('app/src/RollupWallet.tsx'));
- assert.match(effect?.[1]??'',/if\(!nativeHost\)\{[^\n]*PRIVATE!\.reconcile\(wallet\)\.then\(/);
+ assert.match(effect?.[1]??'',/void \(nativeHost\?reconcileNativeJournal\([^\n]*,wallet\):PRIVATE!\.reconcile\(wallet\)\)\s*\.then\(/);
  assert.match(effect?.[2]??'',/\bwallet\b/);
 });
 

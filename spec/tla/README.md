@@ -683,3 +683,49 @@ stateDiagram-v2
 `NoSoftOwner`, `NoSoftDownload` and `NoResumeStarts` state the contract rather than prove a guard. Pinned TLC v1.7.4 on November 12, 2026: the continuity base generated 9,180 states (3,894 distinct, depth 24) and the status base 24,243 (11,418 distinct, depth 16); every action fired. `node tools/check-native-model.mjs` matched all 104 configurations; the Tor-only update mutant was retired when updates were allowed over a direct connection. `BeginUpdate` still needs a Ready session here, and `AndroidUpdate_NoTransport.cfg` covers an update that starts while paused. Simulation passed 20,000 traces at depth 100: continuity with five generations and four bytes (2,000,001 states), status with six flips and six polls (600,001 states).
 
 FIFO native reads are an assumption; if IPC reorders them, a stale foreground flag can persist until the next poll or lifecycle event, and opening still requires the document to be visible. Arti circuit health after a long Android freeze, OEM task killing and process death are outside these models.
+
+## Pool spend journal release
+
+`PoolSpendJournal.tla` is the release side of the journal `NativeSession.tla` only reserves. One spend, three parties: the wallet's journal, the pool app, and whatever hop answers in front of it. A reservation is one row; releasing it is deleting the row, so `NativeSession`'s `ReservedWhenUnresolved` still holds — the row and its reservation always go together.
+
+`clock` is coarse: 0 inside the grace a POST must leave and answer within, 1 past the grace and inside the hour the pool answers for a spend id, 2 past both, where the pool has forgotten the id (`src/rollup/service.ts`, `sweep` and `restore`, both at 3,600,000 ms) and nothing it admitted can still reach a batch. `Dispatch` is only enabled at clock 0 because `beforeNativeMutation` stamps `createdAt` in the same `fetch` call that sends, and the grace exceeds the longest a POST can be in flight.
+
+| Model actions | Source ownership |
+| --- | --- |
+| `Reserve`, `Dispatch` | `src/native/mutations.ts`: `beforeNativeMutation`; `src/native/transport.ts`: `NativeBridge.fetch` calls it before `native_http` |
+| `EdgeRefuse`, `PoolRefuse`, `ForeignRefuse*` | Cloudflare's edge rate limit in front of the pool origin; `src/rollup/ohttp-gateway.ts`: `admit`; `src/rollup/http.ts`: the posts-per-minute refusal before `service.submit` |
+| `Accept`, `AcceptLost`, `LoseUnseen` | `src/shielded/pool.ts`: `rollupApi`, which never resends a private mutation |
+| `Land`, `Reinclude`, `PoolDrop`, `OtherBatch` | `src/rollup/service.ts`: `included`, `onDrop`, `sweep` |
+| `Tick` | wall clock against `createdAt`; `TRACKED_MS` and the journal's `graceMs` |
+| `Catchup` | `src/shielded/wallet.ts`: `tick`, `refreshPoolStatus`, `sync` |
+| `Observe*` | `src/native/mutations.ts`: `observeNativeResponse` and `preAdmissionRefusal` |
+| `ReconcileId` | `src/native/mutations.ts`: `reconcileNativeMutations` and the 404 branch of `observeNativeResponse` |
+| `Settle` | `src/native/mutations.ts`: `settleLandedMutations` and `reconcileJournal`; `src/shielded/wallet.ts`: `settledNullifiers`, `settledDeposit`, `landedDeposit` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> none
+    none --> open: beforeNativeMutation reserves and persists
+    open --> gone: id answers included, or the wallet's verdict says landed
+    open --> gone: 429 with no pool envelope, or the pool's own refusal
+    open --> gone: 404 past the grace and inside the pool's tracking hour
+    open --> gone: past that hour, a deposit coin still unspent
+    open --> gone: past that hour, no history row and a batch since the entry was first judged
+    open --> open: 404 inside the grace, a foreign 429, a lost answer, or a verdict it cannot give
+```
+
+| Configuration | Counterexample / expected invariant |
+| --- | --- |
+| `PoolSpendJournal_Grace.cfg` | a 404 releases while the POST is still in flight; `NoDoublePayment` |
+| `PoolSpendJournal_TrackedWindow.cfg` | a 404 past the tracking hour releases a spend that landed; `NoDoublePayment` |
+| `PoolSpendJournal_ForeignRefusal.cfg` | a 429 from a hop that may have forwarded releases; `NoDoublePayment` |
+| `PoolSpendJournal_EdgeRefusal.cfg` | an envelope-less 429 leaves the row reserved for good; `NoStrandedReservation` |
+| `PoolSpendJournal_Retention.cfg` | settle releases before the pool can have forgotten it; `NoDoublePayment` |
+| `PoolSpendJournal_CoinProof.cfg` | a deposit waits for a batch an idle pool never makes; `NoStrandedReservation` |
+| `PoolSpendJournal_CoinSpentCheck.cfg` | a deposit judged by nullifier history, which no deposit of ours appears in; `NoDoublePayment` |
+
+Pinned TLC v1.7.4 on November 13, 2026: the base generated 10,158 states (2,516 distinct, depth 11) with every action fired, and `PoolSpendJournal_Sim.cfg` (four clock steps, four batches) is exhaustively green at 60,662 states (14,590 distinct). `node tools/check-native-model.mjs` matched all 112 configurations.
+
+The model assumes a 429 carrying no pool envelope was written by a hop that had not forwarded the request, which is what makes `ObserveEdgeRefusal` safe; both hops in the table decide before they forward, but a future one that answered 429 after forwarding would break it, and a 429 that does carry an envelope is modelled as possibly forwarded for exactly that reason. It assumes the Ark indexer's answer for a deposit coin is not stale by anything near the tracking hour, and that the operator a wallet reads is the one that batches: the account's view is a prefix of the truth, and a wallet behind the count it reads gives no verdict at all.
+
+With that last assumption dropped — a frozen replica serving a count the wallet has fully synced while another operator keeps batching — the model finds a `NoDoublePayment` trace against the existing count rule: the wallet advances 0 → 1, the spend lands in batch 2 that the replica never serves, and `count # batchAt` then reads as proof the view is current. That rule is unchanged here and the hazard is the one its comment already names; the deposit path does not rely on it, because a coin read answers past any operator. Amounts, group members, several concurrent spends per origin, storage durability and the Ark layer's own refusal to spend a coin twice are outside this model.

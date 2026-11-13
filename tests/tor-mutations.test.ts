@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {rollupApi,poolApiOf} from '../src/shielded/pool.ts';
 import {isPrivatePoolApi,markPrivateFetch} from '../src/shielded/network-privacy.ts';
-import {makeNativeMutationJournal} from '../src/native/mutations.ts';
+import {NATIVE_GRACE_MS,beforeNativeMutation,makeNativeMutationJournal,reconcileJournal,reconcileNativeJournal,type JournalWallet} from '../src/native/mutations.ts';
 import {PRIVATE_GRACE_MS} from '../src/shielded/private-transport.ts';
 import {ROLLUP_FIELD} from '../packages/protocol/src/rollup/constants.ts';
 
@@ -111,6 +111,67 @@ test('a journal built without a grace never releases on a 404',async t=>{
  for(const later of [300_001,3_599_999]){at=1_000_000+later;await lost(journal,UNKNOWN);assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(later));}
 });
 
+const COIN={txid:'c'.repeat(64),vout:1},OUTPOINT=`${COIN.txid}:1`;
+const shield=()=>({...mutation(),body:body(id,['17'],COIN)});
+const unknownFetch=(async()=>new Response(UNKNOWN,{status:404})) as typeof fetch;
+const NATIVE_BOUND=3_600_000+NATIVE_GRACE_MS;
+
+test('a 429 carrying no pool envelope was written in front of the pool, so it retires the reservation the pool never saw',()=>{
+ for(const edge of ['error code: 1015','','<html>error code: 1015</html>','null','{}','[]']){
+  const journal=makeNativeMutationJournal(storage()),request=mutation();journal.beforeNativeMutation(request);
+  journal.observeNativeResponse({...request,status:429,body:edge,requestBody:body(id,['99'])});
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],edge);
+  journal.observeNativeResponse({...request,status:429,body:edge,requestBody:request.body});
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),[],edge);
+ }
+});
+
+test('the native journal carries a grace its own direct posts fit inside, and reconciles on it',async t=>{
+ const persisted=storage();Object.defineProperty(globalThis,'localStorage',{value:persisted,configurable:true});
+ let at=1_000_000;t.mock.method(Date,'now',()=>at);
+ try{
+  beforeNativeMutation(mutation());
+  at+=NATIVE_GRACE_MS;assert.equal(await reconcileNativeJournal(unknownFetch,origin),true);
+  at+=1;assert.equal(await reconcileNativeJournal(unknownFetch,origin),false);
+  assert.deepEqual(makeNativeMutationJournal(persisted).pendingPoolNullifiers(origin),[]);
+ }finally{Reflect.deleteProperty(globalThis,'localStorage');}
+});
+
+const deposit=(verdict:boolean|undefined,count=140):JournalWallet=>({settledNullifiers:()=>false,settledDeposit:async()=>verdict,batchCount:()=>count});
+test('a shield the pool never admitted clears on its coin alone, hours later, with a pool that never batches again',async()=>{
+ let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS,now:()=>at});
+ journal.beforeNativeMutation(shield());
+ at+=8*3_600_000;
+ assert.equal(await reconcileJournal(journal,unknownFetch,origin,deposit(false)),false);
+ assert.deepEqual([journal.pendingPoolNullifiers(origin),journal.pendingPoolOutpoints(origin)],[[],[]]);
+});
+
+test('a shield stays reserved while the pool could still admit it, and for good while its coin cannot say',async()=>{
+ for(const [age,verdict,left] of [[NATIVE_BOUND,false,[OUTPOINT]],[NATIVE_BOUND+1,undefined,[OUTPOINT]],[NATIVE_BOUND+1,false,[]]] as const){
+  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS,now:()=>at});
+  journal.beforeNativeMutation(shield());
+  at+=age;
+  await reconcileJournal(journal,unknownFetch,origin,deposit(verdict,140));
+  await reconcileJournal(journal,unknownFetch,origin,deposit(verdict,141));
+  assert.deepEqual(journal.pendingPoolOutpoints(origin),left,`${age} ${verdict}`);
+ }
+});
+
+test('a shield is judged by its coin, never by the nullifier history no deposit of ours appears in',async()=>{
+ let at=1_000_000,asked=0;const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS,now:()=>at});
+ journal.beforeNativeMutation(shield());
+ at+=NATIVE_BOUND+1;
+ await reconcileJournal(journal,unknownFetch,origin,{settledNullifiers:()=>{asked++;return false;},settledDeposit:async()=>undefined,batchCount:()=>1});
+ assert.deepEqual([asked,journal.pendingPoolOutpoints(origin)],[0,[OUTPOINT]]);
+});
+
+test('a reconciliation round with nothing pending asks the pool and the wallet nothing',async()=>{
+ const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS});let reads=0,asks=0;
+ const counted=(async()=>{reads++;return new Response(UNKNOWN,{status:404});}) as typeof fetch;
+ assert.equal(await reconcileJournal(journal,counted,origin,{settledNullifiers:()=>false,settledDeposit:async()=>{asks++;return false;},batchCount:()=>1}),false);
+ assert.deepEqual([reads,asks],[0,0]);
+});
+
 const settle=(journal:ReturnType<typeof makeNativeMutationJournal>,verdict:boolean|undefined,count=0)=>journal.settleLandedMutations(origin,()=>verdict,count);
 const BOUND=3_600_000+PRIVATE_GRACE_MS;
 test('a landed nullifier settles its journal entry at once',()=>{
@@ -168,7 +229,7 @@ test('a stored entry loads with no count mark, as an older build wrote it, or wi
  for(const batchAt of [-1,1.5,'140',null,2**53])assert.throws(()=>marked(batchAt).pendingPoolNullifiers(origin),/journal is invalid/,String(batchAt));
 });
 
-test('the native journal settles nothing, because it is built with no grace',t=>{
+test('a journal built with no grace settles nothing',t=>{
  let at=1_000_000;t.mock.method(Date,'now',()=>at);
  const journal=makeNativeMutationJournal(storage());journal.beforeNativeMutation(mutation());
  at+=3_600_001+PRIVATE_GRACE_MS;settle(journal,true);

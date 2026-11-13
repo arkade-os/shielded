@@ -38,7 +38,7 @@ import {WalletBrand,WalletHeaderActions} from './WalletHeaderActions.tsx';
 import {WalletCreatedNotice,WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
 import {isNativeHost,nativeClaimFetch,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {loadWalletPoseidon} from './wallet-crypto.ts';
-import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeMutations} from '../../src/native/mutations.ts';
+import {pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeJournal} from '../../src/native/mutations.ts';
 import {privateTransport,PRIVATE_SHIELD_COINS} from '../../src/shielded/private-transport.ts';
 import {PRIVATE_FLAG} from './private-boot.ts';
 
@@ -315,7 +315,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    stopOpeningProgress=()=>openingProgress.stop();
    try{
     reportStartupStage('Connecting to the private wallet');
-    if(privateFetch)await reconcileNativeMutations(privateFetch,POOL_ORIGIN);
+    if(privateFetch)await reconcileNativeJournal(privateFetch,POOL_ORIGIN);
     else if(PRIVATE)await PRIVATE.reconcile();
     reportStartupStage('Catching up with the private pool');
     const bornAt=bornAtFor(storage,BORN,{token:status.pool!.token,batches:status.pool!.batches});
@@ -465,12 +465,14 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
  },[wallet]);
  useEffect(()=>{refreshRef.current?.request();},[wallet,tick]);
+ // Every tick, so a reservation the wallet can prove dead goes without waiting for the next wallet open.
  useEffect(()=>{
   if(!wallet||!nativeHost&&!PRIVATE)return;
-  if(!nativeHost){let live=true;void PRIVATE!.reconcile(wallet).then(pending=>{if(!live)return;setNativePending(pending);setJournalError('');},error=>{if(!live)return;setNativePending(true);setJournalError(errorText(error));});return()=>{live=false;};}
-  try{setNativePending(pendingPoolNullifiers(POOL_ORIGIN).length>0||pendingPoolOutpoints(POOL_ORIGIN).length>0);}
-  catch(error){setPoolError(errorText(error));}
-  },[wallet,tick,nativeHost]);
+  let live=true;
+  void (nativeHost?reconcileNativeJournal(sessionFetch??fetch,POOL_ORIGIN,wallet):PRIVATE!.reconcile(wallet))
+   .then(pending=>{if(live){setNativePending(pending);setJournalError('');}},error=>{if(live){setNativePending(true);setJournalError(errorText(error));}});
+  return()=>{live=false;};
+  },[wallet,tick,nativeHost,sessionFetch]);
  useEffect(()=>{lnLimits.current=wallet?.swaps;lnLimitsRead.current++;setLnBounds(undefined);setLnBoundsError('');},[wallet,wallet?.swaps]);
  // markets() must load the snapshot before resolve() reads it.
  const readLnBounds=()=>{
@@ -736,7 +738,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const inactive=hidden||suspended||!viewActive;
   if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload}/></div>;
   return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><Icon name="reset" size={16}/><span>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
-   {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs remain reserved; a dropped status alone does not prove that they cannot be included later.</section>}
+   {nativePending&&<section className="stock-warning" role="status">Some payments have unresolved outcomes. Their inputs stay reserved until this wallet can prove they cannot land, which it rechecks every minute; a dropped status alone is no proof.</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}
   {wallet?.operatorDown&&<section className="stock-warning" role="alert"><strong>Pool status is delayed</strong><span>We haven't refreshed the pool status recently. Checks retry automatically. If the operator stops renewing the pool, its head and payouts expire {wallet.operatorDown.headExpiresAt?`on the last observed deadline, ${when(wallet.operatorDown.headExpiresAt)}`:'within a week of its last renewal'}. To withdraw without the operator, see <a href="https://github.com/arkade-os/shielded#if-the-operator-stops">If the operator stops</a>.</span></section>}

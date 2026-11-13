@@ -19,7 +19,7 @@ import type {SubmitDeps} from '../src/shielded/submit.ts';
 import {PRIVATE_PAGE,PRIVATE_SHIELD_COINS} from '../src/shielded/private-transport.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
 import {epochLeafPool} from './fixtures/epoch-pool.ts';
-import {makeNativeMutationJournal} from '../src/native/mutations.ts';
+import {NATIVE_GRACE_MS,makeNativeMutationJournal,reconcileJournal} from '../src/native/mutations.ts';
 import {decodeClaimToken,encodeClaimToken} from '../packages/protocol/src/rollup/bearer.ts';
 
 const privateApi=(api:PoolApi)=>Object.assign(api,{[Symbol.for('shielded.private.pool-api')]:true});
@@ -488,6 +488,37 @@ test('a restarted native wallet reserves uncertain deposit outpoints for every s
  journal.observeNativeResponse({url:origin+'/api/rollup/spends/'+id,method:'GET',status:200,body:JSON.stringify({status:'included',txid:'ab'.repeat(32)})});
  assert.deepEqual(await wallet.getSpendableVtxos({genericallySpendableOnly:true}),[input,other]);
  assert.equal(await wallet.send({recipients:[{address:'unused',amount:330}],selectedVtxos:[input] as never}),'sent');
+});
+
+const depositRig=(vtxo:Record<string,unknown>|undefined,txids:string[],coin={txid:'c'.repeat(64),vout:1,value:2000},pendingOutpoints?:()=>ReadonlySet<string>)=>Object.assign(Object.create(ShieldedWallet.prototype),{
+ used:new Set<string>(),usedTxids:new Set<string>(),pool:{status:{pool:{reserves:{}}}},isPoolPayout:()=>false,
+ account:{txids:new Set(txids),batchCount:7},
+ indexerProvider:{getVtxos:async()=>({vtxos:vtxo?[{txid:coin.txid,vout:coin.vout,...vtxo}]:[]})},
+ settledNullifiers:()=>{throw new Error('a deposit has no history row');},
+ ...(pendingOutpoints?{pendingOutpoints}:{}),
+}) as ShieldedWallet;
+
+test('a shield is settled by its coin: unspent landed nothing, our own batch landed it, anything else cannot say',async()=>{
+ const outpoint='c'.repeat(64)+':1',batch='ab'.repeat(32);
+ assert.equal(await depositRig({},[]).settledDeposit(outpoint),false);
+ assert.equal(await depositRig({spentBy:batch,arkTxId:batch},[batch]).settledDeposit(outpoint),true);
+ for(const [vtxo,txids] of [[undefined,[]],[{isSwept:true},[]],[{isUnrolled:true},[]],[{spentBy:batch,arkTxId:batch},[]],[{spentBy:batch},[batch]]] as const)
+  assert.equal(await depositRig(vtxo,[...txids]).settledDeposit(outpoint),undefined,JSON.stringify(vtxo));
+ for(const bad of ['','c'.repeat(64),'c'.repeat(64)+':x','C'.repeat(64)+':1','c'.repeat(64)+':1:1'])assert.equal(await depositRig({},[]).settledDeposit(bad),undefined,bad);
+});
+
+test('a shield whose coin proves it dead clears without a reload, and auto-shield plans that coin again',async()=>{
+ const rows=new Map<string,string>(),storage={getItem:(key:string)=>rows.get(key)??null,setItem:(key:string,value:string)=>{rows.set(key,value);},removeItem:(key:string)=>{rows.delete(key);}};
+ const origin='https://pool.test',id='a'.repeat(32),input={txid:'c'.repeat(64),vout:1,value:2000};
+ let at=1_000_000;const journal=makeNativeMutationJournal(storage,{graceMs:NATIVE_GRACE_MS,now:()=>at});
+ journal.beforeNativeMutation({url:origin+'/api/rollup/spends',method:'POST',body:JSON.stringify({id,slot:{nullifiers:['17']},coin:input})});
+ const wallet=depositRig({},[],input,()=>new Set(journal.pendingPoolOutpoints(origin)));
+ const unknown=(async()=>new Response('',{status:404})) as typeof fetch;
+ assert.equal(wallet.planFor([input],false),undefined,'the reserved coin is left out while the outcome is unresolved');
+ assert.equal(await reconcileJournal(journal,unknown,origin,wallet),true,'inside the hour the pool could still admit it');
+ at+=8*3_600_000;
+ assert.equal(await reconcileJournal(journal,unknown,origin,wallet),false);
+ assert.deepEqual(wallet.planFor([input],false),{kind:'btc',coins:[input],amount:2000});
 });
 
 test('a 30-coin plan in private mode takes at most the cap, the soonest to expire first and coins without expiry last, and a direct plan takes all',()=>{
