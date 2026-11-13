@@ -15,7 +15,11 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::ipc::Channel;
-use tokio::{io::AsyncWriteExt, sync::mpsc, task::JoinHandle};
+use tokio::{
+    io::{AsyncSeekExt, AsyncWriteExt},
+    sync::mpsc,
+    task::JoinHandle,
+};
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::{
     Connector, client_async_tls_with_config,
@@ -24,6 +28,7 @@ use tokio_tungstenite::{
         protocol::{Message, WebSocketConfig},
     },
 };
+use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
@@ -207,7 +212,8 @@ where
 pub(super) fn download<'a, P>(
     lease: &'a Lease,
     asset: &'a UpdateDownload,
-    file: tokio::fs::File,
+    sources: &'a [Url],
+    file: &'a mut tokio::fs::File,
     tls: Arc<rustls::ClientConfig>,
     progress: &'a P,
 ) -> BoxFuture<'a, Result<(), String>>
@@ -217,6 +223,7 @@ where
     Box::pin(download_with(
         lease,
         asset,
+        sources,
         file,
         progress,
         move |checked| exchange(lease, checked, tls.clone()),
@@ -226,7 +233,8 @@ where
 pub(super) async fn download_with<F, Fut, P>(
     lease: &Lease,
     asset: &UpdateDownload,
-    mut file: tokio::fs::File,
+    sources: &[Url],
+    file: &mut tokio::fs::File,
     progress: &P,
     mut exchange: F,
 ) -> Result<(), String>
@@ -235,121 +243,24 @@ where
     Fut: std::future::Future<Output = Result<(Response<Incoming>, ConnectionTask), String>>,
     P: Fn(UpdateProgress) + Sync,
 {
-    let mut url = asset.validate()?;
     lease.check()?;
     let work = async {
-        lease.check()?;
-        progress(UpdateProgress {
-            received: 0,
-            total: asset.bytes,
-        });
-        for redirects in 0..=2 {
-            let checked = super::policy::check_request(
-                &NativeRequest {
-                    generation: lease.generation,
-                    request_id: lease.id.clone(),
-                    scope: lease.scope.clone(),
-                    url: url.as_str().into(),
-                    method: "GET".into(),
-                    headers: vec![("Accept".into(), "application/octet-stream".into())],
-                    body_base64: None,
-                },
-                false,
-            )?;
-            lease.check()?;
-            let (response, driver) = tokio::time::timeout(CONNECT_TIMEOUT, exchange(checked))
+        let mut failure = "Update download has no approved source".to_owned();
+        for source in sources {
+            match attempt(lease, asset, source, file, progress, &mut exchange).await {
+                Ok(()) => return Ok(()),
+                // Cancellation and generation retirement are final; only a bad source falls back.
+                Err(error) if lease.check().is_err() => return Err(error),
+                Err(error) => failure = error,
+            }
+            file.set_len(0)
                 .await
-                .map_err(|_| "Update connection timed out; retry the download")??;
-            lease.check()?;
-            check_encoding(&response)?;
-            if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
-                if redirects == 2 {
-                    return Err("Update redirect limit exceeded".into());
-                }
-                let location = response
-                    .headers()
-                    .get(hyper::header::LOCATION)
-                    .and_then(|value| value.to_str().ok())
-                    .ok_or("Update redirect is missing its destination")?;
-                url = super::update::redirect_url(location)?;
-                drop(response);
-                drop(driver);
-                continue;
-            }
-            if response.status() != hyper::StatusCode::OK {
-                return Err("Update server did not return the requested package".into());
-            }
-            if let Some(length) = response.headers().get(hyper::header::CONTENT_LENGTH) {
-                let length = length
-                    .to_str()
-                    .ok()
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .ok_or("Update package length is invalid")?;
-                if length != asset.bytes {
-                    return Err("Update package length does not match the release".into());
-                }
-            }
-            let mut body = response.into_body();
-            let mut received = 0u64;
-            let mut digest = Sha256::new();
-            let mut last_progress = Instant::now();
-            while let Some(frame) = tokio::time::timeout(STREAM_IDLE, body.frame())
+                .map_err(|_| "Could not reset the private update file")?;
+            file.seek(std::io::SeekFrom::Start(0))
                 .await
-                .map_err(|_| "Update download stopped responding; retry the download")?
-            {
-                let frame =
-                    frame.map_err(|_| "Update download was interrupted; retry the download")?;
-                if let Ok(bytes) = frame.into_data() {
-                    for chunk in bytes.chunks(MAX_CHUNK) {
-                        lease.check()?;
-                        received = received
-                            .checked_add(chunk.len() as u64)
-                            .filter(|received| *received <= asset.bytes)
-                            .ok_or("Update package exceeded its advertised size")?;
-                        file.write_all(chunk)
-                            .await
-                            .map_err(|_| "Could not write the private update file")?;
-                        digest.update(chunk);
-                        lease.check()?;
-                        if received < asset.bytes
-                            && last_progress.elapsed() >= UPDATE_PROGRESS_INTERVAL
-                        {
-                            progress(UpdateProgress {
-                                received,
-                                total: asset.bytes,
-                            });
-                            last_progress = Instant::now();
-                        }
-                    }
-                }
-            }
-            if received != asset.bytes {
-                return Err("Update package was incomplete; retry the download".into());
-            }
-            let actual: String = digest
-                .finalize()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
-            if actual != asset.sha256 {
-                return Err("Update package checksum does not match the release".into());
-            }
-            file.flush()
-                .await
-                .map_err(|_| "Could not finish the private update file")?;
-            file.sync_all()
-                .await
-                .map_err(|_| "Could not save the private update file")?;
-            lease.check()?;
-            progress(UpdateProgress {
-                received,
-                total: asset.bytes,
-            });
-            drop(driver);
-            lease.check()?;
-            return Ok(());
+                .map_err(|_| "Could not reset the private update file")?;
         }
-        Err("Update redirect limit exceeded".into())
+        Err(failure)
     };
     let result = tokio::select! {
         biased;
@@ -362,6 +273,132 @@ where
         let _ = file.flush().await;
     }
     result
+}
+
+async fn attempt<F, Fut, P>(
+    lease: &Lease,
+    asset: &UpdateDownload,
+    source: &Url,
+    file: &mut tokio::fs::File,
+    progress: &P,
+    exchange: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(CheckedRequest) -> Fut,
+    Fut: std::future::Future<Output = Result<(Response<Incoming>, ConnectionTask), String>>,
+    P: Fn(UpdateProgress) + Sync,
+{
+    let mut url = asset.start(source)?;
+    lease.check()?;
+    progress(UpdateProgress {
+        received: 0,
+        total: asset.bytes,
+    });
+    for redirects in 0..=2 {
+        let checked = super::policy::check_request(
+            &NativeRequest {
+                generation: lease.generation,
+                request_id: lease.id.clone(),
+                scope: lease.scope.clone(),
+                url: url.as_str().into(),
+                method: "GET".into(),
+                headers: vec![("Accept".into(), "application/octet-stream".into())],
+                body_base64: None,
+            },
+            false,
+        )?;
+        lease.check()?;
+        let (response, driver) = tokio::time::timeout(CONNECT_TIMEOUT, exchange(checked))
+            .await
+            .map_err(|_| "Update connection timed out; retry the download")??;
+        lease.check()?;
+        check_encoding(&response)?;
+        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            if redirects == 2 {
+                return Err("Update redirect limit exceeded".into());
+            }
+            let location = response
+                .headers()
+                .get(hyper::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or("Update redirect is missing its destination")?;
+            url = super::update::redirect_url(location)?;
+            drop(response);
+            drop(driver);
+            continue;
+        }
+        if response.status() != hyper::StatusCode::OK {
+            return Err("Update server did not return the requested package".into());
+        }
+        if let Some(length) = response.headers().get(hyper::header::CONTENT_LENGTH) {
+            let length = length
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or("Update package length is invalid")?;
+            if length != asset.bytes {
+                return Err("Update package length does not match the release".into());
+            }
+        }
+        let mut body = response.into_body();
+        let mut received = 0u64;
+        let mut digest = Sha256::new();
+        let mut last_progress = Instant::now();
+        while let Some(frame) = tokio::time::timeout(STREAM_IDLE, body.frame())
+            .await
+            .map_err(|_| "Update download stopped responding; retry the download")?
+        {
+            let frame = frame.map_err(|_| "Update download was interrupted; retry the download")?;
+            if let Ok(bytes) = frame.into_data() {
+                for chunk in bytes.chunks(MAX_CHUNK) {
+                    lease.check()?;
+                    received = received
+                        .checked_add(chunk.len() as u64)
+                        .filter(|received| *received <= asset.bytes)
+                        .ok_or("Update package exceeded its advertised size")?;
+                    file.write_all(chunk)
+                        .await
+                        .map_err(|_| "Could not write the private update file")?;
+                    digest.update(chunk);
+                    lease.check()?;
+                    if received < asset.bytes && last_progress.elapsed() >= UPDATE_PROGRESS_INTERVAL
+                    {
+                        progress(UpdateProgress {
+                            received,
+                            total: asset.bytes,
+                        });
+                        last_progress = Instant::now();
+                    }
+                }
+            }
+        }
+        if received != asset.bytes {
+            return Err("Update package was incomplete; retry the download".into());
+        }
+        let actual: String = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        if actual != asset.sha256 {
+            return Err("Update package checksum does not match the release".into());
+        }
+        file.flush()
+            .await
+            .map_err(|_| "Could not finish the private update file")?;
+        file.sync_all()
+            .await
+            .map_err(|_| "Could not save the private update file")?;
+        lease.check()?;
+        progress(UpdateProgress {
+            received,
+            total: asset.bytes,
+        });
+        drop(driver);
+        lease.check()?;
+        return Ok(());
+    }
+    Err("Update redirect limit exceeded".into())
 }
 
 pub(super) async fn stream(

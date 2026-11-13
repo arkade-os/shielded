@@ -162,7 +162,8 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
     const work=backend.download(owner.generation,owner.id,update,progress=>{
      if(downloading!==owner||!active(owner.revision))return;
      if(!Number.isSafeInteger(progress.received)||progress.received<0||progress.total!==update.bytes||progress.received>progress.total){cancelDownload('Android reported invalid download progress. Retry the update.');return;}
-     if(progress.received>state.received)publish({received:progress.received});
+     // Native reports 0 once as each source attempt starts, so a host-to-GitHub fallback restarts the count.
+     if(progress.received>state.received||(progress.received===0&&state.received>0))publish({received:progress.received});
     });
     void work.then(saved=>{if(downloading!==owner||!active(owner.revision))void backend.cancel(saved.id).catch(()=>{});},()=>{});
     const saved=await Promise.race([work,cancelled]);
