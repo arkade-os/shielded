@@ -208,11 +208,15 @@ This is a bounded authorization and ordering model, not an implementation proof.
 
 ## Tor circuit retirement on refusal
 
-`TorRefusal.tla` models one scope answering repeated refusals. A rate limit or block counts the exit address rather than the request, so the scope's isolation context is replaced before the next attempt. Retirement is bounded to once per cooling interval, declines on a retired lease, and does not exist in direct mode. Reading the refusal and acting on it are separate steps, so pause, cancellation or scope closure can intervene between them. `Decline` is the same refusal with the guard refusing to rotate.
+`TorRefusal.tla` models one scope answering repeated refusals. A rate limit or block counts the exit address rather than the request, so the scope's isolation context is replaced before the next attempt. Retirement is bounded to once per cooling interval, declines on a retired lease, and does not exist in direct mode. Reading the refusal and acting on it are separate steps, so pause, cancellation, scope closure or another lease's replacement can intervene between them.
+
+The refusal belongs to the context that actually carried the request, which `Recover` separates from the one the lease registered with: a connect retry replaces the scope client before the request goes out, so fencing on the registration context would keep the client that was just refused. `OtherRecovery` is the opposite case — a replacement this request did not make — and must still be declined. `Retire` and `Decline` partition the refusal on exactly the implementation's guard.
 
 | Model action | Owning file and symbol |
 | --- | --- |
 | `Send`, `Refused`, `Accepted` | `src-tauri/src/transport/wire.rs`: `http_with`, `stream_with` status branches |
+| `Recover` | `src-tauri/src/transport/session.rs`: `Lease::connect_with_recovery` recording `Lease::established` |
+| `OtherRecovery` | `src-tauri/src/transport/session.rs`: `Lease::reconnect_client` driven by another lease |
 | `Retire`, `Decline` | `src-tauri/src/transport/session.rs`: `Lease::retire_circuit` |
 | `IntervalElapses` | `src-tauri/src/transport/session.rs`: `STATUS_ROTATE_INTERVAL` against `Scope::rotated` |
 | `Pause`, `Cancel`, `CloseScope` | `src-tauri/src/transport/session.rs`: `Inner::{pause,cancel,close_scope}` |
@@ -220,24 +224,27 @@ This is a bounded authorization and ordering model, not an implementation proof.
 ```mermaid
 stateDiagram-v2
     [*] --> idle
-    idle --> sent: current lease / one request
+    idle --> idle: our connect retry / fresh context, recorded as the one used
+    idle --> sent: current lease / one request on the current context
     sent --> done: response accepted
     sent --> refused: 403 or 429
-    refused --> idle: current lease, interval elapsed, Tor / fresh context
-    refused --> idle: bound held, retired lease or direct mode / unchanged
+    sent --> sent: another lease replaces the scope context
+    refused --> idle: used context still current, interval elapsed, Tor / fresh context
+    refused --> idle: bound held, retired lease, direct mode or a superseded context / unchanged
 ```
 
-Pinned TLC v1.7.4 checked the base on November 13, 2026: 1,212 generated states, 344 distinct states, depth 16 and an empty queue. Every semantic action fired, including `Retire` (4 new states, 6 firings) and `IntervalElapses` (8 new, 120 firings). `Terminal` is an artificial stuttering action. The base preserves `RotationsBoundedByInterval`, `NoRetiredRotation`, `NoDirectRotation` and `FreshContextPerRotation`.
+Pinned TLC v1.7.4 checked the base on November 13, 2026: 3,192 generated states, 883 distinct states, depth 14 and an empty queue. Every semantic action fired, including `Recover` (12 new states, 21 firings), `OtherRecovery` (21 new, 160 firings) and `Retire` (7 new, 8 firings). `Terminal` is an artificial stuttering action. The base preserves `RotationsBoundedByInterval`, `NoRetiredRotation`, `NoDirectRotation`, `ContextTracksReplacement` and `NoRetainedRefusedCircuit`.
 
 | Mutation | Short counterexample |
 | --- | --- |
 | `TorRefusal_NoRotateBound.cfg` | Refusal → retire → refusal → retire inside one interval; `RotationsBoundedByInterval` fails |
 | `TorRefusal_NoRotateFence.cfg` | Refusal → pause → retire with a retired lease; `NoRetiredRotation` fails |
 | `TorRefusal_NoDirectGuard.cfg` | Direct mode, refusal → retire; `NoDirectRotation` fails |
+| `TorRefusal_NoOwnRecovery.cfg` | Our connect retry replaces the context → send → refusal → the registration fence declines and keeps the refused client; `NoRetainedRefusedCircuit` fails |
 
-`TorRefusal_Direct.cfg` runs the unweakened guards in direct mode and stays green with no rotation. The three weakened configurations exit 12 with their named invariant. These five bring `node tools/check-native-model.mjs` to 109 configurations. `src-tauri/src/transport/session.rs` carries the matching implementation tests: `a_refused_status_retires_the_scope_circuit_once_per_interval` for the bound, `a_refused_status_retires_nothing_a_retired_lease_no_longer_owns` for the fence and `direct_mode_has_no_circuit_to_retire` for the mode.
+`TorRefusal_Direct.cfg` runs the unweakened guards in direct mode and stays green with no rotation. The four weakened configurations exit 12 with their named invariant. These six bring `node tools/check-native-model.mjs` to 110 configurations. `src-tauri/src/transport/session.rs` carries the matching implementation tests: `a_refused_status_retires_the_scope_circuit_once_per_interval` for the bound, `a_refused_status_retires_nothing_a_retired_lease_no_longer_owns` for the superseded context, `a_refusal_after_connect_recovery_retires_the_client_that_answered` for the recovered one and `direct_mode_has_no_circuit_to_retire` for the mode.
 
-This is a bounded authorization and bounding model, not an implementation proof. It abstracts the real clock as a cooling flag plus an interval counter, and `scopeContext` counts replacements without asserting that a new isolation token yields a different exit address. It says nothing about whether a fresh circuit is admitted, and it does not model another scope: retirement never reads or writes another scope's context in the implementation.
+This is a bounded authorization and bounding model, not an implementation proof. It abstracts the real clock as a cooling flag plus an interval counter, and `scopeContext` counts replacements without asserting that a new isolation token yields a different exit address. It says nothing about whether a fresh circuit is admitted, and it does not model a second scope: retirement never reads or writes another scope's context in the implementation.
 
 ## Wallet status heartbeat
 

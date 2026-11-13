@@ -351,6 +351,9 @@ pub(super) struct Lease {
     pub scope: String,
     pub generation: u64,
     context: ConnectionContext,
+    /// The client a connect retry actually reached the host through, when it is no longer
+    /// `context`. A refusal belongs to this one, not to the client the lease registered with.
+    established: Mutex<Option<Client>>,
     pub cancel: CancellationToken,
     delivery: Arc<Delivery>,
     retirement: Arc<Retirement>,
@@ -834,6 +837,7 @@ impl Inner {
             scope: request.scope.clone(),
             generation: request.generation,
             context,
+            established: Mutex::new(None),
             cancel,
             delivery,
             retirement,
@@ -1218,7 +1222,14 @@ impl Lease {
             Err(_) => {
                 let client = self.reconnect_client()?;
                 self.check()?;
-                connect(client).await.map_err(|_| "Tor connection failed")?
+                let connected = connect(client.clone())
+                    .await
+                    .map_err(|_| "Tor connection failed")?;
+                *self
+                    .established
+                    .lock()
+                    .map_err(|_| "private lease unavailable")? = Some(client);
+                connected
             }
         };
         self.check()?;
@@ -1258,9 +1269,15 @@ impl Lease {
         if self.cancel.is_cancelled() {
             return Err("private request cancelled".into());
         }
-        let ConnectionContext::Tor(ours) = &self.context else {
+        let ConnectionContext::Tor(registered) = &self.context else {
             return Ok(());
         };
+        let recovered = self
+            .established
+            .lock()
+            .map_err(|_| "private lease unavailable")?
+            .clone();
+        let ours = recovered.as_ref().unwrap_or(registered);
         let scope = session
             .scopes
             .get_mut(&self.scope)
@@ -1630,6 +1647,68 @@ mod tests {
                 .context
                 .matches(&rotated)
         );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_after_connect_recovery_retires_the_client_that_answered() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "recovered")).unwrap();
+        let original = lease.context.tor().unwrap().clone();
+        let mut attempts = Vec::new();
+        lease
+            .connect_with_recovery(|client| {
+                attempts.push(client);
+                std::future::ready(if attempts.len() == 1 { Err(()) } else { Ok(()) })
+            })
+            .await
+            .unwrap();
+        assert_eq!(attempts.len(), 2);
+        let answered = attempts[1].clone();
+        assert!(!Arc::ptr_eq(&answered, &original));
+        lease.retire_circuit().unwrap();
+        let session = inner.lock().unwrap();
+        let current = session.scopes[&handle.id].context.tor().unwrap().clone();
+        assert!(!Arc::ptr_eq(&current, &answered));
+        assert!(!Arc::ptr_eq(&current, &original));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_refusal_still_surfaces_its_status_and_retires_the_circuit() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let asked = request(1, handle.id.clone(), "unreadable-refusal");
+        let checked = super::super::policy::check_request(&asked, false).unwrap();
+        let lease = inner.register(&asked, &checked, None).unwrap();
+        let original = inner.lock().unwrap().scopes[&handle.id].context.clone();
+        let (connection, server) = http_connection(&lease).await;
+        let peer = tokio::spawn(async move {
+            let mut peer = BufReader::new(server);
+            let mut head = Vec::new();
+            while peer.read_until(b'\n', &mut head).await.unwrap() != 0
+                && !head.ends_with(b"\r\n\r\n")
+            {}
+            peer.get_mut()
+                .write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 15\r\nContent-Length: 10\r\n\r\nx",
+                )
+                .await
+                .unwrap();
+        });
+        let response = super::super::wire::http_with(&lease, checked, || async { Ok(connection) })
+            .await
+            .unwrap();
+        assert_eq!(response.status, 429);
+        assert_eq!(response.status_text, "Too Many Requests");
+        assert!(response.body_base64.is_empty());
+        assert!(
+            !inner.lock().unwrap().scopes[&handle.id]
+                .context
+                .matches(&original)
+        );
+        peer.await.unwrap();
     }
 
     #[tokio::test]

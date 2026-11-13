@@ -206,6 +206,7 @@ where
             // part the caller needs, so keep it rather than failing on a body nobody reads.
             let undecodable = encoded(&response);
             if undecodable && response.status().is_success() { return Err("upstream ignored private identity encoding".into()); }
+            let refused = matches!(response.status().as_u16(), 403 | 429);
             let reusable = !undecodable
                 && response.version() == hyper::Version::HTTP_11
                 && !response.headers().get_all(hyper::header::CONNECTION).iter().any(|value| value.as_bytes().split(|byte| *byte == b',').any(|token| token.trim_ascii().eq_ignore_ascii_case(b"close")));
@@ -217,11 +218,19 @@ where
                 if undecodable && (name == hyper::header::CONTENT_ENCODING || name == hyper::header::CONTENT_LENGTH) { continue; }
                 headers.push((name.to_string(), value.to_str().map_err(|_| "invalid private response header")?.to_owned()));
             }
+            let mut dropped = undecodable;
             let body = if undecodable { Bytes::new() } else {
-                Limited::new(response.into_body(), MAX_RESPONSE).collect().await.map_err(|_| "private response failed or exceeded size limit; outcome may be unknown")?.to_bytes()
+                match Limited::new(response.into_body(), MAX_RESPONSE).collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    // The refusal itself is the answer; a truncated or oversized error page must
+                    // not bury the status that paces the origin and replaces the exit.
+                    Err(_) if refused => { dropped = true; Bytes::new() }
+                    Err(_) => return Err("private response failed or exceeded size limit; outcome may be unknown".into()),
+                }
             };
+            if dropped { headers.retain(|(name, _)| name != hyper::header::CONTENT_LENGTH.as_str()); }
             lease.check()?;
-            if reusable { lease.return_http(host, connection)?; }
+            if reusable && !dropped { lease.return_http(host, connection)?; }
             Ok::<_, String>(NativeResponse { generation: lease.generation, status, status_text, headers, body_base64: STANDARD.encode(body) })
         }) => result.map_err(|_| "private request timed out; outcome may be unknown")??,
     };
