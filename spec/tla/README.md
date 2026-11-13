@@ -781,6 +781,8 @@ With that last assumption dropped — a frozen replica serving a count the walle
 | `Reopen`, `ReopenReplays` | `src/native/providers.ts`: the `base.getSubscription` re-open at the head of the per-script loop |
 | `CatchUpRead`, `CatchUpFails` | `src/native/providers.ts`: `IsolatedIndexerProvider::readScript` against the per-stream snapshots |
 | `LoseBaseline` | `src/native/providers.ts`: a failed seed read, leaving `snapshots` without an entry for the script |
+| `StartRead`, `FoldRead` | `src/native/providers.ts`: `readScript` capturing `folds` on entry and folding through `foldInto` on exit |
+| `AbsorbSpend` | `src/native/providers.ts`: `absorb` bumping `folds` as each stream event lands |
 | `Escalate` | `src/native/providers.ts`: `queue.fail` after `ISOLATED_RETRIES`, or on `MissedScriptEvent` |
 | `SdkReset` | SDK `ContractWatcher.listenLoop` to `emitConnectionReset` to `ContractManager.reconcileWatched` |
 | `Event` | An arkd indexer change for one script; off-stream it is lost at the server until a read recovers it |
@@ -799,7 +801,7 @@ stateDiagram-v2
     handed --> live: SdkReset / clear watermarks, re-read every script
 ```
 
-`NoMissedEvent` is the promise: a script back on its stream owes nothing from the gap it was away for. `BoundedIsolatedRetry` says a script that cannot resume is handed to the SDK rather than retried in silence. `NoCollateralTeardown` is a cost promise, not a safety one: tearing every sibling down, the behavior before this change, still reaches the SDK reset and so keeps `NoMissedEvent`. Its own invariant is what makes `BreakIsolation` a live guard instead of a dead one.
+`NoMissedEvent` is the promise: a script back on its stream owes nothing from the gap it was away for. `BoundedIsolatedRetry` says a script that cannot resume is handed to the SDK rather than retried in silence. `NoStaleSnapshot` says an in-flight read never walks the snapshot back over what the stream already advanced, which is what keeps a spend from being re-announced or shown unspent. `NoCollateralTeardown` is a cost promise, not a safety one: tearing every sibling down, the behavior before this change, still reaches the SDK reset and so keeps `NoMissedEvent`. Its own invariant is what makes `BreakIsolation` a live guard instead of a dead one.
 
 | Configuration | Counterexample / expected invariant |
 | --- | --- |
@@ -809,7 +811,8 @@ stateDiagram-v2
 | `IndexerStreams_NoIsolation.cfg` | one script's failure detaches its sibling; `NoCollateralTeardown` |
 | `IndexerStreams_NoReopenOrder.cfg` | the read answers, an event lands, then the stream reopens; `NoMissedEvent` |
 | `IndexerStreams_NoBaseline.cfg` | a script with no snapshot resumes, so a vanished coin goes unseen; `NoMissedEvent` |
+| `IndexerStreams_NoMonotonicFold.cfg` | Reopen, StartRead, AbsorbSpend, then FoldRead walks the spend back; `NoStaleSnapshot` |
 
-Pinned TLC v1.7.4 and Java 25 on November 13, 2026: every action fired in the base run (`Escalate` 18 firings, `SdkReset` 600, `ReopenReplays` 1,100), and each of the six mutations violated its named invariant; `node tools/check-native-model.mjs` matched all 111 configurations. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget. The `trace-No*.md` files hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
+Pinned TLC v1.7.4 and Java 25 on November 13, 2026: the base run fired every action and each of the seven mutations violated its named invariant; `node tools/check-native-model.mjs` matched all 120 configurations. `FoldRead` fires but adds no novel states in the base: refusing a downgrade is a no-op on the snapshot, so its effect is only observable under `BreakMonotonicFold`, the same shape as the `Terminal` self-loop above. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget. The `trace-No*.md` files hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
 
 The read is ordered AFTER the stream reopens, so the model needs no assumption about arkd replaying a still-registered subscription id: `ReopenReplays` is optional and `NoMissedEvent` holds without it. `IndexerStreams_NoReopenOrder.cfg` is the read-first ordering, whose `read` phase is the window an event falls into. For a polled script the read IS the stream, so `Reopen` and `CatchUpRead` coincide and that window does not exist. Snapshot staleness beyond what the stream events and the reads fold in, per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.

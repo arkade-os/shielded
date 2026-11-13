@@ -196,6 +196,43 @@ test('a refused script stream reports the coin that landed while it backed off, 
   assert.ok(timers.backoffs().length>=1,'the refused script backed off before resuming');
  }finally{abort.abort();p.retire();}
 });
+test('a catch-up read that keeps failing is owed on the same budget, never swallowed',async t=>{
+ const timers=instantTimers(t),coins=new Map<string,VirtualCoin[]>([['ark',[]]]);
+ let refuse=false,reads=0;
+ const f=streamFixture(coins,()=>{reads++;if(refuse)throw new Error('429 Too Many Requests');});
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,f.base),abort=new AbortController();
+ const stream=p.getSubscription(await p.subscribeForScripts(['ark']),abort.signal);
+ try{
+  assert.ok(await waitUntil(()=>reads===1),'the seed read gave it a baseline');
+  refuse=true;
+  f.on('remote-ark').fail(new Error('the stream dropped'));
+  await assert.rejects(stream.next(),/429 Too Many Requests/);
+  assert.ok(timers.backoffs().length>=ISOLATED_RETRIES,'the owed read retried on the backoff before the stream was handed over');
+ }finally{abort.abort();p.retire();}
+});
+test('a stream spend is not walked back by an older catch-up read still in flight',async t=>{
+ instantTimers(t);
+ const unspent=on('ark','x'),spent={...unspent,isSpent:true,spentBy:'ab'.repeat(32)} as VirtualCoin;
+ const coins=new Map<string,VirtualCoin[]>([['ark',[unspent]]]);
+ let reads=0,hold:(()=>void)|undefined;
+ const f=streamFixture(coins,()=>{reads++;});
+ const inner=f.base.getVtxos.bind(f.base);
+ f.base.getVtxos=async opts=>{const result=await inner(opts);if(reads===2)await new Promise<void>(resolve=>{hold=resolve;});return result;};
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,f.base),abort=new AbortController();
+ const stream=p.getSubscription(await p.subscribeForScripts(['ark']),abort.signal),seen:SubscriptionResponse[]=[];
+ void (async()=>{try{for await(const event of stream)seen.push(event);}catch{}})();
+ try{
+  assert.ok(await waitUntil(()=>reads===1),'the seed read recorded the coin unspent');
+  f.on('remote-ark').fail(new Error('429 Too Many Requests'));
+  assert.ok(await waitUntil(()=>hold!==undefined),'the catch-up read is in flight with the older view');
+  coins.set('ark',[spent]);
+  f.on('remote-ark').push({scripts:['ark'],newVtxos:[],spentVtxos:[spent],sweptVtxos:[]});
+  assert.ok(await waitUntil(()=>seen.some(e=>e.spentVtxos.some(c=>c.txid==='x'))),'the stream spend was announced');
+  hold?.();await settle();
+  assert.equal(seen.filter(e=>e.spentVtxos.some(c=>c.txid==='x')).length,1,'the spend was announced once');
+  assert.ok(!seen.some(e=>e.newVtxos.some(c=>c.txid==='x')),'the older read never walked it back to unspent');
+ }finally{abort.abort();p.retire();}
+});
 test('a stream that resumes to a read missing a coin it had reported is handed to the SDK',async t=>{
  instantTimers(t);
  const coins=new Map<string,VirtualCoin[]>([['ark',[on('ark','x')]]]);
