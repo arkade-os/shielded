@@ -2,7 +2,8 @@ import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex} from '@noble/hashes/utils.js';
 
 export type NativePurpose='public'|'pool-sync'|'pool-operation'|'indexer'|'ark'|'esplora'|'swap'|'lnurl'|'assets'|'discovery'|'release';
-export interface NativeRoute {purpose:NativePurpose;key:string}
+/** `probe` marks a liveness check: it carries its own short deadline, so a rate-limit cooldown must not hold it and report the circuit dead. */
+export interface NativeRoute {purpose:NativePurpose;key:string;probe?:true}
 export function createNativeOperationScope(release:(route:NativeRoute)=>void|Promise<void>){
  const routes=new Map<string,NativeRoute>();let closed=false;
  return {

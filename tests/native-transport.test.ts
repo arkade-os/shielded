@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
+import {setImmediate} from 'node:timers/promises';
 import test from 'node:test';
-import {NativeBridge,SseDecoder,type NativeBackend,type NativeEvent,type NativeStatus} from '../src/native/transport.ts';
+import {NativeBridge,SseDecoder,encode64,type NativeBackend,type NativeEvent,type NativeStatus} from '../src/native/transport.ts';
 import {NativePolicy} from '../src/native/policy.ts';
+import {retryAfterMs} from '../src/shielded/network-privacy.ts';
 
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
+const flush=async()=>{for(let i=0;i<8;i++)await setImmediate();};
 function backend(){
  const calls:{command:string;args:any}[]=[],opened=deferred<{id:string;generation:number}>();let receive!:(event:NativeEvent)=>void;
  const api:NativeBackend={invoke:async(command,args)=>{calls.push({command,args});if(command==='native_status'||command==='native_start')return {phase:'ready',generation:1};if(command==='native_scope')return {id:'scope',generation:1};if(command==='native_stream')return opened.promise;return undefined;},channel:handler=>{receive=handler;return {};}};
  return {api,calls,opened,emit:(event:NativeEvent)=>receive(event)};
 }
-function httpBackend(answer=async(_request:any)=>({generation:1,status:200,headers:[],bodyBase64:'e30='})){
+type NativeAnswer={generation:number;status:number;headers:[string,string][];bodyBase64?:string};
+function httpBackend(answer:(request:any)=>Promise<NativeAnswer>=async()=>({generation:1,status:200,headers:[],bodyBase64:'e30='})){
  const b=backend(),invoke=b.api.invoke;let scopes=0;
  b.api.invoke=async(command,args)=>{
   if(command==='native_scope'){b.calls.push({command,args});return {id:'scope-'+(++scopes),generation:1};}
@@ -320,4 +324,77 @@ test('changing mode retires old handles and guards before its native start compl
  await assert.rejects(bridge.fetch('https://pool.example/api/rollup/status'),/paused|retired/);
  assert.ok(b.calls.some(call=>call.command==='native_cancel'&&call.args.id==='remote'));
  pending.resolve({phase:'ready',generation:2,mode:'direct'});await next;assert.throws(guard,/paused|retired/);
+});
+
+test('Retry-After accepts delta-seconds with a fraction',()=>{
+ assert.deepEqual(['30','1.5','soon',''].map(retryAfterMs),[30_000,1_500,undefined,undefined]);
+});
+
+test('a rate-limited native response paces that origin and leaves others alone',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});t.mock.method(Math,'random',()=>0.8);
+ const limited='https://mempool.limited.example/api';
+ let answered=0;
+ const b=httpBackend(async()=>{answered++;return answered===1?{generation:1,status:429,headers:[['Retry-After','2']]}:{generation:1,status:200,headers:[],bodyBase64:'e30='};});
+ const policy=new NativePolicy('https://pool.example');policy.registerEsplora(limited);
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ assert.equal((await bridge.fetch(limited+'/address/a/utxo')).status,429);
+ const paced=bridge.fetch(limited+'/address/b/utxo');
+ await flush();assert.equal(answered,1);
+ assert.equal((await bridge.fetch('https://pool.example/api/rollup/status')).status,200);
+ assert.equal(answered,2);
+ // The draw is fixed and nonzero, so an unjittered wait would sit on its base and miss this bound.
+ t.mock.timers.tick(2399);await flush();assert.equal(answered,2);
+ t.mock.timers.tick(1);await flush();
+ assert.equal((await paced).status,200);assert.equal(answered,3);
+});
+
+test('a rate-limited origin also paces native stream opens',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:2_000_000});t.mock.method(Math,'random',()=>0);
+ const b=httpBackend(async()=>({generation:1,status:429,headers:[['Retry-After','5']]}));
+ const policy=new NativePolicy('https://pool.example');policy.registerArk('https://ark.limited.example','https://ark.limited.example');
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ assert.equal((await bridge.fetch('https://ark.limited.example/v1/info')).status,429);
+ const stream=bridge.open('native_stream','https://ark.limited.example/v1/batch/events?topics=x',()=>{});
+ await flush();assert.equal(b.calls.filter(call=>call.command==='native_stream').length,0);
+ t.mock.timers.tick(5000);await flush();
+ assert.equal(b.calls.filter(call=>call.command==='native_stream').length,1);
+ b.opened.resolve({id:'remote',generation:1});await stream.ready;stream.close();
+});
+
+test('a native rate limit without Retry-After falls back to a minute',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:3_000_000});t.mock.method(Math,'random',()=>0);
+ let answered=0;
+ const b=httpBackend(async()=>{answered++;return answered===1?{generation:1,status:429,headers:[]}:{generation:1,status:200,headers:[],bodyBase64:'e30='};});
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://fallback.example'));await bridge.status();
+ assert.equal((await bridge.fetch('https://fallback.example/api/rollup/status')).status,429);
+ const paced=bridge.fetch('https://fallback.example/api/rollup/status');
+ t.mock.timers.tick(59_999);await flush();assert.equal(answered,1);
+ t.mock.timers.tick(1);await flush();
+ assert.equal((await paced).status,200);assert.equal(answered,2);
+});
+
+test('the pool admission limit keeps its own cooldown and does not hold back status reads',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:4_000_000});
+ const refusal=encode64(new TextEncoder().encode(JSON.stringify({code:'admission-rate-limit',error:'Too many requests from this address; try again in a minute.'})));
+ let answered=0;
+ const b=httpBackend(async()=>{answered++;return answered===1?{generation:1,status:429,headers:[['Retry-After','30']],bodyBase64:refusal}:{generation:1,status:200,headers:[],bodyBase64:'e30='};});
+ const bridge=new NativeBridge(b.api,new NativePolicy('https://admission.example'));await bridge.status();
+ const spend=await bridge.fetch('https://admission.example/api/rollup/spends',{method:'POST',body:JSON.stringify({id:'a'.repeat(32)})});
+ assert.equal(spend.status,429);
+ assert.equal((await bridge.fetch('https://admission.example/api/rollup/status')).status,200);
+ assert.equal(answered,2);
+});
+
+test('a liveness probe is not held behind a rate-limit cooldown that still paces ordinary reads',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:5_000_000});t.mock.method(Math,'random',()=>0);
+ let answered=0;
+ const b=httpBackend(async()=>{answered++;return answered===1?{generation:1,status:429,headers:[]}:{generation:1,status:200,headers:[],bodyBase64:'e30='};});
+ const policy=new NativePolicy('https://probe.example'),url='https://probe.example/api/rollup/status';
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ assert.equal((await bridge.fetch(url)).status,429);
+ const paced=bridge.fetch(url);await flush();assert.equal(answered,1);
+ assert.equal((await bridge.fetch(url,undefined,{...policy.classify(url,'GET'),key:'tor-health:1',probe:true})).status,200);
+ assert.equal(answered,2);
+ t.mock.timers.tick(60_000);await flush();
+ assert.equal((await paced).status,200);assert.equal(answered,3);
 });
