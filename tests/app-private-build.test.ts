@@ -59,6 +59,20 @@ test('every tick hands the journal the wallet itself, on the native path as much
  assert.match(effect?.[2]??'',/\bwallet\b/);
 });
 
+test('the unresolved-outcomes banner offers a release behind a confirm, on either private path',()=>{
+ const wallet=read('app/src/RollupWallet.tsx'),banner=/\{nativePending&&<section className="stock-warning" role="status">([\s\S]*?)<\/section>\}/.exec(wallet)?.[1]??'';
+ assert.match(banner,/\{confirmRelease\s*\?/,'the action asks before it releases');
+ assert.match(banner,/coin can be spent only once[\s\S]*?A payment is never released here/,'the confirm says why a shield is safe and a payment is not offered');
+ assert.equal((banner.match(/>Release reserved shields<\/button>/g)??[]).length,2,'one button opens the confirm, one does the release');
+ assert.match(banner,/onClick=\{releaseReserved\}/);
+ assert.doesNotMatch(banner,/releaseNote&&/);
+ assert.match(wallet,/<\/section>\}\s*\{releaseNote&&<section className="stock-warning" role="status"><span>\{releaseNote\}<\/span>[\s\S]*?onClick=\{\(\)=>setReleaseNote\(''\)\}>Dismiss</,'the result outlives the banner, which unmounts once nothing is reserved');
+ const handler=/const releaseReserved=\(\)=>\{([\s\S]*?)\n \};/.exec(wallet)?.[1]??'';
+ assert.match(handler,/nativeHost\?forceReleaseNativeJournal\(POOL_ORIGIN\):PRIVATE!\.journal\.forceRelease\(PRIVATE!\.poolOrigin\)/,'both paths release through the journal, never the component');
+ assert.doesNotMatch(handler,/settledNullifiers/,'a payment is never released by hand, whatever the wallet would say');
+ assert.match(handler,/setTick/,'the banner is recomputed from the journal, not assumed');
+});
+
 const PREFETCH_EFFECT=/useEffect\(\(\)=>\{\s*if\(!pool\)return;([\s\S]*?)\},\[([^\]]*)\]\);/;
 test('a private wallet prefetches both proving circuits on open, not on the send tab',()=>{
  const effect=PREFETCH_EFFECT.exec(read('app/src/RollupWallet.tsx')),body=effect?.[1]??'',branch=/if\(PRIVATE\)\{([^}]*)\}/.exec(body);

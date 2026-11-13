@@ -741,6 +741,8 @@ FIFO native reads are an assumption; if IPC reorders them, a stale foreground fl
 | `Observe*` | `src/native/mutations.ts`: `observeNativeResponse` and `preAdmissionRefusal` |
 | `ReconcileId` | `src/native/mutations.ts`: `reconcileNativeMutations` and the 404 branch of `observeNativeResponse` |
 | `Settle` | `src/native/mutations.ts`: `settleLandedMutations` and `reconcileJournal`; `src/shielded/wallet.ts`: `settledNullifiers`, `settledDeposit`, `landedDeposit` |
+| `RetryDispatch`, `RetryAdmit`, `RetryLand` | `src/shielded/wallet.ts`: `autoShield` rebuilding a released shield on the same coin, or a payment rebuilt on other notes |
+| `ForceRelease` | `src/native/mutations.ts`: `forceRelease`; the Release reserved shields action in `app/src/RollupWallet.tsx` |
 
 ```mermaid
 stateDiagram-v2
@@ -749,8 +751,9 @@ stateDiagram-v2
     open --> gone: id answers included, or the wallet's verdict says landed
     open --> gone: Cloudflare's edge-limit 429, or the pool's own refusal
     open --> gone: 404 past the grace and inside the pool's tracking hour
-    open --> gone: past that hour, a deposit coin still unspent
+    open --> gone: past that hour, a deposit, whatever its coin says
     open --> gone: past that hour, no history row and a batch since the entry was first judged
+    open --> gone: the reader releases a deposit, at any age in the model, past the grace in the app
     open --> open: 404 inside the grace, a foreign 429, a lost answer, or a verdict it cannot give
 ```
 
@@ -762,13 +765,16 @@ stateDiagram-v2
 | `PoolSpendJournal_EdgeRefusal.cfg` | a recognised edge-limit 429 leaves the row reserved for good; `NoStrandedReservation` |
 | `PoolSpendJournal_Retention.cfg` | settle releases before the pool can have forgotten it; `NoDoublePayment` |
 | `PoolSpendJournal_CoinProof.cfg` | a deposit waits for a batch an idle pool never makes; `NoStrandedReservation` |
-| `PoolSpendJournal_CoinSpentCheck.cfg` | a deposit judged by nullifier history, which no deposit of ours appears in; `NoDoublePayment` |
+| `PoolSpendJournal_ForceNotes.cfg` | the reader's release reaches a payment, past the window; `NoDoublePayment` |
+| `PoolSpendJournal_UnreadableCoin.cfg` | a deposit whose coin read fails keeps its row past the hour; `NoStrandedReservation` |
 
-Pinned TLC v1.7.4 on November 13, 2026: the base generated 10,158 states (2,516 distinct, depth 11) with every action fired, and `PoolSpendJournal_Sim.cfg` (four clock steps, four batches) is exhaustively green at 60,662 states (14,590 distinct). `node tools/check-native-model.mjs` matched all 112 configurations.
+`paid` counts landings, so `NoDoublePayment` is the real promise rather than a proxy for it: a first attempt and a retry after a release never both land. The asymmetry the deposit rule rests on is in `Land` and `RetryLand`, which a deposit may take only while its coin is unspent. A note spend has no such bound — it can be rebuilt on other notes — so it keeps the verdict and count rules. A retry follows only a release that declared the payment dead, never one that proved it landed.
+
+Pinned TLC v1.7.4 on November 13, 2026: the base generated 27,307 states (6,388 distinct) with every action fired. `node tools/check-native-model.mjs` matched all 127 configurations. The reader's release is offered for deposits only. An earlier revision also let it free a payment past the window on a current unlanded verdict, and this model stays green on that rule — which is the argument against it, not for it: the hazard such a rule misses is a stalled operator's count, exactly what `count # batchAt` in `settleLandedMutations` guards and exactly what this model scopes out. A manual path cannot re-derive a proof the model cannot see, so payments are left to the settle rule, which runs every minute anyway. `ForceRelease` frees a deposit at any age, its POST still in flight included. That is a deliberate over-approximation: `forceRelease` in the app also keeps a shield younger than the grace, so there its POST has already left and answered, and the model staying green without that wait shows the coin, not the grace, bounds a retry. Because a released row can still have its POST in flight here, `DispatchJournaled` is not an invariant of this model; `NativeSession.tla`'s own `DispatchJournaled` still owns "journal before send". `Settle` may read a deposit's coin as `unknown` on any pass, as `reconcileJournal` turns a failed read into `undefined`; past the hour that releases all the same.
 
 The model assumes a recognised edge-limit 429 (Cloudflare's `error code: 1015`) was written before the request was forwarded, which is what makes `ObserveEdgeRefusal` safe; any other 429 is modelled as possibly forwarded and left to the 404 window or the coin. It assumes the Ark indexer's answer for a deposit coin is not stale by anything near the tracking hour, and that the operator a wallet reads is the one that batches: the account's view is a prefix of the truth, and a wallet behind the count it reads gives no verdict at all.
 
-With that last assumption dropped — a frozen replica serving a count the wallet has fully synced while another operator keeps batching — the model finds a `NoDoublePayment` trace against the existing count rule: the wallet advances 0 → 1, the spend lands in batch 2 that the replica never serves, and `count # batchAt` then reads as proof the view is current. That rule is unchanged here and the hazard is the one its comment already names; the deposit path does not rely on it, because a coin read answers past any operator. Amounts, group members, several concurrent spends per origin, storage durability and the Ark layer's own refusal to spend a coin twice are outside this model.
+With that last assumption dropped — a frozen replica serving a count the wallet has fully synced while another operator keeps batching — the model finds a `NoDoublePayment` trace against the existing count rule: the wallet advances 0 → 1, the spend lands in batch 2 that the replica never serves, and `count # batchAt` then reads as proof the view is current. That rule is unchanged here and the hazard is the one its comment already names; the deposit path does not rely on it, because a coin read answers past any operator. Amounts, group members, several concurrent spends per origin, storage durability and the Ark layer's own refusal to spend a coin twice are outside this model. So is the operator's rule that a batch takes one slot per coin (`run` in `src/rollup/epoch-operator.ts`, tested in `tests/rollup-epoch-operator.test.ts`): `paid` counts landings, and two slots on one coin cannot both land, but one batch carrying both is refused by the network. Admission cannot tell a coin's owner, so both slots queue and signing drops the one its owner did not sign.
 
 ## Isolated indexer streams
 

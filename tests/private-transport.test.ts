@@ -205,11 +205,12 @@ test('the sealed path asks a shield\'s coin, not its nullifiers, and releases on
  const start=Date.now();let at=start;t.mock.method(Date,'now',()=>at);
  const post={method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:ID,slot:{nullifiers:['17']},coin})};
  assert.equal((await g.transport.fetch('/api/rollup/spends',post)).status,202);
- at=start+3_600_001+PRIVATE_GRACE_MS;const asked:string[]=[];
+ at=start+3_600_000+PRIVATE_GRACE_MS;const asked:string[]=[];
  const wallet=(verdict:boolean|undefined)=>({settledNullifiers:()=>{throw new Error('a deposit has no history row');},settledDeposit:async(outpoint:string)=>{asked.push(outpoint);return verdict;},batchCount:()=>9});
- assert.equal(await g.transport.reconcile(wallet(undefined)),true);
+ assert.equal(await g.transport.reconcile(wallet(undefined)),true,'the pool could still admit it, and the coin cannot say');
  assert.deepEqual([asked,g.transport.journal.pendingPoolOutpoints(POOL)],[[`${coin.txid}:1`],[`${coin.txid}:1`]]);
- assert.equal(await g.transport.reconcile(wallet(false)),false);
+ at=start+3_600_001+PRIVATE_GRACE_MS;
+ assert.equal(await g.transport.reconcile(wallet(undefined)),false,'past that its coin need not say: one coin bounds any retry');
  assert.deepEqual(g.transport.journal.pendingPoolOutpoints(POOL),[]);
 });
 

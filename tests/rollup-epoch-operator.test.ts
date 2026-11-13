@@ -96,7 +96,7 @@ async function world(epochLen:number){
   pin:{version:1 as const,network:'local-stock' as const,descriptorProfileId:sha('rollup-epoch-test'),programsHash:sha(leaves.batchRecover),artifactsHash:sha('stub'),checkpointHash:sha(checkpoint.script),genesisTxid:parent.id,serverKey:hex.encode(server),emulatorKey:hex.encode(emulator)},
   genesis:{version:1 as const,head:{txid:parent.id,vout:0,value:100_330,sourceTxHex:hex.encode(parent.toBytes())},reserves:{},batches:0},
   clientKey:{spend:{},join:{},recover:{}},prover:{spend:stub,join:stub,recover:stub},verify:async()=>true};
- return {dir,landed,coin,coinOf,cash,program:userTree.pkScript.subarray(2),feeTo,feeView,fee,shield,transport,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
+ return {dir,landed,coin,coinOf,cash,program:userTree.pkScript.subarray(2),feeTo,feeView,fee,shield,transport,signDeposits,open:async(t:TestContext,overrides:Partial<Parameters<typeof openRollupEpochOperator>[0]>={})=>{const op=await openRollupEpochOperator({...options,...overrides});t.after(()=>op.close());return op;}};
 }
 type World=Awaited<ReturnType<typeof world>>;
 type Operator=Awaited<ReturnType<typeof openRollupEpochOperator>>;
@@ -300,6 +300,18 @@ test('admission checks a double-spend before the anchor, so stale-anchor never h
   await assert.rejects(op.submit(twin),rejection('stale-anchor'),`${where}: the anchor has moved on`);
   await assert.rejects(op.submit(first),rejection('double-spend'),`${where}: the spend landed`);
  }
+});
+
+test('a slot squatting on another depositor\'s coin cannot keep the owner out: a batch takes one slot per coin, and signing drops the squatter',async t=>{
+ const w=await world(64),drops:[string[],string][]=[];
+ const op=await w.open(t,{onDrop:(ids,reason)=>drops.push([ids,reason]),signDeposits:async(request,spends)=>spends.some(s=>s.id==='squat')?request:w.signDeposits(request,spends)});
+ const squat=spendOf(deposit(op.state,1000n),{id:'squat',coin:w.coin(1)}),own=spendOf(deposit(op.state,1000n),{coin:w.coin(1)});
+ await op.submit(squat);await op.submit(own);
+ op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ await assert.rejects(op.tick(),/did not sign/);
+ assert.deepEqual([drops,op.pendingIds()],[[[['squat'],'A depositor did not sign; the batch is rebuilt without their deposits.']],[own.id]]);
+ assert.equal(await landsAs(op),0);
+ assert.equal(Transaction.fromPSBT(base64.decode(w.landed[0]!.arkTx)).inputsLength,2,'the pool head, and the coin once');
 });
 
 test('a pad whose rCur has no root is refused once, and the next tick still builds a batch',async t=>{
