@@ -44,14 +44,15 @@ export function pageActivityHistory(history:Activity[],lightning:Activity[]){
 }
 
 export type ActivityNotice={id:string;text:string;detail:string;received:boolean;more:number};
-/** The newest money movement these rows added, for a toast. An absent `seen` is a session's first load, which seeds silently so startup and restore never announce old history. */
-export function pageActivityNotice(rows:readonly Activity[],seen:ReadonlySet<string>|undefined):{seen:ReadonlySet<string>;notice?:ActivityNotice}{
- const next=new Set(seen??[]);for(const row of rows)next.add(row.id);
- if(!seen)return {seen:next};
- const fresh=rows.filter(row=>!seen.has(row.id)&&row.amount!==0&&historyDirection(row)!=='own').sort((a,b)=>b.createdAt-a.createdAt);
- const newest=fresh[0];if(!newest)return {seen:next};
+export type ActivitySeen={ids:ReadonlySet<string>;sources:number};
+/** The newest money movement these rows added, for a toast. `sources` flags the history readers that have answered; the first answer from any of them seeds silently, so startup, restore and a late Lightning start never announce old history. */
+export function pageActivityNotice(rows:readonly Activity[],seen:ActivitySeen|undefined,sources:number):{seen:ActivitySeen;notice?:ActivityNotice}{
+ const ids=new Set(seen?.ids??[]);for(const row of rows)ids.add(row.id);
+ if(!seen||seen.sources!==sources)return {seen:{ids,sources}};
+ const fresh=rows.filter(row=>!seen.ids.has(row.id)&&row.amount!==0&&historyDirection(row)!=='own').sort((a,b)=>b.createdAt-a.createdAt);
+ const newest=fresh[0];if(!newest)return {seen:{ids,sources}};
  const received=historyDirection(newest)==='in';
- return {seen:next,notice:{id:newest.id,received,more:fresh.length-1,
+ return {seen:{ids,sources},notice:{id:newest.id,received,more:fresh.length-1,
   text:`${received?'Received':'Sent'} ${satsText(Math.abs(newest.amount))}`,
   detail:newest.settled?'':received?'Arriving; not settled yet':'Not settled yet'}};
 }

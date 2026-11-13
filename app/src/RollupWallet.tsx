@@ -19,7 +19,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type ActivityNotice,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
 import WalletEntrance from './WalletEntrance.tsx';
 import WalletSyncStatus from './WalletSyncStatus.tsx';
@@ -102,7 +102,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
  const [pullRefresh,setPullRefresh]=useState<PullToRefreshState>({distance:0,ready:false,refreshing:false});
  const [notice,setNotice]=useState<ActivityNotice>();
- const syncRef=useRef<(()=>Promise<void>)|undefined>(undefined),wasVisible=useRef(true);
+ const syncRef=useRef<(()=>Promise<void>)|undefined>(undefined),wasVisible=useRef(true),pendingForeground=useRef(false);
  const dismissNotice=useCallback(()=>setNotice(undefined),[]);
  const pageNode=useRef<HTMLDivElement>(null);
  const panelNode=useRef<HTMLElement>(null),panelGrip=useRef<HTMLDivElement>(null),dockNode=useRef<HTMLElement>(null),mainTabsNode=useRef<HTMLElement>(null),panelTabsNode=useRef<HTMLDivElement>(null),recipientNode=useRef<HTMLInputElement>(null),handledPaymentRequest=useRef<number|undefined>(undefined);
@@ -444,15 +444,15 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{
   if(!wallet)return;
   // Per session, so a late read from a replaced wallet cannot reseed this one into announcing its whole history.
-  let seen:ReadonlySet<string>|undefined;
+  let seen:ActivitySeen|undefined;
   setNotice(undefined);
-  const refresh=pageRefresh({coins:()=>wallet.coins(),balance:()=>wallet.getBalance(),address:()=>wallet.getAddress(),history:()=>wallet.getActivityHistory(),lightningHistory:async()=>wallet.swaps?.getActivityHistory()??[]},(data,errors)=>{
+  const refresh=pageRefresh({coins:()=>wallet.coins(),balance:()=>wallet.getBalance(),address:()=>wallet.getAddress(),history:()=>wallet.getActivityHistory(),lightningHistory:async()=>wallet.swaps?.getActivityHistory()},(data,errors)=>{
    if(restoring.current||!mounted.current)return;
    if(fundsRef.current?.wallet===wallet)fundsRef.current.watch.update(data.coins);
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
    if(data.history||data.lightningHistory){
     const history=pageActivityHistory(data.history??[],data.lightningHistory??[]);setRows(history);
-    const moved=pageActivityNotice(history,seen);seen=moved.seen;
+    const moved=pageActivityNotice(history,seen,(data.history?1:0)|(data.lightningHistory?2:0));seen=moved.seen;
     if(moved.notice)setNotice(moved.notice);
    }
    if(nativeHost)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
@@ -592,6 +592,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    void Promise.resolve().then(async()=>{if(active&&mounted.current)await refreshRef.current?.request();}).catch(error=>{if(active&&mounted.current)setPullSyncError(errorText(error));});
   })().finally(()=>{running=undefined;});
   syncRef.current=sync;
+  if(pendingForeground.current){pendingForeground.current=false;void sync().catch(()=>{});}
   const dispose=bindPullToRefresh(page,sync,{onState:setPullRefresh,onError:error=>{if(active&&mounted.current)setPullSyncError(errorText(error));}});
   return()=>{active=false;if(syncRef.current===sync)syncRef.current=undefined;dispose();};
  },[wallet,ready,viewActive,suspended]);
@@ -599,7 +600,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  // Android can freeze the WebView, leaving the watcher stream stale, so returning to the foreground runs the pull's own read-only sync.
  useEffect(()=>{
   const was=wasVisible.current;wasVisible.current=pageVisible;
-  if(pageVisible&&!was)void syncRef.current?.().catch(()=>{});
+  // A return while the view is inactive or suspended has no sync yet; it runs once the effect above installs one.
+  if(pageVisible&&!was){if(syncRef.current)void syncRef.current().catch(()=>{});else pendingForeground.current=true;}
  },[pageVisible]);
  const phrase=secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  const assetName=(id:string)=>`asset ${short(id)}`;
