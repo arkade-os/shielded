@@ -13,7 +13,7 @@ const REFUSED_BODY=new Set(['The request body is not valid JSON.','A spend id is
 // Only a recognised 429 proves the pool never saw the spend: its own admission limit, or Cloudflare's edge limit, which answers before forwarding. Any other 429 may come from a hop that already forwarded, so it stays uncertain for the 404 window or the coin to settle.
 const EDGE_LIMIT=/error code: 1015/i;
 const preAdmissionRefusal=(status:number,body:string,result:any)=>status===429
- ?EDGE_LIMIT.test(body)||result?.code==='admission-rate-limit'&&result.error==='Too many requests from this address; try again in a minute.'
+ ?(result===undefined&&EDGE_LIMIT.test(body))||(result?.code==='admission-rate-limit'&&result.error==='Too many requests from this address; try again in a minute.')
  :typeof result?.error==='string'&&status===400&&(result.code===undefined?REFUSED_BODY.has(result.error):REFUSED_CODES.has(result.code));
 const invalid=()=>new Error('The native payment journal is invalid; funds remain reserved.');
 const route=(raw:string)=>{const url=new URL(raw);return {origin:url.origin,path:decodeURIComponent(url.pathname).toLowerCase()};};

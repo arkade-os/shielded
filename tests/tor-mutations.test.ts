@@ -127,7 +127,7 @@ test('Cloudflare\'s edge limit answers in front of the pool, so it retires the r
 });
 
 test('a 429 with no recognised refusal may have been forwarded, so it stays reserved',()=>{
- for(const unknown of ['','null','{}','[]','Too Many Requests']){
+ for(const unknown of ['','null','{}','[]','Too Many Requests','{"error":"error code: 1015 from upstream"}']){
   const journal=makeNativeMutationJournal(storage()),request=mutation();journal.beforeNativeMutation(request);
   journal.observeNativeResponse({...request,status:429,body:unknown,requestBody:request.body});
   assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],unknown);
