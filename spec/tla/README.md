@@ -747,7 +747,7 @@ stateDiagram-v2
     [*] --> none
     none --> open: beforeNativeMutation reserves and persists
     open --> gone: id answers included, or the wallet's verdict says landed
-    open --> gone: 429 with no pool envelope, or the pool's own refusal
+    open --> gone: Cloudflare's edge-limit 429, or the pool's own refusal
     open --> gone: 404 past the grace and inside the pool's tracking hour
     open --> gone: past that hour, a deposit coin still unspent
     open --> gone: past that hour, no history row and a batch since the entry was first judged
@@ -759,13 +759,13 @@ stateDiagram-v2
 | `PoolSpendJournal_Grace.cfg` | a 404 releases while the POST is still in flight; `NoDoublePayment` |
 | `PoolSpendJournal_TrackedWindow.cfg` | a 404 past the tracking hour releases a spend that landed; `NoDoublePayment` |
 | `PoolSpendJournal_ForeignRefusal.cfg` | a 429 from a hop that may have forwarded releases; `NoDoublePayment` |
-| `PoolSpendJournal_EdgeRefusal.cfg` | an envelope-less 429 leaves the row reserved for good; `NoStrandedReservation` |
+| `PoolSpendJournal_EdgeRefusal.cfg` | a recognised edge-limit 429 leaves the row reserved for good; `NoStrandedReservation` |
 | `PoolSpendJournal_Retention.cfg` | settle releases before the pool can have forgotten it; `NoDoublePayment` |
 | `PoolSpendJournal_CoinProof.cfg` | a deposit waits for a batch an idle pool never makes; `NoStrandedReservation` |
 | `PoolSpendJournal_CoinSpentCheck.cfg` | a deposit judged by nullifier history, which no deposit of ours appears in; `NoDoublePayment` |
 
 Pinned TLC v1.7.4 on November 13, 2026: the base generated 10,158 states (2,516 distinct, depth 11) with every action fired, and `PoolSpendJournal_Sim.cfg` (four clock steps, four batches) is exhaustively green at 60,662 states (14,590 distinct). `node tools/check-native-model.mjs` matched all 112 configurations.
 
-The model assumes a 429 carrying no pool envelope was written by a hop that had not forwarded the request, which is what makes `ObserveEdgeRefusal` safe; both hops in the table decide before they forward, but a future one that answered 429 after forwarding would break it, and a 429 that does carry an envelope is modelled as possibly forwarded for exactly that reason. It assumes the Ark indexer's answer for a deposit coin is not stale by anything near the tracking hour, and that the operator a wallet reads is the one that batches: the account's view is a prefix of the truth, and a wallet behind the count it reads gives no verdict at all.
+The model assumes a recognised edge-limit 429 (Cloudflare's `error code: 1015`) was written before the request was forwarded, which is what makes `ObserveEdgeRefusal` safe; any other 429 is modelled as possibly forwarded and left to the 404 window or the coin. It assumes the Ark indexer's answer for a deposit coin is not stale by anything near the tracking hour, and that the operator a wallet reads is the one that batches: the account's view is a prefix of the truth, and a wallet behind the count it reads gives no verdict at all.
 
 With that last assumption dropped — a frozen replica serving a count the wallet has fully synced while another operator keeps batching — the model finds a `NoDoublePayment` trace against the existing count rule: the wallet advances 0 → 1, the spend lands in batch 2 that the replica never serves, and `count # batchAt` then reads as proof the view is current. That rule is unchanged here and the hazard is the one its comment already names; the deposit path does not rely on it, because a coin read answers past any operator. Amounts, group members, several concurrent spends per origin, storage durability and the Ark layer's own refusal to spend a coin twice are outside this model.
