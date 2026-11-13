@@ -112,22 +112,40 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
  };
  /**
   * A copy can still be admitted graceMs after the POST and its id answers for an hour after that; past both, only this wallet is left to say.
-  * A deposit spends no note of ours, so `settled` is blind to one and `deposited` answers from its coin, which no stalled operator can fake.
-  * For a note spend the account's history answers, trusted once the pool count differs from the one the entry was first judged at: a stalled operator still answers /status, and a new genesis restarts the count lower.
+  * A deposit spends one coin of ours, and a coin can be spent once: past that bound it has either landed, leaving nothing to re-shield, or it never can, so its coin only settles it sooner.
+  * A note spend can be rebuilt on other notes and two of those can both land, so the account's history answers, trusted once the pool count differs from the one the entry was first judged at: a stalled operator still answers /status, and a new genesis restarts the count lower.
   */
  const settleLandedMutations=(poolOrigin:string,settled:(nullifiers:readonly bigint[])=>boolean|undefined,count:number,deposited?:(coin:string)=>boolean|undefined)=>{
   if(graceMs===undefined||!Number.isSafeInteger(count)||count<0)return;
   const origin=new URL(poolOrigin).origin,at=now(),entries=load();let marked=false;
   const remaining=entries.filter(row=>{
-   const verdict=row.origin!==origin?undefined:row.coin!==undefined?deposited?.(row.coin):settled(row.nullifiers.map(BigInt));
+   if(row.origin!==origin)return true;
+   if(row.coin!==undefined)return deposited?.(row.coin)!==true&&at-row.createdAt<=TRACKED_MS+graceMs;
+   const verdict=settled(row.nullifiers.map(BigInt));
    if(verdict!==false)return verdict!==true;
    if(row.batchAt===undefined){row.batchAt=count;marked=true;}
-   if(at-row.createdAt<=TRACKED_MS+graceMs)return true;
-   return row.coin===undefined&&count===row.batchAt;
+   return at-row.createdAt<=TRACKED_MS+graceMs||count===row.batchAt;
   });
   if(marked||remaining.length!==entries.length)save(remaining);
  };
- return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations,settleLandedMutations};
+ const releasableAt=(row:PendingMutation)=>row.coin!==undefined?row.createdAt:graceMs===undefined?Infinity:row.createdAt+TRACKED_MS+graceMs+1;
+ /**
+  * The reader's own release, from the banner. A shield goes at any age, since its coin can be spent once and a retry cannot pay what the first attempt did.
+  * A payment goes only past the bound and on a current verdict that no batch carried it, or a retry on other notes could pay its recipient twice.
+  */
+ const forceRelease=(poolOrigin:string,settled?:(nullifiers:readonly bigint[])=>boolean|undefined)=>{
+  const origin=new URL(poolOrigin).origin,at=now(),entries=load();let unsettled=0;
+  const remaining=entries.filter(row=>{
+   if(row.origin!==origin||at<releasableAt(row))return true;
+   if(row.coin!==undefined)return false;
+   if(settled?.(row.nullifiers.map(BigInt))===false)return false;
+   unsettled++;return true;
+  });
+  if(remaining.length!==entries.length)save(remaining);
+  const soonest=Math.min(...remaining.filter(row=>row.origin===origin&&at<releasableAt(row)).map(releasableAt));
+  return {released:entries.length-remaining.length,unsettled,...(Number.isFinite(soonest)?{releasableAt:soonest}:{})};
+ };
+ return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations,settleLandedMutations,forceRelease};
 }
 
 export interface JournalWallet {settledNullifiers(nullifiers:readonly bigint[]):boolean|undefined;settledDeposit(coin:string):Promise<boolean|undefined>;batchCount():number}
@@ -137,7 +155,8 @@ export const reconcileJournal=async(journal:ReturnType<typeof makeNativeMutation
  if(!pending())return false;
  await journal.reconcileNativeMutations(fetcher,poolOrigin);
  if(wallet){
-  const coins=new Map(await Promise.all(journal.pendingPoolOutpoints(poolOrigin).map(async coin=>[coin,await wallet.settledDeposit(coin)] as const)));
+  // A coin this wallet cannot read says nothing; it must not stop the pass that ages the rest out.
+  const coins=new Map(await Promise.all(journal.pendingPoolOutpoints(poolOrigin).map(async coin=>[coin,await wallet.settledDeposit(coin).catch(()=>undefined)] as const)));
   journal.settleLandedMutations(poolOrigin,nullifiers=>wallet.settledNullifiers(nullifiers),wallet.batchCount(),coin=>coins.get(coin));
  }
  return pending();
@@ -153,3 +172,4 @@ export const observeNativeResponse=(response:NativeMutationResponse)=>{
  if(journalledRoute(response.url,response.method))current().observeNativeResponse(response);
 };
 export const reconcileNativeJournal=(fetcher:typeof fetch,poolOrigin:string,wallet?:JournalWallet)=>reconcileJournal(current(),fetcher,poolOrigin,wallet);
+export const forceReleaseNativeJournal=(poolOrigin:string,settled?:(nullifiers:readonly bigint[])=>boolean|undefined)=>current().forceRelease(poolOrigin,settled);
