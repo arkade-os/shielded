@@ -26,6 +26,7 @@ const MAX_SCOPES: usize = 1024;
 const MAX_OPERATIONS: usize = 64;
 const MAX_IDLE_HTTP: usize = 16;
 const HTTP_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const STATUS_ROTATE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_CANCELLED: usize = 4096;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const WARM_PAUSE: Duration = Duration::from_secs(30);
@@ -327,6 +328,7 @@ pub(super) struct Scope {
     binding: Option<String>,
     subscription: Option<String>,
     http: Option<IdleHttp>,
+    rotated: Option<Instant>,
 }
 
 struct IdleHttp {
@@ -744,6 +746,7 @@ impl Inner {
                 binding: None,
                 subscription: None,
                 http: None,
+                rotated: None,
             },
         );
         Ok(NativeHandle { id, generation })
@@ -1245,6 +1248,43 @@ impl Lease {
         Ok(scope.context.tor()?.clone())
     }
 
+    /// A refusal that counts the exit address, not the request, so only a fresh circuit can
+    /// change the answer. Bounded per scope so a host refusing everything cannot rotate in a
+    /// loop, and never shared with another scope or dropped to a direct connection.
+    pub fn retire_circuit(&self) -> Result<(), String> {
+        let inner = self.inner.upgrade().ok_or("private transport closed")?;
+        let mut session = inner.lock()?;
+        session.check(self.generation)?;
+        if self.cancel.is_cancelled() {
+            return Err("private request cancelled".into());
+        }
+        let ConnectionContext::Tor(ours) = &self.context else {
+            return Ok(());
+        };
+        let scope = session
+            .scopes
+            .get_mut(&self.scope)
+            .ok_or("private scope closed")?;
+        if scope
+            .rotated
+            .is_some_and(|at| at.elapsed() < STATUS_ROTATE_INTERVAL)
+        {
+            return Ok(());
+        }
+        if !scope
+            .context
+            .tor()
+            .is_ok_and(|current| Arc::ptr_eq(current, ours))
+        {
+            return Ok(());
+        }
+        let fresh = scope.context.tor()?.isolated_client();
+        scope.http.take();
+        scope.context = ConnectionContext::Tor(fresh);
+        scope.rotated = Some(Instant::now());
+        Ok(())
+    }
+
     pub async fn emit_data(
         &self,
         channel: &Channel<NativeStreamEvent>,
@@ -1273,7 +1313,15 @@ impl Lease {
             state.pending = Some((sequence, permit));
             sequence
         };
-        self.emit_event(channel, "data", Some(data), None, None, Some(sequence))
+        self.emit_event(
+            channel,
+            "data",
+            Some(data),
+            None,
+            None,
+            None,
+            Some(sequence),
+        )
     }
     pub fn check(&self) -> Result<(), String> {
         let inner = self.inner.upgrade().ok_or("private transport closed")?;
@@ -1293,7 +1341,18 @@ impl Lease {
         error: Option<String>,
         status: Option<u16>,
     ) -> Result<(), String> {
-        self.emit_event(channel, kind, data, error, status, None)
+        self.emit_event(channel, kind, data, error, status, None, None)
+    }
+
+    /// The open of a stream the host refused: its status is what tells the view to back the
+    /// whole origin off, so it is carried instead of collapsed into an error string.
+    pub fn emit_refused(
+        &self,
+        channel: &Channel<NativeStreamEvent>,
+        status: u16,
+        retry_after: Option<String>,
+    ) -> Result<(), String> {
+        self.emit_event(channel, "open", None, None, Some(status), retry_after, None)
     }
 
     fn emit_event(
@@ -1303,6 +1362,7 @@ impl Lease {
         data: Option<String>,
         error: Option<String>,
         status: Option<u16>,
+        retry_after: Option<String>,
         sequence: Option<u64>,
     ) -> Result<(), String> {
         let inner = self.inner.upgrade().ok_or("private transport closed")?;
@@ -1319,6 +1379,7 @@ impl Lease {
                 data,
                 error,
                 status,
+                retry_after,
                 sequence,
             })
             .map_err(|_| "private channel closed".into())
@@ -1406,6 +1467,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_stream_open_reports_its_status_and_leaves_a_fresh_circuit() {
+        for (status, reason, rotates) in [
+            (429u16, "Too Many Requests", true),
+            (403u16, "Forbidden", true),
+            (404u16, "Not Found", false),
+        ] {
+            let inner = ready();
+            let handle = inner.scope(1, "indexer").unwrap();
+            let lease = register(&inner, &request(1, handle.id.clone(), "stream-refused")).unwrap();
+            let original = inner.lock().unwrap().scopes[&handle.id].context.clone();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let seen = events.clone();
+            let channel = Channel::new(move |body| {
+                if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                    seen.lock().unwrap().push(json);
+                }
+                Ok(())
+            });
+            let (client, server) = tokio::io::duplex(4096);
+            let peer = tokio::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                let mut peer = BufReader::new(server);
+                let mut head = Vec::new();
+                while peer.read_until(b'\n', &mut head).await.unwrap() != 0
+                    && !head.ends_with(b"\r\n\r\n")
+                {}
+                peer.get_mut()
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} {reason}\r\nRetry-After: 42\r\nContent-Length: 0\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let error = super::super::wire::stream_with(&lease, &channel, || async {
+                let request = hyper::Request::builder()
+                    .uri("/v1/indexer/vtxos?scripts=aa")
+                    .header("host", "mutinynet.arkade.sh")
+                    .body(http_body_util::Full::new(bytes::Bytes::new()))
+                    .unwrap();
+                super::super::wire::send_http(lease.test_stream(client), request).await
+            })
+            .await
+            .err()
+            .unwrap();
+            assert!(error.contains("HTTP status rejected"), "{error}");
+            let emitted = events.lock().unwrap().join("|");
+            assert!(
+                emitted.contains(&format!("\"status\":{status}")),
+                "{emitted}"
+            );
+            assert!(emitted.contains("\"retryAfter\":\"42\""), "{emitted}");
+            let after = inner.lock().unwrap().scopes[&handle.id].context.clone();
+            assert_eq!(!after.matches(&original), rotates, "status {status}");
+            peer.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn http_cache_checkout_is_exclusive_and_separates_scopes_and_hosts() {
         let inner = ready();
         let first = inner.scope(1, "indexer").unwrap();
@@ -1471,6 +1593,84 @@ mod tests {
         closed(old_peer).await;
         inner.close_scope(1, &handle.id).unwrap();
         closed(peer).await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_status_retires_the_scope_circuit_once_per_interval() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "refused")).unwrap();
+        let (connection, peer) = http_connection(&lease).await;
+        lease
+            .return_http("mutinynet.arkade.sh".into(), connection)
+            .unwrap();
+        let original = inner.lock().unwrap().scopes[&handle.id].context.clone();
+        lease.retire_circuit().unwrap();
+        let rotated = inner.lock().unwrap().scopes[&handle.id].context.clone();
+        assert!(!rotated.matches(&original));
+        assert!(inner.lock().unwrap().scopes[&handle.id].http.is_none());
+        closed(peer).await;
+        let again = register(&inner, &request(1, handle.id.clone(), "refused-again")).unwrap();
+        again.retire_circuit().unwrap();
+        assert!(
+            inner.lock().unwrap().scopes[&handle.id]
+                .context
+                .matches(&rotated)
+        );
+        inner
+            .lock()
+            .unwrap()
+            .scopes
+            .get_mut(&handle.id)
+            .unwrap()
+            .rotated = Some(Instant::now() - STATUS_ROTATE_INTERVAL);
+        again.retire_circuit().unwrap();
+        assert!(
+            !inner.lock().unwrap().scopes[&handle.id]
+                .context
+                .matches(&rotated)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_status_retires_nothing_a_retired_lease_no_longer_owns() {
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "stale")).unwrap();
+        let original = inner.lock().unwrap().scopes[&handle.id].context.clone();
+        let current = register(&inner, &request(1, handle.id.clone(), "current")).unwrap();
+        current.reconnect_client().unwrap();
+        let replacement = inner.lock().unwrap().scopes[&handle.id].context.clone();
+        assert!(!replacement.matches(&original));
+        lease.retire_circuit().unwrap();
+        assert!(
+            inner.lock().unwrap().scopes[&handle.id]
+                .context
+                .matches(&replacement)
+        );
+        inner.cancel(1, "current").unwrap();
+        assert!(current.retire_circuit().is_err());
+    }
+
+    #[tokio::test]
+    async fn direct_mode_has_no_circuit_to_retire() {
+        let inner = Arc::new(Inner::new(
+            std::env::temp_dir().join(format!("shielded-native-test-{}", uuid::Uuid::new_v4())),
+        ));
+        assert_eq!(
+            inner.start(NativeMode::Direct).await.unwrap().phase,
+            "ready"
+        );
+        let handle = inner.scope(1, "indexer").unwrap();
+        let lease = register(&inner, &request(1, handle.id.clone(), "direct-refused")).unwrap();
+        lease.retire_circuit().unwrap();
+        let session = inner.lock().unwrap();
+        assert!(
+            session.scopes[&handle.id]
+                .context
+                .matches(&ConnectionContext::Direct)
+        );
+        assert!(session.scopes[&handle.id].rotated.is_none());
     }
 
     #[tokio::test]
@@ -2309,6 +2509,7 @@ mod tests {
         let response = NativeResponse {
             generation: 1,
             status: 200,
+            status_text: "OK".into(),
             headers: vec![],
             body_base64: String::new(),
         };
@@ -2402,6 +2603,7 @@ mod tests {
         let response = NativeResponse {
             generation: 1,
             status: 200,
+            status_text: "OK".into(),
             headers: vec![],
             body_base64: STANDARD.encode(r#"{"subscriptionId":"same-server-id"}"#),
         };

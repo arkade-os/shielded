@@ -4,6 +4,7 @@ import {ActivityRegistry,FetchError,makeHandle,ProviderUnavailableError,TxType,W
 import type {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedSnapshot} from '../src/shielded/repository.ts';
 import {epochCatchUp,epochIdle} from '../src/shielded/epoch-sync.ts';
+import {reportRateLimit} from '../src/shielded/network-privacy.ts';
 import {BORN,CREATED,SENT,SECRET,activityReceived,createPageWallet,importLegacySent,openPageWallet,pageCache,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,startPageLightning} from '../app/src/shielded-page.ts';
 import * as page from '../app/src/shielded-page.ts';
 import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
@@ -108,6 +109,20 @@ test('retiring a page inside retry callbacks cannot report a terminal startup fa
   const result=await page.retryPageRead(async()=>{reads++;throw Object.assign(new Error('unavailable'),{status:503});},controller.signal,{onError:()=>{if(retiring==='notice')controller.abort();},shouldRetry:()=>{if(retiring==='policy')controller.abort();return false;},onTerminal:error=>terminal.push(error)});
   assert.equal(result,undefined);assert.equal(reads,1);assert.deepEqual(terminal,[]);
  }
+});
+
+test('a rate-limited origin keeps an explorer read retrying instead of failing the page',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+ const refusal=new Error('Failed to fetch UTXOs: Too Many Requests');
+ const terminal=new AbortController(),seen:unknown[]=[];let reads=0;
+ await assert.rejects(page.retryPageRead(async()=>{reads++;throw refusal;},terminal.signal,{delayMs:1,onTerminal:error=>seen.push(error)}),error=>error===refusal);
+ assert.equal(reads,1);assert.deepEqual(seen,[refusal]);
+ reportRateLimit('https://mempool.retry.example/api/address/a/utxo','2');
+ const open=new AbortController();reads=0;
+ const read=page.retryPageRead(async()=>{if(++reads===1)throw refusal;return 'caught up';},open.signal,{delayMs:1});
+ for(let i=0;i<4;i++)await flush();
+ t.mock.timers.tick(5_000);
+ assert.equal(await read,'caught up');assert.equal(reads,2);
 });
 
 test('pool startup retries an outage and does not publish a read completed after cancellation',async()=>{

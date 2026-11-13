@@ -65,6 +65,7 @@ pub struct NativeHandle {
 pub struct NativeResponse {
     pub generation: u64,
     pub status: u16,
+    pub status_text: String,
     pub headers: Vec<(String, String)>,
     pub body_base64: String,
 }
@@ -82,6 +83,8 @@ pub struct NativeStreamEvent {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sequence: Option<u64>,
 }

@@ -3,6 +3,7 @@ import {bytesToHex} from '@noble/hashes/utils.js';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
+import {rateLimitHolding} from '../../src/shielded/network-privacy.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
@@ -76,7 +77,7 @@ function retryablePageError(error:unknown){
  if(!(error instanceof Error))return false;
  const status=(error as Error&{status?:number}).status;
  if(status!==undefined)return status===408||status===429||status>=500;
- return isRetryableProviderError(error)||/^The pool did not answer \((?:5\d\d|network error)\)\.$/.test(error.message);
+ return isRetryableProviderError(error)||rateLimitHolding()||/^The pool did not answer \((?:5\d\d|network error)\)\.$/.test(error.message);
 }
 export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,options:PageRetry={}):Promise<T|undefined>{
  for(let attempt=0;!signal.aborted;attempt++){

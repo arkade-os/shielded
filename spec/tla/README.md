@@ -206,6 +206,39 @@ Both deliberately weakened configurations exit 12 with their named invariant. Si
 
 This is a bounded authorization and ordering model, not an implementation proof. It abstracts connection failures and timeouts as outcomes, actual Tor circuits and exit selection, DNS, concurrent HTTP operations, storage, TLS correctness and liveness. Context `0` denotes the lease's original client and `1` a replacement, without asserting a different exit address. A retirement blocks a later logical retry dispatch; the model does not claim that previously authorized network work emits no bytes after pause.
 
+## Tor circuit retirement on refusal
+
+`TorRefusal.tla` models one scope answering repeated refusals. A rate limit or block counts the exit address rather than the request, so the scope's isolation context is replaced before the next attempt. Retirement is bounded to once per cooling interval, declines on a retired lease, and does not exist in direct mode. Reading the refusal and acting on it are separate steps, so pause, cancellation or scope closure can intervene between them. `Decline` is the same refusal with the guard refusing to rotate.
+
+| Model action | Owning file and symbol |
+| --- | --- |
+| `Send`, `Refused`, `Accepted` | `src-tauri/src/transport/wire.rs`: `http_with`, `stream_with` status branches |
+| `Retire`, `Decline` | `src-tauri/src/transport/session.rs`: `Lease::retire_circuit` |
+| `IntervalElapses` | `src-tauri/src/transport/session.rs`: `STATUS_ROTATE_INTERVAL` against `Scope::rotated` |
+| `Pause`, `Cancel`, `CloseScope` | `src-tauri/src/transport/session.rs`: `Inner::{pause,cancel,close_scope}` |
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> sent: current lease / one request
+    sent --> done: response accepted
+    sent --> refused: 403 or 429
+    refused --> idle: current lease, interval elapsed, Tor / fresh context
+    refused --> idle: bound held, retired lease or direct mode / unchanged
+```
+
+Pinned TLC v1.7.4 checked the base on November 13, 2026: 1,212 generated states, 344 distinct states, depth 16 and an empty queue. Every semantic action fired, including `Retire` (4 new states, 6 firings) and `IntervalElapses` (8 new, 120 firings). `Terminal` is an artificial stuttering action. The base preserves `RotationsBoundedByInterval`, `NoRetiredRotation`, `NoDirectRotation` and `FreshContextPerRotation`.
+
+| Mutation | Short counterexample |
+| --- | --- |
+| `TorRefusal_NoRotateBound.cfg` | Refusal → retire → refusal → retire inside one interval; `RotationsBoundedByInterval` fails |
+| `TorRefusal_NoRotateFence.cfg` | Refusal → pause → retire with a retired lease; `NoRetiredRotation` fails |
+| `TorRefusal_NoDirectGuard.cfg` | Direct mode, refusal → retire; `NoDirectRotation` fails |
+
+`TorRefusal_Direct.cfg` runs the unweakened guards in direct mode and stays green with no rotation. The three weakened configurations exit 12 with their named invariant. These five bring `node tools/check-native-model.mjs` to 109 configurations. `src-tauri/src/transport/session.rs` carries the matching implementation tests: `a_refused_status_retires_the_scope_circuit_once_per_interval` for the bound, `a_refused_status_retires_nothing_a_retired_lease_no_longer_owns` for the fence and `direct_mode_has_no_circuit_to_retire` for the mode.
+
+This is a bounded authorization and bounding model, not an implementation proof. It abstracts the real clock as a cooling flag plus an interval counter, and `scopeContext` counts replacements without asserting that a new isolation token yields a different exit address. It says nothing about whether a fresh circuit is admitted, and it does not model another scope: retirement never reads or writes another scope's context in the implementation.
+
 ## Wallet status heartbeat
 
 `WalletStatus.tla` separates one maintenance tick from a recurring public-status heartbeat. Both callers share a pending read. Private catch-up may remain blocked indefinitely while status responses continue; disposal can intervene before a response or timer rearm.

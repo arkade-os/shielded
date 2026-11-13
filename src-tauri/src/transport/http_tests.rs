@@ -395,6 +395,69 @@ async fn an_unsupported_encoding_is_rejected_without_caching() {
 }
 
 #[tokio::test]
+async fn a_refusal_carries_its_reason_phrase() {
+    let inner = ready().await;
+    let scope = inner.scope(1, "lnurl").unwrap();
+    let connects = AtomicUsize::new(0);
+    let (client, peer) = serve(vec![
+        b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    ]);
+    let response = perform(
+        &inner,
+        &scope.id,
+        "limited",
+        "GET",
+        &[],
+        Some(client),
+        &connects,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status, 429);
+    assert_eq!(response.status_text, "Too Many Requests");
+    inner.close_scope(1, &scope.id).unwrap();
+    assert_eq!(bounded(peer).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_encoded_refusal_surfaces_its_status_without_its_body() {
+    let inner = ready().await;
+    let scope = inner.scope(1, "lnurl").unwrap();
+    let connects = AtomicUsize::new(0);
+    let (client, peer) = serve(vec![
+        b"HTTP/1.1 429 Too Many Requests\r\nContent-Encoding: gzip\r\nRetry-After: 20\r\nContent-Length: 2\r\n\r\nxz".to_vec(),
+    ]);
+    let response = perform(
+        &inner,
+        &scope.id,
+        "encoded-refusal",
+        "GET",
+        &[],
+        Some(client),
+        &connects,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status, 429);
+    assert_eq!(response.status_text, "Too Many Requests");
+    assert!(response.body_base64.is_empty());
+    assert!(
+        response
+            .headers
+            .iter()
+            .any(|(name, value)| name == "retry-after" && value == "20")
+    );
+    assert!(
+        !response
+            .headers
+            .iter()
+            .any(|(name, _)| name == "content-encoding" || name == "content-length")
+    );
+    no_cached(&inner, &scope.id, "inspect");
+    assert_eq!(bounded(peer).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn an_oversized_body_is_rejected_without_caching() {
     let inner = ready().await;
     let scope = inner.scope(1, "lnurl").unwrap();

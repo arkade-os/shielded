@@ -15,6 +15,9 @@ export const retryAfterMs=(header:string|null|undefined):number|undefined=>{
 };
 const limitedUntil=new Map<string,number>();
 export const rateLimitRemainingMs=(url:string):number=>Math.max(0,(limitedUntil.get(new URL(url).origin)??0)-Date.now());
+// One CDN counts the exit address across every host behind it, so a refusal anywhere means any
+// read that failed meanwhile is worth retrying rather than reporting as a settled failure.
+export const rateLimitHolding=():boolean=>[...limitedUntil.values()].some(until=>until>Date.now());
 // Every host is fronted by one CDN whose limit counts the exit address, so a refusal on any path to it holds back the rest; a capped cooldown re-reads instead of stalling behind an hour-long Retry-After.
 export const reportRateLimit=(url:string,retryAfter:string|null|undefined):void=>{
  const parsed=retryAfterMs(retryAfter),origin=new URL(url).origin;

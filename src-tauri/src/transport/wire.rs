@@ -102,13 +102,26 @@ async fn connect_http(
     HttpConnection::new(stream).await
 }
 
+fn encoded(response: &Response<Incoming>) -> bool {
+    response
+        .headers()
+        .get(hyper::header::CONTENT_ENCODING)
+        .is_some_and(|encoding| encoding.as_bytes() != b"identity")
+}
+
 fn check_encoding(response: &Response<Incoming>) -> Result<(), String> {
-    if let Some(encoding) = response.headers().get(hyper::header::CONTENT_ENCODING) {
-        if encoding.as_bytes() != b"identity" {
-            return Err("upstream ignored private identity encoding".into());
-        }
+    if encoded(response) {
+        return Err("upstream ignored private identity encoding".into());
     }
     Ok(())
+}
+
+fn retry_after(response: &Response<Incoming>) -> Option<String> {
+    response
+        .headers()
+        .get(hyper::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 async fn exchange(
@@ -127,7 +140,6 @@ async fn exchange(
     let request = http_request(checked)?;
     lease.check()?;
     let response = connection.send(request).await?;
-    check_encoding(&response)?;
     Ok((response, connection.driver))
 }
 
@@ -190,22 +202,33 @@ where
             let request = http_request(checked)?;
             lease.check()?;
             let response = connection.send(request).await?;
-            check_encoding(&response)?;
-            let reusable = response.version() == hyper::Version::HTTP_11
+            // A refusal is often a CDN error page the host compressed anyway; its status is the
+            // part the caller needs, so keep it rather than failing on a body nobody reads.
+            let undecodable = encoded(&response);
+            if undecodable && response.status().is_success() { return Err("upstream ignored private identity encoding".into()); }
+            let reusable = !undecodable
+                && response.version() == hyper::Version::HTTP_11
                 && !response.headers().get_all(hyper::header::CONNECTION).iter().any(|value| value.as_bytes().split(|byte| *byte == b',').any(|token| token.trim_ascii().eq_ignore_ascii_case(b"close")));
             let status = response.status().as_u16();
+            let status_text = response.status().canonical_reason().unwrap_or_default().to_owned();
             let mut headers = Vec::new();
             for (name, value) in response.headers() {
                 if name == hyper::header::SET_COOKIE { continue; }
+                if undecodable && (name == hyper::header::CONTENT_ENCODING || name == hyper::header::CONTENT_LENGTH) { continue; }
                 headers.push((name.to_string(), value.to_str().map_err(|_| "invalid private response header")?.to_owned()));
             }
-            let body = Limited::new(response.into_body(), MAX_RESPONSE).collect().await.map_err(|_| "private response failed or exceeded size limit; outcome may be unknown")?.to_bytes();
+            let body = if undecodable { Bytes::new() } else {
+                Limited::new(response.into_body(), MAX_RESPONSE).collect().await.map_err(|_| "private response failed or exceeded size limit; outcome may be unknown")?.to_bytes()
+            };
             lease.check()?;
             if reusable { lease.return_http(host, connection)?; }
-            Ok::<_, String>(NativeResponse { generation: lease.generation, status, headers, body_base64: STANDARD.encode(body) })
+            Ok::<_, String>(NativeResponse { generation: lease.generation, status, status_text, headers, body_base64: STANDARD.encode(body) })
         }) => result.map_err(|_| "private request timed out; outcome may be unknown")??,
     };
     lease.check()?;
+    if matches!(response.status, 403 | 429) {
+        let _ = lease.retire_circuit();
+    }
     Ok(response)
 }
 
@@ -410,7 +433,7 @@ pub(super) async fn stream(
     let result = tokio::select! {
         biased;
         _ = lease.cancel.cancelled() => return,
-        result = stream_inner(&lease, checked, tls, &channel) => result,
+        result = stream_with(&lease, &channel, || exchange(&lease, checked, tls)) => result,
     };
     if let Err(error) = result {
         let _ = lease.emit(&channel, "error", None, Some(error), None);
@@ -418,18 +441,27 @@ pub(super) async fn stream(
     let _ = lease.emit(&channel, "close", None, None, None);
 }
 
-async fn stream_inner(
+pub(super) async fn stream_with<F, Fut>(
     lease: &Lease,
-    checked: CheckedRequest,
-    tls: Arc<rustls::ClientConfig>,
     channel: &Channel<NativeStreamEvent>,
-) -> Result<(), String> {
-    let (response, _driver) = tokio::time::timeout(CONNECT_TIMEOUT, exchange(lease, checked, tls))
+    exchange: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(Response<Incoming>, ConnectionTask), String>>,
+{
+    let (response, _driver) = tokio::time::timeout(CONNECT_TIMEOUT, exchange())
         .await
         .map_err(|_| "private stream connection timed out")??;
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
+        if matches!(status.as_u16(), 403 | 429) {
+            let _ = lease.retire_circuit();
+        }
+        lease.emit_refused(channel, status.as_u16(), retry_after(&response))?;
         return Err("private stream HTTP status rejected".into());
     }
+    check_encoding(&response)?;
     let content_type = response
         .headers()
         .get(hyper::header::CONTENT_TYPE)
