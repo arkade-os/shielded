@@ -769,3 +769,42 @@ Pinned TLC v1.7.4 on November 13, 2026: the base generated 10,158 states (2,516 
 The model assumes a recognised edge-limit 429 (Cloudflare's `error code: 1015`) was written before the request was forwarded, which is what makes `ObserveEdgeRefusal` safe; any other 429 is modelled as possibly forwarded and left to the 404 window or the coin. It assumes the Ark indexer's answer for a deposit coin is not stale by anything near the tracking hour, and that the operator a wallet reads is the one that batches: the account's view is a prefix of the truth, and a wallet behind the count it reads gives no verdict at all.
 
 With that last assumption dropped — a frozen replica serving a count the wallet has fully synced while another operator keeps batching — the model finds a `NoDoublePayment` trace against the existing count rule: the wallet advances 0 → 1, the spend lands in batch 2 that the replica never serves, and `count # batchAt` then reads as proof the view is current. That rule is unchanged here and the hazard is the one its comment already names; the deposit path does not rely on it, because a coin read answers past any operator. Amounts, group members, several concurrent spends per origin, storage durability and the Ark layer's own refusal to spend a coin twice are outside this model.
+
+## Isolated indexer streams
+
+`IndexerStreams.tla` covers one logical script subscription whose scripts stream or poll separately, when one script's transport fails: two scripts, one failing, and an indexer change landing in the gap.
+
+| Model action | Owning file and symbol |
+| --- | --- |
+| `Fail` | `src/native/providers.ts`: the per-script loop in `IsolatedIndexerProvider::getSubscription` (`stream.attach`) |
+| `Backoff` | `src/native/providers.ts`: `isolatedBackoff`, `pollDelay` |
+| `CatchUp`, `CatchUpFails` | `src/native/providers.ts`: `IsolatedIndexerProvider::readScript` against the per-stream snapshots |
+| `Escalate` | `src/native/providers.ts`: `queue.fail` after `ISOLATED_RETRIES`, or on `MissedScriptEvent` |
+| `SdkReset` | SDK `ContractWatcher.listenLoop` to `emitConnectionReset` to `ContractManager.reconcileWatched` |
+| `Event` | An arkd indexer change for one script; off-stream it is lost at the server until a read recovers it |
+| `Terminal` | Artificial bound termination; no implementation counterpart |
+
+```mermaid
+stateDiagram-v2
+    [*] --> live
+    live --> broken: Fail [this script alone]
+    broken --> backoff: Backoff [attempts < bound] / jittered, growing
+    broken --> handed: Escalate [attempts >= bound] / fail the logical stream
+    backoff --> live: CatchUp [no lost coin] / re-read own state, report the gap
+    backoff --> handed: CatchUp [lost coin] / only the SDK reset reaches back
+    backoff --> broken: CatchUpFails
+    handed --> live: SdkReset / clear watermarks, re-read every script
+```
+
+`NoMissedEvent` is the promise: a script back on its stream owes nothing from the gap it was away for. `BoundedIsolatedRetry` says a script that cannot resume is handed to the SDK rather than retried in silence. `NoCollateralTeardown` is a cost promise, not a safety one: tearing every sibling down, the behavior before this change, still reaches the SDK reset and so keeps `NoMissedEvent`. Its own invariant is what makes `BreakIsolation` a live guard instead of a dead one.
+
+| Configuration | Counterexample / expected invariant |
+| --- | --- |
+| `IndexerStreams_NoCatchUp.cfg` | Fail, Backoff, Event, then CatchUp resumes owing the event; `NoMissedEvent` |
+| `IndexerStreams_NoLostEscalation.cfg` | a coin that vanished during the gap resumes undescribed; `NoMissedEvent` |
+| `IndexerStreams_NoRetryBound.cfg` | a dead script is retried past the budget with nothing handed over; `BoundedIsolatedRetry` |
+| `IndexerStreams_NoIsolation.cfg` | one script's failure detaches its sibling; `NoCollateralTeardown` |
+
+Pinned TLC v1.7.4 and Java 25 on November 13, 2026: the base generated 2,571 states (562 distinct, depth 13) and every action fired (`Escalate` 14 firings, `SdkReset` 98, `Fail` 166); each mutation violated its named invariant; `node tools/check-native-model.mjs` matched all 109 configurations. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget (2,000,001 states). `trace-NoCatchUp.md`, `trace-NoLostEscalation.md`, `trace-NoRetryBound.md` and `trace-NoIsolation.md` hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
+
+The catch-up read is modeled as atomic with the resume. The implementation awaits it before re-attaching, so an event landing between its response and the stream re-opening relies on arkd holding events for a still-registered subscription id, which is the same assumption the SDK's own reconnect makes, now for one script instead of all of them. Per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.

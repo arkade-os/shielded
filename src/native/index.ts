@@ -5,7 +5,7 @@ import type {SwapClientConfig} from '@arkade-os/swap';
 import {attesting} from '@arkade-os/swap/advanced';
 import {nostrCardFetcher,nostrRfqTransport} from '@arkade-os/swap/nostr';
 import {SimplePool} from 'nostr-tools';
-import {markPrivateFetch} from '../shielded/network-privacy.ts';
+import {PRIVATE_ONCHAIN_POLL_MS,markPrivateFetch} from '../shielded/network-privacy.ts';
 import {beforeNativeMutation,observeNativeResponse} from './mutations.ts';
 import {createNativeOperationScope,NativePolicy,nativeUrl,type NativePurpose,type NativeRoute} from './policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from './providers.ts';
@@ -72,7 +72,7 @@ export function nativeWalletProviders(arkUrl:string,indexerUrl:string){
  const eventSource:EventSourceFactory=url=>{check();return new NativeEventSource(url,b);};
  const indexerSessionUrl=b.sessionUrl(indexerUrl),base=bindNativeProvider(new RestIndexerProvider(indexerSessionUrl,{eventSource}),check),indexerProvider=new IsolatedIndexerProvider(indexerSessionUrl,eventSource,base);indexers.add(indexerProvider);
  return {arkProvider:bindNativeProvider(new RestArkProvider(b.sessionUrl(arkUrl),{eventSource}),check),indexerProvider:bindNativeProvider(indexerProvider,check),onchainProvider:(network:NetworkName):OnchainProvider=>{
-  check();const url=ESPLORA_URL[network];b.policy.registerEsplora(url);return bindNativeProvider(new IsolatedOnchainProvider(b.sessionUrl(url)),check);
+  check();const url=ESPLORA_URL[network];b.policy.registerEsplora(url);return bindNativeProvider(new IsolatedOnchainProvider(b.sessionUrl(url),PRIVATE_ONCHAIN_POLL_MS),check);
  }};
 }
 function poolFor(purpose:'swap'|'discovery',check:()=>void){

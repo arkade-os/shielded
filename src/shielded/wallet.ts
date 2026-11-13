@@ -28,7 +28,7 @@ import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shie
 import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
-import {PRIVATE_SUBMIT_JITTER_MS,isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
+import {PRIVATE_SUBMIT_JITTER_MS,cacheVtxoSync,isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
 import type {SyncProgressObserver} from './sync-progress.ts';
 export type {ShieldedSyncProgress,SyncProgressObserver} from './sync-progress.ts';
 
@@ -726,7 +726,7 @@ export class ShieldedWallet extends Wallet {
  override async sendSelectedVtxosToSelf(...args:Parameters<Wallet['sendSelectedVtxosToSelf']>){return this.nativeSpend(args[0],()=>super.sendSelectedVtxosToSelf(...args));}
  override async getContractManager(){
   this.assertOpen();
-  const manager=await super.getContractManager();
+  const manager=cacheVtxoSync(await super.getContractManager());
   // Full Wallet disposal can await restore work that is itself waiting for this manager.
   if(this.stopped){manager.dispose();await ReadonlyWallet.prototype.dispose.call(this);this.assertOpen();}
   return manager;

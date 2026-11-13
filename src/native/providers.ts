@@ -1,6 +1,10 @@
 import {EsploraProvider,RestIndexerProvider,isVtxoSpent,type EventSourceFactory,type ExplorerTransaction,type GetVtxosOptions,type IndexerProvider,type PaginationOptions,type SubscriptionResponse,type SubscriptionFilter,type SubscriptionEvent,type SubscriptionHeartbeat,type VirtualCoin} from '@arkade-os/sdk';
 import {privateInterval} from '../shielded/network-privacy.ts';
 
+export const ISOLATED_RETRY_MS=2_000,ISOLATED_RETRY_CAP_MS=60_000,ISOLATED_RETRIES=6;
+/** A gap this snapshot cannot describe: only the SDK's own reset re-reads far enough back to close it. */
+export class MissedScriptEvent extends Error {}
+
 export class AsyncQueue<T> implements AsyncIterableIterator<T> {
  private values:T[]=[];private waiters:{resolve:(value:IteratorResult<T>)=>void;reject:(error:unknown)=>void}[]=[];private done=false;private error:unknown;
  constructor(private onClose:()=>void=()=>{}){}
@@ -21,6 +25,9 @@ const mapItems=async<T,R>(items:T[],read:(item:T)=>Promise<R>)=>{const results:R
 let streamReservations=0,polling=0;const pollWaiters:(()=>void)[]=[];
 const pollRead=async<T>(signal:AbortSignal,read:()=>Promise<T>):Promise<T|undefined>=>{if(polling>=4)await new Promise<void>(resolve=>pollWaiters.push(resolve));else polling++;try{return signal.aborted?undefined:await read();}finally{const next=pollWaiters.shift();if(next)next();else polling--;}};
 const pollDelay=(signal:AbortSignal,ms:number)=>new Promise<void>(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();},timer=setTimeout(done,ms);if(signal.aborted)done();else signal.addEventListener('abort',done,{once:true});});
+const outpointOf=(coin:{txid:string;vout:number})=>coin.txid+':'+coin.vout;
+const fingerprint=(coin:VirtualCoin)=>JSON.stringify(coin,(_key,value)=>typeof value==='bigint'?String(value):value);
+export const isolatedBackoff=(attempt:number)=>privateInterval(Math.min(ISOLATED_RETRY_MS*2**attempt,ISOLATED_RETRY_CAP_MS));
 interface LogicalStream {queue:AsyncQueue<SubscriptionResponse>;attach:(script:string,id:string|null)=>void;detach:(script:string)=>void}
 interface LogicalSubscription {entries:Map<string,string|null>;streams:Set<LogicalStream>;tail:Promise<unknown>;closed:boolean}
 export class IsolatedIndexerProvider extends RestIndexerProvider {
@@ -76,18 +83,30 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
  override getSubscription(id:string,signal:AbortSignal):AsyncIterableIterator<SubscriptionResponse>{
   const record=this.subscriptions.get(id);if(!record||record.closed)throw new Error('Native subscription not found');
   for(const previous of [...record.streams])previous.queue.end();
-  const controllers=new Map<string,AbortController>(),iterators=new Map<string,AsyncIterableIterator<SubscriptionResponse>>();
+  const controllers=new Map<string,AbortController>(),iterators=new Map<string,AsyncIterableIterator<SubscriptionResponse>>(),snapshots=new Map<string,Map<string,VirtualCoin>>();
   const stop=()=>{signal.removeEventListener('abort',stop);for(const script of [...controllers.keys()])stream.detach(script);record.streams.delete(stream);queue.end();};
   const queue=new AsyncQueue<SubscriptionResponse>(stop);
-  const stream:LogicalStream={queue,detach:script=>{controllers.get(script)?.abort();controllers.delete(script);const iterator=iterators.get(script);iterators.delete(script);void iterator?.return?.().catch(()=>{});},attach:(script,remote)=>{
+  const stream:LogicalStream={queue,detach:script=>{controllers.get(script)?.abort();controllers.delete(script);snapshots.delete(script);const iterator=iterators.get(script);iterators.delete(script);void iterator?.return?.().catch(()=>{});},attach:(script,remote)=>{
    if(signal.aborted||controllers.has(script))return;
    const controller=new AbortController();controllers.set(script,controller);
+   const live=()=>!controller.signal.aborted&&!signal.aborted;
    void (async()=>{
-    try{
-     const iterator=remote===null?this.pollScript(script,controller.signal):this.base.getSubscription(remote,controller.signal);iterators.set(script,iterator);
-     for await(const event of iterator){if(controller.signal.aborted||signal.aborted)break;queue.push(event);}
-     if(!controller.signal.aborted&&!signal.aborted)queue.fail(new Error('An isolated subscription closed; catch up before reconnecting'));
-    }catch(error){if(!controller.signal.aborted&&!signal.aborted)queue.fail(error);}
+    // One script's transport failure backs that script off alone; the siblings keep streaming. Only an undescribable gap or an exhausted budget fails the logical stream, which is what makes the SDK reset and re-read.
+    for(let attempt=0;;attempt++){
+     if(attempt>0){
+      await pollDelay(controller.signal,isolatedBackoff(attempt-1));
+      if(!live())return;
+      try{const caught=await this.readScript(script,controller.signal,snapshots);if(!live())return;if(caught)queue.push(caught);}
+      catch(error){if(error instanceof MissedScriptEvent||attempt>=ISOLATED_RETRIES)return void queue.fail(error);continue;}
+     }
+     let failure:unknown;
+     try{
+      const iterator=remote===null?this.pollScript(script,controller.signal,snapshots):this.base.getSubscription(remote,controller.signal);iterators.set(script,iterator);
+      for await(const event of iterator){if(!live())return;queue.push(event);attempt=0;}
+     }catch(error){failure=error;}
+     if(!live())return;
+     if(failure instanceof MissedScriptEvent||attempt>=ISOLATED_RETRIES)return void queue.fail(failure??new Error('An isolated subscription closed; catch up before reconnecting'));
+    }
    })();
   }};
   record.streams.add(stream);if(signal.aborted)stop();else{signal.addEventListener('abort',stop,{once:true});for(const [script,remote] of record.entries)stream.attach(script,remote);}
@@ -102,17 +121,22 @@ export class IsolatedIndexerProvider extends RestIndexerProvider {
   if(!record.entries.size){record.closed=true;this.subscriptions.delete(id);for(const stream of [...record.streams])stream.queue.end();}
  }
  override getFilteredSubscription(_filter:SubscriptionFilter,_signal:AbortSignal):AsyncIterableIterator<SubscriptionEvent|SubscriptionHeartbeat>{throw new Error('Native privacy uses individual script subscriptions, not global filters');}
- private async* pollScript(script:string,signal:AbortSignal):AsyncIterableIterator<SubscriptionResponse>{
-  let previous=new Map<string,VirtualCoin>();
+ /** One script's own state, as the delta against the last snapshot this stream kept for it. */
+ private async readScript(script:string,signal:AbortSignal,snapshots:Map<string,Map<string,VirtualCoin>>):Promise<SubscriptionResponse|undefined>{
+  const result=await pollRead(signal,()=>this.getVtxos({scripts:[script]}));if(signal.aborted||!result)return undefined;
+  const current=new Map(result.vtxos.map(coin=>[outpointOf(coin),coin])),previous=snapshots.get(script);
+  if(previous&&[...previous.keys()].some(key=>!current.has(key)))throw new MissedScriptEvent('An isolated polling snapshot lost a coin; catch up before reconnecting');
+  const changed=result.vtxos.filter(coin=>{const before=previous?.get(outpointOf(coin));return !before||fingerprint(before)!==fingerprint(coin);});
+  snapshots.set(script,current);
+  // SDK watchers consume removals from spentVtxos; keep the actual swept/unrolled flags.
+  return changed.length?{scripts:[script],newVtxos:changed.filter(coin=>!isVtxoSpent(coin)&&!coin.isSwept&&!coin.isUnrolled),spentVtxos:changed.filter(coin=>isVtxoSpent(coin)||coin.isUnrolled||coin.isSwept),sweptVtxos:changed.filter(coin=>coin.isSwept)}:undefined;
+ }
+ private async* pollScript(script:string,signal:AbortSignal,snapshots:Map<string,Map<string,VirtualCoin>>):AsyncIterableIterator<SubscriptionResponse>{
   while(!signal.aborted){
-   const result=await pollRead(signal,()=>this.getVtxos({scripts:[script]}));if(signal.aborted||!result)return;
-   const current=new Map(result.vtxos.map(coin=>[coin.txid+':'+coin.vout,coin]));
-   if([...previous.keys()].some(key=>!current.has(key)))throw new Error('An isolated polling snapshot lost a coin; catch up before reconnecting');
-   const fingerprint=(coin:VirtualCoin)=>JSON.stringify(coin,(_key,value)=>typeof value==='bigint'?String(value):value);
-   const changed=result.vtxos.filter(coin=>{const before=previous.get(coin.txid+':'+coin.vout);return !before||fingerprint(before)!==fingerprint(coin);});
-   // SDK watchers consume removals from spentVtxos; keep the actual swept/unrolled flags.
-   if(changed.length)yield {scripts:[script],newVtxos:changed.filter(coin=>!isVtxoSpent(coin)&&!coin.isSwept&&!coin.isUnrolled),spentVtxos:changed.filter(coin=>isVtxoSpent(coin)||coin.isUnrolled||coin.isSwept),sweptVtxos:changed.filter(coin=>coin.isSwept)};
-   previous=current;await pollDelay(signal,this.pollMs*(1+Math.random()/4));
+   const event=await this.readScript(script,signal,snapshots);
+   if(signal.aborted)return;
+   if(event)yield event;
+   await pollDelay(signal,this.pollMs*(1+Math.random()/4));
   }
  }
  retire(){for(const record of this.subscriptions.values()){record.closed=true;for(const remote of record.entries.values())if(remote)streamReservations--;record.entries.clear();for(const stream of [...record.streams])stream.queue.fail(new Error('Native network generation retired'));}this.subscriptions.clear();}

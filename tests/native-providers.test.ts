@@ -1,12 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {EsploraProvider,RestIndexerProvider,type SubscriptionResponse,type VirtualCoin} from '@arkade-os/sdk';
-import {AsyncQueue,IsolatedIndexerProvider,IsolatedOnchainProvider} from '../src/native/providers.ts';
+import {AsyncQueue,ISOLATED_RETRIES,ISOLATED_RETRY_CAP_MS,ISOLATED_RETRY_MS,IsolatedIndexerProvider,IsolatedOnchainProvider} from '../src/native/providers.ts';
 import {bindNativeProvider} from '../src/native/transport.ts';
 import {NativeBridge,type NativeBackend} from '../src/native/transport.ts';
 import {NativePolicy} from '../src/native/policy.ts';
 
 const coin=(txid:string,vout=0)=>({txid,vout,script:'script'} as VirtualCoin);
+const on=(script:string,txid:string)=>({...coin(txid),script,isSpent:false,isSwept:false,isUnrolled:false} as VirtualCoin);
+/** Runs every timer at once and keeps the delays, so a backoff schedule is assertable instead of waited out. */
+const instantTimers=(t:{mock:{method:typeof import('node:test').mock.method}})=>{
+ const delays:number[]=[],timer=globalThis.setTimeout;
+ t.mock.method(globalThis,'setTimeout',((run:()=>void,ms:number)=>{delays.push(ms);return timer(run,0);}) as never);
+ return {delays,backoffs:()=>delays.filter(ms=>ms>=ISOLATED_RETRY_MS)};
+};
+const nextFor=async(stream:AsyncIterableIterator<SubscriptionResponse>,script:string,pick:(event:SubscriptionResponse)=>boolean)=>{
+ for(let round=0;round<400;round++){
+  const next=await stream.next();
+  assert.equal(next.done,false,'the logical stream closed instead of isolating one script');
+  if(next.value!.scripts[0]===script&&pick(next.value!))return next.value!;
+ }
+ throw new Error(`no matching ${script} event`);
+};
 test('retired provider rejects later calls and internal continuation before another dispatch',async()=>{
  let generation=1,dispatches=0,release!:()=>void;
  const check=()=>{if(generation!==1)throw new Error('provider generation retired');};
@@ -145,6 +160,69 @@ test('an indexer provider built with no stream reservations polls every script i
  streaming.subscribeForScripts=async scripts=>{subscribed.push(scripts);return 'remote-1';};streaming.unsubscribeForScripts=async()=>{};
  const q=new IsolatedIndexerProvider('https://ark.example',undefined,streaming);await q.unsubscribeForScripts(await q.subscribeForScripts(['a']));
  assert.deepEqual(subscribed,[['a']],'the three-argument default still reserves a stream');
+});
+test('a refused script stream reports the coin that landed while it backed off, and its sibling keeps streaming',async t=>{
+ const timers=instantTimers(t),coins=new Map<string,VirtualCoin[]>([['ark',[]],['other',[on('other','b0')]]]),opened:AsyncQueue<SubscriptionResponse>[]=[];
+ let refusals=0;const base=new RestIndexerProvider('https://ark.example');
+ base.getVtxos=async opts=>({vtxos:coins.get(opts!.scripts![0]!)??[]});
+ base.subscribeForScripts=async scripts=>'remote-'+scripts[0];
+ base.unsubscribeForScripts=async()=>{};
+ base.getSubscription=(id,signal)=>{const queue=new AsyncQueue<SubscriptionResponse>();opened.push(queue);signal.addEventListener('abort',()=>queue.end(),{once:true});if(id==='remote-other')queue.push({scripts:['other'],newVtxos:coins.get('other')!,spentVtxos:[],sweptVtxos:[]});return queue;};
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,base),abort=new AbortController();
+ const stream=p.getSubscription(await p.subscribeForScripts(['ark','other']),abort.signal);
+ try{
+  await nextFor(stream,'other',event=>event.newVtxos.some(c=>c.txid==='b0'));
+  // The exit refuses this one script's stream; the faucet deposit lands while it is down.
+  for(const queue of opened.splice(0))queue.fail(new Error('429 Too Many Requests'));
+  refusals++;coins.set('ark',[on('ark','deposit')]);
+  const caught=await nextFor(stream,'ark',event=>event.newVtxos.some(c=>c.txid==='deposit'));
+  assert.deepEqual(caught.spentVtxos,[]);assert.equal(refusals,1);
+  coins.set('other',[on('other','b0'),on('other','b1')]);
+  for(const queue of opened)if(queue!==undefined)queue.push({scripts:['other'],newVtxos:[on('other','b1')],spentVtxos:[],sweptVtxos:[]});
+  await nextFor(stream,'other',event=>event.newVtxos.some(c=>c.txid==='b1'));
+  assert.ok(timers.backoffs().length>=1,'the refused script backed off before its catch-up read');
+ }finally{abort.abort();p.retire();}
+});
+test('a refused polled script reports the coin from its backoff without disturbing the other poll',async t=>{
+ const timers=instantTimers(t),coins=new Map<string,VirtualCoin[]>([['ark',[]],['other',[on('other','b0')]]]);
+ let refuse=true;const base=new RestIndexerProvider('https://ark.example');
+ base.getVtxos=async opts=>{const script=opts!.scripts![0]!;if(script==='ark'&&refuse)throw new Error('403 through this exit');return {vtxos:coins.get(script)??[]};};
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,base,1,0),abort=new AbortController();
+ const stream=p.getSubscription(await p.subscribeForScripts(['ark','other']),abort.signal);
+ try{
+  await nextFor(stream,'other',event=>event.newVtxos.some(c=>c.txid==='b0'));
+  coins.set('ark',[on('ark','deposit')]);refuse=false;
+  const caught=await nextFor(stream,'ark',event=>event.newVtxos.some(c=>c.txid==='deposit'));
+  assert.deepEqual(caught.sweptVtxos,[]);
+  coins.set('other',[on('other','b0'),on('other','b1')]);
+  await nextFor(stream,'other',event=>event.newVtxos.some(c=>c.txid==='b1'));
+  assert.ok(timers.backoffs().length>=1,'the refused poll backed off instead of failing the logical stream');
+ }finally{abort.abort();p.retire();}
+});
+test('a script that never recovers is handed to the SDK after a bounded, growing, jittered backoff',async t=>{
+ const timers=instantTimers(t),base=new RestIndexerProvider('https://ark.example');
+ let reads=0;base.getVtxos=async()=>{reads++;throw new Error('403 through this exit');};
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,base,1,0),abort=new AbortController();
+ const stream=p.getSubscription(await p.subscribeForScripts(['ark']),abort.signal);
+ try{
+  await assert.rejects(stream.next(),/403 through this exit/);
+  const backoffs=timers.backoffs();
+  assert.equal(backoffs.length,ISOLATED_RETRIES,'the budget is bounded');
+  assert.equal(reads,ISOLATED_RETRIES+1);
+  assert.ok(backoffs.every((ms,index)=>ms<=ISOLATED_RETRY_CAP_MS*1.25&&ms>=Math.min(ISOLATED_RETRY_MS*2**index,ISOLATED_RETRY_CAP_MS)),backoffs.join());
+  assert.ok(backoffs[1]!>backoffs[0]!&&backoffs.some(ms=>ms%ISOLATED_RETRY_MS!==0),'growing and jittered');
+ }finally{abort.abort();p.retire();}
+});
+test('a snapshot that lost a coin is handed to the SDK rather than retried, since no read can describe the gap',async t=>{
+ const timers=instantTimers(t),base=new RestIndexerProvider('https://ark.example');
+ let reads=0;base.getVtxos=async()=>{reads++;return {vtxos:reads===1?[on('ark','gone')]:[]};};
+ const p=new IsolatedIndexerProvider('https://ark.example',undefined,base,1,0),abort=new AbortController();
+ const stream=p.getSubscription(await p.subscribeForScripts(['ark']),abort.signal);
+ try{
+  assert.deepEqual((await stream.next()).value?.newVtxos.map((c:VirtualCoin)=>c.txid),['gone']);
+  await assert.rejects(stream.next(),/lost a coin/);
+  assert.equal(timers.backoffs().length,0,'an undescribable gap is not retried in isolation');
+ }finally{abort.abort();p.retire();}
 });
 test('an isolated onchain provider without a poll interval keeps the SDK default, and one with it re-randomizes every read',()=>{
  const url='https://chain.example/api',plain=new IsolatedOnchainProvider(url),slow=new IsolatedOnchainProvider(url,60_000),reads=Array.from({length:20},()=>slow.pollingInterval);

@@ -5,6 +5,7 @@ import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {depositFeeOf} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {DUST} from './pool.ts';
+import {cacheVtxoSync} from './network-privacy.ts';
 import type {LightningArtifact,LightningPayout,LightningRepository} from './lightning-repository.ts';
 import {feeRefused} from './lightning-spend.ts';
 import type {ShieldedWallet} from './wallet.ts';
@@ -33,8 +34,11 @@ export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,
 export const lightningOwner=async(wallet:Pick<Wallet,'identity'>)=>hex.encode(await wallet.identity.xOnlyPublicKey());
 export async function createLightningWallet(secret:string,config:Omit<WalletConfig,'identity'|'walletMode'|'settlementConfig'|'storage'>):Promise<Wallet>{
  const identity=MnemonicIdentity.fromMnemonic(recoveryPhraseOf(secret),{isMainnet:false}),name=`shielded-lightning-${await lightningOwner({identity})}`;
- return Wallet.create({...config,identity,walletMode:'hd',settlementConfig:false,
+ const wallet=await Wallet.create({...config,identity,walletMode:'hd',settlementConfig:false,
   storage:{walletRepository:new IndexedDBWalletRepository(`${name}-wallet`),contractRepository:new IndexedDBContractRepository(`${name}-contracts`)}});
+ const manager=wallet.getContractManager.bind(wallet);
+ wallet.getContractManager=async()=>cacheVtxoSync(await manager());
+ return wallet;
 }
 function hdIdentity(wallet:Wallet){
  const identity=wallet.identity as MnemonicIdentity;
