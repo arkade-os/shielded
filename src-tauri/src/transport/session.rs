@@ -1272,6 +1272,8 @@ impl Lease {
         let ConnectionContext::Tor(registered) = &self.context else {
             return Ok(());
         };
+        // Lock order is session then established; `connect_with_recovery` writes `established`
+        // only after `reconnect_client` has released the session lock.
         let recovered = self
             .established
             .lock()
@@ -1708,6 +1710,61 @@ mod tests {
                 .context
                 .matches(&original)
         );
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stalled_refusal_body_still_answers_and_retires_within_its_bound() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let inner = ready();
+        let handle = inner.scope(1, "indexer").unwrap();
+        let asked = request(1, handle.id.clone(), "stalled-refusal");
+        let checked = super::super::policy::check_request(&asked, false).unwrap();
+        let lease = inner.register(&asked, &checked, None).unwrap();
+        let original = inner.lock().unwrap().scopes[&handle.id].context.clone();
+        let (connection, server) = http_connection(&lease).await;
+        let (release, released) = tokio::sync::oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let mut peer = BufReader::new(server);
+            let mut head = Vec::new();
+            while peer.read_until(b'\n', &mut head).await.unwrap() != 0
+                && !head.ends_with(b"\r\n\r\n")
+            {}
+            peer.get_mut()
+                .write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 25\r\nContent-Length: 64\r\n\r\npartial",
+                )
+                .await
+                .unwrap();
+            let _ = released.await;
+        });
+        tokio::time::pause();
+        let response = super::super::wire::http_with(&lease, checked, || async { Ok(connection) })
+            .await
+            .unwrap();
+        tokio::time::resume();
+        assert_eq!(response.status, 429);
+        assert_eq!(response.status_text, "Too Many Requests");
+        assert!(response.body_base64.is_empty());
+        assert!(
+            response
+                .headers
+                .iter()
+                .any(|(name, value)| name == "retry-after" && value == "25")
+        );
+        assert!(
+            !response
+                .headers
+                .iter()
+                .any(|(name, _)| name == "content-length")
+        );
+        {
+            let session = inner.lock().unwrap();
+            assert!(!session.scopes[&handle.id].context.matches(&original));
+            assert!(session.scopes[&handle.id].http.is_none());
+        }
+        let _ = release.send(());
         peer.await.unwrap();
     }
 

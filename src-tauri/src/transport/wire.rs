@@ -35,6 +35,10 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(180);
 const STREAM_IDLE: Duration = Duration::from_secs(180);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const UPDATE_PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+/// A refusal body is a small error page or the pool's admission JSON, sent with its headers.
+/// A sixth of the 30s idle window that governs the connection it arrives on: several Tor round
+/// trips of headroom, without letting a body that never lands hold back the status.
+const REFUSAL_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) struct ConnectionTask(JoinHandle<()>);
 impl Drop for ConnectionTask {
@@ -218,15 +222,17 @@ where
                 if undecodable && (name == hyper::header::CONTENT_ENCODING || name == hyper::header::CONTENT_LENGTH) { continue; }
                 headers.push((name.to_string(), value.to_str().map_err(|_| "invalid private response header")?.to_owned()));
             }
+            // Replace the exit on the headers, not after a body that may never finish.
+            if refused { let _ = lease.retire_circuit(); }
             let mut dropped = undecodable;
             let body = if undecodable { Bytes::new() } else {
-                match Limited::new(response.into_body(), MAX_RESPONSE).collect().await {
-                    Ok(collected) => collected.to_bytes(),
-                    // The refusal itself is the answer; a truncated or oversized error page must
-                    // not bury the status that paces the origin and replaces the exit.
-                    Err(_) if refused => { dropped = true; Bytes::new() }
-                    Err(_) => return Err("private response failed or exceeded size limit; outcome may be unknown".into()),
-                }
+                let read = Limited::new(response.into_body(), MAX_RESPONSE).collect();
+                let collected = if refused {
+                    tokio::time::timeout(REFUSAL_BODY_TIMEOUT, read).await.ok().and_then(|result| result.ok())
+                } else {
+                    Some(read.await.map_err(|_| "private response failed or exceeded size limit; outcome may be unknown")?)
+                };
+                match collected { Some(collected) => collected.to_bytes(), None => { dropped = true; Bytes::new() } }
             };
             if dropped { headers.retain(|(name, _)| name != hyper::header::CONTENT_LENGTH.as_str()); }
             lease.check()?;
@@ -235,9 +241,6 @@ where
         }) => result.map_err(|_| "private request timed out; outcome may be unknown")??,
     };
     lease.check()?;
-    if matches!(response.status, 403 | 429) {
-        let _ = lease.retire_circuit();
-    }
     Ok(response)
 }
 
