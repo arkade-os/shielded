@@ -742,7 +742,7 @@ FIFO native reads are an assumption; if IPC reorders them, a stale foreground fl
 | `ReconcileId` | `src/native/mutations.ts`: `reconcileNativeMutations` and the 404 branch of `observeNativeResponse` |
 | `Settle` | `src/native/mutations.ts`: `settleLandedMutations` and `reconcileJournal`; `src/shielded/wallet.ts`: `settledNullifiers`, `settledDeposit`, `landedDeposit` |
 | `RetryDispatch`, `RetryAdmit`, `RetryLand` | `src/shielded/wallet.ts`: `autoShield` rebuilding a released shield on the same coin, or a payment rebuilt on other notes |
-| `ForceRelease` | `src/native/mutations.ts`: `forceRelease`; the Release reserved funds action in `app/src/RollupWallet.tsx` |
+| `ForceRelease` | `src/native/mutations.ts`: `forceRelease`; the Release reserved shields action in `app/src/RollupWallet.tsx` |
 
 ```mermaid
 stateDiagram-v2
@@ -754,7 +754,6 @@ stateDiagram-v2
     open --> gone: past that hour, a deposit, whatever its coin says
     open --> gone: past that hour, no history row and a batch since the entry was first judged
     open --> gone: the reader releases a deposit, at any age
-    open --> gone: the reader releases a payment past that hour, on a current unlanded verdict
     open --> open: 404 inside the grace, a foreign 429, a lost answer, or a verdict it cannot give
 ```
 
@@ -766,12 +765,11 @@ stateDiagram-v2
 | `PoolSpendJournal_EdgeRefusal.cfg` | a recognised edge-limit 429 leaves the row reserved for good; `NoStrandedReservation` |
 | `PoolSpendJournal_Retention.cfg` | settle releases before the pool can have forgotten it; `NoDoublePayment` |
 | `PoolSpendJournal_CoinProof.cfg` | a deposit waits for a batch an idle pool never makes; `NoStrandedReservation` |
-| `PoolSpendJournal_ForceWindow.cfg` | the reader's release frees a payment the pool can still include; `NoDoublePayment` |
-| `PoolSpendJournal_ForceVerdict.cfg` | the reader's release frees a payment that landed unseen; `NoDoublePayment` |
+| `PoolSpendJournal_ForceNotes.cfg` | the reader's release reaches a payment, past the window; `NoDoublePayment` |
 
 `paid` counts landings, so `NoDoublePayment` is the real promise rather than a proxy for it: a first attempt and a retry after a release never both land. The asymmetry the deposit rule rests on is in `Land` and `RetryLand`, which a deposit may take only while its coin is unspent. A note spend has no such bound — it can be rebuilt on other notes — so it keeps the verdict and count rules. A retry follows only a release that declared the payment dead, never one that proved it landed.
 
-Pinned TLC v1.7.4 on November 13, 2026: the base generated 28,969 states (7,012 distinct) with every action fired, and `PoolSpendJournal_Sim.cfg` (four clock steps, four batches) is exhaustively green at 88,778 states (21,620 distinct). `node tools/check-native-model.mjs` matched all 126 configurations. `DispatchJournaled` moved out of this model: the reader's release of a deposit is allowed while its POST is still in flight, so an in-flight spend no longer always holds a row. `NativeSession.tla`'s own `DispatchJournaled` still owns "journal before send".
+Pinned TLC v1.7.4 on November 13, 2026: the base generated 26,769 states (6,388 distinct) with every action fired. `node tools/check-native-model.mjs` matched all 126 configurations. The reader's release is offered for deposits only. An earlier revision also let it free a payment past the window on a current unlanded verdict, and this model stays green on that rule — which is the argument against it, not for it: the hazard such a rule misses is a stalled operator's count, exactly what `count # batchAt` in `settleLandedMutations` guards and exactly what this model scopes out. A manual path cannot re-derive a proof the model cannot see, so payments are left to the settle rule, which runs every minute anyway. `DispatchJournaled` moved out of this model: the reader's release of a deposit is allowed while its POST is still in flight, so an in-flight spend no longer always holds a row. `NativeSession.tla`'s own `DispatchJournaled` still owns "journal before send".
 
 The model assumes a recognised edge-limit 429 (Cloudflare's `error code: 1015`) was written before the request was forwarded, which is what makes `ObserveEdgeRefusal` safe; any other 429 is modelled as possibly forwarded and left to the 404 window or the coin. It assumes the Ark indexer's answer for a deposit coin is not stale by anything near the tracking hour, and that the operator a wallet reads is the one that batches: the account's view is a prefix of the truth, and a wallet behind the count it reads gives no verdict at all.
 

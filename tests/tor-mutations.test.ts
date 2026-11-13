@@ -185,42 +185,33 @@ test('a shield is judged by its coin, never by the nullifier history no deposit 
  assert.deepEqual([asked,journal.pendingPoolOutpoints(origin)],[0,[OUTPOINT]]);
 });
 
-const forced=(journal:ReturnType<typeof makeNativeMutationJournal>,verdict?:boolean|undefined)=>journal.forceRelease(origin,verdict===undefined?undefined:()=>verdict);
-test('the reader\'s own release frees a shield at any age and reports when a payment becomes releasable',()=>{
+test('the reader\'s own release frees a shield past its grace and never a payment',()=>{
  let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS,now:()=>at});
  journal.beforeNativeMutation(shield());journal.beforeNativeMutation(mutation(other,['23']));
- assert.deepEqual(journal.forceRelease(origin,()=>false),{released:1,unsettled:0,releasableAt:1_000_000+NATIVE_BOUND+1});
- assert.deepEqual([journal.pendingPoolOutpoints(origin),journal.pendingPoolNullifiers(origin)],[[],[23n]]);
+ assert.deepEqual(journal.forceRelease(origin),{released:0,payments:1,waiting:1},'a shield still within its grace may be in flight');
+ at+=NATIVE_GRACE_MS;
+ assert.deepEqual(journal.forceRelease(origin),{released:1,payments:1,waiting:0});
+ assert.deepEqual([journal.pendingPoolOutpoints(origin),journal.pendingPoolNullifiers(origin)],[[],[23n]],'the shield goes while the pool could still admit it; the payment stays');
  at+=NATIVE_BOUND+1;
- assert.deepEqual(journal.forceRelease(origin,()=>false),{released:1,unsettled:0});
- assert.deepEqual(journal.pendingPoolNullifiers(origin),[]);
+ assert.deepEqual(journal.forceRelease(origin),{released:0,payments:1,waiting:0},'past the window the payment is still the settle rule\'s to free, for its count proof');
+ assert.deepEqual(journal.pendingPoolNullifiers(origin),[23n]);
 });
 
-test('a payment the wallet cannot call unlanded is held by the reader\'s release too, and counted',()=>{
- for(const verdict of [undefined,true] as const){
+test('a payment is left to the settle rule the reader cannot stand in for',()=>{
+ for(const age of [0,NATIVE_BOUND,NATIVE_BOUND+1,24*3_600_000]){
   let at=1_000_000;const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS,now:()=>at});
   journal.beforeNativeMutation(mutation());
-  at+=NATIVE_BOUND+1;
-  assert.deepEqual(forced(journal,verdict),{released:0,unsettled:1},String(verdict));
-  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(verdict));
+  at+=age;
+  assert.deepEqual(journal.forceRelease(origin),{released:0,payments:1,waiting:0},String(age));
+  assert.deepEqual(journal.pendingPoolNullifiers(origin),[17n],String(age));
  }
- const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS});
- journal.beforeNativeMutation(mutation());
- assert.deepEqual(journal.forceRelease(origin),{released:0,unsettled:0,releasableAt:Date.now()+NATIVE_BOUND+1},'no verdict to give, and it is not due yet');
 });
 
 test('the reader\'s release leaves another origin alone and reports nothing to free',()=>{
  const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS}),elsewhere='https://other.test';
  journal.beforeNativeMutation({...mutation(other,['23']),url:elsewhere+'/api/rollup/spends'});
- assert.deepEqual(journal.forceRelease(origin,()=>false),{released:0,unsettled:0});
+ assert.deepEqual(journal.forceRelease(origin),{released:0,payments:0,waiting:0});
  assert.deepEqual(journal.pendingPoolNullifiers(elsewhere),[23n]);
-});
-
-test('a reconciliation round with nothing pending asks the pool and the wallet nothing',async()=>{
- const journal=makeNativeMutationJournal(storage(),{graceMs:NATIVE_GRACE_MS});let reads=0,asks=0;
- const counted=(async()=>{reads++;return new Response(UNKNOWN,{status:404});}) as typeof fetch;
- assert.equal(await reconcileJournal(journal,counted,origin,{settledNullifiers:()=>false,settledDeposit:async()=>{asks++;return false;},batchCount:()=>1}),false);
- assert.deepEqual([reads,asks],[0,0]);
 });
 
 const settle=(journal:ReturnType<typeof makeNativeMutationJournal>,verdict:boolean|undefined,count=0)=>journal.settleLandedMutations(origin,()=>verdict,count);

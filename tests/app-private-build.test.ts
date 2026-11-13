@@ -62,12 +62,12 @@ test('every tick hands the journal the wallet itself, on the native path as much
 test('the unresolved-outcomes banner offers a release behind a confirm, on either private path',()=>{
  const wallet=read('app/src/RollupWallet.tsx'),banner=/\{nativePending&&<section className="stock-warning" role="status">([\s\S]*?)<\/section>\}/.exec(wallet)?.[1]??'';
  assert.match(banner,/\{confirmRelease\s*\?/,'the action asks before it releases');
- assert.match(banner,/coin can be spent only once[\s\S]*?retry with other notes could pay twice/,'the confirm says why a shield is safe and a payment waits');
- assert.equal((banner.match(/>Release reserved funds<\/button>/g)??[]).length,2,'one button opens the confirm, one does the release');
+ assert.match(banner,/coin can be spent only once[\s\S]*?A payment is never released here/,'the confirm says why a shield is safe and a payment is not offered');
+ assert.equal((banner.match(/>Release reserved shields<\/button>/g)??[]).length,2,'one button opens the confirm, one does the release');
  assert.match(banner,/onClick=\{releaseReserved\}/);
  const handler=/const releaseReserved=\(\)=>\{([\s\S]*?)\n \};/.exec(wallet)?.[1]??'';
- assert.match(handler,/nativeHost\?forceReleaseNativeJournal\(POOL_ORIGIN,settled\):PRIVATE!\.journal\.forceRelease\(PRIVATE!\.poolOrigin,settled\)/,'both paths release through the journal, never the component');
- assert.match(handler,/wallet\?\.settledNullifiers\(nullifiers\)/,'a payment is only released on the wallet\'s own verdict');
+ assert.match(handler,/nativeHost\?forceReleaseNativeJournal\(POOL_ORIGIN\):PRIVATE!\.journal\.forceRelease\(PRIVATE!\.poolOrigin\)/,'both paths release through the journal, never the component');
+ assert.doesNotMatch(handler,/settledNullifiers/,'a payment is never released by hand, whatever the wallet would say');
  assert.match(handler,/setTick/,'the banner is recomputed from the journal, not assumed');
 });
 

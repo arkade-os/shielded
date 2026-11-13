@@ -3,7 +3,7 @@ EXTENDS Naturals
 
 CONSTANTS MaxClock, MaxBatches,
           BreakGrace, BreakTrackedWindow, BreakForeignRefusal, BreakEdgeRefusal,
-          BreakRetention, BreakCoinProof, BreakForceWindow, BreakForceVerdict
+          BreakRetention, BreakCoinProof, BreakForceNotes
 
 VARIABLES journal, inFlight, answer, pool, tracked, clock, batches, seen,
           batchAt, marked, deposit, coinSpent, freed, retry, paid, stranded
@@ -154,12 +154,10 @@ Settle ==
     /\ UNCHANGED <<inFlight, answer, pool, tracked, clock, batches, seen,
                    deposit, coinSpent, retry, paid>>
 
-\* The user's own release from the banner: a deposit at any age, since its coin bounds what a retry can do; a note spend only once the pool can no longer include it and this wallet, caught up, has no row for it.
+\* The user's own release from the banner: a deposit at any age, since its coin bounds what a retry can do. A note spend is never offered here; only Settle, which also weighs the pool count, may free one.
 ForceRelease ==
     /\ journal = "open"
-    /\ LET free == \/ deposit
-                   \/ /\ (BreakForceWindow \/ clock >= Retention)
-                      /\ (BreakForceVerdict \/ Verdict = "nothing")
+    /\ LET free == deposit \/ (BreakForceNotes /\ clock >= Retention)
        IN /\ journal' = IF free THEN "gone" ELSE "open"
           /\ freed' = (freed \/ free)
     /\ UNCHANGED <<inFlight, answer, pool, tracked, clock, batches, seen,

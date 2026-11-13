@@ -476,11 +476,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const releaseReserved=()=>{
   setConfirmRelease(false);
   try{
-   const settled=(nullifiers:readonly bigint[])=>wallet?.settledNullifiers(nullifiers);
-   const {released,unsettled,releasableAt}=nativeHost?forceReleaseNativeJournal(POOL_ORIGIN,settled):PRIVATE!.journal.forceRelease(PRIVATE!.poolOrigin,settled);
-   setReleaseNote([released?`Released ${released===1?'one reservation':`${released} reservations`}.`:'Nothing could be released yet.',
-    releasableAt===undefined?'':`A payment stays reserved until ${when(releasableAt)}, when the pool can no longer include it.`,
-    unsettled?'A payment stays reserved until this wallet has caught up with the pool.':''].filter(Boolean).join(' '));
+   const {released,payments,waiting}=nativeHost?forceReleaseNativeJournal(POOL_ORIGIN):PRIVATE!.journal.forceRelease(PRIVATE!.poolOrigin);
+   setReleaseNote([released?`Released ${released===1?'one reserved shield':`${released} reserved shields`}.`:'No shield was released.',
+    waiting?'A shield sent in the last 15 minutes stays reserved while it may still reach the pool.':'',
+    payments?'A payment stays reserved until this wallet can prove the pool will not include it, which it rechecks every minute.':''].filter(Boolean).join(' '));
    setTick(t=>t+1);
   }catch(error){setJournalError(errorText(error));}
  };
@@ -751,8 +750,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><Icon name="reset" size={16}/><span>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{!nativeHost&&<AppUpdateNotice/>}<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/></div></header>
    {nativePending&&<section className="stock-warning" role="status"><span>Some payments have unresolved outcomes. Their inputs stay reserved until this wallet can prove they cannot land, which it rechecks every minute; a dropped status alone is no proof.</span>
     {confirmRelease
-     ?<p><span>Releasing a shield is safe: its coin can be spent only once. A payment is released only once the pool can no longer include it, or a retry with other notes could pay twice.</span><button type="button" className="stock-ghost stock-mini" onClick={releaseReserved}>Release reserved funds</button><button type="button" className="stock-ghost stock-mini" onClick={()=>setConfirmRelease(false)}>Keep them reserved</button></p>
-     :<p><button type="button" className="stock-ghost stock-mini" onClick={()=>{setReleaseNote('');setConfirmRelease(true);}}>Release reserved funds</button></p>}
+     ?<p><span>Releasing a shield is safe: its coin can be spent only once, so a retry cannot pay what the first attempt did. A payment is never released here, since a retry with other notes could pay its recipient twice.</span><button type="button" className="stock-ghost stock-mini" onClick={releaseReserved}>Release reserved shields</button><button type="button" className="stock-ghost stock-mini" onClick={()=>setConfirmRelease(false)}>Keep them reserved</button></p>
+     :<p><button type="button" className="stock-ghost stock-mini" onClick={()=>{setReleaseNote('');setConfirmRelease(true);}}>Release reserved shields</button></p>}
     {releaseNote&&<span>{releaseNote}</span>}</section>}
    <details className="stock-warning stock-network"><summary><strong>Mutinynet</strong><span>Test funds only.</span></summary><p>The proving keys come from a small testnet ceremony: one contribution per circuit, sealed by a Bitcoin beacon. Payments inside the pool hide their amount, sender and recipient; deposits and withdrawals show their amounts.</p></details>
   {pool?.pool?.notice&&<section className="stock-warning"><strong>The pool is waiting</strong><span>{pool.pool.notice}</span></section>}

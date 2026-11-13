@@ -128,22 +128,18 @@ export function makeNativeMutationJournal(storage:JournalStorage,{graceMs,now=()
   });
   if(marked||remaining.length!==entries.length)save(remaining);
  };
- const releasableAt=(row:PendingMutation)=>row.coin!==undefined?row.createdAt:graceMs===undefined?Infinity:row.createdAt+TRACKED_MS+graceMs+1;
  /**
-  * The reader's own release, from the banner. A shield goes at any age, since its coin can be spent once and a retry cannot pay what the first attempt did.
-  * A payment goes only past the bound and on a current verdict that no batch carried it, or a retry on other notes could pay its recipient twice.
+  * The reader's own release, from the banner: shields only, at any age, since one coin can be spent once and a retry cannot pay what the first attempt did.
+  * A payment keeps settleLandedMutations alone, which also waits for a pool count that has moved since the entry was first judged; no hand on a button stands in for that proof.
   */
- const forceRelease=(poolOrigin:string,settled?:(nullifiers:readonly bigint[])=>boolean|undefined)=>{
-  const origin=new URL(poolOrigin).origin,at=now(),entries=load();let unsettled=0;
-  const remaining=entries.filter(row=>{
-   if(row.origin!==origin||at<releasableAt(row))return true;
-   if(row.coin!==undefined)return false;
-   if(settled?.(row.nullifiers.map(BigInt))===false)return false;
-   unsettled++;return true;
-  });
+ const forceRelease=(poolOrigin:string)=>{
+  const origin=new URL(poolOrigin).origin,at=now(),entries=load();
+  // A shield younger than the grace may still be in flight; freeing it would let a retry put the same coin in a second slot.
+  const fresh=(row:PendingMutation)=>graceMs===undefined||at-row.createdAt<graceMs;
+  const remaining=entries.filter(row=>row.origin!==origin||row.coin===undefined||fresh(row));
   if(remaining.length!==entries.length)save(remaining);
-  const soonest=Math.min(...remaining.filter(row=>row.origin===origin&&at<releasableAt(row)).map(releasableAt));
-  return {released:entries.length-remaining.length,unsettled,...(Number.isFinite(soonest)?{releasableAt:soonest}:{})};
+  const mine=remaining.filter(row=>row.origin===origin);
+  return {released:entries.length-remaining.length,payments:mine.filter(row=>row.coin===undefined).length,waiting:mine.filter(row=>row.coin!==undefined).length};
  };
  return {beforeNativeMutation,cancelNativeMutation,pendingPoolNullifiers,pendingPoolOutpoints,observeNativeResponse,reconcileNativeMutations,settleLandedMutations,forceRelease};
 }
@@ -172,4 +168,4 @@ export const observeNativeResponse=(response:NativeMutationResponse)=>{
  if(journalledRoute(response.url,response.method))current().observeNativeResponse(response);
 };
 export const reconcileNativeJournal=(fetcher:typeof fetch,poolOrigin:string,wallet?:JournalWallet)=>reconcileJournal(current(),fetcher,poolOrigin,wallet);
-export const forceReleaseNativeJournal=(poolOrigin:string,settled?:(nullifiers:readonly bigint[])=>boolean|undefined)=>current().forceRelease(poolOrigin,settled);
+export const forceReleaseNativeJournal=(poolOrigin:string)=>current().forceRelease(poolOrigin);
