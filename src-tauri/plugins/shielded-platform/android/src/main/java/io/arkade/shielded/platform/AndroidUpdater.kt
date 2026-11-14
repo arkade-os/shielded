@@ -24,7 +24,8 @@ internal class AndroidUpdater(context: Context) {
     private val installer = manager.packageInstaller
     private val preferences = this.context.getSharedPreferences("shielded.android.updates.v1", Context.MODE_PRIVATE)
     private val ownPackage = this.context.packageName
-    private val directory = File(this.context.cacheDir, "$ownPackage/shielded-updates")
+    // Rust stages into app_cache_dir()/shielded-updates, and Tauri resolves app_cache_dir() on Android to cacheDir itself, with no identifier folder.
+    private val directory = File(this.context.cacheDir, "shielded-updates")
 
     private data class Record(val token: String, val session: Int, val target: Long, val status: String, val error: String? = null)
 
