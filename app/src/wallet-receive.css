@@ -11,10 +11,10 @@
 .receive-stage-copy{display:flex;align-items:center;justify-content:center;gap:9px}
 .receive-stage-mark{display:grid;place-items:center;width:28px;height:28px;border:1px solid rgba(184,134,43,.38);border-radius:50%;background:rgba(228,196,108,.18);color:var(--receive-gold)}
 .receive-stage-copy h2{margin:0;color:var(--receive-ink);font-family:inherit;font-size:17px;font-weight:620;letter-spacing:-.025em}
-.receive-qr-control{display:grid;justify-items:center;width:100%;min-width:0}
+.receive-qr-control{position:relative;display:grid;justify-items:center;width:100%;min-width:0}
 .receive-portal .receive-qr-wrap{display:block;justify-self:center;width:min(100%,272px);padding:12px;border:1px solid rgba(184,134,43,.5);border-radius:25px;background:#fffdf8;box-shadow:inset 0 1px 0 #fff,0 0 0 6px rgba(228,196,108,.1),0 18px 38px -20px rgba(16,53,84,.25);cursor:pointer}
 .receive-portal .receive-qr-wrap::after{display:none}.receive-portal .receive-qr-wrap:disabled{opacity:1;cursor:default}
-.receive-qr-feedback{margin-top:8px;color:var(--receive-muted);font-size:12px;line-height:1.4}.receive-qr-feedback.is-error{color:#8f1d3a}
+.receive-qr-feedback{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);padding:6px 12px;border-radius:999px;background:var(--receive-ink);color:var(--receive-pearl);font-size:12px;font-weight:600;line-height:1.4;white-space:nowrap;pointer-events:none;box-shadow:0 8px 18px -10px rgba(16,53,84,.6)}.receive-qr-feedback.is-error{background:#8f1d3a}
 .receive-qr-wrap .stock-qr{display:block;width:100%;height:auto;max-width:none;margin:0;border-radius:13px;box-shadow:none}
 .receive-empty{display:grid;place-content:center;justify-items:center;gap:16px;width:min(100%,272px);min-height:258px;padding:24px;border:1px dashed rgba(184,134,43,.45);border-radius:25px;background:rgba(255,253,248,.58);color:var(--receive-muted);text-align:center;line-height:1.45}
 .receive-empty svg{color:var(--receive-gold)}
@@ -26,25 +26,29 @@
 .receive-address-value code{border-bottom:1px dotted rgba(184,134,43,.7)}
 .receive-description{max-width:34ch;margin:0;color:var(--receive-muted);font-size:13px;line-height:1.5;text-align:center}
 .receive-action{display:grid;justify-items:center;gap:8px;width:100%;min-width:0}
-.receive-controls{display:flex;justify-content:center;gap:9px;width:100%;padding-top:2px}
-.receive-portal .receive-controls button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 17px;border:1px solid rgba(184,134,43,.45);border-radius:999px;background:#fffaf1;color:var(--receive-ink);box-shadow:inset 0 1px 0 #fff;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s,border-color .2s,transform .2s}
+.receive-controls{display:flex;max-width:100%;overflow:hidden;border:1px solid rgba(184,134,43,.45);border-radius:999px;background:#fffaf1;box-shadow:inset 0 1px 0 #fff}
+.receive-portal .receive-controls button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 17px;border:0;border-radius:0;background:transparent;color:var(--receive-ink);box-shadow:none;font-size:13px;font-weight:600;cursor:pointer;transition:background .2s,transform .2s}
+.receive-portal .receive-controls button+button{border-left:1px solid rgba(184,134,43,.45)}
 .receive-portal .receive-controls button::after{display:none}
 .receive-portal .receive-controls button:first-child{background:var(--receive-ink);border-color:var(--receive-ink);color:var(--receive-pearl)}
 .receive-portal .receive-controls button:active{transform:scale(.96)}
 .receive-details{display:grid;gap:12px;padding-top:16px;border-top:1px solid rgba(184,134,43,.26);min-width:0}
+.receive-details:empty{display:none}
 .receive-details .stock-muted{color:var(--receive-muted)}
 .receive-details .stock-blocked{color:#8f1d3a;background:rgba(143,29,58,.07);border-color:#8f1d3a}
 .receive-details .stock-amount input{min-width:0;border:1px solid rgba(16,53,84,.22);border-radius:14px;background:#fffdf8;color:var(--receive-ink)}
-.receive-amount{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.receive-amount{display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap}
 .receive-amount-field{display:grid;justify-items:start;gap:5px;min-width:0;flex:1;font-size:12px;color:var(--receive-muted)}
 .receive-amount-field input{box-sizing:border-box;width:100%;min-height:44px;min-width:0;padding:8px 12px;border-radius:12px;background:#fffdf8;font:inherit;color:var(--receive-ink)}
-.receive-amount-unit{flex:none;padding-top:18px;color:var(--receive-muted);font-size:12px}
+.receive-amount-unit{flex:none;color:var(--receive-muted);font-size:12px;line-height:44px}
+.receive-portal .receive-amount-toggle{min-height:44px;margin-inline:auto;padding:0 10px;border:0;background:none;box-shadow:none;color:var(--receive-gold);font-size:13px;font-weight:600;text-decoration:underline;text-decoration-color:rgba(184,134,43,.55);text-underline-offset:4px}
+.receive-portal .receive-amount-toggle:hover{background:none;color:var(--receive-ink);text-decoration-color:currentColor}
 .receive-amount-error{flex-basis:100%;margin:0;color:#8f1d3a;font-size:12px;line-height:1.5}
 .receive-details .stock-more summary{color:var(--receive-gold)}
 .receive-portal .receive-details button.stock-ghost,.receive-portal .receive-details button.stock-mini{border:1px solid rgba(184,134,43,.42);border-radius:999px;background:#fffaf1;color:var(--receive-ink);box-shadow:inset 0 1px 0 #fff}
 .receive-portal .receive-details button.stock-ghost::after,.receive-portal .receive-details button.stock-mini::after{display:none}
 .receive-details a{color:var(--receive-ink);text-decoration-color:#b8862b}
-@keyframes receive-appear{from{opacity:.4;transform:translateX(9px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes receive-appear{from{opacity:.4}}
 @media(max-width:380px){.receive-portal{padding:14px;border-radius:26px}.receive-portal::before{border-radius:25px}.receive-portal .receive-pill button{gap:4px;padding-inline:4px;font-size:12px}.receive-portal .receive-pill svg{width:15px;height:15px}.receive-portal .receive-qr-wrap{width:min(100%,252px)}}
 @media(max-width:340px){.receive-portal .receive-pill button{padding-inline:2px}.receive-portal .receive-pill svg{display:none}}
 @media(prefers-reduced-motion:reduce){.receive-stage{animation:none}.receive-portal .receive-pill button,.receive-portal .receive-controls button{transition:none}}

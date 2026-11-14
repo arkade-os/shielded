@@ -51,4 +51,6 @@ test('the frozen shell renders formatted amounts without live wallet controls',(
  assert.match(markup,/123 sats/);assert.doesNotMatch(markup,/sats sats|<(?:a|input|textarea)\b/);
  assert.equal([...markup.matchAll(/<button\b/g)].length,4);assert.equal([...markup.matchAll(/disabled=""/g)].length,4);
  assert.match(markup,/Last known private balance/);assert.match(markup,/Checking Tor readiness/);
+ const withControls=renderToStaticMarkup(createElement(NativeResumePresentation,{snapshot:{balance:'123 sats',activity:[]},phase:'',error:'',controls:createElement('button',{type:'button'},'Lock wallet')}));
+ assert.match(withControls,/<header class="stock-header"><strong>Shielded <small>wallet<\/small><\/strong><button type="button">Lock wallet<\/button><\/header>/,'the connection controls the top bar carried stay reachable while it refreshes');
 });

@@ -12,7 +12,7 @@ const render=(health:NativeTorHealthState,transportBusy=false)=>renderToStaticMa
 
 test('the native connection panel paints above the wallet surface',()=>{
  const css=readFileSync(new URL('../app/src/native-tor-health.css',import.meta.url),'utf8');
- assert.match(css,/\.native-wallet-topbar\{[^}]*position:relative[^}]*z-index:\d+/);
+ assert.match(css,/\.native-tor-health\{[^}]*position:relative[^}]*z-index:\d+/);
  assert.match(css,/\.native-tor-panel\{[^}]*position:fixed[^}]*z-index:\d+/);
  assert.match(css,/\.native-tor-panel\{[^}]*max-width:calc\(100vw - 32px\)/);
  assert.match(css,/\.native-tor-panel\{[^}]*overflow:auto/);
@@ -20,7 +20,30 @@ test('the native connection panel paints above the wallet surface',()=>{
  assert.match(css,/\.native-tor-panel\[data-tone=dark\] \.native-tor-switch\{/);
  assert.match(css,/\.stock-page\.has-sheet \.stock-backdrop\{z-index:45\}/);
  assert.match(css,/\.stock-page\.has-dock\.has-sheet \.stock-panel\{z-index:50\}/);
- assert.match(css,/\.native-sheet-open \.native-wallet-topbar\{pointer-events:none\}/);
+ const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8');
+ assert.match(wallet,/<main className="stock-shell"><header className="stock-header"><WalletBrand [^\n]*?\/><div className="app-header-status">\{headerControls\}<AppUpdateNotice\/>\{!headerControls&&<WalletHeaderActions /,'the controls take About\'s place in the page header, which goes inert behind an open sheet; the brand still opens About');
+ assert.doesNotMatch(native+css,/native-wallet-topbar/);
+});
+
+test('the compact header control is an icon whose name, live text and badge carry each connection state',()=>{
+ for(const [health,state,text] of [
+  [{status:{phase:'ready',generation:1},check:'ok'},'connected','Tor connected'],
+  [{status:{phase:'bootstrapping',generation:1,progress:'42%'},check:'idle'},'connecting','Building Tor circuits'],
+  [{status:{phase:'error',generation:1},check:'idle'},'error','Tor unavailable'],
+  [{status:{phase:'ready',generation:1,mode:'direct'},check:'ok'},'direct','Tor off · Direct connection'],
+  [{status:{phase:'paused',generation:1},check:'idle'},'paused','Tor paused'],
+ ] as const){
+  const html=renderToStaticMarkup(createElement(NativeTorHealth,{health,compact:true,onToggleTor:()=>{},onReconnect:()=>{}}));
+  assert.match(html,new RegExp(`data-health="${state}" data-compact="true"`),state);
+  assert.match(html,new RegExp(`class="native-tor-trigger" aria-label="Wallet connection: ${text}"`),state);
+  assert.match(html,new RegExp(`<span class="native-tor-live" role="status" aria-live="polite">${text}`),state);
+  assert.match(html,/>Use Tor<\/span>/);assert.match(html,/<span>Reconnect<\/span>/);
+ }
+ const delayed=renderToStaticMarkup(createElement(NativeTorHealth,{health:{status:{phase:'ready',generation:1},check:'ok'},compact:true,problem:'Explorer unreachable'}));
+ assert.match(delayed,/data-health="error"/);assert.match(delayed,/aria-label="Wallet connection: Tor connected · wallet data delayed"/);
+ const css=readFileSync(new URL('../app/src/native-tor-health.css',import.meta.url),'utf8');
+ assert.match(css,/\.native-wallet-controls \.native-tor-trigger,\.native-wallet-controls \.native-wallet-lock\{[^}]*width:44px;height:44px/);
+ assert.match(readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8'),/<button className="native-wallet-lock" type="button" aria-label="Lock wallet"[^>]*onClick=\{\(\)=>\{manualLock\.current=true;setConfirmDirect\(false\);void pause\(\);\}\}>/);
 });
 
 test('legacy Tor status renders an accessible enabled Tor switch',()=>{

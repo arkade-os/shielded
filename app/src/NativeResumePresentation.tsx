@@ -1,8 +1,9 @@
+import type {ReactNode} from 'react';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 
-export default function NativeResumePresentation({snapshot,phase,error}:{snapshot:NativeResumeSnapshot;phase:string;error:string}){
+export default function NativeResumePresentation({snapshot,phase,error,controls}:{snapshot:NativeResumeSnapshot;phase:string;error:string;controls?:ReactNode}){
  return <div className="stock-page has-dock" aria-busy="true"><main className="stock-shell">
-  <header className="stock-header"><strong>Shielded <small>wallet</small></strong></header>
+  <header className="stock-header"><strong>Shielded <small>wallet</small></strong>{controls}</header>
   <p className="stock-muted">Mutinynet · Test funds only</p>
   <section className="stock-card stock-balance"><div className="stock-balance-main"><small>Last known private balance</small><strong>{snapshot.balance}</strong><p className="stock-muted" role="status"><span className="stock-spinner" aria-hidden="true"/> {phase}</p></div>{snapshot.unshielded&&<div className="stock-balance-side"><small>Unshielded</small><b>{snapshot.unshielded}</b></div>}</section>
   {error&&<p className="stock-blocked" role="alert">{error}</p>}

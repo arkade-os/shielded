@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {AppUpdateNotice} from './AppUpdates.tsx';
+import {BrandMark} from './WalletHeaderActions.tsx';
 // @ts-ignore circomlibjs has no browser declarations.
 import {buildPoseidon} from 'circomlibjs';
 import {x25519} from '@noble/curves/ed25519.js';
@@ -105,7 +106,7 @@ export default function Disclose(){
   const changed=()=>{const value=decodeURIComponent(location.hash.slice(1));setInput(value);void run(value);};
   addEventListener('hashchange',changed);return()=>removeEventListener('hashchange',changed);
  },[]);
- return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/">Shielded<span>{watch?'View key':'Verify'}</span></a><div className="app-header-status"><AppUpdateNotice/><a className="stock-home" href="/wallet">Wallet</a></div></header>
+ return <div className="stock-page"><main className="stock-shell"><header className="stock-header"><a className="stock-brand" href="/"><BrandMark/>Shielded<span>{watch?'View key':'Verify'}</span></a><div className="app-header-status"><AppUpdateNotice/><a className="stock-home" href="/wallet">Wallet</a></div></header>
   <section className="stock-card"><h2>{watch?'Watch a wallet with its view key':'Check a revealed payment'}</h2>
    <p className="stock-muted">{watch?'A view key (shview2…) shows every note a wallet received, its own deposits and change included. A full viewing key (shfvk2…) also shows which of them were spent. Neither can spend.':'A revealed payment opens the notes of one private payment, so anyone can check its amount and recipient against what the pool published. It shows nothing else about either wallet.'}</p>
    <form className="stock-send" onSubmit={e=>{e.preventDefault();history.replaceState(null,'',`#${input.trim()}`);void run(input);}}>

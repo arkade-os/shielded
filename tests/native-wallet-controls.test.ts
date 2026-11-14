@@ -18,8 +18,14 @@ test('the native About control never navigates back through the app entry point'
 
 test('the native brand opens About in place instead of reloading the wallet route',()=>{
  const html=renderToStaticMarkup(createElement(WalletBrand,{native:true,onAbout:()=>{}}));
- assert.match(html,/<button[^>]*class="stock-brand"[^>]*>Shielded<span>wallet<\/span><\/button>/);
+ assert.match(html,/<button[^>]*class="stock-brand"[^>]*><svg class="stock-brand-mark"[^]*?<\/svg>Shielded<span>wallet<\/span><\/button>/);
  assert.doesNotMatch(html,/href=/);
+});
+
+test('the brand mark draws the app icon shield rather than a stand-in',()=>{
+ const icon=readFileSync(new URL('../src-tauri/icon.svg',import.meta.url),'utf8'),html=renderToStaticMarkup(createElement(WalletBrand,{native:false,onAbout:()=>{}}));
+ for(const d of ['M256 48 416 108v132c0 100-72 172-160 224C168 412 96 340 96 240V108Z','M15-14C6-24-16-19-16-7c0 14 31 6 31 21C15 27-7 30-19 17']){assert.ok(icon.includes(`d="${d}"`),d);assert.ok(html.includes(`d="${d}"`),d);}
+ assert.doesNotMatch(readFileSync(new URL('../app/src/wallet-glass.css',import.meta.url),'utf8'),/\.stock-brand::before/);
 });
 
 test('a loaded wallet offers clearing but not restoring another wallet',()=>{
