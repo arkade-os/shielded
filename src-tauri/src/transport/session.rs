@@ -3068,6 +3068,30 @@ mod tests {
         assert!(inner.scope(resumed.generation, "indexer").is_err());
     }
 
+    // Continuity here cannot come from a warm pause: direct mode holds no Tor client to keep.
+    #[tokio::test]
+    async fn a_direct_app_switch_keeps_its_ready_generation_scopes_and_leases() {
+        let inner = startup_inner();
+        let started = inner.start(NativeMode::Direct).await.unwrap();
+        let scope = inner.scope(started.generation, "indexer").unwrap();
+        let across = request(started.generation, scope.id.clone(), "across");
+        let lease = register(&inner, &across).unwrap();
+        let suspended = inner.suspend(true).unwrap();
+        assert_eq!(suspended.phase, "ready");
+        assert_eq!(suspended.generation, started.generation);
+        assert!(!suspended.foreground);
+        assert!(suspended.warm_from_generation.is_none());
+        assert!(inner.lock().unwrap().client.is_none());
+        assert_eq!(inner.lock().unwrap().scopes.len(), 1);
+        assert!(!lease.cancel.is_cancelled());
+        assert!(lease.check().is_ok());
+        let resumed = inner.resumed().unwrap();
+        assert_eq!(resumed.phase, "ready");
+        assert_eq!(resumed.generation, started.generation);
+        assert!(resumed.foreground);
+        assert!(register(&inner, &request(resumed.generation, scope.id, "after")).is_ok());
+    }
+
     #[tokio::test]
     async fn warm_resume_still_drains_then_bootstraps_a_fresh_owner() {
         let inner = ready();
