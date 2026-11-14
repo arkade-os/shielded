@@ -20,7 +20,6 @@
 .native-tor-panel[hidden]{display:none}
 .stock-page.has-sheet .stock-backdrop{z-index:45}
 .stock-page.has-dock.has-sheet .stock-panel{z-index:50}
-.native-sheet-open .native-wallet-topbar{pointer-events:none}
 .native-tor-switch{display:flex;align-items:center;justify-content:space-between;gap:18px;width:100%;min-height:44px;margin-top:14px;padding:8px 12px;border:1px solid #b8862b55;border-radius:12px;background:#b8862b0b;color:inherit;font:550 12px 'DM Sans',sans-serif;cursor:pointer}
 .native-tor-switch:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
 .native-tor-switch:disabled{opacity:.48;cursor:not-allowed}
@@ -29,9 +28,13 @@
 .native-tor-switch-track::after{content:'';position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#76838c;transition:transform .16s ease,background .16s ease}
 .native-tor-switch[aria-checked=true] .native-tor-switch-track{border-color:#b8862b99;background:#b8862b24}
 .native-tor-switch[aria-checked=true] .native-tor-switch-track::after{transform:translateX(14px);background:#a37a32}
-.native-wallet-topbar{position:relative;z-index:40;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:47px;padding:6px 22px;border-bottom:1px solid #ffffffb8;background:rgba(247,251,255,.64);color:#244258;box-shadow:inset 0 -1px 0 #1035540a;-webkit-backdrop-filter:blur(20px) saturate(1.3);backdrop-filter:blur(20px) saturate(1.3)}
-.native-wallet-topbar .native-wallet-lock{padding:7px 13px;border:1px solid #ffffffd4;border-radius:999px;font:550 12px 'DM Sans',sans-serif;background:rgba(255,255,255,.28);color:#244258;box-shadow:inset 0 1px 0 #fff,0 3px 10px #10355408;cursor:pointer}
+.native-wallet-controls{display:flex;align-items:center;gap:4px}
+.native-wallet-controls .native-tor-trigger,.native-wallet-controls .native-wallet-lock{position:relative;display:grid;place-items:center;width:44px;height:44px;padding:0;border:1px solid #ffffffd4;border-radius:50%;background:rgba(255,255,255,.34);color:#244258;box-shadow:inset 0 1px 0 #fff,0 3px 10px #10355408;cursor:pointer;-webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3)}
+.native-wallet-controls .native-tor-trigger:hover,.native-wallet-controls .native-wallet-lock:hover{background:rgba(255,255,255,.62)}
 .native-wallet-lock:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
+.native-tor-health[data-compact] .native-tor-glyph{width:22px;height:22px;opacity:1;transform:none}
+.native-tor-health[data-compact] .native-tor-dot{position:absolute;top:7px;right:7px;width:9px;height:9px;border:2px solid #f6f2e9}
+.native-tor-live{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .native-tor-health[data-tone=dark]{color:#bdcbd6;font-size:11px}
 .native-tor-health[data-tone=dark] .native-tor-dot{background:#d2ae75;box-shadow:0 0 0 3px #d2ae7518}
 .native-tor-health[data-tone=dark][data-health=connected] .native-tor-dot{background:#8fc5ad;box-shadow:0 0 0 3px #8fc5ad18}
@@ -45,8 +48,8 @@
 .native-tor-panel[data-tone=dark] .native-tor-switch{border-color:#d2ae7555;background:#d2ae7510}
 .native-tor-panel[data-tone=dark] .native-tor-switch[aria-checked=true] .native-tor-switch-track{border-color:#d2ae7599;background:#d2ae7524}
 .native-tor-panel[data-tone=dark] .native-tor-switch[aria-checked=true] .native-tor-switch-track::after{background:#d2ae75}
-@media(max-width:359px){.native-tor-health[data-tone=dark]{font-size:10px}.native-tor-trigger{gap:6px}.native-wallet-topbar{padding-right:16px;padding-left:16px}}
-@media(prefers-reduced-transparency:reduce){.native-wallet-topbar{background:#f9f6ee;-webkit-backdrop-filter:none;backdrop-filter:none}.native-wallet-topbar .native-wallet-lock{background:#fffdf8}}
+@media(max-width:359px){.native-tor-health[data-tone=dark]{font-size:10px}.native-tor-trigger{gap:6px}}
+@media(prefers-reduced-transparency:reduce){.native-wallet-controls .native-tor-trigger,.native-wallet-controls .native-wallet-lock{background:#fffdf8;-webkit-backdrop-filter:none;backdrop-filter:none}}
 @media(prefers-reduced-motion:reduce){.native-tor-trigger>svg,.native-tor-switch-track::after{transition:none}}
 @keyframes native-tor-pulse{50%{opacity:.35;transform:scale(.72)}}
 @media(prefers-reduced-motion:reduce){.native-tor-health[data-health=connecting] .native-tor-dot{animation:none}}

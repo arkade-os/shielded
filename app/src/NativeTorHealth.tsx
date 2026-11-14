@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState,type CSSProperties} from 'react';
+import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState,type CSSProperties,type PointerEvent} from 'react';
 import {createPortal} from 'react-dom';
 import type {NativeTorHealthState} from './native-tor-monitor.ts';
 import './native-tor-health.css';
@@ -17,8 +17,9 @@ export function bindTorPanelDismiss(target:EventTarget,inside:(node:EventTarget|
  return()=>{target.removeEventListener('pointerdown',outside);target.removeEventListener('keydown',key);};
 }
 
-export default function NativeTorHealth({health=initialTorHealth,tone='light',onToggleTor,onReconnect,reconnectBusy=false,problem='',transportBusy=false,open:controlledOpen,onOpenChange}:{health?:NativeTorHealthState;tone?:'light'|'dark';onToggleTor?:()=>void;onReconnect?:()=>void;reconnectBusy?:boolean;problem?:string;transportBusy?:boolean;open?:boolean;onOpenChange?:(open:boolean)=>void}){
+export default function NativeTorHealth({health=initialTorHealth,tone='light',onToggleTor,onReconnect,reconnectBusy=false,problem='',transportBusy=false,open:controlledOpen,onOpenChange,compact=false}:{health?:NativeTorHealthState;tone?:'light'|'dark';onToggleTor?:()=>void;onReconnect?:()=>void;reconnectBusy?:boolean;problem?:string;transportBusy?:boolean;open?:boolean;onOpenChange?:(open:boolean)=>void;compact?:boolean}){
  const [localOpen,setLocalOpen]=useState(false),[position,setPosition]=useState<CSSProperties>({}),host=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null),panelId=useId();
+ const hover=useRef<{open:boolean;timer?:ReturnType<typeof setTimeout>}>({open:false});
  const controlled=controlledOpen!==undefined,open=controlledOpen??localOpen,setOpen=useCallback((value:boolean)=>{if(!controlled)setLocalOpen(value);onOpenChange?.(value);},[controlled,onOpenChange]);
  const {status,check,checkedAt,latencyMs,attempt,retryAt}=health;
  const direct=(status.mode??'tor')==='direct';
@@ -36,9 +37,14 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
   return torPanelPosition(rect,{width:innerWidth,height:innerHeight},tone);
  };
  const toggle=()=>{
+  if(hover.current.open){hover.current.open=false;return;}
   if(!open)setPosition(place());
   setOpen(!open);
  };
+ // A mouse opens the compact panel on hover; clicking then pins it, and leaving both trigger and panel closes an unpinned one.
+ const hoverIn=(event:PointerEvent)=>{if(!compact||event.pointerType!=='mouse')return;clearTimeout(hover.current.timer);if(!open){hover.current.open=true;setPosition(place());setOpen(true);}};
+ const hoverOut=(event:PointerEvent)=>{if(!compact||event.pointerType!=='mouse'||!hover.current.open)return;clearTimeout(hover.current.timer);hover.current.timer=setTimeout(()=>{hover.current.open=false;setOpen(false);},250);};
+ useEffect(()=>{if(!open)hover.current.open=false;return()=>clearTimeout(hover.current.timer);},[open]);
  useLayoutEffect(()=>{
   if(!open)return;
   const update=()=>setPosition(place());
@@ -50,7 +56,7 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
   return bindTorPanelDismiss(window,target=>!!host.current?.contains(target as Node)||!!panel.current?.contains(target as Node),()=>setOpen(false),()=>trigger.current?.focus());
  },[open,setOpen]);
  useEffect(()=>{
-  if(!open)return;
+  if(!open||hover.current.open)return;
   const frame=requestAnimationFrame(()=>panel.current?.querySelector<HTMLButtonElement>('[role=switch]')?.focus({preventScroll:true}));
   return()=>cancelAnimationFrame(frame);
  },[open]);
@@ -69,9 +75,11 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
   {onToggleTor&&<button className="native-tor-switch" type="button" role="switch" aria-checked={!direct} disabled={transportBusy} onClick={()=>{if(!transportBusy){setOpen(false);onToggleTor();requestAnimationFrame(()=>trigger.current?.focus());}}}><span>Use Tor</span><span className="native-tor-switch-track" aria-hidden="true"/></button>}
   <p className="native-tor-privacy">{direct?'Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'Separate Tor scopes protect unrelated wallet items. Repeated identifiers and timing can still reveal links. Wallet services may be unavailable even when Tor is connected.'}</p>
  </>;
- const content=<div ref={panel} className="native-tor-panel" id={panelId} role="region" aria-label="Connection details" data-tone={tone} style={position}>{body}</div>;
- return <><div ref={host} className="native-tor-health" data-tone={tone} data-health={state}>
-  <button ref={trigger} type="button" className="native-tor-trigger" aria-label={`Wallet connection: ${label}`} aria-expanded={open} aria-controls={panelId} onClick={toggle}><span className="native-tor-dot" aria-hidden="true"/><span role="status" aria-live="polite">{label}{progress&&<span className="native-tor-percent"> {progress}</span>}</span><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg></button>
+ const content=<div ref={panel} className="native-tor-panel" id={panelId} role="region" aria-label="Connection details" data-tone={tone} style={position} onPointerEnter={hoverIn} onPointerLeave={hoverOut}>{body}</div>;
+ return <><div ref={host} className="native-tor-health" data-tone={tone} data-health={state} data-compact={compact||undefined} onPointerEnter={hoverIn} onPointerLeave={hoverOut}>
+  <button ref={trigger} type="button" className="native-tor-trigger" aria-label={`Wallet connection: ${label}`} aria-expanded={open} aria-controls={panelId} onClick={toggle}>{compact
+   ?<><svg className="native-tor-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 4.5c4 2.2 6.5 5.1 6.5 8.8a6.5 6.5 0 0 1-13 0c0-3.7 2.5-6.6 6.5-8.8Z"/><path d="M12 9.2c1.9 1.2 3 2.6 3 4.3a3 3 0 0 1-6 0c0-1.7 1.1-3.1 3-4.3Z"/><path d="M12 4.5c0-1.2.6-2.2 1.8-2.8"/>{direct&&<path d="m3.5 3.5 17 17"/>}</svg><span className="native-tor-dot" aria-hidden="true"/><span className="native-tor-live" role="status" aria-live="polite">{label}{progress&&` ${progress}`}</span></>
+   :<><span className="native-tor-dot" aria-hidden="true"/><span role="status" aria-live="polite">{label}{progress&&<span className="native-tor-percent"> {progress}</span>}</span><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 6 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg></>}</button>
   {typeof document==='undefined'?<div className="native-tor-panel" id={panelId} role="region" aria-label="Connection details" data-tone={tone} hidden>{body}</div>:!open?<div id={panelId} hidden/>:null}
  </div>{open&&typeof document!=='undefined'?createPortal(content,document.body):null}</>;
 }

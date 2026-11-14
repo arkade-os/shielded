@@ -86,6 +86,17 @@ test('controlled Tor disclosure activation forwards its next state and renders t
  assert.equal(owner,true);assert.match(renderToStaticMarkup(createElement(Capture)),/aria-expanded="true"/);click!();assert.equal(owner,false);
 });
 
+test('a mouse hovering the compact Tor control opens its panel, a touch does not, and a click pins a hover-opened panel',()=>{
+ type Handlers={onPointerEnter:(event:{pointerType:string})=>void;onClick:()=>void};
+ let owner=false,view:ReactNode;
+ function Capture(){view=NativeTorHealth({compact:true,open:owner,onOpenChange:open=>{owner=open;}});return view;}
+ renderToStaticMarkup(createElement(Capture));
+ const host=find(view,node=>node.type==='div'&&node.props.className==='native-tor-health')?.props as unknown as Handlers,trigger=find(view,node=>node.type==='button'&&node.props.className==='native-tor-trigger')?.props as unknown as Handlers;
+ host.onPointerEnter({pointerType:'touch'});assert.equal(owner,false);
+ host.onPointerEnter({pointerType:'mouse'});assert.equal(owner,true);
+ trigger.onClick();assert.equal(owner,true);
+});
+
 test('opening either privacy panel replaces the other and stale close events preserve the new owner',()=>{
  let owner:Parameters<typeof walletPrivacyPanel>[0]=null;
  for(const [first,second]of [['tor','privacy'],['privacy','tor']] as const){

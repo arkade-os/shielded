@@ -7,7 +7,6 @@
 .app-update-open-error{color:#8f1d3a;font:500 11px/1.4 'DM Sans',sans-serif}
 .app-update-open-fallback{position:relative;font:500 11px/1.4 'DM Sans',sans-serif}.app-update-open-fallback summary{min-height:32px;padding:7px 9px;border:1px solid #b8862b55;border-radius:999px;background:#f5eedc;color:#6b4a18;cursor:pointer}.app-update-open-fallback[open] summary{border-radius:10px 10px 0 0}.app-update-open-fallback input{position:absolute;right:0;top:100%;z-index:1;width:min(440px,calc(100vw - 32px));min-height:44px;padding:8px;border:1px solid #b8862b55;border-radius:0 0 8px 8px;background:#fffdf8;color:#244258;font:13px 'DM Sans',sans-serif}
 .app-header-status{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.native-wallet-topbar .app-header-status{flex:1;min-width:0;gap:8px 12px}
-.native-wallet-topbar .native-wallet-lock,.native-wallet-topbar .native-tor-trigger,.wallet-onboarding-footer .native-tor-trigger{min-height:44px}
+.wallet-onboarding-footer .native-tor-trigger{min-height:44px}
 .app-update-fallback{display:flex;justify-content:center;padding:10px}
-@media(max-width:380px){.app-update-notice{padding-inline:8px;font-size:10px}.app-header-status{gap:8px}.native-wallet-topbar{gap:8px;padding-inline:16px}.native-wallet-topbar .app-header-status{gap:8px 6px}.native-wallet-topbar .native-wallet-lock{align-self:flex-start;padding-inline:8px}}
+@media(max-width:380px){.app-update-notice{padding-inline:8px;font-size:10px}.app-header-status{gap:8px}}

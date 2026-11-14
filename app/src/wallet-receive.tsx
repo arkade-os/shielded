@@ -1,4 +1,4 @@
-import {useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type ReactNode,type TouchEvent} from 'react';
+import {useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type ReactNode} from 'react';
 import {CopyButton,Icon} from './components.tsx';
 import {QrCode} from './wallet-qr.tsx';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
@@ -62,10 +62,10 @@ export function ReceiveQrButton({value,label,disabled=false}:{value:string;label
 }
 
 export function ReceivePortal({active=true,unified=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,loading,description,action,children}:ReceivePortalProps){
- const [expanded,setExpanded]=useState(false);
+ const [expanded,setExpanded]=useState(false),[amountOpen,setAmountOpen]=useState(false),focusNext=useRef(false);
  const buttons=useRef<(HTMLButtonElement|null)[]>([]);
  const strip=useRef<HTMLDivElement>(null),lens=useRef<HTMLSpanElement>(null);
- const start=useRef<{x:number;y:number}|null>(null);
+ const focusIfAsked=(element:HTMLElement|null)=>{if(element&&focusNext.current){focusNext.current=false;element.focus();}};
  const modes=unified?MODES:MODES.slice(1);
  const selected=modes.findIndex(([id])=>id===mode);
  const navigation=useRef({selected,onModeChange,modes});navigation.current={selected,onModeChange,modes};
@@ -93,27 +93,12 @@ export function ReceivePortal({active=true,unified=true,mode,payload,onModeChang
   onModeChange(modes[next]![0]);
   buttons.current[next]?.focus();
  };
- const touchStart=(event:TouchEvent<HTMLDivElement>)=>{
-  const target=event.target as HTMLElement;
-  const touch=event.touches[0];
-  start.current=touch&&!target.closest('button,a,input,textarea,select,summary')?{x:touch.clientX,y:touch.clientY}:null;
- };
- const touchEnd=(event:TouchEvent<HTMLDivElement>)=>{
-  const origin=start.current,touch=event.changedTouches[0];
-  start.current=null;
-  if(!origin||!touch)return;
-  const dx=touch.clientX-origin.x,dy=touch.clientY-origin.y;
-  if(Math.abs(dx)<48||Math.abs(dx)<Math.abs(dy)*1.35)return;
-  const next=selected+(dx<0?1:-1);
-  if(modes[next])onModeChange(modes[next][0]);
- };
-
  return <section className="receive-portal" aria-label="Receive payment">
   <div ref={strip} className="receive-pill wallet-glass-track" style={{'--glass-index':selected,'--glass-count':modes.length} as CSSProperties} role="tablist" aria-label="Receive with">
    <span ref={lens} className="wallet-glass-lens" aria-hidden="true"/>
    {modes.map(([id,label,icon],index)=><button key={id} ref={element=>{buttons.current[index]=element;}} type="button" role="tab" id={`receive-tab-${id}`} aria-selected={mode===id} aria-controls="receive-display" tabIndex={mode===id?0:-1} className={mode===id?'is-selected':''} onClick={()=>onModeChange(id)} onKeyDown={event=>keyTab(event,index)}><Icon name={icon} size={17}/><span>{label}</span></button>)}
   </div>
-  <div id="receive-display" className="receive-display" role="tabpanel" aria-labelledby={`receive-tab-${mode}`} onTouchStart={touchStart} onTouchEnd={touchEnd} onTouchCancel={()=>{start.current=null;}}>
+  <div id="receive-display" className="receive-display" role="tabpanel" aria-labelledby={`receive-tab-${mode}`}>
    <div key={mode} className="receive-stage">
     <div className="receive-stage-copy"><span className="receive-stage-mark" aria-hidden="true"><Icon name={payload==='invoice'?'bolt':modes[selected]?.[2]??'shield'} size={17}/></span><h2>{TITLES[payload]}</h2></div>
     {displayValue?<ReceiveQrButton key={qrValue??displayValue} value={qrValue??displayValue} label={LABELS[payload].toLowerCase()} disabled={!active}/>
@@ -121,15 +106,16 @@ export function ReceivePortal({active=true,unified=true,mode,payload,onModeChang
     {displayValue&&<div className="receive-address"><span>{LABELS[payload]}</span>{short(displayValue)===displayValue?<code>{displayValue}</code>:<button type="button" className="receive-address-value" aria-expanded={expanded} title={expanded?'Show less':'Show full address'} onClick={()=>setExpanded(open=>!open)}><code>{expanded?displayValue:short(displayValue)}</code></button>}</div>}
    </div>
    <p className="receive-description">{description}</p>
-   {displayValue&&<div className="receive-controls"><CopyButton value={displayValue} label={invoice?'Copy invoice':'Copy address'}/>{canShare&&<button type="button" className="receive-share" onClick={()=>void navigator.share({text:displayValue}).catch(()=>{})}><Icon name="share" size={17}/>Share</button>}</div>}
+   {displayValue&&<div className="receive-controls"><CopyButton value={displayValue} label={invoice?'Copy invoice':/^bitcoin:/i.test(displayValue)?'Copy payment link':'Copy address'}/>{canShare&&<button type="button" className="receive-share" onClick={()=>void navigator.share({text:displayValue}).catch(()=>{})}><Icon name="share" size={17}/>Share</button>}</div>}
    {action&&!invalidAmount&&<div className="receive-action">{action}</div>}
   </div>
   {children&&<div className="receive-details">{children}</div>}
-  {onAmount&&<div className="receive-details receive-amount">
-   <label className="receive-amount-field">Exact amount<input inputMode="numeric" aria-label="Receive amount in sats" aria-invalid={invalidAmount||undefined} aria-describedby={invalidAmount?'receive-amount-error':undefined} placeholder="Amount in sats" value={amount??''} onChange={event=>onAmount(event.target.value)}/></label>
+  {onAmount&&(amountOpen||amount?<div className="receive-details receive-amount">
+   <label className="receive-amount-field">Exact amount<input ref={focusIfAsked} inputMode="numeric" aria-label="Receive amount in sats" aria-invalid={invalidAmount||undefined} aria-describedby={invalidAmount?'receive-amount-error':undefined} placeholder="Amount in sats" value={amount??''} onChange={event=>onAmount(event.target.value)}/></label>
    <span className="receive-amount-unit" aria-hidden="true">sats</span>
+   <button type="button" className="icon-button receive-amount-remove" aria-label="Remove amount" onClick={()=>{focusNext.current=true;setAmountOpen(false);onAmount('');}}><Icon name="close" size={16}/></button>
    {invalidAmount&&<p id="receive-amount-error" className="receive-amount-error" role="alert">Enter a whole number from 1 to 9,999,999,999 sats, without leading zeros.</p>}
-  </div>}
+  </div>:<div className="receive-details receive-amount"><button ref={focusIfAsked} type="button" className="receive-amount-toggle" onClick={()=>{focusNext.current=true;setAmountOpen(true);}}>Request an exact amount</button></div>)}
   <GlassRefraction target={lens} active={active} radius={999} bezel={9} strength={14}/>
  </section>;
 }

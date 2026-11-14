@@ -78,12 +78,57 @@ test('the receive input passes pasted text to validation without rewriting it',(
  };
  let change:Change|undefined,received='';
  function Capture(){
-  const view=ReceivePortal({mode:'shielded',payload:'shielded',value:'shrol_example',description:'Test receive',onAmount:amount=>{received=amount;},onModeChange:()=>{}});
+  const view=ReceivePortal({mode:'shielded',payload:'shielded',value:'shrol_example',description:'Test receive',amount:'1',onAmount:amount=>{received=amount;},onModeChange:()=>{}});
   change=findInput(view);return view;
  }
  renderToStaticMarkup(createElement(Capture));
  assert.ok(change);
  for(const raw of ['1.5','01','-1','1e3','1,000','10000000000']){change({target:{value:raw}});assert.equal(received,raw);}
+});
+
+test('an exact amount stays behind a request control until it is asked for or already set',()=>{
+ const base={mode:'shielded',payload:'shielded',value:'shrol_example',description:'Test receive',onModeChange:()=>{}} as const;
+ const collapsed=renderToStaticMarkup(createElement(ReceivePortal,{...base,amount:'',onAmount:()=>{}}));
+ assert.match(collapsed,/<button type="button" class="receive-amount-toggle">Request an exact amount<\/button>/);
+ assert.doesNotMatch(collapsed,/Receive amount in sats|Remove amount/);
+ const set=renderToStaticMarkup(createElement(ReceivePortal,{...base,amount:'330',onAmount:()=>{}}));
+ assert.match(set,/aria-label="Receive amount in sats"/);assert.match(set,/aria-label="Remove amount"/);assert.doesNotMatch(set,/Request an exact amount/);
+ assert.doesNotMatch(renderToStaticMarkup(createElement(ReceivePortal,base)),/Request an exact amount|Receive amount in sats/);
+});
+
+test('asking for an amount focuses the field that replaces the request, and removing it clears the amount and focuses the request again',()=>{
+ type Props={children?:ReactNode;className?:string;onClick?:()=>void;ref?:(element:{focus:()=>void}|null)=>void};
+ const find=(node:ReactNode,match:(props:Props,type:unknown)=>boolean):Props|undefined=>{
+  for(const child of Children.toArray(node)){
+   if(!isValidElement<Props>(child))continue;
+   if(match(child.props,child.type))return child.props;
+   const found=find(child.props.children,match);if(found)return found;
+  }
+ };
+ const amounts:string[]=[];let view:ReactNode,focused=0;const element={focus:()=>{focused++;}};
+ function Capture({amount}:{amount:string}){view=ReceivePortal({mode:'shielded',payload:'shielded',value:'shrol_example',description:'Test receive',amount,onAmount:value=>{amounts.push(value);},onModeChange:()=>{}});return view;}
+ renderToStaticMarkup(createElement(Capture,{amount:''}));
+ const request=find(view,props=>!!props.className?.includes('receive-amount-toggle'))!;
+ request.ref!(element);assert.equal(focused,0,'rendering an open or closed amount never takes focus');
+ request.onClick!();request.ref!(element);request.ref!(element);assert.equal(focused,1);
+ renderToStaticMarkup(createElement(Capture,{amount:'330'}));
+ const field=find(view,(_,type)=>type==='input')!,remove=find(view,props=>!!props.className?.includes('receive-amount-remove'))!;
+ field.ref!(element);assert.equal(focused,1);
+ remove.onClick!();assert.deepEqual(amounts,['']);field.ref!(element);assert.equal(focused,2);
+});
+
+test('copy and share form one group whose copy names what it copies, a payment link once an amount is set',()=>{
+ const base={mode:'shielded',payload:'shielded',description:'Test receive',onModeChange:()=>{}} as const;
+ assert.match(renderToStaticMarkup(createElement(ReceivePortal,{...base,value:'shrol_example'})),/<div class="receive-controls"><button[^>]*>Copy address<\/button><\/div>/);
+ assert.match(renderToStaticMarkup(createElement(ReceivePortal,{...base,value:'bitcoin:?shielded=shrol_example&amount=0.00000330',amount:'330',onAmount:()=>{}})),/<div class="receive-controls"><button[^>]*>Copy payment link<\/button><\/div>/);
+});
+
+test('nothing on the receive sheet moves the QR: copy feedback overlays it, a mode change only fades, and the docked sheet keeps one height',()=>{
+ const css=readFileSync(new URL('../app/src/wallet-receive.css',import.meta.url),'utf8'),glass=readFileSync(new URL('../app/src/wallet-glass.css',import.meta.url),'utf8');
+ assert.match(css,/\.receive-qr-control\{position:relative/);assert.match(css,/\.receive-qr-feedback\{position:absolute/);
+ assert.match(css,/@keyframes receive-appear\{from\{opacity:\.4\}\}/);
+ assert.match(glass,/\.stock-page\.has-dock \.stock-panel\.is-receive\{height:/);
+ assert.match(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),/\(docked&&tab==='receive'\?' is-receive':''\)/);
 });
 
 test('empty receive amount retains address-only receiving without a validation error',()=>{

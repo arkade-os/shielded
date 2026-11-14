@@ -127,9 +127,10 @@
 .stock-dock button.selected{background:var(--gules)}
 .stock-dock button:focus-visible{outline:2px solid var(--or);outline-offset:2px}
 .stock-backdrop{display:block;position:fixed;inset:0;z-index:35;background:rgba(16,53,84,.32);animation:stock-fade .2s ease}
-.stock-page.has-dock .stock-panel{position:fixed;left:0;right:0;bottom:0;z-index:40;max-height:86dvh;overflow-y:auto;overscroll-behavior:contain;padding:10px 16px calc(18px + env(safe-area-inset-bottom));border:none;border-top:1px solid var(--gilt);box-shadow:0 -24px 48px -24px rgba(16,53,84,.45);transform:translateY(105%);visibility:hidden;transition:transform .32s cubic-bezier(.2,.7,.2,1),visibility 0s .32s}
+.stock-page.has-dock .stock-panel{position:fixed;left:0;right:0;bottom:0;z-index:40;max-height:86dvh;display:flex;flex-direction:column;overflow:hidden;touch-action:pan-y pinch-zoom;padding:10px 16px calc(18px + env(safe-area-inset-bottom));border:none;border-top:1px solid var(--gilt);box-shadow:0 -24px 48px -24px rgba(16,53,84,.45);transform:translateY(105%);visibility:hidden;transition:transform .32s cubic-bezier(.2,.7,.2,1),visibility 0s .32s}
 .stock-page.has-dock .stock-panel.is-open{transform:none;visibility:visible;transition:transform .32s cubic-bezier(.2,.7,.2,1)}
-.stock-panel-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;position:sticky;top:-10px;z-index:1;margin:-10px -16px 0;padding:10px 16px 8px;background:var(--card);touch-action:none}
+.stock-page.has-dock .stock-panel-body{flex:1 1 auto;min-height:0;margin:0 -16px;padding:0 16px;overflow-y:auto;overscroll-behavior:contain;touch-action:pan-y pinch-zoom}
+.stock-panel-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;flex:none;margin:-10px -16px 0;padding:10px 16px 8px;background:var(--card);touch-action:none}
 .stock-grabber{grid-column:2;width:44px;height:4px;background:var(--rule)}
 .stock-card .stock-panel-head button{grid-column:3;justify-self:end}
 .has-dock .stock-soundbar{left:12px;right:12px;width:auto;transform:none;top:auto;bottom:calc(86px + env(safe-area-inset-bottom))}

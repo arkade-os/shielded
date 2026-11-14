@@ -38,9 +38,9 @@ test('production CSS preserves standard and Safari glass backdrops',async()=>{
   ['.wallet-glass-lens.has-liquid-refraction',/^var\(--wallet-glass-filter\)/],
   ['.stock-soundbar.has-refraction',/^url\(/],
   ['.receive-pill',/^blur\(/],
-  ['.native-wallet-topbar',/^blur\(/],
+  ['.native-wallet-lock',/^blur\(/],
   ['.stock-panel.has-liquid-refraction',/^none$/],
-  ['.native-wallet-topbar',/^none$/],
+  ['.native-wallet-lock',/^none$/],
  ] as const){
   assert.ok(rules.some(rule=>rule.selector.split(',').some(part=>part.endsWith(selector))&&filter.test(rule.value)),`${selector} emits ${filter} backdrops`);
  }
