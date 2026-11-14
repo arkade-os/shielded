@@ -289,3 +289,10 @@ test('native Ready cannot bypass the pinned identity or the newer-version check'
   assert.notEqual(f.state().phase,'ready');await f.controller.install();assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
  }
 });
+
+test('the Android installer checks the folder the Rust host stages updates in',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const read=(path:string)=>readFileSync(new URL(path,import.meta.url),'utf8');
+ assert.match(read('../src-tauri/src/lib.rs'),/AndroidUpdates::new\(app\.path\(\)\.app_cache_dir\(\)\?\.join\("shielded-updates"\)\)/);
+ assert.match(read('../src-tauri/plugins/shielded-platform/android/src/main/java/io/arkade/shielded/platform/AndroidUpdater.kt'),/private val directory = File\(this\.context\.cacheDir, "shielded-updates"\)/);
+});
