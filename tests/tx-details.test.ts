@@ -117,6 +117,7 @@ const view:TxView={kind:'ark',value:ARK,title:'Sent privately',facts:[['Amount',
 const sheet=(props:Partial<Parameters<typeof TxSheet>[0]>)=>renderToStaticMarkup(createElement(TxSheet,{view,source:services({}).source,native:true,onClose:()=>{},...props}));
 test('the sheet shows the txid with copy and the row\'s facts while it loads, and its explorer action warns it leaves Tor',()=>{
  const html=sheet({});
+ assert.match(html,/^<dialog class="tx-sheet-layer" aria-labelledby="tx-sheet-title"/,'a native modal dialog contains focus and leaves the Activity sheet inert');
  for(const text of ['Arkade transaction','Sent privately','−1,000 sats',ARK,'aria-label="Copy to clipboard"','From the Arkade indexer','Loading…','Open in explorer',EXPLORER_WARNING])assert.ok(html.includes(text),text);
  assert.doesNotMatch(html,/href="https:\/\/explorer/,'the native app opens the explorer only through the opener');
  const web=sheet({native:false});

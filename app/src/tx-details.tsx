@@ -72,7 +72,7 @@ function useHoldCopy(value:string){
  // A touch hold carries no user activation until it lifts, so a write refused mid-hold is retried on the release, which does.
  const [press]=useState(()=>longPress(()=>{void copy().then(()=>show('Copied'),()=>{if(down.current)owed.current=true;else show('Couldn’t copy');});}));
  const release=(retry:boolean)=>{press.up();down.current=false;if(!owed.current)return;owed.current=false;if(retry)void copy().then(()=>show('Copied'),()=>show('Couldn’t copy'));else show('Couldn’t copy');};
- useEffect(()=>()=>clearTimeout(timer.current),[]);
+ useEffect(()=>()=>{press.up();clearTimeout(timer.current);},[press]);
  return {note,spent:press.spent,bind:{
   onPointerDown:(event:PointerEvent)=>{touch.current=event.pointerType!=='mouse';owed.current=false;if(touch.current&&event.isPrimary){down.current=true;press.down(event.clientX,event.clientY);}},
   onPointerMove:(event:PointerEvent)=>press.move(event.clientX,event.clientY),
@@ -91,12 +91,14 @@ export function ActivityLink({value,copy=value,onOpen}:{value:string;copy?:strin
 const Facts=({facts}:{facts:readonly TxFact[]})=><dl className="stock-facts">{facts.map(([label,value])=><Fragment key={label}><dt>{label}</dt><dd>{value}</dd></Fragment>)}</dl>;
 
 export function TxSheet({view,source,native,onClose}:{view:TxView;source:TxSource;native:boolean;onClose:()=>void}){
- const kind=view.kind==='reveal'?undefined:view.kind,close=useRef<HTMLButtonElement>(null),hold=useHoldCopy(view.value);
+ const kind=view.kind==='reveal'?undefined:view.kind,layer=useRef<HTMLDialogElement>(null),close=useRef<HTMLButtonElement>(null),hold=useHoldCopy(view.value);
  const [read,setRead]=useState<TxRead>(),[attempt,setAttempt]=useState(0),[blocked,setBlocked]=useState(false);
  useEffect(()=>{
-  const previous=document.activeElement instanceof HTMLElement?document.activeElement:undefined,key=(event:KeyboardEvent)=>{if(event.key==='Escape')onClose();};
-  close.current?.focus();addEventListener('keydown',key);
-  return()=>{removeEventListener('keydown',key);if(previous?.isConnected)previous.focus();};
+  const node=layer.current,previous=document.activeElement instanceof HTMLElement?document.activeElement:undefined;
+  // Taken in window's capture phase, so the Activity sheet's own Escape listener beneath never sees it.
+  const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.stopPropagation();event.preventDefault();onClose();}};
+  if(node&&!node.open)node.showModal();close.current?.focus();addEventListener('keydown',key,true);
+  return()=>{removeEventListener('keydown',key,true);node?.close();if(previous?.isConnected)previous.focus();};
  },[onClose]);
  useEffect(()=>{
   if(!kind)return;
@@ -105,8 +107,8 @@ export function TxSheet({view,source,native,onClose}:{view:TxView;source:TxSourc
   return()=>controller.abort();
  },[kind,view.value,source,attempt]);
  const again=<button type="button" className="stock-ghost stock-mini" onClick={()=>setAttempt(n=>n+1)}>Check again</button>;
- return <div className="tx-sheet-layer" data-pull-refresh-ignore="" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
-  <section className="stock-card tx-sheet" role="dialog" aria-modal="true" aria-labelledby="tx-sheet-title">
+ return <dialog ref={layer} className="tx-sheet-layer" aria-labelledby="tx-sheet-title" data-pull-refresh-ignore="" onCancel={event=>{event.preventDefault();onClose();}} onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
+  <section className="stock-card tx-sheet">
    <header><small>{kind?TX_KIND[kind]:'Reveal link'}</small><button ref={close} type="button" className="icon-button" aria-label="Close" onClick={onClose}><Icon name="close" size={18}/></button></header>
    <h2 id="tx-sheet-title">{view.title}</h2>
    <Facts facts={view.facts}/>
@@ -122,5 +124,5 @@ export function TxSheet({view,source,native,onClose}:{view:TxView;source:TxSourc
      {blocked&&<><p className="stock-blocked" role="alert">The explorer could not be opened. Copy its link instead.</p><div className="stock-copy"><code>{view.explorer}</code><CopyButton value={view.explorer}/></div></>}</div>
     :<p className="stock-muted"><a href={view.explorer} target="_blank" rel="noreferrer">Open in explorer ↗</a></p>)}
   </section>
- </div>;
+ </dialog>;
 }
