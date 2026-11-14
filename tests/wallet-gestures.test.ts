@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
-import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,sheetGesture} from '../app/src/wallet-gestures.ts';
+import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,longPress,sheetGesture} from '../app/src/wallet-gestures.ts';
 
 class TestDocument extends EventTarget {visibilityState='visible';defaultView=Object.assign(new EventTarget(),{getComputedStyle:(el:TestElement)=>({overflowX:el.overflowX})});scrollingElement?:TestElement;}
 class TestElement extends EventTarget {
@@ -300,4 +300,31 @@ test('a back still queued from the last close does not close the sheet that reop
  const dispose=bindSheetBack(view,()=>closed++);await tick();
  assert.equal(closed,0);
  view.history.back();await tick();assert.equal(closed,1);dispose();
+});
+
+test('a sheet opened over another takes back first and leaves the one beneath open',()=>{
+ const stack:unknown[]=[null],events=new EventTarget();let index=0,under=0,over=0;
+ const view={history:{get state(){return stack[index];},pushState:(state:unknown)=>{stack.splice(index+1,Infinity,state);index++;},back:()=>{if(index>0){index--;events.dispatchEvent(Object.assign(new Event('popstate'),{state:stack[index]}));}}},addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events)} as unknown as Parameters<typeof bindSheetBack>[0];
+ const below=bindSheetBack(view,()=>under++),above=bindSheetBack(view,()=>over++,'shieldedTx');
+ view.history.back();assert.deepEqual([over,under],[1,0]);above();assert.equal(index,1,'the closed top sheet takes no second back');
+ view.history.back();assert.equal(under,1);below();assert.equal(index,0);
+});
+
+test('a long press fires once after the hold and spends only the click that ends it',t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ let holds=0;const press=longPress(()=>holds++);
+ press.down(0,0);t.mock.timers.tick(499);assert.equal(holds,0);
+ press.move(3,4);t.mock.timers.tick(1);assert.equal(holds,1,'a wobble inside the slop still holds');
+ press.up();assert.equal(press.spent(),true);assert.equal(press.spent(),false);
+ press.down(0,0);press.up();assert.equal(press.spent(),false,'a tap still clicks');
+});
+
+test('movement or an early release stops a long press, and a new press forgets an unspent hold',t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ let holds=0;const press=longPress(()=>holds++);
+ press.down(0,0);press.move(0,11);t.mock.timers.tick(600);
+ press.down(0,0);t.mock.timers.tick(300);press.up();t.mock.timers.tick(600);
+ assert.equal(holds,0);assert.equal(press.spent(),false);
+ press.down(0,0);t.mock.timers.tick(500);assert.equal(holds,1);
+ press.down(5,5);press.up();assert.equal(press.spent(),false,'Android sends no click after a hold, so the next tap must still open');
 });

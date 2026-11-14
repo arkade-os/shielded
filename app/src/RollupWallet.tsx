@@ -1,7 +1,7 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type ReactNode} from 'react';
 import {createPortal} from 'react-dom';
 import {invoke} from '@tauri-apps/api/core';
-import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
+import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
@@ -28,6 +28,7 @@ import WalletSyncStatus from './WalletSyncStatus.tsx';
 import {createWalletOpeningProgress} from './wallet-opening-progress.ts';
 import {AppUpdateNotice} from './AppUpdates.tsx';
 import {CopyButton,Icon,WalletBalanceNotice} from './components.tsx';
+import {ActivityLink,REVEAL_LINE,TxSheet,explorerUrl,txOf,when,type TxKind,type TxView} from './tx-details.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
@@ -50,9 +51,7 @@ const POOL_ORIGIN=INJECTED_NATIVE?(globalThis as typeof globalThis&{__SHIELDED_N
 const PASSKEY_RP_ID=passkeyRpId(POOL_ORIGIN,location.hostname);
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
-const EXPLORER='https://explorer.mutinynet.arkade.sh';
 const sats=(value:bigint|number)=>Number(value).toLocaleString('en-US'),short=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
-const when=(at?:number)=>at?new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}):'Time unknown';
 const canShare=typeof navigator!=='undefined'&&typeof navigator.share==='function';
 const receiveRecoveryStorage=()=>{try{return globalThis.sessionStorage;}catch{return undefined;}};
 /** A value to copy; with `qr` it can also show that payload as a QR code and hand the value to the system share sheet. */
@@ -63,7 +62,6 @@ function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
   {qr!==undefined&&canShare&&<button type="button" className="icon-button" aria-label="Share" onClick={()=>void navigator.share(/^https?:/.test(value)?{url:value}:{text:value}).catch(()=>{})}><Icon name="share" size={16}/></button>}</div>
   {shown&&qr!==undefined&&<QrCode value={qr} label={label??'QR code'}/>}</>;
 }
-const TxLink=({txid,path='tx'}:{txid:string;path?:string})=>PRIVATE?<code>{txid}</code>:<a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 // The resolver's kinds, mapped onto the swatches the history list already has.
 const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','shielded-send':'send','self-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
 const LIGHTNING_STATUS:Record<string,string>={received:'Received; waiting to shield',shielding:'Received; shielding',shielded:'Shielded in the pool',retrying:'Received; shielding will retry','below-minimum':'Received outside the pool; below the shielding minimum','onchain-recovery':'Onchain recovery; shielding paused','onchain-recovered':'Recovered onchain'};
@@ -109,6 +107,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sheetOpen,setSheetOpen]=useState(false),narrow=useMedia('(max-width:760px)'),[scanning,setScanning]=useState(false),[codeError,setCodeError]=useState('');
  const [pullRefresh,setPullRefresh]=useState<PullToRefreshState>({distance:0,ready:false,refreshing:false});
  const [notice,setNotice]=useState<ActivityNotice>();
+ const [txView,setTxView]=useState<TxView>(),closeTx=useCallback(()=>setTxView(undefined),[]);
  const syncRef=useRef<(()=>Promise<void>)|undefined>(undefined),wasVisible=useRef(true),pendingForeground=useRef(false);
  const dismissNotice=useCallback(()=>setNotice(undefined),[]);
  const pageNode=useRef<HTMLDivElement>(null);
@@ -143,7 +142,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const reportStartupStage=useCallback((stage:string)=>{if(mounted.current)setStartupStage(stage);onStartupStage?.(stage);},[onStartupStage]);
 
   const closeTransient=useCallback((mode?:TransientWalletDismissal)=>dismissTransientWalletViews({
-   closeSheet:()=>setSheetOpen(false),
+   closeSheet:()=>{setSheetOpen(false);setTxView(undefined);},
    closeScanner:()=>setScanning(false),
    closeAbout:()=>setAboutOpen(false),
    closeSecurity:()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);},
@@ -531,7 +530,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{const panel=panelNode.current;if(!viewActive||suspended||!sheetOpen||!docked||!panel)return;
   // Everything behind the open sheet goes inert, for Tab and for a screen reader's cursor; the backdrop still closes it and the bar keeps reporting.
   const behind:Element[]=[];let el:Element=panel;
-   const skip=tab==='activity'?'.stock-backdrop,.stock-soundbar,.stock-scan,.stock-dock,.wallet-balance-notice,[inert]':'.stock-backdrop,.stock-soundbar,.stock-scan,.wallet-balance-notice,[inert]';
+   const skip=tab==='activity'?'.stock-backdrop,.stock-soundbar,.stock-scan,.stock-dock,.wallet-balance-notice,.tx-sheet-layer,[inert]':'.stock-backdrop,.stock-soundbar,.stock-scan,.wallet-balance-notice,.tx-sheet-layer,[inert]';
    while(el.parentElement&&!el.classList.contains('stock-page')){const up=el.parentElement;for(const other of Array.from(up.children))if(other!==el&&!other.matches(skip))behind.push(other);el=up;}
   for(const other of behind)other.setAttribute('inert','');
   const key=(e:KeyboardEvent)=>{if(e.key==='Escape')setSheetOpen(false);};
@@ -644,11 +643,11 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   void passkeyWords(storage,{rpId:PASSKEY_RP_ID}).then(words=>{if(mounted.current){setPasskeyPhrase(words);setReveal(true);}},error=>{if(mounted.current)setRevealError(errorText(error));}).finally(()=>{revealing.current=false;});
  };
  const assetName=(id:string)=>`asset ${short(id)}`;
- const revealFor=(item:Activity)=>{
-  const link=wallet?.revealLinkOfActivity(item);
+ const revealFor=(item:Activity,open:(link:string)=>void)=>{
+  const link=wallet?.revealLinkOfActivity(item),shown=revealed[item.id];
   if(!link)return null;
-  return <><dt>Reveal</dt><dd>{revealed[item.id]
-   ?<><Copyable value={revealed[item.id]!}/><p className="stock-muted">Anyone with this link can check this payment&apos;s amount and recipient against the pool, and learns nothing else.</p></>
+  return <><dt>Reveal</dt><dd>{shown
+   ?<><ActivityLink value={shown} onOpen={()=>open(shown)}/><p className="stock-muted">{REVEAL_LINE}</p></>
    :<button type="button" className="stock-ghost stock-mini" onClick={()=>setRevealed(r=>({...r,[item.id]:link}))}>Create a reveal link</button>}</dd></>;
  };
 
@@ -711,6 +710,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   });
  },[ready,docked,sheetOpen]);
  useEffect(()=>{if(docked&&sheetOpen&&viewActive&&!suspended)return bindSheetBack(window,()=>setSheetOpen(false));},[docked,sheetOpen,viewActive,suspended]);
+ useEffect(()=>{if(txView&&viewActive&&!suspended)return bindSheetBack(window,closeTx,'shieldedTx');},[!!txView,viewActive,suspended,closeTx]);
+ // Wrapped: window.fetch called as a method of another object throws "Illegal invocation".
+ const txSource=useMemo(()=>{const net=initialPool?.network;return net&&{fetch:(input:RequestInfo|URL,init?:RequestInit)=>(sessionFetch??fetch)(input,init),indexer:String(net.indexerUrl??net.arkUrl),esplora:ESPLORA_URL[net.network as NetworkName]};},[initialPool,sessionFetch]);
  const openSecurity=(view:WalletSecurityView)=>{setReveal(false);setShowView(false);setShowFull(false);setClearError('');setRevealError('');setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const clearWallet=async()=>{
@@ -741,21 +743,24 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
   const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='unshield'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
-  const id=newest.key.arkTxid||newest.key.commitmentTxid,asset=newest.assets?.[0];
+  const tx=txOf(newest.key),asset=newest.assets?.[0];
   const feePaid=wallet&&kind==='shield'?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):wallet&&kind==='lightning-receive'?lightningShieldFeeOf(wallet.shieldedHistory(),item.intent?.metadata?.shieldTxid,item.amount):undefined;
+  const amount=`${direction==='in'?'+':direction==='out'?'−':''}${asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}`;
+  const open=(view:Pick<TxView,'kind'|'value'|'explorer'>)=>setTxView({...view,title:label,facts:[['Amount',amount],['Status',status],['Time',when(item.createdAt)]]});
+  const txLink=(kind:TxKind,txid:string)=>{const explorer=PRIVATE?undefined:explorerUrl(kind,txid);return <ActivityLink value={txid} copy={explorer??txid} onOpen={()=>open({kind,value:txid,explorer})}/>;};
   return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
-    <b className={direction==='own'?undefined:direction}>{direction==='in'?'+':direction==='out'?'−':''}{asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}</b><time>{when(item.createdAt)}</time></summary>
+    <b className={direction==='own'?undefined:direction}>{amount}</b><time>{when(item.createdAt)}</time></summary>
    <dl>
     <dt>Where</dt><dd>{whereOf(kind,received)}</dd>
     {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
-    {id&&<><dt>Transaction</dt><dd><TxLink txid={id} path={newest.key.arkTxid?'tx':'commitment-tx'}/></dd></>}
+    {tx&&<><dt>{tx.kind==='bitcoin'?'Bitcoin transaction':'Transaction'}</dt><dd>{txLink(tx.kind,tx.txid)}</dd></>}
     {feePaid!==undefined&&feePaid>0n&&<><dt>Deposit fee</dt><dd>{satsText(feePaid)}</dd></>}
     {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
      {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
-     <dt>Bitcoin transaction</dt><dd><TxLink txid={item.intent.metadata.onchainTxid} path="commitment-tx"/></dd></>}
+     <dt>Bitcoin transaction</dt><dd>{txLink('bitcoin',item.intent.metadata.onchainTxid)}</dd></>}
     <dt>Status</dt><dd>{status}</dd>
     {kind==='lightning-receive'&&item.intent?.outcome!=='shielded'&&wallet?.swaps&&typeof item.intent?.metadata?.outpoint==='string'&&<LightningRecoveryQuote service={wallet.swaps} outpoint={item.intent.metadata.outpoint} disabled={busy||restoring.current}/>}
-    {revealFor(item)}
+    {revealFor(item,link=>open({kind:'reveal',value:link}))}
    </dl></details></li>;
  });
  const historyContent=(items:typeof historyItems)=>!rows.length?<p className="stock-muted">{synced?'No activity yet.':'Reading the pool…'}</p>:<ul>{items}</ul>;
@@ -878,6 +883,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  </main>
  {docked&&<>{sheetOpen&&<div className="stock-backdrop" aria-hidden="true" onClick={()=>setSheetOpen(false)}/>}
    <nav ref={dockNode} className={'stock-dock wallet-glass-track'+(sheetOpen?'':' is-home')} style={{'--glass-index':Math.max(0,(DOCK as readonly string[]).indexOf(tab)),'--glass-count':DOCK.length} as CSSProperties} aria-label="Wallet navigation"><span ref={dockLens} className="wallet-glass-lens" aria-hidden="true"/>{DOCK.map(name=><button key={name} type="button" aria-controls="stock-panel" aria-expanded={sheetOpen&&tab===name} className={sheetOpen&&tab===name?'selected':''} onClick={()=>openPanel(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav></>}
+ {txView&&txSource&&viewActive&&!suspended&&!hidden&&<TxSheet view={txView} source={txSource} native={nativeHost} onClose={closeTx}/>}
  {ready&&viewActive&&!suspended&&<><GlassRefraction target={panelNode} active={docked&&sheetOpen} radius={30} bezel={24} strength={36}/><GlassRefraction target={dockLens} active={docked&&sheetOpen&&tab==='activity'} radius={999} bezel={10} strength={18}/><GlassRefraction target={mainLens} active={!docked} radius={999} bezel={10} strength={18}/></>}
  {ready&&<Soundbar item={activity} onDismiss={()=>sheetOwner.clear()}/>}
  {scanning&&!suspended&&viewActive&&pageVisible&&!hidden&&<Scanner onResult={code=>{if(suspended||!viewActive||!pageVisible||hidden||paymentRequest)return;onScannerIntentChange?.(false);setScanning(false);fill(code);}} onClose={()=>{onScannerIntentChange?.(false);setScanning(false);}}/>}

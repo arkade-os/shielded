@@ -111,6 +111,19 @@
 .stock-page .stock-history dl,.stock-page .stock-facts{border:1px solid var(--rule);border-radius:14px;background:#fffaf1}
 .stock-page .stock-history dt,.stock-page .stock-facts dt{color:var(--slate);letter-spacing:0;text-transform:none}
 .stock-page .stock-txlink,.stock-page .stock-muted a,.stock-page .stock-warning a{color:var(--navy);text-decoration-color:var(--or);text-underline-offset:3px}
+.stock-page .stock-card button.stock-txlink{overflow:visible;min-height:0;padding:0;border:0;border-radius:0;background:none;font:inherit;font-family:'Geist Mono',ui-monospace,monospace;text-align:left;text-decoration-line:underline;cursor:pointer;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.stock-page .stock-history dd>.stock-muted{margin-top:4px}
+.stock-page .tx-sheet-layer{position:fixed;inset:0;z-index:60;display:grid;align-items:end;justify-items:center;background:rgba(13,42,67,.28);animation:stock-fade .2s ease}
+.stock-page .stock-card.tx-sheet{box-sizing:border-box;width:min(560px,100%);max-height:88dvh;overflow-y:auto;overscroll-behavior:contain;align-content:start;gap:12px;padding:14px 18px calc(20px + env(safe-area-inset-bottom));border-radius:26px 26px 0 0;background:#faf7f0;-webkit-backdrop-filter:none;backdrop-filter:none}
+.stock-page .tx-sheet>header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.stock-page .tx-sheet>header small,.stock-page .tx-sheet-read>small{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--slate)}
+.stock-page .tx-sheet h2{margin-top:-8px;font-size:21px}
+.stock-page .tx-sheet dl{margin:0}
+@media(pointer:coarse){.stock-page .tx-sheet .stock-copy code{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}}
+.stock-page .tx-sheet>header .icon-button{display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--slate)}
+.stock-page .tx-sheet-read,.stock-page .tx-sheet-explorer{display:grid;gap:6px}
+.stock-page .tx-sheet-explorer{justify-items:start}
+@media(min-width:761px){.stock-page .tx-sheet-layer{align-items:center;padding:24px}.stock-page .stock-card.tx-sheet{border-radius:26px}}
 .stock-page .stock-notes>div{border:1px solid var(--rule);border-radius:14px;background:#fffaf1;outline:0}
 .stock-page .stock-notes>div::after{display:none}
 .stock-page .stock-notes span:first-child{font-family:'Geist',system-ui,sans-serif;font-size:16px}

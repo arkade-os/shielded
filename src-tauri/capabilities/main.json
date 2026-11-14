@@ -27,7 +27,7 @@
     "deep-link:default",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://shielded.mutinynet.arkade.sh/#download" }, { "url": "https://shielded.mutinynet.arkade.sh/download#download" }]
+      "allow": [{ "url": "https://shielded.mutinynet.arkade.sh/#download" }, { "url": "https://shielded.mutinynet.arkade.sh/download#download" }, { "url": "https://explorer.mutinynet.arkade.sh/tx/*" }, { "url": "https://explorer.mutinynet.arkade.sh/commitment-tx/*" }, { "url": "https://mempool.mutinynet.arkade.sh/tx/*" }]
     },
     "shielded-platform:allow-secret-get",
     "shielded-platform:allow-secret-set",
