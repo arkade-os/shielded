@@ -64,6 +64,10 @@ export const routeCopy=(railId:string)=>railId==='shielded'?{title:'Private paym
 
 const grouped=(n:number|bigint)=>n.toLocaleString('en-US');
 export const satsText=(n:number|bigint)=>`${grouped(n)} ${Number(n)===1?'sat':'sats'}`;
+/** `notes` counts the spendable ones. topThree caps a payment at three; notes in flight or awaiting recovery are another gap, which this line does not explain. */
+export const sendLimitLine=(max:bigint,balance:bigint,notes:number,unit:string)=>max>0n&&max<balance&&notes>3
+ ?`Up to ${grouped(max)} ${unit} in one payment, which can combine at most three of your notes.`
+ :`Up to ${grouped(max)} ${unit} available privately.`;
 const charges=(fee:DepositFeeSchedule|undefined):fee is DepositFeeSchedule=>!!(fee&&(fee.fixedSats||fee.bps));
 const feeTerms=({fixedSats,bps}:DepositFeeSchedule)=>{
  const fixed=satsText(fixedSats),share=`${bps/100}% of each deposit`;

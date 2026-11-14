@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type ReactNode} from 'react';
-import {createPortal} from 'react-dom';
+import {createPortal,flushSync} from 'react-dom';
 import {invoke} from '@tauri-apps/api/core';
 import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
@@ -17,7 +17,7 @@ import {RECOVERY_LINE} from '../../src/shielded/epoch-recovery.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,payTarget,routeCopy,satsText,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
+import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,payTarget,routeCopy,satsText,sendLimitLine,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
@@ -89,6 +89,9 @@ const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].in
 // Stable, so React focuses it once on mount; an inline ref would take focus back on every render.
 const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
 const DOCK=['activity','receive','send'] as const;
+const titled=(name:string)=>name[0]!.toUpperCase()+name.slice(1);
+// What a neighbouring sheet shows while a swipe brings it in; its real content renders only once the swipe lands.
+const PEEK={activity:Array<string>(9).fill('row'),receive:['pill','qr','line','line','button'],send:['label','field','label','field','text','text','text','bar','chip']} as const;
 export type WalletConnection={problem:string;busy:boolean;reconnect:()=>void};
 export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onConnection,onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,onResumeSnapshot,onScannerIntentChange,resumeScanner,onResumeScannerHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false,headerControls}:{storage?:Storage;reload?:()=>void;onConnection?:(connection:WalletConnection|undefined)=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;resumeScanner?:number;onResumeScannerHandled?:(token:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean;headerControls?:ReactNode}={}){
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
@@ -603,8 +606,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  },[wantsInvoice,invoiceAmount,wallet?.swaps,lnBusy,receiveOpen,receiveBlocked,invoice]);
  const settled=!!pool||!!startupError||!!poolError;
   const opening=!!secret&&!wallet&&!startupFailure;
- const maxSend=wallet?wallet.maxPrivatePayment(assetId?assetFieldOfId(assetId):0n):0n;
+ const sendField=assetId?assetFieldOfId(assetId):0n,maxSend=wallet?wallet.maxPrivatePayment(sendField):0n;
  const needsRecovery=new Set(wallet?.recovering.map(note=>note.nullifier)),recovering=new Set(wallet?.recoveryInFlight.map(note=>note.nullifier));
+ const sendNotes=wallet?wallet.shieldedNotes(sendField).filter(note=>!wallet.inFlight.has(note.nullifier)&&!needsRecovery.has(note.nullifier)).length:0;
  const inFlight=!!wallet&&[...wallet.shieldedNotes(),...reserves.flatMap(id=>wallet.shieldedNotes(assetFieldOfId(id)))].some(note=>wallet.inFlight.has(note.nullifier)&&!recovering.has(note.nullifier));
  useEffect(()=>{
   const page=pageNode.current;
@@ -706,8 +710,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   return bindSheetGestures(panelNode.current,panelBody.current,action=>{
    if(action==='close'){setSheetOpen(false);return;}
    const view=navigation.current,names=['home','activity','receive','send'] as const,next=names[names.indexOf(view.tab)+(action==='next'?1:-1)];
-   if(next&&next!=='home')view.openPanel(next);
-  });
+   // The pages slide back as soon as this returns, so the new sheet must already be rendered or the old one flashes.
+   if(next&&next!=='home')flushSync(()=>view.openPanel(next));
+  },dockNode.current);
  },[ready,docked,sheetOpen]);
  useEffect(()=>{if(docked&&sheetOpen&&viewActive&&!suspended)return bindSheetBack(window,()=>setSheetOpen(false));},[docked,sheetOpen,viewActive,suspended]);
  useEffect(()=>{if(txView&&viewActive&&!suspended)return bindSheetBack(window,closeTx,'shieldedTx');},[!!txView,viewActive,suspended,closeTx]);
@@ -813,10 +818,10 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     {!docked&&<nav ref={mainTabsNode} className="stock-tabs stock-main-tabs wallet-glass-track" style={{'--glass-index':['home','activity','receive','send'].indexOf(tab),'--glass-count':4} as CSSProperties} role="tablist" aria-label="Wallet sections"><span ref={mainLens} className="wallet-glass-lens" aria-hidden="true"/>{(['home','activity','receive','send'] as const).map(name=><button key={name} type="button" role="tab" aria-selected={tab===name} aria-controls="stock-panel" className={tab===name?'selected':''} onClick={()=>selectTab(name)}>{name[0]!.toUpperCase()+name.slice(1)}</button>)}</nav>}
     <div className="stock-grid"><div className="stock-col">
      {docked&&<>{balanceCard()}{recentPreview}</>}
-    <section ref={panelNode} id="stock-panel" className={'stock-card stock-panel'+(docked&&sheetOpen?' is-open':'')+(docked&&tab==='activity'?' is-activity':'')+(docked&&tab==='receive'?' is-receive':'')} {...(docked?{role:'dialog','aria-modal':sheetOpen&&tab!=='activity','aria-label':tab==='activity'?'Activity':tab==='receive'?'Receive':tab==='send'?'Send':'Home',inert:!sheetOpen}:{})}>
-    {docked&&<div className="stock-panel-head"><span className="stock-grabber" aria-hidden="true"/><button type="button" aria-label="Close" onClick={()=>setSheetOpen(false)}><Icon name="close" size={18}/></button></div>}
+    <section ref={panelNode} id="stock-panel" className={'stock-card stock-panel'+(docked&&sheetOpen?' is-open':'')+(docked&&tab==='activity'?' is-activity':'')+(docked&&tab==='receive'?' is-receive':'')+(docked&&tab==='send'?' is-send':'')} {...(docked?{role:'dialog','aria-modal':sheetOpen&&tab!=='activity','aria-labelledby':'stock-panel-title',inert:!sheetOpen}:{})}>
+    {docked&&<div className="stock-panel-head"><h2 id="stock-panel-title" data-sheet-page="">{titled(tab)}</h2><span className="stock-grabber" aria-hidden="true"/><button type="button" aria-label="Close" onClick={()=>setSheetOpen(false)}><Icon name="close" size={18}/></button></div>}
     {docked&&sheetOpen&&activity&&<div className="stock-sheet-status" role="status" aria-live="polite"><span className={'stock-sheet-status-dot is-'+activity.state} aria-hidden="true"/><span><b>{activity.title}</b>{activity.line&&<> · {activity.line}</>}</span>{activity.state!=='active'&&<button type="button" onClick={()=>sheetOwner.clear()} aria-label="Dismiss wallet status">×</button>}</div>}
-     <div ref={panelBody} className="stock-panel-body">{tab==='home'?(!docked?<div className="stock-home-view">{balanceCard()}{recentPreview}</div>:null):tab==='activity'?<section className="stock-card stock-history stock-history-full"><h2>Activity</h2>{historyContent(historyItems)}{synced&&!rows.length&&<button type="button" className="stock-primary" onClick={()=>docked?openPanel('receive'):selectTab('receive')}>Receive your first payment</button>}</section>:<>
+     <div ref={panelBody} className="stock-panel-body" data-sheet-page="">{tab==='home'?(!docked?<div className="stock-home-view">{balanceCard()}{recentPreview}</div>:null):tab==='activity'?<section className="stock-card stock-history stock-history-full">{!docked&&<h2>Activity</h2>}{historyContent(historyItems)}{synced&&!rows.length&&<button type="button" className="stock-primary" onClick={()=>docked?openPanel('receive'):selectTab('receive')}>Receive your first payment</button>}</section>:<>
      {tab==='receive'?<div className="stock-receive">
        <ReceivePortal active={viewActive&&!suspended&&(!docked||sheetOpen)} unified={liveStreams} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receivePaymentValue??receiveValue} qrValue={receiveQr} amount={lnAmount} onAmount={setLnAmount} loading={receiveLoading} description={receiveDescription} action={receiveAction}>
 
@@ -843,7 +848,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {codeError&&<p className="stock-blocked" role="alert">{codeError}</p>}
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {arkAssetRecipient&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-      <p className="stock-muted">{synced?`Up to ${sats(maxSend)} ${unit} available privately.`:'Syncing your wallet…'}</p>
+      <p className="stock-muted">{synced?sendLimitLine(maxSend,assetId?assetUnits(assetId):balance,sendNotes,unit):'Syncing your wallet…'}</p>
      <details className="stock-more"><summary>Where each kind of payment goes</summary><p className="stock-muted">A shielded address pays privately inside the pool. An Arkade address leaves the pool, and the amount and destination become public.{liveStreams?' A Bitcoin address leaves the pool through a fresh key used only for that payment, so it is not linked to your deposit address. Lightning funds its swap directly from one pool note.':' Private networking does not carry Bitcoin or Lightning payments yet.'} A claim link pays whoever opens it first.</p>{liveStreams&&to.trim()&&<p className="stock-muted">Get quote contacts the payment service for Lightning invoices and addresses. It shares the invoice or address and amount; payment happens after you confirm the quote.</p>}</details>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
@@ -853,6 +858,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(POOL_ORIGIN||location.origin,minted)} qr={claimUrl(POOL_ORIGIN||location.origin,minted)} label="QR code of the claim link"/>
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
      </form>}</>}</div>
+     {docked&&sheetOpen&&(['previous','next'] as const).map(side=>{const name=DOCK[(DOCK as readonly string[]).indexOf(tab)+(side==='next'?1:-1)];return name&&<div key={side} className={'stock-panel-peek is-'+side} data-sheet-page={side} aria-hidden="true"><h2>{titled(name)}</h2><div className={'is-'+name}>{PEEK[name].map((shape,i)=><i key={i} className={'is-'+shape}/>)}</div></div>;})}
     </section></div>
     {(docked||tab==='home')&&links.length>0&&<div className="stock-col"><section className="stock-card"><h2>Your claim links</h2><div className="stock-notes">
     {links.map(link=><div key={link.key}><span>{holdingsText([{asset:BigInt(link.asset),amount:BigInt(link.amount)}],field=>wallet?.assetIdOf(field))}</span><span className={link.state==='unclaimed'?'wait':'ok'}>{LINK_STATE[link.state]}</span>

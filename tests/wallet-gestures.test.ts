@@ -1,22 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
-import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,longPress,sheetGesture} from '../app/src/wallet-gestures.ts';
+import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,longPress,sheetGesture,sheetOffset,sheetResistance,sheetSnap,sheetSnapMs} from '../app/src/wallet-gestures.ts';
 
 class TestDocument extends EventTarget {visibilityState='visible';defaultView=Object.assign(new EventTarget(),{getComputedStyle:(el:TestElement)=>({overflowX:el.overflowX})});scrollingElement?:TestElement;}
 class TestElement extends EventTarget {
  isConnected=true;
- values=new Map<string,string>();classes=new Set<string>();captured=new Set<number>();scrollTop=0;scrollWidth=0;clientWidth=0;overflowX='visible';
+ values=new Map<string,string>();classes=new Set<string>();captured=new Set<number>();scrollTop=0;scrollWidth=0;clientWidth=0;overflowX='visible';top=0;
+ children:TestElement[]=[];animations:{keyframes:Keyframe[];timing:KeyframeAnimationOptions;finish:()=>void;cancelled:boolean}[]=[];
  style={getPropertyValue:(name:string)=>this.values.get(name)??'',setProperty:(name:string,value:string)=>this.values.set(name,value),removeProperty:(name:string)=>{const old=this.values.get(name)??'';this.values.delete(name);return old;}};
  classList={add:(name:string)=>this.classes.add(name),remove:(...names:string[])=>names.forEach(name=>this.classes.delete(name)),contains:(name:string)=>this.classes.has(name)};
- constructor(readonly ownerDocument:TestDocument,readonly tag='div',readonly parent?:TestElement,readonly attributes:Record<string,string>={}){super();}
+ constructor(readonly ownerDocument:TestDocument,readonly tag='div',readonly parent?:TestElement,readonly attributes:Record<string,string>={}){super();parent?.children.push(this);}
  get parentElement():TestElement|null{return this.parent??null;}
  contains(node:unknown):boolean{return node instanceof TestElement&&(node===this||this.contains(node.parent));}
- closest(selector:string):TestElement|null{return selector.split(',').some(part=>{const s=part.trim(),classes=s.startsWith('.')?s.slice(1).split('.'):[];return s===this.tag||classes.length>0&&classes.every(name=>this.classes.has(name))||s==='[contenteditable]'&&'contenteditable' in this.attributes||s==='[data-gesture-ignore]'&&'data-gesture-ignore' in this.attributes||s===`[role="${this.attributes.role}"]`;})?this:this.parent?.closest(selector)??null;}
+ matches(selector:string):boolean{return selector.split(',').some(part=>{const s=part.trim(),classes=s.startsWith('.')?s.slice(1).split('.'):[],attribute=/^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(s);return s===this.tag||classes.length>0&&classes.every(name=>this.classes.has(name))||!!attribute&&attribute[1]! in this.attributes&&(attribute[2]===undefined||this.attributes[attribute[1]!]===attribute[2]);});}
+ closest(selector:string):TestElement|null{return this.matches(selector)?this:this.parent?.closest(selector)??null;}
+ querySelectorAll(selector:string):TestElement[]{return this.children.flatMap(child=>[...child.matches(selector)?[child]:[],...child.querySelectorAll(selector)]);}
+ getAttribute(name:string){return this.attributes[name]??null;}
+ animate(keyframes:Keyframe[],timing:KeyframeAnimationOptions){let finish=()=>{};const finished=new Promise<void>(resolve=>{finish=resolve;}),record={keyframes,timing,finish,cancelled:false};this.animations.push(record);return {finished,cancel:()=>{record.cancelled=true;}};}
  setPointerCapture(id:number){this.captured.add(id);}
  hasPointerCapture(id:number){return this.captured.has(id);}
  releasePointerCapture(id:number){this.captured.delete(id);}
- getBoundingClientRect(){return {height:600,width:360};}
+ getBoundingClientRect(){return {height:600,width:360,top:this.top};}
 }
 const element=(node:TestElement)=>node as unknown as HTMLElement;
 function pointer(target:EventTarget,type:string,x:number,y:number,time:number,extra:Record<string,unknown>={}){
@@ -30,17 +35,34 @@ function touchmove(target:EventTarget,x:number,y:number,cancelable=true,contacts
  Object.defineProperty(event,'touches',{value:Array.from({length:contacts},()=>({clientX:x,clientY:y}))});
  target.dispatchEvent(event);return event;
 }
-function sheet(){
- const doc=new TestDocument(),surface=new TestElement(doc),head=new TestElement(doc,'div',surface),body=new TestElement(doc,'div',surface),content=new TestElement(doc,'p',body),actions:string[]=[];
- const dispose=bindSheetGestures(element(surface),element(body),action=>actions.push(action));
- return {doc,surface,head,body,content,dispose,actions,dismissed:()=>actions.filter(action=>action==='close').length};
+function sheet(o:{previous?:boolean;next?:boolean;onAction?:()=>void}={previous:true,next:true}){
+ const doc=new TestDocument(),surface=new TestElement(doc),head=new TestElement(doc,'div',surface),title=new TestElement(doc,'h2',head,{'data-sheet-page':''}),body=new TestElement(doc,'div',surface,{'data-sheet-page':''}),content=new TestElement(doc,'p',body),dock=new TestElement(doc,'nav'),actions:string[]=[];
+ for(const side of ['previous','next'] as const)if(o[side])new TestElement(doc,'div',surface,{'data-sheet-page':side});
+ const dispose=bindSheetGestures(element(surface),element(body),action=>{actions.push(action);o.onAction?.();},element(dock));
+ return {doc,surface,head,title,body,content,dock,dispose,actions,pages:()=>surface.querySelectorAll('[data-sheet-page]'),dismissed:()=>actions.filter(action=>action==='close').length};
 }
+const land=async(s:ReturnType<typeof sheet>)=>{for(const page of s.pages())page.animations.at(-1)?.finish();await new Promise(resolve=>setImmediate(resolve));};
 
 test('the sheet decision closes on a long or fast downward drag from the top and pages on a long or fast sideways one',()=>{
  for(const [dx,dy,ms,top,expected] of [
   [0,96,800,true,'close'],[4,40,40,true,'close'],[0,95,800,true,undefined],[0,200,100,false,undefined],[0,-200,100,true,undefined],[0,23,1,true,undefined],
   [-64,0,800,false,'next'],[64,5,800,true,'previous'],[-30,2,40,true,'next'],[-63,0,800,true,undefined],[40,40,10,true,undefined],
  ] as const)assert.equal(sheetGesture(dx,dy,ms,top),expected,`${dx},${dy} in ${ms}ms, top ${top}`);
+});
+
+test('a sideways release pages toward a sheet that is there and springs back past the first or last',()=>{
+ for(const [dx,ms,previous,next,expected] of [
+  [-64,800,true,true,'next'],[64,800,true,true,'previous'],[-30,40,false,true,'next'],[-63,800,true,true,undefined],
+  [-200,800,true,false,undefined],[200,800,false,true,undefined],[200,100,true,false,'previous'],
+ ] as const)assert.equal(sheetSnap(dx,ms,previous,next),expected,`${dx}px in ${ms}ms`);
+});
+
+test('the pages keep up with the finger toward a neighbour, resist where there is none, and snap faster the less is left',()=>{
+ assert.equal(sheetOffset(-150,360,true,true),-150);assert.equal(sheetOffset(500,360,true,true),360,'never past the neighbour');assert.equal(sheetOffset(0,360,false,false),0);
+ assert.equal(sheetOffset(100,360,false,true).toFixed(1),'47.7');assert.equal(sheetOffset(-100,360,true,false),-sheetOffset(100,360,false,true));
+ const pulls=[50,100,200,400,10_000],held=pulls.map(dx=>sheetResistance(dx,360));
+ assert.ok(held.every((pull,i)=>pull<pulls[i]!*.55&&(i===0||pull>held[i-1]!))&&held.at(-1)!<360,`${held}`);
+ assert.deepEqual([sheetSnapMs(0,360),sheetSnapMs(-180,360),sheetSnapMs(360,360),sheetSnapMs(900,360)],[160,220,280,280]);
 });
 
 test('a sheet follows a downward drag, snaps back below threshold and dismisses only once beyond it',()=>{
@@ -68,12 +90,19 @@ test('a downward drag in scrolled content stays native scrolling, while the head
  assert.deepEqual(s.actions,['close']);s.dispose();
 });
 
-test('a sideways drag pages the sheet and follows the finger, but not from fields, tab strips or sideways scrollers',()=>{
- const s=sheet();
+test('a sideways drag carries every page with the finger and snaps to the neighbour, but not from fields, tab strips or sideways scrollers',async()=>{
+ const held:(string|undefined)[]=[],s=sheet({previous:true,next:true,onAction:()=>held.push(s.body.values.get('transform'))});
  pointer(s.surface,'pointerdown',200,0,0,{target:s.content});pointer(s.doc,'pointermove',100,4,100);
- assert.equal(s.surface.values.get('--wallet-sheet-swipe'),'-35px');assert.ok(s.surface.classes.has('is-sheet-swiping'));
+ assert.deepEqual(s.pages().map(page=>page.values.get('transform')),Array(4).fill('translate3d(-100px,0,0)'),'title, body and both peeks');
+ assert.ok(s.surface.classes.has('is-sheet-swiping'));
  pointer(s.doc,'pointerup',100,4,120);
- pointer(s.surface,'pointerdown',0,0,200,{target:s.head});pointer(s.doc,'pointermove',30,0,210);pointer(s.doc,'pointerup',30,0,220);
+ assert.deepEqual(s.actions,[],'the sheet changes only once the snap lands');
+ assert.deepEqual(s.body.animations[0]?.keyframes,[{transform:'translate3d(-100px,0,0)'},{transform:'translate3d(-360px,0,0)'}]);
+ assert.equal(s.body.animations[0]?.timing.duration,sheetSnapMs(260,360));
+ await land(s);
+ assert.deepEqual(s.actions,['next']);assert.deepEqual(held,['translate3d(-100px,0,0)'],'the new sheet renders before the pages come back');
+ assert.equal(s.body.values.size,0);assert.ok(s.body.animations[0]!.cancelled);
+ pointer(s.surface,'pointerdown',0,0,200,{target:s.head});pointer(s.doc,'pointermove',30,0,210);pointer(s.doc,'pointerup',30,0,220);await land(s);
  assert.deepEqual(s.actions,['next','previous']);assert.equal(s.surface.values.size,0);assert.equal(s.surface.classes.size,0);
  const strip=new TestElement(s.doc,'div',s.body,{role:'tablist'}),tab=new TestElement(s.doc,'button',strip),scroller=new TestElement(s.doc,'div',s.body),inner=new TestElement(s.doc,'span',scroller);
  Object.assign(scroller,{scrollWidth:600,clientWidth:300,overflowX:'auto'});
@@ -83,13 +112,68 @@ test('a sideways drag pages the sheet and follows the finger, but not from field
  assert.deepEqual(s.actions,['next','previous','close'],'a tab strip still lets the sheet close');s.dispose();
 });
 
-test('the first movement decides the axis for the rest of the drag',()=>{
+test('the first movement decides the axis for the rest of the drag',async()=>{
  const s=sheet();
  pointer(s.surface,'pointerdown',100,100,0,{target:s.content});pointer(s.doc,'pointermove',100,80,20);pointer(s.doc,'pointermove',0,80,60);pointer(s.doc,'pointerup',0,80,80);
  assert.deepEqual(s.actions,[]);
  pointer(s.surface,'pointerdown',100,0,100,{target:s.content});pointer(s.doc,'pointermove',80,2,110);pointer(s.doc,'pointermove',30,150,160);
- assert.equal(s.surface.values.get('--wallet-sheet-drag'),undefined);pointer(s.doc,'pointerup',30,150,170);
+ assert.equal(s.surface.values.get('--wallet-sheet-drag'),undefined);assert.equal(s.body.values.get('transform'),'translate3d(-70px,0,0)');
+ pointer(s.doc,'pointerup',30,150,170);await land(s);
  assert.deepEqual(s.actions,['next']);s.dispose();
+});
+
+test('at the first or last sheet a sideways drag resists, keeps the dock highlight in place and springs back without paging',async()=>{
+ const s=sheet({next:true});
+ pointer(s.surface,'pointerdown',100,0,0,{target:s.content});pointer(s.doc,'pointermove',300,0,300);
+ assert.equal(s.body.values.get('transform'),`translate3d(${sheetResistance(200,360)}px,0,0)`);assert.equal(s.dock.values.get('--wallet-sheet-progress'),'0');
+ pointer(s.doc,'pointerup',300,0,320);
+ assert.deepEqual(s.body.animations[0]?.keyframes.at(-1),{transform:'translate3d(0px,0,0)'});
+ await land(s);assert.deepEqual(s.actions,[]);assert.equal(s.body.values.size,0);s.dispose();
+});
+
+test('with reduced motion a swipe pages at once and nothing slides',()=>{
+ const s=sheet();Object.assign(s.doc.defaultView,{matchMedia:(query:string)=>({matches:query==='(prefers-reduced-motion: reduce)'})});
+ pointer(s.surface,'pointerdown',200,0,0,{target:s.content});pointer(s.doc,'pointermove',100,0,100);
+ assert.equal(s.body.values.size,0);assert.equal(s.surface.classes.has('is-sheet-swiping'),false);assert.equal(s.dock.values.size,0);
+ pointer(s.doc,'pointerup',100,0,120);
+ assert.deepEqual(s.actions,['next']);assert.equal(s.body.animations.length,0);assert.equal(s.surface.animations.length,0);s.dispose();
+});
+
+test('a touch during the snap lands it first, and a sheet closed mid-snap does not page',async()=>{
+ const s=sheet();
+ pointer(s.surface,'pointerdown',200,0,0,{target:s.content});pointer(s.doc,'pointermove',100,0,100);pointer(s.doc,'pointerup',100,0,120);
+ pointer(s.surface,'pointerdown',150,0,130,{target:s.content});
+ assert.deepEqual(s.actions,['next']);assert.equal(s.body.values.size,0);assert.ok(s.body.animations[0]!.cancelled);
+ pointer(s.doc,'pointerup',150,0,140);
+ pointer(s.surface,'pointerdown',200,0,200,{target:s.content});pointer(s.doc,'pointermove',100,0,300);pointer(s.doc,'pointerup',100,0,320);
+ s.dispose();await land(s);
+ assert.deepEqual(s.actions,['next']);assert.equal(s.body.values.size,0);assert.equal(s.surface.classes.size,0);
+});
+
+test('the dock highlight follows the drag, then eases over with the snap',async()=>{
+ const s=sheet();
+ pointer(s.surface,'pointerdown',200,0,0,{target:s.content});pointer(s.doc,'pointermove',110,0,100);
+ assert.equal(s.dock.values.get('--wallet-sheet-progress'),'0.25');assert.ok(s.dock.classes.has('is-swipe-dragging'));
+ pointer(s.doc,'pointerup',110,0,120);
+ assert.equal(s.dock.values.get('--wallet-sheet-progress'),'1');assert.equal(s.dock.classes.has('is-swipe-dragging'),false);
+ await land(s);assert.equal(s.dock.values.size,0);s.dispose();
+});
+
+test('a sheet of another height starts where the old one stood and glides to its own place',async()=>{
+ const s=sheet({previous:true,next:true,onAction:()=>{s.surface.top=175;}});s.surface.top=23;
+ pointer(s.surface,'pointerdown',200,0,0,{target:s.content});pointer(s.doc,'pointermove',100,0,100);pointer(s.doc,'pointerup',100,0,120);await land(s);
+ assert.deepEqual(s.surface.animations.map(animation=>animation.keyframes),[[{transform:'translate3d(0,-152px,0)'},{transform:'translate3d(0,0,0)'}]]);
+ pointer(s.surface,'pointerdown',200,0,200,{target:s.content});pointer(s.doc,'pointermove',100,0,300);pointer(s.doc,'pointerup',100,0,320);await land(s);
+ assert.equal(s.surface.animations.length,1,'the same height does not move');s.dispose();
+});
+
+test('each open sheet names itself in its head, the dialog takes that heading as its name, and a swipe lands on a rendered sheet',()=>{
+ const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
+ assert.match(wallet,/'aria-labelledby':'stock-panel-title'/);assert.doesNotMatch(wallet,/'aria-label':tab===/);
+ assert.match(wallet,/<div className="stock-panel-head"><h2 id="stock-panel-title" data-sheet-page="">\{titled\(tab\)\}<\/h2>/);
+ assert.match(wallet,/className="stock-panel-body" data-sheet-page=""/);assert.match(wallet,/data-sheet-page=\{side\} aria-hidden="true"><h2>\{titled\(name\)\}<\/h2>/);
+ assert.match(wallet,/flushSync\(\(\)=>view\.openPanel\(next\)\)/);
+ assert.match(readFileSync(new URL('../app/src/wallet-glass.css',import.meta.url),'utf8'),/\.stock-panel\.is-send,\.stock-page\.has-dock \.stock-panel\.is-receive\{height:/,'Send and Receive share one frame, so paging between them never resizes the sheet');
 });
 
 test('a closing drag claims the native pan on Android, leaving upward, scrolled and pinch moves to the browser',()=>{

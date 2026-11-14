@@ -7,7 +7,7 @@ import {marketOf,resolveRoute} from '@arkade-os/swap/advanced';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,pausedErrorText,payTarget,routeCopy,satsText,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,pausedErrorText,payTarget,routeCopy,satsText,sendLimitLine,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -189,6 +189,15 @@ test('the status sheet names the step in progress, then the outcome',()=>{
  assert.equal(sheetLine(a),'Step 2 of 3: Prove the payment on this device');
  assert.equal(sheetLine({...a,current:3,done:true}),'Done');
  assert.equal(sheetLine({...a,error:'The pool dropped this spend.'}),'The pool dropped this spend.');
+});
+
+test('the send line says why one payment cannot take the whole balance, only when the note limit is the reason',()=>{
+ assert.equal(sendLimitLine(99_850n,100_000n,4,'sats'),'Up to 99,850 sats in one payment, which can combine at most three of your notes.');
+ assert.equal(sendLimitLine(900n,1_200n,5,'units'),'Up to 900 units in one payment, which can combine at most three of your notes.');
+ assert.equal(sendLimitLine(100_000n,100_000n,3,'sats'),'Up to 100,000 sats available privately.');
+ assert.equal(sendLimitLine(50_000n,70_000n,2,'sats'),'Up to 50,000 sats available privately.','a note in flight or awaiting recovery is another gap');
+ assert.equal(sendLimitLine(0n,700n,4,'sats'),'Up to 0 sats available privately.','notes the wallet cannot anchor yet are not the limit');
+ assert.match(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),/sendLimitLine\(maxSend,assetId\?assetUnits\(assetId\):balance,sendNotes,unit\)/);
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{
