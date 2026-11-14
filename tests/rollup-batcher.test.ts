@@ -4,11 +4,12 @@ import {BATCH_SLOTS} from '../packages/protocol/src/rollup/constants.ts';
 import {BATCH_WAIT_MS,JOIN_BATCH_WAIT_MS,RESERVE_DEPOSIT_INPUTS,selectRollupBatch,type RollupSpend} from '../src/rollup/batcher.ts';
 
 let next=0;
-function spend(extra:{at?:number;group?:[bigint,number];asset?:string;deposit?:bigint;coin?:boolean}={}):RollupSpend {
+/** `coin` is its own outpoint unless a txid is named, which two slots share to name one coin. */
+function spend(extra:{at?:number;group?:[bigint,number];asset?:string;deposit?:bigint;coin?:boolean|string}={}):RollupSpend {
  const id=String(++next),[groupId,groupSize]=extra.group??[0n,0];
  return {id,receivedAt:extra.at??0,slot:{root:1n,nullifiers:[BigInt(next)],commitments:[1n,2n],ctDigest:3n,groupId,groupSize},
   publics:[BigInt(next),0n,0n,extra.deposit??0n,0n,extra.asset?7n:0n,0n],proof:{pi_a:[],pi_b:[],pi_c:[]},
-  ...(extra.asset?{asset:extra.asset}:{}),...(extra.coin?{coin:{txid:'',vout:0,value:0,sourceTx:new Uint8Array(),tapTree:new Uint8Array(),leaf:[] as never}}:{})};
+  ...(extra.asset?{asset:extra.asset}:{}),...(extra.coin?{coin:{txid:typeof extra.coin==='string'?extra.coin:id,vout:0,value:0,sourceTx:new Uint8Array(),tapTree:new Uint8Array(),leaf:[] as never}}:{})};
 }
 const pad=(count:number)=>Array.from({length:count},()=>spend({at:Infinity}));
 const ids=(s:RollupSpend[])=>s.map(x=>x.id);
@@ -49,6 +50,20 @@ test('one non-BTC asset per batch, and at most 7 deposit coins beside its reserv
  const nine=Array.from({length:RESERVE_DEPOSIT_INPUTS+2},()=>spend({asset:'x',deposit:1n,coin:true}));
  assert.equal(selectRollupBatch(nine,10_000,pad)!.spends.filter(s=>s.coin).length,RESERVE_DEPOSIT_INPUTS);
  assert.equal(selectRollupBatch(Array.from({length:BATCH_SLOTS},()=>spend({deposit:1n,coin:true})),0,pad)!.spends.filter(s=>s.coin).length,BATCH_SLOTS);
+});
+
+test('one slot per coin: a second unit naming a chosen coin waits, and a unit naming it twice never goes',()=>{
+ const own=spend({deposit:1n,coin:'c'}),twin=spend({deposit:1n,coin:'c'}),lone=spend();
+ assert.deepEqual(ids(selectRollupBatch([own,twin,lone],10_000,pad)!.spends.slice(0,2)),ids([own,lone]));
+ const [a,b]=[spend({group:[5n,2],deposit:1n,coin:'d'}),spend({group:[5n,2],deposit:1n,coin:'d'})];
+ assert.deepEqual(ids(selectRollupBatch([a,b,lone],10_000,pad)!.spends.slice(0,1)),ids([lone]));
+});
+
+test('a coin a skipped unit named is still free for a later unit',()=>{
+ const waiting=spend({group:[5n,2],deposit:1n,coin:'c'}),own=spend({deposit:1n,coin:'c'});
+ assert.deepEqual(ids(selectRollupBatch([waiting,own],10_000,pad)!.spends.slice(0,1)),ids([own]));
+ const other=spend({asset:'y',deposit:1n,coin:'d'}),mine=spend({deposit:1n,coin:'d'});
+ assert.deepEqual(ids(selectRollupBatch([spend({asset:'x',deposit:1n,coin:true}),other,mine],10_000,pad)!.spends.filter(s=>s.coin)).slice(1),[mine.id]);
 });
 
 test('a deposit cap, set after an over-weight batch, holds back further deposit coins',()=>{

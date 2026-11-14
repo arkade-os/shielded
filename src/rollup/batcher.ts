@@ -41,14 +41,17 @@ function units(pending:readonly RollupSpend[]):RollupSpend[][] {
 /** The next batch once it is full or `waitMs` after the last one, else undefined. `padding` fills empty slots with operator zero spends. */
 export function selectRollupBatch(pending:readonly RollupSpend[],now:number,padding:(count:number)=>RollupSpend[],maxCoins=BATCH_SLOTS,waitMs=BATCH_WAIT_MS,lastBatchAt=-Infinity):RollupSelection|undefined {
  if(!pending.length)return undefined;
- const chosen:RollupSpend[]=[];
+ const chosen:RollupSpend[]=[],held=new Set<string>();
  let asset:string|undefined,coins=0;
  for(const unit of units(pending)){
   const unitAsset=unit.find(s=>s.publics[5]!==0n)?.asset;
   if(unitAsset&&asset&&unitAsset!==asset)continue;
   const nextAsset=asset??unitAsset,nextCoins=coins+unit.filter(s=>s.coin).length;
   if(chosen.length+unit.length>BATCH_SLOTS||nextCoins>Math.min(maxCoins,nextAsset?RESERVE_DEPOSIT_INPUTS:BATCH_SLOTS))continue;
-  chosen.push(...unit);asset=nextAsset;coins=nextCoins;
+  // A batch spending one outpoint twice is refused, and admission cannot tell a coin's owner, so a twin waits for a batch this one is not in; only a unit that goes claims its coins.
+  const outpoints=unit.filter(s=>s.coin).map(s=>s.coin!.txid+':'+s.coin!.vout);
+  if(outpoints.some((outpoint,i)=>held.has(outpoint)||outpoints.indexOf(outpoint)<i))continue;
+  chosen.push(...unit);for(const outpoint of outpoints)held.add(outpoint);asset=nextAsset;coins=nextCoins;
  }
  if(!chosen.length)return undefined;
  if(chosen.length<BATCH_SLOTS&&now-lastBatchAt<waitMs)return undefined;

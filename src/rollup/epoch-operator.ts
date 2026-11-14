@@ -304,6 +304,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   if(![0,2,3].includes(groupSize)||(groupId===0n)!==(groupSize===0))throw new RollupRejection('group-invalid','A group has two or three members and a nonzero id.');
   const siblings=pending.spend.filter(s=>groupId!==0n&&s.slot.groupId===groupId);
   if(groupId!==0n&&(siblings.length>=groupSize||siblings.some(s=>s.slot.groupSize!==groupSize)))throw new RollupRejection('group-invalid','The group is already complete or disagrees on its size.');
+  // Refusing a repeat within one group refuses only the submitter's own, and a unit naming an outpoint twice could never be built.
+  if(spend.coin&&siblings.some(s=>s.coin?.txid===spend.coin!.txid&&s.coin.vout===spend.coin!.vout))throw new RollupRejection('group-invalid','A group spends each deposit coin once.');
   // Before the anchor checks: lightning-spend.ts frees its note on stale-anchor, so a landed copy must answer double-spend.
   if(nullifiers.some(nf=>spent(nf,kind)))throw new RollupRejection('double-spend','The note is already spent or pending.');
   if(kind==='recover'){
@@ -367,9 +369,8 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   }
   let taken:RollupEpochSpend[]=[];
   const pad=(count:number)=>{if(padding[kind].length<count)throw new Error('padding');taken=padding[kind].splice(0,count);return taken;};
-  // One slot per coin, as a batch spending an outpoint twice is refused. Admission cannot tell the coin's owner, so a twin waits, and signing drops whichever slot the owner did not sign.
-  const held=new Set<string>(),first=(outpoint:string)=>!held.has(outpoint)&&!!held.add(outpoint);
-  const ready=pending[kind].filter(s=>selectable(s)&&(!s.coin||first(s.coin.txid+':'+s.coin.vout)));
+  // selectRollupBatch takes one slot per coin, and signing drops whichever slot the owner did not sign.
+  const ready=pending[kind].filter(s=>selectable(s));
   // A recover batch is one slot wide: it takes no padding and waits for no company.
   const selection=kind==='recover'?select(ready.slice(0,1),()=>[],undefined,0,lastBatchAt.recover)
    :select(ready,pad,kind==='spend'?coinCap:undefined,kind==='join'?o.joinWaitMs??JOIN_BATCH_WAIT_MS:o.batchWaitMs??BATCH_WAIT_MS,lastBatchAt[kind]);
