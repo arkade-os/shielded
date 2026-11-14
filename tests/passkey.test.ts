@@ -71,17 +71,17 @@ test('the user handle carries the word count, and a handle from elsewhere restor
  const back=await restorePasskeySeed({rpId:RP,client:fake.client});
  assert.equal(back.wordCount,12);
  assert.equal(passkeyRpId('https://shielded.mutinynet.arkade.sh','tauri.localhost'),RP);
- assert.equal(passkeyRpId('',RP),RP);
+ assert.equal(passkeyRpId('',RP),RP); assert.throws(()=>passkeyRpId('shielded.mutinynet.arkade.sh',RP),/not a URL/);
  assert.equal(passkeyRpId('','localhost'),'localhost');
 });
 
 test('a fixed PRF secret derives fixed words and a fixed master secret',async()=>{
- const prf=Uint8Array.from({length:32},(_,index)=>index),fake=fakeClient({prf:()=>prf});
+ const fixed=()=>Uint8Array.from({length:32},(_,index)=>index),prf=fixed(),fake=fakeClient({prf:fixed});
  const twelve=await createPasskeySeed({rpId:RP,userName:'Shielded',client:fake.client});
  assert.equal(twelve.wordCount,12,'twelve words is the default');
  assert.equal(twelve.words,'abandon amount liar amount expire adjust cage candy arch gather drum buyer');
  assert.equal(hex(twelve.master),'9c4939c6f23c1bb13508c83c12036974cdd2f818b14bdf17a7b6e6c875a032d6');
- const full=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fakeClient({prf:()=>prf}).client});
+ const full=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fakeClient({prf:fixed}).client});
  assert.equal(full.words,'abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey unaware');
  assert.equal(hex(full.master),hex(prf),'24 words are the PRF secret itself');
 });

@@ -5,7 +5,7 @@ import {KEY_DOMAIN,KEY_SALT,parseMasterSecret} from './wallet-keys.ts';
 
 const utf8=new TextEncoder();
 export const PASSKEY_RP_NAME='Shielded' as const;
-/** The seed label is Breez's, so one passkey gives the same 12 words in both; the unlock label must stay distinct or the wrap key would come from the seed it wraps. */
+/** A permanent recovery constant: another seed label derives another wallet from every passkey. It is Breez's, so one passkey gives the same 12 words in both; the unlock label must stay distinct or the wrap key would come from the seed it wraps. */
 export const PASSKEY_SEED_SALT=utf8.encode(DEFAULT_PASSKEY_LABEL);
 export const PASSKEY_UNLOCK_SALT=utf8.encode('shielded-unlock-v1');
 export type PasskeyWordCount=12|24;
@@ -28,7 +28,10 @@ export function wordCountFromUserHandle(handle:Uint8Array|null|undefined):Passke
 }
 
 /** Native passkeys belong to the pool origin's host; the browser build has no pool origin and uses its own hostname. Never a value a URL or deep link can influence. */
-export const passkeyRpId=(poolOrigin:string,hostname:string)=>poolOrigin?new URL(poolOrigin).hostname:hostname;
+export function passkeyRpId(poolOrigin:string,hostname:string):string {
+ if(!poolOrigin)return hostname;
+ try{return new URL(poolOrigin).hostname;}catch{throw new Error(`The pool origin ${JSON.stringify(poolOrigin)} is not a URL, so passkeys have no relying party.`);}
+}
 
 const wipe=(bytes:Uint8Array)=>bytes.fill(0);
 function seedOf(credentialId:Uint8Array,prf:Uint8Array,wordCount:PasskeyWordCount):PasskeySeed {
@@ -49,7 +52,7 @@ export async function restorePasskeySeed(o:{rpId:string;client?:WebAuthnClient})
 }
 
 const WRAP_VERSION=1,IV_BYTES=12,TAG_BYTES=16,WRAP_INFO=utf8.encode(`${KEY_DOMAIN}:unlock-wrap:v1`);
-const wrapAssociated=(credentialId:Uint8Array)=>Uint8Array.from([WRAP_VERSION,...credentialId]);
+const wrapAssociated=(credentialId:Uint8Array)=>{const data=new Uint8Array(1+credentialId.length);data[0]=WRAP_VERSION;data.set(credentialId,1);return data;};
 /** Neither the PRF secret nor this key is ever stored: both live only inside one wrap or unwrap. */
 async function wrapKey(o:{rpId:string;credentialId:Uint8Array;client?:WebAuthnClient}) {
  const {prf}=await evaluatePrf({rpId:o.rpId,salt:PASSKEY_UNLOCK_SALT,credentialIds:[o.credentialId],client:o.client});
