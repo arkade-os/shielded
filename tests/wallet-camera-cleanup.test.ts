@@ -97,3 +97,8 @@ test('an incoming payment closes the active camera before filling Send and ignor
  assert.deepEqual(events,['close','send','lightning:new-request']);assert.deepEqual(h.results,[]);
  assert.equal(h.stopCalls,1);assert.equal(h.cancelCalls,1);
 });
+
+test('the scanner asks its camera for an uncropped standard mode, not the screen\'s own aspect',async()=>{
+ const {readFileSync}=await import('node:fs');
+ assert.match(readFileSync(new URL('../app/src/wallet-qr.tsx',import.meta.url),'utf8'),/getVideoTracks\(\)\[0\]\?\.applyConstraints\(\{width:\{ideal:1920\},height:\{ideal:1080\},resizeMode:'none'\}/);
+});

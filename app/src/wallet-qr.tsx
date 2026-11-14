@@ -27,6 +27,8 @@ export function Scanner({onResult,onClose}:{onResult:(text:string)=>void;onClose
    const camera=await rearCamera(player);let stopped=false,cancel=()=>{};
    stop=()=>{if(stopped)return;stopped=true;try{cancel();}finally{camera.stop();}};
    if(!live)return stop();
+   // rearCamera asks for the screen's own size, an aspect no sensor mode has, so the browser cropped the frame to fit and the view read as zoomed in.
+   void (player.srcObject as MediaStream|null)?.getVideoTracks()[0]?.applyConstraints({width:{ideal:1920},height:{ideal:1080},resizeMode:'none'} as MediaTrackConstraints).catch(()=>{});
    const canvas=new QRCanvas();let reading=false;
    cancel=frameLoop(()=>{
     if(reading)return;reading=true;
