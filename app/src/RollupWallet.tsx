@@ -712,7 +712,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{if(docked&&sheetOpen&&viewActive&&!suspended)return bindSheetBack(window,()=>setSheetOpen(false));},[docked,sheetOpen,viewActive,suspended]);
  useEffect(()=>{if(txView&&viewActive&&!suspended)return bindSheetBack(window,closeTx,'shieldedTx');},[!!txView,viewActive,suspended,closeTx]);
  // Wrapped: window.fetch called as a method of another object throws "Illegal invocation".
- const txSource=useMemo(()=>{const net=initialPool?.network;return net&&{fetch:(input:RequestInfo|URL,init?:RequestInit)=>(sessionFetch??fetch)(input,init),indexer:String(net.indexerUrl??net.arkUrl),esplora:ESPLORA_URL[net.network as NetworkName]};},[initialPool,sessionFetch]);
+ const txSource=useMemo(()=>{const net=initialPool?.network,esplora=net&&ESPLORA_URL[net.network as NetworkName];return net&&esplora&&{fetch:(input:RequestInfo|URL,init?:RequestInit)=>(sessionFetch??fetch)(input,init),indexer:String(net.indexerUrl??net.arkUrl),esplora};},[initialPool,sessionFetch]);
  const openSecurity=(view:WalletSecurityView)=>{setReveal(false);setShowView(false);setShowFull(false);setClearError('');setRevealError('');setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const clearWallet=async()=>{
