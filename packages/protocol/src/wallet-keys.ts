@@ -13,15 +13,23 @@ const BABYJUB_SUBORDER=273603035897990940278080071815715938607681397215856725920
 const SECP256K1_ORDER=secp256k1.Point.Fn.ORDER;
 const DOMAIN='arkade-shielded:wallet-key-derivation:v1';
 const SALT=new TextEncoder().encode('arkade-shielded:master-secret:v1');
+const MNEMONIC12=new TextEncoder().encode(`${DOMAIN}:mnemonic12:v1`);
+
+const phraseEntropy=(value:string)=>{
+ const words=value.trim().toLowerCase().split(/\s+/);
+ if(words.length!==12&&words.length!==24)return undefined;
+ try{return mnemonicToEntropy(words.join(' '),wordlist);}catch{throw new Error('That recovery phrase is not valid; check each word.');}
+};
 
 export function parseMasterSecret(value:string):Uint8Array {
  if(typeof value==='string'&&/^(?:[0-9a-fA-F]{2}){32}$/.test(value))return hexToBytes(value);
- const words=typeof value==='string'?value.trim().toLowerCase().split(/\s+/):[];
- if(words.length!==24)throw new Error('A recovery phrase is 24 words (older wallets: 64 hexadecimal characters).');
- try{return mnemonicToEntropy(words.join(' '),wordlist);}catch{throw new Error('That recovery phrase is not valid; check each word.');}
+ const entropy=typeof value==='string'?phraseEntropy(value):undefined;
+ if(!entropy)throw new Error('A recovery phrase is 12 or 24 words (older wallets: 64 hexadecimal characters).');
+ // A permanent recovery constant: changing this stretch loses every wallet created from 12 words.
+ return entropy.length===32?entropy:hkdf(sha256,entropy,SALT,MNEMONIC12,32);
 }
-/** The 32-byte secret as a 24-word BIP39 phrase: the same bytes, so every derived key stays the same. */
-export const recoveryPhraseOf=(masterSecret:Uint8Array|string)=>entropyToMnemonic(typeof masterSecret==='string'?parseMasterSecret(masterSecret):masterSecret,wordlist);
+/** The phrase a wallet is backed up with: 24 words are the 32-byte secret itself, and a 12-word phrase comes back as its own 12 words, since the stretch above cannot be reversed. */
+export const recoveryPhraseOf=(masterSecret:Uint8Array|string)=>entropyToMnemonic(typeof masterSecret==='string'?phraseEntropy(masterSecret)??parseMasterSecret(masterSecret):masterSecret,wordlist);
 
 function scalar(master:Uint8Array,network:string,purpose:string,order:bigint):bigint {
  if(!/^[a-z0-9][a-z0-9.-]{0,62}$/.test(network))throw new Error('Invalid wallet network label.');

@@ -23,6 +23,7 @@ test('master-secret derivation is stable, domain separated and produces valid ke
 
 test('master-secret parsing rejects malformed or wrong-sized values',()=>{
  for(const value of ['', '01', 'gg'.repeat(32), '00'.repeat(33)])assert.throws(()=>parseMasterSecret(value),/64 hexadecimal/);
+ for(const count of [11,15,18,21,23])assert.throws(()=>parseMasterSecret('abandon '.repeat(count).trim()),/12 or 24 words/,`${count} words is not a phrase length we accept`);
  assert.throws(()=>deriveWalletKeyMaterial(new Uint8Array(31),'mutinynet'),/32 bytes/);
  assert.throws(()=>deriveWalletKeyMaterial('00'.repeat(32),'../mutinynet'),/network label/);
 });
@@ -33,7 +34,22 @@ test('the recovery phrase is the same 32-byte secret in 24 words, so existing wa
  assert.deepEqual(parseMasterSecret(phrase),parseMasterSecret(secret));
  assert.deepEqual(deriveWalletKeyMaterial(` ${phrase.toUpperCase().replaceAll(' ','\n  ')} `,'mutinynet'),deriveWalletKeyMaterial(secret,'mutinynet'));
  assert.throws(()=>parseMasterSecret('abandon '.repeat(24).trim()),/not valid/,'a phrase with a bad checksum');
- assert.throws(()=>parseMasterSecret('abandon '.repeat(12).trim()),/24 words/,'a 12-word phrase holds too little');
+ assert.throws(()=>parseMasterSecret('abandon '.repeat(12).trim()),/not valid/,'a 12-word phrase with a bad checksum');
+});
+
+test('a 24-word phrase stays the master secret itself, byte for byte',()=>{
+ const phrase='abandon '.repeat(23)+'art';
+ assert.equal(Buffer.from(parseMasterSecret(phrase)).toString('hex'),'00'.repeat(32));
+ assert.equal(recoveryPhraseOf(phrase),phrase);
+});
+
+test('a 12-word phrase stretches into a fixed master secret and is shown back as its own 12 words',()=>{
+ const phrase='abandon '.repeat(11)+'about',master=parseMasterSecret(phrase);
+ assert.equal(Buffer.from(master).toString('hex'),'cb1cefe7831aa41962a88919be1ead420c16d082284e72a0a89117224af85629');
+ assert.equal(recoveryPhraseOf(phrase),phrase);
+ assert.deepEqual(parseMasterSecret(` ${phrase.toUpperCase().replaceAll(' ','\n  ')} `),master);
+ assert.deepEqual(parseMasterSecret(recoveryPhraseOf(master)),master);
+ assert.notDeepEqual(parseMasterSecret('abandon '.repeat(23)+'art'),master);
 });
 
 test('a claim link seed is stable, distinct per nullifier and network, and unlike the wallet\'s own keys',()=>{
