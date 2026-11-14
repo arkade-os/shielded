@@ -304,10 +304,10 @@ export async function openRollupEpochOperator(o:RollupEpochOperatorOptions){
   if(![0,2,3].includes(groupSize)||(groupId===0n)!==(groupSize===0))throw new RollupRejection('group-invalid','A group has two or three members and a nonzero id.');
   const siblings=pending.spend.filter(s=>groupId!==0n&&s.slot.groupId===groupId);
   if(groupId!==0n&&(siblings.length>=groupSize||siblings.some(s=>s.slot.groupSize!==groupSize)))throw new RollupRejection('group-invalid','The group is already complete or disagrees on its size.');
-  // Refusing a repeat within one group refuses only the submitter's own, and a unit naming an outpoint twice could never be built.
-  if(spend.coin&&siblings.some(s=>s.coin?.txid===spend.coin!.txid&&s.coin.vout===spend.coin!.vout))throw new RollupRejection('group-invalid','A group spends each deposit coin once.');
   // Before the anchor checks: lightning-spend.ts frees its note on stale-anchor, so a landed copy must answer double-spend.
   if(nullifiers.some(nf=>spent(nf,kind)))throw new RollupRejection('double-spend','The note is already spent or pending.');
+  // After double-spend, which a queued copy of this member must answer; this refuses only the submitter's own group, and a unit naming an outpoint twice could never be built.
+  if(spend.coin&&siblings.some(s=>s.coin?.txid===spend.coin!.txid&&s.coin.vout===spend.coin!.vout))throw new RollupRejection('group-invalid','A group spends each deposit coin once.');
   if(kind==='recover'){
    const origin=spend.origin!,nf=nullifiers[0]!,riding=!state.archive.has(origin);
    // The rotating batch archives epoch-1 from live state: its final root is prevNoteRoot, its frozen sets prevNf and nullifiers.

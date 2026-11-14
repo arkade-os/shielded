@@ -330,6 +330,7 @@ test('a group member naming a sibling\'s coin is refused as group-invalid, as no
  const w=await world(64),op=await w.open(t),{dummies:[a,b],group}=groupOf(),g={groupId:group.id,groupSize:2};
  const first=spendOf(deposit(op.state,1000n,{inputs:[a],...g}),{coin:w.coin(1)});
  await op.submit(first);
+ await assert.rejects(op.submit({...first,id:'again'}),rejection('double-spend'),'a queued copy of the same member answers double-spend, which its client keeps reserved');
  await assert.rejects(op.submit(spendOf(deposit(op.state,1000n,{inputs:[b],...g}),{coin:w.coin(1)})),rejection('group-invalid'));
  assert.deepEqual(op.pendingIds(),[first.id]);
 });
