@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 import {test} from 'node:test';
-import {createElement,Fragment} from 'react';
+import {Children,createElement,Fragment,isValidElement,type ReactNode} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import type {WalletOnboardingProps} from '../app/src/WalletOnboarding.tsx';
 
@@ -78,6 +78,37 @@ test('ready direct native setup enables creation with an honest privacy warning'
  assert.match(html,/no Tor circuit isolation/);
  assert.match(html,/role="switch" aria-checked="false"/);
  assert.doesNotMatch(html,/Wallet traffic uses Tor|Your wallet connects through Tor|Separate Tor scopes/);
+});
+
+const buttons=(props:Partial<WalletOnboardingProps>)=>{
+ const found:Record<string,()=>void>={};
+ const walk=(node:ReactNode)=>Children.forEach(node,child=>{
+  if(!isValidElement<{children?:ReactNode;onClick?:()=>void}>(child))return;
+  if(child.type==='button'&&typeof child.props.children==='string'&&child.props.onClick)found[child.props.children]=child.props.onClick;
+  walk(child.props.children);
+ });
+ function Capture(){const view=WalletOnboarding({...defaults,...props});walk(view);return view;}
+ renderToStaticMarkup(createElement(Capture));return found;
+};
+
+test('browser onboarding offers passkeys as a beta beside the phrase actions, at 12 words unless asked for 24',()=>{
+ const created:number[]=[];let restored=0;
+ const passkey={onCreate:(words:number)=>{created.push(words);},onRestore:()=>{restored++;}};
+ const html=render({passkey});
+ assert.match(html,/>Create wallet<\/button><button[^>]*>Restore a wallet<\/button>\s*<div class="wallet-onboarding-passkey" role="group" aria-labelledby="([^"]+)"><p id="\1">Passkey <span>Beta<\/span><\/p>/);
+ assert.match(html,/>Create with a passkey<\/button><label><input type="checkbox"\/>24-word recovery phrase instead of 12<\/label><button[^>]*>Restore with a passkey<\/button>/);
+ assert.match(html,/Anyone who can use this passkey, including through the account it syncs with, can spend from this wallet\./);
+ assert.doesNotMatch(render(),/passkey/i,'no passkey controls where the browser cannot use them');
+ assert.equal([...render({passkey,busy:true}).matchAll(/<(?:button|input)[^>]*disabled=""/g)].length,5);
+ const click=buttons({passkey});
+ click['Create with a passkey']!();click['Restore with a passkey']!();
+ assert.deepEqual(created,[12]);assert.equal(restored,1);
+});
+
+test('the native shell shows no passkey controls, even when given them',()=>{
+ const html=render({transport:'tor',torHealth:{status:{phase:'ready',generation:1},check:'ok'},passkey:{onCreate:()=>{},onRestore:()=>{}}});
+ assert.match(html,/>Create wallet<\/button><button[^>]*>Restore a wallet<\/button><\/div>/);
+ assert.doesNotMatch(html,/passkey/i);
 });
 
 test('native transport changes disable creation, restore and the Tor switch',()=>{

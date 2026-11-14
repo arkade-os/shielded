@@ -38,6 +38,14 @@
 .wallet-onboarding .wallet-onboarding-secondary {border:1px solid #7b94aa66;background:transparent;color:#e5eaf0}
 .wallet-onboarding .wallet-onboarding-secondary:hover:not(:disabled) {background:#afc4d40b;border-color:#afc4d4aa}
 .wallet-onboarding button:disabled {cursor:not-allowed;opacity:.48;transform:none}
+.wallet-onboarding-passkey {display:grid;gap:9px;margin-top:6px;padding-top:15px;border-top:1px solid #7b94aa33}
+.wallet-onboarding-passkey>p {display:flex;align-items:center;gap:8px;margin:0;color:#d6dfe6;font-size:13px;font-weight:600}
+.wallet-onboarding-passkey>p>span {padding:1px 7px;border:1px solid #d2ae7573;border-radius:999px;color:#e2c28f;font-size:10px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}
+.wallet-onboarding .wallet-onboarding-passkey .wallet-onboarding-secondary {min-height:46px;padding:12px 18px}
+.wallet-onboarding-passkey>label {display:flex;align-items:center;gap:9px;color:#c4d0da;font-size:13px;line-height:1.4;cursor:pointer}
+.wallet-onboarding-passkey>label>input {flex:none;width:16px;height:16px;margin:0;accent-color:#d2ae75}
+.wallet-onboarding-passkey>label>input:focus-visible {outline:2px solid #f2d49e;outline-offset:3px}
+.wallet-onboarding-passkey>small {color:#acbdca;font-size:12px;line-height:1.6}
 .wallet-onboarding-footer {position:relative;z-index:1;width:100%;max-width:1120px;margin:6px auto 0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px 16px;color:#a0b0bf;font-size:11px;line-height:1.5}
 .wallet-onboarding-connection {display:flex;align-items:center;min-height:30px;color:#bdc9d4}
 .wallet-onboarding-privacy {position:relative;max-width:180px;text-align:right}
