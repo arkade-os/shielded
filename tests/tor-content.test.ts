@@ -253,10 +253,14 @@ test('a native tick reads no batch page while the pool reports the count the acc
  assert.deepEqual(ran.toSorted(),['recover','renew','shield']);
 });
 
-test('a native tick syncs as soon as the pool count moves, and its auto-shield adds no second catch-up',async()=>{
- const {pages,pool,account,tick}=tickRig(140,140,nativeStub());
+test('a native tick syncs as soon as the pool count moves, and its auto-shield adds no second catch-up',async t=>{
+ timers(t);
+ const {pages,ran,pool,account,wallet,tick}=tickRig(140,140,nativeStub());
+ // The catch-up calls changed(), which the rig uses to stop the wallet; without this the tick never reaches auto-shield.
+ Object.assign(wallet,{changed(){}});
  pool.batches=141;await tick();
  assert.equal(account.batchCount,141);
+ assert.deepEqual(ran.toSorted(),['recover','renew','shield']);
  assert.deepEqual(pages(),['/batches?from=128&limit=12','/batches?from=140&limit=12']);
 });
 

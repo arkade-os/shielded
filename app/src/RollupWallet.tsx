@@ -21,7 +21,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,isPageBusy,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageBusyText,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
 import WalletEntrance from './WalletEntrance.tsx';
 import WalletSyncStatus from './WalletSyncStatus.tsx';
@@ -96,7 +96,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState(''),[journalError,setJournalError]=useState('');
  const [nativePending,setNativePending]=useState(false),[confirmRelease,setConfirmRelease]=useState(false),[releaseNote,setReleaseNote]=useState('');
- const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
+ const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[refreshBusy,setRefreshBusy]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
@@ -475,9 +475,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    }
    if(nativeHost)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
    else refreshFailed.current=false;
-    setRefreshError([...new Set(Object.values(errors))].join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
+    const read=pageReadErrors(errors);setRefreshError(read.error);setRefreshBusy(read.busy);setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
    setPoolError(e=>wallet.repositoryError?`Your saved notes: ${wallet.repositoryError}`:e.startsWith('Your saved notes: ')?'':e);
-  },{retry:nativeHost});
+  },{retry:nativeHost,stored:['balance']});
   const close=async()=>{await refresh.close();sessions.current.delete(close);};
   refreshes.current.set(wallet,refresh);refreshRef.current=refresh;sessions.current.add(close);
   return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
@@ -616,9 +616,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const sync=()=>running??=(async()=>{
    if(!active||!mounted.current)return;
    setPullSyncError('');
-   // Nothing to gain from a pull the edge is still refusing, and its own sync would spend the next allowance.
-   const waiting=refreshRef.current?.waitingMs??0;
-   if(waiting>0){setPullSyncError(pageBusyText(waiting));return;}
+   // Nothing to gain from a pull the edge is still refusing, and its own sync would spend the next allowance; the balance card already shows the countdown.
+   if((refreshRef.current?.waitingMs??0)>0)return;
    let syncError='';
    try{await wallet.sync();}
    catch(error){syncError=errorText(error);}
@@ -773,7 +772,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   })});
  },[onResumeSnapshot,synced,ready,pageVisible,viewActive,suspended,hidden,balance,unshielded,rows]);
   const balanceCard=()=> <section className="stock-card stock-balance">
-   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError} onRetry={nativeHost?undefined:startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request(true)}/></div>
+   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError||refreshBusy} onRetry={nativeHost?undefined:startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request(true)}/></div>
    {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
    {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
   </section>;
@@ -797,7 +796,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    {ready&&pullSyncError&&<p className="stock-blocked" role="alert">{pullSyncError}</p>}
    {ready&&feeNotice&&<p className="stock-blocked" role="alert">{feeNotice}</p>}
    {ready&&startupError&&<p className="stock-blocked">{startupError}</p>}
-   {ready&&refreshError&&!isPageBusy(refreshError)&&<p className="stock-blocked">{refreshError}</p>}
+   {ready&&refreshError&&<p className="stock-blocked">{refreshError}</p>}
   {!ready&&<section className="stock-card stock-loading" aria-busy="true"><span className="stock-spinner" aria-hidden="true"/><div><h2>{pool?pool.phase==='blocked'?'The pool is stopped':'The pool is being set up':'Connecting to the pool'}</h2><p className="stock-muted">{startupError||poolError||pool?.message}</p></div></section>}
   {ready&&<>
    {claim&&<section className="stock-card"><h2>{claimView&&'mine' in claimView&&claimView.mine?'Your claim link':'A claim link for you'}</h2>

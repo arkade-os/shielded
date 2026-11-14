@@ -194,6 +194,50 @@ test('a pull to sync inside a rate-limit pause reports the wait instead of readi
  await refresh.close();
 });
 
+test('an explicit permanent refusal stays itself while another origin is cooling down',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:17_000_000});t.mock.method(Math,'random',()=>0);
+ reportRateLimit('https://mempool.cooling.example/api/address/a/utxo','45');
+ const denied=Object.assign(new Error('Native network route is not approved'),{status:403});
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw denied;}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.equal(reads,1,'a 403 is not retried behind someone else’s cooldown');
+ assert.equal(seen.at(-1)!.balance,page.errorText(denied),'and it reads as itself, not as a busy wait');
+ assert.equal(refresh.waitingMs,0,'nor does it extend the shared pause');
+ t.mock.timers.tick(page.PAGE_BUSY_MAX_MS);await flush();assert.equal(reads,1);
+ await refresh.close();
+});
+
+test('a stored read cannot reset the pause a network refusal set',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:18_000_000});t.mock.method(Math,'random',()=>0);
+ let stored=0,histories=0;
+ const limited=()=>Object.assign(new Error('Too Many Requests'),{status:429});
+ const refresh=page.pageRefresh({
+  balance:async(network:boolean)=>{stored++;return network?1:2;},
+  // The retry's answer is slow, so the stored read of the same round lands inside it rather than after its refusal.
+  history:async()=>{if(++histories===1)throw limited();await new Promise(r=>setTimeout(r,1_000));throw limited();},
+ },()=>{},{retry:true,delayMs:1,stored:['balance']});
+ refresh.request();await flush();
+ assert.deepEqual([stored,histories],[1,1]);
+ assert.equal(refresh.waitingMs,page.PAGE_BUSY_MS,'the first refusal opens the pause');
+ refresh.request();await flush();
+ assert.deepEqual([stored,histories],[1,1],'both are held');
+ t.mock.timers.tick(page.PAGE_BUSY_MS);await flush();
+ assert.deepEqual([stored,histories],[2,2],'the stored read answered while the retry still waits');
+ t.mock.timers.tick(1_000);await flush();
+ assert.equal(refresh.waitingMs,2*page.PAGE_BUSY_MS,'the second refusal doubled rather than restarting from a stored success');
+ await refresh.close();
+});
+
+test('a busy wait and a real failure are reported apart, never as one classified string',()=>{
+ const busy=page.pageBusyText(40_000);
+ assert.deepEqual(page.pageReadErrors({balance:busy,history:'History unavailable'}),{busy,error:'History unavailable'});
+ assert.deepEqual(page.pageReadErrors({history:'History unavailable',balance:busy}),{busy,error:'History unavailable'});
+ assert.deepEqual(page.pageReadErrors({balance:busy}),{busy,error:''});
+ assert.deepEqual(page.pageReadErrors({coins:'Indexer unavailable',history:'Indexer unavailable'}),{busy:'',error:'Indexer unavailable'});
+ assert.deepEqual(page.pageReadErrors({}),{busy:'',error:''});
+});
+
 test('a refresh reads the network on its first round and after a forced one, and the store in between',async()=>{
  const rounds:boolean[]=[];
  const refresh=page.pageRefresh({balance:async(network:boolean)=>{rounds.push(network);return 1;}},()=>{});
