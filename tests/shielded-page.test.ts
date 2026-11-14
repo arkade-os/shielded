@@ -125,6 +125,84 @@ test('a rate-limited origin keeps an explorer read retrying instead of failing t
  assert.equal(await read,'caught up');assert.equal(reads,2);
 });
 
+test('a rate limit on one page reader pauses them all and resumes once after the shared delay',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:9_000_000});t.mock.method(Math,'random',()=>0);
+ let balances=0,histories=0,limited=true;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({
+  balance:async()=>{balances++;if(limited)throw Object.assign(new Error('Failed to fetch UTXOs: Too Many Requests'),{status:429});return 12;},
+  history:async()=>{histories++;return [];},
+ },(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.deepEqual([balances,histories],[1,1],'each reader asked once');
+ assert.equal(seen.at(-1)!.balance,`${page.PAGE_BUSY_NOTICE} Showing your saved balance; retrying in 30 s.`);
+ refresh.request();await flush();
+ assert.deepEqual([balances,histories],[1,1],'the sibling read that succeeded did not lift the pause, and nothing fired inside it');
+ t.mock.timers.tick(page.PAGE_BUSY_MS-1);await flush();
+ assert.deepEqual([balances,histories],[1,1],'nothing resumes before the delay');
+ limited=false;t.mock.timers.tick(1);await flush();
+ assert.equal(histories,2,'the held reader resumes exactly once');
+ assert.deepEqual([balances,histories],[3,2],'the refused reader also serves the round queued behind the pause');
+ assert.deepEqual(seen.at(-1),{});
+ t.mock.timers.tick(page.PAGE_BUSY_MAX_MS);await flush();
+ assert.deepEqual([balances,histories],[3,2],'a lifted pause arms nothing further');
+ await refresh.close();
+});
+
+test('a refusal that only names the limit in its text pauses the page, as on a transport that records none',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:13_000_000});t.mock.method(Math,'random',()=>0);
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw new Error('Failed to fetch UTXOs: Too Many Requests');}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.equal(reads,1);assert.ok(page.isPageBusy(seen.at(-1)!.balance!),seen.at(-1)!.balance);
+ t.mock.timers.tick(page.PAGE_BUSY_MS);await flush();assert.equal(reads,2);
+ await refresh.close();
+});
+
+test('a refusal the native transport already recorded as a rate limit pauses the page even without 429 in its text',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:14_000_000});t.mock.method(Math,'random',()=>0);
+ // #165 writes this store only from a 429 status, so a blank reason phrase still names a refusal; the cooldown it leaves is absolute, so the tests below run on a later clock.
+ reportRateLimit('https://mempool.paced.example/api/address/a/utxo','45');
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw new Error('Failed to fetch UTXOs: ');}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.equal(reads,1);
+ assert.equal(seen.at(-1)!.balance,`${page.PAGE_BUSY_NOTICE} Showing your saved balance; retrying in 45 s.`,'it waits out the Retry-After the transport recorded, not its own shorter floor');
+ t.mock.timers.tick(45_000);await flush();assert.equal(reads,2);
+ await refresh.close();
+});
+
+test('a paced page read gives up inside one round rather than retrying a refusal forever',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:15_000_000});t.mock.method(Math,'random',()=>0);
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw Object.assign(new Error('Too Many Requests'),{status:429});}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ for(let i=0;i<12;i++){t.mock.timers.tick(page.PAGE_BUSY_MAX_MS);await flush();}
+ assert.equal(reads,page.PAGE_READ_ATTEMPTS);
+ assert.match(seen.at(-1)!.balance!,/Wallet services are busy/);
+ await refresh.close();
+});
+
+test('a pull to sync inside a rate-limit pause reports the wait instead of reading',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:16_000_000});t.mock.method(Math,'random',()=>0);
+ let reads=0;
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw Object.assign(new Error('Too Many Requests'),{status:429});}},()=>{},{retry:true,delayMs:1});
+ assert.equal(refresh.waitingMs,0);
+ refresh.request();await flush();assert.equal(reads,1);
+ assert.equal(refresh.waitingMs,page.PAGE_BUSY_MS);
+ t.mock.timers.tick(10_000);
+ assert.equal(refresh.waitingMs,page.PAGE_BUSY_MS-10_000);
+ await refresh.close();
+});
+
+test('a refresh reads the network on its first round and after a forced one, and the store in between',async()=>{
+ const rounds:boolean[]=[];
+ const refresh=page.pageRefresh({balance:async(network:boolean)=>{rounds.push(network);return 1;}},()=>{});
+ await refresh.request();await refresh.request();
+ await refresh.request(true);await refresh.request();
+ assert.deepEqual(rounds,[true,false,true,false]);
+ await refresh.close();
+});
+
 test('pool startup retries an outage and does not publish a read completed after cancellation',async()=>{
  const controller=new AbortController();let reads=0;
  assert.equal(await page.retryPageRead(async()=>{if(++reads===1)throw new Error('The pool did not answer (503).');return 'ready';},controller.signal,{delayMs:1}),'ready');

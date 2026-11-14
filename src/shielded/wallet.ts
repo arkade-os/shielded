@@ -400,15 +400,15 @@ export class ShieldedWallet extends Wallet {
   if(this.stopped)return;
   let atHead=false;
   // Only a tick has just read the status; finish(), renew() and catchUpAfterEvent sync without one, so the skip is not in sync().
-  // Sealed browser transport only: a native wallet is private but not sealed, and reads every tick.
-  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.sealedTransport||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
+  // Every private transport, sealed or native: the counts and the status read behind the skip are the same either way.
+  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.networkPrivacy||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(!this.stopped&&this.operatorDown&&this.headExpiry===undefined){
    const revision=this.statusRevision,expiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;
    if(!this.stopped&&revision===this.statusRevision)this.headExpiry=expiry;
   }}
   if(this.stopped)return;
-  void this.autoShield(this.sealedTransport&&atHead).catch(()=>{});
+  void this.autoShield(this.networkPrivacy&&atHead).catch(()=>{});
   void this.merge().catch(()=>{});
   // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
   if(atHead){void this.renewNotes().catch(()=>{});void this.recoverNotes().catch(()=>{});}
