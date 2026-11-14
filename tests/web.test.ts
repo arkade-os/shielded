@@ -48,3 +48,16 @@ test('native downloads serve the verified host copy or redirect to the pinned re
   const response=await fetch(url(path),{redirect:'manual'});assert.equal(response.status,404,path);
  }
 });
+
+test('the asset links delegate passkeys to the release-signed app, whose certificate this test spells out',async t=>{
+ const web=mkdtempSync(join(tmpdir(),'shielded-web-')),data=mkdtempSync(join(tmpdir(),'shielded-data-')),app=express();serveWeb(app,web,data);
+ const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+ t.after(()=>{server.close();rmSync(web,{recursive:true,force:true});rmSync(data,{recursive:true,force:true});});
+ const fingerprint='374219922ff53597fc064bd511f8af6475118ddc681d47f6b86bbc884a252855'.toUpperCase().match(/../g)!.join(':');
+ assert.match(fingerprint,/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+ for(const method of ['GET','HEAD']){
+  const response=await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/.well-known/assetlinks.json`,{method,redirect:'manual'});
+  assert.deepEqual([response.status,response.headers.get('content-type'),response.headers.get('cache-control')],[200,'application/json','public, max-age=3600'],method);
+  if(method==='GET')assert.equal(await response.text(),`[{"relation":["delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"io.arkade.shielded","sha256_cert_fingerprints":["${fingerprint}"]}}]`);
+ }
+});
