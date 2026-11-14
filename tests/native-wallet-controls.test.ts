@@ -9,6 +9,14 @@ import {WalletCreatedNotice,WalletSecurityMenu} from '../app/src/WalletSecurityM
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {default:NativeAbout}=await import('../app/src/NativeAbout.tsx');
+const {NativeExternalLink}=await import('../app/src/NativeConnectionWarning.tsx');
+
+test('an external link prompt is a native dialog with the link, a copy button and a close button',()=>{
+ const html=renderToStaticMarkup(createElement(NativeExternalLink,{url:'https://faucet.mutinynet.com/?a=1&b=2',onClose:()=>{}}));
+ assert.match(html,/^<dialog class="native-connection-warning" aria-labelledby="external-link-title">/);
+ assert.match(html,/<code class="native-external-link">https:\/\/faucet\.mutinynet\.com\/\?a=1&amp;b=2<\/code>/);
+ assert.match(html,/>Copy link<\/button><button type="button" class="native-connection-confirm">Close<\/button>/);
+});
 
 test('the native About control never navigates back through the app entry point',()=>{
  const html=renderToStaticMarkup(createElement(WalletHeaderActions,{native:true,onAbout:()=>{}}));
