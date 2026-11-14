@@ -21,7 +21,7 @@ export {depositFeeOf,type DepositFee,type DepositFeeSchedule} from '../../protoc
 export interface CreateShieldedWalletOptions {
  /** The pool's origin, for example `https://shielded.mutinynet.arkade.sh`. */
  pool:string;
- /** 32 bytes as 64 hex characters, or the same bytes as a 24-word recovery phrase. */
+ /** 32 bytes as 64 hex characters, the same bytes as a 24-word recovery phrase, or a 12-word phrase stretched into those 32 bytes, keeping the 128-bit strength of its 12 words. */
  secret:string;
  identity?:Identity;
  bornAt?:number;
