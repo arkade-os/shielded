@@ -314,6 +314,27 @@ test('a slot squatting on another depositor\'s coin cannot keep the owner out: a
  assert.equal(Transaction.fromPSBT(base64.decode(w.landed[0]!.arkTx)).inputsLength,2,'the pool head, and the coin once');
 });
 
+test('a squatter slot the batch does not take leaves the owner\'s coin free, so the owner\'s group goes in the very next batch',async t=>{
+ const w=await world(64),drops:string[][]=[];
+ const op=await w.open(t,{onDrop:ids=>drops.push(ids),signDeposits:async(request,spends)=>spends.some(s=>s.id==='squat')?request:w.signDeposits(request,spends)});
+ const {dummies:[a,b],group}=groupOf(),g={groupId:group.id,groupSize:2};
+ const first=spendOf(deposit(op.state,0n,{inputs:[a],...g})),own=spendOf(deposit(op.state,1000n,{inputs:[b],...g}),{coin:w.coin(1)});
+ // Between the owner's two members, so the squatter's lone unit sorts after their group.
+ for(const s of [first,spendOf(deposit(op.state,1000n),{id:'squat',coin:w.coin(1)}),own])await op.submit(s);
+ op.addPadding(padsFor(op.state,'spend',BATCH_SLOTS-1));
+ assert.equal(await landsAs(op),0);
+ assert.deepEqual([carried(w.dir,0,own),op.pendingIds(),drops],[true,['squat'],[]]);
+});
+
+test('a group member naming a sibling\'s coin is refused as group-invalid, as no batch could ever spend it twice',async t=>{
+ const w=await world(64),op=await w.open(t),{dummies:[a,b],group}=groupOf(),g={groupId:group.id,groupSize:2};
+ const first=spendOf(deposit(op.state,1000n,{inputs:[a],...g}),{coin:w.coin(1)});
+ await op.submit(first);
+ await assert.rejects(op.submit({...first,id:'again'}),rejection('double-spend'),'a queued copy of the same member answers double-spend, which its client keeps reserved');
+ await assert.rejects(op.submit(spendOf(deposit(op.state,1000n,{inputs:[b],...g}),{coin:w.coin(1)})),rejection('group-invalid'));
+ assert.deepEqual(op.pendingIds(),[first.id]);
+});
+
 test('a pad whose rCur has no root is refused once, and the next tick still builds a batch',async t=>{
  const w=await world(2),op=await w.open(t),good=fastSpend(op.state);
  const bad:[string,unknown][]=[['no root',{epoch:0}],['a root outside the field',{epoch:0,root:ROLLUP_FIELD}],['a fractional epoch',{epoch:0.5,root:1n}]];
