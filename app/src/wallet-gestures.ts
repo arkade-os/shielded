@@ -162,13 +162,26 @@ export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(a
  };
 }
 
-/** Android's back (the WebView goes back while it has history) closes the open sheet: one same-URL entry while it is open, dropped again when it closes any other way. */
-export function bindSheetBack(view:Pick<Window,'history'|'addEventListener'|'removeEventListener'>,close:()=>void):()=>void {
- view.history.pushState({shieldedSheet:true},'');
+/** Android's back (the WebView goes back while it has history) closes the open sheet: one same-URL entry while it is open, dropped again when it closes any other way. A sheet over another passes its own `key`, so back closes only the top one. */
+export function bindSheetBack(view:Pick<Window,'history'|'addEventListener'|'removeEventListener'>,close:()=>void,key='shieldedSheet'):()=>void {
+ view.history.pushState({[key]:true},'');
  // A back() still queued from the previous close lands on that sheet's entry; only leaving every sheet entry closes this one.
- const back=(event:PopStateEvent)=>{if(!event.state?.shieldedSheet)close();};
+ const back=(event:PopStateEvent)=>{if(!event.state?.[key])close();};
  view.addEventListener('popstate',back);
- return()=>{view.removeEventListener('popstate',back);if(view.history.state?.shieldedSheet)view.history.back();};
+ return()=>{view.removeEventListener('popstate',back);if(view.history.state?.[key])view.history.back();};
+}
+
+/** A press held `ms` without moving past `slop` pixels. A scroll moves or cancels the pointer first, so it never fires. */
+export function longPress(onHold:()=>void,ms=500,slop=10){
+ let timer:ReturnType<typeof setTimeout>|undefined,start:{x:number;y:number}|undefined,held=false;
+ const up=()=>{clearTimeout(timer);timer=undefined;start=undefined;};
+ return {
+  down(x:number,y:number){up();held=false;start={x,y};timer=setTimeout(()=>{up();held=true;onHold();},ms);},
+  move(x:number,y:number){if(start&&Math.hypot(x-start.x,y-start.y)>slop)up();},
+  up,
+  /** True once, for the click that ends a hold: that press already did its work. */
+  spent(){const was=held;held=false;return was;},
+ };
 }
 
 export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<void>,options:{distance?:number;onState?:(state:PullToRefreshState)=>void;onError?:(error:unknown)=>void}={}):()=>void {

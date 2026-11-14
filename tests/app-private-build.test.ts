@@ -87,12 +87,14 @@ test('a private wallet prefetches both proving circuits on open, not on the send
 
 // Source-level: /watch and the wallet are read for their literals and branches, not rendered.
 test('the pool-reading pages take their page size and their links from the transport',()=>{
- const disclose=read('app/src/Disclose.tsx');
+ const disclose=read('app/src/Disclose.tsx'),wallet=read('app/src/RollupWallet.tsx');
  assert.ok(disclose.includes('privateTransport()?.pageSize'));
  assert.doesNotMatch(disclose,/limit=100\b/);
- for(const file of ['app/src/RollupWallet.tsx','app/src/Disclose.tsx']){
-  const links=read(file).split(/\r?\n/).filter(line=>line.includes('${EXPLORER}'));
-  assert.ok(links.length,file);
-  for(const line of links)assert.match(line,/(PRIVATE|privateTransport\(\))\?<code>\{txid\}<\/code>:<a [^>]*\$\{EXPLORER\}/,file);
- }
+ const links=disclose.split(/\r?\n/).filter(line=>line.includes('${EXPLORER}'));
+ assert.ok(links.length);
+ for(const line of links)assert.match(line,/privateTransport\(\)\?<code>\{txid\}<\/code>:<a [^>]*\$\{EXPLORER\}/);
+ const explorers=wallet.match(/explorerUrl\(/g)?.length;
+ assert.ok(explorers);
+ assert.equal(wallet.match(/PRIVATE\?undefined:explorerUrl\(/g)?.length,explorers,'a private wallet neither opens nor copies an explorer link');
+ assert.doesNotMatch(wallet,/explorer\.mutinynet|\$\{EXPLORER\}|TxLink/,'activity links open in the app instead of navigating to an explorer');
 });
