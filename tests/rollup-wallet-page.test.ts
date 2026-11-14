@@ -7,7 +7,7 @@ import {marketOf,resolveRoute} from '@arkade-os/swap/advanced';
 import {base64,hex} from '@scure/base';
 import {rollupWitness} from '../src/rollup/covenant.ts';
 import {batchWitnessOutput,witnessOutput} from './fixtures/batch-witness.ts';
-import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,pausedErrorText,payTarget,routeCopy,satsText,sendLimitLine,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
+import {NO_SWAP_LINE,PAUSED_ERROR,PAUSED_LINE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,noteCapped,openPaymentRequest,pausedErrorText,payTarget,routeCopy,satsText,sendLimitLine,sheetLine,shieldFeeOf,shieldFeeOfTx,shortValue} from '../app/src/rollup-client.ts';
 import {batchStatements,bornAtFor,checkSigningRequest,depositFeeFor,pickNote,planFeeOf,poolApiOf,rollupApi,shieldableWithFee,shieldPlan,waitForSpend,type ArkCoin,type ShieldPlan,type SpendStatus} from '../src/shielded/pool.ts';
 import type {OwnedNote} from '../packages/protocol/src/rollup/account.ts';
 import type {EpochHistoryEntry,EpochOwnedNote} from '../packages/protocol/src/rollup/epoch-account.ts';
@@ -192,12 +192,19 @@ test('the status sheet names the step in progress, then the outcome',()=>{
 });
 
 test('the send line says why one payment cannot take the whole balance, only when the note limit is the reason',()=>{
- assert.equal(sendLimitLine(99_850n,100_000n,4,'sats'),'Up to 99,850 sats in one payment, which can combine at most three of your notes.');
- assert.equal(sendLimitLine(900n,1_200n,5,'units'),'Up to 900 units in one payment, which can combine at most three of your notes.');
- assert.equal(sendLimitLine(100_000n,100_000n,3,'sats'),'Up to 100,000 sats available privately.');
- assert.equal(sendLimitLine(50_000n,70_000n,2,'sats'),'Up to 50,000 sats available privately.','a note in flight or awaiting recovery is another gap');
- assert.equal(sendLimitLine(0n,700n,4,'sats'),'Up to 0 sats available privately.','notes the wallet cannot anchor yet are not the limit');
- assert.match(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),/sendLimitLine\(maxSend,assetId\?assetUnits\(assetId\):balance,sendNotes,unit\)/);
+ const line=(max:bigint,balance:bigint,notes:number,unit='sats')=>sendLimitLine(max,unit,noteCapped(max,balance,notes));
+ assert.equal(line(99_850n,100_000n,4),'Up to 99,850 sats in one payment, which can combine at most three of your notes.');
+ assert.equal(line(900n,1_200n,5,'units'),'Up to 900 units in one payment, which can combine at most three of your notes.');
+ assert.equal(line(100_000n,100_000n,3),'Up to 100,000 sats available privately.');
+ assert.equal(line(50_000n,70_000n,2),'Up to 50,000 sats available privately.','a note in flight or awaiting recovery is another gap');
+ assert.equal(line(0n,700n,4),'Up to 0 sats available privately.','notes the wallet cannot anchor yet are not the limit');
+});
+
+test('only that explanation offers Combine notes, which merges the selected asset\'s notes above three through the progress sheet',()=>{
+ const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
+ assert.match(wallet,/const sendCapped=noteCapped\(maxSend,assetId\?assetUnits\(assetId\):balance,/);
+ assert.match(wallet,/<p className="stock-muted">\{synced\?<>\{sendLimitLine\(maxSend,unit,sendCapped\)\}\{sendCapped&&<> <button type="button" className="stock-textlink" disabled=\{walletBusy\} onClick=\{\(\)=>void run\(\(\)=>wallet!\.merge\(sendField,3\),'Merging two notes'\)\}>Combine notes<\/button><\/>\}<\/>:'Syncing your wallet…'\}<\/p>/);
+ assert.equal(wallet.match(/Combine notes/g)?.length,1,'no other path shows the link');
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{

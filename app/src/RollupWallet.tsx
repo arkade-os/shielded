@@ -17,7 +17,7 @@ import {RECOVERY_LINE} from '../../src/shielded/epoch-recovery.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
-import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,openPaymentRequest,payTarget,routeCopy,satsText,sendLimitLine,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
+import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,noteCapped,openPaymentRequest,payTarget,routeCopy,satsText,sendLimitLine,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
@@ -608,7 +608,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const opening=!!secret&&!wallet&&!startupFailure;
  const sendField=assetId?assetFieldOfId(assetId):0n,maxSend=wallet?wallet.maxPrivatePayment(sendField):0n;
  const needsRecovery=new Set(wallet?.recovering.map(note=>note.nullifier)),recovering=new Set(wallet?.recoveryInFlight.map(note=>note.nullifier));
- const sendNotes=wallet?wallet.shieldedNotes(sendField).filter(note=>!wallet.inFlight.has(note.nullifier)&&!needsRecovery.has(note.nullifier)).length:0;
+ const sendCapped=noteCapped(maxSend,assetId?assetUnits(assetId):balance,wallet?wallet.shieldedNotes(sendField).filter(note=>!wallet.inFlight.has(note.nullifier)&&!needsRecovery.has(note.nullifier)).length:0);
  const inFlight=!!wallet&&[...wallet.shieldedNotes(),...reserves.flatMap(id=>wallet.shieldedNotes(assetFieldOfId(id)))].some(note=>wallet.inFlight.has(note.nullifier)&&!recovering.has(note.nullifier));
  useEffect(()=>{
   const page=pageNode.current;
@@ -848,7 +848,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {codeError&&<p className="stock-blocked" role="alert">{codeError}</p>}
      <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
      {arkAssetRecipient&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-      <p className="stock-muted">{synced?sendLimitLine(maxSend,assetId?assetUnits(assetId):balance,sendNotes,unit):'Syncing your wallet…'}</p>
+      <p className="stock-muted">{synced?<>{sendLimitLine(maxSend,unit,sendCapped)}{sendCapped&&<> <button type="button" className="stock-textlink" disabled={walletBusy} onClick={()=>void run(()=>wallet!.merge(sendField,3),'Merging two notes')}>Combine notes</button></>}</>:'Syncing your wallet…'}</p>
      <details className="stock-more"><summary>Where each kind of payment goes</summary><p className="stock-muted">A shielded address pays privately inside the pool. An Arkade address leaves the pool, and the amount and destination become public.{liveStreams?' A Bitcoin address leaves the pool through a fresh key used only for that payment, so it is not linked to your deposit address. Lightning funds its swap directly from one pool note.':' Private networking does not carry Bitcoin or Lightning payments yet.'} A claim link pays whoever opens it first.</p>{liveStreams&&to.trim()&&<p className="stock-muted">Get quote contacts the payment service for Lightning invoices and addresses. It shares the invoice or address and amount; payment happens after you confirm the quote.</p>}</details>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}

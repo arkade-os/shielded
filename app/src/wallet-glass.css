@@ -126,6 +126,7 @@
 .stock-page .tx-sheet-read,.stock-page .tx-sheet-explorer{display:grid;gap:6px}
 .stock-page .tx-sheet-explorer{justify-items:start}
 @media(min-width:761px){.stock-page .tx-sheet-layer[open]{align-items:center;padding:24px}.stock-page .stock-card.tx-sheet{border-radius:26px}}
+.stock-page .stock-card button.stock-textlink{min-height:0;padding:0;border:0;border-radius:0;background:none;color:var(--navy);font:inherit;text-decoration:underline;text-decoration-color:var(--or);text-underline-offset:3px}
 .stock-page .stock-notes>div{border:1px solid var(--rule);border-radius:14px;background:#fffaf1;outline:0}
 .stock-page .stock-notes>div::after{display:none}
 .stock-page .stock-notes span:first-child{font-family:'Geist',system-ui,sans-serif;font-size:16px}
