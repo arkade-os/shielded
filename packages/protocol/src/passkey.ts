@@ -45,9 +45,9 @@ export async function createPasskeySeed(o:{rpId:string;userName:string;wordCount
  const {credentialId,prf}=await createPrfPasskey({rp:{id:o.rpId,name:PASSKEY_RP_NAME},userId:passkeyUserId(wordCount),userName:o.userName,salt:PASSKEY_SEED_SALT,client:o.client});
  return seedOf(credentialId,prf,wordCount);
 }
-/** Any passkey for this relying party: the handle says which wallet it is, so another passkey yields another wallet rather than an error. */
-export async function restorePasskeySeed(o:{rpId:string;client?:WebAuthnClient}):Promise<PasskeySeed> {
- const {credentialId,userHandle,prf}=await evaluatePrf({rpId:o.rpId,salt:PASSKEY_SEED_SALT,client:o.client});
+/** Any passkey for this relying party unless `credentialId` names one: the handle says which wallet it is, so another passkey yields another wallet rather than an error. */
+export async function restorePasskeySeed(o:{rpId:string;credentialId?:Uint8Array;client?:WebAuthnClient}):Promise<PasskeySeed> {
+ const {credentialId,userHandle,prf}=await evaluatePrf({rpId:o.rpId,salt:PASSKEY_SEED_SALT,credentialIds:o.credentialId&&[o.credentialId],client:o.client});
  return seedOf(credentialId,prf,wordCountFromUserHandle(userHandle));
 }
 

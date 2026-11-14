@@ -1,11 +1,12 @@
-import {useCallback,useEffect,useRef,useState,type CSSProperties,type ReactNode} from 'react';
+import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type ReactNode} from 'react';
 import {createPortal} from 'react-dom';
 import {invoke} from '@tauri-apps/api/core';
-import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
+import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
+import {passkeyRpId,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
 import {IndexedDBShieldedNoteRepository} from '../../src/shielded/repository.ts';
 import type {StepState} from '../../src/shielded/handle.ts';
 import {LNURL_BASE} from '../../src/shielded/lightning.ts';
@@ -20,7 +21,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,renewPageCoins,restorePageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
 import WalletEntrance from './WalletEntrance.tsx';
 import WalletSyncStatus from './WalletSyncStatus.tsx';
@@ -36,7 +37,7 @@ import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,type PullToRefreshState} from './wallet-gestures.ts';
 import NativeAbout from './NativeAbout.tsx';
 import {WalletBrand,WalletHeaderActions} from './WalletHeaderActions.tsx';
-import {WalletCreatedNotice,WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
+import {WalletBackupCard,WalletCreatedNotice,WalletPhrase,WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
 import {isNativeHost,nativeClaimFetch,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {loadWalletPoseidon} from './wallet-crypto.ts';
 import {forceReleaseNativeJournal,pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeJournal} from '../../src/native/mutations.ts';
@@ -46,6 +47,7 @@ import {PRIVATE_FLAG} from './private-boot.ts';
 const INJECTED_NATIVE=isNativeHost();
 const PRIVATE=privateTransport();
 const POOL_ORIGIN=INJECTED_NATIVE?(globalThis as typeof globalThis&{__SHIELDED_NATIVE__:{poolOrigin:string}}).__SHIELDED_NATIVE__.poolOrigin:'';
+const PASSKEY_RP_ID=passkeyRpId(POOL_ORIGIN,location.hostname);
 
 const BACKED_UP='shielded-rollup-wallet-backed-up-v1';
 const EXPLORER='https://explorer.mutinynet.arkade.sh';
@@ -98,6 +100,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
+ const [prf,setPrf]=useState<string>(),[passkeyOff,setPasskeyOff]=useState(false),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
@@ -175,6 +178,15 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   reportStartupStage('Creating private wallet keys');
   try{const fresh=createPageWallet(storage);createdHere.current=true;setSecret(fresh);}
   catch(error){setRestoreError(errorText(error));busyRef.current=false;setBusy(false);}
+ };
+ useEffect(()=>{if(!nativeHost)void prfSupport().then(setPrf);},[nativeHost]);
+ const setupFailed=(error:unknown)=>{const step=passkeyNextStep(error);setRestoreError(step?.message??errorText(error));if(step&&!step.retry)setPasskeyOff(true);};
+ const createWithPasskey=async(wordCount:PasskeyWordCount)=>{
+  if(busyRef.current||secret)return;
+  busyRef.current=true;setBusy(true);setRestoreError('');
+  reportStartupStage('Creating private wallet keys');
+  try{const made=await createPasskeyPageWallet(storage,{rpId:PASSKEY_RP_ID,wordCount});if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
+  catch(error){if(mounted.current){setupFailed(error);busyRef.current=false;setBusy(false);}}
  };
  // The wallet needs the pool phase, network and token before creation.
  useEffect(()=>{
@@ -262,16 +274,17 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   if((startupError||lnError)&&!busy&&!handleBusy.current)reload();
  };
 
- const restoreWallet=async()=>{
+ const restoreWallet=async(withPasskey=false)=>{
   if(secret||wallet){setRestoreError('A wallet is already loaded. Clear it before restoring another wallet.');return;}
   if(busyRef.current||restoreRequested.current||restoring.current)return;
-  restoreRequested.current=true;setRestoreStarted(true);
+  restoreRequested.current=true;setRestoreStarted(true);setRestoreError('');
   try{
-   await restorePageWallet(restore,{cache:cacheRef.current!,storage:storage,reload,stop:async()=>{
+   const options={cache:cacheRef.current!,storage:storage,reload,stop:async()=>{
     restoring.current=true;busyRef.current=true;quotes.clear();setBusy(true);setRestoreError('');sheetOwner.stop();
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
-   }});
-  }catch(error){if(mounted.current)setRestoreError(errorText(error));}
+   }};
+   await (withPasskey?restorePasskeyPageWallet({...options,rpId:PASSKEY_RP_ID}):restorePageWallet(restore,options));
+  }catch(error){if(mounted.current)setupFailed(error);}
   finally{
    if(!restoring.current){
     restoreRequested.current=false;
@@ -621,7 +634,15 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   // A return while the view is inactive or suspended has no sync yet; it runs once the effect above installs one.
   if(pageVisible&&!was){if(syncRef.current)void syncRef.current().catch(()=>{});else pendingForeground.current=true;}
  },[pageVisible]);
- const phrase=secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
+ const passkeyRecord=useMemo(()=>secret?passkeyRecordOf(storage):undefined,[secret,storage]),phraseWords=passkeyRecord?.words??24;
+ const phrase=phraseWords===12?passkeyPhrase:secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
+ useEffect(()=>{if(!reveal&&backedUp)setPasskeyPhrase('');},[reveal,backedUp]);
+ const showPhrase=()=>{
+  if(phrase){setReveal(true);return;}
+  if(revealing.current)return;
+  revealing.current=true;setRevealError('');
+  void passkeyWords(storage,{rpId:PASSKEY_RP_ID}).then(words=>{if(mounted.current){setPasskeyPhrase(words);setReveal(true);}},error=>{if(mounted.current)setRevealError(errorText(error));}).finally(()=>{revealing.current=false;});
+ };
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity)=>{
   const link=wallet?.revealLinkOfActivity(item);
@@ -690,7 +711,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   });
  },[ready,docked,sheetOpen]);
  useEffect(()=>{if(docked&&sheetOpen&&viewActive&&!suspended)return bindSheetBack(window,()=>setSheetOpen(false));},[docked,sheetOpen,viewActive,suspended]);
- const openSecurity=(view:WalletSecurityView)=>{setReveal(false);setShowView(false);setShowFull(false);setClearError('');setSecurityView(view);};
+ const openSecurity=(view:WalletSecurityView)=>{setReveal(false);setShowView(false);setShowFull(false);setClearError('');setRevealError('');setSecurityView(view);};
  const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const clearWallet=async()=>{
   if(!onClearWallet)throw new Error('This host cannot clear its wallet data.');
@@ -755,7 +776,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
   const inactive=hidden||suspended||!viewActive;
-  if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload}/></div>;
+  if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={prf&&prf!=='no'&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined}/></div>;
   return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><Icon name="reset" size={16}/><span>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{headerControls}<AppUpdateNotice/>{!headerControls&&<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/>}</div></header>
    {nativePending&&<section className="stock-warning" role="status"><span>Some payments have unresolved outcomes. Their inputs stay reserved until this wallet can prove they cannot land, which it rechecks every minute; a dropped status alone is no proof.</span>
     {confirmRelease
@@ -833,11 +854,12 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(POOL_ORIGIN||location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
     </div></section></div>}</div>
   </>}
-    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<section className="stock-card stock-recovery"><h2>Save your recovery phrase</h2><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds.</p><details className="stock-more"><summary>Before you switch devices</summary><p className="stock-muted">Keep this browser&apos;s data until pending Lightning swaps and their payouts have finished. The phrase alone does not restore every outstanding swap.</p></details>{reveal&&<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>}<div className="stock-actions">{!reveal&&<button onClick={()=>setReveal(true)}>Show phrase</button>}<button className="stock-ghost" onClick={()=>{storage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}>I saved it</button></div></section>}
+    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<WalletBackupCard words={phraseWords} phrase={phrase} reveal={reveal} error={revealError} onReveal={showPhrase} onSaved={()=>{storage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}/>}
     {(!ready||docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
      {!securityView?<WalletSecurityMenu canReveal={backedUp||!secret} canClear={!!onClearWallet} onOpen={openSecurity}/>:<div className="stock-security-subview"><button type="button" className="stock-security-back" onClick={leaveSecurity}>← Back</button><h3 tabIndex={-1}>{securityView==='phrase'?'Recovery phrase':securityView==='viewing'?'Viewing access':'Clear wallet'}</h3>
-     {securityView==='phrase'&&<><p className="stock-muted">These 24 words restore your pool notes and Arkade keys. Anyone with them can spend your funds. Keep this browser&apos;s data while Lightning swaps or payouts are pending: the phrase alone does not restore every outstanding swap. A fresh browser recovers your Lightning address on its own; direct swaps also need their stored recovery records.</p>
-      {secret?(reveal?<><ol className="stock-words">{phrase.split(' ').map((word,i)=><li key={i}>{word}</li>)}</ol><CopyButton value={phrase}/></>:<button type="button" className="stock-ghost" onClick={()=>setReveal(true)}>Show recovery phrase</button>):<p className="stock-muted">No recovery phrase is available in this browser.</p>}
+     {securityView==='phrase'&&<><p className="stock-muted">These {phraseWords} words restore your pool notes and Arkade keys. Anyone with them can spend your funds. Keep this browser&apos;s data while Lightning swaps or payouts are pending: the phrase alone does not restore every outstanding swap. A fresh browser recovers your Lightning address on its own; direct swaps also need their stored recovery records.</p>
+      {secret?(reveal?<WalletPhrase phrase={phrase}/>:<button type="button" className="stock-ghost" onClick={showPhrase}>Show recovery phrase</button>):<p className="stock-muted">No recovery phrase is available in this browser.</p>}
+      {revealError&&<p className="stock-blocked" role="alert">{revealError}</p>}
       {secret&&<WalletCreatedNotice created={created}/>}</>}
      {securityView==='viewing'&&<>{wallet?<><section className="stock-security-key"><h4>View key · read only</h4>{showView?<><Copyable value={wallet.viewKey()}/><p className="stock-muted">Shows every payment this wallet receives, for an auditor or a second device. It cannot spend and cannot see which notes were spent. <a className="stock-txlink" href={`/watch#${wallet.viewKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowView(true)}>Show view key</button>}</section>
        <section className="stock-security-key"><h4>Full viewing key · sees spends</h4>{showFull?<><Copyable value={wallet.fullViewingKey()}/><p className="stock-muted">Shows every note this wallet received and which ones it spent, so also how much each payment out sent, forever. It cannot spend and cannot freeze your notes. <a className="stock-txlink" href={`/watch#${wallet.fullViewingKey()}`} target="_blank" rel="noreferrer">Open the read-only view ↗</a></p></>:<button type="button" className="stock-ghost stock-mini" onClick={()=>setShowFull(true)}>Show full viewing key</button>}</section></>:<p className="stock-muted">Viewing access is available when the wallet is ready.</p>}</>}
