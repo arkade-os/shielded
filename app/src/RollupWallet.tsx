@@ -1,5 +1,6 @@
 import {useCallback,useEffect,useRef,useState,type CSSProperties} from 'react';
 import {createPortal} from 'react-dom';
+import {invoke} from '@tauri-apps/api/core';
 import {InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
@@ -625,11 +626,14 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    :<button type="button" className="stock-ghost stock-mini" onClick={()=>setRevealed(r=>({...r,[item.id]:link}))}>Create a reveal link</button>}</dd></>;
  };
 
- const submit=()=>{if(quote){setSheetOpen(false);void run(async()=>{
-  const funds=fundsRef.current;if(!funds||funds.wallet!==wallet)throw new Error('The wallet changed. Review its route again.');
-  const currentCoins=await wallet!.coins();
-  if(!mounted.current||restoring.current||fundsRef.current!==funds)throw new Error('The wallet changed. Review its route again.');
-  return quotes.send({...quoteContext,revision:funds.watch.update(currentCoins)},quote);
+ const submit=()=>{if(quote){void run(async()=>{
+  // The sheet and its spinning button stay until the payment exists; until then nothing else shows it started.
+  try{
+   const funds=fundsRef.current;if(!funds||funds.wallet!==wallet)throw new Error('The wallet changed. Review its route again.');
+   const currentCoins=await wallet!.coins();
+   if(!mounted.current||restoring.current||fundsRef.current!==funds)throw new Error('The wallet changed. Review its route again.');
+   return await quotes.send({...quoteContext,revision:funds.watch.update(currentCoins)},quote);
+  }finally{if(mounted.current)setSheetOpen(false);}
  },routeCopy(quote.railId).title);}else getQuote();};
 
  const fill=(code:string,replace=false)=>{
@@ -645,7 +649,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   if(invoiceCarriesAmount(target.to))setAmount('');
   else if(target.amount!==undefined){setAssetId('');setAmount(String(target.amount));}
  };
- const paste=async()=>{try{fill(await navigator.clipboard.readText());}catch{recipientNode.current?.focus();}};
+ // Android's WebView refuses navigator.clipboard.readText, so the platform plugin reads the system clipboard there.
+ const readClipboard=async()=>nativeHost&&typeof __NATIVE_PLATFORM__==='string'&&__NATIVE_PLATFORM__.startsWith('android')?await invoke<string|null>('plugin:shielded-platform|clipboard_text'):navigator.clipboard.readText();
+ const paste=async()=>{try{const text=await readClipboard();if(text===null)throw new Error('The clipboard holds no text.');fill(text);}catch{recipientNode.current?.focus();}};
  const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};
  useEffect(()=>{
@@ -814,7 +820,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
-     <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))}>{busy?'Working…':quoting?'Getting quote…':quote?routeCopy(quote.railId).title:'Get quote'}</button>
+     <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))} aria-busy={busy||quoting}>{busy||quoting?<><span className="stock-spinner" aria-hidden="true"/>{busy?'Preparing…':'Getting quote…'}</>:quote?routeCopy(quote.railId).title:'Get quote'}</button>
      {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
      {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(POOL_ORIGIN||location.origin,minted)} qr={claimUrl(POOL_ORIGIN||location.origin,minted)} label="QR code of the claim link"/>
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}

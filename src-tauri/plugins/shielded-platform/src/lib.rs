@@ -155,6 +155,32 @@ async fn secret_clear<R: Runtime>(
     }
 }
 
+#[tauri::command]
+async fn clipboard_text<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<Option<String>, String> {
+    ensure_local(&window)?;
+    #[cfg(target_os = "android")]
+    {
+        let response: serde_json::Value = app
+            .state::<Mobile<R>>()
+            .0
+            .run_mobile_plugin_async("clipboardText", serde_json::json!({}))
+            .await
+            .map_err(|_| "The clipboard could not be read")?;
+        Ok(response
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("The web view reads the clipboard on this platform".into())
+    }
+}
+
 async fn android_update_request<R: Runtime>(
     app: &AppHandle<R>,
     command: &str,
@@ -214,7 +240,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             secret_get,
             secret_set,
-            secret_clear
+            secret_clear,
+            clipboard_text
         ])
         .setup(|app, api| {
             #[cfg(target_os = "android")]
