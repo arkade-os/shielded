@@ -165,8 +165,10 @@ export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(a
 /** Android's back (the WebView goes back while it has history) closes the open sheet: one same-URL entry while it is open, dropped again when it closes any other way. */
 export function bindSheetBack(view:Pick<Window,'history'|'addEventListener'|'removeEventListener'>,close:()=>void):()=>void {
  view.history.pushState({shieldedSheet:true},'');
- view.addEventListener('popstate',close);
- return()=>{view.removeEventListener('popstate',close);if(view.history.state?.shieldedSheet)view.history.back();};
+ // A back() still queued from the previous close lands on that sheet's entry; only leaving every sheet entry closes this one.
+ const back=(event:PopStateEvent)=>{if(!event.state?.shieldedSheet)close();};
+ view.addEventListener('popstate',back);
+ return()=>{view.removeEventListener('popstate',back);if(view.history.state?.shieldedSheet)view.history.back();};
 }
 
 export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<void>,options:{distance?:number;onState?:(state:PullToRefreshState)=>void;onError?:(error:unknown)=>void}={}):()=>void {

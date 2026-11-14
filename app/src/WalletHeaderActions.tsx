@@ -1,4 +1,7 @@
-import {useId} from 'react';
+import {useState} from 'react';
+
+// Unique across React roots, unlike useId, so no mark resolves another mark's gradient.
+let marks=0;
 
 export function WalletHeaderActions({native,onAbout}:{native:boolean;onAbout:()=>void}){
  return native
@@ -8,7 +11,7 @@ export function WalletHeaderActions({native,onAbout}:{native:boolean;onAbout:()=
 
 /** The app icon's shield, drawn from src-tauri/icon.svg without its square. */
 export function BrandMark(){
- const id=useId().replace(/[^\w-]/g,'');
+ const [id]=useState(()=>`brand-mark-${++marks}`);
  return <svg className="stock-brand-mark" viewBox="84 36 344 440" aria-hidden="true"><defs>
   <linearGradient id={`${id}-brass`} x1="0" y1="0" x2="1" y2="1"><stop stopColor="#fff0c8"/><stop offset=".3" stopColor="#c29a60"/><stop offset=".55" stopColor="#f3dfb5"/><stop offset=".8" stopColor="#8c6b3e"/><stop offset="1" stopColor="#e0be83"/></linearGradient>
   <linearGradient id={`${id}-navy`} x1="0" y1="0" x2=".8" y2="1"><stop stopColor="#2d4b60"/><stop offset=".5" stopColor="#162c40"/><stop offset="1" stopColor="#112234"/></linearGradient></defs>

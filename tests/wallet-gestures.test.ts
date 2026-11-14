@@ -292,3 +292,12 @@ test('a pull refresh failure reaches the explicit error channel and releases its
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal((errors[0] as Error).message,'refresh failed');assert.equal(surface.classes.size,0);dispose();
 });
+
+test('a back still queued from the last close does not close the sheet that reopened',async()=>{
+ const stack:unknown[]=[null],events=new EventTarget(),tick=()=>new Promise(resolve=>setTimeout(resolve));let index=0,closed=0;
+ const view={history:{get state(){return stack[index];},pushState:(state:unknown)=>{stack.splice(index+1,Infinity,state);index++;},back:()=>{setTimeout(()=>{if(index>0){index--;events.dispatchEvent(Object.assign(new Event('popstate'),{state:stack[index]}));}});}},addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events)} as unknown as Parameters<typeof bindSheetBack>[0];
+ bindSheetBack(view,()=>closed++)();
+ const dispose=bindSheetBack(view,()=>closed++);await tick();
+ assert.equal(closed,0);
+ view.history.back();await tick();assert.equal(closed,1);dispose();
+});
