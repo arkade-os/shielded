@@ -11,6 +11,14 @@ export async function openNativeVault(start:()=>Promise<NativeStatus>,read:()=>P
  return {status,secret};
 }
 
+export const NATIVE_FOREGROUND_HOLD='Shielded is waiting for Android to bring it back to the foreground. Switch to another app and back to continue.';
+
+// Android can leave the host believing the app is still in the background, and it then refuses every new connection.
+export function nativeForegroundHold(status:NativeStatus|undefined,state:{visible:boolean;live:boolean;paused:boolean}){
+ if(!state.visible||state.live||state.paused)return;
+ return status?.foreground===false?NATIVE_FOREGROUND_HOLD:undefined;
+}
+
 export async function resumeNativeForeground(pending:Promise<unknown>,current:()=>boolean,open:()=>Promise<void>,retained?:()=>Promise<boolean>){
  await pending;
  if(!current())return;

@@ -4,6 +4,7 @@ import {test} from 'node:test';
 import {Children,createElement,Fragment,isValidElement,type ReactNode} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import type {WalletOnboardingProps} from '../app/src/WalletOnboarding.tsx';
+import {NATIVE_FOREGROUND_HOLD} from '../app/src/native-open.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {default:WalletOnboarding}=await import('../app/src/WalletOnboarding.tsx');
@@ -60,6 +61,14 @@ test('a locked native wallet and failed setup connection keep reconnect availabl
  const failed=render({transport:'tor',setup:true,busy:false,torHealth:{status:{phase:'error',generation:3},check:'idle'}});
  assert.match(failed,/<button[^>]*disabled[^>]*>Create wallet/);
  assert.match(failed,/<button[^>]*>Retry connection<\/button>/);
+});
+
+test('a host that still reports the background explains the wait and keeps reconnect live',()=>{
+ const html=render({transport:'tor',setup:false,busy:false,phase:NATIVE_FOREGROUND_HOLD,torHealth:{status:{phase:'paused',generation:2,foreground:false},check:'idle'}});
+ assert.match(html,/<p class="wallet-onboarding-phase" role="status">Shielded is waiting for Android to bring it back to the foreground\. Switch to another app and back to continue\.<\/p>/);
+ assert.match(html,/<button[^>]*>Unlock and reconnect<\/button>/);
+ assert.doesNotMatch(html,/<button[^>]*disabled[^>]*>Unlock and reconnect/);
+ assert.doesNotMatch(html,/wallet-onboarding-spinner/,'a wait with a remedy is not a loading state');
 });
 
 test('native setup waits for a ready connection even when vault work is idle',()=>{

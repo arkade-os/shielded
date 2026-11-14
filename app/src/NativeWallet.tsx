@@ -7,7 +7,7 @@ import {installNativeTransport,nativeNetwork,type NativeMode} from '../../src/na
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
 import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
-import {openNativeVault,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
+import {NATIVE_FOREGROUND_HOLD,nativeForegroundHold,openNativeVault,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
 import {saveNativeSetup} from './native-setup.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
 import NativeConnectionWarning,{NativeExternalLink} from './NativeConnectionWarning.tsx';
@@ -123,7 +123,7 @@ export default function NativeWallet(){
  },[]);
  const open=useCallback(()=>{
   if(openingOperation.current)return openingOperation.current;
-   if(!pageForeground()||!nativeForeground.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
+   if(!pageForeground()||!nativeForeground.current){setBusy(false);setPhase(!pageForeground()?'Private connection paused':NATIVE_FOREGROUND_HOLD);return Promise.resolve();}
    if(localStorage.getItem(RESET_PENDING)==='1')return finishReset();
    if(manualLock.current||clearing.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
   const previousClose=closed.current;
@@ -266,6 +266,8 @@ export default function NativeWallet(){
    }else if(!wasForeground&&nativeForeground.current&&!manualLock.current&&pageForeground()){
     void resume(++resumeRevision.current).catch(fail);
    }
+   const held=nativeForegroundHold(health.status,{visible:pageForeground(),live:!!liveShown(),paused:manualLock.current||clearing.current});
+   if(held){setBusy(false);setPhase(held);}
   },cause=>{if(live){fail(cause);if(active.current&&!connectionPending.current)void suspend();}},pageForeground);
   const stopVisibility=watchPageVisibility(visible=>{pageVisible.current=visible;monitor.visibilityChanged();visibility();});
   return()=>{live=false;stopVisibility();monitor.stop();document.removeEventListener('click',external,true);void pause();};
