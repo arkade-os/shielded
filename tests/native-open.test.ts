@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {openNativeVault,reopenNativeForeground,resumeNativeForeground} from '../app/src/native-open.ts';
 import {createNativeViewHandoff} from '../app/src/native-view-handoff.ts';
@@ -76,6 +77,26 @@ test('opening accepts the generation created by native start rather than the pau
  bridge.current={phase:'paused',generation};
  const opened=await openNativeVault(()=>bridge.start(),async()=>null,()=>true,{mode:'tor',current:()=>true});
  assert.equal(opened?.status.generation,3);assert.equal(opened.secret,null);
+});
+
+test('a replaced renderer opens the live direct session instead of restarting Tor',async()=>{
+ const modes:unknown[]=[];
+ const bridge=new NativeBridge({invoke:async(command,args)=>{
+  if(command!=='native_start')return {phase:'ready',generation:7,mode:'direct'};
+  modes.push(args?.mode);return {phase:'ready',generation:7,mode:args?.mode};
+ },channel:()=>{}},new NativePolicy('https://pool.example'));
+ const mode=await bridge.hostMode(),current=()=>true;
+ const opened=await openNativeVault(()=>bridge.start(mode),async()=>'secret',current,{mode,current});
+ assert.deepEqual(modes,['direct']);
+ assert.equal(opened?.status.generation,7);assert.equal(opened.secret,'secret');
+});
+
+test('the native wallet adopts the host session mode before its first start',()=>{
+ const native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8');
+ assert.match(native,/const selectedMode=useRef<NativeMode\|undefined>\(undefined\)/);
+ assert.match(native,/const mode=selectedMode\.current\?\?=await nativeNetwork\.hostMode\(\);/);
+ assert.match(native,/const status=await nativeNetwork\.start\(mode\);/);
+ assert.doesNotMatch(native,/useRef<NativeMode>\('tor'\)/);
 });
 
 test('foreground waits for a delayed retired start and then opens one fresh generation',async()=>{

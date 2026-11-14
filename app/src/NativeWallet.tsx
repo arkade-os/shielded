@@ -43,7 +43,7 @@ export default function NativeWallet(){
  const [paymentRequest,setPaymentRequest]=useState<IncomingPayment>();
  const [confirmDirect,setConfirmDirect]=useState(false),[switching,setSwitching]=useState(false),[saving,setSaving]=useState(false);
  const [resetPending,setResetPending]=useState(()=>localStorage.getItem(RESET_PENDING)==='1');
- const selectedMode=useRef<NativeMode>('tor'),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
+ const selectedMode=useRef<NativeMode|undefined>(undefined),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
  const setupAllowed=useRef(false);
  const active=useRef<Session|undefined>(undefined),attempt=useRef(0),cleanup=useRef(createNativeCleanup()),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
  const resumeRevision=useRef(0),nativeForeground=useRef(true);
@@ -137,14 +137,16 @@ export default function NativeWallet(){
    await cleanup.current.drain();
    if(mine!==attempt.current)return;
    await previousClose.catch(()=>{});
+   // Tor off lasts the host's app session, so a replaced renderer adopts a running session's mode instead of restarting Tor.
+   const mode=selectedMode.current??=await nativeNetwork.hostMode();
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
-   setPhase(selectedMode.current==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
+   setPhase(mode==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
     const generationGuard=()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
    const opened=await openNativeVault(async()=>{
-    const status=await nativeNetwork.start(selectedMode.current);
+    const status=await nativeNetwork.start(mode);
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
-   },getSecret,generationGuard,{mode:selectedMode.current,current:generationGuard});
+   },getSecret,generationGuard,{mode,current:generationGuard});
    if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
