@@ -234,7 +234,10 @@ export async function createPasskeyPageWallet(storage:PageStorage,o:{rpId:string
  // Checked before the prompt as well, so a wallet another tab made never costs an orphan passkey.
  if(storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
  const seed=await createPasskeySeed({rpId:o.rpId,userName:`Shielded wallet · ${new Date().toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`,wordCount:o.wordCount,client:o.client});
- try{return {secret:createPageWallet(storage,seed),words:seed.words};}finally{seed.master.fill(0);}
+ try{
+  if(storage.getItem(SECRET))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
+  return {secret:createPageWallet(storage,seed),words:seed.words};
+ }finally{seed.master.fill(0);}
 }
 export async function restorePasskeyPageWallet(o:Parameters<typeof restorePageWallet>[1]&{rpId:string;client?:WebAuthnClient}){
  const seed=await restorePasskeySeed({rpId:o.rpId,client:o.client});

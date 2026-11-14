@@ -128,3 +128,17 @@ test('a passkey never replaces this browser’s wallet, and a phrase wallet neve
  await restorePageWallet('cd'.repeat(32),restoreInto(restored,events));
  assert.equal(restored.getItem(PASSKEY),null);assert.equal(restored.getItem(SECRET),'cd'.repeat(32));
 });
+
+test('a wallet another tab saves during the passkey dialog is kept, and the error names the leftover passkey',async()=>{
+ const synced=syncedPasskeys(),storage=storageOf();
+ await assert.rejects(createPasskeyPageWallet(storage,{rpId:RP,wordCount:12,client:synced.client({create:()=>storage.setItem(SECRET,'ef'.repeat(32))})}),/already exists[\s\S]*delete the passkey it made/);
+ assert.equal(synced.made.length,1);
+ assert.deepEqual([...storage.rows],[[SECRET,'ef'.repeat(32)]]);
+});
+
+test('after a reload a 12-word wallet reveals its words through its passkey, since none are kept',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
+ assert.match(wallet,/const phrase=phraseWords===12\?passkeyPhrase:/);
+ assert.match(wallet,/const showPhrase=\(\)=>\{\s*if\(phrase\)\{setReveal\(true\);return;\}[\s\S]*?passkeyWords\(storage,/);
+});
