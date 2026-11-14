@@ -22,6 +22,14 @@ use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use tor_rtcompat::PreferredRuntime;
 
 pub(super) type Client = Arc<TorClient<PreferredRuntime>>;
+
+/// Keeps Arti's error kind on a failed stream, so a report from a device says which part of Tor failed.
+fn tor_failure(message: String, kind: Option<arti_client::ErrorKind>) -> String {
+    match kind {
+        Some(kind) if message == "Tor connection failed" => format!("{message}: {kind}"),
+        _ => message,
+    }
+}
 const MAX_SCOPES: usize = 1024;
 const MAX_OPERATIONS: usize = 64;
 const MAX_IDLE_HTTP: usize = 16;
@@ -1194,12 +1202,25 @@ impl Lease {
     pub async fn connect(&self, host: &str) -> Result<NativeStream, String> {
         self.check()?;
         let io: Box<dyn NativeIo> = match &self.context {
-            ConnectionContext::Tor(_) => Box::new(
-                self.connect_with_recovery(
-                    |client| async move { client.connect((host, 443)).await },
-                )
-                .await?,
-            ),
+            ConnectionContext::Tor(_) => {
+                let kind = Mutex::new(None);
+                let stream = self
+                    .connect_with_recovery(|client| {
+                        let kind = &kind;
+                        async move {
+                            client.connect((host, 443)).await.inspect_err(|error| {
+                                if let Ok(mut slot) = kind.lock() {
+                                    *slot = Some(arti_client::HasKind::kind(error));
+                                }
+                            })
+                        }
+                    })
+                    .await
+                    .map_err(|message| {
+                        tor_failure(message, kind.lock().ok().and_then(|slot| *slot))
+                    })?;
+                Box::new(stream)
+            }
             ConnectionContext::Direct => {
                 Box::new(super::direct::connect(host, &self.cancel, self.retirement.clone()).await?)
             }
@@ -2869,6 +2890,23 @@ mod tests {
             .await;
         assert_eq!(attempts, 2);
         assert_eq!(result, Err("Tor connection failed".into()));
+    }
+
+    #[test]
+    fn an_exhausted_tor_connect_names_the_kind_of_its_last_failure() {
+        let kind = arti_client::ErrorKind::TorAccessFailed;
+        assert_eq!(
+            tor_failure("Tor connection failed".into(), Some(kind)),
+            "Tor connection failed: error connecting to Tor"
+        );
+        assert_eq!(
+            tor_failure("Tor connection failed".into(), None),
+            "Tor connection failed"
+        );
+        assert_eq!(
+            tor_failure("private request cancelled".into(), Some(kind)),
+            "private request cancelled"
+        );
     }
 
     #[tokio::test]

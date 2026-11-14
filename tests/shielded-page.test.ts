@@ -340,6 +340,8 @@ test('native SDK read failures identify the service without exposing addresses o
  }
  const url='https://mutinynet.arkade.sh/.shielded-native-session/5/v1/indexer/vtxos?scripts=private-script';
  assert.equal(page.errorText(new FetchError('Network request failed: GET '+url,{url,method:'GET',cause:'Tor connection failed'})),'Wallet indexer could not be reached through Tor. Wallet data may be out of date. The Tor connection failed.');
+ assert.equal(page.errorText(new FetchError('Network request failed: GET '+url,{url,method:'GET',cause:'Tor connection failed: network directory is expired.'})),'Wallet indexer could not be reached through Tor. Wallet data may be out of date. The Tor connection failed (network directory is expired).');
+ assert.equal(page.errorText(new FetchError('Network request failed: GET '+url,{url,method:'GET',cause:'Tor connection failed: '+url})),'Wallet indexer could not be reached through Tor. Wallet data may be out of date.');
  assert.equal(page.errorText(new FetchError('bad URL with private data',{url:'not a URL',method:'GET'})),'Wallet service could not be reached. Wallet data may be out of date.');
 });
 
