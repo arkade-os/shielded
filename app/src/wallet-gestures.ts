@@ -91,18 +91,59 @@ export function sheetGesture(dx:number,dy:number,ms:number,atTop:boolean):SheetA
  return undefined;
 }
 
-export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(action:SheetAction)=>void):()=>void {
+/** A sideways release pages only toward a sheet that is there; past the first or last one it springs back. */
+export function sheetSnap(dx:number,ms:number,previous:boolean,next:boolean):'next'|'previous'|undefined {
+ const action=sheetGesture(dx,0,ms,false);
+ return action==='next'&&next||action==='previous'&&previous?action:undefined;
+}
+/** Rubber-banding: about half the finger's travel at first, never a whole sheet. */
+export const sheetResistance=(overscroll:number,width:number)=>width*(1-1/(overscroll*.55/width+1));
+export function sheetOffset(dx:number,width:number,previous:boolean,next:boolean):number {
+ return dx>=0?(previous?Math.min(dx,width):sheetResistance(dx,width)):(next?Math.max(dx,-width):-sheetResistance(-dx,width));
+}
+export const sheetSnapMs=(distance:number,span:number)=>Math.round(160+120*Math.min(1,Math.abs(distance)/span));
+const SNAP_EASING='cubic-bezier(.2,.7,.2,1)';
+
+export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(action:SheetAction)=>void,indicator?:HTMLElement|null):()=>void {
  const doc=sheet.ownerDocument;
  let pointer:{id:number;x:number;y:number;at:number;top:boolean;sideways:boolean;axis?:'x'|'y'}|undefined,disposed=false,suppressUntil=0;
+ // A sideways drag moves every [data-sheet-page]: the sheet's title and body, and a peek at each neighbour the markup renders.
+ let pages:HTMLElement[]=[],edges={previous:false,next:false},width=1,offset=0,glide:{animations:Animation[];land:()=>void}|undefined,drop:Animation|undefined;
  const sideScroller=(el:Element|null)=>{for(;el&&el!==body;el=el.parentElement)if(el.scrollWidth>el.clientWidth&&/auto|scroll/.test(doc.defaultView?.getComputedStyle(el).overflowX??''))return true;return false;};
- const reset=()=>{
+ const place=(at:number)=>{
+  offset=at;for(const page of pages)page.style.setProperty('transform',`translate3d(${at}px,0,0)`);
+  indicator?.style.setProperty('--wallet-sheet-progress',String(Math.max(edges.previous?-1:0,Math.min(edges.next?1:0,-at/width))));
+ };
+ const rest=()=>{
+  const old=glide;glide=undefined;for(const animation of old?.animations??[])animation.cancel();
+  for(const page of pages.splice(0))page.style.removeProperty('transform');
+  sheet.classList.remove('is-sheet-swiping');indicator?.classList.remove('is-swipe-dragging');indicator?.style.removeProperty('--wallet-sheet-progress');
+ };
+ const release=()=>{
   const old=pointer;pointer=undefined;
-  sheet.classList.remove('is-sheet-dragging','is-sheet-swiping');
-  sheet.style.removeProperty('--wallet-sheet-drag');sheet.style.removeProperty('--wallet-sheet-swipe');
+  sheet.classList.remove('is-sheet-dragging');sheet.style.removeProperty('--wallet-sheet-drag');
   if(old?.axis)try{if(sheet.hasPointerCapture(old.id))sheet.releasePointerCapture(old.id);}catch{}
+ };
+ const reset=()=>{release();rest();};
+ // The sheet changes while the neighbour's peek still covers it, so the pages return to rest only onto the new content.
+ const settle=(target:number,action?:'next'|'previous')=>{
+  const moving=pages.length>0;
+  const land=()=>{
+   const top=sheet.getBoundingClientRect().top;
+   try{if(action)onAction(action);}finally{rest();}
+   // A sheet of another height (Activity floats above the dock) starts where the old one stood and glides to its own place.
+   const shift=top-sheet.getBoundingClientRect().top;
+   if(moving&&shift)drop=sheet.animate([{transform:`translate3d(0,${shift}px,0)`},{transform:'translate3d(0,0,0)'}],{duration:sheetSnapMs(shift,sheet.getBoundingClientRect().height||1),easing:SNAP_EASING});
+  };
+  if(!moving||offset===target){land();return;}
+  const keyframes=[{transform:`translate3d(${offset}px,0,0)`},{transform:`translate3d(${target}px,0,0)`}],timing={duration:sheetSnapMs(target-offset,width),easing:SNAP_EASING,fill:'forwards' as const};
+  const current={animations:pages.map(page=>page.animate(keyframes,timing)),land};glide=current;
+  indicator?.classList.remove('is-swipe-dragging');indicator?.style.setProperty('--wallet-sheet-progress',String(-target/width));
+  current.animations[0]!.finished.then(()=>{if(glide===current)land();},()=>{});
  };
  const down=(event:PointerEvent)=>{
   if(disposed||pointer||event.isPrimary===false||event.button!==0||!sheet.isConnected)return;
+  glide?.land();drop?.cancel();
   suppressUntil=0;
   const target=event.target as Element|null,inBody=body.contains(target);
   // A mouse drag over the content selects text, so only the head moves the sheet for a mouse.
@@ -117,10 +158,17 @@ export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(a
    if(Math.abs(dx)<10&&Math.abs(dy)<10){current.at=event.timeStamp;return;}
    const axis=Math.abs(dx)>Math.abs(dy)?'x':'y';
    if(axis==='x'?!current.sideways:dy<0||!current.top){reset();return;}
-   current.axis=axis;sheet.classList.add(axis==='x'?'is-sheet-swiping':'is-sheet-dragging');
+   current.axis=axis;
+   if(axis==='y')sheet.classList.add('is-sheet-dragging');
+   else{
+    const found=Array.from(sheet.querySelectorAll<HTMLElement>('[data-sheet-page]')),has=(side:string)=>found.some(page=>page.getAttribute('data-sheet-page')===side);
+    edges={previous:has('previous'),next:has('next')};width=body.getBoundingClientRect().width||1;offset=0;
+    // Reduced motion moves no page: the swipe still pages, at once, when it lands.
+    if(!doc.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches){pages=found;sheet.classList.add('is-sheet-swiping');indicator?.classList.add('is-swipe-dragging');}
+   }
    try{sheet.setPointerCapture(event.pointerId);}catch{}
   }
-  if(current.axis==='x')sheet.style.setProperty('--wallet-sheet-swipe',`${Math.max(-72,Math.min(72,dx*.35))}px`);
+  if(current.axis==='x'){if(pages.length)place(sheetOffset(dx,width,edges.previous,edges.next));}
   else{const limit=sheet.getBoundingClientRect().height*.6;sheet.style.setProperty('--wallet-sheet-drag',`${Math.max(0,dy<=limit?dy:limit+(dy-limit)*.25)}px`);}
   if(event.cancelable)event.preventDefault();
  };
@@ -133,17 +181,22 @@ export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(a
  };
  const up=(event:PointerEvent)=>{
   const current=pointer;if(!current||event.pointerId!==current.id)return;
-  reset();
+  release();
   if(!current.axis)return;
   suppressUntil=event.timeStamp+400;
-  const action=sheet.isConnected?sheetGesture(current.axis==='x'?event.clientX-current.x:0,current.axis==='y'?event.clientY-current.y:0,event.timeStamp-current.at,current.top):undefined;
+  if(!sheet.isConnected){rest();return;}
+  const ms=event.timeStamp-current.at;
+  if(current.axis==='x'){const action=sheetSnap(event.clientX-current.x,ms,edges.previous,edges.next);settle(action==='next'?-width:action==='previous'?width:0,action);return;}
+  const action=sheetGesture(0,event.clientY-current.y,ms,current.top);
   if(action)onAction(action);
  };
  const cancel=(event?:Event)=>{
+  const current=pointer;if(!current)return;
   if(event?.type==='lostpointercapture'&&event.target!==sheet)return;
-  if(event&&'pointerId' in event&&pointer?.id!==(event as PointerEvent).pointerId)return;
-  if(pointer?.axis&&event)suppressUntil=event.timeStamp+400;
-  reset();
+  if(event&&'pointerId' in event&&current.id!==(event as PointerEvent).pointerId)return;
+  if(current.axis&&event)suppressUntil=event.timeStamp+400;
+  release();
+  if(current.axis==='x')settle(0);
  };
  const hidden=()=>{if(doc.visibilityState==='hidden')cancel();};
  const click=(event:MouseEvent)=>{
@@ -155,7 +208,7 @@ export function bindSheetGestures(sheet:HTMLElement,body:HTMLElement,onAction:(a
  doc.addEventListener('pointermove',move,{passive:false});doc.addEventListener('touchmove',claim,{passive:false});doc.addEventListener('pointerup',up);doc.addEventListener('pointercancel',cancel);
  doc.addEventListener('visibilitychange',hidden);doc.defaultView?.addEventListener('blur',cancel);
  return()=>{
-  if(disposed)return;disposed=true;reset();suppressUntil=0;
+  if(disposed)return;disposed=true;reset();drop?.cancel();suppressUntil=0;
   sheet.removeEventListener('pointerdown',down);sheet.removeEventListener('lostpointercapture',cancel);sheet.removeEventListener('click',click,true);
   doc.removeEventListener('pointermove',move);doc.removeEventListener('touchmove',claim);doc.removeEventListener('pointerup',up);doc.removeEventListener('pointercancel',cancel);
   doc.removeEventListener('visibilitychange',hidden);doc.defaultView?.removeEventListener('blur',cancel);
