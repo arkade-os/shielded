@@ -50,6 +50,8 @@ test('a 12-word phrase stretches into a fixed master secret and is shown back as
  assert.deepEqual(parseMasterSecret(` ${phrase.toUpperCase().replaceAll(' ','\n  ')} `),master);
  assert.deepEqual(parseMasterSecret(recoveryPhraseOf(master)),master);
  assert.notDeepEqual(parseMasterSecret('abandon '.repeat(23)+'art'),master);
+ assert.notDeepEqual(parseMasterSecret('zoo '.repeat(11)+'wrong'),master);
+ assert.throws(()=>recoveryPhraseOf(new Uint8Array(20)),/32 bytes/);
 });
 
 test('a claim link seed is stable, distinct per nullifier and network, and unlike the wallet\'s own keys',()=>{

@@ -29,7 +29,10 @@ export function parseMasterSecret(value:string):Uint8Array {
  return entropy.length===32?entropy:hkdf(sha256,entropy,SALT,MNEMONIC12,32);
 }
 /** The phrase a wallet is backed up with: 24 words are the 32-byte secret itself, and a 12-word phrase comes back as its own 12 words, since the stretch above cannot be reversed. */
-export const recoveryPhraseOf=(masterSecret:Uint8Array|string)=>entropyToMnemonic(typeof masterSecret==='string'?phraseEntropy(masterSecret)??parseMasterSecret(masterSecret):masterSecret,wordlist);
+export const recoveryPhraseOf=(masterSecret:Uint8Array|string)=>{
+ if(typeof masterSecret!=='string'&&masterSecret.length!==32)throw new Error('A master secret is 32 bytes.');
+ return entropyToMnemonic(typeof masterSecret==='string'?phraseEntropy(masterSecret)??parseMasterSecret(masterSecret):masterSecret,wordlist);
+};
 
 function scalar(master:Uint8Array,network:string,purpose:string,order:bigint):bigint {
  if(!/^[a-z0-9][a-z0-9.-]{0,62}$/.test(network))throw new Error('Invalid wallet network label.');
