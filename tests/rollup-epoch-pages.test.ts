@@ -151,7 +151,7 @@ test('/watch reads a note as unspent only while the wallet holds it, and names n
  const pool=epochPool(hash,EPOCH_LEN);
  pool.land('spend',[await pool.deposit(aliceTo,500n),await pool.deposit(aliceTo,300n)]);
  const alice=await replay(fresh(aliceKeys),pool.api);
- // A self-payment spread over two notes nets to nothing, so the account records no entry for it.
+ // A self-payment spread over two notes nets to nothing, so the account records it as a renewal.
  pool.land('spend',(await alice.pay(aliceTo,700n,aliceTo)).spends.map(posted));
  while(pool.state.batchCount<4)pool.land();
  await replay(alice,pool.api);
@@ -164,9 +164,10 @@ test('/watch reads a note as unspent only while the wallet holds it, and names n
  pool.land('spend',(await alice.pay(bobTo,50n,aliceTo)).spends.map(posted));
  const key=parseFullViewKey(hash,fullViewKeyOf(akOf(hash,aliceKeys.ask),aliceKeys.nk,aliceKeys.viewSecret)),account=await fullViewOf(hash,key,pool.api),state=noteStateOf(account);
  assert.deepEqual(account.history.flatMap(e=>e.created.map(n=>[e.kind,e.batch,n.amount,state(n)])),[
-  ['shield',0,500n,'Spent'],['shield',0,300n,'Spent'],['merge',4,300n,'Spent in batch #10'],['recover',9,500n,'Unspent'],['send',10,250n,'Unspent']]);
+  ['shield',0,500n,'Spent in batch #1'],['shield',0,300n,'Spent in batch #1'],['renew',1,500n,'Spent in batch #9'],['renew',1,200n,'Spent in batch #4'],['renew',1,100n,'Spent in batch #4'],
+  ['merge',4,300n,'Spent in batch #10'],['recover',9,500n,'Unspent'],['send',10,250n,'Unspent']]);
  const text=plain(renderToStaticMarkup(createElement(Results,{watched:{address:aliceAddress,entries:[...account.history],state}})));
- assert.deepEqual(text.match(/Note \d+\/\d+/g),['Note 2/65','Note 2/32','Note 1/0','Note 0/2','Note 0/0'],'newest first, each named epoch/leaf');
+ assert.deepEqual(text.match(/Note \d+\/\d+/g),['Note 2/65','Note 2/32','Note 1/0','Note 0/32','Note 0/34','Note 0/35','Note 0/2','Note 0/0'],'newest first, each named epoch/leaf');
  assert.doesNotMatch(text,/Leaf/);
 });
 

@@ -63,7 +63,7 @@ function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
 }
 const TxLink=({txid,path='tx'}:{txid:string;path?:string})=>PRIVATE?<code>{txid}</code>:<a className="stock-txlink" href={`${EXPLORER}/${path}/${txid}`} target="_blank" rel="noreferrer">{short(txid)} ↗</a>;
 // The resolver's kinds, mapped onto the swatches the history list already has.
-const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','shielded-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
+const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','shielded-send':'send','self-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
 const LIGHTNING_STATUS:Record<string,string>={received:'Received; waiting to shield',shielding:'Received; shielding',shielded:'Shielded in the pool',retrying:'Received; shielding will retry','below-minimum':'Received outside the pool; below the shielding minimum','onchain-recovery':'Onchain recovery; shielding paused','onchain-recovered':'Recovered onchain'};
 const WHERE:Record<string,string>={
  shield:'From your Arkade coins into the pool; the amount is public.',
@@ -71,6 +71,7 @@ const WHERE:Record<string,string>={
  'onchain-exit':'Out of the pool through a fresh single-use key, then a batch swap to the Bitcoin chain; the amount and the destination are public.',
  'shielded-send':'Inside the pool; amount and parties stay private.',
  'shielded-receive':'Inside the pool; amount and sender stay private.',
+ 'self-send':'Inside the pool: a private payment to your own address. Nothing left the wallet.',
  'lightning-receive':'The payout is public until it enters the pool.',
  'claim-link':'Inside the pool: into a claim link. Whoever claims it gets the amount, privately.',
  merge:'Inside the pool: your own notes, merged into one. Nothing left the wallet.',

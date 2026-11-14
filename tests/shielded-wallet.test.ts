@@ -20,7 +20,7 @@ import {epochTransferBody,type EpochSpendBody} from '../src/shielded/epoch-pool.
 import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
-import {pageSheet} from '../app/src/shielded-page.ts';
+import {historyDirection,pageActivityHistory,pageActivityNotice,pageSheet} from '../app/src/shielded-page.ts';
 import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
 import type {SyncProgressObserver} from '../src/shielded/sync-progress.ts';
 
@@ -1460,6 +1460,20 @@ test('a mint the pool drops lists no link and frees its notes',async()=>{
   await flush();
   assert.deepEqual([alice.links(),alice.inFlight.size],[[],0]);
  }finally{await alice.dispose();}
+});
+
+for(const {shape,notes,amount,kind} of [{shape:'one note',notes:[1000n],amount:300,kind:'renew'},{shape:'two joined notes',notes:[600n,500n],amount:800,kind:'merge'},{shape:'two grouped notes',notes:[600n,500n],amount:800,kind:'renew'}])test(`a payment to your own shielded address from ${shape} is one row, sent to yourself, with no toast`,async()=>{
+ const pool=sharedPool(),wallet=await open(),read=async()=>pageActivityHistory(await wallet.getActivityHistory(),[]);wallet.api=pool.api;
+ if(kind==='merge')wallet.prover={...prover,joinReady:()=>true};
+ try{
+  await pool.fund(wallet,notes.map(n=>({amount:n})));
+  const seen=pageActivityNotice(await read(),undefined,1).seen;
+  await (await wallet.pay(wallet.shieldedAddress(),BigInt(amount))).settled();
+  const rows=await read(),landed=wallet.shieldedHistory().at(-1)!;
+  assert.deepEqual(rows.map(row=>[row.intent?.kind,row.intent?.label,row.amount,historyDirection(row)]),[['self-send','Sent to yourself',-amount,'own']]);
+  assert.equal(pageActivityNotice(rows,seen,1).notice,undefined);
+  assert.deepEqual([landed.kind,landed.spent.length],[kind,notes.length]);
+ }finally{await wallet.dispose();}
 });
 
 test('a wallet started from a checkpoint watches for links in the batches it catches up while loading',async t=>{

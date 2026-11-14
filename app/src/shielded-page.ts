@@ -34,7 +34,7 @@ function fetchErrorText(error:unknown){
 }
 export const errorText=(error:unknown)=>pausedErrorText(error)??fetchErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');
 export const activityReceived=(item:Activity)=>item.amount!==0?item.amount>0:item.txs.at(-1)?.type===TxType.TxReceived;
-export const historyDirection=(item:Activity):'in'|'out'|'own'=>item.intent?.kind==='shield'||item.intent?.kind==='merge'?'own':activityReceived(item)?'in':'out';
+export const historyDirection=(item:Activity):'in'|'out'|'own'=>item.intent?.kind==='shield'||item.intent?.kind==='merge'||item.intent?.kind==='self-send'?'own':activityReceived(item)?'in':'out';
 export function pageActivityHistory(history:Activity[],lightning:Activity[]){
  const receipts=lightning.filter(row=>row.intent?.kind==='lightning-send'&&row.intent.outcome==='paid');
  const matches=(row:Activity,receipt:Activity)=>row.intent?.kind==='unshield'&&!activityReceived(row)&&row.amount===receipt.amount&&typeof receipt.intent?.metadata?.fundingTxid==='string'&&row.txs.some(tx=>tx.key.arkTxid===receipt.intent!.metadata!.fundingTxid);
