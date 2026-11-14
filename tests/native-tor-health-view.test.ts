@@ -101,7 +101,10 @@ test('a wallet-data problem reaches the connection panel, which owns the one Rec
  assert.match(html,/<button class="native-tor-switch native-tor-reconnect" type="button"><span>Reconnect<\/span><span class="native-tor-reconnect-hint">New Tor circuits, wallet reopens<\/span><\/button>/);
  assert.doesNotMatch(render({status:{phase:'ready',generation:1},check:'ok'}),/native-tor-reconnect|wallet data delayed/);
  const native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8'),wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
- assert.match(native,/<NativeTorHealth health=\{torHealth\}[^>]*onReconnect=\{reload\} problem=\{walletProblem\}/);
- assert.match(native,/onConnectionProblem=\{setWalletProblem\}/);
+ assert.match(native,/<NativeTorHealth health=\{torHealth\}[^>]*onReconnect=\{walletConnection\?\.reconnect\} reconnectBusy=\{walletConnection\?\.busy\} problem=\{walletConnection\?\.problem\}/);
+ assert.match(native,/onConnection=\{setWalletConnection\}/);
  assert.match(wallet,/<WalletSyncStatus [^>]*onRetry=\{nativeHost\?undefined:/,'the app keeps no second reconnect in the balance card');
+ assert.match(wallet,/reconnect:\(\)=>\{if\(!busyRef\.current&&!handleBusy\.current&&!actions\.current\?\.busy\)reload\(\);\}/,'a payment or exit in flight keeps the wallet open');
+ const busy=renderToStaticMarkup(createElement(NativeTorHealth,{health:{status:{phase:'ready',generation:1},check:'ok'},onReconnect:()=>{},reconnectBusy:true}));
+ assert.match(busy,/<button class="native-tor-switch native-tor-reconnect" type="button" disabled=""><span>Reconnect<\/span><span class="native-tor-reconnect-hint">After the payment in progress<\/span>/);
 });

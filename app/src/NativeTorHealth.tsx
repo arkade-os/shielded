@@ -17,7 +17,7 @@ export function bindTorPanelDismiss(target:EventTarget,inside:(node:EventTarget|
  return()=>{target.removeEventListener('pointerdown',outside);target.removeEventListener('keydown',key);};
 }
 
-export default function NativeTorHealth({health=initialTorHealth,tone='light',onToggleTor,onReconnect,problem='',transportBusy=false,open:controlledOpen,onOpenChange}:{health?:NativeTorHealthState;tone?:'light'|'dark';onToggleTor?:()=>void;onReconnect?:()=>void;problem?:string;transportBusy?:boolean;open?:boolean;onOpenChange?:(open:boolean)=>void}){
+export default function NativeTorHealth({health=initialTorHealth,tone='light',onToggleTor,onReconnect,reconnectBusy=false,problem='',transportBusy=false,open:controlledOpen,onOpenChange}:{health?:NativeTorHealthState;tone?:'light'|'dark';onToggleTor?:()=>void;onReconnect?:()=>void;reconnectBusy?:boolean;problem?:string;transportBusy?:boolean;open?:boolean;onOpenChange?:(open:boolean)=>void}){
  const [localOpen,setLocalOpen]=useState(false),[position,setPosition]=useState<CSSProperties>({}),host=useRef<HTMLDivElement>(null),panel=useRef<HTMLDivElement>(null),trigger=useRef<HTMLButtonElement>(null),panelId=useId();
  const controlled=controlledOpen!==undefined,open=controlledOpen??localOpen,setOpen=useCallback((value:boolean)=>{if(!controlled)setLocalOpen(value);onOpenChange?.(value);},[controlled,onOpenChange]);
  const {status,check,checkedAt,latencyMs,attempt,retryAt}=health;
@@ -65,7 +65,7 @@ export default function NativeTorHealth({health=initialTorHealth,tone='light',on
   {ready&&checkedAt&&<p className="native-tor-checked">Last checked {new Date(checkedAt).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'})}{latencyMs!==undefined?` · ${(latencyMs/1000).toFixed(1)}s`:''}</p>}
   {ready&&check==='failed'&&health.error&&<p className="native-tor-problem">{health.error}</p>}
   {problem&&<p className="native-tor-problem">{problem}</p>}
-  {onReconnect&&<button className="native-tor-switch native-tor-reconnect" type="button" disabled={transportBusy} onClick={()=>{if(!transportBusy){setOpen(false);onReconnect();}}}><span>Reconnect</span><span className="native-tor-reconnect-hint">{direct?'Wallet reopens':'New Tor circuits, wallet reopens'}</span></button>}
+  {onReconnect&&<button className="native-tor-switch native-tor-reconnect" type="button" disabled={transportBusy||reconnectBusy} onClick={()=>{if(!transportBusy&&!reconnectBusy){setOpen(false);onReconnect();}}}><span>Reconnect</span><span className="native-tor-reconnect-hint">{reconnectBusy?'After the payment in progress':direct?'Wallet reopens':'New Tor circuits, wallet reopens'}</span></button>}
   {onToggleTor&&<button className="native-tor-switch" type="button" role="switch" aria-checked={!direct} disabled={transportBusy} onClick={()=>{if(!transportBusy){setOpen(false);onToggleTor();requestAnimationFrame(()=>trigger.current?.focus());}}}><span>Use Tor</span><span className="native-tor-switch-track" aria-hidden="true"/></button>}
   <p className="native-tor-privacy">{direct?'Your IP address and DNS lookups are exposed. Direct connections have no Tor circuit isolation.':'Separate Tor scopes protect unrelated wallet items. Repeated identifiers and timing can still reveal links. Wallet services may be unavailable even when Tor is connected.'}</p>
  </>;
