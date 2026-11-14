@@ -117,3 +117,17 @@ test('Tor panel dismissal handles portaled content, outside pointers, Escape and
  dispatch('keydown',panel,'Escape');assert.equal(closed,2);assert.equal(focused,1);
  dispose();dispatch('pointerdown',{});dispatch('keydown',panel,'Escape');assert.equal(closed,2);assert.equal(focused,1);
 });
+
+test('Paste reads the Android clipboard through the platform plugin, and Send keeps its sheet and spinner until the payment starts',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const source=(path:string)=>readFileSync(new URL(path,import.meta.url),'utf8');
+ const wallet=source('../app/src/RollupWallet.tsx');
+ assert.match(wallet,/__NATIVE_PLATFORM__\.startsWith\('android'\)\?await invoke<string\|null>\('plugin:shielded-platform\|clipboard_text'\):navigator\.clipboard\.readText\(\)/);
+ assert.match(source('../src-tauri/plugins/shielded-platform/build.rs'),/"clipboard_text"/);
+ assert.match(source('../src-tauri/capabilities/main.json'),/"shielded-platform:allow-clipboard-text"/);
+ assert.match(source('../src-tauri/plugins/shielded-platform/android/src/main/java/io/arkade/shielded/platform/ShieldedPlatformPlugin.kt'),/fun clipboardText\(invoke: Invoke\)/);
+ const submit=/const submit=\(\)=>\{if\(quote\)\{([\s\S]*?)\},routeCopy/.exec(wallet)?.[1]??'';
+ assert.doesNotMatch(submit.split('try{')[0]!,/setSheetOpen\(false\)/,'the sheet does not close before the payment is prepared');
+ assert.match(submit,/\}finally\{if\(mounted\.current\)setSheetOpen\(false\);\}/);
+ assert.match(wallet,/aria-busy=\{busy\|\|quoting\}>\{busy\|\|quoting\?<><span className="stock-spinner" aria-hidden="true"\/>/);
+});

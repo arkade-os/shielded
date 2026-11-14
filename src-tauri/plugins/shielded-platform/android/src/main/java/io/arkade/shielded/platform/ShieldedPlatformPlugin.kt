@@ -1,6 +1,8 @@
 package io.arkade.shielded.platform
 
 import android.app.Activity
+import android.content.ClipboardManager
+import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -129,6 +131,18 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     fun secretClear(invoke: Invoke) = secret(invoke) {
         vault.clear()
         null
+    }
+
+    @Command
+    fun clipboardText(invoke: Invoke) {
+        main.post {
+            if (destroyed || !trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
+            val context = activeActivity ?: run { invoke.reject("Return to Shielded to paste"); return@post }
+            val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+            // Plain text only: coerceToText would resolve a content:// clip on this main thread, and no payment code arrives that way.
+            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.takeIf { it.length <= 8192 }
+            invoke.resolve(JSObject().put("text", text ?: JSONObject.NULL) as JSObject)
+        }
     }
 
     private fun update(invoke: Invoke, install: Boolean = false, operation: ((() -> Unit) -> Unit) -> JSObject?) {
