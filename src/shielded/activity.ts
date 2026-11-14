@@ -1,20 +1,27 @@
 import {TxType,type Activity,type ActivityResolver,type ArkTransaction} from '@arkade-os/sdk';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
+import type {SentRecord} from './repository.ts';
 
 export const SHIELDED_TAG='shielded';
 const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge',withdraw:'unshield'} as const;
 type SyntheticKind=keyof typeof SYNTHETIC;
-const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool','onchain-exit':'Sent on-chain',list:'Listed asset'} as const;
-export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):EpochHistoryEntry|undefined}
+const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received','self-send':'Sent to yourself',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool','onchain-exit':'Sent on-chain',list:'Listed asset'} as const;
+type Amounts=EpochHistoryEntry['amounts'];
+export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):EpochHistoryEntry|undefined;paidToSelf(entry:EpochHistoryEntry):Amounts|undefined}
 
-export function shieldedRows(entries:()=>readonly EpochHistoryEntry[],assetIdOf:(field:bigint)=>string|undefined,nativeDestination?:bigint):ShieldedRowIndex{
+export function shieldedRows(entries:()=>readonly EpochHistoryEntry[],assetIdOf:(field:bigint)=>string|undefined,nativeDestination?:bigint,sentOf?:(nullifier:bigint)=>SentRecord|undefined):ShieldedRowIndex{
  const index=new WeakMap<ArkTransaction,EpochHistoryEntry>();
+ // A payment to this wallet's own address nets to zero, as a renewal does; only its sent notes, back among the notes it created, tell them apart.
+ const paidToSelf=(e:EpochHistoryEntry):Amounts|undefined=>{
+  const notes=e.spent.flatMap(nf=>{const n=sentOf?.(nf)?.note;return n&&e.created.some(c=>c.rho===BigInt(n.rho))?[n]:[];});
+  return notes.length?[{asset:BigInt(notes[0]!.asset),amount:notes.reduce((sum,n)=>sum+BigInt(n.amount),0n)}]:undefined;
+ };
  return {
   rows(){
    // Only synthesize withdrawals known to be external; older snapshots may omit their destination.
-   return entries().filter(e=>e.kind in SYNTHETIC&&(e.kind!=='withdraw'||nativeDestination!==undefined&&e.destination!==undefined&&e.destination!==nativeDestination)).map(e=>{
-    const sats=e.amounts.filter(a=>a.asset===0n).reduce((sum,a)=>sum+a.amount,0n);
-    const assets=e.amounts.flatMap(a=>{const assetId=a.asset===0n?undefined:assetIdOf(a.asset);return assetId?[{assetId,amount:a.amount}]:[];});
+   return entries().filter(e=>e.kind in SYNTHETIC&&(e.kind!=='withdraw'||nativeDestination!==undefined&&e.destination!==undefined&&e.destination!==nativeDestination)||paidToSelf(e)).map(e=>{
+    const amounts=paidToSelf(e)??e.amounts,sats=amounts.filter(a=>a.asset===0n).reduce((sum,a)=>sum+a.amount,0n);
+    const assets=amounts.flatMap(a=>{const assetId=a.asset===0n?undefined:assetIdOf(a.asset);return assetId?[{assetId,amount:a.amount}]:[];});
     const row:ArkTransaction={key:{boardingTxid:'',commitmentTxid:'',arkTxid:e.txid??''},type:e.kind==='receive'?TxType.TxReceived:TxType.TxSent,
      amount:Number(sats),settled:true,createdAt:e.at??0,tag:SHIELDED_TAG,...(assets.length?{assets}:{})};
     index.set(row,e);
@@ -22,6 +29,7 @@ export function shieldedRows(entries:()=>readonly EpochHistoryEntry[],assetIdOf:
    });
   },
   entryOf(tx){return index.get(tx);},
+  paidToSelf,
  };
 }
 
@@ -32,7 +40,7 @@ export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>r
    const entry=o.index.entryOf(tx);
    if(entry){
     const exit=entry.kind==='withdraw'?o.exitOf?.(entry):undefined;
-    const kind=exit?'onchain-exit':entry.kind==='send'&&o.isLink?.(entry)?'claim-link':SYNTHETIC[entry.kind as SyntheticKind];
+    const kind=exit?'onchain-exit':o.index.paidToSelf(entry)?'self-send':entry.kind==='send'&&o.isLink?.(entry)?'claim-link':SYNTHETIC[entry.kind as SyntheticKind];
     return [{groupId:`${SHIELDED_TAG}:${entry.batch}:${entry.slots.join('-')}`,label:LABELS[kind],kind,metadata:{batch:entry.batch,notes:entry.created.length,spent:entry.spent.length,...(exit?{to:exit.to,onchainTxid:exit.txid,...(exit.sats===undefined?{}:{onchainSats:exit.sats})}:{})}}];
    }
    const txid=tx.key.arkTxid||tx.key.commitmentTxid;

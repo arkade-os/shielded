@@ -29,7 +29,7 @@ export async function fullViewOf(hash:Hash,key:ReturnType<typeof parseFullViewKe
  if(!matches)throw new Error('The full view does not match the pool.');
  return account;
 }
-/** A note reads Unspent only while the account holds it. A payment to oneself across several notes leaves no history entry, so a spent note can have no batch to name. */
+/** A note reads Unspent only while the account holds it. */
 export function noteStateOf(account:EpochAccount){
  const spentIn=new Map(account.history.flatMap(e=>e.spent.map(nf=>[nf,e.batch] as const)));
  const held=new Set([...new Set(account.history.flatMap(e=>e.created.map(n=>n.asset)))].flatMap(asset=>account.notes(asset)).map(n=>n.nullifier));

@@ -40,6 +40,13 @@ test('a private payment, a receipt and a merge each become one synthetic row',()
  assert.equal(rows[0]!.createdAt,1000);
 });
 
+test('a zero-net spend is sent to yourself only when the note it paid came back as yours',()=>{
+ const sent=new Map<bigint,SentRecord>([[7n,{to:SELF,note:{amount:'300',asset:'0',rho:'5'}}],[8n,{to:THEM,note:{amount:'300',asset:'0',rho:'6'}}]]);
+ const renew=(spent:bigint,created:EpochOwnedNote[])=>entry({kind:'renew',amounts:[],spent:[spent],created});
+ const index=shieldedRows(()=>[renew(7n,[note(300n,9n),note(700n,10n)]),renew(8n,[note(1000n,11n)]),renew(12n,[note(1000n,13n)])],assetIdOf,undefined,n=>sent.get(n));
+ assert.deepEqual(index.rows().map(r=>[r.amount,index.entryOf(r)!.spent]),[[300,[7n]]],'a failed payment\'s record and a plain renewal stay unlisted');
+});
+
 test('a shield gets no synthetic row because the SDK already has one',()=>{
  assert.deepEqual(indexOf([entry({kind:'shield'})]).rows(),[]);
 });
