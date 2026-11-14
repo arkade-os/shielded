@@ -126,7 +126,7 @@ export async function renewRollupPool(o:{network:StockNetworkInfo;identity:Ident
  const coins=await withPrevTxs(points.map(p=>{
   const v=found.find(c=>c.txid===p.txid&&c.vout===p.vout);
   if(!v||v.isSpent)throw new Error(`Pool coin ${p.txid}:${p.vout} is missing or spent.`);
-  return {...v,tapTree:o.pool.encode(),forfeitTapLeafScript:leaf,intentTapLeafScript:leaf};
+  return {...v,tapTree:o.pool.encode(),forfeitTapLeafScript:leaf,proofTapLeafScript:leaf};
  }),indexer);
  const session=o.identity.signerSession(),cosigner=hex.encode(await session.getPublicKey());
  const message:Intent.RegisterMessage={type:'register',onchain_output_indexes:[],valid_at:0,expire_at:Math.floor(Date.now()/1000)+600,cosigners_public_keys:[cosigner]};

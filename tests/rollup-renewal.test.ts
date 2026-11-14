@@ -179,7 +179,7 @@ test('a renewal repays every pool coin unchanged, pays the fee from an operator 
  const vtxos=[0,1].map(vout=>({txid:parent.id,vout,value:vout?330:3000,script:hex.encode(pool.tree.pkScript),isSpent:false,prevTx:parent.toBytes(),createdAt:ago(1)}));
  const tree=new DefaultVtxo.Script({pubKey:operator!,serverPubKey:server!,csvTimelock:{type:'seconds',value:1024n}});
  const source=offlineNativeFixture([{script:tree.pkScript,amount:1000n}]);
- const fee={txid:source.id,vout:0,value:1000,script:hex.encode(tree.pkScript),isSpent:false,createdAt:ago(1),prevTx:source.toBytes(),tapTree:tree.encode(),forfeitTapLeafScript:tree.forfeit(),intentTapLeafScript:tree.forfeit()};
+ const fee={txid:source.id,vout:0,value:1000,script:hex.encode(tree.pkScript),isSpent:false,createdAt:ago(1),prevTx:source.toBytes(),tapTree:tree.encode(),forfeitTapLeafScript:tree.forfeit(),proofTapLeafScript:tree.forfeit()};
  let proof='',emulated='';
  const providers={
   ark:{getInfo:async()=>({...info,fees:{...info.fees,intentFee:FEES},dust:330n}),registerIntent:async(i:{proof:string})=>{proof=i.proof;return 'intent-5';},getEventStream:async function*(){throw new Error('the round was dropped');}},

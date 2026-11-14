@@ -134,7 +134,7 @@ test('only an explicit dropped status releases a Lightning reservation; retry ne
  }finally{await wallet.dispose();}
 });
 
-const tx=(txid:string,index:number,script:Uint8Array,leaf?:ExtendedVirtualCoin['intentTapLeafScript'])=>{const t=new Transaction({allowUnknownOutputs:true});t.addInput({txid,index,witnessUtxo:{script,amount:1000n},...(leaf?{tapLeafScript:[leaf]}:{})});t.addOutput({script,amount:1000n});return t;};
+const tx=(txid:string,index:number,script:Uint8Array,leaf?:ExtendedVirtualCoin['proofTapLeafScript'])=>{const t=new Transaction({allowUnknownOutputs:true});t.addInput({txid,index,witnessUtxo:{script,amount:1000n},...(leaf?{tapLeafScript:[leaf]}:{})});t.addOutput({script,amount:1000n});return t;};
 const signingRequest=(coin:ExtendedVirtualCoin,tree:VtxoScript,statement:bigint)=>{
  const head=tx('dd'.repeat(32),0,hex.decode(SCRIPT)),mine=tx(coin.txid,coin.vout,tree.pkScript,tree.leaves[0]),ark=new Transaction({allowUnknownOutputs:true});
  ark.addInput({txid:head.id,index:0,witnessUtxo:{script:hex.decode(SCRIPT),amount:1000n}});
@@ -144,7 +144,7 @@ const signingRequest=(coin:ExtendedVirtualCoin,tree:VtxoScript,statement:bigint)
 test('one external HD payout is shielded directly and only its child signer signs the deposit',async()=>{
  const store=new Store(),wallet=await open(store),child=SingleKey.fromHex('22'.repeat(32)),key=await child.xOnlyPublicKey();
  const tree=new VtxoScript([hex.decode('20'+hex.encode(key)+'ac')]);
- const coin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!} satisfies ExtendedVirtualCoin;
+ const coin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!} satisfies ExtendedVirtualCoin;
  let posted=false,signed=false,childSigns=0,signing:ReturnType<typeof signingRequest>|undefined;
  const signer={xOnlyPublicKey:()=>child.xOnlyPublicKey(),compressedPublicKey:()=>child.compressedPublicKey(),signerSession:()=>child.signerSession(),signMessage:child.signMessage.bind(child),sign:async(...args:Parameters<typeof child.sign>)=>{childSigns++;return child.sign(...args);}};
  try{
@@ -166,7 +166,7 @@ test('embedded child-key bytes are rejected before proving unless they are the e
  for(const embedded of [`00${key}`,`f${key}0`]){
   const store=new Store(),wallet=await open(store);let proofs=0,requests=0;
   const script=Script.encode([hex.decode(embedded),'DROP',foreign,'CHECKSIG']),tree=new VtxoScript([script]);
-  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
   try{
    assert.equal(hex.encode(script).includes(key),true);
    wallet.prover={prove:async()=>{proofs++;throw new Error('The prover must not run');}};wallet.api=(async()=>{requests++;throw new Error('The API must not run');}) as PoolApi;
@@ -180,7 +180,7 @@ test('both DefaultVtxo child signature leaves pass the payout signer check',asyn
  const child=SingleKey.fromHex('22'.repeat(32)),tree=new DefaultVtxo.Script({pubKey:await child.xOnlyPublicKey(),serverPubKey:ArkAddress.decode(ADDRESS).serverPubKey,csvTimelock:{type:'seconds',value:1024n}});
  for(const leaf of [tree.forfeit(),tree.exit()]){
   const store=new Store(),wallet=await open(store);let proofs=0;
-  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:leaf,forfeitTapLeafScript:tree.forfeit()};
+  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:leaf,forfeitTapLeafScript:tree.forfeit()};
   try{
    wallet.prover={prove:async()=>{proofs++;throw new Error('validated child signature operand');}};
    const handle=await wallet.shieldLightning(coin,child,store,{id:'default',reference:`${coin.txid}:${coin.vout}`});
@@ -259,7 +259,7 @@ test('closing a wallet cancels pending Lightning funding and shielding before di
  for(const kind of ['fund','shield'] as const){
   const store=new Store(),repository=new InMemoryShieldedNoteRepository(),wallet=await open(store,repository);
   const child=SingleKey.fromHex('22'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
-  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+  const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
   let posted=false,entered!:()=>void,timer:ReturnType<typeof setTimeout>|undefined;
   const polling=new Promise<void>(resolve=>{entered=resolve;});let action:Promise<unknown>|undefined;
   try{
@@ -340,7 +340,7 @@ test('a rate-limit delay cannot submit expired Lightning funding or release its 
 
 test('Lightning shielding polls slowly while still signing inside a 30-second round',async t=>{
  const store=new Store(),wallet=await open(store),child=SingleKey.fromHex('22'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
- const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+ const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
  let posted=false,signedAt=0,polls=0,signingRequested=false,firstPollSeen!:()=>void,signPosted!:()=>void,signing:ReturnType<typeof signingRequest>|undefined;
  const firstPoll=new Promise<void>(resolve=>{firstPollSeen=resolve;}),signed=new Promise<void>(resolve=>{signPosted=resolve;});
  try{
@@ -429,7 +429,7 @@ test('a window-tag refusal stays reserved when the account never held the note, 
 /** A plain HD Lightning payout coin and the child key that signs it, as shieldLightning requires. */
 async function payout(){
  const child=SingleKey.fromHex('22'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
- const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+ const coin:ExtendedVirtualCoin={txid:'cc'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
  return {child,coin,reference:`${coin.txid}:${coin.vout}`};
 }
 const sees=(wallet:ShieldedWallet,coin:ExtendedVirtualCoin,state:()=>Record<string,unknown>|undefined)=>{

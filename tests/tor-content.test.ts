@@ -539,7 +539,7 @@ test('real SDK automatic send and settlement exclude restarted uncertain deposit
  const wallet=Object.assign(Object.create(ShieldedWallet.prototype),{
   used:new Set<string>(),usedTxids:new Set<string>(),pendingOutpoints:()=>new Set(journal.pendingPoolOutpoints(origin)),stopped:false,selfSending:false,nativeOperations:0,
   restoreLightningSpends:async()=>{},identity,network:{hrp:'tark'},dustAmount:330n,_txLock:Promise.resolve(),_offchainTapscript:tree,_boardingTapscript:tree,_arkServerPublicKey:server,_deprecatedSigners:[],
-  getAddress:async()=>address,getSelectableBoardingUtxos:async()=>[],
+  getAddress:async()=>address,getSelectableBoardingUtxos:async()=>[],onchainProvider:{},
   arkProvider:{getInfo:async()=>({vtxoMinAmount:330n,vtxoMaxAmount:-1n,fees:{intentFee:{offchainInput:'0.0',offchainOutput:'0.0',onchainInput:'0.0',onchainOutput:'0.0'}}})},
   _submitOffchainSpend:async(inputs:typeof available)=>{sent.push(inputs.map(coin=>coin.txid));return 'sent';},
   makeRegisterIntentSignature:async(inputs:typeof available)=>{settled.push(inputs.map(coin=>coin.txid));throw selected;},makeDeleteIntentSignature:async()=>({}),
