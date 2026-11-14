@@ -97,3 +97,11 @@ test('an incoming payment closes the active camera before filling Send and ignor
  assert.deepEqual(events,['close','send','lightning:new-request']);assert.deepEqual(h.results,[]);
  assert.equal(h.stopCalls,1);assert.equal(h.cancelCalls,1);
 });
+
+test('the scanner asks its camera for an uncropped standard mode, and a refusal still starts scanning',async()=>{
+ const asked:unknown[]=[],h=mount();await h.acquiring.promise;
+ (h.player as {srcObject?:unknown}).srcObject={getVideoTracks:()=>[{applyConstraints:(wanted:unknown)=>{asked.push(wanted);return Promise.reject(Error('refused'));}}]};
+ h.acquisition.resolve(h.camera);await h.started.promise;
+ assert.deepEqual(asked,[{width:{ideal:1920},height:{ideal:1080},resizeMode:'none'}]);
+ h.cleanup();assert.equal(h.stopCalls,1);
+});
