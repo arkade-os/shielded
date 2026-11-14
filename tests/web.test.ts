@@ -58,6 +58,6 @@ test('the asset links delegate passkeys to the release-signed app, whose certifi
  for(const method of ['GET','HEAD']){
   const response=await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/.well-known/assetlinks.json`,{method,redirect:'manual'});
   assert.deepEqual([response.status,response.headers.get('content-type'),response.headers.get('cache-control')],[200,'application/json','public, max-age=3600'],method);
-  if(method==='GET')assert.equal(await response.text(),`[{"relation":["delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"io.arkade.shielded","sha256_cert_fingerprints":["${fingerprint}"]}}]`);
+  if(method==='GET')assert.equal(await response.text(),`[{"relation":["delegate_permission/common.handle_all_urls","delegate_permission/common.get_login_creds"],"target":{"namespace":"android_app","package_name":"io.arkade.shielded","sha256_cert_fingerprints":["${fingerprint}"]}}]`);
  }
 });
