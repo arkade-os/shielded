@@ -14,6 +14,7 @@ const SECP256K1_ORDER=secp256k1.Point.Fn.ORDER;
 const DOMAIN='arkade-shielded:wallet-key-derivation:v1';
 const SALT=new TextEncoder().encode('arkade-shielded:master-secret:v1');
 const MNEMONIC12=new TextEncoder().encode(`${DOMAIN}:mnemonic12:v1`);
+export {DOMAIN as KEY_DOMAIN,SALT as KEY_SALT};
 
 const phraseEntropy=(value:string)=>{
  const words=value.trim().toLowerCase().split(/\s+/);
