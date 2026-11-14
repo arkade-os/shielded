@@ -32,13 +32,13 @@ export async function openCustomerArkWallet(identity:Identity,network:StockNetwo
  const sources=new Map<string,Transaction>();for(const encoded of raw.txs){const tx=decodeStockIndexerTransaction(encoded);sources.set(tx.id,tx);}
  const coins:CustomerVtxo[]=[];
  for(const coin of rawCoins){
-  if(coin.value<330||coin.assets?.length||!coin.tapTree||!coin.intentTapLeafScript?.[1])continue;
+  if(coin.value<330||coin.assets?.length||!coin.tapTree||!coin.proofTapLeafScript?.[1])continue;
   const source=sources.get(coin.txid),treeBytes=coin.tapTree instanceof Uint8Array?coin.tapTree:hex.decode(String(coin.tapTree));
   if(!source)continue;
   // SDK VTXOs expose TapLeafScript as [control block, script || leaf version],
   // while VtxoScript.findLeaf expects the script body without its final version byte.
   const tree=VtxoScript.decode(treeBytes);if(!customerVtxoSourceMatches(coin,source,tree,script))continue;
-  const leafHex=walletIntentLeafScriptHex(coin.intentTapLeafScript);
+  const leafHex=walletIntentLeafScriptHex(coin.proofTapLeafScript);
   try{tree.findLeaf(leafHex);}catch{continue;}
   coins.push({amount:coin.value,coin,funding:{txid:coin.txid,vout:coin.vout,value:coin.value,sourceTxHex:hex.encode(source.toBytes(true,true)),tapTreeHex:hex.encode(treeBytes),leafHex}});
  }

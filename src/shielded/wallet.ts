@@ -625,8 +625,8 @@ export class ShieldedWallet extends Wallet {
  }
  async shieldLightning(singleVirtualCoin:ExtendedVirtualCoin,descriptorSigner:Identity,store:LightningSpendStore,request:{id:string;reference:string;signal?:AbortSignal}):Promise<ShieldedPaymentHandle>{
   this.assertOpen();request.signal?.throwIfAborted();const input=singleVirtualCoin;
-  if(!request.id||!/^[0-9a-f]{64}$/i.test(input.txid)||!Number.isSafeInteger(input.vout)||input.vout<0||!Number.isSafeInteger(input.value)||input.value<DUST||input.assets?.length||input.isSpent||input.spentBy||input.isSwept||input.isUnrolled||!input.tapTree||!input.intentTapLeafScript)throw new Error('Shield one spendable plain Lightning payout at a time.');
-  const coin={txid:input.txid.toLowerCase(),vout:input.vout,value:input.value,tapTree:hex.encode(input.tapTree),leaf:walletIntentLeafScriptHex(input.intentTapLeafScript)};
+  if(!request.id||!/^[0-9a-f]{64}$/i.test(input.txid)||!Number.isSafeInteger(input.vout)||input.vout<0||!Number.isSafeInteger(input.value)||input.value<DUST||input.assets?.length||input.isSpent||input.spentBy||input.isSwept||input.isUnrolled||!input.tapTree||!input.proofTapLeafScript)throw new Error('Shield one spendable plain Lightning payout at a time.');
+  const coin={txid:input.txid.toLowerCase(),vout:input.vout,value:input.value,tapTree:hex.encode(input.tapTree),leaf:walletIntentLeafScriptHex(input.proofTapLeafScript)};
   if(request.reference!==`${coin.txid}:${coin.vout}`)throw new Error('The Lightning payout reference must identify its outpoint.');
   const tree=VtxoScript.decode(input.tapTree);tree.findLeaf(coin.leaf);
   const key=hex.encode(await descriptorSigner.xOnlyPublicKey()),ops=Script.decode(hex.decode(coin.leaf));
@@ -911,7 +911,7 @@ export class ShieldedWallet extends Wallet {
    await new Promise(r=>setTimeout(r,1000));
    this.assertOpen();
    const found=(await this.getSpendableVtxos()).find(v=>v.txid===txid&&(vout===undefined||v.vout===vout)&&v.value===value&&(asset?v.assets?.length===1&&v.assets[0]!.assetId===asset.assetId&&BigInt(v.assets[0]!.amount)===asset.amount:!v.assets?.length));
-   if(found?.tapTree&&found.intentTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.intentTapLeafScript)};
+   if(found?.tapTree&&found.proofTapLeafScript)return {txid:found.txid,vout:found.vout,value:found.value,tapTree:hex.encode(found.tapTree instanceof Uint8Array?found.tapTree:hex.decode(String(found.tapTree))),leaf:walletIntentLeafScriptHex(found.proofTapLeafScript)};
   }
   throw new Error('The deposit coin did not appear in your Arkade wallet.');
  }

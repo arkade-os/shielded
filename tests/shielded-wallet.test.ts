@@ -475,7 +475,7 @@ function readyDeposit(wallet:ShieldedWallet){
 
 for(const asset of [false,true]){
  test(`${asset?'asset':'BTC'} shielding submits each reserved sibling outpoint`,async()=>{
-  const wallet=await open(),a={...coin(),...(asset?{assets:[{assetId:TOKEN,amount:5n}]}:{}),tapTree:new Uint8Array([1]),intentTapLeafScript:[{},new Uint8Array([0x51,0xc0])]},b={...a,vout:1};
+  const wallet=await open(),a={...coin(),...(asset?{assets:[{assetId:TOKEN,amount:5n}]}:{}),tapTree:new Uint8Array([1]),proofTapLeafScript:[{},new Uint8Array([0x51,0xc0])]},b={...a,vout:1};
   const submitted:number[]=[];
   wallet.pool.status.pool!.reserves={[TOKEN]:'10'};
   wallet.getSpendableVtxos=async()=>[b,a] as never;
@@ -490,7 +490,7 @@ for(const asset of [false,true]){
  });
 
  test(`${asset?'asset':'BTC'} shielding waits for its exact output while an equal sibling is visible`,async()=>{
-  const wallet=await open(),sibling={...coin(),...(asset?{assets:[{assetId:TOKEN,amount:5n}]}:{}),tapTree:new Uint8Array([1]),intentTapLeafScript:[{},new Uint8Array([0x51,0xc0])]},selected={...sibling,vout:1};
+  const wallet=await open(),sibling={...coin(),...(asset?{assets:[{assetId:TOKEN,amount:5n}]}:{}),tapTree:new Uint8Array([1]),proofTapLeafScript:[{},new Uint8Array([0x51,0xc0])]},selected={...sibling,vout:1};
   let reads=0;const submitted:number[]=[];
   wallet.pool.status.pool!.reserves={[TOKEN]:'10'};
   wallet.getSpendableVtxos=async()=>{
@@ -506,7 +506,7 @@ for(const asset of [false,true]){
 }
 
 test('consolidated shielding discovers an unknown output vout under its whole transaction reservation',async t=>{
- const wallet=await open(),a=coin('a'.repeat(64),200),b=coin('b'.repeat(64),300),output={...coin(),vout:3,tapTree:new Uint8Array([1]),intentTapLeafScript:[{},new Uint8Array([0x51,0xc0])]};
+ const wallet=await open(),a=coin('a'.repeat(64),200),b=coin('b'.repeat(64),300),output={...coin(),vout:3,tapTree:new Uint8Array([1]),proofTapLeafScript:[{},new Uint8Array([0x51,0xc0])]};
  let sent=false;const submitted:number[]=[];
  wallet.getSpendableVtxos=async()=>{
   if(sent){assert.ok((wallet as any).usedTxids.has(output.txid));return [output] as never;}

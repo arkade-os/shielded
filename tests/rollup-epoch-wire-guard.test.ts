@@ -83,7 +83,7 @@ const until=async(ok:()=>boolean,what:string)=>{for(let i=0;i<500&&!ok();i++)awa
 const bobAddress=()=>{const bob=deriveRollupKeys2('22'.repeat(32),'mutinynet');return rollupAddressOf(rollupRecipientOf(hash,bob.ask,bob.nk,bob.viewSecret));};
 const lightningPayout=async()=>{
  const child=SingleKey.fromHex('44'.repeat(32)),tree=new VtxoScript([hex.decode('20'+hex.encode(await child.xOnlyPublicKey())+'ac')]);
- const coin:ExtendedVirtualCoin={txid:'ab'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),intentTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
+ const coin:ExtendedVirtualCoin={txid:'ab'.repeat(32),vout:1,value:1000,status:{confirmed:true},script:hex.encode(tree.pkScript),createdAt:new Date(),isUnrolled:false,tapTree:tree.encode(),proofTapLeafScript:tree.leaves[0]!,forfeitTapLeafScript:tree.leaves[0]!};
  return {coin,child};
 };
 
