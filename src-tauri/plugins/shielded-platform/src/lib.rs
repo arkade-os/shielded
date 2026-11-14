@@ -181,6 +181,61 @@ async fn clipboard_text<R: Runtime>(
     }
 }
 
+#[cfg(target_os = "android")]
+const PASSKEY_CANCELLED: &str = "Passkey cancelled";
+
+async fn passkey<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    command: &str,
+    request: String,
+) -> Result<String, String> {
+    ensure_local(&window)?;
+    #[cfg(target_os = "android")]
+    {
+        let response: serde_json::Value = app
+            .state::<Mobile<R>>()
+            .0
+            .run_mobile_plugin_async(command, serde_json::json!({ "request": request }))
+            .await
+            .map_err(|error| {
+                if error.to_string() == PASSKEY_CANCELLED {
+                    PASSKEY_CANCELLED
+                } else {
+                    "Passkey unavailable"
+                }
+            })?;
+        response
+            .get("response")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| "Passkey unavailable".into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, command, request);
+        Err("Passkeys are available in the Android app only".into())
+    }
+}
+
+#[tauri::command]
+async fn passkey_create<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    request: String,
+) -> Result<String, String> {
+    passkey(app, window, "passkeyCreate", request).await
+}
+
+#[tauri::command]
+async fn passkey_get<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    request: String,
+) -> Result<String, String> {
+    passkey(app, window, "passkeyGet", request).await
+}
+
 async fn android_update_request<R: Runtime>(
     app: &AppHandle<R>,
     command: &str,
@@ -241,7 +296,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             secret_get,
             secret_set,
             secret_clear,
-            clipboard_text
+            clipboard_text,
+            passkey_create,
+            passkey_get
         ])
         .setup(|app, api| {
             #[cfg(target_os = "android")]

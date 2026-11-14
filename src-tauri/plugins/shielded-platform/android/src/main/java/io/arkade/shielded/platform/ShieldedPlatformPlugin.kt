@@ -19,6 +19,7 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
@@ -35,6 +36,9 @@ class UpdateArgs {
     var bytes: Long = 0
     var versionCode: Long = 0
 }
+
+@InvokeArg
+class PasskeyArgs { var request: String = "" }
 
 private val baseInsets = WeakHashMap<View, Insets>()
 
@@ -144,6 +148,28 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
             invoke.resolve(JSObject().put("text", text ?: JSONObject.NULL) as JSObject)
         }
     }
+
+    // No `resumed` gate: the prompt pauses this Activity, and the SDK's confirming get can start before onResume.
+    private fun passkey(invoke: Invoke, ceremony: (Activity, String, Executor, PasskeyReply) -> Unit) {
+        main.post {
+            if (destroyed || !trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
+            val context = activeActivity ?: run { invoke.reject(PASSKEY_UNAVAILABLE); return@post }
+            val ticket = generation
+            val source = webview
+            val reply: PasskeyReply = { response, error ->
+                if (response != null && generation == ticket && !destroyed && webview === source && trusted()) invoke.resolve(JSObject().put("response", response))
+                else invoke.reject(if (passkeyCancelled(error)) PASSKEY_CANCELLED else PASSKEY_UNAVAILABLE)
+            }
+            try { ceremony(context, invoke.parseArgs(PasskeyArgs::class.java).request, Executor { main.post(it) }, reply) }
+            catch (error: Exception) { reply(null, error) }
+        }
+    }
+
+    @Command
+    fun passkeyCreate(invoke: Invoke) = passkey(invoke, ::createPasskey)
+
+    @Command
+    fun passkeyGet(invoke: Invoke) = passkey(invoke, ::getPasskey)
 
     private fun update(invoke: Invoke, install: Boolean = false, operation: ((() -> Unit) -> Unit) -> JSObject?) {
         val dispatch = AndroidUpdateDispatch(install)
