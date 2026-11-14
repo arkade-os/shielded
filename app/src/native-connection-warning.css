@@ -7,4 +7,5 @@
 .native-connection-warning button{padding:13px 16px;border:1px solid #173b54;border-radius:999px;background:#173b54;color:white;font:600 13px 'DM Sans',sans-serif;cursor:pointer}
 .native-connection-warning .native-connection-confirm{border-color:#bd8d43;background:transparent;color:#805710}
 .native-connection-warning button:focus-visible{outline:2px solid #b8862b;outline-offset:3px}
+.native-external-link{display:block;padding:10px 12px;border:1px solid #173b5426;border-radius:12px;background:#fff;font:13px/1.5 'IBM Plex Mono',monospace;overflow-wrap:anywhere;user-select:all;-webkit-user-select:all}
 @media(prefers-reduced-transparency:reduce){.native-connection-warning::backdrop{background:#102c4bdb;-webkit-backdrop-filter:none;backdrop-filter:none}}
