@@ -27,7 +27,9 @@ function fetchErrorText(error:unknown){
   'Native network generation is retired or paused':'The private connection was paused.',
  };
  const cause=typeof error.cause==='string'?error.cause:error.cause instanceof Error?error.cause.message:'';
- const reason=Object.hasOwn(causes,cause)?causes[cause]:undefined;
+ // Arti's error-kind wording only: no digits or colons, so no address or URL rides along.
+ const kind=/^Tor connection failed: ([a-zA-Z][a-zA-Z ,.()/-]{0,99})$/.exec(cause)?.[1]?.replace(/\.$/,'');
+ const reason=Object.hasOwn(causes,cause)?causes[cause]:kind?`The Tor connection failed (${kind}).`:undefined;
  return `${service} could not be reached${native?' through Tor':''}. Wallet data may be out of date.${reason?' '+reason:''}`;
 }
 export const errorText=(error:unknown)=>pausedErrorText(error)??fetchErrorText(error)??(error instanceof Error?error.message:typeof error==='string'?error:'The action failed.');

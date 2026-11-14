@@ -86,7 +86,8 @@ type ClaimView={notes:{asset:bigint;amount:bigint}[];mine:boolean}|{error:string
 const methodsFailure=(error:unknown)=>[METHODS_REFUSED,METHODS_NOT_WITHDRAWN].includes(errorText(error));
 // Stable, so React focuses it once on mount; an inline ref would take focus back on every render.
 const focusOnMount=(el:HTMLElement|null)=>{el?.focus();};
-export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,onResumeSnapshot,onScannerIntentChange,resumeScanner,onResumeScannerHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;resumeScanner?:number;onResumeScannerHandled?:(token:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
+export type WalletConnection={problem:string;busy:boolean;reconnect:()=>void};
+export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onConnection,onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,onResumeSnapshot,onScannerIntentChange,resumeScanner,onResumeScannerHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false}:{storage?:Storage;reload?:()=>void;onConnection?:(connection:WalletConnection|undefined)=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;resumeScanner?:number;onResumeScannerHandled?:(token:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean}={}){
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState(''),[journalError,setJournalError]=useState('');
  const [nativePending,setNativePending]=useState(false),[confirmRelease,setConfirmRelease]=useState(false),[releaseNote,setReleaseNote]=useState('');
@@ -573,8 +574,11 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const fundingFee=fee?[feeLine,feePaused&&PAUSED_LINE,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' '):'';
  useEffect(()=>{if(feePaused)setFeeConfirmed(false);},[!!feePaused]);
  const requestedAmount=receiveAmount(lnAmount),invoiceAmount=invoiceRequestAmount(lnAmount,lnBounds);
- const ready=pool?.phase==='ready'&&!!secret,unit=assetId?'units':'sats',lnOutside=requestedAmount!==undefined&&!!lnBounds&&!invoiceInRange(lnBounds,requestedAmount);
+ const ready=pool?.phase==='ready'&&!!secret,connectionProblem=ready?startupError||refreshError:'',unit=assetId?'units':'sats',lnOutside=requestedAmount!==undefined&&!!lnBounds&&!invoiceInRange(lnBounds,requestedAmount);
  const receiveOpen=tab==='receive'&&(!docked||sheetOpen)&&viewActive&&!suspended;
+ const walletBusy=busy||handleBusy.current||!!actions.current?.busy;
+ // Reconnect shuts the wallet down, so like the old balance-card retry it waits out a payment or exit in flight.
+ useEffect(()=>{if(!viewActive)return;onConnection?.({problem:connectionProblem,busy:walletBusy,reconnect:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current?.busy)reload();}});return()=>onConnection?.(undefined);},[connectionProblem,walletBusy,viewActive,onConnection,reload]);
  useEffect(()=>{invoiceTried.current=undefined;},[lnAmount]);
  // Typing settles before an invoice is made; a failed amount is not retried until it changes.
  useEffect(()=>{
@@ -739,7 +743,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   })});
  },[onResumeSnapshot,synced,ready,pageVisible,viewActive,suspended,hidden,balance,unshielded,rows]);
   const balanceCard=()=> <section className="stock-card stock-balance">
-   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError} onRetry={startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request()}/></div>
+   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError} onRetry={nativeHost?undefined:startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request()}/></div>
    {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
    {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
   </section>;
