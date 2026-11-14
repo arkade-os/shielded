@@ -16,7 +16,7 @@ function claim(){
 }
 function evidence(onRead=async()=>{}){
  const tx=claim();let reads=0;
- const indexer={getVtxos:async(input:{scripts:string[]})=>{assert.deepEqual(input.scripts,[script]);await onRead();reads++;return {vtxos:[{...outpoint,spentBy:tx.id,arkTxId:'cd'.repeat(32)}]};},getVirtualTxs:async(ids:string[])=>{assert.deepEqual(ids,[tx.id]);return {txs:[base64.encode(tx.toPSBT())]};}} as unknown as LockupSpendIndexer;
+ const indexer={getVtxos:async(input:{scripts:string[]})=>{assert.deepEqual(input.scripts,[script]);await onRead();reads++;return {vtxos:[{...outpoint,spentBy:tx.id,arkTxId:'cd'.repeat(32)}]};},getVirtualTxs:async(ids:string[])=>{assert.deepEqual(ids,[tx.id,'cd'.repeat(32)]);return {txs:[base64.encode(tx.toPSBT())]};}} as unknown as LockupSpendIndexer;
  return {indexer,reads:()=>reads};
 }
 test('verified claim receipt repair survives IndexedDB reopen and preserves unrelated fields',async()=>{
