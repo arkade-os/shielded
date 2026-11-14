@@ -139,7 +139,8 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
             if (destroyed || !trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
             val context = activeActivity ?: run { invoke.reject("Return to Shielded to paste"); return@post }
             val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
-            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()?.takeIf { it.length <= 8192 }
+            // Plain text only: coerceToText would resolve a content:// clip on this main thread, and no payment code arrives that way.
+            val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.takeIf { it.length <= 8192 }
             invoke.resolve(JSObject().put("text", text ?: JSONObject.NULL) as JSObject)
         }
     }
