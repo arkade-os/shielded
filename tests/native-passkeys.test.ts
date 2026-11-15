@@ -110,6 +110,19 @@ test('native assertions refuse another credential when the request restricts its
  await assert.rejects(evaluatePrf({rpId:RP,salt,credentialIds:[new Uint8Array([1,2,3])],client}),/Passkey unavailable/);
 });
 
+test('native relying-party enforcement and Apple associations match the bundled pool origin',()=>{
+ const source=(path:string)=>readFileSync(new URL(path,import.meta.url),'utf8'),plugin='../src-tauri/plugins/shielded-platform/';
+ const origin=/poolOrigin: '([^']+)'/.exec(source('../src-tauri/src/lib.rs'))?.[1];assert.ok(origin);
+ const url=new URL(origin);assert.equal(url.protocol,'https:');assert.equal(url.hostname,RP);
+ for(const [path,pattern,expected]of [
+  [plugin+'src/passkeys/mod.rs',/const RP: &str = "([^"]+)"/,url.hostname],
+  [plugin+'src/passkeys/linux.rs',/const ORIGIN: &str = "([^"]+)"/,url.origin],
+  [plugin+'ios/Sources/Passkeys.swift',/static let rpID = "([^"]+)"/,url.hostname],
+  ['../src-tauri/macos/PasskeyEntitlements.plist',/<string>(webcredentials:[^<]+)<\/string>/,`webcredentials:${url.hostname}`],
+  ['../tools/native-build.mjs',/domain = '(webcredentials:[^']+)'/,`webcredentials:${url.hostname}`],
+ ]as const)assert.equal(pattern.exec(source(path))?.[1],expected,path);
+});
+
 test('passkey commands, permissions and the cancel message line up across build.rs, Rust, the capability and Kotlin',()=>{
  const source=(path:string)=>readFileSync(new URL(path,import.meta.url),'utf8'),plugin='../src-tauri/plugins/shielded-platform/';
  const build=source(plugin+'build.rs'),rust=source(plugin+'src/lib.rs'),kotlin=source(plugin+'android/src/main/java/io/arkade/shielded/platform/ShieldedPlatformPlugin.kt');

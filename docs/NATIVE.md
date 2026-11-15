@@ -110,6 +110,8 @@ Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iO
 
 Passkey and phrase setup retain a public recovery intent across an unknown vault-write outcome. A fresh random wallet records its optional birth metadata after the vault acknowledges creation, so a rejected first write cannot require a phrase that was never shown. If that acknowledgement or metadata is lost, reopening reads the native vault and scans from genesis when no birth cursor exists. A competing wallet is never replaced by setup.
 
+Public passkey metadata retains credential IDs up to 4,096 base64url characters for compatibility with existing browser wallets. Native passkey requests and responses accept decoded IDs up to 1,024 bytes. If an existing browser credential exceeds that native bound, native passkey recovery fails closed; use its original supported browser or restore the same wallet with its recovery phrase.
+
 ### Apple passkeys
 
 The Apple bridge implements platform-passkey PRF on iOS 18 and macOS 15 or later. The app deployment minima remain iOS 14 and macOS 11; older systems can use phrase wallets. Hardware-security-key PRF is outside this Apple adapter. See [Apple's PRF API availability](https://developer.apple.com/documentation/authenticationservices/asauthorizationpublickeycredentialprfassertioninput-swift.struct).

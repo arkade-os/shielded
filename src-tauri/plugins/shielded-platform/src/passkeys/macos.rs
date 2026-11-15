@@ -166,22 +166,21 @@ unsafe fn request_for(
             &NSString::from_str(&input.rp_id),
         );
     let challenge = NSData::with_bytes(&input.challenge);
-    let required = ASAuthorizationPublicKeyCredentialUserVerificationPreferenceRequired
-        .ok_or(PasskeyError::Unavailable)?;
+    let required = NSString::from_str("required");
     if create {
         let request = provider.createCredentialRegistrationRequestWithChallenge_name_userID(
             &challenge,
             &NSString::from_str(&input.user_name),
             &NSData::with_bytes(&input.user_id),
         );
-        request.setUserVerificationPreference(required);
+        request.setUserVerificationPreference(&required);
         request.setPrf(Some(
             &ASAuthorizationPublicKeyCredentialPRFRegistrationInput::checkForSupport(),
         ));
         Ok(request.into_super())
     } else {
         let request = provider.createCredentialAssertionRequestWithChallenge(&challenge);
-        request.setUserVerificationPreference(required);
+        request.setUserVerificationPreference(&required);
         let credentials: Vec<_> = input
             .credentials
             .iter()

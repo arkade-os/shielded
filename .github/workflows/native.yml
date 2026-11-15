@@ -85,6 +85,9 @@ jobs:
       - run: node tools/native-build.mjs icons
       - run: npm run native:frontend
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - name: Check gated Apple passkey imports
+        if: runner.os == 'macOS'
+        run: node tools/apple-passkey-linkage.check.mjs
       - name: Build desktop package
         run: node tools/retry-command.mjs node tools/native-build.mjs desktop build ${{ env.NATIVE_BUILD_FLAG }} --bundles ${{ matrix.bundle }} ${{ runner.os == 'macOS' && '--target universal-apple-darwin' || '' }}
       - name: Verify universal macOS bundle
