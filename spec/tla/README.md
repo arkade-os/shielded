@@ -842,6 +842,19 @@ Pinned TLC v1.7.4 and Java 25 on November 13, 2026: the base run fired every act
 The read is ordered AFTER the stream reopens, so the model needs no assumption about arkd replaying a still-registered subscription id: `ReopenReplays` is optional and `NoMissedEvent` holds without it. `IndexerStreams_NoReopenOrder.cfg` is the read-first ordering, whose `read` phase is the window an event falls into. For a polled script the read IS the stream, so `Reopen` and `CatchUpRead` coincide and that window does not exist. Snapshot staleness beyond what the stream events and the reads fold in, per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.
 # Native passkey setup and recovery
 
+`ApplePasskeyPrompt` models the provider callback, queued main-thread start, runtime deadline, dropped caller, and delayed native cleanup as independent actors. Each request has a distinct ticket. Expiration retires that ticket before cleanup is queued; callback and cleanup can take only their own active slot. The model abstracts runtime clock progress and OS cancellation, checking safety when a deadline fires rather than real-time scheduling guarantees. Its 875-state graph and five disabled-guard counterexamples cover bounded pending results, expired starts, foreign cleanup/callbacks and a single settled result. A four-request simulation checks 20,000 wider traces.
+
+```mermaid
+stateDiagram-v2
+    idle --> queued: submit + ticket
+    queued --> active: ticket live + slot empty
+    queued --> unavailable: deadline or drop
+    active --> success: own callback first
+    active --> unavailable: deadline or drop
+    unavailable --> cleaned: take only own slot + cancel
+    success --> cleaned: release only own slot
+```
+
 `NativePasskeyFlow` separates the OS prompt, foreground return, vault read, public intent, native create and renderer reply. An external writer and retired owners can interleave with every step. Secret derivation, provider cryptography and operating-system persistence are abstracted as seed identities and atomic vault operations.
 
 ```mermaid

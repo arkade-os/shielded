@@ -137,6 +137,8 @@ The desktop wrapper selects `macos/PasskeyEntitlements.plist`, which retains cam
 
 Before distributing an enabled build, verify create, confirming authentication, restore and recovery reveal on signed iOS and both Mac architectures. Compare 12-word and 24-word recovery phrases across browser/native use of the same passkey, and exercise cancellation, system-prompt inactivity, lock and background/return. The provider must return a valid PRF result; operating-system/API availability alone does not guarantee it. These credential/device checks remain unverified here.
 
+Apple provider waits have a 120-second runtime deadline. Expiration releases only that ceremony and cancels its captured controller; late callbacks or timer cleanup cannot cancel a newer request. This is independent of the renderer's immediate logical cancellation on lock or connection revocation. Device suspension and main-thread scheduling remain subject to the operating system.
+
 ### Passkey relying-party changes
 
 The current native relying party is `shielded.mutinynet.arkade.sh`. Changing only the pool origin or one native constant fails closed; changing every constant does not migrate existing passkeys to another relying party. Before enabling a signed build with a different origin:

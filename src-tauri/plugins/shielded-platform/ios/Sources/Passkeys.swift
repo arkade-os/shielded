@@ -96,6 +96,7 @@ private final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate
     private let window: UIWindow
     private let input: PasskeyInput
     private let create: Bool
+    private let deadline = PasskeyDeadline()
     private var controller: ASAuthorizationController?
     private var completion: ((Result<String, PlatformPasskeyError>) -> Void)?
 
@@ -126,12 +127,26 @@ private final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate
         controller?.presentationContextProvider = self
     }
 
-    func start() { controller?.performRequests() }
-    func cancel() { controller?.cancel(); finish(.failure(.cancelled)) }
+    func start() {
+        guard completion != nil else { return }
+        deadline.arm { [weak self] in self?.stop(.unavailable) }
+        controller?.performRequests()
+    }
+
+    func cancel() { stop(.cancelled) }
+
+    private func stop(_ error: PlatformPasskeyError) {
+        guard Thread.isMainThread else { DispatchQueue.main.async { self.stop(error) }; return }
+        let previous = controller
+        finish(.failure(error))
+        previous?.cancel()
+    }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor { window }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard Thread.isMainThread else { DispatchQueue.main.async { self.authorizationController(controller: controller, didCompleteWithAuthorization: authorization) }; return }
+        guard completion != nil, self.controller === controller else { return }
         do {
             let id: Data, handle: Data?, key: SymmetricKey?, enabled: Bool?
             if create, let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
@@ -163,6 +178,8 @@ private final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate
     }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        guard Thread.isMainThread else { DispatchQueue.main.async { self.authorizationController(controller: controller, didCompleteWithError: error) }; return }
+        guard completion != nil, self.controller === controller else { return }
         let cancelled = (error as? ASAuthorizationError)?.code == .canceled
         finish(.failure(cancelled ? .cancelled : .unavailable))
     }
@@ -171,6 +188,7 @@ private final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate
         guard Thread.isMainThread else { DispatchQueue.main.async { self.finish(result) }; return }
         guard let complete = completion else { return }
         completion = nil
+        deadline.cancel()
         controller?.delegate = nil
         controller?.presentationContextProvider = nil
         controller = nil

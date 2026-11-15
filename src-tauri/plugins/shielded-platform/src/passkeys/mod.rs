@@ -1,6 +1,9 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::{json, Value};
 
+#[cfg(any(target_os = "macos", test))]
+mod deadline;
+
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 #[cfg(target_os = "macos")]
@@ -145,6 +148,15 @@ mod tests {
         assert_eq!(parse(&input.to_string(), false).unwrap().salt, b"Default");
         input["rpId"] = json!("tauri.localhost");
         assert!(parse(&input.to_string(), false).is_err());
+    }
+    #[test]
+    fn native_credentials_enforce_the_provider_limit_independently_of_public_metadata() {
+        let mut input = json!({"rpId":RP,"challenge":URL_SAFE_NO_PAD.encode([0;32]),"extensions":{"prf":{"eval":{"first":URL_SAFE_NO_PAD.encode(b"Default")}}},"userVerification":"required"});
+        for (length, accepted) in [(1024, true), (1025, false)] {
+            input["allowCredentials"] =
+                json!([{"type":"public-key","id":URL_SAFE_NO_PAD.encode(vec![1;length])}]);
+            assert_eq!(parse(&input.to_string(), false).is_ok(), accepted);
+        }
     }
     #[test]
     fn native_responses_reject_incomplete_prf_output() {

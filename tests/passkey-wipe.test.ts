@@ -18,3 +18,9 @@ test('seed derivation wipes its owned PRF bytes when either mnemonic or master d
   assert.deepEqual(prf,new Uint8Array(32),`${derive.name}: ${stage} failure must wipe the returned SDK buffer`);
  }
 });
+
+test('bound-credential validation still wipes PRF before it can reach seed derivation',async()=>{
+ const prf=new Uint8Array(32).fill(7);globalThis.__shieldedPasskeyFault={prf,stage:'mnemonic'};
+ await assert.rejects(restorePasskeySeed({rpId:'shielded.mutinynet.arkade.sh',credentialId:Uint8Array.of(2),wordCount:12}),/does not match the recovery credential/);
+ assert.deepEqual(prf,new Uint8Array(32));
+});

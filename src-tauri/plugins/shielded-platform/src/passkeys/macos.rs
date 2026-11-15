@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, time::Duration};
 
 use futures_channel::oneshot;
 use objc2::rc::Retained;
@@ -13,7 +13,10 @@ use objc2_foundation::{
 use tauri::{AppHandle, Runtime, WebviewWindow};
 use zeroize::Zeroizing;
 
-use super::{reply, PasskeyError, PasskeyRequest};
+use super::{
+    deadline::{await_deadline, take_owned, DeadlineTicket},
+    reply, PasskeyError, PasskeyRequest,
+};
 
 type Completion = Result<String, PasskeyError>;
 
@@ -21,15 +24,30 @@ struct DelegateState {
     window: Retained<NSWindow>,
     sender: RefCell<Option<oneshot::Sender<Completion>>>,
     create: bool,
+    ticket: DeadlineTicket,
 }
 
 struct Ceremony {
     delegate: Retained<ShieldedPasskeyDelegate>,
-    _controller: Retained<ASAuthorizationController>,
+    controller: Retained<ASAuthorizationController>,
 }
 
 thread_local! {
-    static ACTIVE: RefCell<Option<Ceremony>> = const { RefCell::new(None) };
+    static ACTIVE: RefCell<Option<(DeadlineTicket, Ceremony)>> = const { RefCell::new(None) };
+}
+
+struct RetireOnDrop<F: FnOnce(DeadlineTicket)> {
+    ticket: DeadlineTicket,
+    cleanup: Option<F>,
+}
+
+impl<F: FnOnce(DeadlineTicket)> Drop for RetireOnDrop<F> {
+    fn drop(&mut self) {
+        self.ticket.retire();
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup(self.ticket.clone());
+        }
+    }
 }
 
 define_class!(
@@ -47,16 +65,30 @@ define_class!(
             _controller: &ASAuthorizationController,
             authorization: &ASAuthorization,
         ) {
-            let result = unsafe { response(authorization, self.ivars().create) };
-            let _ceremony = self.finish(result);
+            let Some(_ceremony) = self.claim() else {
+                return;
+            };
+            let result = if self.ivars().ticket.retire() {
+                unsafe { response(authorization, self.ivars().create) }
+            } else {
+                Err(PasskeyError::Unavailable)
+            };
+            self.finish(result);
         }
 
         #[unsafe(method(authorizationController:didCompleteWithError:))]
         fn failed(&self, _controller: &ASAuthorizationController, error: &NSError) {
-            let domain = error.domain();
-            let authorization_domain = &*domain == unsafe { ASAuthorizationErrorDomain };
-            let result = Err(failure(authorization_domain, error.code()));
-            let _ceremony = self.finish(result);
+            let Some(_ceremony) = self.claim() else {
+                return;
+            };
+            let result = if self.ivars().ticket.retire() {
+                let domain = error.domain();
+                let authorization_domain = &*domain == unsafe { ASAuthorizationErrorDomain };
+                Err(failure(authorization_domain, error.code()))
+            } else {
+                Err(PasskeyError::Unavailable)
+            };
+            self.finish(result);
         }
     }
 
@@ -77,23 +109,31 @@ impl ShieldedPasskeyDelegate {
         unsafe { msg_send![super(this), init] }
     }
 
-    fn finish(&self, result: Completion) -> Option<Ceremony> {
+    fn claim(&self) -> Option<Ceremony> {
+        ACTIVE.with(|active| take_owned(&mut *active.borrow_mut(), &self.ivars().ticket))
+    }
+
+    fn finish(&self, result: Completion) {
         let sender = self.ivars().sender.borrow_mut().take();
-        let ceremony = ACTIVE.with(|active| {
-            let ours = active
-                .borrow()
-                .as_ref()
-                .is_some_and(|item| std::ptr::eq::<ShieldedPasskeyDelegate>(&*item.delegate, self));
-            if ours {
-                active.borrow_mut().take()
-            } else {
-                None
-            }
-        });
         if let Some(sender) = sender {
             let _ = sender.send(result);
         }
-        ceremony
+    }
+}
+
+fn cancel_owned(ticket: &DeadlineTicket) {
+    let ceremony = ACTIVE.with(|active| take_owned(&mut *active.borrow_mut(), ticket));
+    let Some(ceremony) = ceremony else {
+        return;
+    };
+    unsafe {
+        ceremony.controller.setDelegate(None);
+        ceremony.controller.setPresentationContextProvider(None);
+    }
+    ceremony.delegate.finish(Err(PasskeyError::Unavailable));
+    // Cancellation may synchronously invoke a delegate; the owner slot is already empty.
+    unsafe {
+        ceremony.controller.cancel();
     }
 }
 
@@ -197,8 +237,9 @@ fn begin<R: Runtime>(
     create: bool,
     request: PasskeyRequest,
     sender: oneshot::Sender<Completion>,
+    ticket: DeadlineTicket,
 ) {
-    if !available() || ACTIVE.with(|active| active.borrow().is_some()) {
+    if !ticket.active() || !available() || ACTIVE.with(|active| active.borrow().is_some()) {
         let _ = sender.send(Err(PasskeyError::Unavailable));
         return;
     }
@@ -221,12 +262,17 @@ fn begin<R: Runtime>(
             return;
         }
     };
+    if !ticket.active() {
+        let _ = sender.send(Err(PasskeyError::Unavailable));
+        return;
+    }
     let delegate = ShieldedPasskeyDelegate::new(
         mtm,
         DelegateState {
             window: native_window,
             sender: RefCell::new(Some(sender)),
             create,
+            ticket: ticket.clone(),
         },
     );
     unsafe {
@@ -237,11 +283,18 @@ fn begin<R: Runtime>(
         controller.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         controller.setPresentationContextProvider(Some(ProtocolObject::from_ref(&*delegate)));
         ACTIVE.with(|active| {
-            *active.borrow_mut() = Some(Ceremony {
-                delegate,
-                _controller: controller.clone(),
-            })
+            *active.borrow_mut() = Some((
+                ticket.clone(),
+                Ceremony {
+                    delegate,
+                    controller: controller.clone(),
+                },
+            ))
         });
+        if !ticket.active() {
+            cancel_owned(&ticket);
+            return;
+        }
         controller.performRequests();
     }
 }
@@ -255,15 +308,79 @@ pub(crate) async fn run<R: Runtime>(
     if !available() {
         return Err(PasskeyError::Unavailable);
     }
+    let ticket = DeadlineTicket::new();
+    let cleanup_app = app.clone();
+    let _cleanup = RetireOnDrop {
+        ticket: ticket.clone(),
+        cleanup: Some(move |ticket| {
+            let _ = cleanup_app.run_on_main_thread(move || cancel_owned(&ticket));
+        }),
+    };
     let (sender, receiver) = oneshot::channel();
-    app.run_on_main_thread(move || begin(window, create, request, sender))
-        .map_err(|_| PasskeyError::Unavailable)?;
-    receiver.await.map_err(|_| PasskeyError::Unavailable)?
+    let queued = ticket.clone();
+    await_deadline(
+        async move {
+            app.run_on_main_thread(move || begin(window, create, request, sender, queued))
+                .map_err(|_| PasskeyError::Unavailable)?;
+            receiver.await.map_err(|_| PasskeyError::Unavailable)?
+        },
+        &ticket,
+        Duration::from_secs(120),
+    )
+    .await?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_waiter_retires_queued_start_before_scheduling_cleanup() {
+        use std::{
+            cell::Cell,
+            future::Future,
+            rc::Rc,
+            task::{Context, Waker},
+        };
+        let ticket = DeadlineTicket::new();
+        let scheduled = Rc::new(Cell::new(false));
+        let observed = scheduled.clone();
+        let guard = RetireOnDrop {
+            ticket: ticket.clone(),
+            cleanup: Some(move |ticket: DeadlineTicket| {
+                assert!(!ticket.active());
+                observed.set(true);
+            }),
+        };
+        let mut waiter = Box::pin(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(waiter.as_mut().poll(&mut context).is_pending());
+        assert!(ticket.active());
+        drop(waiter);
+        assert!(!ticket.active());
+        assert!(scheduled.get());
+    }
+
+    #[test]
+    fn delayed_drop_cleanup_preserves_a_newer_prompt() {
+        use std::rc::Rc;
+        let ticket = DeadlineTicket::new();
+        let queued = Rc::new(RefCell::new(None));
+        let cleanup_queue = queued.clone();
+        drop(RetireOnDrop {
+            ticket: ticket.clone(),
+            cleanup: Some(move |ticket| *cleanup_queue.borrow_mut() = Some(ticket)),
+        });
+        let next = DeadlineTicket::new();
+        let mut slot = Some((next.clone(), "next"));
+        assert!(!ticket.active());
+        assert!(take_owned(&mut slot, &queued.borrow_mut().take().unwrap()).is_none());
+        assert!(next.active());
+        assert_eq!(take_owned(&mut slot, &next), Some("next"));
+    }
 
     #[test]
     fn only_the_authorization_domain_cancellation_is_cancelled() {

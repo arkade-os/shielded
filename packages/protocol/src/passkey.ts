@@ -51,6 +51,7 @@ export async function restorePasskeySeed(o:{rpId:string;credentialId?:Uint8Array
  const expected=o.credentialId?.slice(),hint=o.wordCount;
  if(hint!==undefined&&(!expected?.length||(hint!==12&&hint!==24)))throw new Error('Recovery word count requires a bound passkey credential.');
  const {credentialId,userHandle,prf}=await evaluatePrf({rpId:o.rpId,salt:PASSKEY_SEED_SALT,credentialIds:expected&&[expected],client:o.client});
+ // Identity and word-count validation can throw before seedOf takes ownership.
  try{
   const count=wordCountFromUserHandle(userHandle);
   if(hint!==undefined){

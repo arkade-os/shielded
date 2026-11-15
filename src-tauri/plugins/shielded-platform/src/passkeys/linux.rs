@@ -7,11 +7,13 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::StreamExt;
 use zbus::{
     zvariant::{OwnedObjectPath, OwnedValue, Str},
     Connection, Proxy,
 };
+use zeroize::Zeroizing;
 
 use super::PasskeyError;
 
@@ -109,6 +111,22 @@ fn response(create: bool, code: u32, mut values: Values) -> Result<String, Passk
     {
         return Err(PasskeyError::Unavailable);
     }
+    if let Some(first) = value.pointer("/clientExtensionResults/prf/results/first") {
+        let encoded = first
+            .as_str()
+            .filter(|encoded| encoded.len() == 43 || encoded.len() == 44 && encoded.ends_with('='))
+            .ok_or(PasskeyError::Unavailable)?;
+        let mut decoded = Zeroizing::new([0u8; 33]);
+        let length = URL_SAFE_NO_PAD
+            .decode_slice(
+                encoded.strip_suffix('=').unwrap_or(encoded),
+                &mut decoded[..],
+            )
+            .map_err(|_| PasskeyError::Unavailable)?;
+        if length != 32 {
+            return Err(PasskeyError::Unavailable);
+        }
+    }
     Ok(json)
 }
 
@@ -183,6 +201,24 @@ pub(crate) async fn run(create: bool, request: String) -> Result<String, Passkey
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{
+        engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+        Engine,
+    };
+
+    fn credential_response(first: serde_json::Value, create: bool) -> (String, Values) {
+        let json = serde_json::json!({"type":"public-key","rawId":"AQ","clientExtensionResults":{"providerExtension":{"supported":true},"prf":{"results":{"first":first}}}}).to_string();
+        let field = if create {
+            "registration_response_json"
+        } else {
+            "authentication_response_json"
+        };
+        let values = HashMap::from([
+            ("type".into(), text("publicKey".into())),
+            (field.into(), text(json.clone())),
+        ]);
+        (json, values)
+    }
 
     #[test]
     fn portal_options_preserve_the_raw_webauthn_prf_request() {
@@ -203,7 +239,7 @@ mod tests {
 
     #[test]
     fn response_preserves_prf_bytes_and_maps_cancellation() {
-        let json = r#"{"type":"public-key","rawId":"AQ","clientExtensionResults":{"prf":{"results":{"first":"private_output"}}}}"#;
+        let json = r#"{"type":"public-key","rawId":"AQ","clientExtensionResults":{"prf":{"results":{"first":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}}}"#;
         let values = HashMap::from([
             ("type".into(), text("publicKey".into())),
             ("authentication_response_json".into(), text(json.into())),
@@ -217,6 +253,61 @@ mod tests {
             response(false, 2, HashMap::new()),
             Err(PasskeyError::Unavailable)
         ));
+    }
+
+    #[test]
+    fn provider_prf_output_must_decode_to_exactly_32_bytes() {
+        for create in [false, true] {
+            for length in [16, 31, 33] {
+                let (_, values) = credential_response(
+                    serde_json::json!(URL_SAFE_NO_PAD.encode(vec![7; length])),
+                    create,
+                );
+                assert!(matches!(
+                    response(create, 0, values),
+                    Err(PasskeyError::Unavailable)
+                ));
+            }
+            for first in [
+                serde_json::json!("private_output"),
+                serde_json::json!("!".repeat(43)),
+                serde_json::json!(format!("{}==", URL_SAFE_NO_PAD.encode([7; 32]))),
+                serde_json::Value::Null,
+                serde_json::json!(32),
+            ] {
+                let (_, values) = credential_response(first, create);
+                assert!(matches!(
+                    response(create, 0, values),
+                    Err(PasskeyError::Unavailable)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn valid_padded_and_unpadded_prf_responses_preserve_provider_json() {
+        for create in [false, true] {
+            for first in [URL_SAFE_NO_PAD.encode([7; 32]), URL_SAFE.encode([7; 32])] {
+                let (json, values) = credential_response(serde_json::json!(first), create);
+                assert_eq!(response(create, 0, values).unwrap(), json);
+            }
+        }
+    }
+
+    #[test]
+    fn missing_or_disabled_prf_is_forwarded_for_sdk_failure_classification() {
+        for prf in [
+            serde_json::Value::Null,
+            serde_json::json!({"enabled":false}),
+            serde_json::json!({}),
+        ] {
+            let json = serde_json::json!({"type":"public-key","rawId":"AQ","clientExtensionResults":{"prf":prf}}).to_string();
+            let values = HashMap::from([
+                ("type".into(), text("publicKey".into())),
+                ("authentication_response_json".into(), text(json.clone())),
+            ]);
+            assert_eq!(response(false, 0, values).unwrap(), json);
+        }
     }
 
     #[test]

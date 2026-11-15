@@ -20,6 +20,7 @@ windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Networki
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
 futures-channel = "=0.3.34"
+tokio = { version = "=1.54.1", features = ["time"] }
 objc2 = "=0.6.5"
 objc2-foundation = { version = "=0.3.2", features = ["NSArray", "NSData", "NSString", "NSError", "NSObject", "NSProcessInfo"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSWindow", "NSResponder"] }
@@ -31,3 +32,6 @@ zbus = { version = "=4.4.0", default-features = false, features = ["tokio"] }
 futures-util = "=0.3.34"
 tokio = { version = "=1.54.1", features = ["time"] }
 uuid = { version = "=1.29.0", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "=1.54.1", features = ["rt", "time"] }

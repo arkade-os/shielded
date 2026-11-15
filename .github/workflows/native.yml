@@ -79,6 +79,9 @@ jobs:
       - name: Check Apple entitlement preparation with plutil
         if: runner.os == 'macOS'
         run: node tools/apple-entitlements.check.mjs
+      - name: Check Apple passkey callback deadlines
+        if: runner.os == 'macOS'
+        run: node tools/apple-passkey-deadline.check.mjs
       - run: node tools/native-build.mjs icons
       - run: npm run native:frontend
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
@@ -257,6 +260,9 @@ jobs:
       - name: Check Apple entitlement preparation with plutil
         if: runner.os == 'macOS'
         run: node tools/apple-entitlements.check.mjs
+      - name: Check Apple passkey callback deadlines
+        if: runner.os == 'macOS'
+        run: node tools/apple-passkey-deadline.check.mjs
       - name: Select simulator architecture
         shell: bash
         run: |
