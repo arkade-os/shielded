@@ -67,6 +67,13 @@ fn options(create: bool, request: String, token: String) -> Values {
 }
 
 fn request_path(sender: &str, token: &str) -> Result<OwnedObjectPath, PasskeyError> {
+    if token.is_empty()
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err(PasskeyError::Unavailable);
+    }
     let sender = sender
         .strip_prefix(':')
         .ok_or(PasskeyError::Unavailable)?
@@ -248,6 +255,8 @@ mod tests {
             "/org/freedesktop/portal/desktop/request/1_432/shielded_unpredictable"
         );
         assert!(request_path("invalid", "token").is_err());
-        assert!(request_path(":1.432", "invalid/path").is_err());
+        for token in ["", "invalid/path", "invalid-token", "invalid.token", "é"] {
+            assert!(request_path(":1.432", token).is_err());
+        }
     }
 }
