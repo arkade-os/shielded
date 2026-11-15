@@ -1,4 +1,5 @@
 import React from 'react';
+import {writeWalletClipboard} from './wallet-clipboard.ts';
 import type {ActivityNotice} from './shielded-page.ts';
 
 export function Icon({name,size=20,className=''}:{name:string;size?:number;className?:string}) {
@@ -33,7 +34,7 @@ export function Icon({name,size=20,className=''}:{name:string;size?:number;class
 export function Hash({value,full=false}:{value?:string;full?:boolean}) { if(!value)return <span className="muted">Awaiting execution</span>;return <code title={value}>{full||value.length<22?value:`${value.slice(0,10)}…${value.slice(-8)}`}</code> }
 export function Badge({children,tone='neutral'}:{children:React.ReactNode;tone?:string}) {return <span className={`badge ${tone}`}>{children}</span>}
 export function Empty({icon='layers',title,description}:{icon?:string;title:string;description:string}){return <div className="empty-state"><div className="empty-icon"><Icon name={icon} size={23}/></div><strong>{title}</strong><p>{description}</p></div>}
-export function CopyButton({value,label}:{value:string;label?:string}) {const[copied,setCopied]=React.useState(false);return <button type="button" className={label?'stock-ghost stock-mini':'icon-button'} aria-label={label?undefined:'Copy to clipboard'} onClick={async()=>{await navigator.clipboard.writeText(value);setCopied(true);setTimeout(()=>setCopied(false),1500)}}>{label?(copied?'Copied':label):<Icon name={copied?'check':'copy'} size={16}/>}</button>}
+export function CopyButton({value,label}:{value:string;label?:string}) {const[copied,setCopied]=React.useState(false);return <button type="button" className={label?'stock-ghost stock-mini':'icon-button'} aria-label={label?undefined:'Copy to clipboard'} onClick={async()=>{await writeWalletClipboard(value);setCopied(true);setTimeout(()=>setCopied(false),1500)}}>{label?(copied?'Copied':label):<Icon name={copied?'check':'copy'} size={16}/>}</button>}
 /** A money-moved toast. The dismiss button carries no handler of its own: its click, from a tap or from the keyboard, bubbles to the surface. */
 export function WalletBalanceNotice({notice,onDismiss}:{notice:ActivityNotice;onDismiss:()=>void}) {
  React.useEffect(()=>{const timer=setTimeout(onDismiss,6000);return()=>clearTimeout(timer);},[notice.id,onDismiss]);

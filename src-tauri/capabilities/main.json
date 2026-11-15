@@ -25,6 +25,8 @@
     "allow-native-android-update-install",
     "allow-native-android-update-confirm",
     "deep-link:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://shielded.mutinynet.arkade.sh/#download" }, { "url": "https://shielded.mutinynet.arkade.sh/download#download" }, { "url": "https://explorer.mutinynet.arkade.sh/tx/*" }, { "url": "https://explorer.mutinynet.arkade.sh/commitment-tx/*" }, { "url": "https://mempool.mutinynet.arkade.sh/tx/*" }]

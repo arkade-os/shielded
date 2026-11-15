@@ -1,6 +1,10 @@
 import Foundation
 import Tauri
+import UIKit
 import WebKit
+
+@_silgen_name("shielded_native_did_become_active")
+private func nativeDidBecomeActive()
 
 private struct SeedArgs: Decodable { let value: String }
 
@@ -8,8 +12,22 @@ final class ShieldedPlatformPlugin: Plugin {
     private weak var webview: WKWebView?
     private let worker = DispatchQueue(label: "io.arkade.shielded.vault")
     private let vault = SeedVault()
+    private var activationObserver: NSObjectProtocol?
 
-    override func load(webview: WKWebView) { self.webview = webview }
+    override init() {
+        super.init()
+        activationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            nativeDidBecomeActive()
+        }
+    }
+
+    override func load(webview: WKWebView) {
+        self.webview = webview
+    }
+
+    deinit {
+        if let observer = activationObserver { NotificationCenter.default.removeObserver(observer) }
+    }
 
     private func trusted() -> Bool {
         guard let url = webview?.url, url.port == nil, url.user == nil, url.password == nil else { return false }

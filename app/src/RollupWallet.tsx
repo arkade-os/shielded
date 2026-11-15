@@ -1,6 +1,7 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type ReactNode} from 'react';
 import {createPortal,flushSync} from 'react-dom';
-import {invoke} from '@tauri-apps/api/core';
+import {watchPageVisibility} from './page-visibility.ts';
+import {readWalletClipboard} from './wallet-clipboard.ts';
 import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
@@ -39,7 +40,7 @@ import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,type 
 import NativeAbout from './NativeAbout.tsx';
 import {WalletBrand,WalletHeaderActions} from './WalletHeaderActions.tsx';
 import {WalletBackupCard,WalletCreatedNotice,WalletPhrase,WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
-import {isNativeHost,nativeClaimFetch,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
+import {isNativeHost,nativeClaimFetch,nativeNetwork,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {loadWalletPoseidon} from './wallet-crypto.ts';
 import {forceReleaseNativeJournal,pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeJournal} from '../../src/native/mutations.ts';
 import {privateTransport,PRIVATE_SHIELD_COINS} from '../../src/shielded/private-transport.ts';
@@ -119,7 +120,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[pullSyncError,setPullSyncError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
  const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[payoutWatchError,setPayoutWatchError]=useState(''),[unifiedStage,setUnifiedStage]=useState('Reading your saved receiver'),[unifiedStalled,setUnifiedStalled]=useState(false),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
- const [pageVisible,setPageVisible]=useState(()=>!document.hidden);
+ const [documentVisible,setPageVisible]=useState(()=>!document.hidden),[nativeActive,setNativeActive]=useState(true);
+ const pageVisible=documentVisible&&nativeActive;
  const handledResumeScanner=useRef<number|undefined>(undefined);
  const [lnBoundsError,setLnBoundsError]=useState('');
  const [claim,setClaim]=useState(()=>location.pathname.replace(/\/+$/,'')==='/claim'?location.hash.slice(1):''),[claimView,setClaimView]=useState<ClaimView>(),[claimRead,setClaimRead]=useState(0),[minted,setMinted]=useState('');
@@ -152,16 +154,11 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  },mode),[]);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
+   useEffect(()=>watchPageVisibility(visible=>{setPageVisible(visible);if(!visible)closeTransient('background');}),[closeTransient]);
    useEffect(()=>{
-    setPageVisible(!document.hidden);
-    const visibility=()=>{const visible=!document.hidden;setPageVisible(visible);if(!visible)closeTransient('background');};
-    const hidden=()=>{setPageVisible(false);closeTransient('background');};
-    const visible=()=>{setPageVisible(!document.hidden);};
-    document.addEventListener('visibilitychange',visibility);
-    addEventListener('pagehide',hidden);addEventListener('freeze',hidden);
-    addEventListener('pageshow',visible);addEventListener('resume',visible);
-    return()=>{document.removeEventListener('visibilitychange',visibility);removeEventListener('pagehide',hidden);removeEventListener('freeze',hidden);removeEventListener('pageshow',visible);removeEventListener('resume',visible);};
-   },[closeTransient]);
+    if(!nativeHost)return;
+    return nativeNetwork.subscribe(status=>{setNativeActive(status.foreground!==false);if(status.foreground===false)closeTransient('background');});
+   },[nativeHost,closeTransient]);
  useEffect(()=>{
   mounted.current=true;
   onShutdown?.(async()=>{restoring.current=true;mounted.current=false;await Promise.all([...sessions.current].map(close=>close()));await cacheRef.current?.drain();if(cacheRef.current)await cacheRef.current.repository[Symbol.asyncDispose]();});
@@ -678,9 +675,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   if(invoiceCarriesAmount(target.to))setAmount('');
   else if(target.amount!==undefined){setAssetId('');setAmount(String(target.amount));}
  };
- // Android's WebView refuses navigator.clipboard.readText, so the platform plugin reads the system clipboard there.
- const readClipboard=async()=>nativeHost&&typeof __NATIVE_PLATFORM__==='string'&&__NATIVE_PLATFORM__.startsWith('android')?await invoke<string|null>('plugin:shielded-platform|clipboard_text'):navigator.clipboard.readText();
- const paste=async()=>{try{const text=await readClipboard();if(text===null)throw new Error('The clipboard holds no text.');fill(text);}catch{recipientNode.current?.focus();}};
+ const paste=async()=>{try{fill(await readWalletClipboard());}catch{recipientNode.current?.focus();}};
  const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};
  useEffect(()=>{

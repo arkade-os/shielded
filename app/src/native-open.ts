@@ -17,3 +17,8 @@ export async function resumeNativeForeground(pending:Promise<unknown>,current:()
  if(retained&&await retained())return;
  if(current())await open();
 }
+
+export async function reopenNativeForeground(views:{shown?:{retired:boolean};candidate?:unknown},current:()=>boolean,retire:()=>Promise<void>,open:()=>Promise<void>){
+ if(views.candidate||views.shown&&!views.shown.retired)await retire();
+ if(current())await open();
+}

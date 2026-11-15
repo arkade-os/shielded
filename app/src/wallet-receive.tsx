@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState,type CSSProperties,type KeyboardEvent,type ReactNode} from 'react';
 import {CopyButton,Icon} from './components.tsx';
+import {writeWalletClipboard} from './wallet-clipboard.ts';
 import {QrCode} from './wallet-qr.tsx';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSwipeGesture} from './wallet-gestures.ts';
@@ -53,7 +54,7 @@ export function ReceiveQrButton({value,label,disabled=false}:{value:string;label
   if(disabled||busy.current)return;
   busy.current=true;setCopyState('copying');
   let result:'copied'|'failed';
-  try{await navigator.clipboard.writeText(value);result='copied';}catch{result='failed';}
+  try{await writeWalletClipboard(value);result='copied';}catch{result='failed';}
   busy.current=false;
   if(!live.current)return;
   setCopyState(result);clearTimeout(timer.current);timer.current=setTimeout(()=>{if(live.current)setCopyState('idle');},2000);

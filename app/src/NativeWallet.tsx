@@ -7,7 +7,7 @@ import {installNativeTransport,nativeNetwork,type NativeMode} from '../../src/na
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
 import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
-import {openNativeVault,resumeNativeForeground} from './native-open.ts';
+import {openNativeVault,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
 import {saveNativeSetup} from './native-setup.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
 import NativeConnectionWarning,{NativeExternalLink} from './NativeConnectionWarning.tsx';
@@ -22,6 +22,7 @@ import {Icon} from './components.tsx';
 import {clearNativeTransientDocument} from './wallet-recovery.ts';
 import {watchPaymentDeepLinks,type IncomingPayment} from './native-deeplink.ts';
 import {registerAndroidInstallPreparation} from './android-updates.ts';
+import {watchPageVisibility} from './page-visibility.ts';
 
 installNativeTransport();
 const loadWallet=()=>import('./RollupWallet');
@@ -46,6 +47,8 @@ export default function NativeWallet(){
  const setupAllowed=useRef(false);
  const active=useRef<Session|undefined>(undefined),attempt=useRef(0),cleanup=useRef(createNativeCleanup()),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
  const resumeRevision=useRef(0),nativeForeground=useRef(true);
+ const pageVisible=useRef(!document.hidden);
+ const pageForeground=useCallback(()=>pageVisible.current&&!document.hidden,[]);
  const resumeMemory=useRef(createNativeResumePresentation()),resumeTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
  const [,setResumeRender]=useState(0);
  const clearResume=useCallback(()=>{clearTimeout(resumeTimer.current);resumeMemory.current.clear();setResumeRender(value=>value+1);},[]);
@@ -120,7 +123,7 @@ export default function NativeWallet(){
  },[]);
  const open=useCallback(()=>{
   if(openingOperation.current)return openingOperation.current;
-   if(document.hidden||!nativeForeground.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
+   if(!pageForeground()||!nativeForeground.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
    if(localStorage.getItem(RESET_PENDING)==='1')return finishReset();
    if(manualLock.current||clearing.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
   const previousClose=closed.current;
@@ -134,9 +137,9 @@ export default function NativeWallet(){
    await cleanup.current.drain();
    if(mine!==attempt.current)return;
    await previousClose.catch(()=>{});
-    if(mine!==attempt.current||document.hidden||!nativeForeground.current||manualLock.current||clearing.current)return;
+    if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    setPhase(selectedMode.current==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
-    const generationGuard=()=>mine===attempt.current&&!document.hidden&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
+    const generationGuard=()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
    const opened=await openNativeVault(async()=>{
     const status=await nativeNetwork.start(selectedMode.current);
     if(status.phase==='ready')openingGeneration.current=status.generation;
@@ -144,7 +147,7 @@ export default function NativeWallet(){
    },getSecret,generationGuard,{mode:selectedMode.current,current:generationGuard});
    if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
-    if(mine!==attempt.current||document.hidden||!nativeForeground.current||manualLock.current||clearing.current)return;
+    if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    if(!opened||healthExpired.current)throw new Error('The connection changed while opening the wallet. Reconnect to try again.');
    const {secret,status}=opened;
    if(secret===null){
@@ -158,7 +161,7 @@ export default function NativeWallet(){
    next.onResumeSnapshot=snapshot=>{if(active.current===next&&!view.retired)resumeMemory.current.remember(snapshot);};
    next.onScannerIntentChange=requested=>{if(active.current===next&&!view.retired&&(!requested||!paymentRequestPending.current))resumeMemory.current.scanner(requested);};
    next.onResumeScannerHandled=token=>{if(active.current===next&&!view.retired){resumeMemory.current.acknowledge(token);setResumeRender(value=>value+1);}};
-    const current=()=>active.current===next&&mine===attempt.current&&!document.hidden&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current&&handoff.current.snapshot.candidate===view;
+    const current=()=>active.current===next&&mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current&&handoff.current.snapshot.candidate===view;
    if(candidate){
     next.onStartupFailure=message=>{
      if(!current())return;
@@ -182,7 +185,7 @@ export default function NativeWallet(){
   finally{if(mine===attempt.current){setBusy(false);openingGeneration.current=undefined;}}
   })();
   openingOperation.current=run.finally(()=>{openingOperation.current=undefined;});return openingOperation.current;
- },[finishReset,suspend,clearResume]);
+ },[finishReset,suspend,clearResume,pageForeground]);
  const clearWallet=useCallback(async()=>{
   if(transition.current||creating.current)throw new Error('Wait for the current wallet operation to finish before clearing it.');
   transition.current=true;clearing.current=true;setResetPending(true);localStorage.setItem(RESET_PENDING,'1');setBusy(true);setSaving(true);setError('');setPhase('Clearing wallet');
@@ -198,7 +201,7 @@ export default function NativeWallet(){
   if(creating.current||transition.current||manualLock.current||!setupAllowed.current)return;
   const mine=attempt.current;setBusy(true);setSaving(true);setError('');
   healthExpired.current=false;
-  const writing=saveNativeSetup(torHealth.status,nativeNetwork.status,()=>mine===attempt.current&&!document.hidden&&nativeForeground.current&&!manualLock.current&&!transition.current,
+  const writing=saveNativeSetup(torHealth.status,nativeNetwork.status,()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!transition.current,
    ()=>restore?bytesToHex(parseMasterSecret(phrase)):bytesToHex(crypto.getRandomValues(new Uint8Array(32))),async secret=>{
     setupAllowed.current=false;setSetup(false);setPhase('Reopen the wallet to confirm secure storage');
     await putSecret(secret);localStorage.setItem('shielded-native-wallet','1');
@@ -216,7 +219,7 @@ export default function NativeWallet(){
   if(transition.current||creating.current||manualLock.current)return;
   transition.current=true;setSwitching(true);setConfirmDirect(false);setError('');
   const mine=attempt.current+1;
-  try{await pause();if(mine!==attempt.current||document.hidden||manualLock.current||!transition.current)return;selectedMode.current=mode;await open();}
+  try{await pause();if(mine!==attempt.current||!pageForeground()||manualLock.current||!transition.current)return;selectedMode.current=mode;await open();}
   catch(cause){fail(cause);}
   finally{transition.current=false;setSwitching(false);}
  };
@@ -227,22 +230,19 @@ export default function NativeWallet(){
  useEffect(()=>{
   let live=true;
   const resume=(mine:number)=>{
-   const current=()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&!document.hidden&&nativeForeground.current;
+   const current=()=>live&&mine===resumeRevision.current&&!manualLock.current&&!clearing.current&&pageForeground()&&nativeForeground.current;
    // A retained return keeps its open sheets, so only a rebuild may clear their document locks.
    return resumeNativeForeground(Promise.all([closed.current,openingOperation.current]),current,async()=>{
-    clearTransientDocument();const shown=handoff.current.snapshot.shown;
-    if(shown&&!shown.retired)await suspend();
-    if(current())await open();
+    clearTransientDocument();
+    await reopenNativeForeground(handoff.current.snapshot,current,suspend,open);
    },retained);
   };
   const visibility=()=>{
    const mine=++resumeRevision.current;
-   if(document.hidden){
+   if(!pageForeground()){
     if(!liveShown())void suspend();
    }else if(!manualLock.current)void resume(mine).catch(fail);
   };
-  document.addEventListener('visibilitychange',visibility);
-  visibility();
   const external=(event:MouseEvent)=>{
    const anchor=event.target instanceof Element?event.target.closest('a[href]'):null;if(!anchor)return;
    if(anchor.getAttribute('data-native-external')==='true')return;
@@ -260,21 +260,22 @@ export default function NativeWallet(){
     openingGeneration.current=undefined;healthExpired.current=true;
    }
    if(observed&&!connectionPending.current&&(health.status.phase!=='ready'||health.status.generation!==observed.generation)){
-    void suspend().then(()=>{if(live&&!manualLock.current&&!document.hidden&&nativeForeground.current)return open();}).catch(fail);
-   }else if(!wasForeground&&nativeForeground.current&&!manualLock.current&&!document.hidden){
+    void suspend().then(()=>{if(live&&!manualLock.current&&pageForeground()&&nativeForeground.current)return open();}).catch(fail);
+   }else if(!wasForeground&&nativeForeground.current&&!manualLock.current&&pageForeground()){
     void resume(++resumeRevision.current).catch(fail);
    }
-  },cause=>{if(live){fail(cause);if(active.current&&!connectionPending.current)void suspend();}},()=>!document.hidden);
-  return()=>{live=false;monitor.stop();document.removeEventListener('visibilitychange',visibility);document.removeEventListener('click',external,true);void pause();};
- },[open,pause,suspend,clearResume,liveShown,retained]);
+  },cause=>{if(live){fail(cause);if(active.current&&!connectionPending.current)void suspend();}},pageForeground);
+  const stopVisibility=watchPageVisibility(visible=>{pageVisible.current=visible;monitor.visibilityChanged();visibility();});
+  return()=>{live=false;stopVisibility();monitor.stop();document.removeEventListener('click',external,true);void pause();};
+ },[open,pause,suspend,clearResume,liveShown,retained,pageForeground]);
  const reload=useCallback(()=>{
   const current=active.current,mine=attempt.current;if(!current)return;
   void current.cache.flush().then(async()=>{
-   if(active.current!==current||attempt.current!==mine||manualLock.current||document.hidden)return;
+   if(active.current!==current||attempt.current!==mine||manualLock.current||!pageForeground())return;
    const nextAttempt=attempt.current+1;await pause();
-   if(attempt.current===nextAttempt&&!manualLock.current&&!document.hidden)await open();
+   if(attempt.current===nextAttempt&&!manualLock.current&&pageForeground())await open();
   }).catch(cause=>{if(active.current===current&&attempt.current===mine){fail(cause);void pause();}});
-   },[open,pause]);
+   },[open,pause,pageForeground]);
  const candidateOpening=!!candidate;
  const reconnectOpening=reconnecting&&!error;
  const opening=candidateOpening||reconnectOpening;

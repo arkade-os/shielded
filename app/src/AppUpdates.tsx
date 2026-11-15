@@ -3,6 +3,7 @@ import {openUrl} from '@tauri-apps/plugin-opener';
 import {registerAppCache} from './app-cache.ts';
 import {nativeUpdateUrl,type NativeRelease} from '../../src/native-release.ts';
 import {createNativeUpdateMonitor} from './native-updates.ts';
+import {watchPageVisibility} from './page-visibility.ts';
 import {androidUpdateBackend,androidUpdateNotice,createAndroidUpdateController,type AndroidUpdateController} from './android-updates.ts';
 
 const native=typeof __NATIVE_BUILD__!=='undefined'&&__NATIVE_BUILD__;
@@ -20,16 +21,15 @@ export function AppUpdatesProvider({children}:{children:ReactNode}){
  const closeAndroid=useCallback(()=>setAndroidOpen(false),[]);
  useEffect(()=>{
   if(native){
-   let stopped=false,monitor:ReturnType<typeof createNativeUpdateMonitor>|undefined;
+   let stopped=false,visible=!document.hidden,monitor:ReturnType<typeof createNativeUpdateMonitor>|undefined;
    let controller:AndroidUpdateController|undefined,unsubscribeAndroid:(()=>void)|undefined;
+   const stopVisibility=watchPageVisibility(value=>{visible=value;monitor?.visibilityChanged();controller?.visibilityChanged();});
    void import('../../src/native/index.ts').then(({nativeNetwork,nativeReleaseFetch})=>{
     if(stopped)return;
-    if(android){controller=createAndroidUpdateController(androidUpdateBackend(),nativeNetwork);setAndroidController(controller);const owned=controller;unsubscribeAndroid=controller.subscribe(()=>setAndroidNotice(androidUpdateNotice(owned.getSnapshot())));}
-    monitor=createNativeUpdateMonitor({...nativeNetwork,fetch:nativeReleaseFetch},{commit:__APP_COMMIT__,buildNumber:__NATIVE_BUILD_NUMBER__,platform:__NATIVE_PLATFORM__,channel:'native-mutinynet',network:'mutinynet'},release=>{controller?.setRelease(release);setUpdate({release});},()=>!document.hidden);
-    document.addEventListener('visibilitychange',monitor.visibilityChanged);
-    if(controller)document.addEventListener('visibilitychange',controller.visibilityChanged);
+    if(android){controller=createAndroidUpdateController(androidUpdateBackend(),nativeNetwork,undefined,()=>visible&&!document.hidden);setAndroidController(controller);const owned=controller;unsubscribeAndroid=controller.subscribe(()=>setAndroidNotice(androidUpdateNotice(owned.getSnapshot())));}
+    monitor=createNativeUpdateMonitor({...nativeNetwork,fetch:nativeReleaseFetch},{commit:__APP_COMMIT__,buildNumber:__NATIVE_BUILD_NUMBER__,platform:__NATIVE_PLATFORM__,channel:'native-mutinynet',network:'mutinynet'},release=>{controller?.setRelease(release);setUpdate({release});},()=>visible&&!document.hidden);
    }).catch(()=>{});
-   return()=>{stopped=true;unsubscribeAndroid?.();if(monitor){document.removeEventListener('visibilitychange',monitor.visibilityChanged);monitor.stop();}if(controller){document.removeEventListener('visibilitychange',controller.visibilityChanged);controller.stop();}};
+   return()=>{stopped=true;stopVisibility();unsubscribeAndroid?.();monitor?.stop();controller?.stop();};
   }
   const receive=(apply:()=>void)=>setUpdate({apply});browserListeners.add(receive);
   if(browserApply)receive(browserApply);

@@ -40,7 +40,7 @@ export function createNativeTorMonitor(
  const owned=(status:NativeStatus)=>!!warmEvidence&&warmEvidence.status.generation===status.generation&&(warmEvidence.status.mode??'tor')===(status.mode??'tor');
  // Hidden renderer timers never fire: only the hidden edge withdraws retained health, and a return re-derives the cadence.
  const foreground=()=>{
-  const next=isVisible();
+  const next=isVisible()&&health.status.foreground!==false;
   if(!next){
    if(visible||probe){
     revision++;invalidate();
@@ -89,7 +89,10 @@ export function createNativeTorMonitor(
     const error=new Error('Tor connection check timed out');reject(error);owner.controller.abort(error);
    },10_000);
   });
-  const request=Promise.resolve().then(()=>network.check(owner.controller.signal));
+  const request=Promise.resolve().then(()=>{
+   if(probe!==owner||owner.controller.signal.aborted)throw new Error('Tor connection check cancelled');
+   return network.check(owner.controller.signal);
+  });
   const cleanup=()=>{clearTimeout(owner.deadline);owner.controller.signal.removeEventListener('abort',abort);};
   void Promise.race([request,deadline]).then(()=>{cleanup();finish(owner,true);},error=>{cleanup();finish(owner,false,error);});
  }
@@ -110,13 +113,15 @@ export function createNativeTorMonitor(
   if(foreground()&&status.phase==='ready'&&health.check==='idle')runCheck();
  };
  const poll=async()=>{
-  if(stopped||!foreground()||polling)return;
+  if(stopped)return;
+  foreground();
+  if(!isVisible()||polling)return;
   polling=true;const captured=revision;
   try{
    const status=await network.status();
-   if(!stopped&&foreground()&&captured===revision){statusFailures=0;accept(status);}
+   if(!stopped&&isVisible()&&captured===revision){statusFailures=0;accept(status);}
   }catch(error){
-   if(!stopped&&foreground()&&captured===revision){
+   if(!stopped&&isVisible()&&captured===revision){
     statusFailures++;
     if(statusFailures<TOR_STATUS_FAILURE_LIMIT)return;
     revision++;invalidate();warmEvidence=undefined;
@@ -130,6 +135,7 @@ export function createNativeTorMonitor(
  void poll();
  return {
   check:runCheck,
+  visibilityChanged(){if(stopped)return;foreground();void poll();},
   stop(){if(stopped)return;stopped=true;revision++;clearInterval(interval);unsubscribe();invalidate();}
  };
 }
