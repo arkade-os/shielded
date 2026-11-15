@@ -249,6 +249,7 @@ export default function NativeWallet(){
     void writing.then(settled,settled);
    }}));
    check();setupOperation.current=undefined;setSaving(false);setPhrase('');await open();
+  // An unconfirmed credential is not retried implicitly; the SDK may already have created it.
   }catch(cause){if(current()){const step=passkeyNextStep(cause);setError(step?.message??(cause instanceof Error?cause.message:String(cause)));if(step&&!step.retry)setPasskeySupport({available:false,reason:step.message});try{setSetupIntent(pendingNativeSetup(localStorage));}catch(error){fail(error);setupAllowed.current=false;setSetup(false);}setBusy(false);}}
   finally{if(setupOperation.current===operation){setupOperation.current=undefined;setSaving(false);}}
  };

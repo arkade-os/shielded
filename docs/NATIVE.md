@@ -137,6 +137,15 @@ The desktop wrapper selects `macos/PasskeyEntitlements.plist`, which retains cam
 
 Before distributing an enabled build, verify create, confirming authentication, restore and recovery reveal on signed iOS and both Mac architectures. Compare 12-word and 24-word recovery phrases across browser/native use of the same passkey, and exercise cancellation, system-prompt inactivity, lock and background/return. The provider must return a valid PRF result; operating-system/API availability alone does not guarantee it. These credential/device checks remain unverified here.
 
+### Passkey relying-party changes
+
+The current native relying party is `shielded.mutinynet.arkade.sh`. Changing only the pool origin or one native constant fails closed; changing every constant does not migrate existing passkeys to another relying party. Before enabling a signed build with a different origin:
+
+1. Review the bundled `__SHIELDED_NATIVE__.poolOrigin` used by `NativeWallet.tsx` and `RollupWallet.tsx`; `passkeyRpId` derives their RP host from it. Browser recovery also depends on the website's actual hostname. Keep the native network policy and build metadata consistent with that origin.
+2. Update and rebuild the matching enforcement layers together: Rust `passkeys/mod.rs` (`RP`), Swift `Passkeys.swift` (`PasskeyInput.rpID`), Linux `passkeys/linux.rs` (`ORIGIN`, including its HTTPS scheme), macOS `macos/PasskeyEntitlements.plist`, and the iOS domain added by `tools/native-build.mjs`. Do not enable a mixed-origin build.
+3. Configure the new host's HTTPS `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json` for the actual Apple app identity and existing Android package/signing certificate. Verify the signed Apple associated-domain entitlement and Android association against that host before enabling passkey controls. Keep signing identities stable.
+4. Preserve access to the old RP's recovery path until a separately reviewed credential migration is available. Verify existing-wallet recovery and any new-RP credential with separate test wallets, across browser and native providers; compare the derived 12/24 words and test pending-setup recovery. This PR does not implement an RP migration or publish new domain associations.
+
 ## CI binaries and public releases
 
 Release inputs are pinned for reproduction. The workflow uses Node `24.22.2`, Rust `1.96.0`, immutable action commit SHAs, the committed npm and Cargo lockfiles, `SOURCE_DATE_EPOCH=1794240000`, and a Rust path remap. Each platform artifact records those inputs and SHA-256 hashes of both lockfiles. Publication rejects a mixed toolchain or mismatched reproduction metadata. `tools/reproducible-build.test.mjs` fails if a runtime or action becomes floating.

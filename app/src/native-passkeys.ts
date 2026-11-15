@@ -23,7 +23,7 @@ function credential(json:string){
  }catch{throw new Error(UNAVAILABLE);}// V8's parse errors quote nearby input, which here is the PRF secret.
 }
 
-/** The SDK's WebAuthnClient over Android Credential Manager, which speaks WebAuthn's JSON forms rather than DOM objects. */
+/** Native WebAuthn JSON for the SDK. `before` waits for foreground before every prompt, including registration's confirming assertion. */
 export function nativePasskeys(call:Call=invoke,context:Context={}):WebAuthnClient{
  const check=()=>{if(context.signal?.aborted)throw new DOMException('The passkey prompt was cancelled.','NotAllowedError');context.current?.();};
  const ceremony=async(command:string,publicKey:unknown)=>{

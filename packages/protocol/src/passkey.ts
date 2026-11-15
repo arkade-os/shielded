@@ -35,9 +35,10 @@ export function passkeyRpId(poolOrigin:string,hostname:string):string {
 
 const wipe=(bytes:Uint8Array)=>bytes.fill(0);
 function seedOf(credentialId:Uint8Array,prf:Uint8Array,wordCount:PasskeyWordCount):PasskeySeed {
- const words=mnemonicFromPrf(prf,wordCount);
- wipe(prf);
- return {credentialId,wordCount,words,master:parseMasterSecret(words)};
+ try{
+  const words=mnemonicFromPrf(prf,wordCount);
+  return {credentialId,wordCount,words,master:parseMasterSecret(words)};
+ }finally{wipe(prf);}
 }
 
 export async function createPasskeySeed(o:{rpId:string;userName:string;wordCount?:PasskeyWordCount;client?:WebAuthnClient}):Promise<PasskeySeed> {

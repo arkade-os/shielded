@@ -61,6 +61,13 @@ test('createPrfPasskey sends base64url WebAuthn JSON through the bridge and a 32
  assert.deepEqual(get,{rpId:RP,allowCredentials:[{type:'public-key',id:RAW}],userVerification:'required',extensions:{prf:{eval:{first:SALT}}}});
 });
 
+test('a registration PRF result still requires a matching PRF from the confirming native assertion',async()=>{
+ const changed=prf.slice();changed[0]^=1;
+ const {client,calls}=bridge(registration({prf:{enabled:true,results:{first:PRF}}}),authentication({prf:{results:{first:Buffer.from(changed).toString('base64url')}}}));
+ await assert.rejects(createPrfPasskey({...passkey,client}),error=>error instanceof PrfUnavailable&&/different secret/.test(error.message)&&hex.encode(error.credentialId!)===hex.encode(raw));
+ assert.deepEqual(calls.map(call=>call.command),['plugin:shielded-platform|passkey_create','plugin:shielded-platform|passkey_get']);
+});
+
 test('evaluatePrf reads rawId, userHandle and the PRF result, and offers every passkey when no id is given',async()=>{
  const {client,calls}=bridge(authentication({prf:{results:{first:PRF}}}),authentication({prf:{results:{first:PRF}}},null),authentication({prf:{results:{first:PRF}}},`${USER}==`));
  assert.deepEqual(await evaluatePrf({rpId:RP,salt,client}),{credentialId:raw,userHandle:user,prf});

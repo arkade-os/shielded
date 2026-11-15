@@ -323,6 +323,7 @@ async fn passkey<R: Runtime>(
     }
     #[cfg(target_os = "linux")]
     {
+        // Preserve WebAuthn extensions for the trusted OS portal after enforcing our RP and input bounds.
         let _ = (app, parsed);
         passkeys::linux::run(create, request)
             .await

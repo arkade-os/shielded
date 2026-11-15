@@ -7,6 +7,7 @@ EXTENDS Naturals
 CONSTANTS Flows, RecoverableFlows, OtherSeed, MaxOwner, BreakOwner, BreakForeground,
     BreakIntent, BreakCreateOnly, BreakPublish, BreakRandomJournal
 VARIABLE s
+\* Pure safety: fairness and eventual provider completion are outside this model.
 vars == <<s>>
 
 Init == s = [owner |-> 1, page |-> TRUE, native |-> TRUE, ready |-> TRUE,
