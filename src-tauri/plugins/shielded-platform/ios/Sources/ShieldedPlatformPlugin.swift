@@ -14,13 +14,15 @@ final class ShieldedPlatformPlugin: Plugin {
     private let vault = SeedVault()
     private var activationObserver: NSObjectProtocol?
 
+    override init() {
+        super.init()
+        activationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            nativeDidBecomeActive()
+        }
+    }
+
     override func load(webview: WKWebView) {
         self.webview = webview
-        if activationObserver == nil {
-            activationObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
-                nativeDidBecomeActive()
-            }
-        }
     }
 
     deinit {
