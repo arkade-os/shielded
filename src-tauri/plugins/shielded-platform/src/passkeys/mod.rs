@@ -134,6 +134,7 @@ pub(super) fn reply(
         extension["enabled"] = json!(enabled);
     }
     if let Some(prf) = prf {
+        // Zeroizing covers owned PRF bytes; serialized JSON/IPC strings cannot be reliably wiped.
         extension["results"] = json!({"first":URL_SAFE_NO_PAD.encode(prf)});
     }
     Ok(json!({"id":id,"rawId":id,"type":"public-key","response":{"userHandle":user.map(|u|URL_SAFE_NO_PAD.encode(u))},"clientExtensionResults":{"prf":extension}}).to_string())

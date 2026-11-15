@@ -112,6 +112,21 @@ Passkey and phrase setup retain a public recovery intent across an unknown vault
 
 Public passkey metadata retains credential IDs up to 4,096 base64url characters for compatibility with existing browser wallets. Native passkey requests and responses accept decoded IDs up to 1,024 bytes. If an existing browser credential exceeds that native bound, native passkey recovery fails closed; use its original supported browser or restore the same wallet with its recovery phrase.
 
+### Passkey availability and PRF results
+
+`passkey_support` checks native API/build availability; it does not certify that the
+selected provider or credential will return PRF output. Android's API 28 threshold
+matches [Credential Manager's passkey minimum](https://developer.android.com/identity/passkeys#android-version-compatibility).
+Provider and service versions still matter. The existing Android bridge forwards
+WebAuthn extension requests and responses to Credential Manager. The SDK rejects
+missing or invalid PRF output before seed creation or any vault write; it never
+substitutes a random wallet. CI does not establish a physical-device PRF matrix.
+
+The protocol wipes the PRF bytes it owns after derivation and on failure. Native WebAuthn
+responses also contain encoded PRF material in JSON/IPC strings; those copies cannot
+be reliably wiped across the bridge and JavaScript runtime. They remain secret data
+and must not enter logs, public metadata or storage.
+
 ### Apple passkeys
 
 The Apple bridge implements platform-passkey PRF on iOS 18 and macOS 15 or later. The app deployment minima remain iOS 14 and macOS 11; older systems can use phrase wallets. Hardware-security-key PRF is outside this Apple adapter. See [Apple's PRF API availability](https://developer.apple.com/documentation/authenticationservices/asauthorizationpublickeycredentialprfassertioninput-swift.struct).
