@@ -840,3 +840,23 @@ stateDiagram-v2
 Pinned TLC v1.7.4 and Java 25 on November 13, 2026: the base run fired every action and each of the seven mutations violated its named invariant; `node tools/check-native-model.mjs` matched all 120 configurations. `FoldRead` fires but adds no novel states in the base: refusing a downgrade is a no-op on the snapshot, so its effect is only observable under `BreakMonotonicFold`, the same shape as the `Terminal` self-loop above. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget. The `trace-No*.md` files hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
 
 The read is ordered AFTER the stream reopens, so the model needs no assumption about arkd replaying a still-registered subscription id: `ReopenReplays` is optional and `NoMissedEvent` holds without it. `IndexerStreams_NoReopenOrder.cfg` is the read-first ordering, whose `read` phase is the window an event falls into. For a polled script the read IS the stream, so `Reopen` and `CatchUpRead` coincide and that window does not exist. Snapshot staleness beyond what the stream events and the reads fold in, per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.
+# Native passkey setup and recovery
+
+`NativePasskeyFlow` separates the OS prompt, foreground return, vault read, public intent, native create and renderer reply. An external writer and retired owners can interleave with every step. Secret derivation, provider cryptography and operating-system persistence are abstracted as seed identities and atomic vault operations.
+
+```mermaid
+stateDiagram-v2
+    idle --> prompt: own ready setup
+    prompt --> seed: PRF result
+    seed --> read: inspect vault
+    read --> intent: current owner + foreground
+    intent --> sent: journal persisted + recheck
+    sent --> written: vault absent or identical
+    sent --> failed: another wallet exists
+    written --> done: reconcile public metadata
+    done --> published: current owner + foreground
+    prompt --> cancelled: explicit revocation
+    intent --> cancelled: explicit revocation
+```
+
+Each disabled guard has a failing configuration: owner, foreground, journal, create-only vault admission and presentation. An empty vault retains an interrupted setup intent; a retry must derive the same seed. Late admitted writes reconcile metadata without presenting an old owner. The checked two-flow graph has 13,040 states; the wider simulation uses four flows and 20,000 traces.

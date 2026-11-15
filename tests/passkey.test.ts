@@ -58,6 +58,30 @@ test('a passkey seed restores to the same wallet it created, for 12 and for 24 w
  assert.deepEqual(PASSKEY_SEED_SALT,new TextEncoder().encode(DEFAULT_PASSKEY_LABEL));
 });
 
+test('a bound recovery word count restores 24 words when the provider omits its user handle',async()=>{
+ for(const handle of [null,new Uint8Array(32)]){
+  const fake=fakeClient({handle}),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fake.client});
+  const restored=await restorePasskeySeed({rpId:RP,credentialId:made.credentialId,wordCount:24,client:fake.client});
+  assert.deepEqual(restored,made);
+  assert.equal((await restorePasskeySeed({rpId:RP,credentialId:made.credentialId,client:fake.client})).wordCount,12,'unhinted legacy recovery retains its default');
+  made.master.fill(0);restored.master.fill(0);
+ }
+});
+
+test('a recovery word count cannot override a known handle or another credential',async()=>{
+ for(const wordCount of [12,24] as PasskeyWordCount[]){
+  const fake=fakeClient(),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount,client:fake.client});
+  await assert.rejects(restorePasskeySeed({rpId:RP,credentialId:made.credentialId,wordCount:wordCount===12?24:12,client:fake.client}),/word count|recovery metadata/);
+  const otherId=made.credentialId.slice();otherId[0]^=1;
+  await assert.rejects(restorePasskeySeed({rpId:RP,credentialId:otherId,wordCount,client:fake.client}),/credential|passkey/);
+  made.master.fill(0);
+ }
+ const fake=fakeClient();
+ await assert.rejects(restorePasskeySeed({rpId:RP,wordCount:24,client:fake.client}),/credential/);
+ await assert.rejects(restorePasskeySeed({rpId:RP,credentialId:new Uint8Array(),wordCount:24,client:fake.client}),/credential/);
+ assert.equal(fake.calls.length,0,'unbound metadata cannot start a credential prompt');
+});
+
 test('the user handle carries the word count, and a handle from elsewhere restores as 12 words',async()=>{
  const id=passkeyUserId(24);
  assert.equal(id.length,32);

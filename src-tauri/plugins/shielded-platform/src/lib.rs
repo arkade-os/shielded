@@ -1,6 +1,7 @@
 use tauri::{plugin::TauriPlugin, AppHandle, Runtime, WebviewWindow};
 use zeroize::Zeroizing;
 
+mod passkeys;
 mod policy;
 
 const UNAVAILABLE: &str = "Secure wallet storage unavailable";
@@ -131,6 +132,53 @@ async fn secret_set<R: Runtime>(
 }
 
 #[tauri::command]
+async fn secret_create<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    value: String,
+) -> Result<(), String> {
+    ensure_local(&window)?;
+    let value = Zeroizing::new(value);
+    if !policy::valid_seed(&value) {
+        return Err("Invalid wallet seed".into());
+    }
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        tauri::async_runtime::spawn_blocking(move || {
+            let _access = VAULT_ACCESS.lock().map_err(|_| UNAVAILABLE)?;
+            let vault = entry()?;
+            match vault.get_secret() {
+                Ok(existing) => {
+                    let existing = Zeroizing::new(existing);
+                    if existing.as_slice() == value.as_bytes() {
+                        Ok(())
+                    } else {
+                        Err("A different wallet already exists in secure storage".into())
+                    }
+                }
+                Err(keyring::Error::NoEntry) => vault
+                    .set_secret(value.as_bytes())
+                    .map_err(|_| UNAVAILABLE.into()),
+                Err(_) => Err(UNAVAILABLE.into()),
+            }
+        })
+        .await
+        .map_err(|_| UNAVAILABLE.to_owned())?
+    }
+    #[cfg(mobile)]
+    {
+        let _: serde_json::Value = app
+            .state::<Mobile<R>>()
+            .0
+            .run_mobile_plugin_async("secretCreate", serde_json::json!({"value": &*value}))
+            .await
+            .map_err(|_| UNAVAILABLE)?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn secret_clear<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
@@ -181,8 +229,45 @@ async fn clipboard_text<R: Runtime>(
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(mobile)]
 const PASSKEY_CANCELLED: &str = "Passkey cancelled";
+
+#[tauri::command]
+async fn passkey_support<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<serde_json::Value, String> {
+    ensure_local(&window)?;
+    #[cfg(mobile)]
+    {
+        app.state::<Mobile<R>>()
+            .0
+            .run_mobile_plugin_async(
+                "passkeySupport",
+                serde_json::json!({"configured":cfg!(apple_passkeys)}),
+            )
+            .await
+            .map_err(|_| "Passkey unavailable".into())
+    }
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        #[cfg(target_os = "windows")]
+        let available = passkeys::windows::available();
+        #[cfg(target_os = "macos")]
+        let available = cfg!(apple_passkeys) && passkeys::macos::available();
+        #[cfg(target_os = "linux")]
+        let available = passkeys::linux::available().await;
+        let reason = if cfg!(target_os = "macos") && !cfg!(apple_passkeys) {
+            "Passkeys need an Apple signing team and an associated domain in this build. You can use a recovery phrase."
+        } else {
+            "Passkeys need a supported system provider with PRF support. You can use a recovery phrase."
+        };
+        Ok(
+            serde_json::json!({"available":available,"reason":if available {None} else {Some(reason)}}),
+        )
+    }
+}
 
 async fn passkey<R: Runtime>(
     app: AppHandle<R>,
@@ -191,8 +276,15 @@ async fn passkey<R: Runtime>(
     request: String,
 ) -> Result<String, String> {
     ensure_local(&window)?;
-    #[cfg(target_os = "android")]
+    let create = command == "passkeyCreate";
+    let parsed = passkeys::parse(&request, create).map_err(String::from)?;
+    #[cfg(mobile)]
     {
+        let _ = parsed;
+        #[cfg(target_os = "ios")]
+        if !cfg!(apple_passkeys) {
+            return Err("Passkey unavailable".into());
+        }
         let response: serde_json::Value = app
             .state::<Mobile<R>>()
             .0
@@ -211,10 +303,30 @@ async fn passkey<R: Runtime>(
             .map(str::to_owned)
             .ok_or_else(|| "Passkey unavailable".into())
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "windows")]
     {
-        let _ = (app, command, request);
-        Err("Passkeys are available in the Android app only".into())
+        let _ = app;
+        let hwnd = window.hwnd().map_err(|_| "Passkey unavailable")?.0 as isize;
+        tauri::async_runtime::spawn_blocking(move || passkeys::windows::run(hwnd, create, parsed))
+            .await
+            .map_err(|_| "Passkey unavailable")?
+            .map_err(String::from)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if !cfg!(apple_passkeys) {
+            return Err("Passkey unavailable".into());
+        }
+        passkeys::macos::run(app, window, create, parsed)
+            .await
+            .map_err(String::from)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (app, parsed);
+        passkeys::linux::run(create, request)
+            .await
+            .map_err(String::from)
     }
 }
 
@@ -295,10 +407,12 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             secret_get,
             secret_set,
+            secret_create,
             secret_clear,
             clipboard_text,
             passkey_create,
-            passkey_get
+            passkey_get,
+            passkey_support
         ])
         .setup(|app, api| {
             #[cfg(target_os = "android")]

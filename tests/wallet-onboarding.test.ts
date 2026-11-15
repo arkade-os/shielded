@@ -105,10 +105,16 @@ test('browser onboarding offers passkeys as a beta beside the phrase actions, at
  assert.deepEqual(created,[12]);assert.equal(restored,1);
 });
 
-test('the native shell shows no passkey controls, even when given them',()=>{
+test('native onboarding offers its supported native passkeys',()=>{
  const html=render({transport:'tor',torHealth:{status:{phase:'ready',generation:1},check:'ok'},passkey:{onCreate:()=>{},onRestore:()=>{}}});
- assert.match(html,/>Create wallet<\/button><button[^>]*>Restore a wallet<\/button><\/div>/);
- assert.doesNotMatch(html,/passkey/i);
+ assert.match(html,/>Create with a passkey<\/button>/);assert.match(html,/>Restore with a passkey<\/button>/);
+ assert.match(render({transport:'tor',passkeyUnavailable:'Apple signing and associated domain are required.'}),/Apple signing and associated domain are required/);
+});
+
+test('an interrupted setup offers only its existing passkey or matching recovery phrase',()=>{
+ const html=render({transport:'tor',pendingSetup:true,torHealth:{status:{phase:'ready',generation:1},check:'ok'},passkey:{onCreate:()=>{},onRestore:()=>{}}});
+ assert.match(html,/>Finish passkey setup<\/button>/);assert.match(html,/>Finish with recovery phrase<\/button>/);
+ assert.doesNotMatch(html,/>Create wallet<\/button>|>Create with a passkey<\/button>|24-word recovery phrase/);
 });
 
 test('native transport changes disable creation, restore and the Tor switch',()=>{

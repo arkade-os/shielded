@@ -45,10 +45,20 @@ export async function createPasskeySeed(o:{rpId:string;userName:string;wordCount
  const {credentialId,prf}=await createPrfPasskey({rp:{id:o.rpId,name:PASSKEY_RP_NAME},userId:passkeyUserId(wordCount),userName:o.userName,salt:PASSKEY_SEED_SALT,client:o.client});
  return seedOf(credentialId,prf,wordCount);
 }
-/** Any passkey for this relying party unless `credentialId` names one: the handle says which wallet it is, so another passkey yields another wallet rather than an error. */
-export async function restorePasskeySeed(o:{rpId:string;credentialId?:Uint8Array;client?:WebAuthnClient}):Promise<PasskeySeed> {
- const {credentialId,userHandle,prf}=await evaluatePrf({rpId:o.rpId,salt:PASSKEY_SEED_SALT,credentialIds:o.credentialId&&[o.credentialId],client:o.client});
- return seedOf(credentialId,prf,wordCountFromUserHandle(userHandle));
+/** Discoverable recovery reads the handle; persisted word counts may fill a missing handle only for their bound credential. */
+export async function restorePasskeySeed(o:{rpId:string;credentialId?:Uint8Array;wordCount?:PasskeyWordCount;client?:WebAuthnClient}):Promise<PasskeySeed> {
+ const expected=o.credentialId?.slice(),hint=o.wordCount;
+ if(hint!==undefined&&(!expected?.length||(hint!==12&&hint!==24)))throw new Error('Recovery word count requires a bound passkey credential.');
+ const {credentialId,userHandle,prf}=await evaluatePrf({rpId:o.rpId,salt:PASSKEY_SEED_SALT,credentialIds:expected&&[expected],client:o.client});
+ try{
+  const count=wordCountFromUserHandle(userHandle);
+  if(hint!==undefined){
+   if(credentialId.length!==expected!.length||!credentialId.every((byte,i)=>byte===expected![i]))throw new Error('That passkey does not match the recovery credential.');
+   const known=userHandle?.length===HANDLE_BYTES&&userHandle[0]===HANDLE_MAGIC[0]&&userHandle[1]===HANDLE_MAGIC[1]&&(userHandle[2]===0x11||userHandle[2]===0x12);
+   if(known&&count!==hint)throw new Error('The passkey word count does not match its recovery metadata.');
+  }
+  return seedOf(credentialId,prf,hint??count);
+ }finally{wipe(prf);}
 }
 
 const WRAP_VERSION=1,IV_BYTES=12,TAG_BYTES=16,WRAP_INFO=utf8.encode(`${KEY_DOMAIN}:unlock-wrap:v1`);

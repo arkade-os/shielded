@@ -106,6 +106,33 @@ Use the npm scripts for mobile initialization. Tauri uses that package-manager c
 
 Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iOS. `src-tauri/vendor/sysinfo` backports the upstream iOS fix while retaining the pinned release and real memory metrics. Its `README.shielded.md` records the source and patch; remove this override when Arti accepts a fixed release.
 
+### Apple passkeys
+
+The Apple bridge implements platform-passkey PRF on iOS 18 and macOS 15 or later. The app deployment minima remain iOS 14 and macOS 11; older systems can use phrase wallets. Hardware-security-key PRF is outside this Apple adapter. See [Apple's PRF API availability](https://developer.apple.com/documentation/authenticationservices/asauthorizationpublickeycredentialprfassertioninput-swift.struct).
+
+Apple passkeys are disabled in default builds. There is no Apple Developer team or associated-domain signing configured for Shielded yet. Unsigned compilation checks the bridge, but does not establish a usable Apple credential ceremony. Enabling the build flag alone does not configure or prove the domain association.
+
+Before enabling a signed build:
+
+1. Register `io.arkade.shielded` with the actual Apple Developer team, enable Associated Domains for that app identity, and use a signing identity/provisioning profile that permits it.
+2. Serve `https://shielded.mutinynet.arkade.sh/.well-known/apple-app-site-association` over HTTPS with a `webcredentials.apps` entry for the signed app's actual application-identifier prefix plus `.io.arkade.shielded`. Use the actual prefix from that app identity; do not assume it always equals the Team ID. No association file or signing identity is published by this change.
+3. Build with `SHIELDED_APPLE_PASSKEYS=1` and verify the resulting signed app contains `com.apple.developer.associated-domains = ["webcredentials:shielded.mutinynet.arkade.sh"]`. Follow [Apple's associated-domain setup](https://developer.apple.com/documentation/xcode/supporting-associated-domains) and [passkey requirements](https://developer.apple.com/documentation/authenticationservices/supporting-passkeys).
+
+On a configured Mac, keep the flag in the environment for the entire command:
+
+```sh
+SHIELDED_APPLE_PASSKEYS=1 npm run native:build
+SHIELDED_APPLE_PASSKEYS=1 npm run native:ios -- init --ci
+SHIELDED_APPLE_PASSKEYS=1 npm run native:ios -- prepare
+SHIELDED_APPLE_PASSKEYS=1 npm run native:ios -- build --target aarch64 --ci
+```
+
+Configure the real development team/signing through Xcode or the documented Tauri signing environment before the signed iPhone build. Do not put certificates or private keys in source. These commands do not enroll a team, create certificates, publish the domain association or submit an app.
+
+The desktop wrapper selects `macos/PasskeyEntitlements.plist`, which retains camera access. The iOS wrapper merges the domain into the entitlement file referenced by the generated app target's signing settings, using macOS `plutil`. This runs after initialization and before build/dev/prepare, retains other entitlements and associated domains, and rejects ambiguous projects, changed app identifiers or redirected paths before editing. Existing generated native edits are preserved; regeneration is not required merely to enable the domain. If those signing settings are customized, every app configuration must use the same entitlement file inside the generated project. After an opted-in build, unsetting the flag disables the bridge; it does not remove an association from a manually maintained iOS entitlement file.
+
+Before distributing an enabled build, verify create, confirming authentication, restore and recovery reveal on signed iOS and both Mac architectures. Compare 12-word and 24-word recovery phrases across browser/native use of the same passkey, and exercise cancellation, system-prompt inactivity, lock and background/return. The provider must return a valid PRF result; operating-system/API availability alone does not guarantee it. These credential/device checks remain unverified here.
+
 ## CI binaries and public releases
 
 Release inputs are pinned for reproduction. The workflow uses Node `24.22.2`, Rust `1.96.0`, immutable action commit SHAs, the committed npm and Cargo lockfiles, `SOURCE_DATE_EPOCH=1794240000`, and a Rust path remap. Each platform artifact records those inputs and SHA-256 hashes of both lockfiles. Publication rejects a mixed toolchain or mismatched reproduction metadata. `tools/reproducible-build.test.mjs` fails if a runtime or action becomes floating.

@@ -13,6 +13,33 @@ const salt=new TextEncoder().encode('Default'),passkey={rp:{id:RP,name:'Shielded
 const registration=(extensions:object)=>JSON.stringify({id:RAW,rawId:RAW,type:'public-key',authenticatorAttachment:'platform',response:{clientDataJSON:'e30',attestationObject:'oA',transports:['internal','hybrid'],publicKeyAlgorithm:-7},clientExtensionResults:{credProps:{rk:true},...extensions}});
 const authentication=(extensions:object,userHandle:string|null=USER)=>JSON.stringify({id:RAW,rawId:RAW,type:'public-key',authenticatorAttachment:'platform',response:{clientDataJSON:'e30',authenticatorData:'AA',signature:'AA',userHandle},clientExtensionResults:extensions});
 
+test('logical cancellation settles an unanswered native prompt and rejects its late result',async()=>{
+ const abort=new AbortController();let reply!:(json:string)=>void,calls=0;
+ const client=nativePasskeys(async()=>{calls++;return new Promise<string>(resolve=>{reply=resolve;});},{signal:abort.signal});
+ const pending=createPrfPasskey({...passkey,client});
+ await new Promise(resolve=>setImmediate(resolve));abort.abort();
+ await assert.rejects(pending);reply(registration({prf:{enabled:true}}));
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
+});
+
+test('a retired owner cannot start the confirming get after native registration',async()=>{
+ let current=true,calls=0;
+ const client=nativePasskeys(async()=>{calls++;current=false;return registration({prf:{enabled:true}});},{current:()=>{if(!current)throw new Error('Retired');}});
+ await assert.rejects(createPrfPasskey({...passkey,client}));assert.equal(calls,1);
+});
+
+test('confirming a native credential waits for its owner to return to the foreground',async()=>{
+ let prompts=0,checks=0;const order:string[]=[];
+ const client=nativePasskeys(async()=>{order.push('prompt');prompts++;return prompts===1?registration({prf:{enabled:true}}):authentication({prf:{results:{first:PRF}}});},{before:async()=>{checks++;order.push('foreground');}});
+ await createPrfPasskey({...passkey,client});assert.equal(checks,2);assert.deepEqual(order,['foreground','prompt','foreground','prompt']);
+});
+
+test('a hide between foreground wait and dispatch delays the next native prompt',async()=>{
+ let foreground=false,checks=0,prompts=0;
+ const client=nativePasskeys(async()=>{assert.equal(foreground,true);prompts++;return authentication({prf:{results:{first:PRF}}});},{foreground:()=>foreground,before:async()=>{if(++checks===2)foreground=true;}});
+ await evaluatePrf({rpId:RP,salt,client});assert.equal(prompts,1);assert.equal(checks,2);
+});
+
 function bridge(...replies:(string|{reject:unknown})[]){
  const calls:{command:string;request:Record<string,any>}[]=[];
  const client=nativePasskeys(async(command,{request})=>{
@@ -69,6 +96,11 @@ test('a malformed bridge response fails without quoting the response',async()=>{
  for(const reply of [`{"rawId":"${RAW}","clientExtensionResults":{"prf":{"results":{"first":["${PRF}",]}}}}`,authentication({prf:{results:{first:PRF}}}).replace(`"rawId":"${RAW}"`,'"rawId":"+//+AQIDBAUGBwgJCgsMDQ"')]){
   await assert.rejects(bridge(reply).client.get({publicKey:{challenge:new Uint8Array(32)}}),(error:unknown)=>error instanceof Error&&error.message==='Passkey unavailable');
  }
+});
+
+test('native assertions refuse another credential when the request restricts its identity',async()=>{
+ const {client}=bridge(authentication({prf:{results:{first:PRF}}}));
+ await assert.rejects(evaluatePrf({rpId:RP,salt,credentialIds:[new Uint8Array([1,2,3])],client}),/Passkey unavailable/);
 });
 
 test('passkey commands, permissions and the cancel message line up across build.rs, Rust, the capability and Kotlin',()=>{

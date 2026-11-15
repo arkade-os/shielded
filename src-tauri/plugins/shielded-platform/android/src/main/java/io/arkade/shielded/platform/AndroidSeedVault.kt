@@ -11,6 +11,10 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 class AndroidSeedVault(context: Context) {
+    companion object {
+        private val access = Any()
+    }
+
     private val records = context.getSharedPreferences("shielded_seed_v1", Context.MODE_PRIVATE)
     private val alias = "io.arkade.shielded.seed.v1"
     private val aad = alias.toByteArray(Charsets.UTF_8)
@@ -28,9 +32,8 @@ class AndroidSeedVault(context: Context) {
         return generator.generateKey()
     }
 
-    @Synchronized
-    fun get(): String? {
-        val encoded = records.getString("seed", null) ?: return null
+    fun get(): String? = synchronized(access) {
+        val encoded = records.getString("seed", null) ?: return@synchronized null
         check(encoded.length <= 128)
         val blob = Base64.decode(encoded, Base64.NO_WRAP)
         check(blob.size == 93 && blob[0] == 1.toByte())
@@ -38,13 +41,13 @@ class AndroidSeedVault(context: Context) {
         cipher.init(Cipher.DECRYPT_MODE, key(false), GCMParameterSpec(128, blob.copyOfRange(1, 13)))
         cipher.updateAAD(aad)
         val plaintext = cipher.doFinal(blob, 13, blob.size - 13)
-        return try {
+        try {
             plaintext.toString(Charsets.UTF_8).also { requireSeed(it) }
         } finally { plaintext.fill(0) }
     }
 
-    @Synchronized
-    fun set(value: String) {
+    fun set(value: String) = synchronized(access) {
+        check(!Thread.currentThread().isInterrupted)
         requireSeed(value)
         val plaintext = value.toByteArray(Charsets.UTF_8)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -53,14 +56,22 @@ class AndroidSeedVault(context: Context) {
         val encrypted = try { cipher.doFinal(plaintext) } finally { plaintext.fill(0) }
         check(cipher.iv.size == 12)
         val blob = byteArrayOf(1) + cipher.iv + encrypted
+        check(!Thread.currentThread().isInterrupted)
         check(records.edit().putString("seed", Base64.encodeToString(blob, Base64.NO_WRAP)).commit())
     }
 
-    @Synchronized
-    fun clear() {
+    fun clear() = synchronized(access) {
         check(records.edit().clear().commit())
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         if (store.containsAlias(alias)) store.deleteEntry(alias)
+    }
+
+    fun create(value: String) = synchronized(access) {
+        requireSeed(value)
+        check(!Thread.currentThread().isInterrupted)
+        val previous = get()
+        check(previous == null || previous == value)
+        if (previous == null) set(value)
     }
 
     private fun requireSeed(value: String) {

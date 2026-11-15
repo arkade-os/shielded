@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,9 +20,11 @@ export function nativeArguments(platform, action, args = [], host = process.plat
   if (action === 'init' && !env.npm_execpath && !env.PNPM_PACKAGE_NAME) throw new Error(`Initialize through npm run native:${platform} -- init so generated IDE callbacks can resolve Tauri`);
   const command = [...(platform === 'desktop' ? [] : [platform]), action, ...args];
   const versionCode = platform === 'android' && action !== 'prepare' ? androidVersionCode(env) : undefined;
-  if (versionCode !== undefined) {
+  const overlay = versionCode !== undefined ? { bundle: { android: { versionCode, autoIncrementVersionCode: false } } }
+    : platform === 'desktop' && host === 'darwin' && env.SHIELDED_APPLE_PASSKEYS === '1' ? { bundle: { macOS: { entitlements: 'macos/PasskeyEntitlements.plist' } } } : undefined;
+  if (overlay) {
     const separator = command.indexOf('--');
-    command.splice(separator < 0 ? command.length : separator, 0, '--config', JSON.stringify({ bundle: { android: { versionCode, autoIncrementVersionCode: false } } }));
+    command.splice(separator < 0 ? command.length : separator, 0, '--config', JSON.stringify(overlay));
   }
   return command;
 }
@@ -64,6 +66,53 @@ export function prepareAndroid(projectRoot = root) {
   prepareIcons(projectRoot);
 }
 
+export function prepareApplePasskeys(projectRoot = root, env = process.env, execute = spawnSync) {
+  if (env.SHIELDED_APPLE_PASSKEYS !== '1') return;
+  const apple = resolve(projectRoot, 'src-tauri/gen/apple');
+  const local = path => {
+    const suffix = relative(resolve(projectRoot), path);
+    if (isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`)) throw new Error('Apple entitlement path must stay inside the generated project');
+    let part = resolve(projectRoot);
+    for (const name of suffix.split(sep)) {
+      part = resolve(part, name);
+      if (!existsSync(part) || lstatSync(part).isSymbolicLink()) throw new Error('Initialize the local iOS project without symlinked entitlement paths');
+    }
+    return path;
+  };
+  local(apple);
+  const projects = readdirSync(apple, { withFileTypes: true }).filter(file => file.isDirectory() && file.name.endsWith('.xcodeproj'));
+  if (projects.length !== 1) throw new Error('Expected one generated iOS application project');
+  const plist = path => {
+    const result = execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', local(path)], { shell: false, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    if (result.error || result.status !== 0) throw new Error('Apple entitlement inspection failed');
+    try { return JSON.parse(result.stdout); } catch { throw new Error('Apple entitlement inspection returned an invalid property list'); }
+  };
+  const objects = plist(resolve(apple, projects[0].name, 'project.pbxproj')).objects;
+  if (!objects || typeof objects !== 'object' || Array.isArray(objects)) throw new Error('The iOS project has no build settings');
+  const targets = Object.values(objects).filter(value => value?.isa === 'PBXNativeTarget' && value.productType === 'com.apple.product-type.application');
+  if (targets.length !== 1) throw new Error('Expected one iOS application target');
+  const configs = objects[targets[0].buildConfigurationList]?.buildConfigurations;
+  if (!Array.isArray(configs) || !configs.length) throw new Error('The iOS target has no signing configuration');
+  const identifier = JSON.parse(readFileSync(resolve(projectRoot, 'src-tauri/tauri.conf.json'), 'utf8')).identifier.replaceAll('_', '-');
+  const paths = configs.map(id => {
+    const settings = objects[id]?.buildSettings, value = settings?.CODE_SIGN_ENTITLEMENTS;
+    if (settings?.PRODUCT_BUNDLE_IDENTIFIER !== identifier || typeof value !== 'string') throw new Error('The iOS signing configuration has a different identifier or entitlement path');
+    const path = value.replace(/^\$\(SRCROOT\)\//, '');
+    if (path.includes('$') || isAbsolute(path)) throw new Error('The iOS entitlement path must be a generated project file');
+    const resolved = resolve(apple, path), suffix = relative(apple, resolved);
+    if (suffix === '..' || suffix.startsWith(`..${sep}`)) throw new Error('The iOS entitlement path leaves the generated project');
+    return local(resolved);
+  });
+  if (new Set(paths).size !== 1) throw new Error('The iOS build configurations use different entitlement files');
+  const file = paths[0], entitlements = plist(file), key = 'com.apple.developer.associated-domains', domain = 'webcredentials:shielded.mutinynet.arkade.sh';
+  if (!entitlements || typeof entitlements !== 'object' || Array.isArray(entitlements)) throw new Error('Invalid Apple entitlements');
+  const domains = Object.hasOwn(entitlements, key) ? entitlements[key] : [];
+  if (!Array.isArray(domains) || domains.some(value => typeof value !== 'string')) throw new Error('Invalid Apple associated domains');
+  if (domains.includes(domain)) return;
+  const result = execute('/usr/bin/plutil', [Object.hasOwn(entitlements, key) ? '-replace' : '-insert', key, '-json', JSON.stringify([...domains, domain]), file], { shell: false, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0) throw new Error('Apple entitlement preparation failed');
+}
+
 export function main([platform = 'desktop', action = 'dev', ...args] = process.argv.slice(2)) {
   if (platform === 'icons') { prepareIcons(); return; }
   if (args[0] === '--') args.shift();
@@ -83,10 +132,12 @@ export function main([platform = 'desktop', action = 'dev', ...args] = process.a
     const initialized = existsSync(resolve(root, 'src-tauri/gen/apple'));
     if (action === 'init') {
       if (!initialized) run(command);
+      prepareApplePasskeys();
       prepareIcons();
       return;
     }
     if (action !== 'init' && !initialized) throw new Error('Initialize the local iOS project first');
+    prepareApplePasskeys();
     prepareIcons();
     if (action === 'prepare') return;
   }

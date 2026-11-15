@@ -8,6 +8,9 @@ import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {passkeyRpId,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
+import {nativePasskeys} from './native-passkeys.ts';
+import {waitNativePasskeyForeground} from './native-passkey-operation.ts';
+import {createPasskeyRevealOwner} from './passkey-reveal.ts';
 import {IndexedDBShieldedNoteRepository} from '../../src/shielded/repository.ts';
 import type {StepState} from '../../src/shielded/handle.ts';
 import {LNURL_BASE} from '../../src/shielded/lightning.ts';
@@ -40,7 +43,7 @@ import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,type 
 import NativeAbout from './NativeAbout.tsx';
 import {WalletBrand,WalletHeaderActions} from './WalletHeaderActions.tsx';
 import {WalletBackupCard,WalletCreatedNotice,WalletPhrase,WalletSecurityMenu,type WalletSecurityView} from './WalletSecurityMenu.tsx';
-import {isNativeHost,nativeClaimFetch,nativeNetwork,nativeOperationFetch,nativeSessionFetch,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
+import {isNativeHost,nativeClaimFetch,nativeNetwork,nativeOperationFetch,nativeSessionFetch,nativeSessionGuard,nativeSwapConfig,nativeWalletProviders} from '../../src/native/index.ts';
 import {loadWalletPoseidon} from './wallet-crypto.ts';
 import {forceReleaseNativeJournal,pendingPoolNullifiers,pendingPoolOutpoints,reconcileNativeJournal} from '../../src/native/mutations.ts';
 import {privateTransport,PRIVATE_SHIELD_COINS} from '../../src/shielded/private-transport.ts';
@@ -96,6 +99,7 @@ const PEEK={activity:Array<string>(9).fill('row'),receive:['pill','qr','line','l
 export type WalletConnection={problem:string;busy:boolean;reconnect:()=>void};
 export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onConnection,onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,onResumeSnapshot,onScannerIntentChange,resumeScanner,onResumeScannerHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false,headerControls}:{storage?:Storage;reload?:()=>void;onConnection?:(connection:WalletConnection|undefined)=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;resumeScanner?:number;onResumeScannerHandled?:(token:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean;headerControls?:ReactNode}={}){
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
+ const [sessionGuard]=useState(()=>nativeHost?nativeSessionGuard():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState(''),[journalError,setJournalError]=useState('');
  const [nativePending,setNativePending]=useState(false),[confirmRelease,setConfirmRelease]=useState(false),[releaseNote,setReleaseNote]=useState('');
  const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
@@ -103,6 +107,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [prf,setPrf]=useState<string>(),[passkeyOff,setPasskeyOff]=useState(false),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
+ const phrasePrompt=useRef(createPasskeyRevealOwner()),phraseForeground=useRef(!document.hidden),phraseActive=useRef(true),phraseCurrent=useRef(true);
+ phraseCurrent.current=!suspended&&viewActive&&!hidden;
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
@@ -150,14 +156,14 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    closeSheet:()=>{setSheetOpen(false);setTxView(undefined);},
    closeScanner:()=>setScanning(false),
    closeAbout:()=>setAboutOpen(false),
-   closeSecurity:()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);},
+   closeSecurity:()=>{if(mode!=='background')phrasePrompt.current.cancel();if(mode!=='background'||!phrasePrompt.current.active)setSecurityView(null);setPasskeyPhrase('');setReveal(false);setShowView(false);setShowFull(false);},
  },mode),[]);
- useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;sheetOwner.stop();quotes.clear();};},[]);
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;phrasePrompt.current.cancel();sheetOwner.stop();quotes.clear();};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
-   useEffect(()=>watchPageVisibility(visible=>{setPageVisible(visible);if(!visible)closeTransient('background');}),[closeTransient]);
+   useEffect(()=>watchPageVisibility(visible=>{phraseForeground.current=visible;setPageVisible(visible);if(!visible)closeTransient('background');}),[closeTransient]);
    useEffect(()=>{
     if(!nativeHost)return;
-    return nativeNetwork.subscribe(status=>{setNativeActive(status.foreground!==false);if(status.foreground===false)closeTransient('background');});
+    return nativeNetwork.subscribe(status=>{phraseActive.current=status.foreground!==false;setNativeActive(status.foreground!==false);if(status.foreground===false)closeTransient('background');});
    },[nativeHost,closeTransient]);
  useEffect(()=>{
   mounted.current=true;
@@ -638,10 +644,23 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const phrase=phraseWords===12?passkeyPhrase:secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  useEffect(()=>{if(!reveal&&backedUp)setPasskeyPhrase('');},[reveal,backedUp]);
  const showPhrase=()=>{
+  if(!mounted.current||!phraseCurrent.current||document.hidden||!phraseForeground.current||nativeHost&&!phraseActive.current)return;
+  try{sessionGuard?.();}catch(error){setRevealError(errorText(error));return;}
   if(phrase){setReveal(true);return;}
   if(revealing.current)return;
   revealing.current=true;setRevealError('');
-  void passkeyWords(storage,{rpId:PASSKEY_RP_ID}).then(words=>{if(mounted.current){setPasskeyPhrase(words);setReveal(true);}},error=>{if(mounted.current)setRevealError(errorText(error));}).finally(()=>{revealing.current=false;});
+  const request=phrasePrompt.current.begin(),original=storage.getItem(SECRET);
+  const current=()=>{request.current();if(!mounted.current||!phraseCurrent.current||storage.getItem(SECRET)!==original)throw new Error('The recovery request was closed.');};
+  void (async()=>{
+   const guard=sessionGuard??(()=>{});
+   const check=()=>{current();guard();};check();
+   const expected=nativeHost?await nativeNetwork.status():undefined;check();
+   const foreground=()=>phraseForeground.current&&phraseActive.current&&!document.hidden;
+   const before=expected?()=>waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground):undefined;
+   const words=await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
+   if(expected)do{await waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground);}while(!foreground());
+   check();setPasskeyPhrase(words);setReveal(true);
+  })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(errorText(error));}).finally(()=>{request.finish();revealing.current=false;});
  };
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity,open:(link:string)=>void)=>{
@@ -676,7 +695,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   else if(target.amount!==undefined){setAssetId('');setAmount(String(target.amount));}
  };
  const paste=async()=>{try{fill(await readWalletClipboard());}catch{recipientNode.current?.focus();}};
- const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
+ const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){phrasePrompt.current.cancel();setPasskeyPhrase('');setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};
  useEffect(()=>{
   if(resumeScanner===undefined||handledResumeScanner.current===resumeScanner||paymentRequest||!wallet||!ready||!pageVisible||!viewActive||suspended||hidden)return;
@@ -713,8 +732,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{if(txView&&viewActive&&!suspended)return bindSheetBack(window,closeTx,'shieldedTx');},[!!txView,viewActive,suspended,closeTx]);
  // Wrapped: window.fetch called as a method of another object throws "Illegal invocation".
  const txSource=useMemo(()=>{const net=initialPool?.network,esplora=net&&ESPLORA_URL[net.network as NetworkName];return net&&esplora&&{fetch:(input:RequestInfo|URL,init?:RequestInit)=>(sessionFetch??fetch)(input,init),indexer:String(net.indexerUrl??net.arkUrl),esplora};},[initialPool,sessionFetch]);
- const openSecurity=(view:WalletSecurityView)=>{setReveal(false);setShowView(false);setShowFull(false);setClearError('');setRevealError('');setSecurityView(view);};
- const leaveSecurity=()=>{setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
+ const openSecurity=(view:WalletSecurityView)=>{phrasePrompt.current.cancel();setPasskeyPhrase('');setReveal(false);setShowView(false);setShowFull(false);setClearError('');setRevealError('');setSecurityView(view);};
+ const leaveSecurity=()=>{phrasePrompt.current.cancel();setPasskeyPhrase('');setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);};
  const clearWallet=async()=>{
   if(!onClearWallet)throw new Error('This host cannot clear its wallet data.');
   if(busyRef.current||handleBusy.current||actions.current?.busy)throw new Error('Wait for the current wallet operation to finish before clearing it.');
@@ -860,7 +879,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(POOL_ORIGIN||location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
     </div></section></div>}</div>
   </>}
-    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<WalletBackupCard words={phraseWords} phrase={phrase} reveal={reveal} error={revealError} onReveal={showPhrase} onSaved={()=>{storage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}/>}
+    {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<WalletBackupCard words={phraseWords} phrase={phrase} reveal={reveal} error={revealError} onReveal={showPhrase} onSaved={()=>{phrasePrompt.current.cancel();setPasskeyPhrase('');storage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}/>}
     {(!ready||docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
      {!securityView?<WalletSecurityMenu canReveal={backedUp||!secret} canClear={!!onClearWallet} onOpen={openSecurity}/>:<div className="stock-security-subview"><button type="button" className="stock-security-back" onClick={leaveSecurity}>← Back</button><h3 tabIndex={-1}>{securityView==='phrase'?'Recovery phrase':securityView==='viewing'?'Viewing access':'Clear wallet'}</h3>
      {securityView==='phrase'&&<><p className="stock-muted">These {phraseWords} words restore your pool notes and Arkade keys. Anyone with them can spend your funds. Keep this browser&apos;s data while Lightning swaps or payouts are pending: the phrase alone does not restore every outstanding swap. A fresh browser recovers your Lightning address on its own; direct swaps also need their stored recovery records.</p>

@@ -30,6 +30,7 @@ function connection(){
 }
 export const nativeFetch:typeof fetch=markPrivateFetch((input,init)=>connection().fetch(input,init));
 export const nativeSessionFetch=(fetcher:typeof fetch=nativeFetch):typeof fetch=>markPrivateFetch(connection().bindFetch(fetcher));
+export const nativeSessionGuard=()=>connection().sessionGuard();
 function scopedFetch(purpose:NativePurpose):typeof fetch {
  return markPrivateFetch((input,init)=>{
   const b=connection(),url=nativeUrl(input instanceof Request?input.url:String(input),b.policy.poolOrigin);
