@@ -18,6 +18,33 @@ test('Windows setup bundles WebView2 without a first-run download', () => {
   assert.deepEqual(json('tauri.conf.json').bundle.windows.webviewInstallMode, { type: 'offlineInstaller', silent: true });
 });
 
+test('macOS camera access has a purpose string and hardened-runtime entitlement', () => {
+  const config = json('tauri.conf.json');
+  const info = readFileSync(new URL(config.bundle.macOS.infoPlist, root), 'utf8');
+  const entitlements = readFileSync(new URL(config.bundle.macOS.entitlements, root), 'utf8');
+  assert.match(info, /<key>NSCameraUsageDescription<\/key>\s*<string>[^<]+<\/string>/);
+  assert.match(entitlements, /<key>com.apple.security.device.camera<\/key>\s*<true\s*\/>/);
+  assert.doesNotMatch(entitlements, /disable-library-validation|allow-unsigned-executable-memory/);
+});
+
+test('all native platforms receive text-only clipboard access in the local main window', () => {
+  const permissions = json('capabilities/main.json').permissions.filter(value => typeof value === 'string' && value.startsWith('clipboard-manager:'));
+  assert.deepEqual(permissions.sort(), ['clipboard-manager:allow-read-text', 'clipboard-manager:allow-write-text']);
+  assert.match(readFileSync(new URL('src/lib.rs', root), 'utf8'), /\.plugin\(tauri_plugin_clipboard_manager::init\(\)\)/);
+});
+
+test('iOS activation repairs native status for the default non-scene lifecycle without renderer authority', () => {
+  const source = readFileSync(new URL('src/lib.rs', root), 'utf8');
+  const swift = readFileSync(new URL('plugins/shielded-platform/ios/Sources/ShieldedPlatformPlugin.swift', root), 'utf8');
+  assert.match(swift, /@_silgen_name\("shielded_native_did_become_active"\)/);
+  assert.match(swift, /addObserver\(forName: UIApplication\.didBecomeActiveNotification, object: nil, queue: \.main\)/);
+  assert.match(swift, /removeObserver\(observer\)/);
+  assert.match(source, /pub extern "C" fn shielded_native_did_become_active\(\)/);
+  assert.match(source, /\.emit_to\("main", "shielded-native-lifecycle", status\)/);
+  assert.doesNotMatch(source, /WindowEvent::Focused\(/);
+  assert.ok(!json('capabilities/main.json').permissions.some(value => typeof value === 'string' && /resume|foreground|active/.test(value)));
+});
+
 test('bundled renderer has no direct network or remote asset capability', () => {
   const config = json('tauri.conf.json');
   const csp = Object.fromEntries(config.app.security.csp.split(';').filter(part => part.trim()).map(part => {

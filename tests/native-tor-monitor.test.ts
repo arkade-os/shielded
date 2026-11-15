@@ -26,6 +26,7 @@ function fixture(t:TestContext,initial:NativeStatus={phase:'ready',generation:1}
  return {
   monitor,health,errors,checks,latest:()=>health.at(-1)!,statusCalls:()=>statusCalls,
   emit:(status:NativeStatus)=>{current=status;listener(status);},
+  status:(status:NativeStatus)=>{current=status;},
   visible:(value:boolean)=>{visible=value;},
   holdStatus:()=>{pendingStatus=deferred<NativeStatus>();return pendingStatus;}
  };
@@ -39,6 +40,40 @@ test('Tor status and initial reachability are monitored before a wallet exists',
  t.mock.timers.tick(120);f.checks[0]!.result.resolve();await flush();
  assert.equal(f.latest().check,'ok');assert.equal(f.latest().latencyMs,120);assert.equal(f.latest().checkedAt,120);
  assert.equal(f.latest().attempt,undefined);assert.equal(f.latest().retryAt,undefined);
+});
+
+test('a DOM-visible but natively inactive app polls status without starting Tor probes',async t=>{
+ const f=fixture(t,{phase:'ready',generation:1,foreground:false});await flush();
+ assert.equal(f.checks.length,0);assert.equal(f.statusCalls(),1);
+ t.mock.timers.tick(1500);await flush();assert.equal(f.statusCalls(),2);assert.equal(f.checks.length,0);
+ f.emit({phase:'ready',generation:1,foreground:true});await flush();assert.equal(f.checks.length,1);
+});
+
+test('status polling repairs a missed native activation event while probes remain foreground-gated',async t=>{
+ const f=fixture(t,{phase:'ready',generation:1,foreground:false});await flush();
+ assert.equal(f.checks.length,0);
+ f.status({phase:'ready',generation:1,foreground:true});t.mock.timers.tick(1500);await flush();
+ assert.equal(f.latest().status.foreground,true);assert.equal(f.checks.length,1);
+});
+
+test('native inactivity cancels a pending health probe and its late result stays retired',async t=>{
+ const f=fixture(t);await flush();
+ f.emit({phase:'ready',generation:1,foreground:false});assert.equal(f.checks[0]!.signal.aborted,true);
+ f.checks[0]!.result.resolve();await flush();assert.notEqual(f.latest().check,'ok');
+ t.mock.timers.tick(30_000);await flush();assert.equal(f.checks.length,1);
+ f.emit({phase:'ready',generation:1,foreground:true});await flush();assert.equal(f.checks.length,2);
+});
+
+test('a queued health probe cannot begin after the native hidden edge',async t=>{
+ const f=fixture(t,{phase:'bootstrapping',generation:1});await flush();
+ f.emit({phase:'ready',generation:1,foreground:true});f.emit({phase:'ready',generation:1,foreground:false});await flush();
+ assert.equal(f.checks.length,0);
+});
+
+test('page lifecycle changes immediately stop and resume checks without waiting for the poll timer',async t=>{
+ const f=fixture(t);await flush();
+ f.visible(false);f.monitor.visibilityChanged();assert.equal(f.checks[0]!.signal.aborted,true);
+ f.visible(true);f.monitor.visibilityChanged();await flush();assert.equal(f.checks.length,2);
 });
 
 test('status polling never overlaps and retains a newer subscription result',async t=>{

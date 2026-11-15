@@ -3,6 +3,22 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 mod android_updates;
 pub mod transport;
 
+#[cfg(target_os = "ios")]
+static IOS_APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "ios")]
+#[unsafe(no_mangle)]
+pub extern "C" fn shielded_native_did_become_active() {
+    use tauri::Emitter;
+    let Some(app) = IOS_APP.get() else { return };
+    let Some(transport) = app.try_state::<transport::PrivacyTransport>() else { return };
+    if transport.status().is_ok_and(|status| !status.foreground) {
+        if let Ok(status) = transport.resumed() {
+            let _ = app.emit_to("main", "shielded-native-lifecycle", status);
+        }
+    }
+}
+
 pub(crate) fn ensure_local(window: &tauri::WebviewWindow) -> Result<(), String> {
     tauri_plugin_shielded_platform::ensure_local(window)
 }
@@ -21,6 +37,7 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shielded_platform::init())
         .invoke_handler(tauri::generate_handler![
             transport::native_status,
@@ -52,6 +69,8 @@ pub fn run() {
             let transport = transport::PrivacyTransport::new(app.path().app_data_dir()?.join("tor"))
                 .map_err(std::io::Error::other)?;
             app.manage(transport.clone());
+            #[cfg(target_os = "ios")]
+            let _ = IOS_APP.set(app.handle().clone());
             app.manage(android_updates::AndroidUpdates::new(app.path().app_cache_dir()?.join("shielded-updates"))
                 .map_err(std::io::Error::other)?);
             transport.prewarm().map_err(std::io::Error::other)?;

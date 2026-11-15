@@ -1,5 +1,23 @@
 # Native session safety model
 
+## Page and native activation ordering
+
+`PageLifecycle` models the renderer page lifecycle independently from native activation, queued health checks, late replies and explicit lock. `PageHide`/`PageReturn` anchor to `watchPageVisibility` in `app/src/page-visibility.ts`; `Inactive`/`Activate`/`Repair` anchor to the mobile window handler and `shielded_native_did_become_active` in `src-tauri/src/lib.rs`. `Poll`/`Begin`/`Dispatch`/`Complete`/`Drop` anchor to `createNativeTorMonitor` in `app/src/native-tor-monitor.ts`. The model abstracts amounts, storage, network I/O and OS delivery guarantees. It permits a lost renderer activation event; a DOM-visible status poll can recover that observation after native metadata has changed, without granting startup authority.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active
+    Active --> Background: pagehide, freeze or native inactive / cancel diagnostic
+    Background --> Active: page shown and native active / reuse owner
+    Background --> AwaitingActivation: page shown, native event missed
+    AwaitingActivation --> Active: native activation or status poll
+    Active --> Locked: explicit Lock / revoke owner
+    Background --> Locked: explicit Lock / revoke owner
+    Locked --> [*]
+```
+
+The base checks 114 distinct states with all actions exercised. Four single-guard mutations fail the named probe, dispatch, delivery and recovery invariants; wider simulation runs 20,000 traces at depth 100. Real regressions are in `tests/page-visibility.test.ts` and `tests/native-tor-monitor.test.ts`. These bounded results do not establish that an operating system keeps a process alive or delivers every callback.
+
 This is a bounded workflow model for the Shielded native host. It is not a proof of the implementation, Tor isolation, encryption, storage durability or complete wallet accounting.
 
 ## Action anchors

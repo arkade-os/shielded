@@ -1,6 +1,25 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {openNativeVault,resumeNativeForeground} from '../app/src/native-open.ts';
+import {openNativeVault,reopenNativeForeground,resumeNativeForeground} from '../app/src/native-open.ts';
+import {createNativeViewHandoff} from '../app/src/native-view-handoff.ts';
+
+test('native-only interruption retires a first opening candidate before reconstructing it',async()=>{
+ const handoff=createNativeViewHandoff<{id:number}>(),calls:string[]=[];
+ const old=handoff.stage({id:1},{awaitReady:true});old.onShutdown(async()=>{calls.push('shutdown');});
+ assert.equal(handoff.promote(old,()=>false),false);
+ await resumeNativeForeground(Promise.resolve(),()=>true,()=>reopenNativeForeground(handoff.snapshot,()=>true,async()=>{
+  for(const view of handoff.retire(true))await view.shutdown?.();
+ },async()=>{calls.push('open');handoff.stage({id:2},{awaitReady:true});}),async()=>false);
+ assert.equal(old.retired,true);assert.equal(handoff.snapshot.candidate?.session.id,2);assert.deepEqual(calls,['shutdown','open']);
+ assert.equal(handoff.promote(old,()=>true),false);
+});
+
+test('a lock while an interrupted candidate drains prevents a replacement open',async()=>{
+ let finish!:()=>void,current=true,opens=0;
+ const retiring=new Promise<void>(resolve=>{finish=resolve;});
+ const resumed=reopenNativeForeground({candidate:{}},()=>current,()=>retiring,async()=>{opens++;});
+ current=false;finish();await resumed;assert.equal(opens,0);
+});
 import {NativeBridge} from '../src/native/transport.ts';
 import {NativePolicy} from '../src/native/policy.ts';
 import type {NativeStatus} from '../src/native/transport.ts';

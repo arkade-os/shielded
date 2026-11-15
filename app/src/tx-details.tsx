@@ -3,6 +3,7 @@ import {openUrl} from '@tauri-apps/plugin-opener';
 import {Transaction,type TxKey} from '@arkade-os/sdk';
 import {base64} from '@scure/base';
 import {CopyButton,Icon} from './components.tsx';
+import {writeWalletClipboard} from './wallet-clipboard.ts';
 import {errorText} from './shielded-page.ts';
 import {longPress} from './wallet-gestures.ts';
 
@@ -68,7 +69,7 @@ export async function readTx(kind:TxKind,txid:string,source:TxSource,signal?:Abo
 function useHoldCopy(value:string){
  const [note,setNote]=useState<string>(),latest=useRef(value),touch=useRef(false),down=useRef(false),owed=useRef(false),timer=useRef<ReturnType<typeof setTimeout>>(undefined);latest.current=value;
  const show=(text:string)=>{setNote(text);clearTimeout(timer.current);timer.current=setTimeout(()=>setNote(undefined),1500);};
- const copy=()=>Promise.resolve().then(()=>navigator.clipboard.writeText(latest.current));
+ const copy=()=>Promise.resolve().then(()=>writeWalletClipboard(latest.current));
  // A touch hold carries no user activation until it lifts, so a write refused mid-hold is retried on the release, which does.
  const [press]=useState(()=>longPress(()=>{void copy().then(()=>show('Copied'),()=>{if(down.current)owed.current=true;else show('Couldn’t copy');});}));
  const release=(retry:boolean)=>{press.up();down.current=false;if(!owed.current)return;owed.current=false;if(retry)void copy().then(()=>show('Copied'),()=>show('Couldn’t copy'));else show('Couldn’t copy');};
