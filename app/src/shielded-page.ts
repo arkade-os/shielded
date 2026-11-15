@@ -244,7 +244,7 @@ export async function restorePasskeyPageWallet(o:Parameters<typeof restorePageWa
 export async function passkeyWords(storage:Pick<Storage,'getItem'>,o:{rpId:string;client?:WebAuthnClient}){
  const record=passkeyRecordOf(storage),secret=storage.getItem(SECRET);
  if(!record||!secret)throw new Error('This wallet was not made with a passkey.');
- const seed=await restorePasskeySeed({rpId:o.rpId,credentialId:base64urlnopad.decode(record.credentialId),client:o.client});
+ const seed=await restorePasskeySeed({rpId:o.rpId,credentialId:base64urlnopad.decode(record.credentialId),wordCount:record.words,client:o.client});
  try{
   if(bytesToHex(seed.master)!==secret)throw new Error('That passkey does not open this wallet.');
   return seed.words;

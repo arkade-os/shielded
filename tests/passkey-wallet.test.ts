@@ -91,6 +91,16 @@ test('a 12-word passkey wallet shows its words again only through its own passke
  await assert.rejects(passkeyWords(storageOf(),{rpId:RP,client:synced.client()}),/not made with a passkey/);
 });
 
+test('a bound 24-word recovery reveal keeps its saved count when the provider omits the handle',async()=>{
+ const synced=syncedPasskeys(),storage=storageOf();
+ const made=await createPasskeyPageWallet(storage,{rpId:RP,wordCount:24,client:synced.client()});
+ const source=synced.client(),client:WebAuthnClient={...source,get:async options=>{
+  const credential=await source.get(options) as Credential&{response:{userHandle:Uint8Array|null}};
+  credential.response.userHandle=null;return credential;
+ }};
+ assert.equal(await passkeyWords(storage,{rpId:RP,client}),made.words);
+});
+
 test('each passkey failure lands on its next step, and leaves nothing stored',async()=>{
  const events:string[]=[],short=syncedPasskeys(()=>new Uint8Array(31));
  const failed=async(run:(storage:ReturnType<typeof storageOf>)=>Promise<unknown>)=>{
