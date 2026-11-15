@@ -109,7 +109,8 @@ export function prepareApplePasskeys(projectRoot = root, env = process.env, exec
   const domains = Object.hasOwn(entitlements, key) ? entitlements[key] : [];
   if (!Array.isArray(domains) || domains.some(value => typeof value !== 'string')) throw new Error('Invalid Apple associated domains');
   if (domains.includes(domain)) return;
-  const result = execute('/usr/bin/plutil', [Object.hasOwn(entitlements, key) ? '-replace' : '-insert', key, '-json', JSON.stringify([...domains, domain]), file], { shell: false, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+  const keypath = key.replaceAll('.', '\\.');
+  const result = execute('/usr/bin/plutil', [Object.hasOwn(entitlements, key) ? '-replace' : '-insert', keypath, '-json', JSON.stringify([...domains, domain]), file], { shell: false, encoding: 'utf8', maxBuffer: 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error('Apple entitlement preparation failed');
 }
 

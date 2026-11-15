@@ -76,6 +76,9 @@ jobs:
           exit 1
       - run: npm ci
       - run: node --test tools/native-host.test.mjs tools/native-artifacts.test.mjs
+      - name: Check Apple entitlement preparation with plutil
+        if: runner.os == 'macOS'
+        run: node tools/apple-entitlements.check.mjs
       - run: node tools/native-build.mjs icons
       - run: npm run native:frontend
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
@@ -251,6 +254,9 @@ jobs:
       - uses: ./.github/actions/setup
       - run: node tools/reproducible-build.test.mjs
       - run: node tools/native-artifacts.mjs verify-network
+      - name: Check Apple entitlement preparation with plutil
+        if: runner.os == 'macOS'
+        run: node tools/apple-entitlements.check.mjs
       - name: Select simulator architecture
         shell: bash
         run: |

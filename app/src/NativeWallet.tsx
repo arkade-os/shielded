@@ -240,10 +240,13 @@ export default function NativeWallet(){
     }
     const master=restore?parseMasterSecret(phrase):crypto.getRandomValues(new Uint8Array(32));
     try{metadata=restore?{}:{created:Date.now()};return bytesToHex(master);}finally{master.fill(0);}
-   },secret=>commitNativeSetup({expected:operation.expected,status:nativeNetwork.status,current:check,foreground,storage:localStorage,secret,metadata,read:getSecret,write:async value=>{
+   },secret=>commitNativeSetup({expected:operation.expected,status:nativeNetwork.status,current:check,foreground,storage:localStorage,secret,metadata,recordBeforeWrite:restore||withPasskey,read:getSecret,write:value=>{
     check();if(!foreground())throw new Error('Wait until the wallet is active before confirming secure storage.');setupAllowed.current=false;setSetup(false);setPhase('Confirming secure wallet storage');
-    const writing=(async()=>{await createSecret(value);reconcileNativeSetup(localStorage,value);})();creating.current=writing;
-    try{await writing;}finally{if(creating.current===writing){creating.current=undefined;if(setupOperation.current!==operation)setSaving(false);}}
+    return createSecret(value);
+   },onWrite:writing=>{
+    creating.current=writing;
+    const settled=()=>{if(creating.current===writing){creating.current=undefined;if(setupOperation.current!==operation)setSaving(false);}};
+    void writing.then(settled,settled);
    }}));
    check();setupOperation.current=undefined;setSaving(false);setPhrase('');await open();
   }catch(cause){if(current()){const step=passkeyNextStep(cause);setError(step?.message??(cause instanceof Error?cause.message:String(cause)));if(step&&!step.retry)setPasskeySupport({available:false,reason:step.message});try{setSetupIntent(pendingNativeSetup(localStorage));}catch(error){fail(error);setupAllowed.current=false;setSetup(false);}setBusy(false);}}

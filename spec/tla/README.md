@@ -850,13 +850,14 @@ stateDiagram-v2
     prompt --> seed: PRF result
     seed --> read: inspect vault
     read --> intent: current owner + foreground
-    intent --> sent: journal persisted + recheck
+    intent --> sent: recoverable journal or fresh random + recheck
     sent --> written: vault absent or identical
-    sent --> failed: another wallet exists
+    sent --> failed: refused or failed write
+    failed --> idle: retry fresh random while vault empty
     written --> done: reconcile public metadata
     done --> published: current owner + foreground
     prompt --> cancelled: explicit revocation
     intent --> cancelled: explicit revocation
 ```
 
-Each disabled guard has a failing configuration: owner, foreground, journal, create-only vault admission and presentation. An empty vault retains an interrupted setup intent; a retry must derive the same seed. Late admitted writes reconcile metadata without presenting an old owner. The checked two-flow graph has 13,040 states; the wider simulation uses four flows and 20,000 traces.
+Each disabled guard has a failing configuration: owner, foreground, recoverable journal, create-only vault admission, presentation and unknown random intents. Passkey and phrase setup persist their public intent before dispatch; an empty vault retains it and a retry must derive the same seed. A fresh random seed has no pre-write intent because the user cannot recover it after a rejected write. Its optional birth metadata is applied after acknowledgement; missing birth metadata scans from genesis. Late admitted writes reconcile metadata without presenting an old owner. The checked two-flow graph has 10,464 states; the wider simulation uses four flows and 20,000 traces.

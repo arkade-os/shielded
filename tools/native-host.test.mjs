@@ -130,7 +130,19 @@ function appleProject(t, entitlements = {}) {
     if (args[0] === '-convert') return { status: 0, stdout: readFileSync(args.at(-1), 'utf8') };
     assert.ok(['-insert', '-replace'].includes(args[0]));
     const target = args.at(-1), value = JSON.parse(readFileSync(target, 'utf8'));
-    value[args[1]] = JSON.parse(args[3]); writeFileSync(target, JSON.stringify(value)); writes.push(args);
+    const path = ['']; let escaped = false;
+    for (const character of args[1]) {
+      if (escaped) { path[path.length - 1] += character; escaped = false; }
+      else if (character === '\\') escaped = true;
+      else if (character === '.') path.push('');
+      else path[path.length - 1] += character;
+    }
+    let parent = value;
+    for (const key of path.slice(0, -1)) {
+      if (!parent[key] || typeof parent[key] !== 'object') return { status: 1 };
+      parent = parent[key];
+    }
+    parent[path.at(-1)] = JSON.parse(args[3]); writeFileSync(target, JSON.stringify(value)); writes.push(args);
     return { status: 0 };
   };
   return { workspace, apple, file, projectFile, pbx, execute, writes };

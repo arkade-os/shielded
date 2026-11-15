@@ -659,7 +659,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    const before=expected?()=>waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground):undefined;
    const words=await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
    if(expected)do{await waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground);}while(!foreground());
-   check();setPasskeyPhrase(words);setReveal(true);
+   request.publish(foreground,()=>{check();setPasskeyPhrase(words);setReveal(true);});
   })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(errorText(error));}).finally(()=>{request.finish();revealing.current=false;});
  };
  const assetName=(id:string)=>`asset ${short(id)}`;

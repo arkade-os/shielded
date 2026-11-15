@@ -15,16 +15,24 @@ export async function waitNativePasskeyForeground(expected:NativeStatus,status:(
  }
 }
 
-export async function commitNativeSetup(o:{expected:NativeStatus;status:()=>Promise<NativeStatus>;current:()=>void;foreground:()=>boolean;storage:Storage;secret:string;metadata:Parameters<typeof prepareNativeSetup>[2];read:()=>Promise<string|null>;write:(secret:string)=>Promise<void>}){
+export async function commitNativeSetup(o:{expected:NativeStatus;status:()=>Promise<NativeStatus>;current:()=>void;foreground:()=>boolean;storage:Storage;secret:string;metadata:Parameters<typeof prepareNativeSetup>[2];recordBeforeWrite?:boolean;read:()=>Promise<string|null>;write:(secret:string)=>Promise<void>;onWrite?:(promise:Promise<void>)=>void}){
+ const recordBeforeWrite=o.recordBeforeWrite!==false,created=o.metadata.created;
+ if(!recordBeforeWrite&&(o.metadata.passkey!==undefined||created===undefined||!Number.isSafeInteger(created)||created<0))throw new Error('The native setup metadata is invalid.');
  await waitNativePasskeyForeground(o.expected,o.status,o.current,o.foreground);
  const existing=await o.read();o.current();
  if(existing!==null&&!pendingNativeSetup(o.storage))throw new Error('A wallet already exists on this device. Reopen it before continuing.');
  for(;;){
   await waitNativePasskeyForeground(o.expected,o.status,o.current,o.foreground);o.current();
   if(!o.foreground())continue;
-  prepareNativeSetup(o.storage,o.secret,o.metadata);o.current();
+  if(recordBeforeWrite)prepareNativeSetup(o.storage,o.secret,o.metadata);
+  else if(pendingNativeSetup(o.storage))throw new Error('Finish the pending setup before creating another wallet.');
+  o.current();
   if(o.foreground())break;
  }
- if(existing===null)await o.write(o.secret);
- reconcileNativeSetup(o.storage,existing??o.secret);
+ const writing=(async()=>{
+  if(existing===null)await o.write(o.secret);
+  if(!recordBeforeWrite)prepareNativeSetup(o.storage,o.secret,o.metadata);
+  reconcileNativeSetup(o.storage,existing??o.secret);
+ })();
+ o.onWrite?.(writing);await writing;
 }

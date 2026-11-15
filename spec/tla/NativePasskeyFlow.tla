@@ -4,8 +4,8 @@ EXTENDS Naturals
 \* PromptReply/Publish: app/src/native-passkeys.ts, RollupWallet.tsx showPhrase.
 \* ReadVault/Prepare/Dispatch: native-passkey-operation.ts commitNativeSetup.
 \* NativeWrite/Reply/Reconcile: shielded-platform secret_create, native-setup-journal.ts.
-CONSTANTS Flows, OtherSeed, MaxOwner, BreakOwner, BreakForeground,
-    BreakIntent, BreakCreateOnly, BreakPublish
+CONSTANTS Flows, RecoverableFlows, OtherSeed, MaxOwner, BreakOwner, BreakForeground,
+    BreakIntent, BreakCreateOnly, BreakPublish, BreakRandomJournal
 VARIABLE s
 vars == <<s>>
 
@@ -17,6 +17,7 @@ Current(f) == s.active = f /\ s.flow[f].owner = s.owner /\ s.ready
 Foreground == s.page /\ s.native
 Begin(f) == /\ s.flow[f].step = "idle" /\ s.active = 0 /\ s.vault = 0
     /\ s.ready /\ Foreground
+    /\ (s.journal = 0 \/ f \in RecoverableFlows)
     /\ s' = [s EXCEPT !.active = f,
         !.flow[f] = [step |-> "prompt", owner |-> s.owner,
             seed |-> IF s.journal = 0 THEN f ELSE s.journal, seen |-> 0]]
@@ -28,10 +29,10 @@ Prepare(f) == /\ s.flow[f].step = "read" /\ s.flow[f].seen = 0
     /\ (Current(f) \/ BreakOwner) /\ (Foreground \/ BreakForeground)
     /\ s.journal \in {0, s.flow[f].seed}
     /\ s' = [s EXCEPT !.flow[f].step = "intent",
-        !.journal = IF BreakIntent THEN 0 ELSE s.flow[f].seed]
+        !.journal = IF BreakIntent \/ (f \notin RecoverableFlows /\ ~BreakRandomJournal) THEN 0 ELSE s.flow[f].seed]
 Dispatch(f) == /\ s.flow[f].step = "intent"
     /\ (Current(f) \/ BreakOwner) /\ (Foreground \/ BreakForeground)
-    /\ (s.journal = s.flow[f].seed \/ BreakIntent)
+    /\ (s.journal = s.flow[f].seed \/ BreakIntent \/ f \notin RecoverableFlows)
     /\ s' = [s EXCEPT !.flow[f].step = "sent",
         !.badOwner = @ \/ ~Current(f), !.badForeground = @ \/ ~Foreground]
 NativeWrite(f) == /\ s.flow[f].step = "sent"
@@ -43,6 +44,11 @@ NativeWrite(f) == /\ s.flow[f].step = "sent"
 Reply(f) == /\ s.flow[f].step = "written" /\ s.vault = s.flow[f].seed
     /\ s' = [s EXCEPT !.flow[f].step = "done", !.metadata = s.vault,
         !.journal = IF @ = s.vault THEN 0 ELSE @]
+WriteFailure(f) == /\ s.flow[f].step = "sent"
+    /\ s' = [s EXCEPT !.flow[f].step = "failed"]
+Retry(f) == /\ s.flow[f].step = "failed" /\ f \notin RecoverableFlows
+    /\ s.vault = 0 /\ s.journal = 0
+    /\ s' = [s EXCEPT !.flow[f].step = "idle", !.active = IF @ = f THEN 0 ELSE @]
 Publish(f) == /\ s.flow[f].step = "done"
     /\ ((Current(f) /\ Foreground) \/ BreakPublish)
     /\ s' = [s EXCEPT !.flow[f].step = "published", !.active = IF @ = f THEN 0 ELSE @,
@@ -63,7 +69,7 @@ Reconcile == /\ s.vault # 0 /\ s.journal = s.vault
 Next == Retire \/ Reconnect \/ PageHide \/ PageShow \/ NativeHide \/ NativeShow
     \/ ExternalWrite \/ Reconcile \/ \E f \in Flows:
         Begin(f) \/ PromptReply(f) \/ ReadVault(f) \/ Prepare(f) \/ Dispatch(f)
-        \/ NativeWrite(f) \/ Reply(f) \/ Publish(f) \/ Cancel(f)
+        \/ NativeWrite(f) \/ WriteFailure(f) \/ Retry(f) \/ Reply(f) \/ Publish(f) \/ Cancel(f)
 TypeOK == /\ s.owner \in 1..MaxOwner /\ s.active \in Flows \cup {0}
     /\ s.vault \in Flows \cup {0, OtherSeed} /\ s.journal \in Flows \cup {0}
     /\ s.metadata \in Flows \cup {0, OtherSeed}
@@ -71,7 +77,8 @@ TypeOK == /\ s.owner \in 1..MaxOwner /\ s.active \in Flows \cup {0}
 NoRetiredAdmission == ~s.badOwner
 NoHiddenAdmission == ~s.badForeground
 NoWalletOverwrite == ~s.badOverwrite
-RecoverableWrite == s.vault = 0 \/ s.metadata = s.vault \/ s.journal = s.vault
+RecoverableWrite == s.vault \notin RecoverableFlows \/ s.metadata = s.vault \/ s.journal = s.vault
+NoUnknownSetupIntent == s.journal = 0 \/ s.journal \in RecoverableFlows
 NoRetiredPresentation == ~s.badPublish
 Spec == Init /\ [][Next]_vars
 =============================================================================

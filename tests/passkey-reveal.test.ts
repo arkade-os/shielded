@@ -13,3 +13,10 @@ test('a late completion cannot clear a newer reveal owner',()=>{
  const owner=createPasskeyRevealOwner(),old=owner.begin(),next=owner.begin();
  assert.throws(old.current,/closed/);old.finish();assert.equal(owner.active,true);next.current();next.finish();assert.equal(owner.active,false);
 });
+
+test('a browser recovery result that arrives while hidden cannot reveal on return',async()=>{
+ const owner=createPasskeyRevealOwner(),request=owner.begin();let foreground=true,published=0,reply!:()=>void;
+ const received=new Promise<void>(resolve=>{reply=resolve;});
+ const reading=(async()=>{await received;request.publish(()=>foreground,()=>{published++;});})();
+ foreground=false;reply();await assert.rejects(reading,/foreground/);foreground=true;assert.equal(published,0);
+});
