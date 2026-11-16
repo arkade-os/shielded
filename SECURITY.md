@@ -20,6 +20,17 @@ The policy applies to the source in this public repository, release artifacts an
 
 Documented alpha, testnet, or unaudited status is severity context, not a blanket exclusion. A testnet-only issue is still relevant when it exposes a flaw that can reach a supported mainnet or published release path.
 
+## Known Security Status and Limitations
+
+Shielded is unaudited research software for Mutinynet test coins. Do not use it with real funds.
+
+- **Trusted setup.** Phase 1 uses the Hermez Perpetual Powers of Tau transcript. The genesis 4 epoch-pool keys came from a testnet phase-2 ceremony with one recorded contribution per circuit and a Bitcoin beacon. Anyone who kept a contribution's randomness could forge proofs for that circuit. The genesis 3 keys were a development-only setup with one automated contribution and no beacon.
+- **Rule enforcement and offline behavior.** The pool covenant verifies client and batch proofs through the Arkade emulator, and the Arkade operator co-signs. Bitcoin does not verify the proofs. Both services must remain honest and online. There is no emulator-free exit, so if the emulator or arkd goes offline, the shared pool is frozen on Bitcoin for every participant.
+- **Sequencer.** The shielded sequencer orders spends and stores encrypted note records. It can delay or refuse a spend, but it cannot spend a note without the owner's proof and holds no key in the pool covenant. A fallback batch needs a mirror of the records and the published proving keys, and a renewed head expires at most one week after its last renewal.
+- **Recovery.** Recovery needs the wallet's recovery secret, published records, and the sealed spent-note sets for the note's epoch and the following epoch. If every copy of an epoch's sets is lost, notes from that epoch and the previous epoch cannot be recovered.
+- **Viewing keys.** A view key reveals every note a wallet received. A full viewing key also reveals spends and change amounts. Viewing keys cannot be revoked and do not grant spending authority.
+- **Privacy.** Deposits and withdrawals are public, including amounts and Arkade addresses. Internal payments hide sender, recipient, and amount within the current anonymity set. Nullifiers are public, and co-spending multiple notes publicly groups them as belonging to one owner. Recovery events reveal that an owner was away for more than an epoch. Treat boundary amounts as public and do not reuse a withdrawal address.
+
 ## Threat Model and Trust Boundaries
 
 This repository uses the **Protocol and runtime** profile. The security boundary includes user signing authority, VTXO and settlement state, operator liquidity, contract source and compiled artifacts, VM evaluation, replay protection, and recovery from unknown outcomes.
