@@ -1,14 +1,87 @@
-# Security status
+# Security Policy
 
-Shielded is unaudited research software for Mutinynet test coins. Do not use it with real funds.
+## Reporting a Vulnerability
 
-- **Trusted setup.** Phase 1 is the Hermez Perpetual Powers of Tau transcript, shared with many projects. The genesis 4 epoch-pool keys (release `rollup-genesis-4-keys`, manifest `rollup-keys/genesis-4.json`) come from a small testnet phase-2 ceremony: one recorded contribution per circuit, sealed by the beacon of Bitcoin block 972846. Anyone who kept a contribution's randomness could forge proofs for that circuit; the beacon only stops the last contributor from choosing the final key. The genesis 3 keys (release `rollup-genesis-3-keys`) were a development-only phase-2 setup with a single automated contribution and no beacon; that release stays published as the record of that setup. The README shows how to verify the published artifacts.
-- **Who enforces the rules.** The pool covenant verifies every client proof and the batch proof through the Arkade emulator's opcodes, and the Arkade operator co-signs. Bitcoin itself does not check the proofs. Both services must stay honest and online.
-- **If the Arkade service (emulator or arkd) goes offline, the pool is frozen on Bitcoin.** Every pool-head spend path is keyed on the emulator, so with the emulator gone no leaf is spendable and the shared pool coin cannot be split — for everyone, not just you, and separate from the head-expiry point below. There is no emulator-free exit. This is a known limitation of running on Arkade; a privacy-preserving unilateral exit was explored and set aside because it costs the pool's amount privacy.
-- **The pool operator** (the shielded sequencer, distinct from the Arkade service above) orders spends into batches and stores the encrypted note records. It can delay or refuse a spend, but it cannot spend a note without a proof that only the note owner's keys can make, and it holds no key in the pool covenant.
-- **If the sequencer stops or refuses you — and the Arkade service is still up —** the batch leaf still accepts any valid batch. With the published batch key, `tools/rollup-fallback.ts` proves one from your own spend and submits it to Arkade directly (so this path does **not** help if Arkade itself is offline; see above). That needs a mirror of the pool's records and keys, made while the sequencer was up (the batch proving keys are hundreds of megabytes, so this is a desktop step, not something a browser wallet can do). Other wallets, and the sequencer itself, follow such a batch only once its record is handed over (`publish`). Until then, the notes it creates cannot be found. Renewing the head needs the sequencer, so without it the head expires at most a week after its last renewal, and every payout made from it expires at the same time. Withdraw, and move the payout on Arkade, before then.
-- **Recovery** needs the published records and the wallet's recovery secret. Nobody can reset a lost secret. The pool forgets in epochs of 128 batches: a note spends directly in the epoch it was made in and the one after, and a wallet refreshes its notes inside that window. Recovering an older note needs the sealed spent-note sets of the epoch it came from and the one after, which the operator serves and a GitHub release mirrors; if every copy of an epoch's sets were lost, neither that epoch's notes nor the previous epoch's could be recovered.
-- **Viewing keys.** A view key reveals every note a wallet received; a full viewing key also reveals which notes it spent and, through change, how much each payment out sent. Both are forever: a key handed out cannot be revoked. Neither can spend, and a full viewing key cannot freeze notes either, because a zero-value input's nullifier is hashed apart from real ones.
-- **Privacy.** Deposits and withdrawals are public, including amounts and the Arkade addresses involved. Payments inside the pool hide sender, recipient and amount, and the anonymity set is the previous epoch's notes plus the current epoch so far: at least one whole epoch once the pool has rotated. A refresh is an ordinary payment to yourself. A recovery is a public event: it names the epoch the note came from, shows that its owner was away for over an epoch, and hides only among that one sealed epoch. Nullifiers are public: every spend reveals the spent note's nullifier, so an observer sees that a note was spent — not whose or how much, for an internal transfer. A payment that spends two or three notes at once — when no single note covers the amount, or when an asset moves alongside its Bitcoin leg — publicly marks those nullifiers as one group, so the batch feed shows those notes share an owner. This clusters a user's co-spent notes; it does not reveal identity or amount, and hiding it would need a different group construction left to a later genesis. Treat boundary amounts as public and do not reuse a withdrawal address.
+Please do not open a public issue, discussion, or pull request for a suspected vulnerability.
 
-Report issues privately to the maintainers. Do not post private details in public dependency issues or PRs.
+Use the **Report a vulnerability** button on this repository's **Security** tab. The direct private form is:
+
+https://github.com/arkade-os/shielded/security/advisories/new
+
+Keep technical details in the private advisory. Do not include seed phrases, private keys, production credentials, live user data, or funds in a report. Do not test against accounts, funds, or deployments you do not own or have explicit permission to test.
+
+We aim to acknowledge a new report within 2 business days. If you do not receive a response, add a comment to the private advisory. If GitHub reports that private reporting is unavailable, email security@arklabs.to without technical details and ask for a private channel.
+
+## System and Scope
+
+This policy covers **arkade-os/shielded**: the experimental shielded multi-asset protocol, proving setup, sequencer, and recovery flows.
+
+The policy applies to the source in this public repository, release artifacts and packages built from it, and services operated by Ark Labs or Arkade OS from an unmodified release. It also covers a vulnerability in a dependency when the issue creates an exploitable path through this repository's code or a supported deployment.
+
+Documented alpha, testnet, or unaudited status is severity context, not a blanket exclusion. A testnet-only issue is still relevant when it exposes a flaw that can reach a supported mainnet or published release path.
+
+## Threat Model and Trust Boundaries
+
+This repository uses the **Protocol and runtime** profile. The security boundary includes user signing authority, VTXO and settlement state, operator liquidity, contract source and compiled artifacts, VM evaluation, replay protection, and recovery from unknown outcomes.
+
+Assets include private keys and signing authority, funds and VTXOs, settlement and payment state, contract source and compiled artifacts, service credentials, enclave or MPC material, user data, and release integrity.
+
+Attacker-controlled inputs include network traffic, RPC, HTTP, and gRPC input, invoices and webhook payloads, relay and peer messages, contract source and artifacts, repository metadata, build inputs, dependencies, and stored state created by another participant.
+
+Users control their own keys. Remote servers, operators, solvers, plugins, peers, RPC providers, and relayed messages are untrusted unless a protocol step verifies them. A valid signature, a successful HTTP response, a relayed message, or a valid quote is not authorization by itself. Mocks, fixtures, regtest, and testnet behavior do not establish production safety.
+
+## Security Invariants
+
+- No spend path may move funds without the signatures, timelocks, asset rules, and other conditions required by the protocol.
+- VTXO, batch, commitment, exit, renewal, and recovery transitions must conserve value and reject wrong-network, wrong-outpoint, duplicate, and replayed transactions.
+- The VM, compiler, and emulator must preserve script semantics, reject malformed or unbounded inputs, and never gain an unintended host-level execution path.
+- Compiled artifacts and generated bindings must correspond to the reviewed source and must not silently weaken covenant or unilateral-exit constraints.
+- Settlement and recovery state must be idempotent. A timeout, restart, or unknown outcome must not create a second spend, credit, batch, or payout.
+
+## Reportable Findings and Severity Context
+
+A reportable finding is a practical violation of confidentiality, integrity, availability, authorization, fund safety, key safety, settlement correctness, or release integrity that is reachable in source, a supported deployment, or a published artifact.
+
+Raise severity when reachability is unauthenticated, the issue affects many users or deployments, funds or keys can be taken or frozen, an attacker can turn an unknown outcome into a duplicate spend or credit, or the issue enters a published package or release artifact.
+
+- **Critical:** theft or loss of funds or keys at scale, unauthenticated signing or spending, a covenant or VM bypass across users, enclave or MPC secret extraction, or broad compromise of a published package.
+- **High:** practical loss of one user's or one merchant's funds, repeatable double settlement or credit, authorization bypass to a privileged operation, persistent production denial of service, or a supply-chain flaw in a supported release.
+- **Medium:** bounded denial of service, cross-user information disclosure, privilege escalation without direct fund impact, or a security-control bypass with realistic but limited preconditions.
+- **Low:** a demonstrated information leak, missing hardening, or defense-in-depth gap without a practical path to meaningful impact.
+
+These are context for prioritization, not a requirement that reporters assign the final severity.
+
+## Out of Scope, Exclusions, and Accepted Risk
+
+- A custom fork or modified deployment that is not operated by Ark Labs or Arkade OS.
+- A vulnerability only in a third-party dependency, when it cannot be exploited through this repository or a supported deployment. Report that dependency upstream as well.
+- Feature requests, non-security bugs, and reports without a concrete security impact.
+- Social engineering, physical access, or a report that requires an already compromised device or credential, unless the compromise exposes an upstream weakness.
+- Public disclosure before we have coordinated a fix and disclosure date.
+- Spam, automated low-signal reports, leaked secrets unrelated to this repository, and requests for payment in exchange for withholding disclosure.
+
+We will not treat an inference or an undocumented assumption about a deployment as an accepted risk. A known limitation becomes an accepted risk only after review and documentation by the repository owner.
+
+## Remediation and Coordinated Disclosure
+
+We aim to remediate a confirmed vulnerability within 90 business days from acknowledgement. Severity, dependency constraints, protocol compatibility, and coordinated testing can change that target; we will explain material delays in the private advisory.
+
+We will keep the reporter informed in the private advisory, work with the reporter on a suitable public disclosure date after remediation, and coordinate credit. If exploitation creates an immediate risk to users, we may publish mitigations before the full advisory.
+
+## Reporting Template
+
+Use the following structure in the private advisory:
+
+```text
+* Summary:
+* Repository, release, commit, or deployment:
+* Security impact:
+* Preconditions and attacker capability:
+* Steps to reproduce and proof of concept:
+* Affected keys, funds, data, or transactions:
+* Suggested severity and reasoning:
+* Suggested mitigation:
+* Credit preference:
+```
+
+Redact secrets, private keys, seed phrases, live credentials, addresses not controlled by the reporter, and personal data.
