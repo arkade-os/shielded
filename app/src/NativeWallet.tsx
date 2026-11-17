@@ -73,7 +73,7 @@ export default function NativeWallet(){
  const retained=useCallback(async()=>{
   const view=liveShown();if(!view)return false;
   const status=await nativeNetwork.status().catch(()=>undefined);
-  return !!status&&status.phase==='ready'&&status.generation===view.session.generation&&(status.mode??'tor')===selectedMode.current&&liveShown()===view;
+  return !!status&&status.phase==='ready'&&status.generation===view.session.generation&&selectedMode.current!==undefined&&(status.mode??'tor')===selectedMode.current&&liveShown()===view;
  },[liveShown]);
  const pause=useCallback(()=>{
   clearResume();clearTransientDocument();
@@ -255,7 +255,7 @@ export default function NativeWallet(){
   const monitor=createNativeTorMonitor(nativeNetwork,health=>{
    if(!live)return;setTorHealth(health);
    const wasForeground=nativeForeground.current;nativeForeground.current=health.status.foreground!==false;
-   if(health.status.phase==='error'||health.status.mode!==undefined&&health.status.mode!==selectedMode.current)clearResume();
+   if(health.status.phase==='error'||selectedMode.current!==undefined&&health.status.mode!==undefined&&health.status.mode!==selectedMode.current)clearResume();
    const observed=active.current;
    const connecting=openingGeneration.current;
    if(connecting!==undefined&&(health.status.phase!=='ready'||health.status.generation!==connecting)){
