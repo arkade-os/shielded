@@ -76,6 +76,25 @@ test('a received-vtxo event reaches a companion read inside the sync window',asy
  }finally{await wallet.dispose();f.indexer.retire();}
 });
 
+test('the stored balance answers the same spendable amount as a live one without an explorer read',async t=>{
+ const f=companionFixture();let now=1_900_000_000_000,utxoReads=0;
+ t.mock.method(Date,'now',()=>now);
+ Object.assign(f.providers.onchainProvider as object,{getCoins:async()=>{utxoReads++;return [];}});
+ const wallet=await createLightningWallet(f.secret,f.providers);
+ try{
+  const script=hex.encode((await wallet.offchainTapscript).pkScript);
+  f.coins.set(script,[coinOn(script,'ef'.repeat(32))]);
+  now+=PRIVATE_VTXO_SYNC_MAX_AGE_MS+1_000;
+  utxoReads=0;
+  const live=await wallet.getBalance();
+  assert.ok(utxoReads>0,'a live balance reads the explorer for boarding coins');
+  // The boarding read starts a contract sync of its own; it must not be counted against the stored read.
+  await settle();utxoReads=0;
+  assert.equal((await wallet.getStoredBalance()).available,live.available);
+  assert.equal(utxoReads,0,'the stored balance read none');
+ }finally{await wallet.dispose();f.indexer.retire();}
+});
+
 const nativeHost=async()=>{
  Object.defineProperty(globalThis,'__SHIELDED_NATIVE__',{value:{version:1,poolOrigin:'https://pool.example'},configurable:true});
  Object.defineProperty(globalThis,'window',{value:globalThis,configurable:true});

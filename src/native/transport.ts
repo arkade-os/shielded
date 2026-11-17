@@ -178,7 +178,8 @@ export class NativeBridge {
    this.observeResponse?.({url,method:request.method,status:response.status,body:responseBody,requestBody:body});
    const answer=new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,statusText:response.statusText??'',headers:response.headers});
    // The pool's own admission limit keeps a sharper cooldown that leaves status reads open, so only an edge limit holds the whole origin back.
-   if(response.status===429&&!admissionLimited(responseBody))reportRateLimit(url,answer.headers.get('Retry-After'));
+   // A probe is exempt from waiting a cooldown out, so it must be exempt from arming one: it is the only request that can walk into one and push its deadline out again.
+   if(response.status===429&&!explicit?.probe&&!admissionLimited(responseBody))reportRateLimit(url,answer.headers.get('Retry-After'));
    return answer;
   }finally{request.signal.removeEventListener('abort',abort);release?.();if(oneShot)await this.release(oneShot);}
  }
