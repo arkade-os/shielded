@@ -13,16 +13,18 @@ function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?
  let info:AndroidUpdateInfo={packageName:update.packageName,versionCode:update.versionCode-1,signerSha256:update.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null,...options.info};
  const downloads:{id:string;generation:number;progress:(value:{received:number;total:number})=>void;result:ReturnType<typeof deferred<{id:string;versionCode:number}>>}[]=[],cancelled:string[]=[],events:string[]=[];
  let infoRead=()=>Promise.resolve(info),install:AndroidUpdateBackend['install']=async()=>{info={...info,installStatus:'installing'};return {installStatus:'installing'};};
+ let permit=async()=>{};
  const backend:AndroidUpdateBackend={
   info:()=>{events.push('info');return infoRead();},
   download:(generation,id,_update,progress)=>{assert.equal(_update,update);const result=deferred<{id:string;versionCode:number}>();downloads.push({id,generation,progress,result});events.push('download');return result.promise;},
-  cancel:async id=>{cancelled.push(id);if(info.staged?.id===id)info={...info,staged:undefined};},permission:async()=>{events.push('permission');},
-  install:async id=>{events.push('install:'+id);return install(id);},confirm:async()=>{events.push('confirm');info={...info,installStatus:'installing'};return {installStatus:'installing'};},
+  cancel:async id=>{cancelled.push(id);if(info.staged?.id===id)info={...info,staged:undefined};},permission:()=>{events.push('permission');return permit();},
+  install:async id=>{events.push('install:'+id);return install(id);},open:async id=>{events.push('open:'+id);return {installStatus:'idle'};},
+  confirm:async()=>{events.push('confirm');info={...info,installStatus:'installing'};return {installStatus:'installing'};},
  };
  const controller=createAndroidUpdateController(backend,{status:async()=>status,subscribe:receive=>{listener=receive;return()=>{listener=()=>{};};}},async()=>{events.push('prepare');await options.prepare?.();},()=>visible);
  if(!options.withoutRelease)controller.setRelease(release);t.after(()=>controller.stop());
  const finish=async()=>{const pending=downloads.at(-1)!;info={...info,staged:{id:pending.id,versionCode:update.versionCode}};pending.result.resolve(info.staged!);await flush();};
- return {controller,downloads,cancelled,events,finish,state:controller.getSnapshot,setInfo:(change:Partial<AndroidUpdateInfo>)=>{info={...info,...change};},read:(read:typeof infoRead)=>{infoRead=read;},install:(fn:typeof install)=>{install=fn;},visible:(value:boolean)=>{visible=value;controller.visibilityChanged();},emit:(next:NativeStatus)=>{status=next;listener(next);}};
+ return {controller,downloads,cancelled,events,finish,state:controller.getSnapshot,setInfo:(change:Partial<AndroidUpdateInfo>)=>{info={...info,...change};},read:(read:typeof infoRead)=>{infoRead=read;},install:(fn:typeof install)=>{install=fn;},permission:(fn:typeof permit)=>{permit=fn;},visible:(value:boolean)=>{visible=value;controller.visibilityChanged();},emit:(next:NativeStatus)=>{status=next;listener(next);}};
 }
 
 test('Android downloads need a ready generation, with Tor on or off',async t=>{
@@ -288,6 +290,58 @@ test('native Ready cannot bypass the pinned identity or the newer-version check'
   f.install(async()=>{throw new Error('Install reply lost');});await f.controller.install();const staged={...saved,ready:true};f.setInfo({...changed,installStatus:'idle',staged});await f.controller.refresh();
   assert.notEqual(f.state().phase,'ready');await f.controller.install();assert.equal(f.events.filter(event=>event.startsWith('install:')).length,1);
  }
+});
+
+test('a hidden app never asks for the install permission, so its rejection cannot linger on return',async t=>{
+ const staged={id:crypto.randomUUID(),versionCode:update.versionCode},f=fixture(t,{info:{canRequestInstalls:false,staged}});await flush();
+ assert.equal(f.state().phase,'ready');
+ const rejected=deferred<void>();void rejected.promise.catch(()=>{});f.permission(()=>rejected.promise);
+ f.visible(false);const opening=f.controller.permission();await flush();
+ f.visible(true);await flush();
+ rejected.reject(new Error('Return to Shielded to continue the Android update'));await opening;await flush();
+ assert.equal(f.events.includes('permission'),false);assert.equal(f.state().error,'');assert.equal(f.state().opening,false);
+});
+
+test('opening Android settings reports itself while the request is in flight',async t=>{
+ const staged={id:crypto.randomUUID(),versionCode:update.versionCode},f=fixture(t,{info:{canRequestInstalls:false,staged}});await flush();
+ const opened=deferred<void>();f.permission(()=>opened.promise);
+ const opening=f.controller.permission();await flush();assert.equal(f.state().opening,true);
+ await f.controller.permission();assert.equal(f.events.filter(event=>event==='permission').length,1);
+ opened.resolve();await opening;assert.equal(f.state().opening,false);
+});
+
+test('the Android installer handoff reuses the install preflight and keeps the verified package',async t=>{
+ const f=fixture(t,{info:{canRequestInstalls:false}});await flush();const pending=f.controller.download();await flush();await f.finish();await pending;
+ const staged=f.state().staged!;
+ await f.controller.openInstaller();
+ assert.equal(f.events.includes('prepare'),false);assert.equal(f.events.some(event=>event.startsWith('open:')),false);
+ assert.equal(f.state().phase,'ready');assert.match(f.state().error,/Android settings/);
+ f.visible(false);f.setInfo({canRequestInstalls:true});f.visible(true);await flush();
+ await f.controller.openInstaller();
+ assert.deepEqual(f.events.filter(event=>event==='prepare'||event.startsWith('open:')),['prepare','open:'+staged.id]);
+ assert.equal(f.state().phase,'ready');assert.equal(f.state().error,'');assert.equal(f.state().staged?.id,staged.id);
+ f.setInfo({signerSha256:'0'.repeat(64)});await f.controller.openInstaller();
+ assert.match(f.state().error,/different signing key/);assert.equal(f.events.filter(event=>event.startsWith('open:')).length,1);
+});
+
+test('the handoff and the resumed-activity gate line up across the capability, Rust and Kotlin',async()=>{
+ const {readFileSync}=await import('node:fs');
+ const read=(path:string)=>readFileSync(new URL(path,import.meta.url),'utf8'),plugin='../src-tauri/plugins/shielded-platform/';
+ assert.match(read('../src-tauri/build.rs'),/"native_android_update_open",/);
+ assert.match(read('../src-tauri/src/lib.rs'),/native_android_update_open,/);
+ assert.ok((JSON.parse(read('../src-tauri/capabilities/main.json')).permissions as unknown[]).includes('allow-native-android-update-open'));
+ assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;/);
+ assert.match(read(plugin+'src/lib.rs'),/"updateOpenInstaller"/);
+ const updater=read(plugin+'android/src/main/java/io/arkade/shielded/platform/AndroidUpdater.kt');
+ assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+verify\(file, args\)\s+if \(!canInstall\(\)\) result\("permission-required"\)/);
+ assert.match(updater,/FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);
+ assert.match(updater,/setDataAndType\(uri, "application\/vnd\.android\.package-archive"\)/);
+ assert.match(updater,/addFlags\(Intent\.FLAG_GRANT_READ_URI_PERMISSION\)/);
+ assert.match(read(plugin+'android/src/main/AndroidManifest.xml'),/UpdateFileProvider" android:authorities="\$\{applicationId\}\.updates" android:exported="false" android:grantUriPermissions="true"/);
+ assert.match(read(plugin+'android/src/main/res/xml/shielded_update_paths.xml'),/<cache-path name="shielded-updates" path="shielded-updates\/" \/>/);
+ const kotlin=read(plugin+'android/src/main/java/io/arkade/shielded/platform/ShieldedPlatformPlugin.kt');
+ assert.match(kotlin,/trusted\(\) && resumed\(\)/);assert.doesNotMatch(kotlin,/private var resumed/);
+ assert.match(kotlin,/lifecycle\?\.currentState\?\.isAtLeast\(Lifecycle\.State\.RESUMED\)/);
 });
 
 test('the Android installer checks the folder the Rust host stages updates in',async()=>{

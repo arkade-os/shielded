@@ -12,11 +12,11 @@ export interface AndroidInstallResult {installStatus:AndroidInstallStatus|'permi
 export interface AndroidUpdateBackend {
  info():Promise<AndroidUpdateInfo>;
  download(generation:number,requestId:string,update:AndroidUpdatePackage,progress:(value:{received:number;total:number})=>void):Promise<{id:string;versionCode:number}>;
- cancel(id:string):Promise<void>;permission():Promise<void>;install(id:string):Promise<AndroidInstallResult>;confirm():Promise<AndroidInstallResult>;
+ cancel(id:string):Promise<void>;permission():Promise<void>;install(id:string):Promise<AndroidInstallResult>;open(id:string):Promise<AndroidInstallResult>;confirm():Promise<AndroidInstallResult>;
 }
 export type AndroidUpdatePhase='idle'|'checking'|'available'|'blocked'|'downloading'|'ready'|'preparing'|'installing'|'confirmation-required'|'failed'|'unknown'|'installed';
 export interface AndroidUpdateState {
- phase:AndroidUpdatePhase;release?:NativeRelease;info?:AndroidUpdateInfo;staged?:{id:string;versionCode:number};received:number;total:number;networkReady:boolean;torReady:boolean;error:string;
+ phase:AndroidUpdatePhase;release?:NativeRelease;info?:AndroidUpdateInfo;staged?:{id:string;versionCode:number};received:number;total:number;networkReady:boolean;torReady:boolean;opening:boolean;error:string;
 }
 interface UpdateNetwork {status():Promise<NativeStatus>;subscribe(listener:(status:NativeStatus)=>void):()=>void}
 export function androidUpdateNotice(state:AndroidUpdateState){
@@ -38,7 +38,8 @@ export function androidUpdateBackend():AndroidUpdateBackend {
   info:()=>invoke('native_android_update_info'),
   download:(generation,requestId,{url,bytes,sha256,versionCode,packageName,signerSha256},progress)=>invoke('native_android_update_download',{generation,requestId,update:{url,bytes,sha256,versionCode,packageName,signerSha256},onProgress:new Channel(progress)}),
   cancel:id=>invoke('native_android_update_cancel',{id}),permission:()=>invoke('native_android_update_permission'),
-  install:id=>invoke('native_android_update_install',{id}),confirm:()=>invoke('native_android_update_confirm'),
+  install:id=>invoke('native_android_update_install',{id}),open:id=>invoke('native_android_update_open',{id}),
+  confirm:()=>invoke('native_android_update_confirm'),
  };
 }
 // IPC may outlive this deadline; reconcile native status before another install.
@@ -62,7 +63,7 @@ const conflict=(info:AndroidUpdateInfo,update?:AndroidUpdatePackage)=>{
 };
 
 export function createAndroidUpdateController(backend:AndroidUpdateBackend,network:UpdateNetwork,prepare:()=>Promise<void>=prepareAndroidInstall,isVisible:()=>boolean=()=>!document.hidden){
- let state:AndroidUpdateState={phase:'checking',received:0,total:0,networkReady:false,torReady:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0;
+ let state:AndroidUpdateState={phase:'checking',received:0,total:0,networkReady:false,torReady:false,opening:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0;
  let status:NativeStatus={phase:'idle',generation:0},poll:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|undefined;
  type Download={id:string;generation:number;revision:number;cancel:(error:Error)=>void};
  let downloading:Download|undefined,permissionOpening=false,rearmPreflight:(()=>void)|undefined;
@@ -130,6 +131,31 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   networkRevision++;status=next;const ready=next.phase==='ready';publish({networkReady:ready,torReady:ready&&(next.mode??'tor')==='tor'});
   if(downloading&&(!ready||next.generation!==downloading.generation))cancelDownload('The connection changed. Reconnect, then retry the download.');
  };
+ // A handoff to Android's own installer shares this preflight, so it cannot skip the identity
+ // checks, the saved-package match, the install permission or the wallet's final writes.
+ async function run(mode:'install'|'confirm'|'open'){
+  const saved=state.staged,confirm=mode==='confirm';
+  if(stopped||!isVisible()||(confirm?state.phase!=='confirmation-required':!installable()))return;
+  const owner=++revision;let submitted=false;publish({phase:'preparing',error:''});
+  try{
+   const info=await bounded(backend.info());if(!active(owner))return;
+   if(!confirm&&info.installStatus==='failed'&&!info.staged){reconcile(info);return;}
+   const blocked=confirm?installationConflict(info):conflict(info,state.release?.androidUpdate);if(blocked)throw new Error(blocked);
+   publish({info});
+   if(confirm&&info.installStatus!=='confirmation-required'){reconcile(info);return;}
+   if(!confirm&&(info.installStatus==='installing'||info.installStatus==='confirmation-required')){reconcile(info);return;}
+   if(!confirm&&(!info.staged||info.staged.id!==saved!.id||info.staged.versionCode!==saved!.versionCode))throw new Error('The saved update is unavailable. Download it again before installing.');
+   if(!confirm&&!info.canRequestInstalls){publish({phase:'ready',info,error:'Allow Shielded to install updates in Android settings, then return and tap Install update.'});return;}
+   await bounded(prepare(),30_000);if(!active(owner))return;
+   submitted=true;publish({phase:'installing'});
+   const result=await bounded(confirm?backend.confirm():mode==='open'?backend.open(saved!.id):backend.install(saved!.id),15_000);if(!active(owner))return;
+   // Handing the package over leaves no installer session of ours, so an idle reply is the handoff
+   // completing rather than a lost install.
+   const phase=result.installStatus==='permission-required'?'ready':result.installStatus==='idle'?(mode==='open'?'ready':'unknown'):result.installStatus;
+   publish({phase,info:{...info,...(result.installStatus==='permission-required'?{canRequestInstalls:false}:{installStatus:result.installStatus})},...(phase==='installed'?{staged:undefined}:{}),error:result.installError??(phase==='unknown'?'Android has not confirmed the install status. Check again before starting another installation.':'')});
+  }catch(error){if(active(owner))publish({phase:submitted?'unknown':confirm?'confirmation-required':saved?'ready':'failed',error:message(error)});}
+  finally{if(active(owner))schedule();}
+ }
  const unsubscribe=network.subscribe(accept),initialNetwork=networkRevision;
  void network.status().then(next=>{if(!stopped&&networkRevision===initialNetwork)accept(next);},()=>{});
  void refresh();
@@ -180,39 +206,20 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    catch(error){if(active(owner))publish({phase:'ready',error:message(error)});}
   },
   async permission(){
-   if(stopped||permissionOpening||!installable())return;
-   permissionOpening=true;const owner=++revision;publish({error:''});
+   if(stopped||permissionOpening||!isVisible()||!installable())return;
+   permissionOpening=true;const owner=++revision;publish({opening:true,error:''});
    try{await bounded(backend.permission());if(active(owner)&&isVisible())await refresh();}
-   catch(error){if(active(owner))publish({error:message(error)});}
-   finally{permissionOpening=false;}
+   catch(error){if(active(owner)&&isVisible())publish({error:message(error)});}
+   finally{permissionOpening=false;publish({opening:false});}
   },
-  async install(confirm=false){
-   const saved=state.staged;
-   if(stopped||!isVisible()||(confirm?state.phase!=='confirmation-required':!installable()))return;
-   const owner=++revision;let submitted=false;publish({phase:'preparing',error:''});
-   try{
-    const info=await bounded(backend.info());if(!active(owner))return;
-    if(!confirm&&info.installStatus==='failed'&&!info.staged){reconcile(info);return;}
-    const blocked=confirm?installationConflict(info):conflict(info,state.release?.androidUpdate);if(blocked)throw new Error(blocked);
-    publish({info});
-    if(confirm&&info.installStatus!=='confirmation-required'){reconcile(info);return;}
-    if(!confirm&&(info.installStatus==='installing'||info.installStatus==='confirmation-required')){reconcile(info);return;}
-    if(!confirm&&(!info.staged||info.staged.id!==saved!.id||info.staged.versionCode!==saved!.versionCode))throw new Error('The saved update is unavailable. Download it again before installing.');
-    if(!confirm&&!info.canRequestInstalls){publish({phase:'ready',info,error:'Allow Shielded to install updates in Android settings, then return and tap Install update.'});return;}
-    await bounded(prepare(),30_000);if(!active(owner))return;
-    submitted=true;publish({phase:'installing'});
-    const result=await bounded(confirm?backend.confirm():backend.install(saved!.id),15_000);if(!active(owner))return;
-    const phase=result.installStatus==='permission-required'?'ready':result.installStatus==='idle'?'unknown':result.installStatus;
-    publish({phase,info:{...info,...(result.installStatus==='permission-required'?{canRequestInstalls:false}:{installStatus:result.installStatus})},...(phase==='installed'?{staged:undefined}:{}),error:result.installError??(phase==='unknown'?'Android has not confirmed the install status. Check again before starting another installation.':'')});
-   }catch(error){if(active(owner))publish({phase:submitted?'unknown':confirm?'confirmation-required':saved?'ready':'failed',error:message(error)});}
-   finally{if(active(owner))schedule();}
-  },
+  install:(confirm=false)=>run(confirm?'confirm':'install'),
+  openInstaller:()=>run('open'),
   visibilityChanged(){
    if(stopped)return;
    rearmPreflight?.();
    if(!isVisible()){
     clearTimeout(poll);poll=undefined;
-    if(state.phase==='preparing'){++revision;publish({phase:state.info?.installStatus==='confirmation-required'?'confirmation-required':'ready',error:'Installation paused. Return to Shielded and tap Install update when you are ready.'});}
+    if(state.phase==='preparing'){++revision;publish({phase:state.info?.installStatus==='confirmation-required'?'confirmation-required':'ready',error:'Installation paused. Tap Install update when you are ready.'});}
    }
    else void refresh();
   },

@@ -5,5 +5,8 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application>
         <receiver android:name="io.arkade.shielded.platform.UpdateReceiver" android:exported="false" />
+        <provider android:name="io.arkade.shielded.platform.UpdateFileProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shielded_update_paths" />
+        </provider>
     </application>
 </manifest>

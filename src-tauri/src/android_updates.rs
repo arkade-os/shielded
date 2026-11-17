@@ -642,16 +642,15 @@ pub async fn native_android_update_permission(
     tauri_plugin_shielded_platform::android_update_permission(&app).await
 }
 
-#[tauri::command]
-pub async fn native_android_update_install(
-    app: AppHandle,
-    window: WebviewWindow,
-    updates: State<'_, AndroidUpdates>,
-    id: String,
+/// Both installers receive only the file this host verified and still owns, under the same fence.
+async fn submit(
+    app: &AppHandle,
+    updates: &AndroidUpdates,
+    id: &str,
+    handoff: bool,
 ) -> Result<Value, String> {
-    crate::ensure_local(&window)?;
-    let info = tauri_plugin_shielded_platform::android_update_info(&app).await?;
-    let owner = match updates.begin_install(&id) {
+    let info = tauri_plugin_shielded_platform::android_update_info(app).await?;
+    let owner = match updates.begin_install(id) {
         Ok(owner) => owner,
         Err(BeginInstallError::Failed(error)) => {
             return Ok(json!({ "installStatus": "failed", "installError": error }));
@@ -660,11 +659,40 @@ pub async fn native_android_update_install(
     };
     let request = &owner.prepared.request;
     let result = match check_candidate(request, &info) {
-        Ok(()) => tauri_plugin_shielded_platform::android_install_update(&app, json!({ "path": owner.prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code })).await,
+        Ok(()) => {
+            let metadata = json!({ "path": owner.prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code });
+            if handoff {
+                tauri_plugin_shielded_platform::android_open_update_installer(app, metadata).await
+            } else {
+                tauri_plugin_shielded_platform::android_install_update(app, metadata).await
+            }
+        }
         Err(error) => Ok(json!({ "installStatus": "failed", "installError": error })),
     };
     owner.finish(&result)?;
     result
+}
+
+#[tauri::command]
+pub async fn native_android_update_install(
+    app: AppHandle,
+    window: WebviewWindow,
+    updates: State<'_, AndroidUpdates>,
+    id: String,
+) -> Result<Value, String> {
+    crate::ensure_local(&window)?;
+    submit(&app, &updates, &id, false).await
+}
+
+#[tauri::command]
+pub async fn native_android_update_open(
+    app: AppHandle,
+    window: WebviewWindow,
+    updates: State<'_, AndroidUpdates>,
+    id: String,
+) -> Result<Value, String> {
+    crate::ensure_local(&window)?;
+    submit(&app, &updates, &id, true).await
 }
 
 #[tauri::command]

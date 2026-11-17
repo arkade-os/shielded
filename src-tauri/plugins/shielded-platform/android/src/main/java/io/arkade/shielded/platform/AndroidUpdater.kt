@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.core.content.FileProvider
 import app.tauri.plugin.JSObject
 import java.io.File
 import java.io.OutputStream
@@ -214,6 +215,30 @@ internal class AndroidUpdater(context: Context) {
         } finally {
             synchronized(lock) { if (preparing == token) preparing = null }
         }
+    }
+
+    // The system installer owns the outcome, so this writes no journal record and keeps no session.
+    fun openInstaller(args: UpdateArgs, activity: () -> Activity, authorize: (() -> Unit) -> Unit): JSObject = try {
+        synchronized(lock) {
+            val record = reconcile(version(installed()))
+            if (preparing != null || record?.status in listOf("preparing", "installing", "confirmation-required"))
+                throw UpdateRejected("An Android update is already awaiting completion")
+        }
+        val file = AndroidUpdatePolicy.privateApk(directory, args.path)
+        verify(file, args)
+        if (!canInstall()) result("permission-required")
+        else {
+            val uri = FileProvider.getUriForFile(context, "$ownPackage.updates", file)
+            authorize {
+                activity().startActivity(Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                })
+            }
+            result("idle")
+        }
+    } catch (error: Exception) {
+        result("failed", (error as? UpdateRejected)?.message ?: "Android could not open this update in its installer. You can retry.")
     }
 
     private fun abandonPending(record: Record): Record {

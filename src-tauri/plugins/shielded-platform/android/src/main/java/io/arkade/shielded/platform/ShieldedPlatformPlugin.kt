@@ -13,6 +13,7 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.doOnAttach
+import androidx.lifecycle.Lifecycle
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
@@ -53,7 +54,11 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     @Volatile private var generation = 0L
     private var destroyed = false
     private var activeActivity: Activity? = activity
-    private var resumed = false
+
+    // Tauri registers this plugin after the Activity's first onResume, so a latched flag would miss
+    // that resume and refuse every installer action until the next app switch.
+    private fun resumed() = (activeActivity as? AppCompatActivity)
+        ?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true
 
     override fun load(webView: WebView) {
         webview = webView
@@ -193,7 +198,7 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
                         try {
                             val authorize: (() -> Unit) -> Unit = { action ->
                                 AndroidUpdateAuthorization({ main.post(it) }, {
-                                    generation == ticket && !destroyed && webview === source && trusted() && resumed
+                                    generation == ticket && !destroyed && webview === source && trusted() && resumed()
                                 }).run(action)
                             }
                             // Read-only checks remain available while paused; installer actions require the resumed Activity.
@@ -242,6 +247,13 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun updateOpenInstaller(invoke: Invoke) = update(invoke, install = true) { authorize ->
+        updater.openInstaller(invoke.parseArgs(UpdateArgs::class.java), {
+            activeActivity ?: throw UpdateRejected("Return to Shielded to open the Android installer")
+        }, authorize)
+    }
+
+    @Command
     fun updateConfirm(invoke: Invoke) = update(invoke) { authorize ->
         var result: JSObject? = null
         authorize { result = updater.confirm(activeActivity ?: throw UpdateRejected("Return to Shielded to confirm the Android update")) }
@@ -252,20 +264,14 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         if (activeActivity !== activity) generation++
         activeActivity = activity
         destroyed = false
-        resumed = true
         if (updateWorker.isShutdown) updateWorker = Executors.newSingleThreadExecutor()
         updater.resumed()
-    }
-
-    override fun onPause(activity: AppCompatActivity) {
-        if (activeActivity === activity) resumed = false
     }
 
     override fun onDestroy(activity: AppCompatActivity) {
         if (activeActivity !== activity) return
         generation++
         destroyed = true
-        resumed = false
         activeActivity = null
         updateWorker.shutdown()
     }

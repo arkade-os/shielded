@@ -23,6 +23,7 @@
     "allow-native-android-update-cancel",
     "allow-native-android-update-permission",
     "allow-native-android-update-install",
+    "allow-native-android-update-open",
     "allow-native-android-update-confirm",
     "deep-link:default",
     "clipboard-manager:allow-read-text",
