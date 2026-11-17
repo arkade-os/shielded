@@ -3,9 +3,9 @@ import {test} from 'node:test';
 import {indexedDB} from 'fake-indexeddb';
 import {ConditionWitness,Transaction,setArkPsbtField} from '@arkade-os/sdk';
 import {InMemoryAssetSwapRepository,type CorridorSwapRecord,type LockupSpendIndexer} from '@arkade-os/swap';
-import {base64,hex} from '@scure/base';
+import {base64,bech32,hex} from '@scure/base';
 import {sha256} from '@noble/hashes/sha2.js';
-import {LightningSwapRepository,repairLightningReceipt} from '../src/shielded/lightning-receipt.ts';
+import {LightningSwapRepository,invoiceDescription,repairLightningReceipt} from '../src/shielded/lightning-receipt.ts';
 
 globalThis.indexedDB=indexedDB;
 const preimage=new Uint8Array(32).fill(7),hash=hex.encode(sha256(preimage)),script='5120'+'aa'.repeat(32);
@@ -59,4 +59,18 @@ for(const [version,store] of [[6,'swapRecords'],[5,'otherRecords']] as const)tes
   const saved=await new Promise((resolve,reject)=>{const request=db.transaction(store,'readonly').objectStore(store).get(original.id);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});
   assert.deepEqual(saved,original);
  }finally{db.close();await repository[Symbol.asyncDispose]();}
+});
+
+const field=(type:number,bytes:Uint8Array)=>{const words=bech32.toWords(bytes);return [type,words.length>>5,words.length&31,...words];};
+const SIGNATURE=[...field(13,new TextEncoder().encode('decoy')),...Array(93).fill(0)];
+const invoiceWith=(...fields:number[][])=>bech32.encode('lntbs21u',[...Array(7).fill(0),...fields.flat(),...SIGNATURE],false);
+const MUTINY='lntbs210n1p4dpvmxpp58d4nqkxz5htt4ctfhyvfqnx0947fyp4uvdyg3g9j6xhahn2dytrqdqqcqzzsxqyz5vqsp5nxkcjl99y7h0uyp34xwgw6cldflucq8r7ssk06vylsjld60lfzps9qxpqysgqrf3yfzavh34pu5t8ee9perqp35z6534k6q3m5v5xckdrm4l869yrxrm4pxslwvqtzql96m69hq7sxwptw5fry9u8h3twyrdenungqxcqafud53';
+test('an invoice description comes from its d field and never from its signature',()=>{
+ const hash=field(1,new Uint8Array(32).fill(1)),described=invoiceWith(hash,field(13,new TextEncoder().encode('Two coffees ☕')));
+ assert.equal(SIGNATURE.length,104);
+ assert.equal(invoiceDescription(described),'Two coffees ☕');
+ assert.equal(invoiceDescription(described.toUpperCase()),'Two coffees ☕');
+ assert.equal(invoiceDescription(invoiceWith(hash,field(23,new Uint8Array(32)))),undefined,'a Lightning address invoice carries only its description hash');
+ assert.equal(invoiceDescription(MUTINY),undefined,'a real invoice with an empty description');
+ for(const broken of ['','lightning',described.slice(0,-1)+(described.endsWith('q')?'p':'q')])assert.equal(invoiceDescription(broken),undefined,broken);
 });

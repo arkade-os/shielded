@@ -161,13 +161,14 @@ for(const failedStage of ['markets','resolve'] as const)test(`explicit invoice d
 });
 
 const flushTasks=async()=>{for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));};
-test('startup repairs an ended send receipt under its session lock without starting a payment client',async()=>{
+for(const described of [false,true])test(`startup repairs an ended send receipt under its session lock without starting a payment client${described?', and reads what it delivered and its description':''}`,async()=>{
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey());
  const artifact={...await journal.allocateArtifact(ownerKey,pool,'send'),state:'ended' as const,quoteId:'old-quote'};await journal.updateArtifact(ownerKey,pool,artifact);
  const name=`shielded-lightning-${ownerKey}-${pool}-${artifact.id}`,repository=new LightningSwapRepository(name),preimage=new Uint8Array(32).fill(7),paymentHash=hex.encode(sha256(preimage));
  const tx=new Transaction({allowUnknownInputs:true,allowUnknownOutputs:true}),funding='aa'.repeat(32);
  tx.addInput({txid:funding,index:1});tx.addOutput({script:script.pkScript,amount:2113n});setArkPsbtField(tx,0,ConditionWitness,[preimage]);
- const saved={id:artifact.quoteId,family:'rfq',kind:'lightning_send',state:'refunded',lockupPkScript:hex.encode(script.pkScript),lock:{hash:paymentHash},profile:{custom:'keep'},fundingTxid:funding,give:{amount:'2113'},createdAt:1,updatedAt:1} as unknown as SwapRecord;
+ const bolt11='lntbs21u1qqqqqqqpp5qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsdqj23mk7grrdanxvet9wvqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqp5ph6l';
+ const saved={id:artifact.quoteId,family:'rfq',kind:'lightning_send',state:'refunded',lockupPkScript:hex.encode(script.pkScript),lock:{hash:paymentHash},profile:{custom:'keep'},fundingTxid:funding,give:{amount:'2113'},...(described?{take:{amount:'2100'},route:{take:{instrument:{kind:'invoice',bolt11}}}}:{}),createdAt:1,updatedAt:1} as unknown as SwapRecord;
  await repository.saveSwapRecord(saved);await repository[Symbol.asyncDispose]();let reads=0;
  Object.assign(f.base,{indexerProvider:{getVtxos:async()=>{assert.equal(f.live.has(name),true);reads++;return {vtxos:[{txid:funding,vout:1,spentBy:tx.id,arkTxId:'bb'.repeat(32)}]};},getVirtualTxs:async()=>({txs:[base64.encode(tx.toPSBT())]})}});
  const service=await createPrivateLightning({...f,companion:f.base,journal,repositoryFor:db=>new LightningSwapRepository(db),legacyRecovery:false});
@@ -175,7 +176,8 @@ test('startup repairs an ended send receipt under its session lock without start
   const reopened=new LightningSwapRepository(name),corrected=await reopened.getSwapRecord(saved.id);assert.ok(corrected?.family==='rfq');assert.equal(corrected.state,'settled');await reopened[Symbol.asyncDispose]();
   assert.equal(reads,1);assert.equal(f.configs.length,1);assert.equal(f.starts.length,0);assert.equal(f.funded.length,0);assert.equal(f.live.size,0);
   assert.equal((await journal.artifacts(ownerKey,pool))[0]!.state,'ended');
-  const history=await service.getActivityHistory();assert.equal(history.length,1);assert.equal(history[0]!.intent?.label,'Paid via Lightning');assert.equal(history[0]!.amount,-2113);assert.equal(history[0]!.intent?.metadata?.fundingTxid,funding);
+  const history=await service.getActivityHistory();assert.equal(history.length,1);assert.equal(history[0]!.intent?.label,'Sent over Lightning');assert.equal(history[0]!.amount,-2113);
+  assert.deepEqual(history[0]!.intent?.metadata,described?{fundingTxid:funding,delivered:2100,description:'Two coffees'}:{fundingTxid:funding});
   await service[Symbol.asyncDispose]();
   const restored=await createPrivateLightning({...f,companion:f.base,journal,repositoryFor:db=>new LightningSwapRepository(db),legacyRecovery:false});
   try{assert.deepEqual(await restored.getActivityHistory(),history);assert.equal(reads,1);assert.equal(f.starts.length,0);assert.equal(f.funded.length,0);}
@@ -1064,7 +1066,9 @@ for(const disposeDuringRepair of [false,true])test(`live terminal receipt repair
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
  let closing:Promise<void>|undefined;
  try{
-  const quote=await service.quote({to:'invoice'}),accepted=await service.accept(quote);
+  const quote=await service.quote({to:'invoice'});
+  await service.recordLightning('another-quote','bob@pay.example');await service.recordLightning(quote.id,'alice@pay.example');
+  const accepted=await service.accept(quote);
   assert.equal(accepted.outcome,'open');assert.equal(f.starts.length,1);assert.equal(f.funded.length,1);assert.equal(reads,0);assert.equal(casEntered,false);
   const stored=await repository.getSwapRecord(quote.id);assert.ok(stored?.family==='rfq');assert.equal(stored.state,'created');
   const refunded={...stored,state:'refunded' as const,fundingTxid:funding,profile:{...stored.profile,custom:'preserve-live-metadata'}};
@@ -1081,12 +1085,13 @@ for(const disposeDuringRepair of [false,true])test(`live terminal receipt repair
    assert.equal(corrected.settlementPreimageHex,hex.encode(preimage));assert.equal(hex.encode(sha256(hex.decode(corrected.settlementPreimageHex!))),paymentHash);
    assert.deepEqual(corrected.profile,refunded.profile);assert.equal(corrected.fundingTxid,funding);assert.equal(corrected.refundTxid,undefined);
   }finally{await reopened[Symbol.asyncDispose]();}
-  assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),poolName))[0]!.state,'ended');
+  const [ended]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),poolName);assert.deepEqual([ended!.state,ended!.lightning],['ended','alice@pay.example']);
   if(!disposeDuringRepair){
    const history=await service.getActivityHistory();assert.equal(history.length,1);assert.equal(history[0]!.amount,-1003);assert.equal(history[0]!.intent?.outcome,'paid');assert.equal(history[0]!.intent?.metadata?.fundingTxid,funding);
    const withdrawal={...history[0]!,id:'pool-withdrawal',intent:{kind:'unshield' as const,label:'Withdrawn from the pool',metadata:{batch:146}}};
-   const merged=pageActivityHistory([withdrawal],history);assert.equal(merged.length,1);assert.equal(merged[0]!.id,withdrawal.id);assert.equal(merged[0]!.intent?.label,'Paid via Lightning');assert.equal(merged[0]!.intent?.outcome,'paid');
-   assert.equal(merged[0]!.amount,withdrawal.amount);assert.deepEqual(merged[0]!.txs,withdrawal.txs);assert.deepEqual(merged[0]!.intent?.metadata,withdrawal.intent.metadata);
+   const merged=pageActivityHistory([withdrawal],history);assert.equal(merged.length,1);assert.equal(merged[0]!.id,withdrawal.id);
+   assert.equal(merged[0]!.amount,withdrawal.amount);assert.deepEqual(merged[0]!.txs,withdrawal.txs);
+   assert.deepEqual(merged[0]!.intent,{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{batch:146,fundingTxid:funding,delivered:1000,to:'alice@pay.example'}});
   }
  }finally{release();await closing;await service[Symbol.asyncDispose]();}
 });

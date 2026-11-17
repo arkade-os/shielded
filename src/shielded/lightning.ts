@@ -1,4 +1,4 @@
-import {isLnurl,type PaymentRail,type PaymentRequest,type RouterContext} from '@arkade-os/sdk';
+import {isLnurl,type PaymentRail,type PaymentRequest,type RouteQuote,type RouterContext} from '@arkade-os/sdk';
 import {LnurlError,LnurlTransportError,createLnurlClient,type LnurlClient,type PayRequest} from '@arkade-os/lnurl-client';
 import {lnurlRails} from '@arkade-os/lnurl-client/arkade';
 import {lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap';
@@ -51,12 +51,14 @@ export function lnurlShieldedRail(wallet:ShieldedWallet,client:LnurlClient):Paym
  };
 }
 
-export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<SwapClient,'markets'>,fetcher?:typeof fetch):PaymentRail[]{
+export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<SwapClient,'markets'>&{recordLightning?:(quoteId:string,lightning:string)=>Promise<void>},fetcher?:typeof fetch):PaymentRail[]{
  const base=lightningRail(swaps);
  // `available` resolves offline against the cached registry, which nothing has fetched on a fresh page.
  const lightning=poolFunded(wallet,{...base,available:async(req,ctx)=>{await swaps.markets().catch(()=>{});return base.available!(req,ctx);}});
  const client=createLnurlClient(fetcher?{fetchImpl:fetcher}:undefined);
- const [arkade,viaLightning]=lnurlRails({client,arkade:shieldedWithdrawRail(wallet),lightning}) as [PaymentRail,PaymentRail];
+ const [arkade,lnurlLightning]=lnurlRails({client,arkade:shieldedWithdrawRail(wallet),lightning}) as [PaymentRail,PaymentRail];
+ // The swap is funded inside its session, which never sees the address, so the quote's artifact takes it first.
+ const viaLightning:PaymentRail={...lnurlLightning,quote:async(req,ctx)=>{const quote=await lnurlLightning.quote(req,ctx);return {...quote,send:async()=>{await swaps.recordLightning?.(String(quote.meta?.quoteId),req.raw.trim());return quote.send();}};}};
  const handOver=async(error:unknown,req:PaymentRequest,ctx:RouterContext,...rails:PaymentRail[])=>{
   if(!transient(error))for(const rail of rails)if(await Promise.resolve().then(()=>rail.available!(req,ctx)).catch(()=>false))return rail.quote(req,ctx);
   throw error;
@@ -65,7 +67,13 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
  // cannot pay in one note, or under another operator, hands over to the Lightning option here.
  const lnurlArkade:PaymentRail={...arkade,
   available:async(req,ctx)=>{await wallet.restoreLightningSpends();return Number.isSafeInteger(req.amount)&&wallet.canWithdraw(BigInt(req.amount!))&&await arkade.available!(req,ctx);},
-  quote:async(req,ctx)=>{try{return await arkade.quote(req,ctx);}catch(error){return handOver(error,req,ctx,viaLightning);}}};
+  quote:async(req,ctx)=>{
+   let quote:RouteQuote;try{quote=await arkade.quote(req,ctx);}catch(error){return handOver(error,req,ctx,viaLightning);}
+   // lnurl-client hands the withdraw rail only the callback's destination, so the address is recorded here or nowhere.
+   const to=quote.meta?.to;
+   if(typeof to!=='string'||!to)throw new Error('The Lightning address service gave no Arkade destination.');
+   return {...quote,send:()=>wallet.withdraw(to,BigInt(quote.amount),{record:{to,lightning:req.raw.trim()}})};
+  }};
  const shielded=lnurlShieldedRail(wallet,client);
  // A hand-over from the private route lands on a public one, and the quote's copy says so before anything is sent.
  const lnurlShielded:PaymentRail={...shielded,quote:async(req,ctx)=>{try{return await shielded.quote(req,ctx);}catch(error){return handOver(error,req,ctx,lnurlArkade,viaLightning);}}};

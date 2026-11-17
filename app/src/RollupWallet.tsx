@@ -64,12 +64,14 @@ function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
   {shown&&qr!==undefined&&<QrCode value={qr} label={label??'QR code'}/>}</>;
 }
 // The resolver's kinds, mapped onto the swatches the history list already has.
-const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','shielded-send':'send','self-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
+const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','lightning-send':'withdraw','lnurl-arkade':'withdraw','shielded-send':'send','self-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
 const LIGHTNING_STATUS:Record<string,string>={received:'Received; waiting to shield',shielding:'Received; shielding',shielded:'Shielded in the pool',retrying:'Received; shielding will retry','below-minimum':'Received outside the pool; below the shielding minimum','onchain-recovery':'Onchain recovery; shielding paused','onchain-recovered':'Recovered onchain'};
 const WHERE:Record<string,string>={
  shield:'From your Arkade coins into the pool; the amount is public.',
  unshield:'Out of the pool to an Arkade address; the amount is public.',
  'onchain-exit':'Out of the pool through a fresh single-use key, then a batch swap to the Bitcoin chain; the amount and the destination are public.',
+ 'lightning-send':'Out of the pool into a Lightning swap, which paid the invoice; the amount is public.',
+ 'lnurl-arkade':'Out of the pool to the Arkade address the Lightning address gave; the amount and the destination are public.',
  'shielded-send':'Inside the pool; amount and parties stay private.',
  'shielded-receive':'Inside the pool; amount and sender stay private.',
  'self-send':'Inside the pool: a private payment to your own address. Nothing left the wallet.',
@@ -745,7 +747,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const historyItems=rows.map(item=>{
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
-  const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='unshield'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
+  const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='lightning-send'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
   const tx=txOf(newest.key),asset=newest.assets?.[0];
   const feePaid=wallet&&kind==='shield'?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):wallet&&kind==='lightning-receive'?lightningShieldFeeOf(wallet.shieldedHistory(),item.intent?.metadata?.shieldTxid,item.amount):undefined;
   const amount=`${direction==='in'?'+':direction==='out'?'−':''}${asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}`;
@@ -761,6 +763,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
      {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
      <dt>Bitcoin transaction</dt><dd>{txLink('bitcoin',item.intent.metadata.onchainTxid)}</dd></>}
+    {(kind==='lnurl-arkade'||kind==='lightning-send')&&typeof item.intent?.metadata?.to==='string'&&<><dt>To</dt><dd><Copyable value={item.intent.metadata.to}/></dd></>}
+    {kind==='lightning-send'&&typeof item.intent?.metadata?.description==='string'&&<><dt>Description</dt><dd>{item.intent.metadata.description}</dd></>}
+    {kind==='lightning-send'&&typeof item.intent?.metadata?.delivered==='number'&&<><dt>Delivered</dt><dd>{sats(item.intent.metadata.delivered)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.delivered)}-sat swap fee</dd></>}
     <dt>Status</dt><dd>{status}</dd>
     {kind==='lightning-receive'&&item.intent?.outcome!=='shielded'&&wallet?.swaps&&typeof item.intent?.metadata?.outpoint==='string'&&<LightningRecoveryQuote service={wallet.swaps} outpoint={item.intent.metadata.outpoint} disabled={busy||restoring.current}/>}
     {revealFor(item,link=>open({kind:'reveal',value:link}))}

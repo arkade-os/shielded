@@ -92,6 +92,13 @@ test('a withdrawal that paid an on-chain exit shows as sent on-chain, with where
   [['onchain-exit','Sent on-chain','tb1qdest','ef'.repeat(32),990],['unshield','Withdrawn from the pool',undefined,undefined,undefined]]);
 });
 
+test('a withdrawal that paid a Lightning address shows as sent to that address, and a private send never does',()=>{
+ const entries=[entry({kind:'withdraw',destination:2n,spent:[7n],slots:[0]}),entry({kind:'withdraw',destination:3n,spent:[8n],slots:[1]}),entry({kind:'send',spent:[9n],slots:[2]})],index=indexOf(entries,1n);
+ const resolver=shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>false,isListing:()=>false,lightningOf:e=>e.spent[0]===8n?undefined:'alice@pay.example'});
+ assert.deepEqual(index.rows().map(r=>{const i=resolver.resolve(r)![0]!;return [i.kind,i.label,i.metadata?.to,i.metadata?.batch];}),
+  [['lnurl-arkade','Sent to a Lightning address','alice@pay.example',3],['unshield','Withdrawn from the pool',undefined,3],['shielded-send','Sent privately',undefined,3]]);
+});
+
 test('each synthetic row resolves to its own entry even when a batch holds three of them',async()=>{
  const entries=[entry({kind:'send',slots:[0]}),entry({kind:'receive',spent:[],created:[note(400n,9n)],amounts:[{asset:0n,amount:400n}],slots:[1]}),entry({kind:'merge',amounts:[],created:[note(900n,11n)],slots:[2]})];
  const index=indexOf(entries);

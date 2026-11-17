@@ -511,11 +511,11 @@ const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({ra
 test('a paid Lightning receipt enriches exactly one matching withdrawal without duplicating its debit',()=>{
  const tx={key:{arkTxid:'funding',boardingTxid:'',commitmentTxid:''},type:TxType.TxSent,amount:2113,settled:true,createdAt:100};
  const withdrawal:Activity={id:'pool-row',amount:-2113,createdAt:100,settled:true,txs:[tx],intent:{kind:'unshield',label:'Withdrawn from the pool',metadata:{batch:146,notes:1}}};
- const receipt:Activity={id:'receipt',amount:-2113,createdAt:200,settled:true,txs:[tx],intent:{kind:'lightning-send',label:'Paid via Lightning',outcome:'paid',metadata:{fundingTxid:'funding'}}};
+ const receipt:Activity={id:'receipt',amount:-2113,createdAt:200,settled:true,txs:[tx],intent:{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{fundingTxid:'funding',delivered:2100,description:'Two coffees'}}};
  const incoming:Activity={id:'incoming',amount:2000,createdAt:150,settled:false,txs:[],intent:{kind:'lightning-receive',outcome:'shielding'}};
  const rows=page.pageActivityHistory([withdrawal],[receipt,incoming]);assert.equal(rows.length,2);assert.equal(rows[0],incoming);
- const paid=rows[1]!;assert.equal(paid.id,withdrawal.id);assert.equal(paid.amount,-2113);assert.equal(paid.txs,withdrawal.txs);assert.deepEqual(paid.intent?.metadata,withdrawal.intent!.metadata);
- assert.equal(paid.intent?.label,'Paid via Lightning');assert.equal(paid.intent?.outcome,'paid');assert.equal(activityReceived(paid),false);
+ const paid=rows[1]!;assert.equal(paid.id,withdrawal.id);assert.equal(paid.amount,-2113);assert.equal(paid.txs,withdrawal.txs);
+ assert.deepEqual(paid.intent,{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{batch:146,notes:1,fundingTxid:'funding',delivered:2100,description:'Two coffees'}});assert.equal(activityReceived(paid),false);
  assert.deepEqual(page.pageActivityHistory([withdrawal],[receipt,incoming]),rows);
  for(const unbound of [{...receipt,amount:-2000},{...receipt,intent:{...receipt.intent!,metadata:{fundingTxid:'other'}}}]){
   const untouched=page.pageActivityHistory([withdrawal],[unbound,incoming]);assert.equal(untouched.length,2);assert.equal(untouched[1],withdrawal);
