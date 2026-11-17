@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {openNativeVault,reopenNativeForeground,resumeNativeForeground} from '../app/src/native-open.ts';
+import {NATIVE_FOREGROUND_HOLD,nativeForegroundHold,openNativeVault,reopenNativeForeground,resumeNativeForeground} from '../app/src/native-open.ts';
 import {createNativeViewHandoff} from '../app/src/native-view-handoff.ts';
 
 test('native-only interruption retires a first opening candidate before reconstructing it',async()=>{
@@ -76,6 +77,49 @@ test('opening accepts the generation created by native start rather than the pau
  bridge.current={phase:'paused',generation};
  const opened=await openNativeVault(()=>bridge.start(),async()=>null,()=>true,{mode:'tor',current:()=>true});
  assert.equal(opened?.status.generation,3);assert.equal(opened.secret,null);
+});
+
+test('a replaced renderer opens the live direct session instead of restarting Tor',async()=>{
+ const modes:unknown[]=[];
+ const bridge=new NativeBridge({invoke:async(command,args)=>{
+  if(command!=='native_start')return {phase:'ready',generation:7,mode:'direct'};
+  modes.push(args?.mode);return {phase:'ready',generation:7,mode:args?.mode};
+ },channel:()=>{}},new NativePolicy('https://pool.example'));
+ const mode=await bridge.hostMode(),current=()=>true;
+ const opened=await openNativeVault(()=>bridge.start(mode),async()=>'secret',current,{mode,current});
+ assert.deepEqual(modes,['direct']);
+ assert.equal(opened?.status.generation,7);assert.equal(opened.secret,'secret');
+});
+
+test('a visible renderer whose host still reports the background explains the wait',()=>{
+ const waiting={visible:true,live:false,paused:false};
+ for(const phase of ['paused','error','locked','bootstrapping','ready']){
+  assert.equal(nativeForegroundHold({phase,generation:2,foreground:false},waiting),NATIVE_FOREGROUND_HOLD,phase);
+ }
+ assert.match(NATIVE_FOREGROUND_HOLD,/Switch to another app and back/);
+ assert.doesNotMatch(NATIVE_FOREGROUND_HOLD,/native_|WindowEvent|Tauri|generation|webview|suspend/i);
+ const held:[string,Parameters<typeof nativeForegroundHold>[1],NativeStatus][]=[
+  ['a working wallet is not alarmed',{...waiting,live:true},{phase:'ready',generation:2,foreground:false}],
+  ['a hidden renderer keeps the paused copy',{...waiting,visible:false},{phase:'paused',generation:2,foreground:false}],
+  ['a deliberate lock or reset stays quiet',{...waiting,paused:true},{phase:'paused',generation:2,foreground:false}],
+  ['a foreground host needs no excuse',waiting,{phase:'paused',generation:2,foreground:true}],
+  ['a host that reports no foreground field is not Android',waiting,{phase:'paused',generation:2}],
+ ];
+ for(const [why,state,status] of held)assert.equal(nativeForegroundHold(status,state),undefined,why);
+ assert.equal(nativeForegroundHold(undefined,waiting),undefined);
+ // Reconnect routes through open(), so its guard must explain itself and still refuse to start.
+ const native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8');
+ assert.match(native,/if\(!pageForeground\(\)\|\|!nativeForeground\.current\)\{setBusy\(false\);setPhase\(!pageForeground\(\)\?'Private connection paused':NATIVE_FOREGROUND_HOLD\);return Promise\.resolve\(\);\}/);
+ assert.match(native,/const held=nativeForegroundHold\(health\.status,\{visible:pageForeground\(\),live:!!liveShown\(\),paused:manualLock\.current\|\|clearing\.current\}\);\s*if\(held\)\{setBusy\(false\);setPhase\(held\);\}/);
+ assert.match(native,/onReconnect=\{\(\)=>\{if\(transition\.current\|\|creating\.current\)return;manualLock\.current=false;void \(resetPending\?finishReset\(\):open\(\)\);\}\}/,'reconnect gains no path around the latch');
+});
+
+test('the native wallet adopts the host session mode before its first start',()=>{
+ const native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8');
+ assert.match(native,/const selectedMode=useRef<NativeMode\|undefined>\(undefined\)/);
+ assert.match(native,/const mode=selectedMode\.current\?\?=await nativeNetwork\.hostMode\(\);/);
+ assert.match(native,/const status=await nativeNetwork\.start\(mode\);/);
+ assert.doesNotMatch(native,/useRef<NativeMode>\('tor'\)/);
 });
 
 test('foreground waits for a delayed retired start and then opens one fresh generation',async()=>{

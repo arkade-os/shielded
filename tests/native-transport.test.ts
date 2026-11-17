@@ -283,6 +283,21 @@ test('native starts select Tor by default and send an explicit direct selection'
  assert.deepEqual(selections,['tor','direct']);
 });
 
+test('the host session mode is read from a running session only, where the fenced status read cannot reach it',async()=>{
+ for(const [status,mode] of [
+  [{phase:'ready',generation:7,mode:'direct'},'direct'],
+  [{phase:'bootstrapping',generation:7,mode:'direct'},'direct'],
+  [{phase:'paused',generation:7,mode:'direct'},'tor'],
+  [{phase:'locked',generation:0,mode:'tor'},'tor'],
+  [{phase:'ready',generation:7},'tor'],
+ ] as [NativeStatus,string][]){
+  const label=`${status.phase} ${status.mode}`;
+  const bridge=new NativeBridge({invoke:async()=>status,channel:()=>({})},new NativePolicy('https://pool.example'));
+  assert.equal(await bridge.hostMode(),mode,label);
+  assert.equal((await bridge.status()).mode,'tor',label);
+ }
+});
+
 test('a mismatched native start cannot publish a direct connection as Tor',async()=>{
  const api:NativeBackend={invoke:async()=>({phase:'ready',generation:1,mode:'direct'}),channel:()=>({})};
  const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));

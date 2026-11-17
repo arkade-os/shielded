@@ -7,7 +7,7 @@ import {installNativeTransport,nativeNetwork,type NativeMode} from '../../src/na
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
 import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
-import {openNativeVault,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
+import {NATIVE_FOREGROUND_HOLD,nativeForegroundHold,openNativeVault,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
 import {saveNativeSetup} from './native-setup.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
 import NativeConnectionWarning,{NativeExternalLink} from './NativeConnectionWarning.tsx';
@@ -43,7 +43,7 @@ export default function NativeWallet(){
  const [paymentRequest,setPaymentRequest]=useState<IncomingPayment>();
  const [confirmDirect,setConfirmDirect]=useState(false),[switching,setSwitching]=useState(false),[saving,setSaving]=useState(false);
  const [resetPending,setResetPending]=useState(()=>localStorage.getItem(RESET_PENDING)==='1');
- const selectedMode=useRef<NativeMode>('tor'),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
+ const selectedMode=useRef<NativeMode|undefined>(undefined),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
  const setupAllowed=useRef(false);
  const active=useRef<Session|undefined>(undefined),attempt=useRef(0),cleanup=useRef(createNativeCleanup()),closed=useRef<Promise<void>>(Promise.resolve()),manualLock=useRef(false);
  const resumeRevision=useRef(0),nativeForeground=useRef(true);
@@ -73,7 +73,7 @@ export default function NativeWallet(){
  const retained=useCallback(async()=>{
   const view=liveShown();if(!view)return false;
   const status=await nativeNetwork.status().catch(()=>undefined);
-  return !!status&&status.phase==='ready'&&status.generation===view.session.generation&&(status.mode??'tor')===selectedMode.current&&liveShown()===view;
+  return !!status&&status.phase==='ready'&&status.generation===view.session.generation&&selectedMode.current!==undefined&&(status.mode??'tor')===selectedMode.current&&liveShown()===view;
  },[liveShown]);
  const pause=useCallback(()=>{
   clearResume();clearTransientDocument();
@@ -123,7 +123,7 @@ export default function NativeWallet(){
  },[]);
  const open=useCallback(()=>{
   if(openingOperation.current)return openingOperation.current;
-   if(!pageForeground()||!nativeForeground.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
+   if(!pageForeground()||!nativeForeground.current){setBusy(false);setPhase(!pageForeground()?'Private connection paused':NATIVE_FOREGROUND_HOLD);return Promise.resolve();}
    if(localStorage.getItem(RESET_PENDING)==='1')return finishReset();
    if(manualLock.current||clearing.current){setBusy(false);setPhase('Private connection paused');return Promise.resolve();}
   const previousClose=closed.current;
@@ -137,14 +137,16 @@ export default function NativeWallet(){
    await cleanup.current.drain();
    if(mine!==attempt.current)return;
    await previousClose.catch(()=>{});
+   // Tor off lasts the host's app session, so a replaced renderer adopts a running session's mode instead of restarting Tor.
+   const mode=selectedMode.current??=await nativeNetwork.hostMode();
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
-   setPhase(selectedMode.current==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
+   setPhase(mode==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
     const generationGuard=()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
    const opened=await openNativeVault(async()=>{
-    const status=await nativeNetwork.start(selectedMode.current);
+    const status=await nativeNetwork.start(mode);
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
-   },getSecret,generationGuard,{mode:selectedMode.current,current:generationGuard});
+   },getSecret,generationGuard,{mode,current:generationGuard});
    if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
@@ -253,7 +255,7 @@ export default function NativeWallet(){
   const monitor=createNativeTorMonitor(nativeNetwork,health=>{
    if(!live)return;setTorHealth(health);
    const wasForeground=nativeForeground.current;nativeForeground.current=health.status.foreground!==false;
-   if(health.status.phase==='error'||health.status.mode!==undefined&&health.status.mode!==selectedMode.current)clearResume();
+   if(health.status.phase==='error'||selectedMode.current!==undefined&&health.status.mode!==undefined&&health.status.mode!==selectedMode.current)clearResume();
    const observed=active.current;
    const connecting=openingGeneration.current;
    if(connecting!==undefined&&(health.status.phase!=='ready'||health.status.generation!==connecting)){
@@ -264,6 +266,8 @@ export default function NativeWallet(){
    }else if(!wasForeground&&nativeForeground.current&&!manualLock.current&&pageForeground()){
     void resume(++resumeRevision.current).catch(fail);
    }
+   const held=nativeForegroundHold(health.status,{visible:pageForeground(),live:!!liveShown(),paused:manualLock.current||clearing.current});
+   if(held){setBusy(false);setPhase(held);}
   },cause=>{if(live){fail(cause);if(active.current&&!connectionPending.current)void suspend();}},pageForeground);
   const stopVisibility=watchPageVisibility(visible=>{pageVisible.current=visible;monitor.visibilityChanged();visibility();});
   return()=>{live=false;stopVisibility();monitor.stop();document.removeEventListener('click',external,true);void pause();};
