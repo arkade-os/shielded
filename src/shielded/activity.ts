@@ -5,7 +5,7 @@ import type {SentRecord} from './repository.ts';
 export const SHIELDED_TAG='shielded';
 const SYNTHETIC={send:'shielded-send',receive:'shielded-receive',merge:'merge',withdraw:'unshield'} as const;
 type SyntheticKind=keyof typeof SYNTHETIC;
-const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received','self-send':'Sent to yourself',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool','onchain-exit':'Sent on-chain',list:'Listed asset'} as const;
+const LABELS={'shielded-send':'Sent privately','shielded-receive':'Received','self-send':'Sent to yourself',merge:'Merged notes','claim-link':'Claim link',shield:'Shielded',unshield:'Withdrawn from the pool','onchain-exit':'Sent on-chain','lnurl-arkade':'Sent to a Lightning address',list:'Listed asset'} as const;
 type Amounts=EpochHistoryEntry['amounts'];
 export interface ShieldedRowIndex {rows():ArkTransaction[];entryOf(tx:ArkTransaction):EpochHistoryEntry|undefined;paidToSelf(entry:EpochHistoryEntry):Amounts|undefined}
 
@@ -33,15 +33,15 @@ export function shieldedRows(entries:()=>readonly EpochHistoryEntry[],assetIdOf:
  };
 }
 
-export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly EpochHistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:EpochHistoryEntry)=>boolean;exitOf?:(entry:EpochHistoryEntry)=>{to:string;txid:string;sats?:number}|undefined}):ActivityResolver{
+export function shieldedActivityResolver(o:{index:ShieldedRowIndex;entries:()=>readonly EpochHistoryEntry[];isPoolBatch:(txid:string)=>boolean;isListing:(txid:string)=>boolean;isLink?:(entry:EpochHistoryEntry)=>boolean;exitOf?:(entry:EpochHistoryEntry)=>{to:string;txid:string;sats?:number}|undefined;lightningOf?:(entry:EpochHistoryEntry)=>string|undefined}):ActivityResolver{
  return {
   id:SHIELDED_TAG,
   resolve(tx){
    const entry=o.index.entryOf(tx);
    if(entry){
-    const exit=entry.kind==='withdraw'?o.exitOf?.(entry):undefined;
-    const kind=exit?'onchain-exit':o.index.paidToSelf(entry)?'self-send':entry.kind==='send'&&o.isLink?.(entry)?'claim-link':SYNTHETIC[entry.kind as SyntheticKind];
-    return [{groupId:`${SHIELDED_TAG}:${entry.batch}:${entry.slots.join('-')}`,label:LABELS[kind],kind,metadata:{batch:entry.batch,notes:entry.created.length,spent:entry.spent.length,...(exit?{to:exit.to,onchainTxid:exit.txid,...(exit.sats===undefined?{}:{onchainSats:exit.sats})}:{})}}];
+    const exit=entry.kind==='withdraw'?o.exitOf?.(entry):undefined,lightning=entry.kind==='withdraw'?o.lightningOf?.(entry):undefined;
+    const kind=exit?'onchain-exit':lightning?'lnurl-arkade':o.index.paidToSelf(entry)?'self-send':entry.kind==='send'&&o.isLink?.(entry)?'claim-link':SYNTHETIC[entry.kind as SyntheticKind];
+    return [{groupId:`${SHIELDED_TAG}:${entry.batch}:${entry.slots.join('-')}`,label:LABELS[kind],kind,metadata:{batch:entry.batch,notes:entry.created.length,spent:entry.spent.length,...(exit?{to:exit.to,onchainTxid:exit.txid,...(exit.sats===undefined?{}:{onchainSats:exit.sats})}:{}),...(lightning?{to:lightning}:{})}}];
    }
    const txid=tx.key.arkTxid||tx.key.commitmentTxid;
    if(!txid)return undefined;

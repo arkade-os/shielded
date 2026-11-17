@@ -1,4 +1,4 @@
-import {isLnurl,type PaymentRail,type PaymentRequest,type RouterContext} from '@arkade-os/sdk';
+import {isLnurl,type PaymentRail,type PaymentRequest,type RouteQuote,type RouterContext} from '@arkade-os/sdk';
 import {LnurlError,LnurlTransportError,createLnurlClient,type LnurlClient,type PayRequest} from '@arkade-os/lnurl-client';
 import {lnurlRails} from '@arkade-os/lnurl-client/arkade';
 import {lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap';
@@ -65,7 +65,11 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
  // cannot pay in one note, or under another operator, hands over to the Lightning option here.
  const lnurlArkade:PaymentRail={...arkade,
   available:async(req,ctx)=>{await wallet.restoreLightningSpends();return Number.isSafeInteger(req.amount)&&wallet.canWithdraw(BigInt(req.amount!))&&await arkade.available!(req,ctx);},
-  quote:async(req,ctx)=>{try{return await arkade.quote(req,ctx);}catch(error){return handOver(error,req,ctx,viaLightning);}}};
+  quote:async(req,ctx)=>{
+   let quote:RouteQuote;try{quote=await arkade.quote(req,ctx);}catch(error){return handOver(error,req,ctx,viaLightning);}
+   // lnurl-client hands the withdraw rail only the callback's destination, so the address is recorded here or nowhere.
+   const to=String(quote.meta?.to);return {...quote,send:()=>wallet.withdraw(to,BigInt(quote.amount),{record:{to,lightning:req.raw.trim()}})};
+  }};
  const shielded=lnurlShieldedRail(wallet,client);
  // A hand-over from the private route lands on a public one, and the quote's copy says so before anything is sent.
  const lnurlShielded:PaymentRail={...shielded,quote:async(req,ctx)=>{try{return await shielded.quote(req,ctx);}catch(error){return handOver(error,req,ctx,lnurlArkade,viaLightning);}}};

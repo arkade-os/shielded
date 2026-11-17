@@ -10,7 +10,7 @@ import type {LightningArtifact,LightningPayout,LightningRepository} from './ligh
 import {feeRefused} from './lightning-spend.ts';
 import type {ShieldedWallet} from './wallet.ts';
 import {createLightningRecovery,recoveryLock,type LightningRecovery} from './lightning-recovery.ts';
-import {LightningSwapRepository,ReceiptStoreCompatibilityError,repairLightningReceipt} from './lightning-receipt.ts';
+import {LightningSwapRepository,ReceiptStoreCompatibilityError,invoiceDescription,repairLightningReceipt} from './lightning-receipt.ts';
 
 /** One pool-funded on-chain exit's payout key: where the pool pays, what signs it, and the hold that keeps everything else off it. */
 export interface ExitPayout {
@@ -136,8 +136,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const manager=await companion.getContractManager(),[contracts,spends,artifacts]=await Promise.all([manager.getContractsWithVtxos(undefined,undefined,{unspentOnly:false}),journal.list(String(wallet.self.owner),pool),journal.artifacts(owner,pool)]);
   const rows=new Map<string,Activity>();
   for(const record of receipts.values()){
-   const amount=Number(record.give.amount),createdAt=record.createdAt*1000,txid=record.fundingTxid!;
-   rows.set(`shielded-lightning:send:${record.id}`,{id:`shielded-lightning:send:${record.id}`,amount:-amount,createdAt,settled:true,intent:{kind:'lightning-send',label:'Paid via Lightning',outcome:'paid',metadata:{fundingTxid:txid}},
+   const amount=Number(record.give.amount),createdAt=record.createdAt*1000,txid=record.fundingTxid!,delivered=Number(record.take?.amount),invoice=record.route?.take.instrument,description=invoice?.kind==='invoice'?invoiceDescription(invoice.bolt11):undefined;
+   rows.set(`shielded-lightning:send:${record.id}`,{id:`shielded-lightning:send:${record.id}`,amount:-amount,createdAt,settled:true,intent:{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{fundingTxid:txid,...(Number.isSafeInteger(delivered)?{delivered}:{}),...(description?{description}:{})}},
     txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:txid},type:TxType.TxSent,amount,createdAt,settled:true}]});
   }
   for(const {contract,vtxos} of contracts){
