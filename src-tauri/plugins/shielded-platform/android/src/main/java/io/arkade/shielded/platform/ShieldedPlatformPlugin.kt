@@ -146,7 +146,7 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     fun clipboardText(invoke: Invoke) {
         main.post {
             if (destroyed || !trusted()) { invoke.reject("Native access is restricted to the bundled wallet"); return@post }
-            val context = activeActivity ?: run { invoke.reject("Return to Shielded to paste"); return@post }
+            val context = activeActivity ?: run { invoke.reject("Shielded is not on screen, so the clipboard could not be read."); return@post }
             val clip = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
             // Plain text only: coerceToText would resolve a content:// clip on this main thread, and no payment code arrives that way.
             val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()?.takeIf { it.length <= 8192 }
@@ -237,7 +237,7 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
 
     @Command
     fun updatePermission(invoke: Invoke) = update(invoke) { authorize ->
-        authorize { updater.permission(activeActivity ?: throw UpdateRejected("Return to Shielded to allow Android updates")) }
+        authorize { updater.permission(activeActivity ?: throw UpdateRejected("Shielded is not on screen, so Android settings could not open. Try again.")) }
         null
     }
 
@@ -249,14 +249,14 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     @Command
     fun updateOpenInstaller(invoke: Invoke) = update(invoke, install = true) { authorize ->
         updater.openInstaller(invoke.parseArgs(UpdateArgs::class.java), {
-            activeActivity ?: throw UpdateRejected("Return to Shielded to open the Android installer")
+            activeActivity ?: throw UpdateRejected("Shielded is not on screen, so the Android installer could not open. Try again.")
         }, authorize)
     }
 
     @Command
     fun updateConfirm(invoke: Invoke) = update(invoke) { authorize ->
         var result: JSObject? = null
-        authorize { result = updater.confirm(activeActivity ?: throw UpdateRejected("Return to Shielded to confirm the Android update")) }
+        authorize { result = updater.confirm(activeActivity ?: throw UpdateRejected("Shielded is not on screen, so the Android installer could not open. Try again.")) }
         result
     }
 

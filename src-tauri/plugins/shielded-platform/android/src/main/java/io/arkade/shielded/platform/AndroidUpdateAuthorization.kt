@@ -23,7 +23,8 @@ internal class AndroidUpdateAuthorization(
         val task = FutureTask<Unit> {
             if (!phase.compareAndSet(Phase.QUEUED, Phase.RUNNING)) throw UpdateRejected("Android update authorization expired")
             try {
-                if (!allowed() || now() - deadline >= 0) throw UpdateRejected("Return to Shielded to continue the Android update")
+                // Journalled and replayed by info(), so it has to stay true when it is read back.
+                if (!allowed() || now() - deadline >= 0) throw UpdateRejected("Shielded was in the background, so Android did not open the installer. Try again.")
                 action()
             } finally { phase.set(Phase.FINISHED) }
         }
@@ -44,7 +45,7 @@ internal class AndroidUpdateAuthorization(
     private fun cancel(task: FutureTask<Unit>, phase: AtomicReference<Phase>): Nothing {
         val queued = phase.compareAndSet(Phase.QUEUED, Phase.CANCELLED)
         task.cancel(false)
-        if (queued) throw UpdateRejected("Android could not authorize this update. Return to Shielded and try again.")
+        if (queued) throw UpdateRejected("Android could not authorize this update. Try again.")
         // Cancellation cannot stop an action that already started.
         throw AmbiguousUpdateAuthorization()
     }

@@ -298,7 +298,7 @@ test('a hidden app never asks for the install permission, so its rejection canno
  const rejected=deferred<void>();void rejected.promise.catch(()=>{});f.permission(()=>rejected.promise);
  f.visible(false);const opening=f.controller.permission();await flush();
  f.visible(true);await flush();
- rejected.reject(new Error('Return to Shielded to continue the Android update'));await opening;await flush();
+ rejected.reject(new Error('Shielded was in the background, so Android did not open the installer. Try again.'));await opening;await flush();
  assert.equal(f.events.includes('permission'),false);assert.equal(f.state().error,'');assert.equal(f.state().opening,false);
 });
 
@@ -330,18 +330,28 @@ test('the handoff and the resumed-activity gate line up across the capability, R
  assert.match(read('../src-tauri/build.rs'),/"native_android_update_open",/);
  assert.match(read('../src-tauri/src/lib.rs'),/native_android_update_open,/);
  assert.ok((JSON.parse(read('../src-tauri/capabilities/main.json')).permissions as unknown[]).includes('allow-native-android-update-open'));
- assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;/);
+ assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+submit\(&app, &updates, &id, true\)/);
+ assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_install\([\s\S]*?submit\(&app, &updates, &id, false\)/);
  assert.match(read(plugin+'src/lib.rs'),/"updateOpenInstaller"/);
  const updater=read(plugin+'android/src/main/java/io/arkade/shielded/platform/AndroidUpdater.kt');
  assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+verify\(file, args\)\s+if \(!canInstall\(\)\) result\("permission-required"\)/);
  assert.match(updater,/FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);
  assert.match(updater,/setDataAndType\(uri, "application\/vnd\.android\.package-archive"\)/);
  assert.match(updater,/addFlags\(Intent\.FLAG_GRANT_READ_URI_PERMISSION\)/);
+ // The handoff must reach a preinstalled installer only; an implicit APK intent any app can claim.
+ assert.match(updater,/intent\.setPackage\(systemInstaller\(intent\)\)\s+authorize \{ activity\(\)\.startActivity\(intent\) \}/);
+ assert.match(updater,/PackageManager\.MATCH_SYSTEM_ONLY or PackageManager\.MATCH_DEFAULT_ONLY/);
+ assert.match(updater,/resolved\?\.activityInfo\?\.packageName\s+\?: throw UpdateRejected\(/);
+ assert.match(read(plugin+'android/src/main/AndroidManifest.xml'),/<queries>[\s\S]*application\/vnd\.android\.package-archive[\s\S]*<\/queries>/);
  assert.match(read(plugin+'android/src/main/AndroidManifest.xml'),/UpdateFileProvider" android:authorities="\$\{applicationId\}\.updates" android:exported="false" android:grantUriPermissions="true"/);
  assert.match(read(plugin+'android/src/main/res/xml/shielded_update_paths.xml'),/<cache-path name="shielded-updates" path="shielded-updates\/" \/>/);
  const kotlin=read(plugin+'android/src/main/java/io/arkade/shielded/platform/ShieldedPlatformPlugin.kt');
+ assert.match(kotlin,/@Command\s+fun updateOpenInstaller\(invoke: Invoke\)/);
  assert.match(kotlin,/trusted\(\) && resumed\(\)/);assert.doesNotMatch(kotlin,/private var resumed/);
  assert.match(kotlin,/lifecycle\?\.currentState\?\.isAtLeast\(Lifecycle\.State\.RESUMED\)/);
+ // These reach the dialog through the installer journal, so they are read only while Shielded is up.
+ for(const file of ['ShieldedPlatformPlugin.kt','AndroidUpdateAuthorization.kt','AndroidUpdater.kt'])
+  assert.doesNotMatch(read(plugin+'android/src/main/java/io/arkade/shielded/platform/'+file),/Return to Shielded/,file);
 });
 
 test('the Android installer checks the folder the Rust host stages updates in',async()=>{

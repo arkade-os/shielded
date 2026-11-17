@@ -217,6 +217,18 @@ internal class AndroidUpdater(context: Context) {
         }
     }
 
+    // An implicit APK-MIME view intent is offered to every app that claims it, so the handoff goes
+    // to a preinstalled handler or nowhere; any other app could fake the install screen.
+    @Suppress("DEPRECATION")
+    private fun systemInstaller(intent: Intent): String {
+        val flags = PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY
+        val resolved = if (Build.VERSION.SDK_INT >= 33)
+            manager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(flags.toLong()))
+        else manager.resolveActivity(intent, flags)
+        return resolved?.activityInfo?.packageName
+            ?: throw UpdateRejected("This device has no system installer for update packages. Install the update inside Shielded.")
+    }
+
     // The system installer owns the outcome, so this writes no journal record and keeps no session.
     fun openInstaller(args: UpdateArgs, activity: () -> Activity, authorize: (() -> Unit) -> Unit): JSObject = try {
         synchronized(lock) {
@@ -229,12 +241,12 @@ internal class AndroidUpdater(context: Context) {
         if (!canInstall()) result("permission-required")
         else {
             val uri = FileProvider.getUriForFile(context, "$ownPackage.updates", file)
-            authorize {
-                activity().startActivity(Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                })
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
+            intent.setPackage(systemInstaller(intent))
+            authorize { activity().startActivity(intent) }
             result("idle")
         }
     } catch (error: Exception) {

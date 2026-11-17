@@ -3,6 +3,13 @@
     <!-- wry asks for CAMERA when the scanner calls getUserMedia; Android denies an undeclared permission without a prompt. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Package visibility: without this, resolveActivity cannot see the system installer on API 30+. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+    </queries>
     <application>
         <receiver android:name="io.arkade.shielded.platform.UpdateReceiver" android:exported="false" />
         <provider android:name="io.arkade.shielded.platform.UpdateFileProvider" android:authorities="${applicationId}.updates" android:exported="false" android:grantUriPermissions="true">
