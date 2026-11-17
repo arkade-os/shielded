@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.core.content.FileProvider
 import app.tauri.plugin.JSObject
 import java.io.File
 import java.io.OutputStream
@@ -214,6 +215,42 @@ internal class AndroidUpdater(context: Context) {
         } finally {
             synchronized(lock) { if (preparing == token) preparing = null }
         }
+    }
+
+    // An implicit APK-MIME view intent is offered to every app that claims it, so the handoff goes
+    // to a preinstalled handler or nowhere; any other app could fake the install screen.
+    @Suppress("DEPRECATION")
+    private fun systemInstaller(intent: Intent): String {
+        val flags = PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY
+        val resolved = if (Build.VERSION.SDK_INT >= 33)
+            manager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(flags.toLong()))
+        else manager.resolveActivity(intent, flags)
+        return resolved?.activityInfo?.packageName
+            ?: throw UpdateRejected("This device has no system installer for update packages. Install the update inside Shielded.")
+    }
+
+    // The system installer owns the outcome, so this writes no journal record and keeps no session.
+    fun openInstaller(args: UpdateArgs, activity: () -> Activity, authorize: (() -> Unit) -> Unit): JSObject = try {
+        synchronized(lock) {
+            val record = reconcile(version(installed()))
+            if (preparing != null || record?.status in listOf("preparing", "installing", "confirmation-required"))
+                throw UpdateRejected("An Android update is already awaiting completion")
+        }
+        val file = AndroidUpdatePolicy.privateApk(directory, args.path)
+        verify(file, args)
+        if (!canInstall()) result("permission-required")
+        else {
+            val uri = FileProvider.getUriForFile(context, "$ownPackage.updates", file)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            intent.setPackage(systemInstaller(intent))
+            authorize { activity().startActivity(intent) }
+            result("idle")
+        }
+    } catch (error: Exception) {
+        result("failed", (error as? UpdateRejected)?.message ?: "Android could not open this update in its installer. You can retry.")
     }
 
     private fun abandonPending(record: Record): Record {

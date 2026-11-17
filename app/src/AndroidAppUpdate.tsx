@@ -5,7 +5,7 @@ import {installedBuild} from './installed-build.ts';
 import './android-app-update.css';
 
 const size=(bytes:number)=>`${(bytes/1024/1024).toFixed(1)} MB`;
-export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDiscard,onPermission,onInstall,onConfirm,onRefresh}:{state:AndroidUpdateState;onClose:()=>void;onDownload:()=>void;onCancel:()=>void;onDiscard:()=>void;onPermission:()=>void;onInstall:()=>void;onConfirm:()=>void;onRefresh:()=>void}){
+export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDiscard,onPermission,onInstall,onOpen,onConfirm,onRefresh}:{state:AndroidUpdateState;onClose:()=>void;onDownload:()=>void;onCancel:()=>void;onDiscard:()=>void;onPermission:()=>void;onInstall:()=>void;onOpen:()=>void;onConfirm:()=>void;onRefresh:()=>void}){
  const dialog=useRef<HTMLElement>(null),close=useRef<HTMLButtonElement>(null);
  useEffect(()=>{
   const previous=document.activeElement instanceof HTMLElement?document.activeElement:undefined,overflow=document.body.style.overflow;
@@ -19,7 +19,7 @@ export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDisc
   };
   addEventListener('keydown',key);return()=>{document.body.style.overflow=overflow;removeEventListener('keydown',key);if(previous?.isConnected)previous.focus();};
  },[onClose]);
- const {phase,release,info,staged,error,networkReady,torReady}=state,percent=state.total?Math.min(100,Math.floor(state.received/state.total*100)):0,build=installedBuild();
+ const {phase,release,info,staged,error,networkReady,torReady,opening}=state,percent=state.total?Math.min(100,Math.floor(state.received/state.total*100)):0,build=installedBuild();
  const canDownload=['available','failed'].includes(phase)&&!staged,canInstall=phase==='ready'||phase==='failed'&&!!staged&&info?.installStatus==='failed';
  const headings:Record<AndroidUpdateState['phase'],string>={idle:'Shielded updates',checking:'Checking this installation',available:'A new Shielded is ready',blocked:'Keep this installation',downloading:torReady?'Bringing your update through Tor':'Downloading your update',ready:'Ready to install',preparing:'Saving and locking your wallet',installing:'Installing with Android','confirmation-required':'Finish in the Android installer',failed:'The update needs another try',unknown:'Check the Android installer',installed:'Shielded is up to date'};
  return <div className="android-update-layer" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
@@ -36,7 +36,9 @@ export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDisc
    <div className="android-update-actions">
     {canDownload&&<button type="button" onClick={onDownload} disabled={!networkReady}>{phase==='failed'?'Retry download':'Download update'}{release?.androidUpdate?` · ${size(release.androidUpdate.bytes)}`:''}</button>}
     {phase==='downloading'&&<button type="button" className="android-update-secondary" onClick={onCancel}>Cancel download</button>}
-    {canInstall&&<>{!info?.canRequestInstalls&&<button type="button" onClick={onPermission}>Allow installation in Android settings</button>}<button type="button" onClick={onInstall} disabled={!info?.canRequestInstalls}>Install update</button></>}
+    {canInstall&&(info?.canRequestInstalls
+     ?<><button type="button" onClick={onInstall}>Install update</button><button type="button" className="android-update-secondary" onClick={onOpen}>Install with Android’s installer</button></>
+     :<button type="button" onClick={onPermission} disabled={opening}>{opening?'Opening Android settings…':'Allow installation in Android settings'}</button>)}
     {phase==='confirmation-required'&&<button type="button" onClick={onConfirm}>Continue in Android installer</button>}
     {['unknown','installing','failed','checking'].includes(phase)&&<button type="button" className="android-update-secondary" onClick={onRefresh}>Check install status</button>}
     {staged&&['ready','blocked','failed'].includes(phase)&&<button type="button" className="android-update-secondary" onClick={onDiscard}>Discard downloaded update</button>}
@@ -46,6 +48,6 @@ export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDisc
 }
 export default function AndroidAppUpdate({controller,onClose}:{controller:AndroidUpdateController;onClose:()=>void}){
  const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
- const view=<AndroidAppUpdateDialog state={state} onClose={onClose} onDownload={()=>void controller.download()} onCancel={controller.cancel} onDiscard={()=>void controller.discard()} onPermission={()=>void controller.permission()} onInstall={()=>void controller.install()} onConfirm={()=>void controller.install(true)} onRefresh={()=>void controller.refresh()}/>;
+ const view=<AndroidAppUpdateDialog state={state} onClose={onClose} onDownload={()=>void controller.download()} onCancel={controller.cancel} onDiscard={()=>void controller.discard()} onPermission={()=>void controller.permission()} onInstall={()=>void controller.install()} onOpen={()=>void controller.openInstaller()} onConfirm={()=>void controller.install(true)} onRefresh={()=>void controller.refresh()}/>;
  return typeof document==='undefined'?view:createPortal(view,document.body);
 }

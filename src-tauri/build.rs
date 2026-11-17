@@ -17,6 +17,7 @@ fn main() {
             "native_android_update_cancel",
             "native_android_update_permission",
             "native_android_update_install",
+            "native_android_update_open",
             "native_android_update_confirm",
         ]),
     ))

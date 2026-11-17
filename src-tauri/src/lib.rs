@@ -56,6 +56,7 @@ pub fn run() {
             android_updates::native_android_update_cancel,
             android_updates::native_android_update_permission,
             android_updates::native_android_update_install,
+            android_updates::native_android_update_open,
             android_updates::native_android_update_confirm
         ])
         .setup(|app| {

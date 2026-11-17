@@ -462,12 +462,14 @@ struct InstallOwner {
     attempt: String,
 }
 impl InstallOwner {
-    fn finish(&self, result: &Result<Value, String>) -> Result<(), String> {
+    /// A handoff keeps no session of ours, so its idle reply releases the package the same way a
+    /// known failure does; an idle reply from our own installer still means the outcome is lost.
+    fn finish(&self, result: &Result<Value, String>, handoff: bool) -> Result<(), String> {
         let known_failure = result.as_ref().is_ok_and(|value| {
             matches!(
                 value["installStatus"].as_str(),
                 Some("failed" | "permission-required")
-            )
+            ) || (handoff && value["installStatus"] == "idle")
         });
         let available = known_failure && self.prepared.available();
         let mut state = self.updates.lock()?;
@@ -642,16 +644,15 @@ pub async fn native_android_update_permission(
     tauri_plugin_shielded_platform::android_update_permission(&app).await
 }
 
-#[tauri::command]
-pub async fn native_android_update_install(
-    app: AppHandle,
-    window: WebviewWindow,
-    updates: State<'_, AndroidUpdates>,
-    id: String,
+/// Both installers receive only the file this host verified and still owns, under the same fence.
+async fn submit(
+    app: &AppHandle,
+    updates: &AndroidUpdates,
+    id: &str,
+    handoff: bool,
 ) -> Result<Value, String> {
-    crate::ensure_local(&window)?;
-    let info = tauri_plugin_shielded_platform::android_update_info(&app).await?;
-    let owner = match updates.begin_install(&id) {
+    let info = tauri_plugin_shielded_platform::android_update_info(app).await?;
+    let owner = match updates.begin_install(id) {
         Ok(owner) => owner,
         Err(BeginInstallError::Failed(error)) => {
             return Ok(json!({ "installStatus": "failed", "installError": error }));
@@ -660,11 +661,40 @@ pub async fn native_android_update_install(
     };
     let request = &owner.prepared.request;
     let result = match check_candidate(request, &info) {
-        Ok(()) => tauri_plugin_shielded_platform::android_install_update(&app, json!({ "path": owner.prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code })).await,
+        Ok(()) => {
+            let metadata = json!({ "path": owner.prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code });
+            if handoff {
+                tauri_plugin_shielded_platform::android_open_update_installer(app, metadata).await
+            } else {
+                tauri_plugin_shielded_platform::android_install_update(app, metadata).await
+            }
+        }
         Err(error) => Ok(json!({ "installStatus": "failed", "installError": error })),
     };
-    owner.finish(&result)?;
+    owner.finish(&result, handoff)?;
     result
+}
+
+#[tauri::command]
+pub async fn native_android_update_install(
+    app: AppHandle,
+    window: WebviewWindow,
+    updates: State<'_, AndroidUpdates>,
+    id: String,
+) -> Result<Value, String> {
+    crate::ensure_local(&window)?;
+    submit(&app, &updates, &id, false).await
+}
+
+#[tauri::command]
+pub async fn native_android_update_open(
+    app: AppHandle,
+    window: WebviewWindow,
+    updates: State<'_, AndroidUpdates>,
+    id: String,
+) -> Result<Value, String> {
+    crate::ensure_local(&window)?;
+    submit(&app, &updates, &id, true).await
 }
 
 #[tauri::command]
@@ -994,11 +1024,41 @@ mod tests {
     }
 
     #[test]
+    fn a_completed_handoff_releases_the_package_for_discarding_or_installing_again() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        owner
+            .finish(&Ok(json!({"installStatus":"idle"})), true)
+            .unwrap();
+        drop(owner);
+        assert!(matches!(*updates.lock().unwrap(), Phase::Ready(_)));
+        assert_eq!(updates.cancel(&prepared.id).unwrap(), None);
+        assert!(matches!(*updates.lock().unwrap(), Phase::Idle));
+    }
+
+    #[test]
+    fn an_idle_reply_from_the_in_app_installer_still_fences_the_package() {
+        let updates = fixture();
+        let prepared = ready(&updates);
+        let owner = updates.begin_install(&prepared.id).unwrap();
+        owner
+            .finish(&Ok(json!({"installStatus":"idle"})), false)
+            .unwrap();
+        drop(owner);
+        assert!(matches!(
+            *updates.lock().unwrap(),
+            Phase::Installing { calling: false, .. }
+        ));
+        assert!(updates.cancel(&prepared.id).is_err());
+    }
+
+    #[test]
     fn a_known_precommit_failure_restores_only_an_available_package_for_explicit_retry() {
         let updates = fixture();
         let prepared = ready(&updates);
         let owner = updates.begin_install(&prepared.id).unwrap();
-        owner.finish(&Ok(json!({"installStatus":"failed","installError":"Could not save the installer record"}))).unwrap();
+        owner.finish(&Ok(json!({"installStatus":"failed","installError":"Could not save the installer record"})), false).unwrap();
         assert!(matches!(*updates.lock().unwrap(), Phase::Ready(_)));
         drop(owner);
         let mut native = info();
@@ -1073,7 +1133,9 @@ mod tests {
             let prepared = ready(&updates);
             let owner = updates.begin_install(&prepared.id).unwrap();
             std::fs::remove_file(prepared_path(&updates)).unwrap();
-            owner.finish(&Ok(json!({"installStatus":status}))).unwrap();
+            owner
+                .finish(&Ok(json!({"installStatus":status})), false)
+                .unwrap();
             drop(owner);
             let mut native = info();
             updates.snapshot(&mut native).unwrap();
@@ -1122,12 +1184,12 @@ mod tests {
         let prepared = ready(&updates);
         let owner = updates.begin_install(&prepared.id).unwrap();
         owner
-            .finish(&Ok(json!({"installStatus":"permission-required"})))
+            .finish(&Ok(json!({"installStatus":"permission-required"})), false)
             .unwrap();
         let replacement = updates.begin_install(&prepared.id).unwrap();
         assert!(
             owner
-                .finish(&Ok(json!({"installStatus":"failed"})))
+                .finish(&Ok(json!({"installStatus":"failed"})), false)
                 .is_err()
         );
         drop(owner);
@@ -1152,7 +1214,7 @@ mod tests {
         let first = ready(&updates);
         let old_owner = updates.begin_install(&first.id).unwrap();
         old_owner
-            .finish(&Ok(json!({"installStatus":"permission-required"})))
+            .finish(&Ok(json!({"installStatus":"permission-required"})), false)
             .unwrap();
         updates.cancel(&first.id).unwrap();
         let next = ready(&updates);
@@ -1161,7 +1223,7 @@ mod tests {
         assert!(updates.begin_install(&first.id).is_err());
         assert!(
             old_owner
-                .finish(&Ok(json!({"installStatus":"failed"})))
+                .finish(&Ok(json!({"installStatus":"failed"})), false)
                 .is_err()
         );
         drop(old_owner);
@@ -1290,7 +1352,7 @@ mod tests {
         entered.await.unwrap();
         let owner = updates.begin_install(&prepared.id).unwrap();
         owner
-            .finish(&Ok(json!({"installStatus":"installing"})))
+            .finish(&Ok(json!({"installStatus":"installing"})), false)
             .unwrap();
         drop(owner);
         send.send(Ok(info())).unwrap();

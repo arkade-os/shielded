@@ -11,8 +11,8 @@ import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-relea
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {AndroidAppUpdateDialog}=await import('../app/src/AndroidAppUpdate.tsx');
 const raw=nativeReleaseFixture(),release=parseNativeRelease({...raw,androidUpdate:androidUpdateFixture(raw)});
-const defaults:AndroidUpdateState={phase:'available',release,received:0,total:50*1024*1024,networkReady:true,torReady:true,error:'',info:{packageName:'io.arkade.shielded',versionCode:100122,signerSha256:release.androidUpdate!.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null}};
-const render=(state:Partial<AndroidUpdateState>)=>renderToStaticMarkup(createElement(AndroidAppUpdateDialog,{state:{...defaults,...state},onClose:()=>{},onDownload:()=>{},onCancel:()=>{},onDiscard:()=>{},onPermission:()=>{},onInstall:()=>{},onConfirm:()=>{},onRefresh:()=>{}}));
+const defaults:AndroidUpdateState={phase:'available',release,received:0,total:50*1024*1024,networkReady:true,torReady:true,opening:false,error:'',info:{packageName:'io.arkade.shielded',versionCode:100122,signerSha256:release.androidUpdate!.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null}};
+const render=(state:Partial<AndroidUpdateState>)=>renderToStaticMarkup(createElement(AndroidAppUpdateDialog,{state:{...defaults,...state},onClose:()=>{},onDownload:()=>{},onCancel:()=>{},onDiscard:()=>{},onPermission:()=>{},onInstall:()=>{},onOpen:()=>{},onConfirm:()=>{},onRefresh:()=>{}}));
 
 test('Android update is an accessible in-app dialog with its version and build',()=>{
  const html=render({});assert.match(html,/role="dialog" aria-modal="true"/);assert.match(html,/Shielded 0.1.0/);assert.match(html,/Build 123/);assert.match(html,/Download update/);assert.match(html,/through Tor/);assert.doesNotMatch(html,/<a\b|target=|Copy download link|uninstall/i);
@@ -31,9 +31,20 @@ test('a connecting wallet disables downloading until it is ready',()=>{
  const html=render({networkReady:false,torReady:false});assert.match(html,/Wait for the wallet to connect/);assert.match(html,/<button type="button" disabled="">Download update/);
 });
 
-test('Android settings permission is a separate action and the install remains disabled',()=>{
- const html=render({phase:'ready',staged:{id:'saved',versionCode:100123},info:{...defaults.info!,canRequestInstalls:false}});
- assert.match(html,/Allow installation in Android settings/);assert.match(html,/<button type="button" disabled="">Install update/);assert.match(html,/Download verified/);assert.match(html,/wallet will lock and finish saving/);assert.match(html,/Discard downloaded update/);
+test('without the install permission the settings action is the only primary, and it reports being opened',()=>{
+ const pending={phase:'ready',staged:{id:'saved',versionCode:100123},info:{...defaults.info!,canRequestInstalls:false}} as Partial<AndroidUpdateState>;
+ const html=render(pending);
+ assert.match(html,/<button type="button">Allow installation in Android settings/);
+ assert.doesNotMatch(html,/Install update|Android’s installer/);
+ assert.match(html,/Download verified/);assert.match(html,/wallet will lock and finish saving/);assert.match(html,/Discard downloaded update/);
+ const opening=render({...pending,opening:true});
+ assert.match(opening,/<button type="button" disabled="">Opening Android settings…/);assert.doesNotMatch(opening,/Allow installation/);
+});
+
+test('a granted permission leaves one install primary beside a secondary handoff to Android',()=>{
+ const html=render({phase:'ready',staged:{id:'saved',versionCode:100123}});
+ assert.match(html,/<button type="button">Install update<\/button><button type="button" class="android-update-secondary">Install with Android’s installer/);
+ assert.doesNotMatch(html,/disabled=""/);
 });
 
 test('verified updates install only through the explicit install action',()=>{
