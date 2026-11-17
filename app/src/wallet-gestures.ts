@@ -237,16 +237,23 @@ export function longPress(onHold:()=>void,ms=500,slop=10){
  };
 }
 
+const IDLE:PullToRefreshState={distance:0,ready:false,refreshing:false};
+const phase=(state:PullToRefreshState)=>`${state.distance>0}/${state.ready}/${state.refreshing}`;
+/** How far the page moves for a pull: the sheets' rubber band, so about half the finger's travel. */
+const pullOffset=(distance:number)=>Math.round(sheetResistance(distance,600));
+
 export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<void>,options:{distance?:number;onState?:(state:PullToRefreshState)=>void;onError?:(error:unknown)=>void}={}):()=>void {
- const doc=surface.ownerDocument,threshold=options.distance??72;
- let pointer:{id:number;y:number;x:number;distance:number}|undefined,refreshing=false,disposed=false,suppressUntil=0;
+ const doc=surface.ownerDocument,threshold=options.distance??96;
+ let pointer:{id:number;y:number;x:number;distance:number}|undefined,refreshing=false,disposed=false,suppressUntil=0,shown=phase(IDLE);
  const flag=(name:string,on:boolean)=>{if(on)surface.classList.add(name);else surface.classList.remove(name);};
+ // Each state re-renders the whole wallet, so the page hears only a change of phase; the offset moves through the CSS variable.
+ const notify=(state:PullToRefreshState)=>{if(phase(state)===shown)return;shown=phase(state);options.onState?.(state);};
  const publish=(state:PullToRefreshState)=>{
-  surface.style.setProperty('--wallet-pull-distance',`${state.distance}px`);
-  flag('is-pulling-to-refresh',state.distance>0);
+  surface.style.setProperty('--wallet-pull-distance',`${pullOffset(state.distance)}px`);
+  flag('is-pulling-to-refresh',!state.refreshing);
   flag('is-pull-ready',state.ready);
   flag('is-pull-refreshing',state.refreshing);
-  options.onState?.(state);
+  notify(state);
  };
  const reset=(id?:number)=>{if(id!==undefined)try{if(surface.hasPointerCapture(id))surface.releasePointerCapture(id);}catch{}pointer=undefined;surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);};
  const atTop=(target:Element|null)=>{
@@ -265,12 +272,13 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
  const move=(event:PointerEvent)=>{
   const current=pointer;if(!current||event.pointerId!==current.id)return;
   const dy=event.clientY-current.y,dx=event.clientX-current.x;
-  if(dy<=0||Math.abs(dx)>=8&&Math.abs(dx)>=Math.abs(dy)){reset(current.id);options.onState?.({distance:0,ready:false,refreshing:false});return;}
-  if(current.distance===0&&Math.abs(dy)<8)return;
+  // A landing finger wobbles, so before the slop only a clear upward start ends the pull; `panning` still claims only downward moves.
+  if(dy<=(current.distance?0:-8)||Math.abs(dx)>=8&&Math.abs(dx)>=Math.abs(dy)){reset(current.id);notify(IDLE);return;}
+  if(!current.distance&&dy<8)return;
   if(!surface.isConnected){reset(current.id);return;}
   try{surface.setPointerCapture(event.pointerId);}catch{}
-  current.distance=Math.min(96,Math.max(0,dy));
-  publish({distance:current.distance,ready:current.distance>=threshold,refreshing:false});
+  current.distance=dy;
+  publish({distance:dy,ready:dy>=threshold,refreshing:false});
   if(event.cancelable)event.preventDefault();
  };
  // Android hands a vertical touch drag to native panning and then fires pointercancel, so the pull claims the first cancelable move itself; preventDefault() in pointermove cannot.
@@ -286,20 +294,20 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
   const commit=current.distance>=threshold;
   if(commit)suppressUntil=event.timeStamp+400;
   reset(current.id);
-  if(!commit){options.onState?.({distance:0,ready:false,refreshing:false});return;}
+  if(!commit){notify(IDLE);return;}
   refreshing=true;publish({distance:threshold,ready:false,refreshing:true});
   void Promise.resolve().then(refresh).catch(error=>options.onError?.(error)).finally(()=>{
    refreshing=false;
    if(disposed)return;
    surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);flag('is-pull-refreshing',false);
-   options.onState?.({distance:0,ready:false,refreshing:false});
+   notify(IDLE);
   });
  };
  const cancel=(event?:Event)=>{
   if(event?.type==='lostpointercapture'&&event.target!==surface)return;
   if(event&&'pointerId' in event&&pointer?.id!==(event as PointerEvent).pointerId)return;
   if(pointer)reset(pointer.id);
-  if(!refreshing)options.onState?.({distance:0,ready:false,refreshing:false});
+  if(!refreshing)notify(IDLE);
  };
  const click=(event:MouseEvent)=>{
   if(event.detail===0||!suppressUntil)return;
@@ -313,7 +321,7 @@ export function bindPullToRefresh(surface:HTMLElement,refresh:()=>void|Promise<v
  return()=>{
   if(disposed)return;disposed=true;refreshing=false;suppressUntil=0;if(pointer)reset(pointer.id);
   surface.style.removeProperty('--wallet-pull-distance');flag('is-pulling-to-refresh',false);flag('is-pull-ready',false);flag('is-pull-refreshing',false);
-  options.onState?.({distance:0,ready:false,refreshing:false});
+  notify(IDLE);
   surface.removeEventListener('pointerdown',down);surface.removeEventListener('lostpointercapture',cancel);surface.removeEventListener('click',click,true);
   doc.removeEventListener('pointermove',move);doc.removeEventListener('touchmove',panning);doc.removeEventListener('pointerup',up);doc.removeEventListener('pointercancel',cancel);
   doc.removeEventListener('visibilitychange',hidden);doc.defaultView?.removeEventListener('blur',cancel);
