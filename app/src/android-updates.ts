@@ -145,7 +145,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    if(confirm&&info.installStatus!=='confirmation-required'){reconcile(info);return;}
    if(!confirm&&(info.installStatus==='installing'||info.installStatus==='confirmation-required')){reconcile(info);return;}
    if(!confirm&&(!info.staged||info.staged.id!==saved!.id||info.staged.versionCode!==saved!.versionCode))throw new Error('The saved update is unavailable. Download it again before installing.');
-   if(!confirm&&!info.canRequestInstalls){publish({phase:'ready',info,error:'Allow Shielded to install updates in Android settings, then return and tap Install update.'});return;}
+   if(!confirm&&!info.canRequestInstalls){publish({phase:'ready',info,error:'Allow Shielded to install updates in Android settings, then return and install again.'});return;}
    await bounded(prepare(),30_000);if(!active(owner))return;
    submitted=true;publish({phase:'installing'});
    const result=await bounded(confirm?backend.confirm():mode==='open'?backend.open(saved!.id):backend.install(saved!.id),15_000);if(!active(owner))return;
