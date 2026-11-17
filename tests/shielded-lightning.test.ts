@@ -74,12 +74,15 @@ test('a Lightning address whose Arkade destination the pool cannot pay hands ove
    :u.searchParams.get('paymentOption')==='arkade'?{status:'OK',paymentOption:'arkade',paymentDestination:foreign}:{pr:INVOICE,routes:[]};
   return new Response(JSON.stringify(body),{headers:{'content-type':'application/json'}});
  });
- const swaps={resolve:async()=>({eligible:1}) as never,markets:async()=>[],accept:async()=>{throw new Error('not accepted here');},onUpdate:()=>()=>{},
+ const calls:string[]=[],swaps={resolve:async()=>({eligible:1}) as never,markets:async()=>[],accept:async()=>{calls.push('accept');throw new Error('not accepted here');},onUpdate:()=>()=>{},
+  recordLightning:async(quoteId:string,lightning:string)=>{calls.push(`${quoteId} pays ${lightning}`);},
   quote:async()=>({id:'q',expiresAt:Math.floor(Date.now()/1000)+600,market:{kind:'card',key:'k'},take:{amount:21n},fee:{amount:1n},give:{amount:22n}}) as never};
  const {wallet}=fakeWallet({arkade:0}),router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never);
  for(const rail of lightningRails(wallet,swaps))router.use(rail);
- const quote=await router.route(req('alice@pay.example',21));
+ const quote=await router.route(req(' alice@pay.example ',21));
  assert.deepEqual([quote.railId,quote.total],['lnurl-lightning',22],'another operator\'s Arkade address is never paid from the pool');
+ await assert.rejects((await quote.send()).settled(),/not accepted here/);
+ assert.deepEqual(calls,['q pays alice@pay.example','accept'],'the swap learns which address it pays before it is accepted');
  offline=true;
  await assert.rejects(router.route(req('alice@pay.example',21)),/Request failed/,'a network blip is reported, not paid around with a swap fee');
 });

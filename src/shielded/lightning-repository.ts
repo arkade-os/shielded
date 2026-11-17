@@ -3,7 +3,7 @@ import {lightningSpendConflict,sameLightningSpendRequest,validateLightningSpend,
 export interface LightningPayout {id:string;descriptor:string;address:string;script:string}
 export interface LightningArtifact {
  id:string;index:number;kind:'send'|'receive'|'exit';state:'allocated'|'quoted'|'accepted'|'ended';createdAt:number;
- descriptor?:string;address?:string;script?:string;serverPubKey?:string;csvTimelock?:string;quoteId?:string;expiresAt?:number;
+ descriptor?:string;address?:string;script?:string;serverPubKey?:string;csvTimelock?:string;quoteId?:string;expiresAt?:number;lightning?:string;
 }
 interface JournalState {v:1;next:number;artifacts:LightningArtifact[];payouts:LightningPayout[];spends:LightningSpendRecord[];receive:Record<string,unknown>}
 interface JournalCounter {next:number;payments:{hash:string;pool:string;id:string;state:LightningSpendRecord['state']}[]}

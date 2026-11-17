@@ -763,7 +763,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
      {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
      <dt>Bitcoin transaction</dt><dd>{txLink('bitcoin',item.intent.metadata.onchainTxid)}</dd></>}
-    {kind==='lnurl-arkade'&&typeof item.intent?.metadata?.to==='string'&&<><dt>To</dt><dd><Copyable value={item.intent.metadata.to}/></dd></>}
+    {(kind==='lnurl-arkade'||kind==='lightning-send')&&typeof item.intent?.metadata?.to==='string'&&<><dt>To</dt><dd><Copyable value={item.intent.metadata.to}/></dd></>}
     {kind==='lightning-send'&&typeof item.intent?.metadata?.description==='string'&&<><dt>Description</dt><dd>{item.intent.metadata.description}</dd></>}
     {kind==='lightning-send'&&typeof item.intent?.metadata?.delivered==='number'&&<><dt>Delivered</dt><dd>{sats(item.intent.metadata.delivered)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.delivered)}-sat swap fee</dd></>}
     <dt>Status</dt><dd>{status}</dd>

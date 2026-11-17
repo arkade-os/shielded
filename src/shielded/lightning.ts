@@ -51,12 +51,14 @@ export function lnurlShieldedRail(wallet:ShieldedWallet,client:LnurlClient):Paym
  };
 }
 
-export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<SwapClient,'markets'>,fetcher?:typeof fetch):PaymentRail[]{
+export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<SwapClient,'markets'>&{recordLightning?:(quoteId:string,lightning:string)=>Promise<void>},fetcher?:typeof fetch):PaymentRail[]{
  const base=lightningRail(swaps);
  // `available` resolves offline against the cached registry, which nothing has fetched on a fresh page.
  const lightning=poolFunded(wallet,{...base,available:async(req,ctx)=>{await swaps.markets().catch(()=>{});return base.available!(req,ctx);}});
  const client=createLnurlClient(fetcher?{fetchImpl:fetcher}:undefined);
- const [arkade,viaLightning]=lnurlRails({client,arkade:shieldedWithdrawRail(wallet),lightning}) as [PaymentRail,PaymentRail];
+ const [arkade,lnurlLightning]=lnurlRails({client,arkade:shieldedWithdrawRail(wallet),lightning}) as [PaymentRail,PaymentRail];
+ // The swap is funded inside its session, which never sees the address, so the quote's artifact takes it first.
+ const viaLightning:PaymentRail={...lnurlLightning,quote:async(req,ctx)=>{const quote=await lnurlLightning.quote(req,ctx);return {...quote,send:async()=>{await swaps.recordLightning?.(String(quote.meta?.quoteId),req.raw.trim());return quote.send();}};}};
  const handOver=async(error:unknown,req:PaymentRequest,ctx:RouterContext,...rails:PaymentRail[])=>{
   if(!transient(error))for(const rail of rails)if(await Promise.resolve().then(()=>rail.available!(req,ctx)).catch(()=>false))return rail.quote(req,ctx);
   throw error;

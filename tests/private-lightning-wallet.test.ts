@@ -1066,7 +1066,9 @@ for(const disposeDuringRepair of [false,true])test(`live terminal receipt repair
  const service=await createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor,clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,onError:error=>errors.push(error)});
  let closing:Promise<void>|undefined;
  try{
-  const quote=await service.quote({to:'invoice'}),accepted=await service.accept(quote);
+  const quote=await service.quote({to:'invoice'});
+  await service.recordLightning('another-quote','bob@pay.example');await service.recordLightning(quote.id,'alice@pay.example');
+  const accepted=await service.accept(quote);
   assert.equal(accepted.outcome,'open');assert.equal(f.starts.length,1);assert.equal(f.funded.length,1);assert.equal(reads,0);assert.equal(casEntered,false);
   const stored=await repository.getSwapRecord(quote.id);assert.ok(stored?.family==='rfq');assert.equal(stored.state,'created');
   const refunded={...stored,state:'refunded' as const,fundingTxid:funding,profile:{...stored.profile,custom:'preserve-live-metadata'}};
@@ -1083,13 +1085,13 @@ for(const disposeDuringRepair of [false,true])test(`live terminal receipt repair
    assert.equal(corrected.settlementPreimageHex,hex.encode(preimage));assert.equal(hex.encode(sha256(hex.decode(corrected.settlementPreimageHex!))),paymentHash);
    assert.deepEqual(corrected.profile,refunded.profile);assert.equal(corrected.fundingTxid,funding);assert.equal(corrected.refundTxid,undefined);
   }finally{await reopened[Symbol.asyncDispose]();}
-  assert.equal((await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),poolName))[0]!.state,'ended');
+  const [ended]=await journal.artifacts(hex.encode(await root.xOnlyPublicKey()),poolName);assert.deepEqual([ended!.state,ended!.lightning],['ended','alice@pay.example']);
   if(!disposeDuringRepair){
    const history=await service.getActivityHistory();assert.equal(history.length,1);assert.equal(history[0]!.amount,-1003);assert.equal(history[0]!.intent?.outcome,'paid');assert.equal(history[0]!.intent?.metadata?.fundingTxid,funding);
    const withdrawal={...history[0]!,id:'pool-withdrawal',intent:{kind:'unshield' as const,label:'Withdrawn from the pool',metadata:{batch:146}}};
    const merged=pageActivityHistory([withdrawal],history);assert.equal(merged.length,1);assert.equal(merged[0]!.id,withdrawal.id);
    assert.equal(merged[0]!.amount,withdrawal.amount);assert.deepEqual(merged[0]!.txs,withdrawal.txs);
-   assert.deepEqual(merged[0]!.intent,{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{batch:146,fundingTxid:funding,delivered:1000}});
+   assert.deepEqual(merged[0]!.intent,{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{batch:146,fundingTxid:funding,delivered:1000,to:'alice@pay.example'}});
   }
  }finally{release();await closing;await service[Symbol.asyncDispose]();}
 });
