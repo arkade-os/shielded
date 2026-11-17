@@ -70,7 +70,9 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
   quote:async(req,ctx)=>{
    let quote:RouteQuote;try{quote=await arkade.quote(req,ctx);}catch(error){return handOver(error,req,ctx,viaLightning);}
    // lnurl-client hands the withdraw rail only the callback's destination, so the address is recorded here or nowhere.
-   const to=String(quote.meta?.to);return {...quote,send:()=>wallet.withdraw(to,BigInt(quote.amount),{record:{to,lightning:req.raw.trim()}})};
+   const to=quote.meta?.to;
+   if(typeof to!=='string'||!to)throw new Error('The Lightning address service gave no Arkade destination.');
+   return {...quote,send:()=>wallet.withdraw(to,BigInt(quote.amount),{record:{to,lightning:req.raw.trim()}})};
   }};
  const shielded=lnurlShieldedRail(wallet,client);
  // A hand-over from the private route lands on a public one, and the quote's copy says so before anything is sent.
