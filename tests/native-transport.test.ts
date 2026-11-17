@@ -437,3 +437,20 @@ test('closing a native stream during a cooldown never takes a scope',async t=>{
  assert.equal(b.calls.filter(call=>call.command==='native_stream').length,0);
  await stream.ready;
 });
+
+test('a liveness probe reports its own refusal without arming or extending the origin cooldown',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:8_000_000});t.mock.method(Math,'random',()=>0);
+ const b=httpBackend(async()=>({generation:1,status:429,headers:[['Retry-After','30']]}));
+ const policy=new NativePolicy('https://probeloop.example'),url='https://probeloop.example/api/rollup/status';
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ const probe=(n:number)=>({...policy.classify(url,'GET'),key:'tor-health:'+n,probe:true as const});
+ assert.equal((await bridge.fetch(url,undefined,probe(1))).status,429);
+ assert.equal(rateLimitRemainingMs(url),0,'a probe refusal opens no cooldown of its own');
+ assert.equal((await bridge.fetch(url)).status,429);
+ assert.equal(rateLimitRemainingMs(url),30_000,'an ordinary refusal still opens one');
+ t.mock.timers.tick(20_000);
+ assert.equal((await bridge.fetch(url,undefined,probe(2))).status,429);
+ assert.equal(rateLimitRemainingMs(url),10_000,'and it leaves the remaining wait to run down');
+ t.mock.timers.tick(10_000);
+ assert.equal(rateLimitRemainingMs(url),0,'so the origin does get a clear window');
+});
