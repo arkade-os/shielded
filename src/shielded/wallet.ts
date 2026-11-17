@@ -363,6 +363,7 @@ export class ShieldedWallet extends Wallet {
  private rememberHeadExpiry(){
   const head=this.poolHead();if(head!==undefined&&head!==this.lastHead){this.lastHeadExpiry=undefined;this.headReadAt=undefined;}
   const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
+  // Sealed only, unlike the tick's skip: native reaches the indexer directly, so tick() reads the expiry once an outage starts.
   if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
   this.headReadAt=now;this.lastHead=head;
   this.headRead=this.fetchHeadExpiry().then(expiry=>{
