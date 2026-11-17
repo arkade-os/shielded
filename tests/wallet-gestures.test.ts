@@ -309,7 +309,7 @@ test('pulling down from the top refreshes once and publishes its progress',async
  const doc=new TestDocument(),surface=new TestElement(doc),states:boolean[]=[];let refreshes=0;
  const dispose=bindPullToRefresh(element(surface),async()=>{refreshes++;},{distance:60,onState:state=>states.push(state.refreshing)});
  pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,70,100);assert.ok(surface.classes.has('is-pulling-to-refresh'));
- pointer(doc,'pointermove',0,5,110);assert.equal(surface.values.get('--wallet-pull-distance'),'5px');assert.equal(surface.classes.has('is-pull-ready'),false);
+ pointer(doc,'pointermove',0,5,110);assert.equal(surface.values.get('--wallet-pull-distance'),'3px');assert.equal(surface.classes.has('is-pull-ready'),false);
  pointer(doc,'pointermove',0,70,115);pointer(doc,'pointerup',0,70,120);
  await new Promise(resolve=>setImmediate(resolve));
  assert.equal(refreshes,1);assert.equal(states.at(-1),false);assert.equal(surface.classes.size,0);dispose();
@@ -367,6 +367,60 @@ test('a downward pull claims the native pan, leaving scrolling, pinching and scr
  assert.equal(touchmove(doc,0,20).defaultPrevented,false);
  dispose();
  pointer(surface,'pointerdown',0,0,400);assert.equal(touchmove(doc,0,20).defaultPrevented,false);
+});
+
+test('a still or slightly upward first move keeps the pull, while a clear upward start gives the touch back',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc);let refreshes=0;
+ const dispose=bindPullToRefresh(element(surface),()=>{refreshes++;},{distance:60});
+ for(const jitter of [0,-2]){
+  pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',1,jitter,10);
+  assert.equal(touchmove(doc,1,20).defaultPrevented,true,`after ${jitter}`);
+  pointer(doc,'pointermove',1,80,50);pointer(doc,'pointerup',1,80,60);await new Promise(resolve=>setImmediate(resolve));
+ }
+ assert.equal(refreshes,2);
+ pointer(surface,'pointerdown',0,0,100);pointer(doc,'pointermove',0,-9,110);
+ assert.equal(touchmove(doc,0,20).defaultPrevented,false);pointer(doc,'pointerup',0,80,120);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(refreshes,2);dispose();
+});
+
+test('the page follows a pull with resistance, arms at the threshold and holds open while it syncs',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc);let finish=()=>{};
+ const dispose=bindPullToRefresh(element(surface),()=>new Promise<void>(resolve=>{finish=resolve;}));
+ const offset=()=>parseFloat(surface.values.get('--wallet-pull-distance')??'0'),pulls=[20,60,96,200],armed:boolean[]=[];
+ pointer(surface,'pointerdown',0,0,0);
+ const seen=pulls.map((y,i)=>{pointer(doc,'pointermove',0,y,10*(i+1));armed.push(surface.classes.has('is-pull-ready'));return offset();});
+ assert.ok(seen.every((at,i)=>at>pulls[i]!*.4&&at<pulls[i]!*.6&&(i===0||at>seen[i-1]!)),`${seen}`);
+ assert.deepEqual(armed,[false,false,true,true]);assert.ok(surface.classes.has('is-pulling-to-refresh'));
+ pointer(doc,'pointerup',0,200,100);
+ assert.equal(offset(),seen[2],'held where the pull armed');assert.ok(surface.classes.has('is-pull-refreshing'));
+ assert.equal(surface.classes.has('is-pulling-to-refresh'),false,'no longer under the finger, so it eases into place');
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(offset(),seen[2]);finish();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(surface.values.size,0);assert.equal(surface.classes.size,0);dispose();
+});
+
+test('a pull tells the page only when it shows, arms, syncs and ends',async()=>{
+ const doc=new TestDocument(),surface=new TestElement(doc),states:string[]=[];
+ const dispose=bindPullToRefresh(element(surface),()=>{},{distance:60,onState:s=>states.push(`${s.distance>0}/${s.ready}/${s.refreshing}`)});
+ pointer(surface,'pointerdown',0,0,0);for(let y=4;y<=120;y+=4)pointer(doc,'pointermove',0,y,y);
+ pointer(doc,'pointerup',0,120,200);await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(states,['true/false/false','true/true/false','true/false/true','false/false/false']);dispose();
+});
+
+test('a refresh with nothing to do, as during a rate-limit pause, still puts the indicator away',async()=>{
+ for(const refresh of [()=>{},async()=>{}]){
+  const doc=new TestDocument(),surface=new TestElement(doc),shown:boolean[]=[];
+  const dispose=bindPullToRefresh(element(surface),refresh,{distance:60,onState:s=>shown.push(s.distance>0||s.refreshing)});
+  pointer(surface,'pointerdown',0,0,0);pointer(doc,'pointermove',0,90,50);pointer(doc,'pointerup',0,90,60);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(shown.at(-1),false);assert.equal(surface.values.size,0);assert.equal(surface.classes.size,0);dispose();
+ }
+});
+
+test('the pull indicator opens its own space above the page, and only its settle animates',()=>{
+ const css=readFileSync(new URL('../app/src/wallet-glass.css',import.meta.url),'utf8'),rule=/\n\.wallet-pull-refresh\{([^}]*)\}/.exec(css)?.[1]??'';
+ assert.match(rule,/height:var\(--wallet-pull-distance,0px\)/);assert.doesNotMatch(rule,/position:/,'a floating pill covers the cards beneath it');
+ assert.match(css,/\.stock-page\.is-pulling-to-refresh \.wallet-pull-refresh\{transition:none\}/);
+ assert.match(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),/<div className="wallet-pull-refresh"[^>]*><span><Icon name="reset" size=\{16\}\/>/);
 });
 
 test('a pull refresh failure reaches the explicit error channel and releases its state',async()=>{
