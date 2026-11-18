@@ -364,7 +364,7 @@ Reservation captures generation, mode and intent. Pause and fresh mode/retry req
 
 | Model action | Owning file and symbol |
 | --- | --- |
-| `SetupReserve`, `ShowWebview` | `src-tauri/src/lib.rs`: `run`; `src-tauri/src/transport/mod.rs`: `PrivacyTransport::prewarm`; `session.rs`: `Inner::prewarm`, `Inner::prepare_start` |
+| `SetupReserve`, `ShowWebview` | `src-tauri/src/lib.rs`: `run`; `src-tauri/src/transport/mod.rs`: `PrivacyTransport::remembering`, `PrivacyTransport::prewarm`; `session.rs`: `Inner::remembered_mode`, `Inner::prewarm`, `Inner::prepare_start` |
 | `RequestStart`, `Read`, `Bind`, `Observe` | `session.rs`: `Inner::prepare_start`, `PreparedStart`, `Startup::waiter`, `StartWaiter::wait` |
 | `WorkerBegin`, `DrainAck` | `session.rs`: `StartupWork::run_with_bootstrap`, its retirement loop, `Inner::check_start`, `Session::start_matches` |
 | `Capture`, `Commit` | `session.rs`: `StartupWork::run`, `StartupWork::run_with_bootstrap`, `Inner::finish_start`, `Session::start_matches` |

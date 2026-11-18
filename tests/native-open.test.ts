@@ -133,6 +133,7 @@ test('the native wallet adopts the host session mode before its first start and 
  assert.match(native,/const status=await nativeNetwork\.start\(mode\);/);
  assert.match(native,/onConfirm=\{\(\)=>void switchMode\('direct'\)\}/,'Tor off still needs the confirmation');
  assert.doesNotMatch(native,/useRef<NativeMode>\('tor'\)/);
+ assert.match(readFileSync(new URL('../src-tauri/src/lib.rs',import.meta.url),'utf8'),/PrivacyTransport::remembering\(data\.join\("tor"\), data\.join\("native-mode"\)\)/,'the app host prewarms the mode it remembers');
 });
 
 test('foreground waits for a delayed retired start and then opens one fresh generation',async()=>{

@@ -2425,6 +2425,27 @@ mod tests {
         std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
 
+    #[tokio::test]
+    async fn a_stale_direct_completion_cannot_overwrite_a_later_tor_request() {
+        let (inner, file) = remembering(PathBuf::from("unused"), Some("tor"));
+        let direct = match inner
+            .prepare_start(NativeMode::Direct, DRAIN_TIMEOUT, false)
+            .unwrap()
+        {
+            PreparedStart::Pending {
+                work: Some(work), ..
+            } => work,
+            _ => panic!("expected a new direct startup"),
+        };
+        let tor = inner
+            .prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, false)
+            .unwrap();
+        inner.finish_start(direct.generation, NativeMode::Direct, &direct.completion, Ok(()));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "tor");
+        drop((direct, tor));
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
     #[test]
     fn a_tor_choice_that_cannot_be_written_removes_a_saved_direct_mode() {
         let (inner, file) = remembering(PathBuf::from("unused"), Some("direct"));
