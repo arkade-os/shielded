@@ -55,7 +55,7 @@ export function NativeUpdateFallback(){
 
 export function AppUpdateNotice({tone='light'}:{tone?:'light'|'dark'}){
  const {apply,release,android:controller,androidNotice,openAndroid}=useContext(Updates);
- if(android&&(release||androidNotice))return <button className="app-update-notice" data-tone={tone} type="button" disabled={!controller} onClick={openAndroid} aria-label={androidNotice?`${androidNotice}. View Android installation.`:'Native app update available. Download through Tor.'}><span className="app-update-dot" aria-hidden="true"/>{androidNotice??'Update available'}</button>;
+ if(android&&(release||androidNotice))return <button className="app-update-notice" data-tone={tone} type="button" disabled={!controller} onClick={openAndroid} aria-label={androidNotice?`${androidNotice}. View Android installation.`:'Native app update available. View the update.'}><span className="app-update-dot" aria-hidden="true"/>{androidNotice??'Update available'}</button>;
  if(release)return <NativeUpdateLink tone={tone}/>;
  return apply?<button className="app-update-notice" data-tone={tone} type="button" onClick={apply} aria-label="Update app to the new version"><span className="app-update-dot" aria-hidden="true"/>Update available</button>:null;
 }
