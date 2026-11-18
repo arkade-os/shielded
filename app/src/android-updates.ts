@@ -172,5 +172,4 @@ export function createUpdateController<Info extends {staged?:Staged|null;downloa
   stop(){if(stopped)return;cancelDownload('Update download stopped.');stopped=true;++revision;unsubscribe();listeners.clear();},
  };
 }
-export type AndroidUpdateController=ReturnType<typeof createAndroidUpdateController>;
 export type UpdateController=ReturnType<typeof createUpdateController>;
