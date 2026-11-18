@@ -143,6 +143,9 @@ test('native preparation rejects missing platforms, wrong source/network, traver
   for (const change of [{ commit: 'b'.repeat(40) }, { network: 'bitcoin' }, { poolOrigin: 'https://example.com' }, { platform: 'ios' }]) {
     writeFileSync(path, JSON.stringify({ ...original, ...change })); await assert.rejects(f.prepare(), /source|platform|network/);
   }
+  for (const change of [{ node: '24.22.3' }, { rust: '1.97.0' }]) {
+    writeFileSync(path, JSON.stringify({ ...original, environment: { ...original.environment, ...change } })); await assert.rejects(f.prepare(), /reproduction environment/);
+  }
   writeFileSync(path, JSON.stringify({ ...original, packages: [{ ...original.packages[0], file: '../escape.exe' }] }));
   await assert.rejects(f.prepare(), /Unsafe/);
   writeFileSync(path, JSON.stringify(original)); writeFileSync(join(dirname(path), original.packages[0].file), 'tampered');

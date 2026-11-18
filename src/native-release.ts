@@ -120,8 +120,9 @@ export function parseNativeRelease(input: unknown): NativeRelease {
   if (value.environment === undefined) {
     if (value.buildNumber >= FIRST_REPRODUCIBLE_BUILD) throw new Error('Missing native build environment');
   } else {
-    const candidate = record(value.environment);
-    if (candidate.node !== '24.22.2' || candidate.rust !== '1.96.0' || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
+    const candidate = record(value.environment), version = (field: unknown) => typeof field === 'string' && /^\d+\.\d+\.\d+$/.test(field);
+    // Shape only, so installed apps survive a CI toolchain bump; the publisher pins the exact toolchain.
+    if (!version(candidate.node) || !version(candidate.rust) || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
     environment = candidate as unknown as NativeBuildEnvironment;
   }
   return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages, ...(androidUpdate ? { androidUpdate } : {}) };
