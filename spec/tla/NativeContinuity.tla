@@ -7,7 +7,7 @@ EXTENDS Naturals
    RetireGraph: NativeWallet.pause/suspend, paired with native_pause invalidation.
    Mount/BeginOperation/FirstFetch: NativeWallet.open, NativeBridge.sessionGuard.
    BeginUpdate/Receive/Verify/Publish/Cancel: update controller and DownloadOwner.
-   Install: createAndroidUpdateController.install and Android foreground guard. *)
+   Install: createAndroidUpdateController.update handoff and Android foreground guard. *)
 
 CONSTANTS MaxGeneration, MaxBytes, BreakSoftOwner, BreakSoftDownload,
     BreakGraphBinding, BreakUpdateFence, BreakStartVisibility,
