@@ -1,7 +1,8 @@
 import express from 'express';
 import type {OhttpGatewayKey} from './ohttp-keys.ts';
 
-export interface OhttpUpstream{origin:string;prefix:string}
+/** `methods` and `headers` widen GET/POST and content-type, accept and x-digest for this entry alone, never for the pool. */
+export interface OhttpUpstream{origin:string;prefix:string;methods?:readonly string[];headers?:readonly string[]}
 export type OhttpOutcome={kind:'sealed';bytes:Uint8Array}|{kind:'busy';status:429|503;retryAfter:number}|{kind:'refused'};
 export type OhttpOpen=(sealed:Uint8Array,options?:{maxAnswer?:number;signal?:AbortSignal;room?:()=>boolean})=>Promise<OhttpOutcome>;
 
@@ -11,7 +12,11 @@ const copied=(from:Headers,names:string[])=>{const kept=new Headers();for(const 
 
 export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewayToken,rate=20,maxInFlight=32,timeoutMs=30_000,http=true,fetch:send=fetch,now=()=>performance.now(),clock=()=>Date.now(),windowMs=90_000}:{key:OhttpGatewayKey;upstreams:OhttpUpstream[];poolOrigin:string;poolLoopback:string;gatewayToken:string;rate?:number;maxInFlight?:number;timeoutMs?:number;http?:boolean;fetch?:typeof fetch;now?:()=>number;clock?:()=>number;windowMs?:number}){
  if(![rate,maxInFlight].every(count=>Number.isSafeInteger(count)&&count>=1))throw new Error('The Oblivious HTTP rate and in-flight cap are whole numbers of at least 1.');
- const allowed=upstreams.map(({origin,prefix})=>{const url=new URL(origin);if(url.protocol!=='https:'||!prefix.startsWith('/')||!prefix.endsWith('/'))throw new Error(`An Oblivious HTTP upstream is https with a path prefix that starts and ends with /, not ${origin} ${prefix}.`);return {origin:url.origin,prefix};});
+ const allowed=upstreams.map(({origin,prefix,methods=[],headers=[]})=>{
+  const url=new URL(origin);if(url.protocol!=='https:'||!prefix.startsWith('/')||!prefix.endsWith('/'))throw new Error(`An Oblivious HTTP upstream is https with a path prefix that starts and ends with /, not ${origin} ${prefix}.`);
+  if(!methods.every(method=>/^[A-Z]+$/.test(method))||!headers.every(header=>/^[a-z][a-z0-9-]*$/.test(header)))throw new Error(`An Oblivious HTTP upstream's extra methods are upper case and its extra headers lower case, not ${methods} ${headers}.`);
+  return {origin:url.origin,prefix,methods,headers};
+ });
  const pool=new URL(poolOrigin).origin,loopback=new URL(poolLoopback).origin,tally=new Map<string,number>(),seen=new Set<string>();
  let since=now(),second=0,used=0,inFlight=0,startedAt=clock();
  const note=(kind:string)=>{tally.set(kind,(tally.get(kind)??0)+1);if(now()-since<60_000)return;console.log(`[ohttp] ${[...tally].map(([name,count])=>`${name} ${count}`).join(', ')}`);tally.clear();since=now();};
@@ -21,13 +26,13 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   // The checks read the path decoded once, as the upstream routes it (arkd serves /v1/tx%73 as its stream); an encoded slash or an empty segment is refused raw.
   // Express routes ignore case and a trailing slash, so the pool route matches any case: /OHTTP/ or /api/ROLLUP/ohttp would reach this gateway again.
   let routed:string;try{routed=decodeURIComponent(path);}catch{return answer(403,'refused');}
-  const lower=routed.toLowerCase(),toPool=url.origin===pool&&lower.startsWith('/api/rollup/'),listed=toPool?!lower.startsWith('/api/rollup/ohttp'):allowed.some(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix));
-  if(!listed||!['GET','POST'].includes(request.method)||/%2f|%5c/i.test(path)||path.includes('//'))return answer(403,'refused');
+  const lower=routed.toLowerCase(),toPool=url.origin===pool&&lower.startsWith('/api/rollup/'),entry=toPool?undefined:allowed.find(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix)),listed=toPool?!lower.startsWith('/api/rollup/ohttp'):!!entry;
+  if(!listed||!['GET','POST',...entry?.methods??[]].includes(request.method)||/%2f|%5c/i.test(path)||path.includes('//'))return answer(403,'refused');
   if(/text\/event-stream/i.test(request.headers.get('accept')??'')||STREAMS.some(stream=>lower.startsWith(stream)))return answer(400,'stream');
-  const headers=copied(request.headers,['content-type','accept','x-digest']),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);
+  const headers=copied(request.headers,['content-type','accept','x-digest',...entry?.headers??[]]),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);
   if(toPool)headers.set('x-shielded-gateway',gatewayToken);
   try{
-   const upstream=await send((toPool?loopback:url.origin)+path+url.search,{method:request.method,headers,redirect:'error',signal,...(request.method==='POST'?{body:await request.arrayBuffer()}:{})});
+   const upstream=await send((toPool?loopback:url.origin)+path+url.search,{method:request.method,headers,redirect:'error',signal,...(request.method==='GET'?{}:{body:await request.arrayBuffer()})});
    const reader=upstream.body?.getReader(),chunks:Uint8Array[]=[];let size=0;
    if(reader)for(;;){const {done,value}=await reader.read();if(done)break;if((size+=value.length)>cap){await reader.cancel();return answer(502,'oversize');}chunks.push(value);}
    const response=new Response(size?Buffer.concat(chunks):null,{status:upstream.status,headers:copied(upstream.headers,['content-type','cache-control','retry-after'])});

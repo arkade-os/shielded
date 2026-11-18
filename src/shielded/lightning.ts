@@ -5,7 +5,7 @@ import {lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap
 import {shieldedRail,shieldedTargetOf,shieldedWithdrawRail} from './rails.ts';
 import type {ShieldedWallet} from './wallet.ts';
 
-export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
+export {LNURL_BASE} from './network-privacy.ts';
 const sats=(value:number)=>value.toLocaleString('en-US');
 // A network blip is not a refusal: falling back on one would charge a swap fee for a payment the pool could make free.
 const transient=(error:unknown)=>error instanceof LnurlTransportError||(error instanceof LnurlError&&(error.retryable||(error.httpStatus??0)>=500));

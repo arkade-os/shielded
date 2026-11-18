@@ -7,13 +7,13 @@ import {NATIVE_RELEASE_ENDPOINT} from '../native-release.ts';
 import {journalledRoute,makeNativeMutationJournal,reconcileJournal,type JournalWallet} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
-import {PRIVATE_ONCHAIN_POLL_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
+import {LNURL_BASE,PRIVATE_ONCHAIN_POLL_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
 import {createSealedFetch,SealedFetchError} from './sealed-fetch.ts';
 
 export const PRIVATE_PAGE=12;
 export const PRIVATE_GRACE_MS=900_000;
 export const PRIVATE_SHIELD_COINS=20;
-export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
+export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];lnurl?:string;storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
 export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile(wallet?:JournalWallet):Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
 
 let installed:PrivateTransport|undefined;
@@ -24,7 +24,8 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
  const target=(config.globals??globalThis) as Record<string,unknown>,direct=target.fetch as typeof fetch,Original=config.socket??(target.WebSocket as typeof WebSocket);
  const relays=config.relays??NOSTR_RELAYS,pinned=new Set(relays.map(normalizeURL)),policy=new NativePolicy(config.poolOrigin),{poolOrigin}=policy,pageOrigin=new URL(config.pageOrigin).origin;
  const journal=makeNativeMutationJournal(config.storage??globalThis.localStorage,{graceMs:PRIVATE_GRACE_MS});
- const sealedFetch=createSealedFetch({config:config.config,gateway:config.gateway,origin:poolOrigin,relays,pool:new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000,websocketImplementation:Original})});
+ policy.registerLnurl(config.lnurl??LNURL_BASE);
+ const sealedFetch=createSealedFetch({config:config.config,gateway:config.gateway,origin:poolOrigin,relays,authorized:url=>policy.authorizes(url),pool:new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000,websocketImplementation:Original})});
  const Guarded=class extends Original {constructor(url:string|URL,protocols?:string|string[]){const u=normalizeURL(String(url));if(!pinned.has(u))throw new Error('Private networking does not permit a WebSocket to '+url);super(u,protocols);}};
  // Express routes ignore case, so these checks do; the release list matches exactly, as its handler does. Order matters: a pool API path is sealed at the pinned origin even when the page is served from it, and a proving path on the page origin goes direct even when it is not.
  const route=(url:URL,method:string)=>{

@@ -4,7 +4,7 @@ import {test,type TestContext} from 'node:test';
 import {buildOffchainTx,CSVMultisigTapscript,DefaultVtxo,ESPLORA_URL,SingleKey} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
 import {normalizeURL} from 'nostr-tools/utils';
-import {NOSTR_CHUNK_BYTES,NOSTR_RELAYS,NOSTR_REQUEST_KIND} from '../packages/protocol/src/nostr-carrier.ts';
+import {NOSTR_CHUNK_BYTES,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest} from '../packages/protocol/src/nostr-carrier.ts';
 import {IsolatedOnchainProvider} from '../src/native/providers.ts';
 import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
 import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
@@ -16,15 +16,15 @@ import {SealedFetchError} from '../src/shielded/sealed-fetch.ts';
 import {createNostrBus} from './fixtures/nostr-bus.ts';
 import info from './fixtures/ark-info.json' with {type:'json'};
 
-const POOL='https://pool.example',PAGE='http://127.0.0.1:5173',LOOPBACK='http://127.0.0.1:9',ARK='https://ark.example',ESPLORA=ESPLORA_URL.mutinynet,ID='ab'.repeat(16);
+const POOL='https://pool.example',PAGE='http://127.0.0.1:5173',LOOPBACK='http://127.0.0.1:9',ARK='https://ark.example',ESPLORA=ESPLORA_URL.mutinynet,ID='ab'.repeat(16),LNURL='https://lnurl.example';
 const settle=()=>new Promise<void>(resolve=>setImmediate(resolve));
 const memory=()=>{const items=new Map<string,string>();return {getItem:(key:string)=>items.get(key)??null,setItem:(key:string,value:string)=>{items.set(key,value);},removeItem:(key:string)=>{items.delete(key);}};};
 
 async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.json({ok:true}),inject=true}:{pageOrigin?:string;globals?:Record<string,unknown>;reply?:(url:string)=>Response;inject?:boolean}={}){
  // Node's own WebSocket reaches the six public relays, so a pool that lost its websocketImplementation fails here instead.
  const real=globalThis.WebSocket;globalThis.WebSocket=class {constructor(){throw new Error('a test reached for a public relay');}} as unknown as typeof WebSocket;t.after(()=>{globalThis.WebSocket=real;});
- const key=(await loadOhttpKey((await generateOhttpKey()).env))!,bus=createNostrBus(),calls:string[]=[],direct:string[]=[],made:unknown[]=[];
- const router=createOhttpGateway({key,upstreams:[{origin:ARK,prefix:'/v1/'},{origin:new URL(ESPLORA).origin,prefix:'/api/'}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:(async(url:string)=>{calls.push(url);return reply(url);}) as unknown as typeof fetch});
+ const key=(await loadOhttpKey((await generateOhttpKey()).env))!,bus=createNostrBus(),calls:string[]=[],direct:string[]=[],made:unknown[]=[],sent:{url:string;init:RequestInit}[]=[];
+ const router=createOhttpGateway({key,upstreams:[{origin:ARK,prefix:'/v1/'},{origin:new URL(ESPLORA).origin,prefix:'/api/'},{origin:LNURL,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:(async(url:string,init:RequestInit)=>{calls.push(url);sent.push({url,init});return reply(url);}) as unknown as typeof fetch});
  // The relay pool hands each socket a normalized URL, so the gateway listens on the same strings.
  const carrier=startNostrCarrier({open:router.open,secret:key.nostrSecret,relays:NOSTR_RELAYS.map(normalizeURL),pool:bus.pool});t.after(()=>carrier.close());await settle();
  // The sentinel is a WebSocket over the bus, speaking NIP-01 to the sealed fetch's own relay pool.
@@ -42,8 +42,10 @@ async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.
   close(){this.readyState=3;for(const sub of this.subs.values())sub.close();this.subs.clear();}
  }
  const target:Record<string,unknown>={fetch:async(input:string)=>{direct.push(String(input));return new Response('direct');},...(inject?{}:{WebSocket:Sentinel}),...globals};
- const transport=installPrivateTransport({config:key.config,gateway:key.nostrPublic,poolOrigin:POOL,pageOrigin,storage:memory(),...(inject?{socket:Sentinel as unknown as typeof WebSocket}:{}),globals:target});t.after(()=>transport.close());
- return {transport,globals:target,bus,calls,direct,made,Sentinel,requests:()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND)};
+ const transport=installPrivateTransport({config:key.config,gateway:key.nostrPublic,poolOrigin:POOL,pageOrigin,lnurl:LNURL,storage:memory(),...(inject?{socket:Sentinel as unknown as typeof WebSocket}:{}),globals:target});t.after(()=>transport.close());
+ const requests=()=>bus.published.filter(event=>event.kind===NOSTR_REQUEST_KIND);
+ const inner=()=>Promise.all(requests().map(async event=>(await key.server.decapsulateRequest(new Request('http://gateway.test/',{method:'POST',headers:{'content-type':'message/ohttp-req'},body:Buffer.from(readRequest(event,key.nostrPublic)!)}))).request));
+ return {transport,globals:target,bus,calls,sent,direct,made,Sentinel,requests,inner};
 }
 
 test('a relative pool path is rewritten to the pinned pool origin and sealed',async t=>{
@@ -97,6 +99,15 @@ test('arkd, indexer and Esplora requests are classified before they are sealed',
  assert.equal(g.requests().length,0,'nothing refused was published');
  for(const url of [ARK+'/v1/indexer/vtxos?scripts=aa',utxos])assert.equal((await g.transport.fetch(url)).status,200,url);
  assert.deepEqual(g.calls,[ARK+'/v1/indexer/vtxos?scripts=aa',utxos]);
+});
+
+test('the wallet\'s Lightning address bearer reaches its service alone, PATCH included, and nothing else carries it',async t=>{
+ const g=await rig(t),headers={authorization:'Bearer token','content-type':'application/json'};g.transport.providers(ARK,ARK);
+ for(const [url,method] of [[LNURL+'/lnurl/address','GET'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH'],[LNURL+'/lnurl/address/alice/arkade','POST'],[ARK+'/v1/info','GET'],['/api/rollup/status','GET']] as const)
+  assert.equal((await g.transport.fetch(url,{method,headers,...(method==='GET'?{}:{body:'{}'})})).status,200,`${method} ${url}`);
+ assert.deepEqual(g.sent.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[LNURL+'/lnurl/address','GET','Bearer token'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH','Bearer token'],[LNURL+'/lnurl/address/alice/arkade','POST','Bearer token'],[ARK+'/v1/info','GET',null],[LOOPBACK+'/api/rollup/status','GET',null]]);
+ for(const request of await g.inner())assert.equal(request.headers.get('authorization'),request.url.startsWith(LNURL)?'Bearer token':null,'the client seals the bearer only toward its service: '+request.url);
+ await assert.rejects(g.transport.fetch(LNURL+'/lnurl/address/alice',{method:'DELETE',headers}),/not approved/);
 });
 
 test('the transport fetch is marked private and sealed',async t=>{

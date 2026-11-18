@@ -22,7 +22,7 @@ const flush=async(t:TestContext)=>{for(let i=0;i<8;i++){t.mock.timers.tick(0);aw
 const advance=async(t:TestContext,ms:number)=>{await flush(t);for(let at=0;at<ms;at+=1000){t.mock.timers.tick(1000);await flush(t);}};
 const FORBIDDEN=['accept-charset','accept-encoding','access-control-request-headers','access-control-request-method','connection','content-length','cookie','cookie2','date','dnt','expect','host','keep-alive','origin','referer','set-cookie','te','trailer','transfer-encoding','upgrade','via'];
 
-type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;open?:OhttpOpen}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'getTimeoutMs'|'attempts'|'random'>;
+type Rig={relays?:string[];reply?:()=>Response|Promise<Response>;gateway?:Partial<Parameters<typeof createOhttpGateway>[0]>;open?:OhttpOpen}&Pick<Parameters<typeof createSealedFetch>[0],'pick'|'timeoutMs'|'getTimeoutMs'|'attempts'|'random'|'authorized'>;
 async function rig(t:TestContext,{relays=[A,B],reply=()=>Response.json({ok:true}),gateway={},open,...options}:Rig={}){
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,calls:{url:string;init:RequestInit}[]=[],bus=createNostrBus();
  const upstream=(async(url:string,init:RequestInit)=>{calls.push({url,init});return reply();}) as unknown as typeof fetch;
@@ -49,6 +49,12 @@ test('relative URLs resolve against the origin and only content-type, accept and
  assert.deepEqual(g.calls.map(call=>call.url),[LOOPBACK+'/api/rollup/status']);
  const request=await g.inner();
  assert.equal(request.url,POOL+'/api/rollup/status');assert.deepEqual([...request.headers.keys()],['accept','x-date']);
+});
+
+test('Authorization leaves the client only inside a request to a URL it is authorized for',async t=>{
+ const g=await rig(t,{authorized:url=>new URL(url).origin==='https://ark.example'});
+ for(const url of [ARK,'/api/rollup/status'])assert.equal((await g.fetch(url,{headers:{Authorization:'Bearer token'}})).status,200,url);
+ assert.deepEqual([(await g.inner(0)).headers.get('authorization'),(await g.inner(1)).headers.get('authorization')],['Bearer token',null]);
 });
 
 test('a large answer is reassembled, from chunks in any order, past a chunk another key signed',async t=>{

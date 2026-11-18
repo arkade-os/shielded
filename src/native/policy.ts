@@ -29,10 +29,14 @@ export class NativePolicy {
  private arks=new Set<string>();
  private indexers=new Set<string>();
  private esploras=new Set<string>();
+ private lnurls=new Set<string>();
  private subscriptions=new Map<string,NativeRoute>();
  constructor(pool:string){this.poolOrigin=nativeUrl(pool).origin;}
  registerArk(ark:string,indexer:string){this.arks.add(nativeUrl(ark).origin);this.indexers.add(nativeUrl(indexer).origin);}
  registerEsplora(base:string){this.esploras.add(nativeUrl(base).href.replace(/\/$/,''));}
+ registerLnurl(base:string){this.lnurls.add(nativeUrl(base).origin);}
+ /** Whether a request may carry the wallet's Authorization header: only the registered Lightning address service reads one. */
+ authorizes(input:string):boolean {try{return this.lnurls.has(nativeUrl(input).origin);}catch{return false;}}
  subscription(id:string,script:string,origin:string){
   if(!id||!script)throw new Error('Invalid native subscription');
   const key=origin+'|'+id,next=route('indexer',origin+'|script|'+script),previous=this.subscriptions.get(key);
@@ -78,6 +82,14 @@ export class NativePolicy {
    if(m==='GET'&&path==='/v1/info')return route('public',origin+path);
    if(m==='GET'&&path==='/v1/batch/events')return route('ark',origin+'|topics|'+url.search);
    if(m==='POST'&&/^\/v1\/(tx\/(submit|finalize|pending)|batch\/(registerIntent|deleteIntent|ack|tree\/submitNonces|tree\/submitSignatures|submitForfeitTxs))$/.test(path))return route('ark',origin+path+'|'+digest(body??''));
+  }
+  if(this.lnurls.has(origin)){
+   if(path==='/lnurl/address'&&(m==='GET'||m==='POST'))return route('lnurl',origin+'|address');
+   const owned=/^\/lnurl\/address\/([^/]+)(\/arkade)?$/.exec(path);
+   if(owned&&m===(owned[2]?'POST':'PATCH'))return route('lnurl',origin+'|address|'+owned[1]);
+   // Paying an address on this service: its pay request and callback, never a host a payee names.
+   const pay=/^\/(?:\.well-known\/lnurlp|lnurl)\/([^/]+)(?:\/callback)?$/.exec(path);
+   if(m==='GET'&&pay&&pay[1]!=='address')return route('lnurl',origin+'|pay|'+pay[1]);
   }
   for(const base of this.esploras){
    if(!url.href.startsWith(base+'/'))continue;

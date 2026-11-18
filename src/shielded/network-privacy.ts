@@ -6,6 +6,8 @@ export const PRIVATE_PAGE_DEFAULT=50;
 export const PRIVATE_ONCHAIN_POLL_MS=60_000;
 export const PRIVATE_VTXO_SYNC_MAX_AGE_MS=15_000;
 export const PRIVATE_SUBMIT_JITTER_MS=10_000,PRIVATE_SPEND_POLL_MS=20_000,PRIVATE_VERDICT_EVERY=5,PRIVATE_SIGN_POLL_MS=3_000;
+// Here, not in lightning.ts, so the private boot reaches it without loading the Lightning clients.
+export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
 export const privateInterval=(ms:number):number=>Math.round(ms*(1+Math.random()/4));
 // Every display read re-syncs each watched script; a staleness budget collapses a burst of them into one indexer round. Watcher events sync their own script, so a payment still lands inside the window.
 export const cacheVtxoSync=<T,>(manager:T):T=>{(manager as {setVtxoSyncMaxAge?:(ms:number)=>void}).setVtxoSyncMaxAge?.(PRIVATE_VTXO_SYNC_MAX_AGE_MS);return manager;};

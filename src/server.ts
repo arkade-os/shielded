@@ -14,6 +14,7 @@ import {createOhttpGateway} from './rollup/ohttp-gateway.ts';
 import {loadOhttpKey} from './rollup/ohttp-keys.ts';
 import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
 import {MUTINY_ARK_URL,parseStockEndpoint} from './stock/network.ts';
+import {LNURL_BASE} from './shielded/network-privacy.ts';
 import {serveWeb} from './web.ts';
 
 const root=fileURLToPath(new URL('..',import.meta.url)),web=join(root,'app/dist');
@@ -33,10 +34,11 @@ if(ohttpKey&&gatewayToken){
  if(!port)throw new Error('PORT must be a fixed port number while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
  if(!['0.0.0.0','127.0.0.1'].includes(host))throw new Error('HOST must be 0.0.0.0 or 127.0.0.1 while SHIELDED_OHTTP_KEY is set: the gateway reaches the pool at http://127.0.0.1:$PORT.');
  // arkd and the indexer are bare origins, as the pool requires, so their prefixes are fixed; Esplora keeps the path of its base URL.
- const ark=parseStockEndpoint(process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL,'Arkade URL'),indexer=parseStockEndpoint(process.env.SHIELDED_INDEXER_URL||ark,'indexer URL'),esplora=new URL(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet);
+ const ark=parseStockEndpoint(process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL,'Arkade URL'),indexer=parseStockEndpoint(process.env.SHIELDED_INDEXER_URL||ark,'indexer URL'),esplora=new URL(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet),lnurl=parseStockEndpoint(process.env.SHIELDED_LNURL_URL||LNURL_BASE,'Lightning address service URL');
  nostrRelays=nostrRelaysFromEnv(process.env.SHIELDED_NOSTR_RELAYS);
+ // The Lightning address service alone gets PATCH and the wallet's bearer, and its pay requests only on this one origin, so no payee can name the host.
  gateway=createOhttpGateway({key:ohttpKey,gatewayToken,http:ohttpHttp,poolOrigin:process.env.SHIELDED_PUBLIC_ORIGIN||'https://shielded.mutinynet.arkade.sh',poolLoopback:`http://127.0.0.1:${port}`,
-  upstreams:[{origin:ark,prefix:'/v1/'},{origin:indexer,prefix:'/v1/indexer/'},{origin:esplora.origin,prefix:esplora.pathname.replace(/\/?$/,'/')}],
+  upstreams:[{origin:ark,prefix:'/v1/'},{origin:indexer,prefix:'/v1/indexer/'},{origin:esplora.origin,prefix:esplora.pathname.replace(/\/?$/,'/')},{origin:lnurl,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']},{origin:lnurl,prefix:'/.well-known/lnurlp/'}],
   ...(process.env.SHIELDED_OHTTP_RATE?{rate:Number(process.env.SHIELDED_OHTTP_RATE)}:{})});
  app.use('/api/rollup',gateway);
 }
