@@ -349,6 +349,7 @@ struct IdleHttp {
 
 pub(super) struct Inner {
     pub data_dir: PathBuf,
+    pub mode_file: Option<PathBuf>,
     pub session: Mutex<Session>,
     pub tls: Arc<rustls::ClientConfig>,
 }
@@ -382,6 +383,7 @@ impl Inner {
         tls.resumption = rustls::client::Resumption::disabled();
         Self {
             data_dir,
+            mode_file: None,
             tls: Arc::new(tls),
             session: Mutex::new(Session {
                 phase: "locked",
@@ -414,6 +416,32 @@ impl Inner {
 
     pub fn status(&self) -> Result<NativeStatus, String> {
         Ok(self.lock()?.status())
+    }
+
+    fn remembered_mode(&self) -> NativeMode {
+        let saved = self.mode_file.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+        if saved.as_deref().map(str::trim) == Some("direct") {
+            NativeMode::Direct
+        } else {
+            NativeMode::Tor
+        }
+    }
+
+    /// Called under the session lock, so writes land in the order modes change. A file that
+    /// cannot hold Tor is removed instead, because a missing file also means Tor.
+    fn remember(&self, mode: NativeMode) {
+        let Some(path) = &self.mode_file else { return };
+        let temporary = path.with_extension("tmp");
+        let saved = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| {
+                std::fs::write(&temporary, if mode == NativeMode::Direct { "direct" } else { "tor" })
+            })
+            .and_then(|()| std::fs::rename(&temporary, path));
+        if saved.is_err() && mode == NativeMode::Tor {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     pub fn finish_update<T>(
@@ -522,7 +550,7 @@ impl Inner {
     }
 
     pub fn prewarm(self: &Arc<Self>) -> Result<NativeStatus, String> {
-        match self.prepare_start(NativeMode::Tor, DRAIN_TIMEOUT, true)? {
+        match self.prepare_start(self.remembered_mode(), DRAIN_TIMEOUT, true)? {
             PreparedStart::Ready(status) => Ok(status),
             PreparedStart::Pending { work, .. } => {
                 if let Some(work) = work {
@@ -608,6 +636,10 @@ impl Inner {
             }
         }
         session.mode = mode;
+        // Remembered before it starts, so a failed return to Tor never relaunches direct.
+        if mode == NativeMode::Tor {
+            self.remember(mode);
+        }
         session.phase = "bootstrapping";
         session.error = None;
         let cancel = CancellationToken::new();
@@ -668,7 +700,10 @@ impl Inner {
         } else {
             session.bootstrap_cancel = None;
             match result {
-                Ok(()) => session.phase = "ready",
+                Ok(()) => {
+                    session.phase = "ready";
+                    self.remember(mode);
+                }
                 Err(error) => {
                     session.phase = "error";
                     session.warm_from_generation = None;
@@ -2327,6 +2362,90 @@ mod tests {
         assert_eq!(repeated.mode, NativeMode::Direct);
         assert_eq!(repeated.generation, status.generation);
         assert!(direct.lock().unwrap().client.is_none());
+    }
+
+    fn remembering(data_dir: PathBuf, saved: Option<&str>) -> (Arc<Inner>, PathBuf) {
+        let file = std::env::temp_dir()
+            .join(format!("shielded-mode-test-{}", uuid::Uuid::new_v4()))
+            .join("native-mode");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        if let Some(saved) = saved {
+            std::fs::write(&file, saved).unwrap();
+        }
+        let mut inner = Inner::new(data_dir);
+        inner.mode_file = Some(file.clone());
+        (Arc::new(inner), file)
+    }
+
+    #[test]
+    fn only_a_saved_direct_mode_is_remembered_as_direct() {
+        let (inner, file) = remembering(PathBuf::from("unused"), None);
+        assert_eq!(inner.remembered_mode(), NativeMode::Tor);
+        for (saved, mode) in [
+            ("direct\n", NativeMode::Direct),
+            ("tor", NativeMode::Tor),
+            ("Direct", NativeMode::Tor),
+            ("", NativeMode::Tor),
+        ] {
+            std::fs::write(&file, saved).unwrap();
+            assert_eq!(inner.remembered_mode(), mode, "{saved:?}");
+        }
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_direct_session_is_remembered_only_once_ready_and_never_creates_tor_storage() {
+        let tor = std::env::temp_dir().join(format!("shielded-mode-tor-{}", uuid::Uuid::new_v4()));
+        let (inner, file) = remembering(tor.clone(), Some("tor"));
+        let (waiter, work) = match inner
+            .prepare_start(NativeMode::Direct, DRAIN_TIMEOUT, false)
+            .unwrap()
+        {
+            PreparedStart::Pending {
+                waiter,
+                work: Some(work),
+            } => (waiter, work),
+            _ => panic!("expected a new direct startup"),
+        };
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "tor");
+        work.run_with_bootstrap(|_, _, _, _| std::future::ready(Ok(())))
+            .await;
+        assert_eq!(waiter.wait(&inner).await.unwrap().phase, "ready");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "direct");
+        assert!(!file.with_extension("tmp").exists());
+        assert!(!tor.exists());
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_tor_request_is_remembered_even_when_tor_fails_to_start() {
+        let (inner, file) = remembering(PathBuf::from("\0"), Some("direct"));
+        assert_eq!(inner.start(NativeMode::Tor).await.unwrap().phase, "error");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "tor");
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_tor_choice_that_cannot_be_written_removes_a_saved_direct_mode() {
+        let (inner, file) = remembering(PathBuf::from("unused"), Some("direct"));
+        std::fs::create_dir(file.with_extension("tmp")).unwrap();
+        inner.remember(NativeMode::Tor);
+        assert!(!file.exists());
+        assert_eq!(inner.remembered_mode(), NativeMode::Tor);
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prewarm_starts_in_the_remembered_direct_mode_without_a_tor_client() {
+        let tor = std::env::temp_dir().join(format!("shielded-mode-tor-{}", uuid::Uuid::new_v4()));
+        let (inner, file) = remembering(tor.clone(), Some("direct"));
+        assert_eq!(inner.prewarm().unwrap().mode, NativeMode::Direct);
+        let ready = inner.start(NativeMode::Direct).await.unwrap();
+        assert_eq!(ready.phase, "ready");
+        assert_eq!(ready.generation, 1);
+        assert!(inner.lock().unwrap().client.is_none());
+        assert!(!tor.exists());
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]

@@ -100,6 +100,14 @@ impl PrivacyTransport {
             inner: Arc::new(session::Inner::new(data_dir)),
         })
     }
+    /// The app's transport launches in the mode its last session started in.
+    pub fn remembering(data_dir: PathBuf, mode_file: PathBuf) -> Result<Self, String> {
+        let mut inner = session::Inner::new(data_dir);
+        inner.mode_file = Some(mode_file);
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
     pub fn pause(&self) -> Result<NativeStatus, String> {
         self.inner.pause()
     }

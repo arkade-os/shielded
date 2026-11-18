@@ -11,9 +11,6 @@ export async function openNativeVault(start:()=>Promise<NativeStatus>,read:()=>P
  return {status,secret};
 }
 
-export const NATIVE_MODE='shielded-native-mode-v1';
-export const rememberedNativeMode=(storage:Pick<Storage,'getItem'>):NativeMode=>storage.getItem(NATIVE_MODE)==='direct'?'direct':'tor';
-
 export const NATIVE_FOREGROUND_HOLD='Shielded is waiting for Android to bring it back to the foreground. Switch to another app and back to continue.';
 
 // Android can leave the host believing the app is still in the background, and it then refuses every new connection.

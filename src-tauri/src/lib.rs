@@ -64,7 +64,8 @@ pub fn run() {
                     eprintln!("Could not register payment URI handlers: {error}");
                 }
             }
-            let transport = transport::PrivacyTransport::new(app.path().app_data_dir()?.join("tor"))
+            let data = app.path().app_data_dir()?;
+            let transport = transport::PrivacyTransport::remembering(data.join("tor"), data.join("native-mode"))
                 .map_err(std::io::Error::other)?;
             app.manage(transport.clone());
             #[cfg(target_os = "ios")]

@@ -7,7 +7,7 @@ import {installNativeTransport,nativeNetwork,type NativeMode} from '../../src/na
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
 import {createNativeViewHandoff,currentNativeWalletView,isNativeWalletViewActive,nativeWalletPresentation,type NativeWalletView} from './native-view-handoff.ts';
-import {NATIVE_FOREGROUND_HOLD,NATIVE_MODE,nativeForegroundHold,openNativeVault,rememberedNativeMode,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
+import {NATIVE_FOREGROUND_HOLD,nativeForegroundHold,openNativeVault,reopenNativeForeground,resumeNativeForeground} from './native-open.ts';
 import {saveNativeSetup} from './native-setup.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
 import NativeConnectionWarning,{NativeExternalLink} from './NativeConnectionWarning.tsx';
@@ -137,7 +137,7 @@ export default function NativeWallet(){
    await cleanup.current.drain();
    if(mine!==attempt.current)return;
    await previousClose.catch(()=>{});
-   const mode=selectedMode.current??=await nativeNetwork.hostMode(rememberedNativeMode(localStorage));
+   const mode=selectedMode.current??=await nativeNetwork.hostMode();
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    setPhase(mode==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
     const generationGuard=()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
@@ -220,7 +220,7 @@ export default function NativeWallet(){
   if(transition.current||creating.current||manualLock.current)return;
   transition.current=true;setSwitching(true);setConfirmDirect(false);setError('');
   const mine=attempt.current+1;
-  try{await pause();if(mine!==attempt.current||!pageForeground()||manualLock.current||!transition.current)return;selectedMode.current=mode;localStorage.setItem(NATIVE_MODE,mode);await open();}
+  try{await pause();if(mine!==attempt.current||!pageForeground()||manualLock.current||!transition.current)return;selectedMode.current=mode;await open();}
   catch(cause){fail(cause);}
   finally{transition.current=false;setSwitching(false);}
  };

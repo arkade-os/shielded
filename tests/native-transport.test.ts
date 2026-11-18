@@ -283,23 +283,20 @@ test('native starts select Tor by default and send an explicit direct selection'
  assert.deepEqual(selections,['tor','direct']);
 });
 
-test('a running direct session wins over the remembered mode, which a prewarming Tor session cannot override',async()=>{
- for(const [status,remembered,mode] of [
-  [{phase:'ready',generation:7,mode:'direct'},'tor','direct'],
-  [{phase:'bootstrapping',generation:7,mode:'direct'},'tor','direct'],
-  [{phase:'paused',generation:7,mode:'direct'},'tor','tor'],
-  [{phase:'locked',generation:0,mode:'tor'},'tor','tor'],
-  [{phase:'ready',generation:7},'tor','tor'],
-  [{phase:'bootstrapping',generation:1,mode:'tor'},'direct','direct'],
-  [{phase:'ready',generation:1,mode:'tor'},'direct','direct'],
-  [{phase:'locked',generation:0,mode:'tor'},'direct','direct'],
- ] as [NativeStatus,'tor'|'direct',string][]){
-  const label=`${status.phase} ${status.mode} remembering ${remembered}`;
+test('the host session mode is read from a running or paused session, where the fenced status read cannot reach it',async()=>{
+ for(const [status,mode] of [
+  [{phase:'ready',generation:7,mode:'direct'},'direct'],
+  [{phase:'bootstrapping',generation:7,mode:'direct'},'direct'],
+  [{phase:'paused',generation:7,mode:'direct'},'direct'],
+  [{phase:'error',generation:7,mode:'direct'},'tor'],
+  [{phase:'locked',generation:0,mode:'tor'},'tor'],
+  [{phase:'ready',generation:7},'tor'],
+ ] as [NativeStatus,string][]){
+  const label=`${status.phase} ${status.mode}`;
   const bridge=new NativeBridge({invoke:async()=>status,channel:()=>({})},new NativePolicy('https://pool.example'));
-  assert.equal(await bridge.hostMode(remembered),mode,label);
+  assert.equal(await bridge.hostMode(),mode,label);
   assert.equal((await bridge.status()).mode,'tor',label);
  }
- assert.equal(await new NativeBridge({invoke:async()=>({phase:'locked',generation:0}),channel:()=>({})},new NativePolicy('https://pool.example')).hostMode(),'tor');
 });
 
 test('a mismatched native start cannot publish a direct connection as Tor',async()=>{

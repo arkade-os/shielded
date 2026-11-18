@@ -356,7 +356,7 @@ This is a bounded ownership and view-continuity model. It abstracts React render
 
 ## Eager native Tor startup
 
-`TorStartup.tla` models reserving the initial Tor startup synchronously before the WebView loads, then running its worker alongside frontend initialization. Same-mode frontend calls join the reserved job; they cannot return an intermediate `bootstrapping` result. Bootstrap work belongs to the native host, so cancelling one caller does not cancel work awaited by another.
+`TorStartup.tla` models reserving the initial startup synchronously before the WebView loads, then running its worker alongside frontend initialization. The reservation uses the mode the host remembers: the last mode that reached ready, or Tor as soon as it is requested; an unreadable record means Tor. Same-mode frontend calls join the reserved job; they cannot return an intermediate `bootstrapping` result. Bootstrap work belongs to the native host, so cancelling one caller does not cancel work awaited by another.
 
 `prewarm` is the non-blocking kickoff and intentionally returns an immediate status snapshot. The terminal-waiting contract applies to asynchronous `start` and `start_mode`. The `initial_only` check inside `Inner::prepare_start` limits host kickoff to the initial locked, generation-zero Tor state; calling it again cannot reverse pause or a direct-mode choice.
 
@@ -396,7 +396,7 @@ The exhaustive base has two callers, two startup jobs and three generations, cov
 
 In the source, `StartWaiter::wait` explicitly rechecks generation and mode after reading the retained result. The model's additional ready-phase predicate is a derived correspondence condition: startup phase writers are fenced by `Session::start_matches`, and the other exits from ready invalidate generation first. A retained ready result therefore cannot become non-ready with the same generation and mode. Non-ready terminal statuses are failures for readiness. The already-ready fast path is linearized inside `Inner::prepare_start`'s session lock rather than awaiting a completion. The model does not cover later IPC delivery, JavaScript revision/visibility checks or actual vault access, and is not composed with the other models into a refinement proof.
 
-Pinned TLC v1.7.4 checked the base on November 8, 2026: 131,128 generated states, 27,210 distinct states, depth 19 and an empty queue. Every semantic action fired. `ReserveLate` and `DuplicateStart` are mutation-only actions and correctly have zero base coverage. `Terminal` is artificial stuttering. All ten guard mutations exit 12 with their named invariant; their single-worker counterexamples are:
+Pinned TLC v1.7.4 checked the base on November 8, 2026: 131,128 generated states, 27,210 distinct states, depth 19 and an empty queue. Every semantic action fired. `ReserveLate` and `DuplicateStart` are mutation-only actions and correctly have zero base coverage. `Terminal` is artificial stuttering. On November 18, 2026, with `SetupReserve` choosing either remembered mode, the base generated 262,254 states (54,419 distinct, depth 19) and fired for both modes. All ten guard mutations exit 12 with their named invariant; their single-worker counterexamples are:
 
 | Configuration | Counterexample |
 | --- | --- |
@@ -413,7 +413,7 @@ Pinned TLC v1.7.4 checked the base on November 8, 2026: 131,128 generated states
 
 `TerminalJoinersRelease` is conditional liveness: once completion is retained, an attached waiter eventually returns or cancels under weak fairness of its observation step. No fairness is imposed on network completion, worker scheduling or retirement acknowledgements, so the model does not promise bootstrap/retry latency or eventual connectivity. Caller delivery before the native reservation boundary and process restart are outside its scope.
 
-The wider configuration passed 20,000 traces at depth 100 with four callers, four jobs, five generations and seed 20261108, checking 2,040,179 states. The native gate includes 38 expected configurations, up from 27. Local checks used two workers and a 256 MiB heap because of host memory pressure. These results do not prove Tor directory validation, circuit isolation, caching, cryptography, native vault durability, frontend rendering, physical-device behavior or a startup speedup.
+The wider configuration passed 20,000 traces at depth 100 with four callers, four jobs, five generations and seed 20261108, checking 2,040,179 states, and 2,038,868 states with both setup modes. The native gate includes 38 expected configurations, up from 27. Local checks used two workers and a 256 MiB heap because of host memory pressure. These results do not prove Tor directory validation, circuit isolation, caching, cryptography, native vault durability, frontend rendering, physical-device behavior or a startup speedup.
 
 ## Scoped native HTTP reuse
 

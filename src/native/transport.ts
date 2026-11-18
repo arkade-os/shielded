@@ -74,11 +74,11 @@ export class NativeBridge {
   }
   this.current={...status,mode};for(const fn of this.listeners)try{fn(this.current);}catch{}return this.current;
  }
- // A running direct session outlives this renderer, which acceptsStatus fences out until it has asked for that mode.
- // A running Tor session does not win: launch prewarms Tor before any renderer has read the remembered choice.
- async hostMode(remembered:NativeMode='tor'):Promise<NativeMode>{
+ // The host launches in the mode it last started and keeps it while paused, so a renderer rebuilt after a lock or reset
+ // adopts it; acceptsStatus fences this renderer out until it has asked for that mode.
+ async hostMode():Promise<NativeMode>{
   const status:NativeStatus=await this.backend.invoke('native_status');
-  return ['ready','bootstrapping'].includes(status.phase)&&status.mode==='direct'?'direct':remembered;
+  return ['ready','bootstrapping','paused'].includes(status.phase)?status.mode??'tor':'tor';
  }
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
  acceptLifecycle(status:NativeStatus){if(!this.acceptsStatus(status))return this.current;++this.statusRevision;return this.acceptStatus(status);}
