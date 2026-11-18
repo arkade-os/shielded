@@ -4,11 +4,15 @@ import type {AddressInfo} from 'node:net';
 import {test,type TestContext} from 'node:test';
 import {setTimeout as sleep} from 'node:timers/promises';
 import express from 'express';
+import {AEAD_AES_128_GCM,CipherSuite,KDF_HKDF_SHA256,KEM_DHKEM_X25519_HKDF_SHA256} from 'hpke';
 import {matchFilters,type Filter} from 'nostr-tools/filter';
 import {finalizeEvent,generateSecretKey,getPublicKey,type Event} from 'nostr-tools/pure';
+import {KeyConfig,OHTTPClient} from 'ohttp-ts';
 import {WebSocketServer} from 'ws';
 import {gatewayCaller} from '../src/rollup/http.ts';
 import {ANSWER_BYTES} from '../src/rollup/nostr-carrier.ts';
+import {createOhttpGateway} from '../src/rollup/ohttp-gateway.ts';
+import {generateOhttpKey,loadOhttpKey} from '../src/rollup/ohttp-keys.ts';
 import {CARD_KIND,RFQ_KIND,createRendezvousRouter} from '../src/rollup/rendezvous.ts';
 
 const TOKEN='per-process-token',wallet=generateSecretKey(),solver=generateSecretKey(),W=getPublicKey(wallet),S=getPublicKey(solver);
@@ -128,4 +132,18 @@ test('its own rate and in-flight caps answer 429 and 503 with Retry-After',async
 test('the route takes its relays and limits from configuration only',()=>{
  const fromGateway=gatewayCaller(TOKEN);
  for(const options of [{relays:[]},{relays:['wss://r.example'],rate:0},{relays:['wss://r.example'],maxInFlight:1.5},{relays:['wss://r.example'],maxWaitMs:25_001}])assert.throws(()=>createRendezvousRouter({fromGateway,...options}),/rendezvous/,JSON.stringify(options));
+});
+
+test('through the real gateway: a sealed RFQ reaches the rendezvous over the loopback hop, with its token, and the reply comes back sealed',async t=>{
+ const r=await relay(t,{react:solving()}),app=express();app.use('/api/rollup',createRendezvousRouter({relays:[r.url],fromGateway:gatewayCaller(TOKEN)}));
+ const server=app.listen(0,'127.0.0.1');await once(server,'listening');t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+ const key=(await loadOhttpKey((await generateOhttpKey()).env))!,gateway=createOhttpGateway({key,upstreams:[],poolOrigin:'https://pool.example',poolLoopback:`http://127.0.0.1:${(server.address() as AddressInfo).port}`,gatewayToken:TOKEN});
+ const client=new OHTTPClient(new CipherSuite(KEM_DHKEM_X25519_HKDF_SHA256,KDF_HKDF_SHA256,AEAD_AES_128_GCM),KeyConfig.parseMultiple(key.config)[0]!,{maxMessageSize:5<<20});
+ const event=rfq(),{init,context}=await client.encapsulateRequest(new Request('https://pool.example/api/rollup/rendezvous',{method:'POST',headers:{'content-type':'application/json','x-date':new Date().toUTCString()},body:JSON.stringify({kind:RFQ_KIND,event,filter:RFQ_FILTER,waitMs:20_000})}));
+ const outcome=await gateway.open(init.body as Uint8Array);
+ assert.equal(outcome.kind,'sealed');
+ const inner=await context.decapsulateResponse(new Response(Buffer.from((outcome as {bytes:Uint8Array}).bytes),{headers:{'content-type':'message/ohttp-res'}}));
+ const {events}=await inner.json() as {events:Event[]};
+ assert.deepEqual([inner.status,events.map(reply=>reply.tags)],[200,[[['p',W]]]]);
+ assert.deepEqual(r.published.map(sent=>sent.id),[event.id]);
 });
