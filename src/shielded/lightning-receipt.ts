@@ -1,7 +1,7 @@
 import {awaitTransaction} from '@arkade-os/sdk';
 import {IndexedDbAssetSwapRepository,type AssetSwapRepository,type LockupSpendIndexer,type SwapRecord} from '@arkade-os/swap';
 import {readLockupFate} from '@arkade-os/swap/protocol';
-import {hex} from '@scure/base';
+import {bech32,hex} from '@scure/base';
 
 export interface ConditionalSwapRepository extends AssetSwapRepository {
  saveSwapRecordIfUnchanged(expected:SwapRecord,next:SwapRecord):Promise<boolean>;
@@ -40,6 +40,15 @@ export class LightningSwapRepository extends IndexedDbAssetSwapRepository implem
    await done;return saved;
   }finally{db.close();}
  }
+}
+
+/** BOLT11's `d` field; a Lightning address's invoice carries only `h`, a hash of its description. */
+export function invoiceDescription(bolt11:string):string|undefined{
+ try{
+  const words=bech32.decode(bolt11,false).words.slice(7,-104);
+  for(let i=0;i+3<=words.length;){const end=i+3+words[i+1]!*32+words[i+2]!;if(words[i]===13)return new TextDecoder().decode(bech32.fromWords(words.slice(i+3,end)))||undefined;i=end;}
+ }catch{}
+ return undefined;
 }
 
 export async function repairLightningReceipt(repository:AssetSwapRepository,indexer:LockupSpendIndexer,id:string):Promise<boolean>{

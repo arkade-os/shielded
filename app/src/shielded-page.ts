@@ -5,7 +5,7 @@ import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
 import {createPasskeySeed,passkeyFailure,restorePasskeySeed,type PasskeyOutcome,type PasskeySeed,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
 import type {ShieldedNoteRepository,SentRecord} from '../../src/shielded/repository.ts';
 import {epochIdle} from '../../src/shielded/epoch-sync.ts';
-import {rateLimitHolding} from '../../src/shielded/network-privacy.ts';
+import {rateLimitHolding,rateLimitHoldingMs} from '../../src/shielded/network-privacy.ts';
 import type {ShieldedWallet} from '../../src/shielded/wallet.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 import {isShieldedHandle,watchHandle,type StepState} from '../../src/shielded/handle.ts';
@@ -45,7 +45,7 @@ export function pageActivityHistory(history:Activity[],lightning:Activity[]){
  const rows=history.map(row=>{
   const candidates=receipts.filter(receipt=>matches(row,receipt));
   if(candidates.length!==1||history.filter(item=>matches(item,candidates[0]!)).length!==1)return row;
-  return {...row,intent:{...row.intent!,label:'Paid via Lightning',outcome:'paid'}};
+  const paid=candidates[0]!.intent!;return {...row,intent:{...paid,metadata:{...row.intent!.metadata,...paid.metadata}}};
  });
  return [...rows,...lightning.filter(row=>row.intent?.kind!=='lightning-send')].sort((a,b)=>b.createdAt-a.createdAt);
 }
@@ -78,7 +78,46 @@ export function pageCache(source:ShieldedNoteRepository){
  return {repository,close(){closed=true;},async drain(){await Promise.allSettled([...writes]);}};
 }
 
-type PageRetry={delayMs?:number;onError?:(error:unknown)=>void;onTerminal?:(error:unknown)=>void;shouldRetry?:()=>boolean};
+export const PAGE_BUSY_MS=30_000,PAGE_BUSY_MAX_MS=300_000,PAGE_READ_ATTEMPTS=5;
+export const PAGE_BUSY_NOTICE='Wallet services are busy.';
+export const pageBusyText=(ms:number)=>`${PAGE_BUSY_NOTICE} Showing your saved balance; retrying in ${Math.max(1,Math.round(ms/1000))} s.`;
+export const isPageBusy=(text:string)=>text.startsWith(PAGE_BUSY_NOTICE);
+/** An explicit status names its own outcome, so a 403 is never read off someone else's cooldown; only a statusless failure falls back to the message and to the transport's record of a 429. */
+const pageRateLimited=(error:unknown)=>{
+ const status=(error as {status?:number})?.status;
+ if(typeof status==='number')return status===429;
+ return error instanceof Error&&/\b429\b|too many requests/i.test(error.message)||rateLimitHoldingMs()>0;
+};
+/** Busy and failure kept apart before any join: a joined string cannot be classified, and whichever reader published first would decide for the rest. */
+export const pageReadErrors=(errors:Readonly<Record<string,string|undefined>>)=>{
+ const messages=Object.values(errors).filter((text):text is string=>!!text);
+ return {busy:messages.find(isPageBusy)??'',error:[...new Set(messages.filter(text=>!isPageBusy(text)))].join(' ')};
+};
+/** One pause for every page read, because the CDN's limit counts this address across all its hosts: a per-reader ladder answers one refusal with five. */
+function pageBusyGate(){
+ let until=0,delay=0,epoch=0;
+ const gate={
+  get waitingMs(){return Math.max(0,until-Date.now());},
+  get epoch(){return epoch;},
+  refuse(){
+   epoch++;delay=Math.min(delay?delay*2:PAGE_BUSY_MS,PAGE_BUSY_MAX_MS);
+   until=Math.max(until,Date.now()+Math.max(rateLimitHoldingMs(),Math.round(delay*(1+Math.random()/4))));
+   return gate.waitingMs;
+  },
+  // Only a read begun after the refusal: one already in flight proves nothing about the pause it landed in.
+  pass(at:number){if(at===epoch){until=0;delay=0;}},
+  async wait(signal:AbortSignal){
+   for(let ms=gate.waitingMs;ms>0&&!signal.aborted;ms=gate.waitingMs)await new Promise<void>(resolve=>{
+    const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();},timer=setTimeout(done,ms);
+    signal.addEventListener('abort',done,{once:true});if(signal.aborted)done();
+   });
+  },
+ };
+ return gate;
+}
+type PageBusyGate=ReturnType<typeof pageBusyGate>;
+
+type PageRetry={delayMs?:number;attempts?:number;gate?:PageBusyGate;fromStore?:boolean;onError?:(error:unknown)=>void;onBusy?:(ms:number)=>void;onTerminal?:(error:unknown)=>void;shouldRetry?:()=>boolean};
 function retryablePageError(error:unknown){
  if(!(error instanceof Error))return false;
  const status=(error as Error&{status?:number}).status;
@@ -86,14 +125,23 @@ function retryablePageError(error:unknown){
  return isRetryableProviderError(error)||rateLimitHolding()||/^The pool did not answer \((?:5\d\d|network error)\)\.$/.test(error.message);
 }
 export async function retryPageRead<T>(read:()=>Promise<T>,signal:AbortSignal,options:PageRetry={}):Promise<T|undefined>{
+ // Unbounded by default: the startup readers are single-flight on a 60 s-capped ladder, so their load is already paced.
+ const limit=options.attempts??Infinity;
  for(let attempt=0;!signal.aborted;attempt++){
-  try{const value=await read();return signal.aborted?undefined:value;}
+  await options.gate?.wait(signal);
+  if(signal.aborted)return;
+  const began=options.gate?.epoch??0;
+  // A read served from the store never reached the network, so its success says nothing about the pause.
+  try{const value=await read();if(!options.fromStore)options.gate?.pass(began);return signal.aborted?undefined:value;}
   catch(error){
    if(signal.aborted)return;
-   options.onError?.(error);
-   const retry=retryablePageError(error)&&options.shouldRetry?.()!==false;
+   const busy=!!options.gate&&pageRateLimited(error);
+   if(busy)options.onBusy?.(options.gate!.refuse());else options.onError?.(error);
+   const retry=(busy||retryablePageError(error))&&attempt+1<limit&&options.shouldRetry?.()!==false;
    if(signal.aborted)return;
-   if(!retry){options.onTerminal?.(error);throw error;}
+   if(!retry){if(!busy)options.onTerminal?.(error);throw error;}
+   // A busy pause is the gate's wait at the top of the loop; the ladder below is for everything else.
+   if(busy)continue;
    await new Promise<void>(resolve=>{
     const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
     const timer=setTimeout(done,Math.min((options.delayMs??5000)*2**Math.min(attempt,4),60_000)*(1+Math.random()/4));
@@ -173,19 +221,21 @@ export async function startPageLightning<C extends {dispose():Promise<void>},S e
  return;
 }
 
-export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:()=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void,options:{retry?:boolean;delayMs?:number}={}){
- let closed=false;const controller=new AbortController();
+/** `network` is true on a reader's first round and on a forced request; otherwise a reader may answer from the store a sync has just filled. */
+export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in keyof T]:(network:boolean)=>Promise<T[K]>},publish:(values:Partial<T>,errors:Partial<Record<keyof T,string>>)=>void,options:{retry?:boolean;delayMs?:number;stored?:readonly (keyof T)[]}={}){
+ let closed=false;const controller=new AbortController(),gate=pageBusyGate(),stored=new Set(options.stored??[]);
  const values:Partial<T>={},errors:Partial<Record<keyof T,string>>={};
  const reads=(Object.keys(readers) as (keyof T)[]).map(key=>{
-  let queued=false,running:Promise<void>|undefined;
+  let queued=false,running:Promise<void>|undefined,live=true;
   const report=(error:unknown)=>{if(closed)return;errors[key]=errorText(error);publish({...values},{...errors});};
-  const request=()=>{
-   if(closed)return;queued=true;
+  const busy=(ms:number)=>{if(closed)return;errors[key]=pageBusyText(ms);publish({...values},{...errors});};
+  const request=(network=false)=>{
+   if(closed)return;queued=true;live||=network;
    running??=Promise.resolve().then(async()=>{
     while(queued&&!closed){
-     queued=false;
+     queued=false;const round=live;live=false;
      try{
-      const value=options.retry?await retryPageRead(readers[key],controller.signal,{delayMs:options.delayMs,onError:report}):await readers[key]();
+      const value=options.retry?await retryPageRead(()=>readers[key](round),controller.signal,{delayMs:options.delayMs,attempts:PAGE_READ_ATTEMPTS,gate,fromStore:!round&&stored.has(key),onError:report,onBusy:busy}):await readers[key](round);
       if(closed)return;values[key]=value;delete errors[key];publish({...values},{...errors});
      }catch(error){if(!options.retry)report(error);}
     }
@@ -194,7 +244,8 @@ export function pageRefresh<T extends Record<string,unknown>>(readers:{[K in key
   return {request,drain:()=>running};
  });
  return {
-  request(){for(const read of reads)read.request();return Promise.all(reads.map(read=>read.drain())).then(()=>undefined);},
+  get waitingMs(){return gate.waitingMs;},
+  request(network=false){for(const read of reads)read.request(network);return Promise.all(reads.map(read=>read.drain())).then(()=>undefined);},
   async close(){closed=true;controller.abort();await Promise.all(reads.map(read=>read.drain()));},
  };
 }

@@ -74,6 +74,11 @@ export class NativeBridge {
   }
   this.current={...status,mode};for(const fn of this.listeners)try{fn(this.current);}catch{}return this.current;
  }
+ // The app session's mode lives in the host and outlives this renderer, which acceptsStatus fences out until it has asked for that mode.
+ async hostMode():Promise<NativeMode>{
+  const status:NativeStatus=await this.backend.invoke('native_status');
+  return ['ready','bootstrapping'].includes(status.phase)?status.mode??'tor':'tor';
+ }
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
  acceptLifecycle(status:NativeStatus){if(!this.acceptsStatus(status))return this.current;++this.statusRevision;return this.acceptStatus(status);}
  async status(){
@@ -178,7 +183,8 @@ export class NativeBridge {
    this.observeResponse?.({url,method:request.method,status:response.status,body:responseBody,requestBody:body});
    const answer=new Response([101,204,205,304].includes(response.status)||request.method==='HEAD'?null:responseBytes,{status:response.status,statusText:response.statusText??'',headers:response.headers});
    // The pool's own admission limit keeps a sharper cooldown that leaves status reads open, so only an edge limit holds the whole origin back.
-   if(response.status===429&&!admissionLimited(responseBody))reportRateLimit(url,answer.headers.get('Retry-After'));
+   // A probe is exempt from waiting a cooldown out, so it must be exempt from arming one: it is the only request that can walk into one and push its deadline out again.
+   if(response.status===429&&!explicit?.probe&&!admissionLimited(responseBody))reportRateLimit(url,answer.headers.get('Retry-After'));
    return answer;
   }finally{request.signal.removeEventListener('abort',abort);release?.();if(oneShot)await this.release(oneShot);}
  }

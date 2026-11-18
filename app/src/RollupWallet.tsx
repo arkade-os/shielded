@@ -25,7 +25,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
 import WalletEntrance from './WalletEntrance.tsx';
 import WalletSyncStatus from './WalletSyncStatus.tsx';
@@ -67,12 +67,14 @@ function Copyable({value,qr,label}:{value:string;qr?:string;label?:string}){
   {shown&&qr!==undefined&&<QrCode value={qr} label={label??'QR code'}/>}</>;
 }
 // The resolver's kinds, mapped onto the swatches the history list already has.
-const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','shielded-send':'send','self-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
+const SWATCH:Record<string,string>={shield:'shield',unshield:'withdraw','onchain-exit':'withdraw','lightning-send':'withdraw','lnurl-arkade':'withdraw','shielded-send':'send','self-send':'send','shielded-receive':'receive','lightning-receive':'receive',merge:'merge',list:'arkade','claim-link':'send'};
 const LIGHTNING_STATUS:Record<string,string>={received:'Received; waiting to shield',shielding:'Received; shielding',shielded:'Shielded in the pool',retrying:'Received; shielding will retry','below-minimum':'Received outside the pool; below the shielding minimum','onchain-recovery':'Onchain recovery; shielding paused','onchain-recovered':'Recovered onchain'};
 const WHERE:Record<string,string>={
  shield:'From your Arkade coins into the pool; the amount is public.',
  unshield:'Out of the pool to an Arkade address; the amount is public.',
  'onchain-exit':'Out of the pool through a fresh single-use key, then a batch swap to the Bitcoin chain; the amount and the destination are public.',
+ 'lightning-send':'Out of the pool into a Lightning swap, which paid the invoice; the amount is public.',
+ 'lnurl-arkade':'Out of the pool to the Arkade address the Lightning address gave; the amount and the destination are public.',
  'shielded-send':'Inside the pool; amount and parties stay private.',
  'shielded-receive':'Inside the pool; amount and sender stay private.',
  'self-send':'Inside the pool: a private payment to your own address. Nothing left the wallet.',
@@ -102,7 +104,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [sessionGuard]=useState(()=>nativeHost?nativeSessionGuard():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState(''),[journalError,setJournalError]=useState('');
  const [nativePending,setNativePending]=useState(false),[confirmRelease,setConfirmRelease]=useState(false),[releaseNote,setReleaseNote]=useState('');
- const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
+ const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[refreshBusy,setRefreshBusy]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
@@ -142,7 +144,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const busyRef=useRef(false),restoreRequested=useRef(false),restoring=useRef(false),mounted=useRef(false),createdHere=useRef(false);
  const cacheRef=useRef<ReturnType<typeof pageCache>|undefined>(undefined),sheetRef=useRef<ReturnType<typeof pageSheet>|undefined>(undefined);
  const sessions=useRef(new Set<()=>Promise<void>>());
- const refreshRef=useRef<{request:()=>Promise<void>}|undefined>(undefined);
+ const refreshRef=useRef<{request:(network?:boolean)=>Promise<void>;waitingMs:number}|undefined>(undefined);
  const refreshFailed=useRef(false),handleBusy=useRef(false),unifiedRetry=useRef<Promise<void>|undefined>(undefined),unifiedStalledRef=useRef(false);
  const actions=useRef<ReturnType<typeof pageActions>|undefined>(undefined);
  actions.current??=pageActions(()=>{if(mounted.current)setTick(t=>t+1);});
@@ -468,7 +470,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   // Per session, so a late read from a replaced wallet cannot reseed this one into announcing its whole history.
   let seen:ActivitySeen|undefined;
   setNotice(undefined);
-  const refresh=pageRefresh({coins:()=>wallet.coins(),balance:()=>wallet.getBalance(),address:()=>wallet.getAddress(),history:()=>wallet.getActivityHistory(),lightningHistory:async()=>wallet.swaps?.getActivityHistory()},(data,errors)=>{
+  // Only balance.available is shown, and it comes off the contract snapshot the coins read has just synced; a live balance adds an explorer /utxo read for boarding totals nothing here reads.
+  const refresh=pageRefresh({coins:()=>wallet.coins(),balance:(network:boolean)=>network?wallet.getBalance():wallet.getStoredBalance(),address:()=>wallet.getAddress(),history:()=>wallet.getActivityHistory(),lightningHistory:async()=>wallet.swaps?.getActivityHistory()},(data,errors)=>{
    if(restoring.current||!mounted.current)return;
    if(fundsRef.current?.wallet===wallet)fundsRef.current.watch.update(data.coins);
    if(data.coins)setCoins(data.coins);if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
@@ -479,9 +482,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    }
    if(nativeHost)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
    else refreshFailed.current=false;
-    setRefreshError([...new Set(Object.values(errors))].join(' '));setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
+    const read=pageReadErrors(errors);setRefreshError(read.error);setRefreshBusy(read.busy);setPool(wallet.pool.status);poolRef.current=wallet.pool.status;
    setPoolError(e=>wallet.repositoryError?`Your saved notes: ${wallet.repositoryError}`:e.startsWith('Your saved notes: ')?'':e);
-  },{retry:nativeHost});
+  },{retry:nativeHost,stored:['balance']});
   const close=async()=>{await refresh.close();sessions.current.delete(close);};
   refreshes.current.set(wallet,refresh);refreshRef.current=refresh;sessions.current.add(close);
   return()=>{if(refreshRef.current===refresh)refreshRef.current=undefined;void close();};
@@ -621,12 +624,14 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const sync=()=>running??=(async()=>{
    if(!active||!mounted.current)return;
    setPullSyncError('');
+   // Nothing to gain from a pull the edge is still refusing, and its own sync would spend the next allowance; the balance card already shows the countdown.
+   if((refreshRef.current?.waitingMs??0)>0)return;
    let syncError='';
    try{await wallet.sync();}
    catch(error){syncError=errorText(error);}
    if(!active||!mounted.current)return;
    setPullSyncError(syncError);
-   void Promise.resolve().then(async()=>{if(active&&mounted.current)await refreshRef.current?.request();}).catch(error=>{if(active&&mounted.current)setPullSyncError(errorText(error));});
+   void Promise.resolve().then(async()=>{if(active&&mounted.current)await refreshRef.current?.request(true);}).catch(error=>{if(active&&mounted.current)setPullSyncError(errorText(error));});
   })().finally(()=>{running=undefined;});
   syncRef.current=sync;
   if(pendingForeground.current){pendingForeground.current=false;void sync().catch(()=>{});}
@@ -761,7 +766,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const historyItems=rows.map(item=>{
   const kind=item.intent?.kind,received=activityReceived(item),direction=historyDirection(item),newest=item.txs[item.txs.length-1]!;
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
-  const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='unshield'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
+  const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='lightning-send'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
   const tx=txOf(newest.key),asset=newest.assets?.[0];
   const feePaid=wallet&&kind==='shield'?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):wallet&&kind==='lightning-receive'?lightningShieldFeeOf(wallet.shieldedHistory(),item.intent?.metadata?.shieldTxid,item.amount):undefined;
   const amount=`${direction==='in'?'+':direction==='out'?'−':''}${asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}`;
@@ -777,6 +782,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
      {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
      <dt>Bitcoin transaction</dt><dd>{txLink('bitcoin',item.intent.metadata.onchainTxid)}</dd></>}
+    {(kind==='lnurl-arkade'||kind==='lightning-send')&&typeof item.intent?.metadata?.to==='string'&&<><dt>To</dt><dd><Copyable value={item.intent.metadata.to}/></dd></>}
+    {kind==='lightning-send'&&typeof item.intent?.metadata?.description==='string'&&<><dt>Description</dt><dd>{item.intent.metadata.description}</dd></>}
+    {kind==='lightning-send'&&typeof item.intent?.metadata?.delivered==='number'&&<><dt>Delivered</dt><dd>{sats(item.intent.metadata.delivered)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.delivered)}-sat swap fee</dd></>}
     <dt>Status</dt><dd>{status}</dd>
     {kind==='lightning-receive'&&item.intent?.outcome!=='shielded'&&wallet?.swaps&&typeof item.intent?.metadata?.outpoint==='string'&&<LightningRecoveryQuote service={wallet.swaps} outpoint={item.intent.metadata.outpoint} disabled={busy||restoring.current}/>}
     {revealFor(item,link=>open({kind:'reveal',value:link}))}
@@ -793,7 +801,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   })});
  },[onResumeSnapshot,synced,ready,pageVisible,viewActive,suspended,hidden,balance,unshielded,rows]);
   const balanceCard=()=> <section className="stock-card stock-balance">
-   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError} onRetry={nativeHost?undefined:startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request()}/></div>
+   <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError||refreshBusy} onRetry={nativeHost?undefined:startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request(true)}/></div>
    {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
    {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
   </section>;
@@ -801,7 +809,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
 
   const inactive=hidden||suspended||!viewActive;
   if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={prf&&prf!=='no'&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined}/></div>;
-  return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><Icon name="reset" size={16}/><span>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{headerControls}<AppUpdateNotice/>{!headerControls&&<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/>}</div></header>
+  return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><span><Icon name="reset" size={16}/>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{headerControls}<AppUpdateNotice/>{!headerControls&&<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/>}</div></header>
    {nativePending&&<section className="stock-warning" role="status"><span>Some payments have unresolved outcomes. Their inputs stay reserved until this wallet can prove they cannot land, which it rechecks every minute; a dropped status alone is no proof.</span>
     {confirmRelease
      ?<p><span>Releasing a shield is safe: its coin can be spent only once, so a retry cannot pay what the first attempt did. A payment is never released here, since a retry with other notes could pay its recipient twice.</span><button type="button" className="stock-ghost stock-mini" onClick={releaseReserved}>Release reserved shields</button><button type="button" className="stock-ghost stock-mini" onClick={()=>setConfirmRelease(false)}>Keep them reserved</button></p>

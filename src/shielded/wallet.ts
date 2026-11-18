@@ -222,7 +222,7 @@ export class ShieldedWallet extends Wallet {
    await wallet.load(wallet.networkPrivacy?config.pool.status:undefined);
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())),nullifier=>wallet.sentOf(nullifier));
-   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>wallet.sentOf(e.spent[0]!)?.lightning,
     exitOf:e=>{const sent=wallet.sentOf(e.spent[0]!);return sent?.onchainTxid?{to:sent.to,txid:sent.onchainTxid,...(sent.onchainSats===undefined?{}:{sats:sent.onchainSats})}:undefined;}}));
    await wallet.start();
    return wallet;
@@ -363,6 +363,7 @@ export class ShieldedWallet extends Wallet {
  private rememberHeadExpiry(){
   const head=this.poolHead();if(head!==undefined&&head!==this.lastHead){this.lastHeadExpiry=undefined;this.headReadAt=undefined;}
   const now=Date.now(),ahead=this.lastHeadExpiry!==undefined&&this.lastHeadExpiry>now,backingOff=this.headReadAt!==undefined&&now-this.headReadAt<10*WATCHDOG_MS;
+  // Sealed only, unlike the tick's skip: native reaches the indexer directly, so tick() reads the expiry once an outage starts.
   if(!this.sealedTransport||this.headRead||ahead||backingOff)return;
   this.headReadAt=now;this.lastHead=head;
   this.headRead=this.fetchHeadExpiry().then(expiry=>{
@@ -400,15 +401,15 @@ export class ShieldedWallet extends Wallet {
   if(this.stopped)return;
   let atHead=false;
   // Only a tick has just read the status; finish(), renew() and catchUpAfterEvent sync without one, so the skip is not in sync().
-  // Sealed browser transport only: a native wallet is private but not sealed, and reads every tick.
-  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.sealedTransport||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
+  // Every private transport, sealed or native: the counts and the status read behind the skip are the same either way.
+  try{await this.refreshPoolStatus();if(this.stopped)return;if(this.offline){await this.load();this.assertOpen();}if(!this.networkPrivacy||this.pool.status.pool?.batches!==this.account.batchCount)await this.sync();if(this.stopped)return;atHead=!this.offline;}
   // Once per outage: null on an unavailable head stops the retry, and it stalls the two below by one RTT only on that tick.
   catch{if(!this.stopped&&this.operatorDown&&this.headExpiry===undefined){
    const revision=this.statusRevision,expiry=await this.fetchHeadExpiry().catch(()=>undefined)??null;
    if(!this.stopped&&revision===this.statusRevision)this.headExpiry=expiry;
   }}
   if(this.stopped)return;
-  void this.autoShield(this.sealedTransport&&atHead).catch(()=>{});
+  void this.autoShield(this.networkPrivacy&&atHead).catch(()=>{});
   void this.merge().catch(()=>{});
   // Renewal targets are drawn against the batch count, so behind the head they would land in the wrong window.
   if(atHead){void this.renewNotes().catch(()=>{});void this.recoverNotes().catch(()=>{});}
@@ -834,7 +835,7 @@ export class ShieldedWallet extends Wallet {
   this.hold(held,handle);
   return this.announce(handle);
  }
- async withdraw(to:string,amount:bigint,opts:{asset?:string;sats?:bigint}={}):Promise<ShieldedPaymentHandle>{return this.announce(this.withdrawal(to,amount,opts));}
+ async withdraw(to:string,amount:bigint,opts:{asset?:string;sats?:bigint;record?:SentRecord}={}):Promise<ShieldedPaymentHandle>{return this.announce(this.withdrawal(to,amount,opts));}
  private withdrawal(to:string,amount:bigint,opts:{asset?:string;sats?:bigint;record?:SentRecord}={}):ShieldedPaymentHandle{
   const held:bigint[]=[];
   const handle=shieldedHandle({title:'Withdrawing',steps:shieldedSteps.withdraw,railId:'shielded-withdraw'},async step=>{

@@ -10,7 +10,7 @@ import type {LightningArtifact,LightningPayout,LightningRepository} from './ligh
 import {feeRefused} from './lightning-spend.ts';
 import type {ShieldedWallet} from './wallet.ts';
 import {createLightningRecovery,recoveryLock,type LightningRecovery} from './lightning-recovery.ts';
-import {LightningSwapRepository,ReceiptStoreCompatibilityError,repairLightningReceipt} from './lightning-receipt.ts';
+import {LightningSwapRepository,ReceiptStoreCompatibilityError,invoiceDescription,repairLightningReceipt} from './lightning-receipt.ts';
 
 /** One pool-funded on-chain exit's payout key: where the pool pays, what signs it, and the hold that keeps everything else off it. */
 export interface ExitPayout {
@@ -23,6 +23,7 @@ export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,
  exitPayout(poolAddress?:string):Promise<ExitPayout>;
  registerPayouts(records:LightningPayout[],signal?:AbortSignal):Promise<void>;
  getActivityHistory():Promise<Activity[]>;
+ recordLightning(quoteId:string,lightning:string):Promise<void>;
  quoteRecovery(outpoint:string):Promise<ExitQuote>;
  getRecovery(outpoint:string):Promise<LightningRecovery|undefined>;
  prepareRecovery(outpoint:string,quote:ExitQuote):Promise<LightningRecovery>;
@@ -136,8 +137,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   const manager=await companion.getContractManager(),[contracts,spends,artifacts]=await Promise.all([manager.getContractsWithVtxos(undefined,undefined,{unspentOnly:false}),journal.list(String(wallet.self.owner),pool),journal.artifacts(owner,pool)]);
   const rows=new Map<string,Activity>();
   for(const record of receipts.values()){
-   const amount=Number(record.give.amount),createdAt=record.createdAt*1000,txid=record.fundingTxid!;
-   rows.set(`shielded-lightning:send:${record.id}`,{id:`shielded-lightning:send:${record.id}`,amount:-amount,createdAt,settled:true,intent:{kind:'lightning-send',label:'Paid via Lightning',outcome:'paid',metadata:{fundingTxid:txid}},
+   const amount=Number(record.give.amount),createdAt=record.createdAt*1000,txid=record.fundingTxid!,delivered=Number(record.take?.amount),invoice=record.route?.take.instrument,description=invoice?.kind==='invoice'?invoiceDescription(invoice.bolt11):undefined,to=artifacts.find(a=>a.quoteId===record.id)?.lightning;
+   rows.set(`shielded-lightning:send:${record.id}`,{id:`shielded-lightning:send:${record.id}`,amount:-amount,createdAt,settled:true,intent:{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{fundingTxid:txid,...(Number.isSafeInteger(delivered)?{delivered}:{}),...(description?{description}:{}),...(to?{to}:{})}},
     txs:[{key:{boardingTxid:'',commitmentTxid:'',arkTxid:txid},type:TxType.TxSent,amount,createdAt,settled:true}]});
   }
   for(const {contract,vtxos} of contracts){
@@ -357,6 +358,8 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    return quoted;
   }catch(error){await close(session);throw error;}
  };
+ // On the session's own artifact: accept and bind save that object again, which would drop a copy saved apart.
+ const recordLightning=async(quoteId:string,lightning:string)=>{const session=[...sessions.values()].find(s=>s.artifact.quoteId===quoteId);if(session){session.artifact.lightning=lightning;await journal.updateArtifact(owner,pool,session.artifact);}};
  const accept:PrivateLightningService['accept']=async quoted=>{
   assertOpen();const session=[...sessions.values()].find(s=>s.quote===quoted);
   if(!session)throw new Error('Lightning quote is no longer active; request another quote');
@@ -423,7 +426,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   });
   const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}taking=takeOver(false);await taking;await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
-  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts:(records,signal)=>registerPayouts(records,true,signal),getActivityHistory,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
+  return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts:(records,signal)=>registerPayouts(records,true,signal),getActivityHistory,recordLightning,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
  }catch(error){await dispose();throw error;}
 }

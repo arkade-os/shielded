@@ -125,6 +125,128 @@ test('a rate-limited origin keeps an explorer read retrying instead of failing t
  assert.equal(await read,'caught up');assert.equal(reads,2);
 });
 
+test('a rate limit on one page reader pauses them all and resumes once after the shared delay',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:9_000_000});t.mock.method(Math,'random',()=>0);
+ let balances=0,histories=0,limited=true;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({
+  balance:async()=>{balances++;if(limited)throw Object.assign(new Error('Failed to fetch UTXOs: Too Many Requests'),{status:429});return 12;},
+  history:async()=>{histories++;return [];},
+ },(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.deepEqual([balances,histories],[1,1],'each reader asked once');
+ assert.equal(seen.at(-1)!.balance,`${page.PAGE_BUSY_NOTICE} Showing your saved balance; retrying in 30 s.`);
+ refresh.request();await flush();
+ assert.deepEqual([balances,histories],[1,1],'the sibling read that succeeded did not lift the pause, and nothing fired inside it');
+ t.mock.timers.tick(page.PAGE_BUSY_MS-1);await flush();
+ assert.deepEqual([balances,histories],[1,1],'nothing resumes before the delay');
+ limited=false;t.mock.timers.tick(1);await flush();
+ assert.equal(histories,2,'the held reader resumes exactly once');
+ assert.deepEqual([balances,histories],[3,2],'the refused reader also serves the round queued behind the pause');
+ assert.deepEqual(seen.at(-1),{});
+ t.mock.timers.tick(page.PAGE_BUSY_MAX_MS);await flush();
+ assert.deepEqual([balances,histories],[3,2],'a lifted pause arms nothing further');
+ await refresh.close();
+});
+
+test('a refusal that only names the limit in its text pauses the page, as on a transport that records none',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:13_000_000});t.mock.method(Math,'random',()=>0);
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw new Error('Failed to fetch UTXOs: Too Many Requests');}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.equal(reads,1);assert.ok(page.isPageBusy(seen.at(-1)!.balance!),seen.at(-1)!.balance);
+ t.mock.timers.tick(page.PAGE_BUSY_MS);await flush();assert.equal(reads,2);
+ await refresh.close();
+});
+
+test('a refusal the native transport already recorded as a rate limit pauses the page even without 429 in its text',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:14_000_000});t.mock.method(Math,'random',()=>0);
+ // #165 writes this store only from a 429 status, so a blank reason phrase still names a refusal; the cooldown it leaves is absolute, so the tests below run on a later clock.
+ reportRateLimit('https://mempool.paced.example/api/address/a/utxo','45');
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw new Error('Failed to fetch UTXOs: ');}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.equal(reads,1);
+ assert.equal(seen.at(-1)!.balance,`${page.PAGE_BUSY_NOTICE} Showing your saved balance; retrying in 45 s.`,'it waits out the Retry-After the transport recorded, not its own shorter floor');
+ t.mock.timers.tick(45_000);await flush();assert.equal(reads,2);
+ await refresh.close();
+});
+
+test('a paced page read gives up inside one round rather than retrying a refusal forever',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:15_000_000});t.mock.method(Math,'random',()=>0);
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw Object.assign(new Error('Too Many Requests'),{status:429});}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ for(let i=0;i<12;i++){t.mock.timers.tick(page.PAGE_BUSY_MAX_MS);await flush();}
+ assert.equal(reads,page.PAGE_READ_ATTEMPTS);
+ assert.match(seen.at(-1)!.balance!,/Wallet services are busy/);
+ await refresh.close();
+});
+
+test('a pull to sync inside a rate-limit pause reports the wait instead of reading',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:16_000_000});t.mock.method(Math,'random',()=>0);
+ let reads=0;
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw Object.assign(new Error('Too Many Requests'),{status:429});}},()=>{},{retry:true,delayMs:1});
+ assert.equal(refresh.waitingMs,0);
+ refresh.request();await flush();assert.equal(reads,1);
+ assert.equal(refresh.waitingMs,page.PAGE_BUSY_MS);
+ t.mock.timers.tick(10_000);
+ assert.equal(refresh.waitingMs,page.PAGE_BUSY_MS-10_000);
+ await refresh.close();
+});
+
+test('an explicit permanent refusal stays itself while another origin is cooling down',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:17_000_000});t.mock.method(Math,'random',()=>0);
+ reportRateLimit('https://mempool.cooling.example/api/address/a/utxo','45');
+ const denied=Object.assign(new Error('Native network route is not approved'),{status:403});
+ let reads=0;const seen:Record<string,string>[]=[];
+ const refresh=page.pageRefresh({balance:async()=>{reads++;throw denied;}},(_values,errors)=>seen.push({...errors}),{retry:true,delayMs:1});
+ refresh.request();await flush();
+ assert.equal(reads,1,'a 403 is not retried behind someone else’s cooldown');
+ assert.equal(seen.at(-1)!.balance,page.errorText(denied),'and it reads as itself, not as a busy wait');
+ assert.equal(refresh.waitingMs,0,'nor does it extend the shared pause');
+ t.mock.timers.tick(page.PAGE_BUSY_MAX_MS);await flush();assert.equal(reads,1);
+ await refresh.close();
+});
+
+test('a stored read cannot reset the pause a network refusal set',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:18_000_000});t.mock.method(Math,'random',()=>0);
+ let stored=0,histories=0;
+ const limited=()=>Object.assign(new Error('Too Many Requests'),{status:429});
+ const refresh=page.pageRefresh({
+  balance:async(network:boolean)=>{stored++;return network?1:2;},
+  // The retry's answer is slow, so the stored read of the same round lands inside it rather than after its refusal.
+  history:async()=>{if(++histories===1)throw limited();await new Promise(r=>setTimeout(r,1_000));throw limited();},
+ },()=>{},{retry:true,delayMs:1,stored:['balance']});
+ refresh.request();await flush();
+ assert.deepEqual([stored,histories],[1,1]);
+ assert.equal(refresh.waitingMs,page.PAGE_BUSY_MS,'the first refusal opens the pause');
+ refresh.request();await flush();
+ assert.deepEqual([stored,histories],[1,1],'both are held');
+ t.mock.timers.tick(page.PAGE_BUSY_MS);await flush();
+ assert.deepEqual([stored,histories],[2,2],'the stored read answered while the retry still waits');
+ t.mock.timers.tick(1_000);await flush();
+ assert.equal(refresh.waitingMs,2*page.PAGE_BUSY_MS,'the second refusal doubled rather than restarting from a stored success');
+ await refresh.close();
+});
+
+test('a busy wait and a real failure are reported apart, never as one classified string',()=>{
+ const busy=page.pageBusyText(40_000);
+ assert.deepEqual(page.pageReadErrors({balance:busy,history:'History unavailable'}),{busy,error:'History unavailable'});
+ assert.deepEqual(page.pageReadErrors({history:'History unavailable',balance:busy}),{busy,error:'History unavailable'});
+ assert.deepEqual(page.pageReadErrors({balance:busy}),{busy,error:''});
+ assert.deepEqual(page.pageReadErrors({coins:'Indexer unavailable',history:'Indexer unavailable'}),{busy:'',error:'Indexer unavailable'});
+ assert.deepEqual(page.pageReadErrors({}),{busy:'',error:''});
+});
+
+test('a refresh reads the network on its first round and after a forced one, and the store in between',async()=>{
+ const rounds:boolean[]=[];
+ const refresh=page.pageRefresh({balance:async(network:boolean)=>{rounds.push(network);return 1;}},()=>{});
+ await refresh.request();await refresh.request();
+ await refresh.request(true);await refresh.request();
+ assert.deepEqual(rounds,[true,false,true,false]);
+ await refresh.close();
+});
+
 test('pool startup retries an outage and does not publish a read completed after cancellation',async()=>{
  const controller=new AbortController();let reads=0;
  assert.equal(await page.retryPageRead(async()=>{if(++reads===1)throw new Error('The pool did not answer (503).');return 'ready';},controller.signal,{delayMs:1}),'ready');
@@ -389,11 +511,11 @@ const quoteOf=(railId:string,send:()=>Promise<unknown>=async()=>undefined)=>({ra
 test('a paid Lightning receipt enriches exactly one matching withdrawal without duplicating its debit',()=>{
  const tx={key:{arkTxid:'funding',boardingTxid:'',commitmentTxid:''},type:TxType.TxSent,amount:2113,settled:true,createdAt:100};
  const withdrawal:Activity={id:'pool-row',amount:-2113,createdAt:100,settled:true,txs:[tx],intent:{kind:'unshield',label:'Withdrawn from the pool',metadata:{batch:146,notes:1}}};
- const receipt:Activity={id:'receipt',amount:-2113,createdAt:200,settled:true,txs:[tx],intent:{kind:'lightning-send',label:'Paid via Lightning',outcome:'paid',metadata:{fundingTxid:'funding'}}};
+ const receipt:Activity={id:'receipt',amount:-2113,createdAt:200,settled:true,txs:[tx],intent:{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{fundingTxid:'funding',delivered:2100,description:'Two coffees'}}};
  const incoming:Activity={id:'incoming',amount:2000,createdAt:150,settled:false,txs:[],intent:{kind:'lightning-receive',outcome:'shielding'}};
  const rows=page.pageActivityHistory([withdrawal],[receipt,incoming]);assert.equal(rows.length,2);assert.equal(rows[0],incoming);
- const paid=rows[1]!;assert.equal(paid.id,withdrawal.id);assert.equal(paid.amount,-2113);assert.equal(paid.txs,withdrawal.txs);assert.deepEqual(paid.intent?.metadata,withdrawal.intent!.metadata);
- assert.equal(paid.intent?.label,'Paid via Lightning');assert.equal(paid.intent?.outcome,'paid');assert.equal(activityReceived(paid),false);
+ const paid=rows[1]!;assert.equal(paid.id,withdrawal.id);assert.equal(paid.amount,-2113);assert.equal(paid.txs,withdrawal.txs);
+ assert.deepEqual(paid.intent,{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{batch:146,notes:1,fundingTxid:'funding',delivered:2100,description:'Two coffees'}});assert.equal(activityReceived(paid),false);
  assert.deepEqual(page.pageActivityHistory([withdrawal],[receipt,incoming]),rows);
  for(const unbound of [{...receipt,amount:-2000},{...receipt,intent:{...receipt.intent!,metadata:{fundingTxid:'other'}}}]){
   const untouched=page.pageActivityHistory([withdrawal],[unbound,incoming]);assert.equal(untouched.length,2);assert.equal(untouched[1],withdrawal);

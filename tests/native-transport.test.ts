@@ -283,6 +283,21 @@ test('native starts select Tor by default and send an explicit direct selection'
  assert.deepEqual(selections,['tor','direct']);
 });
 
+test('the host session mode is read from a running session only, where the fenced status read cannot reach it',async()=>{
+ for(const [status,mode] of [
+  [{phase:'ready',generation:7,mode:'direct'},'direct'],
+  [{phase:'bootstrapping',generation:7,mode:'direct'},'direct'],
+  [{phase:'paused',generation:7,mode:'direct'},'tor'],
+  [{phase:'locked',generation:0,mode:'tor'},'tor'],
+  [{phase:'ready',generation:7},'tor'],
+ ] as [NativeStatus,string][]){
+  const label=`${status.phase} ${status.mode}`;
+  const bridge=new NativeBridge({invoke:async()=>status,channel:()=>({})},new NativePolicy('https://pool.example'));
+  assert.equal(await bridge.hostMode(),mode,label);
+  assert.equal((await bridge.status()).mode,'tor',label);
+ }
+});
+
 test('a mismatched native start cannot publish a direct connection as Tor',async()=>{
  const api:NativeBackend={invoke:async()=>({phase:'ready',generation:1,mode:'direct'}),channel:()=>({})};
  const bridge=new NativeBridge(api,new NativePolicy('https://pool.example'));
@@ -436,4 +451,21 @@ test('closing a native stream during a cooldown never takes a scope',async t=>{
  assert.equal(scopes(),taken);
  assert.equal(b.calls.filter(call=>call.command==='native_stream').length,0);
  await stream.ready;
+});
+
+test('a liveness probe reports its own refusal without arming or extending the origin cooldown',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:8_000_000});t.mock.method(Math,'random',()=>0);
+ const b=httpBackend(async()=>({generation:1,status:429,headers:[['Retry-After','30']]}));
+ const policy=new NativePolicy('https://probeloop.example'),url='https://probeloop.example/api/rollup/status';
+ const bridge=new NativeBridge(b.api,policy);await bridge.status();
+ const probe=(n:number)=>({...policy.classify(url,'GET'),key:'tor-health:'+n,probe:true as const});
+ assert.equal((await bridge.fetch(url,undefined,probe(1))).status,429);
+ assert.equal(rateLimitRemainingMs(url),0,'a probe refusal opens no cooldown of its own');
+ assert.equal((await bridge.fetch(url)).status,429);
+ assert.equal(rateLimitRemainingMs(url),30_000,'an ordinary refusal still opens one');
+ t.mock.timers.tick(20_000);
+ assert.equal((await bridge.fetch(url,undefined,probe(2))).status,429);
+ assert.equal(rateLimitRemainingMs(url),10_000,'and it leaves the remaining wait to run down');
+ t.mock.timers.tick(10_000);
+ assert.equal(rateLimitRemainingMs(url),0,'so the origin does get a clear window');
 });

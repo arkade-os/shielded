@@ -1476,6 +1476,16 @@ for(const {shape,notes,amount,kind} of [{shape:'one note',notes:[1000n],amount:3
  }finally{await wallet.dispose();}
 });
 
+test('a pool withdrawal recorded for a Lightning address is one row, sent to that address',async()=>{
+ const pool=sharedPool(),wallet=await open(),decoded=ArkAddress.decode(POOL_ADDRESS),to=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();wallet.api=pool.api;
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  await (await wallet.withdraw(to,400n,{record:{to,lightning:'alice@pay.example'}})).settled();
+  const rows=pageActivityHistory(await wallet.getActivityHistory(),[]);
+  assert.deepEqual(rows.map(row=>[row.intent?.kind,row.intent?.label,row.intent?.metadata?.to,row.amount,historyDirection(row)]),[['lnurl-arkade','Sent to a Lightning address','alice@pay.example',-400,'out']]);
+ }finally{await wallet.dispose();}
+});
+
 test('a wallet started from a checkpoint watches for links in the batches it catches up while loading',async t=>{
  const world=epochLeafPool(hash,EPOCH_LEN,70);
  const fetcher=(async(url:string)=>{
