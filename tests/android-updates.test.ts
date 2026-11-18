@@ -190,7 +190,7 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.deepEqual(read('../src-tauri/build.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual(read('../src-tauri/src/lib.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual((JSON.parse(read('../src-tauri/capabilities/main.json')).permissions as unknown[]).filter(item=>typeof item==='string'&&item.startsWith('allow-native-android-update-')),commands.map(name=>'allow-'+name.replaceAll('_','-')));
- assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\(/);
+ assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\([\s\S]*?\.await;\s+if opened\.is_err\(\) \{\s+let _ = updates\.retire_if_missing\(&prepared\);/,'a failed handoff retires a stage whose file the recheck deleted');
  assert.match(read(plugin+'src/lib.rs'),/"updateOpenInstaller"/);
  const updater=read(platform+'AndroidUpdater.kt');
  assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+(\/\/.*\s+)?try \{ verify\(file, args\) \} catch \(error: UpdateRejected\) \{ file\.delete\(\); throw error \}\s+val uri = FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);

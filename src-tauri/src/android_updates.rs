@@ -191,14 +191,23 @@ impl AndroidUpdates {
             Phase::Ready(prepared) if prepared.info.id == id => prepared.clone(),
             _ => return Err("The verified update is not ready or has been replaced".into()),
         };
+        if self.retire_if_missing(&prepared)? {
+            return Err(MISSING_PACKAGE.into());
+        }
+        Ok(prepared)
+    }
+
+    /// A staged file that is gone, evicted or deleted by the handoff's recheck, leaves the stage
+    /// so the next attempt downloads again; a file still on disk stays staged.
+    fn retire_if_missing(&self, prepared: &Prepared) -> Result<bool, String> {
         if prepared.available() {
-            return Ok(prepared);
+            return Ok(false);
         }
         let mut state = self.lock()?;
-        if matches!(&*state, Phase::Ready(current) if current.same_file(&prepared)) {
+        if matches!(&*state, Phase::Ready(current) if current.same_file(prepared)) {
             *state = Phase::Idle;
         }
-        Err(MISSING_PACKAGE.into())
+        Ok(true)
     }
 
     fn cancel(&self, id: &str) -> Result<Option<u64>, String> {
@@ -415,11 +424,15 @@ pub async fn native_android_update_open(
         request,
         &tauri_plugin_shielded_platform::android_update_info(&app).await?,
     )?;
-    tauri_plugin_shielded_platform::android_open_update_installer(
+    let opened = tauri_plugin_shielded_platform::android_open_update_installer(
         &app,
         json!({ "path": prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code }),
     )
-    .await
+    .await;
+    if opened.is_err() {
+        let _ = updates.retire_if_missing(&prepared);
+    }
+    opened
 }
 
 #[cfg(test)]
@@ -713,6 +726,27 @@ mod tests {
         );
         assert!(native.get("downloading").is_none());
         updates.cancel(&staged.id).unwrap();
+        std::fs::remove_dir(&updates.directory).unwrap();
+    }
+    #[test]
+    fn a_failed_handoff_retires_a_deleted_file_but_keeps_one_still_on_disk() {
+        let updates = fixture();
+        let staged = ready(&updates);
+        let lease = updates.prepared(&staged.id).unwrap();
+        assert!(!updates.retire_if_missing(&lease).unwrap());
+        assert!(matches!(*updates.lock().unwrap(), Phase::Ready(_)));
+        std::fs::remove_file(&lease.file.path).unwrap();
+        assert!(updates.retire_if_missing(&lease).unwrap());
+        let mut native = info();
+        updates.snapshot(&mut native).unwrap();
+        assert!(native.get("staged").is_none());
+        assert!(updates.prepared(&staged.id).is_err());
+        drop(lease);
+        drop(
+            updates
+                .reserve(&uuid::Uuid::new_v4().to_string(), 2)
+                .unwrap(),
+        );
         std::fs::remove_dir(&updates.directory).unwrap();
     }
     #[test]
