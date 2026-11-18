@@ -16,7 +16,7 @@ test('an Android seed write that misses the disk leaves no seed in the preferenc
  const set=source.slice(source.indexOf('fun set('),source.indexOf('fun clear('));
  assert.match(set,/val previous = records\.getString\("seed", null\)/);
  assert.match(set,/if \(!records\.edit\(\)\.putString\("seed", .*\)\.commit\(\)\) \{/,'a failed commit is handled, never trusted');
- assert.match(set,/\{ if \(previous == null\) remove\("seed"\) else putString\("seed", previous\) \}\.commit\(\)[\s\S]*?error\(/,'the durable record returns to the map before the write reports failure');
+ assert.match(set,/val restored = records\.edit\(\)\.apply \{ if \(previous == null\) remove\("seed"\) else putString\("seed", previous\) \}\.commit\(\)[\s\S]*?error\(if \(restored\)/,'the durable record returns to the map before the write reports failure, and a failed rollback says so');
 });
 
 test('iOS vault creation atomically adds and accepts a duplicate only if its seed matches',()=>{

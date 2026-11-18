@@ -100,7 +100,7 @@ test('a passkey without a usable PRF result is PrfUnavailable and keeps the new 
 });
 
 test('a malformed bridge response fails without quoting the response',async()=>{
- for(const reply of [`{"rawId":"${RAW}","clientExtensionResults":{"prf":{"results":{"first":["${PRF}",]}}}}`,authentication({prf:{results:{first:PRF}}}).replace(`"rawId":"${RAW}"`,'"rawId":"+//+AQIDBAUGBwgJCgsMDQ"')]){
+ for(const reply of [`{"rawId":"${RAW}","clientExtensionResults":{"prf":{"results":{"first":["${PRF}",]}}}}`,authentication({prf:{results:{first:PRF}}}).replace(`"rawId":"${RAW}"`,'"rawId":"+//+AQIDBAUGBwgJCgsMDQ"'),authentication({prf:{results:{first:PRF}}}).replace(`"id":"${RAW}"`,`"id":"${'A'.repeat(1367)}"`)]){
   await assert.rejects(bridge(reply).client.get({publicKey:{challenge:new Uint8Array(32)}}),(error:unknown)=>error instanceof Error&&error.message==='Passkey unavailable');
  }
 });

@@ -17,7 +17,7 @@ function credential(json:string){
  try{
   if(json.length>65536)throw new Error();
   const c=JSON.parse(json) as ResponseJSON,prf=c.clientExtensionResults?.prf,handle=c.response?.userHandle;
-  if(c.type!=='public-key'||typeof c.id!=='string'||!c.rawId||decode(c.rawId).length>1024)throw new Error();
+  if(c.type!=='public-key'||typeof c.id!=='string'||c.id.length>1366||!c.rawId||decode(c.rawId).length>1024)throw new Error();
   const outputs={prf:prf&&{enabled:prf.enabled,results:prf.results&&{first:decode(prf.results.first)}}};
   return {id:c.id,type:c.type,rawId:decode(c.rawId),response:{userHandle:handle?decode(handle):null},getClientExtensionResults:()=>outputs};
  }catch{throw new Error(UNAVAILABLE);}// V8's parse errors quote nearby input, which here is the PRF secret.
