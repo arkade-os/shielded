@@ -134,7 +134,7 @@ export function createUpdateController<Info extends {staged?:Staged|null;downloa
    let staged=kept(info,update);publish({staged});
    if(!staged){
     if(info.downloading)throw new Error('Another update download is still running. Try again in a moment.');
-    if(info.staged)await bounded(backend.cancel(info.staged.id));
+    if(info.staged)await visiblyBounded(backend.cancel(info.staged.id));
     if(!active(owner))return;
     staged=await download(owner,update);if(!staged)return;
    }
@@ -143,11 +143,12 @@ export function createUpdateController<Info extends {staged?:Staged|null;downloa
    publish({phase:'preparing',staged});
    await bounded(prepare(),30_000);if(!active(owner))return;
    if(policy.exits){publish({phase:'installing'});await backend.open(staged.id);return;}
-   await bounded(backend.open(staged.id),15_000);if(!active(owner))return;
+   // Outlasts the Android host's 45-second HANDOFF_DEADLINE, after which the installer can no longer open.
+   await bounded(backend.open(staged.id),60_000);if(!active(owner))return;
    publish({phase:'available'});
   }catch(error){if(active(owner))publish({phase:'failed',received:0,error:message(error)});}
   // The host may answer just before it exits, so installing keeps the owner and no refresh can reopen the update.
-  finally{if(updating===owner&&state.phase!=='installing')updating=0;}
+  finally{if(updating===owner&&state.phase!=='installing'){updating=0;if(latest!==release)void refresh();}}
  }
  const unsubscribe=network.subscribe(accept),initialNetwork=networkRevision;
  void network.status().then(next=>{if(!stopped&&networkRevision===initialNetwork)accept(next);},()=>{});

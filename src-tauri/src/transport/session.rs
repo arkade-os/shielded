@@ -427,20 +427,28 @@ impl Inner {
         }
     }
 
-    /// Called under the session lock, so writes land in the order modes change. A file that
-    /// cannot hold Tor is removed instead, because a missing file also means Tor.
-    fn remember(&self, mode: NativeMode) {
-        let Some(path) = &self.mode_file else { return };
+    /// Mode changes call this under the session lock, so writes land in the order modes change.
+    /// A file that cannot hold Tor is removed instead, because a missing file also means Tor.
+    fn remember(&self, mode: NativeMode) -> bool {
+        let Some(path) = &self.mode_file else { return false };
         let temporary = path.with_extension("tmp");
-        let saved = path
-            .parent()
+        path.parent()
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| {
                 std::fs::write(&temporary, if mode == NativeMode::Direct { "direct" } else { "tor" })
             })
-            .and_then(|()| std::fs::rename(&temporary, path));
-        if saved.is_err() && mode == NativeMode::Tor {
-            let _ = std::fs::remove_file(path);
+            .and_then(|()| std::fs::rename(&temporary, path))
+            .is_ok()
+            || (mode == NativeMode::Tor && std::fs::remove_file(path).is_ok())
+    }
+
+    /// Direct only while its record can still be rewritten: one that cannot may be hiding a later
+    /// Tor choice the host failed to save.
+    fn launch_mode(&self) -> NativeMode {
+        if self.remembered_mode() == NativeMode::Direct && self.remember(NativeMode::Direct) {
+            NativeMode::Direct
+        } else {
+            NativeMode::Tor
         }
     }
 
@@ -550,7 +558,7 @@ impl Inner {
     }
 
     pub fn prewarm(self: &Arc<Self>) -> Result<NativeStatus, String> {
-        match self.prepare_start(self.remembered_mode(), DRAIN_TIMEOUT, true)? {
+        match self.prepare_start(self.launch_mode(), DRAIN_TIMEOUT, true)? {
             PreparedStart::Ready(status) => Ok(status),
             PreparedStart::Pending { work, .. } => {
                 if let Some(work) = work {
@@ -2450,10 +2458,35 @@ mod tests {
     fn a_tor_choice_that_cannot_be_written_removes_a_saved_direct_mode() {
         let (inner, file) = remembering(PathBuf::from("unused"), Some("direct"));
         std::fs::create_dir(file.with_extension("tmp")).unwrap();
-        inner.remember(NativeMode::Tor);
+        assert!(inner.remember(NativeMode::Tor));
         assert!(!file.exists());
         assert_eq!(inner.remembered_mode(), NativeMode::Tor);
         std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_direct_record_that_can_no_longer_be_rewritten_launches_tor() {
+        let (inner, file) = remembering(PathBuf::from("unused"), Some("direct"));
+        assert_eq!(inner.launch_mode(), NativeMode::Direct);
+        std::fs::create_dir(file.with_extension("tmp")).unwrap();
+        assert_eq!(inner.remembered_mode(), NativeMode::Direct);
+        assert_eq!(inner.launch_mode(), NativeMode::Tor);
+        std::fs::remove_dir_all(file.parent().unwrap()).unwrap();
+    }
+
+    // A read-only directory is the double failure; Windows deletes even a read-only file.
+    #[cfg(unix)]
+    #[test]
+    fn a_tor_choice_that_can_be_neither_written_nor_removed_still_launches_tor() {
+        use std::os::unix::fs::PermissionsExt;
+        let (inner, file) = remembering(PathBuf::from("unused"), Some("direct"));
+        let directory = file.parent().unwrap();
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(!inner.remember(NativeMode::Tor));
+        assert_eq!(inner.remembered_mode(), NativeMode::Direct);
+        assert_eq!(inner.launch_mode(), NativeMode::Tor);
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]

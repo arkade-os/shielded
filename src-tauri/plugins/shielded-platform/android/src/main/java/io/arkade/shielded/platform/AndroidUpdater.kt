@@ -91,8 +91,13 @@ internal class AndroidUpdater(context: Context) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         intent.setPackage(systemInstaller(intent))
-        authorize { activity().startActivity(intent) }
+        authorize {
+            if (AndroidUpdatePolicy.handoffExpired(args.deadline, System.currentTimeMillis()))
+                throw UpdateRejected("Android took too long to open its installer. Try again.")
+            activity().startActivity(intent)
+        }
     } catch (error: Exception) {
-        throw error as? UpdateRejected ?: UpdateRejected("Android could not open this update in its installer. You can retry.")
+        throw error as? UpdateRejected ?: UpdateRejected((error as? AmbiguousUpdateAuthorization)?.message
+            ?: "Android could not open this update in its installer. You can retry.")
     }
 }

@@ -9,7 +9,7 @@ const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
 function deferred<T>(){let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 const raw=nativeReleaseFixture(),release=parseNativeRelease({...raw,androidUpdate:androidUpdateFixture(raw)}),update=release.androidUpdate!;
 const installed:AndroidUpdateInfo={packageName:update.packageName,versionCode:update.versionCode-1,signerSha256:update.signerSha256,installerPackageName:null};
-function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?:NativeStatus;prepare?:()=>Promise<void>}={}){
+function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?:NativeStatus;prepare?:()=>Promise<void>;cancel?:()=>Promise<void>}={}){
  let visible=true,listener:(status:NativeStatus)=>void=()=>{},status:NativeStatus=options.status??{phase:'ready',generation:1,mode:'tor'};
  let info:AndroidUpdateInfo={...installed,...options.info};
  const downloads:{id:string;generation:number;progress:(value:{received:number;total:number})=>void;result:ReturnType<typeof deferred<{id:string;versionCode:number}>>}[]=[],cancelled:string[]=[],events:string[]=[];
@@ -17,7 +17,7 @@ function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?
  const backend:AndroidUpdateBackend={
   info:()=>{events.push('info');return infoRead();},
   download:(generation,id,_update,progress)=>{assert.equal(_update,update);const result=deferred<{id:string;versionCode:number}>();downloads.push({id,generation,progress,result});events.push('download');return result.promise;},
-  cancel:async id=>{cancelled.push(id);if(info.staged?.id===id)info={...info,staged:undefined};},
+  cancel:async id=>{cancelled.push(id);await options.cancel?.();if(info.staged?.id===id)info={...info,staged:undefined};},
   open:async id=>{events.push('open:'+id);return open(id);},
  };
  const lock=()=>{status={phase:'paused',generation:status.generation+1};listener(status);};
@@ -47,6 +47,17 @@ test('a download owns progress and the tap; a GitHub fallback restarts the count
  work.progress({received:0,total:update.bytes});assert.equal(f.state().received,0);
  f.controller.setRelease(release);assert.equal(f.state().phase,'downloading');
  await f.finish();await pending;assert.equal(f.downloads.length,1);assert.deepEqual(f.handoffs(),['prepare','open:'+work.id]);
+});
+
+test('a release that arrives during an update is offered from fresh native state once the update ends',async t=>{
+ const later={...release,buildNumber:release.buildNumber+1,androidUpdate:{...update,versionCode:update.versionCode+1}};
+ const f=fixture(t);await flush();const pending=f.controller.update();await flush();
+ f.controller.setRelease(later);assert.equal(f.state().release,release);
+ f.downloads[0]!.result.reject(new Error('Tor download timed out'));await pending;await flush();
+ assert.equal(f.state().release,later);assert.equal(f.state().phase,'available');assert.equal(f.state().total,later.androidUpdate.bytes);
+ const g=fixture(t);await flush();const unchanged=g.controller.update();await flush();
+ g.downloads[0]!.result.reject(new Error('Tor download timed out'));await unchanged;await flush();
+ assert.equal(g.state().phase,'failed');assert.match(g.state().error,/timed out/);
 });
 
 test('Tor pause or generation replacement cancels the download and fences late progress and saved files',async t=>{
@@ -135,6 +146,14 @@ test('a saved update for another release is discarded and replaced by one tap',a
  assert.deepEqual(f.cancelled,[old.id]);assert.equal(f.downloads.length,1);await f.finish();await pending;assert.deepEqual(f.handoffs(),['prepare','open:'+f.downloads[0]!.id]);
 });
 
+test('discarding the older saved update counts only visible time',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date']});
+ const old={id:crypto.randomUUID(),versionCode:update.versionCode-1},discarding=deferred<void>();
+ const f=fixture(t,{info:{staged:old},cancel:()=>discarding.promise});await flush();const pending=f.controller.update();await flush();
+ f.visible(false);t.mock.timers.tick(60_000);f.visible(true);await flush();
+ discarding.resolve();await flush();assert.equal(f.state().phase,'downloading');assert.equal(f.downloads.length,1);await f.finish();await pending;
+});
+
 test('missing or failing wallet preparation prevents the handoff and keeps the verified file',async t=>{
  await assert.rejects(prepareAndroidInstall(),/cannot finish saving/);
  const unregister=registerAndroidInstallPreparation(async()=>{throw new Error('Wallet writes are still pending');});await assert.rejects(prepareAndroidInstall(),/writes are still pending/);unregister();
@@ -179,14 +198,19 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.deepEqual(read('../src-tauri/build.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual(read('../src-tauri/src/lib.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual((JSON.parse(read('../src-tauri/capabilities/main.json')).permissions as unknown[]).filter(item=>typeof item==='string'&&item.startsWith('allow-native-android-update-')),commands.map(name=>'allow-'+name.replaceAll('_','-')));
- assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\(/);
+ const rust=read('../src-tauri/src/android_updates.rs');
+ assert.match(rust,/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let deadline = [^;]*?\+ HANDOFF_DEADLINE;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\([\s\S]*?"deadline": deadline\.as_millis\(\) as u64[\s\S]*?\.await;\s+if opened\.is_err\(\) \{\s+let _ = updates\.retire_if_missing\(&prepared\);/,'one deadline from the start of the handoff, and a failed handoff retires a stage whose file the recheck deleted');
+ const deadline=Number(rust.match(/HANDOFF_DEADLINE: std::time::Duration = std::time::Duration::from_secs\((\d+)\)/)![1])*1000;
+ const backstop=Number(read('../app/src/android-updates.ts').match(/bounded\(backend\.open\(staged\.id\),([\d_]+)\)/)![1].replace(/_/g,''));
+ assert.ok(backstop>deadline,'the renderer outwaits the host deadline, so it never gives up on a handoff that can still open the installer');
  assert.match(read(plugin+'src/lib.rs'),/"updateOpenInstaller"/);
  const updater=read(platform+'AndroidUpdater.kt');
  assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+(\/\/.*\s+)?try \{ verify\(file, args\) \} catch \(error: UpdateRejected\) \{ file\.delete\(\); throw error \}\s+val uri = FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);
  assert.match(updater,/setDataAndType\(uri, "application\/vnd\.android\.package-archive"\)/);
  assert.match(updater,/addFlags\(Intent\.FLAG_GRANT_READ_URI_PERMISSION\)/);
  // The handoff must reach a preinstalled installer only; an implicit APK intent any app can claim.
- assert.match(updater,/intent\.setPackage\(systemInstaller\(intent\)\)\s+authorize \{ activity\(\)\.startActivity\(intent\) \}/);
+ assert.match(updater,/intent\.setPackage\(systemInstaller\(intent\)\)\s+authorize \{\s+if \(AndroidUpdatePolicy\.handoffExpired\(args\.deadline, System\.currentTimeMillis\(\)\)\)\s+throw UpdateRejected\([^)]*\)\s+activity\(\)\.startActivity\(intent\)\s+\}/,'the deadline is checked on the main thread right before the installer starts');
+ assert.match(updater,/\(error as\? AmbiguousUpdateAuthorization\)\?\.message/,'an installer launch that may have started keeps its own message');
  assert.match(updater,/PackageManager\.MATCH_SYSTEM_ONLY or PackageManager\.MATCH_DEFAULT_ONLY/);
  assert.match(updater,/resolved\?\.activityInfo\?\.packageName\s+\?: throw UpdateRejected\(/);
  assert.doesNotMatch(updater,/PackageInstaller|SharedPreferences|canRequestPackageInstalls|permission-required/);
@@ -196,6 +220,7 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.match(manifest,/UpdateFileProvider" android:authorities="\$\{applicationId\}\.updates" android:exported="false" android:grantUriPermissions="true"/);
  assert.match(read(plugin+'android/src/main/res/xml/shielded_update_paths.xml'),/<cache-path name="shielded-updates" path="shielded-updates\/" \/>/);
  const kotlin=read(platform+'ShieldedPlatformPlugin.kt');
+ assert.match(kotlin,/class UpdateArgs \{[^}]*var deadline: Long = 0[^}]*\}/,'the Rust "deadline" key reaches UpdateArgs, and 0 leaves verification unbounded');
  assert.deepEqual([...kotlin.matchAll(/@Command\s+fun (update\w+)/g)].map(match=>match[1]),['updateInfo','updateVerify','updateOpenInstaller']);
  assert.match(kotlin,/trusted\(\) && resumed\(\)/);assert.doesNotMatch(kotlin,/private var resumed/);
  assert.match(kotlin,/lifecycle\?\.currentState\?\.isAtLeast\(Lifecycle\.State\.RESUMED\)/);

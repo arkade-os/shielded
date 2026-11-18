@@ -6,7 +6,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 
-internal class AmbiguousUpdateAuthorization : Exception("Android may still be opening its installer.")
+internal class AmbiguousUpdateAuthorization : Exception("Android may still be opening its installer. If it does not appear, try again.")
 
 internal class AndroidUpdateAuthorization(
     private val post: (Runnable) -> Boolean,
