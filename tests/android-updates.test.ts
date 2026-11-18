@@ -36,7 +36,7 @@ test('one tap downloads, saves and locks, then hands the verified file to Androi
   assert.deepEqual(f.handoffs(),['prepare','open:'+id]);assert.equal(f.state().phase,'available');assert.equal(f.state().staged?.id,id);assert.equal(f.state().error,'');
  }
  const g=fixture(t,{status:{phase:'bootstrapping',generation:4,mode:'tor'}});await flush();await g.controller.update();
- assert.equal(g.downloads.length,0);assert.match(g.state().error,/Wait for the wallet to connect/);
+ assert.equal(g.downloads.length,0);assert.match(g.state().error,/Open or reconnect your wallet/);
 });
 
 test('a download owns progress and the tap; a GitHub fallback restarts the count and a new release cannot interrupt it',async t=>{
@@ -120,7 +120,7 @@ test('invalid progress, native failures and a download still running end in Try 
 test('a preflight that outlives the connection cannot start a download',async t=>{
  const f=fixture(t);await flush();const checking=deferred<AndroidUpdateInfo>();f.read(()=>checking.promise);const pending=f.controller.update();await flush();
  f.emit({phase:'paused',generation:2});checking.resolve(installed);await pending;
- assert.equal(f.downloads.length,0);assert.equal(f.state().phase,'failed');assert.match(f.state().error,/Wait for the wallet to connect/);
+ assert.equal(f.downloads.length,0);assert.equal(f.state().phase,'failed');assert.match(f.state().error,/Open or reconnect your wallet/);
 });
 
 test('a verified download kept from earlier goes straight to the handoff, even while the wallet is locked',async t=>{
@@ -167,7 +167,7 @@ test('a file evicted before the handoff is downloaded again once the locked wall
  const f=fixture(t);await flush();const first=f.controller.update();await flush();await f.finish();await first;
  f.open(async()=>{f.setInfo({staged:undefined});throw new Error('The downloaded update is no longer on this device. Try again to download it.');});
  await f.controller.update();assert.equal(f.state().phase,'failed');assert.match(f.state().error,/no longer on this device/);assert.equal(f.state().networkReady,false);
- f.open(async()=>{});await f.controller.update();assert.equal(f.downloads.length,1);assert.match(f.state().error,/Wait for the wallet to connect/);assert.equal(f.state().staged,undefined);
+ f.open(async()=>{});await f.controller.update();assert.equal(f.downloads.length,1);assert.match(f.state().error,/Open or reconnect your wallet/);assert.equal(f.state().staged,undefined);
  f.emit({phase:'ready',generation:4,mode:'tor'});const retry=f.controller.update();await flush();assert.equal(f.downloads.length,2);await f.finish();await retry;
  assert.equal(f.state().phase,'available');assert.equal(f.state().staged?.id,f.downloads[1]!.id);
 });

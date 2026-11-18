@@ -31,7 +31,7 @@ export function androidUpdateBackend():AndroidUpdateBackend {
   cancel:id=>invoke('native_android_update_cancel',{id}),open:id=>invoke('native_android_update_open',{id}),
  };
 }
-const NO_REPLY='Android did not respond. Try again.';
+const NO_REPLY='Android did not respond. Try again.',OFFLINE='Open or reconnect your wallet before downloading this update.';
 const bounded=<T>(work:Promise<T>,milliseconds=10_000)=>new Promise<T>((resolve,reject)=>{
  const timer=setTimeout(()=>reject(new Error(NO_REPLY)),milliseconds);
  work.then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});
@@ -96,7 +96,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   if(downloading&&(!ready||next.generation!==downloading.generation))cancelDownload('The connection changed. Reconnect, then try again.');
  };
  async function download(owner:number,update:AndroidUpdatePackage){
-  if(!state.networkReady)throw new Error('Wait for the wallet to connect before downloading this update.');
+  if(!state.networkReady)throw new Error(OFFLINE);
   const transfer:Download={id:crypto.randomUUID(),generation:status.generation,cancel:()=>{}};
   const cancelled=new Promise<never>((_,reject)=>{transfer.cancel=reject;});void cancelled.catch(()=>{});downloading=transfer;
   publish({phase:'downloading',received:0,total:update.bytes});
@@ -118,7 +118,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   const release=latest,update=release?.androidUpdate;
   if(stopped||!isVisible()||!['available','failed'].includes(state.phase))return;
   if(!update){publish({phase:'blocked',error:'This release does not include an installable Android update yet.'});return;}
-  if(!state.staged&&!state.networkReady){publish({error:'Wait for the wallet to connect before downloading this update.'});return;}
+  if(!state.staged&&!state.networkReady){publish({error:OFFLINE});return;}
   const owner=updating=++revision;publish({phase:'checking',release,error:''});
   try{
    const info=await visiblyBounded(backend.info());if(!active(owner))return;

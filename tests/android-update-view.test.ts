@@ -39,7 +39,7 @@ test('with Tor off the download stays available and names both direct destinatio
 });
 
 test('a connecting wallet disables a download but not a verified update, which locks the wallet first',()=>{
- const html=render({networkReady:false,torReady:false});assert.match(html,/Wait for the wallet to connect/);assert.match(html,/<button type="button" disabled="">Update/);
+ const html=render({networkReady:false,torReady:false});assert.match(html,/Open or reconnect your wallet/);assert.match(html,/<button type="button" disabled="">Update/);
  const ready=render({networkReady:false,torReady:false,staged});assert.match(ready,/<button type="button">Update/);assert.match(ready,/Download verified/);assert.match(ready,/wallet will lock and finish saving/);assert.doesNotMatch(ready,/Wait for the wallet|Tor is off/);
 });
 

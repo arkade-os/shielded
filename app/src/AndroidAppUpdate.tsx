@@ -32,7 +32,7 @@ export function AndroidAppUpdateDialog({state,onClose,onUpdate,onCancel}:{state:
    {phase==='downloading'&&<div className="android-update-progress" role="status" aria-live="polite"><div><strong>{percent}%</strong><span>{size(state.received)} of {size(state.total)}</span></div><progress max={100} value={percent} aria-label="Update download"/></div>}
    {canUpdate&&staged&&<p className="android-update-verified">Download verified. Your wallet will lock and finish saving before installation.</p>}
    {error&&<p className="android-update-error" role="alert">{error}</p>}
-   {canUpdate&&offline&&<p className="android-update-help">Wait for the wallet to connect, then download.</p>}{canUpdate&&!staged&&networkReady&&!torReady&&<p className="android-update-help">Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it. Shielded still verifies it before installing.</p>}
+   {canUpdate&&offline&&<p className="android-update-help">Open or reconnect your wallet, then download.</p>}{canUpdate&&!staged&&networkReady&&!torReady&&<p className="android-update-help">Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it. Shielded still verifies it before installing.</p>}
    <div className="android-update-actions">
     {canUpdate&&<button type="button" onClick={onUpdate} disabled={offline}>{phase==='failed'?'Try again':`Update${release?.androidUpdate?` · ${size(release.androidUpdate.bytes)}`:''}`}</button>}
     {phase==='downloading'&&<button type="button" className="android-update-secondary" onClick={onCancel}>Cancel download</button>}
