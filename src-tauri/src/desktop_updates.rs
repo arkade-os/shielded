@@ -361,10 +361,8 @@ impl Drop for DownloadOwner {
 }
 
 /// Streams the saved update into `sink`, refusing it unless it still has the signed length and SHA-256.
-fn copy_checked(staged: &Path, mut sink: impl Write, update: &DesktopUpdate) -> Result<(), String> {
-    let mut source = std::fs::File::open(staged)
-        .map_err(|_| CHANGED)?
-        .take(update.bytes.saturating_add(1));
+fn copy_checked(source: impl Read, mut sink: impl Write, update: &DesktopUpdate) -> Result<(), String> {
+    let mut source = source.take(update.bytes.saturating_add(1));
     let (mut digest, mut buffer, mut length) = (Sha256::new(), vec![0; 1 << 20], 0u64);
     loop {
         let read = source.read(&mut buffer).map_err(|_| CHANGED)?;
@@ -388,7 +386,8 @@ fn copy_checked(staged: &Path, mut sink: impl Write, update: &DesktopUpdate) -> 
 }
 
 fn verify(staged: &Path, update: &DesktopUpdate) -> Result<(), String> {
-    copy_checked(staged, std::io::sink(), update)
+    let file = std::fs::File::open(staged).map_err(|_| CHANGED)?;
+    copy_checked(file, std::io::sink(), update)
 }
 
 fn writable(directory: &Path) -> Result<(), String> {
@@ -418,7 +417,8 @@ fn write_executable(staged: &Path, path: &Path, update: &DesktopUpdate) -> Resul
         .create_new(true)
         .open(path)
         .map_err(|_| UNSUPPORTED)?;
-    copy_checked(staged, &mut copy, update)?;
+    let source = std::fs::File::open(staged).map_err(|_| CHANGED)?;
+    copy_checked(source, &mut copy, update)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -444,16 +444,20 @@ fn replace_file(staged: &Path, target: &Path, update: &DesktopUpdate) -> Result<
 }
 
 #[cfg(any(target_os = "macos", test))]
-fn bundle_root(binary: &Path) -> Option<PathBuf> {
-    let contents = binary
+fn bundle_root(binary: &Path) -> Result<PathBuf, String> {
+    let bundle = binary
         .parent()
-        .filter(|directory| directory.ends_with("MacOS"))?
-        .parent()
-        .filter(|directory| directory.ends_with("Contents"))?;
-    contents
-        .parent()
+        .filter(|directory| directory.ends_with("MacOS"))
+        .and_then(Path::parent)
+        .filter(|directory| directory.ends_with("Contents"))
+        .and_then(Path::parent)
         .filter(|bundle| bundle.extension().is_some_and(|extension| extension == "app"))
-        .map(Path::to_path_buf)
+        .ok_or(UNSUPPORTED)?;
+    // Gatekeeper runs a quarantined app from a random read-only copy; replacing it updates nothing.
+    if bundle.components().any(|part| part.as_os_str() == "AppTranslocation") {
+        return Err("Move Shielded to the Applications folder and reopen it to update in place.".into());
+    }
+    Ok(bundle.to_path_buf())
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -489,9 +493,7 @@ fn target(app: &AppHandle) -> Result<Option<PathBuf>, String> {
 #[cfg(target_os = "macos")]
 fn target(app: &AppHandle) -> Result<Option<PathBuf>, String> {
     let binary = tauri::process::current_binary(&app.env()).map_err(|_| UNAVAILABLE)?;
-    bundle_root(&binary)
-        .map(Some)
-        .ok_or_else(|| UNSUPPORTED.into())
+    bundle_root(&binary).map(Some)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -499,9 +501,25 @@ fn target(_app: &AppHandle) -> Result<Option<PathBuf>, String> {
     Err(UNAVAILABLE.into())
 }
 
+/// Hashes through a handle that shares reading only, so the verified installer cannot be
+/// rewritten, renamed or deleted until its process exists and Windows protects the image.
+#[cfg(target_os = "windows")]
+fn lock_installer(staged: &Path, update: &DesktopUpdate) -> Result<std::fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    let installer = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(staged)
+        .map_err(|_| CHANGED)?;
+    copy_checked(&installer, std::io::sink(), update)?;
+    Ok(installer)
+}
+
 /// Returns whether Tauri should relaunch the app; the NSIS installer relaunches it itself.
 #[cfg(target_os = "windows")]
-fn install(staged: &Path, _target: Option<&Path>, _update: &DesktopUpdate) -> Result<bool, String> {
+fn install(staged: &Path, _target: Option<&Path>, update: &DesktopUpdate) -> Result<bool, String> {
+    let _installer = lock_installer(staged, update)?;
     std::process::Command::new(staged)
         .args(INSTALLER_ARGUMENTS)
         .spawn()
@@ -648,17 +666,17 @@ pub async fn native_desktop_update_install(
     let (_, target) = host(&app)?;
     let prepared = updates.begin_install(&id)?;
     let (staged, update) = (prepared.file.path.clone(), prepared.update.clone());
-    let applied = tokio::task::spawn_blocking(move || match verify(&staged, &update) {
-        Ok(()) => install(&staged, target.as_deref(), &update).map_err(|error| (true, error)),
-        Err(error) => Err((false, error)),
+    let applied = tokio::task::spawn_blocking(move || {
+        verify(&staged, &update)?;
+        install(&staged, target.as_deref(), &update)
     })
     .await
-    .unwrap_or_else(|_| Err((true, UNAVAILABLE.into())));
+    .unwrap_or_else(|_| Err(UNAVAILABLE.into()));
     match applied {
         Ok(true) => app.request_restart(),
         Ok(false) => app.exit(0),
-        Err((keep, error)) => {
-            updates.end_install(&prepared, keep);
+        Err(error) => {
+            updates.end_install(&prepared, error != CHANGED);
             return Err(error);
         }
     }
@@ -875,18 +893,40 @@ mod tests {
     }
 
     #[test]
-    fn the_running_bundle_is_found_from_its_executable() {
-        assert_eq!(
-            bundle_root(Path::new("/Applications/Shielded.app/Contents/MacOS/shielded-native")),
-            Some(PathBuf::from("/Applications/Shielded.app"))
-        );
+    fn the_running_bundle_is_found_from_its_executable_unless_gatekeeper_translocated_it() {
+        for bundle in ["/Applications/Shielded.app", "/Users/me/Downloads/Shielded.app"] {
+            let binary = format!("{bundle}/Contents/MacOS/shielded-native");
+            assert_eq!(bundle_root(Path::new(&binary)), Ok(PathBuf::from(bundle)));
+        }
         for binary in [
             "/usr/local/bin/shielded-native",
             "/Applications/Shielded.app/Contents/shielded-native",
             "/Applications/Shielded/Contents/MacOS/shielded-native",
         ] {
-            assert_eq!(bundle_root(Path::new(binary)), None, "{binary}");
+            assert_eq!(bundle_root(Path::new(binary)).unwrap_err(), UNSUPPORTED, "{binary}");
         }
+        let translocated = "/private/var/folders/x1/abc123/T/AppTranslocation/1C9C2F7E-0D4E-4F5B-9B0A-2E4D2C7A1B11/d/Shielded.app/Contents/MacOS/shielded-native";
+        assert!(bundle_root(Path::new(translocated)).unwrap_err().contains("Applications folder"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_installer_still_starts_but_cannot_be_rewritten_renamed_or_deleted() {
+        let directory = scratch();
+        let staged = directory.0.join("installer.exe");
+        let system = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        std::fs::copy(system.join("hostname.exe"), &staged).unwrap();
+        let update = local(&std::fs::read(&staged).unwrap());
+        let writer = std::fs::OpenOptions::new().write(true).open(&staged).unwrap();
+        assert_eq!(lock_installer(&staged, &update).unwrap_err(), CHANGED);
+        drop(writer);
+        let installer = lock_installer(&staged, &update).unwrap();
+        assert!(std::fs::OpenOptions::new().write(true).open(&staged).is_err());
+        assert!(std::fs::rename(&staged, directory.0.join("swapped.exe")).is_err());
+        assert!(std::fs::remove_file(&staged).is_err());
+        assert!(std::process::Command::new(&staged).output().unwrap().status.success());
+        drop(installer);
+        assert_eq!(lock_installer(&staged, &local(b"another installer")).unwrap_err(), CHANGED);
     }
 
     #[test]
