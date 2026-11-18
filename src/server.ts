@@ -7,11 +7,12 @@ import {ESPLORA_URL} from '@arkade-os/sdk';
 import compression from 'compression';
 import express from 'express';
 import {dropLegacyData} from './legacy.ts';
-import {createRollupRouter} from './rollup/http.ts';
+import {createRollupRouter,gatewayCaller} from './rollup/http.ts';
 import {DEFAULT_VM_BINARY} from './rollup/leaves.ts';
 import {nostrRelaysFromEnv,startNostrCarrier} from './rollup/nostr-carrier.ts';
 import {createOhttpGateway} from './rollup/ohttp-gateway.ts';
 import {loadOhttpKey} from './rollup/ohttp-keys.ts';
+import {createRendezvousRouter,RFQ_RELAYS} from './rollup/rendezvous.ts';
 import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
 import {MUTINY_ARK_URL,parseStockEndpoint} from './stock/network.ts';
 import {LNURL_BASE} from './shielded/network-privacy.ts';
@@ -36,11 +37,13 @@ if(ohttpKey&&gatewayToken){
  // arkd and the indexer are bare origins, as the pool requires, so their prefixes are fixed; Esplora keeps the path of its base URL.
  const ark=parseStockEndpoint(process.env.SHIELDED_ARK_URL||MUTINY_ARK_URL,'Arkade URL'),indexer=parseStockEndpoint(process.env.SHIELDED_INDEXER_URL||ark,'indexer URL'),esplora=new URL(process.env.SHIELDED_ESPLORA_URL||ESPLORA_URL.mutinynet),lnurl=parseStockEndpoint(process.env.SHIELDED_LNURL_URL||LNURL_BASE,'Lightning address service URL');
  nostrRelays=nostrRelaysFromEnv(process.env.SHIELDED_NOSTR_RELAYS);
+ const rfqRelays=nostrRelaysFromEnv(process.env.SHIELDED_RFQ_RELAYS,RFQ_RELAYS,'SHIELDED_RFQ_RELAYS');
  // The Lightning address service alone gets PATCH and the wallet's bearer, and its pay requests only on this one origin, so no payee can name the host.
  gateway=createOhttpGateway({key:ohttpKey,gatewayToken,http:ohttpHttp,poolOrigin:process.env.SHIELDED_PUBLIC_ORIGIN||'https://shielded.mutinynet.arkade.sh',poolLoopback:`http://127.0.0.1:${port}`,
   upstreams:[{origin:ark,prefix:'/v1/'},{origin:indexer,prefix:'/v1/indexer/'},{origin:esplora.origin,prefix:esplora.pathname.replace(/\/?$/,'/')},{origin:lnurl,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']},{origin:lnurl,prefix:'/.well-known/lnurlp/'}],
   ...(process.env.SHIELDED_OHTTP_RATE?{rate:Number(process.env.SHIELDED_OHTTP_RATE)}:{})});
  app.use('/api/rollup',gateway);
+ app.use('/api/rollup',createRendezvousRouter({relays:rfqRelays,fromGateway:gatewayCaller(gatewayToken)}));
 }
 console.log(ohttpKey?`Oblivious HTTP gateway on (key id ${ohttpKey.keyId}, Nostr ${ohttpKey.nostrPublic.slice(0,8)}…, ${nostrRelays.length} relays, HTTP route ${ohttpHttp?'on':'off'}).`:'Oblivious HTTP gateway off.');
 app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean),gatewayToken}));

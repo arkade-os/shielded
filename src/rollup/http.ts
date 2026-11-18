@@ -37,6 +37,15 @@ const POSTS_PER_MINUTE=60;
 /** Each admission checks a Groth16 proof in this process; past this many at once, a flood from many addresses would stall batching. */
 const ADMITTING_AT_ONCE=8;
 const LOOPBACK=new Set(['127.0.0.1','::1','::ffff:127.0.0.1']);
+/** Whether a request came over the gateway's loopback hop. It reads the raw socket, not req.ip, which trust proxy lets a header set. */
+export function gatewayCaller(gatewayToken?:string):(req:express.Request)=>boolean {
+ const token=gatewayToken?Buffer.from(gatewayToken):undefined;
+ return req=>{
+  if(!token||!LOOPBACK.has(req.socket.remoteAddress??'')||req.headers['x-forwarded-for']!==undefined)return false;
+  const claimed=Buffer.from(req.get('x-shielded-gateway')??'');
+  return claimed.length===token.length&&timingSafeEqual(claimed,token);
+ };
+}
 export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[],gatewayToken}:{allowedOrigins?:readonly string[];gatewayToken?:string}={}){
  // A file:, data: or other opaque entry normalises to "null", which sandboxed and local pages send as their Origin.
  const allowed=new Set(allowedOrigins.map(entry=>{const origin=new URL(entry).origin;if(origin==='null')throw new Error(`${entry} is not an http(s) origin.`);return origin;}));
@@ -56,13 +65,8 @@ export function createRollupRouter(service:()=>RollupService|undefined,{allowedO
  });
  // Every submission costs a proof check, so each address gets a budget; reads and signatures, which an admitted deposit owes within its round, stay open.
  const writes=new Map<string,{count:number;since:number}>();
- // The gateway's loopback hop is every sealed caller at once and limits itself, so it skips this budget. It reads the raw socket, not req.ip, which trust proxy lets a header set.
- const token=gatewayToken?Buffer.from(gatewayToken):undefined;
- const fromGateway=(req:express.Request)=>{
-  if(!token||!LOOPBACK.has(req.socket.remoteAddress??'')||req.headers['x-forwarded-for']!==undefined)return false;
-  const claimed=Buffer.from(req.get('x-shielded-gateway')??'');
-  return claimed.length===token.length&&timingSafeEqual(claimed,token);
- };
+ // The gateway's loopback hop is every sealed caller at once and limits itself, so it skips this budget.
+ const fromGateway=gatewayCaller(gatewayToken);
  router.use((req,res,next)=>{
   if(req.method!=='POST'||/^\/spends\/[^/]+\/sign$/.test(req.path)||fromGateway(req))return next();
   const now=Date.now(),key=req.ip??'',seen=writes.get(key);
