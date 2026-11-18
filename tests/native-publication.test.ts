@@ -5,12 +5,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type NativePlatform, type NativeRelease } from '../src/native-release.ts';
 import { nativeReleaseFixture } from './fixtures/native-release.ts';
 import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
-import { assertNativeReleaseAdvancement, extractNativeLinuxArchive, GitHubNativeReleases, nativePublicationIdentity, prepareNativeRelease, publishNativeRelease, selectNativeArtifactDirectories, type NativeReleaseIndex, type PreparedNativeRelease } from '../tools/publish-native-release.ts';
+import { assertNativeReleaseAdvancement, desktopUpdateMessage, extractNativeLinuxArchive, GitHubNativeReleases, nativePublicationIdentity, nativeUpdateSigningKey, prepareNativeRelease, publishNativeRelease, selectNativeArtifactDirectories, type NativeReleaseIndex, type PreparedNativeRelease } from '../tools/publish-native-release.ts';
 
 const env = { GITHUB_REPOSITORY: 'arkade-os/shielded', GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_NUMBER: '124', GITHUB_RUN_ID: '999', GITHUB_RUN_ATTEMPT: '1' };
+const signingKey = new Uint8Array(32).fill(7), signingPublicKey = Buffer.from(ed25519.getPublicKey(signingKey)).toString('hex');
 function artifactName(platform: NativePlatform, attempt: number) {
   return `shielded-mutinynet-${platform === 'ios' ? 'ios-unsigned' : platform}-release-${env.GITHUB_SHA}-attempt${attempt}`;
 }
@@ -35,7 +37,7 @@ function fixture(t: TestContext) {
     mkdirSync(selected, { recursive: true }); writeFileSync(join(selected, file), bytes);
     writeFileSync(join(selected, 'manifest.json'), JSON.stringify({ schema: 1, network: 'mutinynet', commit: env.GITHUB_SHA, buildNumber: Number(env.GITHUB_RUN_NUMBER), versionCode: 100000 + Number(env.GITHUB_RUN_NUMBER), packageName: androidSigning.packageName, signerSha256: androidSigning.certificateSha256, package: { file, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } }));
   };
-  return { directory, input, output, artifact, add, signed, addSigned, prepare: (attempt = 1) => prepareNativeRelease(input, output, nativePublicationIdentity({ ...env, GITHUB_RUN_ATTEMPT: String(attempt) }), '0.1.0', new Date('2026-11-07T12:00:00Z')) };
+  return { directory, input, output, artifact, add, signed, addSigned, prepare: (attempt = 1) => prepareNativeRelease(input, output, nativePublicationIdentity({ ...env, GITHUB_RUN_ATTEMPT: String(attempt) }), '0.1.0', signingKey, new Date('2026-11-07T12:00:00Z')) };
 }
 function fakeGitHub(prepared: PreparedNativeRelease, options: { noChannel?: boolean; beforeAdvance?: boolean; afterAdvance?: boolean; conflict?: boolean; changedHead?: boolean; rejectSource?: boolean } = {}) {
   type Asset = { id: number; name: string; size: number };
@@ -77,6 +79,35 @@ test('native preparation validates all actual hashes and writes complete unified
   assert.match(prepared.manifest.releaseUrl, /native-mutinynet-aaaaaaaaaaaa-run999-attempt1$/);
   assert.equal(readFileSync(prepared.sumsPath, 'utf8').trim().split('\n').length, 10);
   assert.equal(parseNativeRelease(JSON.parse(readFileSync(prepared.manifestPath, 'utf8'))).buildNumber, 124);
+});
+
+test('publication signs exactly the in-app desktop installers and the channel parser keeps the signatures', async t => {
+  const prepared = await fixture(t).prepare(), signed = prepared.manifest.packages.filter(item => item.signature);
+  assert.deepEqual(signed.map(item => `${item.platform} ${item.file.split('-mutinynet-release-').at(-1)}`), ['windows-x86_64 Shielded_0.1.0_x64-setup.exe', 'linux-x86_64 Shielded.AppImage', 'macos-universal Shielded.app.zip']);
+  for (const item of signed) assert.ok(ed25519.verify(Buffer.from(item.signature!, 'base64'), Buffer.from(desktopUpdateMessage(prepared.manifest, item)), ed25519.getPublicKey(signingKey)), item.file);
+  assert.deepEqual(parseNativeRelease(JSON.parse(readFileSync(prepared.manifestPath, 'utf8'))).packages, prepared.manifest.packages);
+});
+
+test('publication fails rather than ship a desktop platform without its signed in-app installer', async t => {
+  const f = fixture(t), path = join(f.artifact('linux-x86_64'), 'manifest.json'), original = JSON.parse(readFileSync(path, 'utf8'));
+  writeFileSync(path, JSON.stringify({ ...original, packages: original.packages.filter((item: { file: string }) => !item.file.endsWith('.AppImage')) }));
+  await assert.rejects(f.prepare(), /one in-app linux-x86_64 update package/);
+});
+
+test('the update signing key must be a base64 32-byte seed of the pinned key and is never echoed', () => {
+  const seed = Buffer.from(signingKey).toString('base64');
+  assert.deepEqual(nativeUpdateSigningKey({ SHIELDED_UPDATE_SIGNING_KEY: `${seed}\n` }, signingPublicKey), Buffer.from(signingKey));
+  for (const value of [undefined, '', 'not base64!', `${seed}=`, Buffer.alloc(31, 7).toString('base64'), Buffer.alloc(64, 7).toString('base64')]) {
+    assert.throws(() => nativeUpdateSigningKey({ SHIELDED_UPDATE_SIGNING_KEY: value }, signingPublicKey), /base64 of a 32-byte ed25519 seed/, String(value));
+  }
+  assert.throws(() => nativeUpdateSigningKey({ SHIELDED_UPDATE_SIGNING_KEY: seed }), (error: Error) => /does not match the update key pinned/.test(error.message) && !error.message.includes(seed));
+});
+
+test('the desktop update message and signature match the vector pinned in the Rust verifier', () => {
+  const message = desktopUpdateMessage({ channel: 'native-mutinynet', network: 'mutinynet', commit: '7a90ca067003650a87163c1ffc0f6203c72e6722', buildNumber: 275 }, { platform: 'windows-x86_64', file: 'shielded-mutinynet-windows-x86_64-7a90ca067003-run44073476179-attempt1-mutinynet-release-Shielded_0.1.0_x64-setup.exe', bytes: 226613350, sha256: '59967f6469a778999c465f1e4f8d8bdda009612f8a2f37e9f3fa7c68b2a9d9e4' });
+  assert.equal(message, 'shielded-native-update-v1\nchannel=native-mutinynet\nnetwork=mutinynet\nplatform=windows-x86_64\nfile=shielded-mutinynet-windows-x86_64-7a90ca067003-run44073476179-attempt1-mutinynet-release-Shielded_0.1.0_x64-setup.exe\nbytes=226613350\nsha256=59967f6469a778999c465f1e4f8d8bdda009612f8a2f37e9f3fa7c68b2a9d9e4\ncommit=7a90ca067003650a87163c1ffc0f6203c72e6722\nbuildNumber=275');
+  assert.equal(signingPublicKey, 'ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c');
+  assert.equal(Buffer.from(ed25519.sign(Buffer.from(message), signingKey)).toString('base64'), 'mwS7OvlAyVyjn55vYhrvkVl0DxNjLk7VrRVzvOhk9P1uOxjlGv7p9y7PcTvYmthkOM4b4QbaVoU6tlv29IlFBQ==');
 });
 
 test('signed Android artifact is published separately without changing legacy packages', async t => {
@@ -142,6 +173,9 @@ test('native preparation rejects missing platforms, wrong source/network, traver
   const f = fixture(t), path = join(f.artifact('windows-x86_64'), 'manifest.json'), original = JSON.parse(readFileSync(path, 'utf8'));
   for (const change of [{ commit: 'b'.repeat(40) }, { network: 'bitcoin' }, { poolOrigin: 'https://example.com' }, { platform: 'ios' }]) {
     writeFileSync(path, JSON.stringify({ ...original, ...change })); await assert.rejects(f.prepare(), /source|platform|network/);
+  }
+  for (const change of [{ node: '24.22.3' }, { rust: '1.97.0' }]) {
+    writeFileSync(path, JSON.stringify({ ...original, environment: { ...original.environment, ...change } })); await assert.rejects(f.prepare(), /reproduction environment/);
   }
   writeFileSync(path, JSON.stringify({ ...original, packages: [{ ...original.packages[0], file: '../escape.exe' }] }));
   await assert.rejects(f.prepare(), /Unsafe/);
@@ -332,4 +366,6 @@ test('workflow keeps native gates and retention, limits publisher trust and seri
   assert.match(workflow, /lipo .* -verify_arch arm64 x86_64/);
   assert.match(workflow, /test "\$\(uname -m\)" = arm64/);
   assert.match(workflow, /cargo test .*--target aarch64-apple-darwin/);
+  assert.equal((workflow.match(/secrets\.SHIELDED_UPDATE_SIGNING_KEY/g) ?? []).length, 1);
+  assert.match(publisher, /tools\/publish-native-release\.ts native-downloads native-release\s+env:\s+GITHUB_TOKEN: \$\{\{ github\.token \}\}\s+SHIELDED_UPDATE_SIGNING_KEY: \$\{\{ secrets\.SHIELDED_UPDATE_SIGNING_KEY \}\}/);
 });

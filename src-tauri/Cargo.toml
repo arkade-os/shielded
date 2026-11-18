@@ -23,6 +23,7 @@ tauri-build = { version = "=2.7.4", features = [] }
 arti-client = { version = "=0.48.0", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite", "experimental-api"] }
 base64 = "=0.23.1"
 bytes = "=1.12.1"
+ed25519-dalek = { version = "=3.0.0", default-features = false }
 futures-util = { version = "=0.3.34", features = ["sink"] }
 http-body-util = "=0.1.5"
 hyper = { version = "=1.12.0", features = ["client", "http1"] }

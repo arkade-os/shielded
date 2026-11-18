@@ -5453,6 +5453,7 @@ dependencies = [
  "arti-client",
  "base64 0.23.1",
  "bytes",
+ "ed25519-dalek",
  "futures-util",
  "http-body-util",
  "hyper",

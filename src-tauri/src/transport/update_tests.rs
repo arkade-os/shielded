@@ -3,7 +3,7 @@ use super::{
     policy::{check_request, http_request},
     routes::POOL,
     session::{Inner, Lease},
-    update::{MAX_APK_BYTES, initial_url, redirect_url},
+    update::{initial_url, package_limit, redirect_url},
     wire::{download_with, send_http},
 };
 use arti_client::{BootstrapBehavior, TorClient, config::TorClientConfigBuilder};
@@ -147,7 +147,7 @@ fn serve(response: Vec<u8>) -> (DuplexStream, JoinHandle<Vec<u8>>) {
 #[test]
 fn package_metadata_is_bounded_and_pinned_to_our_release_repository() {
     assert!(asset(b"ok").validate().is_ok());
-    for value in [0, MAX_APK_BYTES + 1, u64::MAX] {
+    for value in [0, 128 * 1024 * 1024 + 1, u64::MAX] {
         let mut next = asset(b"ok");
         next.bytes = value;
         assert!(next.validate().is_err());
@@ -172,6 +172,44 @@ fn package_metadata_is_bounded_and_pinned_to_our_release_repository() {
         MIRROR.into(),
     ] {
         assert!(initial_url(&value).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn desktop_installers_are_pinned_by_name_with_a_size_cap_per_format() {
+    let release = "native-mutinynet-7a90ca067003-run44073476179-attempt1";
+    for (platform, name, bytes, cap) in [
+        ("windows-x86_64", "Shielded_0.1.0_x64-setup.exe", 226_613_350, 512),
+        ("linux-x86_64", "Shielded_0.1.0_amd64.AppImage", 92_879_352, 256),
+        ("macos-universal", "Shielded.app.zip", 25_331_770, 256),
+    ] {
+        let file = format!(
+            "shielded-mutinynet-{platform}-7a90ca067003-run44073476179-attempt1-mutinynet-release-{name}"
+        );
+        let mut package = UpdateDownload {
+            url: format!("https://github.com/arkade-os/shielded/releases/download/{release}/{file}"),
+            bytes,
+            sha256: "a".repeat(64),
+        };
+        assert_eq!(package.file().unwrap(), file);
+        assert_eq!(
+            package.mirror().unwrap().as_str(),
+            format!("https://{POOL}/downloads/native/{release}/{file}")
+        );
+        assert_eq!(package_limit(&file), Some(cap * 1024 * 1024));
+        package.bytes = cap * 1024 * 1024 + 1;
+        assert!(package.validate().is_err(), "{file}");
+    }
+    for file in [
+        "shielded-mutinynet-windows-x86_64-7a90ca067003-mutinynet-release-Shielded_0.1.0_x64.msi",
+        "shielded-mutinynet-windows-x86_64-7a90ca067003-mutinynet-release-Shielded.exe",
+        "shielded-mutinynet-linux-x86_64-7a90ca067003-mutinynet-release-Shielded_0.1.0_amd64.deb",
+        "shielded-mutinynet-macos-universal-7a90ca067003-mutinynet-release-Shielded_0.1.0_universal.dmg",
+        "shielded-mutinynet-ios-7a90ca067003-mutinynet-release-Shielded-simulator.app.zip",
+        "shielded-mutinynet-linux-x86_64-7a90ca067003-mutinynet-release-Shielded-setup.exe",
+        "shielded-mutinynet-windows-x86_64-setup.exe",
+    ] {
+        assert_eq!(package_limit(file), None, "{file}");
     }
 }
 

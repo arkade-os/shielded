@@ -17,6 +17,24 @@ test('native manifest keeps the last published release installable before reprod
   assert.throws(() => parseNativeRelease({ ...legacy, buildNumber: 38 }), /Missing native build environment/);
 });
 
+test('package signatures are optional, kept when canonical 64-byte base64, and otherwise rejected', () => {
+  const signature = Buffer.alloc(64, 9).toString('base64'), input = release(); Object.assign(input.packages[0], { signature });
+  assert.equal(parseNativeRelease(input).packages[0].signature, signature);
+  assert.equal('signature' in parseNativeRelease(release()).packages[0], false);
+  for (const bad of [null, 7, '', signature.slice(0, -4), `${signature.slice(0, -3)}B==`, signature.replace(/=+$/, ''), Buffer.alloc(65, 9).toString('base64')]) {
+    const invalid = release(); Object.assign(invalid.packages[0], { signature: bad });
+    assert.throws(() => parseNativeRelease(invalid), /signature/, String(bad));
+  }
+});
+
+test('installed apps keep parsing releases built with a newer Node or Rust toolchain', () => {
+  const input = release(), environment = { ...input.environment, node: '26.1.0', rust: '1.99.2' };
+  assert.deepEqual(parseNativeRelease({ ...input, environment }).environment, environment);
+  for (const change of [{ node: '26' }, { node: 'v26.1.0' }, { rust: '1.99.2-nightly' }, { rust: 199 }]) {
+    assert.throws(() => parseNativeRelease({ ...input, environment: { ...environment, ...change } }), /Invalid native build environment/, JSON.stringify(change));
+  }
+});
+
 test('native manifest rejects incorrect channel, identity, timestamps and oversized packages', () => {
   for (const change of [
     { schema: 2 }, { channel: 'latest' }, { network: 'bitcoin' }, { commit: 'A'.repeat(40) },

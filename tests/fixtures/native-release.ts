@@ -4,7 +4,7 @@ import androidSigning from '../../src-tauri/android-signing.json' with {type:'js
 export function nativeReleaseFixture() {
   const commit = 'a'.repeat(40), tag = `native-mutinynet-${commit.slice(0, 12)}-run123-attempt1`;
   const packages = ([
-    ['windows-x86_64', 'Shielded.exe', 'release', false],
+    ['windows-x86_64', 'Shielded_0.1.0_x64-setup.exe', 'release', false],
     ['linux-x86_64', 'Shielded.deb', 'release', false], ['linux-x86_64', 'Shielded.AppImage', 'release', false],
     ['macos-universal', 'Shielded.dmg', 'release', false], ['macos-universal', 'Shielded.app.zip', 'release', false],
     ['android-arm64', 'Shielded.apk', 'release', true], ['android-arm64', 'Shielded.apk', 'debug', false],
