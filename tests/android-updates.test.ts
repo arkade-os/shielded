@@ -190,14 +190,19 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.deepEqual(read('../src-tauri/build.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual(read('../src-tauri/src/lib.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual((JSON.parse(read('../src-tauri/capabilities/main.json')).permissions as unknown[]).filter(item=>typeof item==='string'&&item.startsWith('allow-native-android-update-')),commands.map(name=>'allow-'+name.replaceAll('_','-')));
- assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\([\s\S]*?\.await;\s+if opened\.is_err\(\) \{\s+let _ = updates\.retire_if_missing\(&prepared\);/,'a failed handoff retires a stage whose file the recheck deleted');
+ const rust=read('../src-tauri/src/android_updates.rs');
+ assert.match(rust,/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let deadline = [^;]*?\+ HANDOFF_DEADLINE;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\([\s\S]*?"deadline": deadline\.as_millis\(\) as u64[\s\S]*?\.await;\s+if opened\.is_err\(\) \{\s+let _ = updates\.retire_if_missing\(&prepared\);/,'one deadline from the start of the handoff, and a failed handoff retires a stage whose file the recheck deleted');
+ const deadline=Number(rust.match(/HANDOFF_DEADLINE: std::time::Duration = std::time::Duration::from_secs\((\d+)\)/)![1])*1000;
+ const backstop=Number(read('../app/src/android-updates.ts').match(/bounded\(backend\.open\(staged\.id\),([\d_]+)\)/)![1].replace(/_/g,''));
+ assert.ok(backstop>deadline,'the renderer outwaits the host deadline, so it never gives up on a handoff that can still open the installer');
  assert.match(read(plugin+'src/lib.rs'),/"updateOpenInstaller"/);
  const updater=read(platform+'AndroidUpdater.kt');
  assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+(\/\/.*\s+)?try \{ verify\(file, args\) \} catch \(error: UpdateRejected\) \{ file\.delete\(\); throw error \}\s+val uri = FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);
  assert.match(updater,/setDataAndType\(uri, "application\/vnd\.android\.package-archive"\)/);
  assert.match(updater,/addFlags\(Intent\.FLAG_GRANT_READ_URI_PERMISSION\)/);
  // The handoff must reach a preinstalled installer only; an implicit APK intent any app can claim.
- assert.match(updater,/intent\.setPackage\(systemInstaller\(intent\)\)\s+authorize \{ activity\(\)\.startActivity\(intent\) \}/);
+ assert.match(updater,/intent\.setPackage\(systemInstaller\(intent\)\)\s+authorize \{\s+if \(AndroidUpdatePolicy\.handoffExpired\(args\.deadline, System\.currentTimeMillis\(\)\)\)\s+throw UpdateRejected\([^)]*\)\s+activity\(\)\.startActivity\(intent\)\s+\}/,'the deadline is checked on the main thread right before the installer starts');
+ assert.match(updater,/\(error as\? AmbiguousUpdateAuthorization\)\?\.message/,'an installer launch that may have started keeps its own message');
  assert.match(updater,/PackageManager\.MATCH_SYSTEM_ONLY or PackageManager\.MATCH_DEFAULT_ONLY/);
  assert.match(updater,/resolved\?\.activityInfo\?\.packageName\s+\?: throw UpdateRejected\(/);
  assert.doesNotMatch(updater,/PackageInstaller|SharedPreferences|canRequestPackageInstalls|permission-required/);
@@ -207,6 +212,7 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.match(manifest,/UpdateFileProvider" android:authorities="\$\{applicationId\}\.updates" android:exported="false" android:grantUriPermissions="true"/);
  assert.match(read(plugin+'android/src/main/res/xml/shielded_update_paths.xml'),/<cache-path name="shielded-updates" path="shielded-updates\/" \/>/);
  const kotlin=read(platform+'ShieldedPlatformPlugin.kt');
+ assert.match(kotlin,/class UpdateArgs \{[^}]*var deadline: Long = 0[^}]*\}/,'the Rust "deadline" key reaches UpdateArgs, and 0 leaves verification unbounded');
  assert.deepEqual([...kotlin.matchAll(/@Command\s+fun (update\w+)/g)].map(match=>match[1]),['updateInfo','updateVerify','updateOpenInstaller']);
  assert.match(kotlin,/trusted\(\) && resumed\(\)/);assert.doesNotMatch(kotlin,/private var resumed/);
  assert.match(kotlin,/lifecycle\?\.currentState\?\.isAtLeast\(Lifecycle\.State\.RESUMED\)/);

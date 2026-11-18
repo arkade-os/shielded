@@ -134,7 +134,8 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    if(!isVisible()){publish({phase:'available',staged,received:0});return;}
    publish({phase:'preparing',staged});
    await bounded(prepare(),30_000);if(!active(owner))return;
-   await bounded(backend.open(staged.id),15_000);if(!active(owner))return;
+   // Outlasts the host's 45-second HANDOFF_DEADLINE, after which the installer can no longer open.
+   await bounded(backend.open(staged.id),60_000);if(!active(owner))return;
    publish({phase:'available'});
   }catch(error){if(active(owner))publish({phase:'failed',received:0,error:message(error)});}
   finally{if(updating===owner){updating=0;if(latest!==release)void refresh();}}

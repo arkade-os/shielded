@@ -14,6 +14,9 @@ const UNAVAILABLE: &str = "Android updater unavailable";
 const MAX_APK_BYTES: u64 = 128 * 1024 * 1024;
 const MISSING_PACKAGE: &str =
     "The downloaded update is no longer on this device. Try again to download it.";
+/// Counted from the start of a handoff; the plugin refuses to start the installer after it, and the
+/// renderer waits longer, so a handoff it gave up on cannot open the installer later.
+const HANDOFF_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -418,6 +421,10 @@ pub async fn native_android_update_open(
     id: String,
 ) -> Result<(), String> {
     crate::ensure_local(&window)?;
+    let deadline = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| UNAVAILABLE)?
+        + HANDOFF_DEADLINE;
     let prepared = updates.prepared(&id)?;
     let request = &prepared.request;
     check_candidate(
@@ -426,7 +433,7 @@ pub async fn native_android_update_open(
     )?;
     let opened = tauri_plugin_shielded_platform::android_open_update_installer(
         &app,
-        json!({ "path": prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code }),
+        json!({ "path": prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code, "deadline": deadline.as_millis() as u64 }),
     )
     .await;
     if opened.is_err() {

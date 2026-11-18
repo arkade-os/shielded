@@ -96,4 +96,11 @@ class AndroidUpdatePolicyTest {
             AndroidUpdatePolicy.metadata(payload.size.toLong(), hash(payload), version)
         }
     }
+
+    @Test fun aHandoffDeadlineExpiresAtItsInstantAndOnlyWhenSet() {
+        assertFalse(AndroidUpdatePolicy.handoffExpired(0, Long.MAX_VALUE))
+        assertFalse(AndroidUpdatePolicy.handoffExpired(1_000, 999))
+        assertTrue(AndroidUpdatePolicy.handoffExpired(1_000, 1_000))
+        assertTrue(AndroidUpdatePolicy.handoffExpired(1_000, 1_001))
+    }
 }

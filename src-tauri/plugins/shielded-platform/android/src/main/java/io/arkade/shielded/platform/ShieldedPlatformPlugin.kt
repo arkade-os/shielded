@@ -37,6 +37,7 @@ class UpdateArgs {
     var sha256: String = ""
     var bytes: Long = 0
     var versionCode: Long = 0
+    var deadline: Long = 0
 }
 
 @InvokeArg

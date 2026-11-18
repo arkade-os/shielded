@@ -54,5 +54,7 @@ internal object AndroidUpdatePolicy {
         if (hex(hash.digest()) != sha256) throw UpdateRejected("The Android update checksum does not match")
     }
 
+    fun handoffExpired(deadline: Long, now: Long) = deadline > 0 && now >= deadline
+
     fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 }
