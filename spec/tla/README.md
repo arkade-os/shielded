@@ -356,7 +356,7 @@ This is a bounded ownership and view-continuity model. It abstracts React render
 
 ## Eager native Tor startup
 
-`TorStartup.tla` models reserving the initial startup synchronously before the WebView loads, then running its worker alongside frontend initialization. The reservation uses the mode the host remembers: the last mode that reached ready, or Tor as soon as it is requested; an unreadable record means Tor. Same-mode frontend calls join the reserved job; they cannot return an intermediate `bootstrapping` result. Bootstrap work belongs to the native host, so cancelling one caller does not cancel work awaited by another.
+`TorStartup.tla` models reserving the initial startup synchronously before the WebView loads, then running its worker alongside frontend initialization. The reservation uses the mode the host remembers: the last mode that reached ready, or Tor as soon as it is requested; an unreadable record, or a direct one the host can no longer rewrite, means Tor. Same-mode frontend calls join the reserved job; they cannot return an intermediate `bootstrapping` result. Bootstrap work belongs to the native host, so cancelling one caller does not cancel work awaited by another.
 
 `prewarm` is the non-blocking kickoff and intentionally returns an immediate status snapshot. The terminal-waiting contract applies to asynchronous `start` and `start_mode`. The `initial_only` check inside `Inner::prepare_start` limits host kickoff to the initial locked, generation-zero Tor state; calling it again cannot reverse pause or a direct-mode choice.
 
