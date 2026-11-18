@@ -11,7 +11,9 @@ export function createSolverRegistryMirror({url=SOLVER_REGISTRY_URL,fetch:send=f
   if(!response.ok||!response.body)throw new Error(`HTTP ${response.status}`);
   const reader=response.body.getReader(),chunks:Uint8Array[]=[];let size=0;
   for(;;){const {done,value}=await reader.read();if(done)break;if((size+=value.length)>MAX_BYTES){await reader.cancel();throw new Error(`larger than ${MAX_BYTES} bytes`);}chunks.push(value);}
-  const body=Buffer.concat(chunks),index=JSON.parse(body.toString('utf8'));
+  const body=Buffer.concat(chunks);
+  // Its own message: JSON.parse's quotes the body, and lenient decoding would turn bad bytes into replacement characters that may still parse.
+  let index:{markets?:unknown;solvers?:unknown};try{index=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(body));}catch{throw new Error('the registry is not UTF-8 JSON');}
   // Only the shape: the wallet's discovery client validates the index itself.
   if(!index||typeof index!=='object'||!Array.isArray(index.markets)||index.solvers!==undefined&&!Array.isArray(index.solvers))throw new Error('not a solver registry index');
   held={body,at:now()};

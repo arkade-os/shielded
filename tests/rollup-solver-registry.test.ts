@@ -35,10 +35,13 @@ test('a held copy answers at once and is refreshed behind the answer once it is 
 });
 
 test('a failed, oversize or malformed upstream answer is never served, and a good held copy outlives it for a day',async t=>{
- for(const reply of [()=>new Response('nope',{status:500}),()=>new Response('x'.repeat((128<<10)+1)),()=>new Response('{"solvers":[]}'),()=>new Response('not json'),()=>Promise.reject(new TypeError('fetch failed'))]){
+ const notJson='Solver registry mirror: the registry is not UTF-8 JSON';
+ for(const [reply,warning] of [[()=>new Response('nope',{status:500}),/: HTTP 500$/],[()=>new Response('x'.repeat((128<<10)+1)),/: larger than/],[()=>new Response('{"solvers":[]}'),/: not a solver registry index$/],
+  [()=>new Response('not json, nor a secret'),notJson],[()=>new Response(new Uint8Array([0x7b,0x22,0x6d,0xff,0x22,0x3a,0x5b,0x5d,0x7d])),notJson],[()=>Promise.reject(new TypeError('fetch failed')),/: fetch failed$/]] as const){
   const m=await mirror(t,reply);
   const response=await m.get();assert.deepEqual([response.status,response.headers.get('cache-control')],[503,'no-store']);
-  assert.equal(m.warnings.length,1);assert.match(m.warnings[0]!,/^Solver registry mirror: /);
+  assert.equal(m.warnings.length,1);
+  if(typeof warning==='string')assert.equal(m.warnings[0],warning,'its own message, which quotes nothing of the body');else assert.match(m.warnings[0]!,warning);
  }
  let clock=0,ok=true;const m=await mirror(t,()=>ok?new Response(INDEX):new Response('nope',{status:502}),{now:()=>clock});
  assert.equal((await m.get()).status,200);ok=false;
