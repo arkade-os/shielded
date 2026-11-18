@@ -46,7 +46,7 @@ export async function createPasskeySeed(o:{rpId:string;userName:string;wordCount
  const {credentialId,prf}=await createPrfPasskey({rp:{id:o.rpId,name:PASSKEY_RP_NAME},userId:passkeyUserId(wordCount),userName:o.userName,salt:PASSKEY_SEED_SALT,client:o.client});
  return seedOf(credentialId,prf,wordCount);
 }
-/** Discoverable recovery reads the handle; persisted word counts may fill a missing handle only for their bound credential. */
+/** Discoverable recovery reads the handle; persisted word counts may fill a missing handle only for their bound credential. With neither, the restore refuses: guessing 12 would quietly derive another wallet from a 24-word passkey. */
 export async function restorePasskeySeed(o:{rpId:string;credentialId?:Uint8Array;wordCount?:PasskeyWordCount;client?:WebAuthnClient}):Promise<PasskeySeed> {
  const expected=o.credentialId?.slice(),hint=o.wordCount;
  if(hint!==undefined&&(!expected?.length||(hint!==12&&hint!==24)))throw new Error('Recovery word count requires a bound passkey credential.');
@@ -54,6 +54,8 @@ export async function restorePasskeySeed(o:{rpId:string;credentialId?:Uint8Array
  // Identity and word-count validation can throw before seedOf takes ownership.
  try{
   const count=wordCountFromUserHandle(userHandle);
+  // A handle from elsewhere still means 12 words; only its absence leaves the count unknown.
+  if(hint===undefined&&!userHandle?.length)throw Object.assign(new Error('That passkey did not say how many recovery words its wallet has.'),{name:'PasskeyWordsUnknown'});
   if(hint!==undefined){
    if(credentialId.length!==expected!.length||!credentialId.every((byte,i)=>byte===expected![i]))throw new Error('That passkey does not match the recovery credential.');
    const known=userHandle?.length===HANDLE_BYTES&&userHandle[0]===HANDLE_MAGIC[0]&&userHandle[1]===HANDLE_MAGIC[1]&&(userHandle[2]===0x11||userHandle[2]===0x12);
@@ -93,9 +95,9 @@ export async function unwrapWalletSecret(o:{rpId:string;credentialId:Uint8Array;
  return secret;
 }
 
-/** What the app does next: retry a cancel, offer a phrase instead of a passkey this device cannot use, and never re-prompt an unconfirmed one. */
-export type PasskeyOutcome='cancelled'|'unavailable'|'unconfirmed';
-const OUTCOMES:Record<string,PasskeyOutcome>={PasskeyCancelled:'cancelled',PrfUnavailable:'unavailable',PasskeyUnconfirmed:'unconfirmed'};
+/** What the app does next: retry a cancel, offer a phrase instead of a passkey this device cannot use or cannot count words for, and never re-prompt an unconfirmed one. */
+export type PasskeyOutcome='cancelled'|'unavailable'|'unconfirmed'|'uncounted';
+const OUTCOMES:Record<string,PasskeyOutcome>={PasskeyCancelled:'cancelled',PrfUnavailable:'unavailable',PasskeyUnconfirmed:'unconfirmed',PasskeyWordsUnknown:'uncounted'};
 export function passkeyFailure(error:unknown):{outcome:PasskeyOutcome;credentialId?:Uint8Array}|undefined {
  // On the error's own name, not instanceof: a second copy of the SDK would break the class identity and the mapping with it.
  const named=error instanceof Error?OUTCOMES[error.name]:undefined;

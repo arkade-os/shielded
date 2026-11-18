@@ -63,8 +63,20 @@ test('a bound recovery word count restores 24 words when the provider omits its 
   const fake=fakeClient({handle}),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fake.client});
   const restored=await restorePasskeySeed({rpId:RP,credentialId:made.credentialId,wordCount:24,client:fake.client});
   assert.deepEqual(restored,made);
-  assert.equal((await restorePasskeySeed({rpId:RP,credentialId:made.credentialId,client:fake.client})).wordCount,12,'unhinted legacy recovery retains its default');
+  const unhinted=restorePasskeySeed({rpId:RP,credentialId:made.credentialId,client:fake.client});
+  if(handle)assert.equal((await unhinted).wordCount,12,'a handle from elsewhere still names the default');
+  else await assert.rejects(unhinted,/how many recovery words/,'with no handle and no hint there is nothing to count');
   made.master.fill(0);restored.master.fill(0);
+ }
+});
+
+test('a discovery restore refuses to guess the word count when the provider returns no user handle',async()=>{
+ for(const handle of [null,new Uint8Array()]){
+  const fake=fakeClient({handle}),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fake.client});
+  made.master.fill(0);
+  const refused=await caught(()=>restorePasskeySeed({rpId:RP,client:fake.client})) as Error;
+  assert.equal(refused.name,'PasskeyWordsUnknown');assert.match(refused.message,/how many recovery words/);
+  assert.deepEqual(passkeyFailure(refused),{outcome:'uncounted'},'the passkey is this wallet’s own, never an orphan to offer for deletion');
  }
 });
 

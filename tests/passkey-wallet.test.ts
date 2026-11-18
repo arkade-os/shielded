@@ -120,6 +120,14 @@ test('each passkey failure lands on its next step, and leaves nothing stored',as
  assert.equal(restoreCancelled.retry,true);
  const restoreUnavailable=await failed(storage=>restorePasskeyPageWallet({...restoreInto(storage,events),rpId:RP,client:short.client()}));
  assert.equal(restoreUnavailable.retry,false);assert.doesNotMatch(restoreUnavailable.message,/delete/);
+ const synced=syncedPasskeys();await createPasskeyPageWallet(storageOf(),{rpId:RP,wordCount:24,client:synced.client()});
+ const bare=synced.client(),handleless:WebAuthnClient={...bare,get:async options=>{
+  const credential=await bare.get(options) as Credential&{response:{userHandle:Uint8Array|null}};
+  credential.response.userHandle=null;return credential;
+ }};
+ const uncounted=await failed(storage=>restorePasskeyPageWallet({...restoreInto(storage,events),rpId:RP,client:handleless}));
+ assert.equal(uncounted.retry,false,'another prompt would read the same missing handle');
+ assert.match(uncounted.message,/how many recovery words[\s\S]*recovery phrase/);assert.doesNotMatch(uncounted.message,/delete/);
  assert.deepEqual(events,[],'a failed restore never stops the page');
  assert.equal(passkeyNextStep(new Error('offline')),undefined);
 });
