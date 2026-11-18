@@ -33,12 +33,25 @@ export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,
  [Symbol.asyncDispose]():Promise<void>;
 }
 export const lightningOwner=async(wallet:Pick<Wallet,'identity'>)=>hex.encode(await wallet.identity.xOnlyPublicKey());
+type ContractReads=Pick<Awaited<ReturnType<Wallet['getContractManager']>>,'getContractsWithVtxos'>;
+const splitReads=new WeakSet<object>();
+/** Sealed, a read of every contract re-syncs each one, a sealed read apiece, once any is stale: watched contracts still sync, and retained ones, which nothing polls, come from the store their last sync filled. A scoped read is the caller's to choose. */
+export function sealedContractReads<M extends ContractReads>(manager:M):M {
+ if(splitReads.has(manager))return manager;
+ const read=manager.getContractsWithVtxos.bind(manager);
+ manager.getContractsWithVtxos=async(filter,pageSize,options)=>{
+  if(filter!==undefined||options?.requireSynced)return read(filter,pageSize,options);
+  const [live,kept]=await Promise.all([read({watch:['watched','awaiting-funds']},pageSize,options),read({watch:'retained'},pageSize,{...options,maxSyncAgeMs:Number.MAX_SAFE_INTEGER})]);
+  return [...live,...kept];
+ };
+ splitReads.add(manager);return manager;
+}
 export async function createLightningWallet(secret:string,config:Omit<WalletConfig,'identity'|'walletMode'|'settlementConfig'|'storage'>):Promise<Wallet>{
  const identity=MnemonicIdentity.fromMnemonic(recoveryPhraseOf(secret),{isMainnet:false}),name=`shielded-lightning-${await lightningOwner({identity})}`;
  const wallet=await Wallet.create({...config,identity,walletMode:'hd',settlementConfig:false,
   storage:{walletRepository:new IndexedDBWalletRepository(`${name}-wallet`),contractRepository:new IndexedDBContractRepository(`${name}-contracts`)}});
- const manager=wallet.getContractManager.bind(wallet);
- wallet.getContractManager=async()=>cacheVtxoSync(await manager());
+ const manager=wallet.getContractManager.bind(wallet),sealed=isSealedFetch(globalThis.fetch);
+ wallet.getContractManager=async()=>{const held=cacheVtxoSync(await manager());return sealed?sealedContractReads(held):held;};
  return wallet;
 }
 function hdIdentity(wallet:Wallet){
@@ -269,14 +282,14 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   wallet.changed();
   if(rescan)await scan();
  };
- // Sealed: a swap's script is single-use, so once its swap has ended and a fresh read finds no unspent coin on it, nothing is left to poll for.
+ // Sealed: a swap's script is single-use, so once its swap has ended and a fresh sync finds no unspent coin on it, nothing is left to poll for. The sync goes through the manager, so the store a retained script is read from never keeps a coin the indexer has seen spent.
  const retireScripts=async()=>{
   const manager=await companion.getContractManager(),retained=new Set((await manager.getContracts()).filter(contract=>contract.watch==='retained').map(contract=>contract.script));
   for(const {state,script} of await journal.artifacts(owner,pool)){
    if(stopped)return;
    if(state!=='ended'||!script||retained.has(script)||exiting.has(script))continue;
-   const unspent=(await companion.indexerProvider.getVtxos({scripts:[script]})).vtxos.some(coin=>!isVtxoSpent(coin)&&!coin.isSwept);
-   if(!unspent&&!stopped)await manager.setContractWatchState(script,'retained');
+   const synced=(await manager.getContractsWithVtxos({script:[script]},undefined,{maxSyncAgeMs:0,unspentOnly:true})).find(row=>row.contract.script===script);
+   if(synced&&!synced.vtxos.some(coin=>!isVtxoSpent(coin)&&!coin.isSwept)&&!stopped)await manager.setContractWatchState(script,'retained');
   }
  };
  let retirement:Promise<void>|undefined;
