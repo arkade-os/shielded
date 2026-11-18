@@ -252,10 +252,10 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const watchPlan=async(manager:Awaited<ReturnType<Wallet['getContractManager']>>,records:LightningPayout[])=>{
   const plan=new Map<string,'watched'|'retained'>(records.map(record=>[record.script,'watched']));
   if(!sealed)return plan;
-  const retained=new Set((await manager.getContracts()).filter(contract=>contract.watch==='retained').map(contract=>contract.script));
-  for(const record of records)if(retained.has(record.script))plan.set(record.script,'retained');
+  const current=new Map((await manager.getContracts()).map(contract=>[contract.script,contract.watch??'watched']));
+  for(const record of records)if(current.get(record.script)==='retained')plan.set(record.script,'retained');
   const lnurl=[...new Map([...payouts.values(),...records].map(payout=>[payout.script,payout])).values()].filter(payout=>Number.isSafeInteger(lnurlIndex(payout.descriptor)));
-  lnurl.sort((a,b)=>lnurlIndex(b.descriptor)-lnurlIndex(a.descriptor)).forEach((payout,rank)=>plan.set(payout.script,rank<=PRIVATE_PAYOUT_WINDOW?'watched':'retained'));
+  lnurl.sort((a,b)=>lnurlIndex(b.descriptor)-lnurlIndex(a.descriptor)).forEach((payout,rank)=>{const state=rank<=PRIVATE_PAYOUT_WINDOW?'watched':'retained';if(plan.has(payout.script)||current.get(payout.script)!==state)plan.set(payout.script,state);});
   return plan;
  };
  const registerPayouts=async(records:LightningPayout[],rescan=true,signal?:AbortSignal)=>{

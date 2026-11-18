@@ -1317,13 +1317,14 @@ async function longLivedWallet(sealed:boolean){
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),manager=await f.base.getContractManager(),freshReads:string[]=[];
  Object.assign(manager,{setContractWatchState:async(target:string,watch:string)=>{const contract=f.contracts.find(c=>c.script===target);if(contract)contract.watch=watch;}});
  Object.assign(f.base,{indexerProvider:{getVtxos:async({scripts}:{scripts:string[]})=>{freshReads.push(...scripts);return {vtxos:[]};}}});
- const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}}),rows=Array.from({length:PAYOUTS},(_,i)=>receiveDestination(branch,i));
- for(const row of rows)await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});
+ const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}});
+ const payout=async(i:number)=>{const row=receiveDestination(branch,i);await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});return row;};
+ const rows=[];for(let i=0;i<PAYOUTS;i++)rows.push(await payout(i));
  await journal.savePayouts(ownerKey,pool,rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})));
  for(let i=0;i<=SWAPS;i++){const artifact=await materializeLightningArtifact(f.base,await journal.allocateArtifact(ownerKey,pool,i%2?'send':'receive'));await journal.updateArtifact(ownerKey,pool,i<SWAPS?{...artifact,state:'ended'}:artifact);}
  const open=()=>createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,sealed});
  const polled=()=>f.contracts.filter(contract=>contract.watch!=='retained').map(contract=>contract.script as string);
- return {open,polled,rows,freshReads,settle:async()=>{for(let i=0;i<500&&polled().length>PRIVATE_PAYOUT_WINDOW+2;i++)await new Promise(resolve=>setImmediate(resolve));}};
+ return {open,polled,rows,payout,freshReads,settle:async()=>{for(let i=0;i<500&&polled().length>PRIVATE_PAYOUT_WINDOW+2;i++)await new Promise(resolve=>setImmediate(resolve));}};
 }
 
 test(`sealed, ${PAYOUTS} Lightning address payouts and ${SWAPS} finished swaps poll only the newest ${PRIVATE_PAYOUT_WINDOW+1} payouts and the open swap: ${3*(PRIVATE_PAYOUT_WINDOW+2)} sealed reads a minute, not ${3*(PAYOUTS+SWAPS+1)}`,async t=>{
@@ -1332,8 +1333,10 @@ test(`sealed, ${PAYOUTS} Lightning address payouts and ${SWAPS} finished swaps p
  const polled=w.polled(),newest=w.rows.slice(-(PRIVATE_PAYOUT_WINDOW+1)).map(row=>row.script);
  assert.equal(polled.length,PRIVATE_PAYOUT_WINDOW+2);assert.ok(newest.every(script=>polled.includes(script)),'the current payout and the 8 before it stay watched');
  assert.equal(w.freshReads.length,SWAPS,'each finished swap is read once before it is retained');
- const again=await w.open();await flushTasks();await again[Symbol.asyncDispose]();
+ const again=await w.open();await flushTasks();
  assert.deepEqual([w.polled(),w.freshReads.length],[polled,SWAPS],'a retained swap script stays retained across a restart, unread');
+ const {id,descriptor,address,script}=await w.payout(PAYOUTS);await again.registerPayouts([{id,descriptor,address,script}]);await again[Symbol.asyncDispose]();
+ assert.deepEqual([w.polled().includes(script),w.polled().includes(newest[0]!),w.polled().length],[true,false,PRIVATE_PAYOUT_WINDOW+2],'a new payout pushes the oldest watched one out of the window');
  t.mock.method(Math,'random',()=>0.5);t.mock.timers.enable({apis:['setTimeout']});
  const reads:string[]=[],provider=new IsolatedIndexerProvider('https://indexer.example',undefined,{getVtxos:async({scripts}:{scripts:string[]})=>{reads.push(scripts[0]!);return {vtxos:[]};}} as never,20_000,0),stop=new AbortController();
  provider.getSubscription(await provider.subscribeForScripts(polled),stop.signal);
