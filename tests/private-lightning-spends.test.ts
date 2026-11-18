@@ -586,6 +586,20 @@ test('a wallet with batch swaps off refuses an on-chain send at quote time, whet
  }finally{await off.dispose();await on.dispose();}
 });
 
+test('with Lightning attached, a wallet with batch swaps off still refuses renewal and the on-chain exit, and routes an invoice to Lightning',async()=>{
+ const off=await open(new Store(),undefined,prover,undefined,{batchSwaps:false}),BTC='tb1qmt3ue2senlg6ddgmr76hwsk0rdvdk4rgeaen7l';
+ const INVOICE='lntbs210n1p4dpvmxpp58d4nqkxz5htt4ctfhyvfqnx0947fyp4uvdyg3g9j6xhahn2dytrqdqqcqzzsxqyz5vqsp5nxkcjl99y7h0uyp34xwgw6cldflucq8r7ssk06vylsjld60lfzps9qxpqysgqrf3yfzavh34pu5t8ee9perqp35z6534k6q3m5v5xckdrm4l869yrxrm4pxslwvqtzql96m69hq7sxwptw5fry9u8h3twyrdenungqxcqafud53';
+ try{
+  await fund(off,[30_000n]);off.coins=async()=>[{txid:TXID,vout:0,value:1000,expiresAt:Date.now()+SHIELD_FLOOR_MS-60_000}] as never;
+  off.swaps={exitPayout:async()=>{throw new Error('the exit ran');},markets:async()=>[],resolve:async()=>({eligible:1}),onUpdate:()=>()=>{},accept:async()=>{throw new Error('not accepted here');},[Symbol.asyncDispose]:async()=>{},
+   quote:async()=>({id:'q',expiresAt:Math.floor(Date.now()/1000)+600,market:{kind:'card',key:'k'},take:{amount:1000n},fee:{amount:3n},give:{amount:1003n}})} as never;
+  assert.ok(off.canExitPrivately(),'the companion that would pay an exit is there');
+  await assert.rejects(off.router().route({raw:BTC,amount:20_000}),/batch stream/);
+  await assert.rejects(off.renew(),/batch stream/);
+  assert.equal((await off.router().route({raw:INVOICE})).railId,'lightning');
+ }finally{await off.dispose();}
+});
+
 test('a stale-anchor refusal still drops at once, on the pool verdict alone and without reading a batch',async()=>{
  const store=new Store(),{wallet,pool}=await funded(store);const reason='The spend opens against another previous-epoch root than the next batch does; prove it again.';let batches=0;
  try{

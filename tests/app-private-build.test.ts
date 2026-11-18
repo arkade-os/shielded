@@ -23,20 +23,35 @@ test('the transport is the first module main.tsx imports',()=>{
  assert.match(/^import\b.*$/m.exec(read('app/src/main.tsx'))?.[0]??'',/^import '\.\/private-boot(\.ts)?';/);
 });
 
-test('a private wallet, which has no Lightning, opens receive on shielded and offers no unified tab',()=>{
- const wallet=read('app/src/RollupWallet.tsx'),lightning=/const (\w+)=nativeHost\|\|!PRIVATE;/.exec(wallet)?.[1];
- assert.ok(lightning);
- assert.ok(wallet.includes(`useState<ReceiveMode>(${lightning}?'unified':'shielded')`));
- assert.match(wallet,new RegExp(`<ReceivePortal [^>]*unified=\\{${lightning}\\}`));
+const PREDICATES=/const lightningOn=nativeHost\|\|!PRIVATE\|\|initialPool\?\.privateLightning===true,batchStreams=nativeHost\|\|!PRIVATE;/;
+test('a private wallet has Lightning exactly when its server says it carries it, and receive opens on unified then and on shielded otherwise',()=>{
+ const wallet=read('app/src/RollupWallet.tsx');
+ assert.match(wallet,PREDICATES);
+ assert.ok(wallet.includes(`const receiveMode=chosenReceiveMode??(lightningOn?'unified':'shielded');`));
+ assert.match(wallet,/<ReceivePortal [^>]*unified=\{lightningOn\}/);
+ assert.ok(wallet.includes('const pairing=PRIVATE&&!nativeHost&&!status.privateLightning?undefined:createLightningWallet('),'no companion, so no Lightning request, against a server without the routes');
+ assert.ok(wallet.includes('...(nativeHost?nativeSwapConfig():PRIVATE?privateSwapConfig(PRIVATE):{})'),'a private wallet\'s swaps never use the default socket transport');
 });
 
-test('a private wallet offers no Lightning, Bitcoin or renewal action its transport cannot carry',()=>{
- const wallet=read('app/src/RollupWallet.tsx'),live=/const (\w+)=nativeHost\|\|!PRIVATE;/.exec(wallet)?.[1];
- assert.ok(live);
- assert.ok(wallet.includes(`placeholder={${live}?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'}`));
- assert.ok(wallet.includes(`{${live}?' A Bitcoin address leaves the pool`));
- assert.ok(wallet.includes(`{${live}&&to.trim()&&`));
- assert.match(wallet,new RegExp(`expiring>0&&\\(${live}\\?<button[^\\n]*?>Renew expiring sats</button>:`));
+test('in private mode the Lightning address details say what this site\'s server now sees, and how to recover older payouts',()=>{
+ const wallet=read('app/src/RollupWallet.tsx'),line=/\{PRIVATE&&' With private networking on, this site\\'s server makes the requests to that service for you:([^\n]*?)'\}<\/p><\/details>/.exec(wallet)?.[1]??'';
+ assert.match(line,/the server sees this Lightning address, its access token and your shielded address\./);
+ assert.match(line,/to recover those, turn private networking off and open the wallet again\.$/);
+});
+
+test('the private boot never loads the swap package, whose Nostr module captures WebSocket as it evaluates',()=>{
+ for(const file of ['app/src/private-boot.ts','src/shielded/private-transport.ts','src/shielded/sealed-fetch.ts','src/shielded/network-privacy.ts','src/native/policy.ts'])assert.doesNotMatch(read(file),/from '@arkade-os\/swap|private-swap/,file);
+ assert.match(read('src/shielded/private-swap.ts'),/from '@arkade-os\/swap\/nostr'/,'the swap\'s Nostr module is reached only from the lazily loaded wallet');
+});
+
+test('a private wallet offers no Bitcoin or renewal action its transport cannot carry, and Lightning only as its server carries it',()=>{
+ const wallet=read('app/src/RollupWallet.tsx');
+ assert.match(wallet,PREDICATES);
+ assert.ok(wallet.includes(`placeholder={lightningOn?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'}`));
+ assert.ok(wallet.includes(`{batchStreams?' A Bitcoin address leaves the pool`));
+ assert.ok(wallet.includes(`{!lightningOn?' This server does not carry Lightning payments over private networking yet.'`));
+ assert.ok(wallet.includes(`{lightningOn&&to.trim()&&`));
+ assert.match(wallet,/expiring>0&&\(batchStreams\?<button[^\n]*?>Renew expiring sats<\/button>:/);
  assert.match(wallet,/^import \{PRIVATE_FLAG\} from '\.\/private-boot(\.ts)?';$/m);
  assert.ok(wallet.includes('turn private networking off: remove {PRIVATE_FLAG} from this site&apos;s local storage, then open this page again without ?private=1 in its address.'));
  assert.ok(read('app/src/private-boot.ts').includes("To turn private networking off, remove ${PRIVATE_FLAG} from this site's local storage, then open this page again without ?private=1 in its address."),'a link with ?private=1 sets the flag again on reload');

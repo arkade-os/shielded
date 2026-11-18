@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {ArkAddress,PaymentRouter,SingleKey,makeHandle,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
 import type {SwapRailClient} from '@arkade-os/swap';
-import {lightningRails,poolFunded} from '../src/shielded/lightning.ts';
+import {FOREIGN_LNURL,LNURL_BASE,lightningRails,poolFunded} from '../src/shielded/lightning.ts';
+import {markSealedFetch} from '../src/shielded/network-privacy.ts';
 import {SHIELDED_PRIORITY,shieldedRail,shieldedWithdrawRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
 
@@ -119,4 +120,19 @@ test('a Lightning address paid on its Arkade option records the address with the
  const quote=await router.route(req(' alice@pay.example ',2000));
  await (await quote.send()).settled();
  assert.deepEqual([quote.railId,withdrawn],['lnurl-arkade',[[PAYEE,2000n,{record:{to:PAYEE,lightning:'alice@pay.example'}}]]]);
+});
+
+test('sealed, a Lightning address at another service is refused before any request, while invoices and its own service\'s addresses still route',async()=>{
+ const asked:string[]=[],own=`alice@${new URL(LNURL_BASE).host}`;
+ const sealed=markSealedFetch((async(url:string|URL)=>{asked.push(String(url));return new Response(JSON.stringify({tag:'payRequest',callback:LNURL_BASE+'/.well-known/lnurlp/alice/callback',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","alice"]]',
+  paymentOptions:[{id:'arkade',type:'arkade'},{id:'lightning',type:'lightning'}]}),{headers:{'content-type':'application/json'}});}) as unknown as typeof fetch);
+ const swaps={resolve:async()=>({eligible:1}) as never,markets:async()=>[],accept:async()=>{throw new Error('not accepted here');},onUpdate:()=>()=>{},
+  quote:async()=>({id:'q',expiresAt:Math.floor(Date.now()/1000)+600,market:{kind:'card',key:'k'},take:{amount:21n},fee:{amount:1n},give:{amount:22n}}) as never};
+ const {wallet}=fakeWallet({arkade:0}),router=new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never);
+ for(const rail of lightningRails(wallet,swaps,sealed))router.use(rail);
+ for(const raw of ['alice@example.com',' bob@pay.example '])await assert.rejects(router.route(req(raw,2000)),error=>(error as Error).message===FOREIGN_LNURL,raw);
+ assert.equal(asked.length,0,'nothing was resolved for them');
+ assert.equal((await router.route(req(INVOICE))).railId,'lightning','a bolt11 still quotes');
+ assert.deepEqual((await router.options(req(own,2000))).map(o=>o.railId),['lnurl-arkade','lnurl-lightning']);
+ assert.ok(asked.length&&asked.every(url=>url.startsWith(LNURL_BASE+'/')),asked.join());
 });

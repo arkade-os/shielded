@@ -11,7 +11,7 @@ export interface LnurlPayout {id:string;descriptor:string;address:string;script:
 export interface PaymentMethod {type:string;destination:string}
 export interface LnurlReceiver {handle:string;domain:string;lightningAddress:string|undefined;lnurl:string;status:string;nameless?:boolean;sessionLnurl?:string;paymentMethods?:PaymentMethod[]}
 export interface PrivateReceiveState {on:boolean;pending:boolean;refused:boolean;withdrawing:boolean;listed:'own'|'foreign'|null}
-export type UnifiedReceiveStage='Reading your saved receiver'|'Checking the Lightning address service through Tor'|'Registering your unified address'|'Restoring payout watches'|'Binding your payment routes'|'Unified address ready';
+export type UnifiedReceiveStage='Reading your saved receiver'|'Checking the Lightning address service'|'Registering your unified address'|'Restoring payout watches'|'Binding your payment routes'|'Unified address ready';
 export interface LnurlReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
@@ -318,7 +318,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    config.onStage?.('Reading your saved receiver');
   const state=await load(),existing=state.servers[serverKey],server=existing??{receivers:[]};
   if(!existing){state.servers[serverKey]=server;await save(state);}
-   config.onStage?.('Checking the Lightning address service through Tor');
+   config.onStage?.('Checking the Lightning address service');
   const branch=currentBranch();void branch.catch(()=>{});
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');

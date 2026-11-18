@@ -71,7 +71,7 @@ test('native Lightning can bind its payouts without holding the unified address 
   await bounded(f.payoutEntered.promise,'payout hydration');
   assert.deepEqual(stages.slice(0,4),[
    'Reading your saved receiver',
-   'Checking the Lightning address service through Tor',
+   'Checking the Lightning address service',
    'Registering your unified address',
    'Restoring payout watches',
   ]);

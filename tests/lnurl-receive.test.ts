@@ -226,7 +226,7 @@ test('unified setup reports progress through local state, Tor service work, watc
  await service.ensureUnified();
  assert.deepEqual(stages,[
   'Reading your saved receiver',
-  'Checking the Lightning address service through Tor',
+  'Checking the Lightning address service',
   'Registering your unified address',
   'Restoring payout watches',
   'Binding your payment routes',
