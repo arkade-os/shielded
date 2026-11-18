@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -93,6 +93,104 @@ test('build commands reject incompatible hosts and forward Tauri arguments witho
   assert.deepEqual(nativeArguments('ios', 'build', ['--no-sign'], 'darwin'), ['ios', 'build', '--no-sign']);
   assert.throws(() => nativeArguments('ios', 'build', [], 'win32'), /macOS/);
   assert.throws(() => nativeArguments('desktop', 'init', [], 'linux'), /action/);
+});
+
+test('Apple passkeys add signing entitlements only for an explicit Apple build opt-in', () => {
+  for (const host of ['darwin', 'win32', 'linux']) {
+    for (const flag of [undefined, '0', 'true']) assert.deepEqual(nativeArguments('desktop', 'build', [], host, { SHIELDED_APPLE_PASSKEYS: flag }), ['build']);
+  }
+  const args = nativeArguments('desktop', 'build', ['--debug', '--', 'runner-arg'], 'darwin', { SHIELDED_APPLE_PASSKEYS: '1' });
+  assert.deepEqual(args.slice(-2), ['--', 'runner-arg']);
+  const overlay = JSON.parse(args[args.indexOf('--config') + 1]);
+  assert.deepEqual(overlay, { bundle: { macOS: { entitlements: 'macos/PasskeyEntitlements.plist' } } });
+  const plist = readFileSync(new URL(overlay.bundle.macOS.entitlements, root), 'utf8');
+  assert.match(plist, /<key>com.apple.security.device.camera<\/key>\s*<true\s*\/>/);
+  assert.match(plist, /<key>com.apple.developer.associated-domains<\/key>\s*<array>\s*<string>webcredentials:shielded\.mutinynet\.arkade\.sh<\/string>\s*<\/array>/);
+  assert.doesNotMatch(plist, /TeamIdentifier|application-identifier|disable-library-validation|allow-unsigned-executable-memory/);
+  for (const host of ['win32', 'linux']) assert.deepEqual(nativeArguments('desktop', 'build', [], host, { SHIELDED_APPLE_PASSKEYS: '1' }), ['build']);
+  assert.deepEqual(nativeArguments('ios', 'build', ['--no-sign'], 'darwin', { SHIELDED_APPLE_PASSKEYS: '1' }), ['ios', 'build', '--no-sign']);
+});
+
+function appleProject(t, entitlements = {}) {
+  const workspace = mkdtempSync(fileURLToPath(new URL('./.native-apple-', import.meta.url)));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  const apple = resolve(workspace, 'src-tauri/gen/apple'), project = resolve(apple, 'shielded-native.xcodeproj');
+  mkdirSync(project, { recursive: true });
+  mkdirSync(resolve(apple, 'shielded-native_iOS'), { recursive: true });
+  writeFileSync(resolve(workspace, 'src-tauri/tauri.conf.json'), JSON.stringify({ identifier: 'io.arkade.shielded' }));
+  const file = resolve(apple, 'shielded-native_iOS/shielded-native_iOS.entitlements');
+  const settings = { PRODUCT_BUNDLE_IDENTIFIER: 'io.arkade.shielded', CODE_SIGN_ENTITLEMENTS: 'shielded-native_iOS/shielded-native_iOS.entitlements', DEVELOPMENT_TEAM: 'retained-team' };
+  const pbx = { objects: { main: { isa: 'PBXNativeTarget', productType: 'com.apple.product-type.application', buildConfigurationList: 'configs' }, configs: { buildConfigurations: ['debug', 'release'] }, debug: { buildSettings: { ...settings } }, release: { buildSettings: { ...settings } } } };
+  const projectFile = resolve(project, 'project.pbxproj');
+  writeFileSync(projectFile, JSON.stringify(pbx));
+  writeFileSync(file, JSON.stringify(entitlements));
+  const writes = [];
+  const execute = (command, args, options) => {
+    assert.equal(command, '/usr/bin/plutil'); assert.equal(options.shell, false);
+    if (args[0] === '-convert') return { status: 0, stdout: readFileSync(args.at(-1), 'utf8') };
+    assert.ok(['-insert', '-replace'].includes(args[0]));
+    const target = args.at(-1), value = JSON.parse(readFileSync(target, 'utf8'));
+    const path = ['']; let escaped = false;
+    for (const character of args[1]) {
+      if (escaped) { path[path.length - 1] += character; escaped = false; }
+      else if (character === '\\') escaped = true;
+      else if (character === '.') path.push('');
+      else path[path.length - 1] += character;
+    }
+    let parent = value;
+    for (const key of path.slice(0, -1)) {
+      if (!parent[key] || typeof parent[key] !== 'object') return { status: 1 };
+      parent = parent[key];
+    }
+    parent[path.at(-1)] = JSON.parse(args[3]); writeFileSync(target, JSON.stringify(value)); writes.push(args);
+    return { status: 0 };
+  };
+  return { workspace, apple, file, projectFile, pbx, execute, writes };
+}
+
+test('iOS passkey preparation merges the domain into the actual signed file and preserves native edits', t => {
+  const before = { 'com.apple.developer.associated-domains': ['webcredentials:other.example'], 'keychain-access-groups': ['existing-group'], 'get-task-allow': true };
+  const f = appleProject(t, before), original = readFileSync(f.projectFile, 'utf8');
+  nativeBuild.prepareApplePasskeys(f.workspace, {}, f.execute);
+  assert.equal(f.writes.length, 0);
+  nativeBuild.prepareApplePasskeys(f.workspace, { SHIELDED_APPLE_PASSKEYS: '1' }, f.execute);
+  assert.deepEqual(JSON.parse(readFileSync(f.file, 'utf8')), { ...before, 'com.apple.developer.associated-domains': ['webcredentials:other.example', 'webcredentials:shielded.mutinynet.arkade.sh'] });
+  assert.equal(readFileSync(f.projectFile, 'utf8'), original);
+  nativeBuild.prepareApplePasskeys(f.workspace, { SHIELDED_APPLE_PASSKEYS: '1' }, f.execute);
+  assert.equal(f.writes.length, 1);
+});
+
+test('iOS passkey preparation refuses mismatched identities, entitlement paths and malformed domains before writing', t => {
+  for (const change of [
+    f => { f.pbx.objects.debug.buildSettings.PRODUCT_BUNDLE_IDENTIFIER = 'io.other.wallet'; },
+    f => { f.pbx.objects.release.buildSettings.CODE_SIGN_ENTITLEMENTS = '../outside.entitlements'; },
+    f => { f.pbx.objects.main.buildConfigurationList = 'missing'; },
+    f => { mkdirSync(resolve(f.apple, 'another.xcodeproj')); },
+    f => { writeFileSync(f.file, JSON.stringify({ 'com.apple.developer.associated-domains': 'wrong type' })); },
+    f => { writeFileSync(f.file, JSON.stringify({ 'com.apple.developer.associated-domains': null })); },
+  ]) {
+    const f = appleProject(t); change(f); writeFileSync(f.projectFile, JSON.stringify(f.pbx));
+    const original = readFileSync(f.file, 'utf8');
+    assert.throws(() => nativeBuild.prepareApplePasskeys(f.workspace, { SHIELDED_APPLE_PASSKEYS: '1' }, f.execute), error => error instanceof Error && /^(The iOS|Expected one|Invalid Apple|Initialize|Apple entitlement)/.test(error.message));
+    assert.equal(readFileSync(f.file, 'utf8'), original); assert.equal(f.writes.length, 0);
+  }
+});
+
+test('iOS passkey preparation inserts a previously absent domain key without changing signing identity', t => {
+  const f = appleProject(t, { 'application-identifier': 'existing-prefix.io.arkade.shielded' });
+  nativeBuild.prepareApplePasskeys(f.workspace, { SHIELDED_APPLE_PASSKEYS: '1' }, f.execute);
+  assert.equal(f.writes[0][0], '-insert');
+  assert.deepEqual(JSON.parse(readFileSync(f.file, 'utf8')), { 'application-identifier': 'existing-prefix.io.arkade.shielded', 'com.apple.developer.associated-domains': ['webcredentials:shielded.mutinynet.arkade.sh'] });
+});
+
+test('iOS passkey preparation never follows a redirected entitlement directory', t => {
+  const f = appleProject(t), target = resolve(f.workspace, 'outside');
+  mkdirSync(target); writeFileSync(resolve(target, 'wallet.entitlements'), '{}');
+  symlinkSync(target, resolve(f.apple, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  for (const id of ['debug', 'release']) f.pbx.objects[id].buildSettings.CODE_SIGN_ENTITLEMENTS = 'linked/wallet.entitlements';
+  writeFileSync(f.projectFile, JSON.stringify(f.pbx));
+  assert.throws(() => nativeBuild.prepareApplePasskeys(f.workspace, { SHIELDED_APPLE_PASSKEYS: '1' }, f.execute), /symlinked entitlement/);
+  assert.equal(readFileSync(resolve(target, 'wallet.entitlements'), 'utf8'), '{}'); assert.equal(f.writes.length, 0);
 });
 
 test('mobile initialization requires a package-manager runner for generated IDE callbacks', () => {

@@ -3819,6 +3819,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-authentication-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee6d6f7dab884a28adaec1012eb3889257a49cc145724e35f93ece2d209f8b25"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "objc2-cloud-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3918,6 +3930,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.2",
  "block2",
+ "libc",
  "objc2",
  "objc2-core-foundation",
 ]
@@ -6153,10 +6166,21 @@ dependencies = [
 name = "tauri-plugin-shielded-platform"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "futures-channel",
+ "futures-util",
  "keyring",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-authentication-services",
+ "objc2-foundation",
  "serde_json",
  "tauri",
  "tauri-plugin",
+ "tokio",
+ "uuid",
+ "windows",
+ "zbus 4.4.0",
  "zeroize",
 ]
 
@@ -6422,6 +6446,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -8817,6 +8842,7 @@ dependencies = [
  "serde_repr",
  "sha1 0.10.7",
  "static_assertions",
+ "tokio",
  "tracing",
  "uds_windows",
  "windows-sys 0.52.0",

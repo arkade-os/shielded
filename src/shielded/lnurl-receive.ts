@@ -41,6 +41,8 @@ export const HD_REFUSED='This Lightning address is still in HD receive mode, and
 export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. The wallet stops sending it until Shielded opens again.';
 export const METHODS_NOT_WITHDRAWN='The service for this Lightning address still lists the private receive address after it was withdrawn, so payers may still be offered it. The wallet keeps asking the service to remove it and retries automatically.';
 export const SEALED_RECOVERY='With private networking on, this wallet does not search for Lightning address payouts made before it was opened in this browser: that takes hundreds of private requests. To recover them, turn private networking off and open the wallet again.';
+/** A method still listed after its withdrawal outranks a refusal: payers may still be offered it. */
+export const privateReceiveNotice=({refused,withdrawing,listed}:PrivateReceiveState)=>withdrawing&&listed!==null?METHODS_NOT_WITHDRAWN:refused?METHODS_REFUSED:'';
 const SCAN_BATCH=50,STATE_POOL='lnurl-receive',STATE_KEY='state-v1';
 const TESTNET_BIP32={public:0x043587cf,private:0x04358394};
 const failedContractWatches=new WeakMap<Wallet,Set<string>>();
@@ -322,9 +324,11 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   const branch=currentBranch();void branch.catch(()=>{});
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');
+  const matched=tracked&&owned.find(row=>sameReceiver(row,tracked));
   // A name this identity already owns, from another device or an older wallet, wins over a nameless receiver or a new one.
-  let receiver=(tracked&&owned.find(row=>sameReceiver(row,tracked)))??owned.find(row=>row.handle===server.pending)??owned.find(row=>!!row.lightningAddress)??owned[0];
-  const recoverPayouts=!!receiver&&!state.payouts.length;
+  let receiver=[matched,...owned].find(row=>!!row?.lightningAddress)??matched??owned.find(row=>row.handle===server.pending)??owned[0];
+  // A receiver this device did not track may be bound to /2/7 children another device derived past this journal.
+  const recoverPayouts=!!receiver&&(!state.payouts.length||receiver!==matched);
   if(!receiver){
     config.onStage?.('Registering your unified address');
    receiver=fromAddress(await client.registerAddress({token:await token(),domain,nameless:true}));
