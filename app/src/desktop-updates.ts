@@ -11,10 +11,10 @@ export function desktopUpdatePackage(release:NativeRelease,platform:string):Desk
  const suffix=DESKTOP_UPDATE_FORMATS[platform as NativePlatform],item=suffix?release.packages.find(item=>item.platform===platform&&item.file.endsWith(suffix)&&item.signature):undefined;
  return item&&{...item,signature:item.signature!,commit:release.commit,buildNumber:release.buildNumber};
 }
-const UNSIGNED='This release has no signed in-app update for this computer.';
+const UNSIGNED='This release has no signed in-app update for this computer.',UNSUPPORTED='This installation cannot update itself. Download the new version from the downloads page.';
 export const desktopUpdatePolicy=(platform:string):UpdatePolicy<DesktopUpdateInfo,DesktopUpdatePackage,DesktopStagedUpdate>=>({
  host:'The updater',missing:UNSIGNED,exits:true,package:release=>desktopUpdatePackage(release,platform),
- conflict:(info,update)=>info.unsupported||(update?'':UNSIGNED),matches:(staged,update)=>staged.buildNumber===update.buildNumber,
+ conflict:(info,update)=>info.unsupported!==null?info.unsupported||UNSUPPORTED:update?'':UNSIGNED,matches:(staged,update)=>staged.buildNumber===update.buildNumber,
 });
 export function desktopUpdateBackend():DesktopUpdateBackend {
  return {

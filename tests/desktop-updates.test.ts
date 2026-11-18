@@ -67,6 +67,8 @@ test('an installation that cannot replace itself or an unsigned release keeps th
  const reason='This installation cannot update itself. Download the new version from the downloads page.';
  const blocked=desktop(t,{info:{unsupported:reason}});await flush();await blocked.controller.update();
  assert.equal(blocked.state().phase,'blocked');assert.equal(blocked.downloads.length,0);
+ const empty=desktop(t,{info:{unsupported:''}});await flush();void empty.controller.update();await flush();
+ assert.deepEqual([empty.state().phase,empty.downloads.length],['blocked',0]);assert.match(empty.state().error,/cannot update itself/);
  assert.match(notice(blocked.controller),/<a\b[^>]*title="This installation cannot update itself\. Download the new version from the downloads page\."/);assert.doesNotMatch(notice(blocked.controller),/<button/);
  const unsigned=desktop(t,{release:release(false)});await flush();assert.match(notice(unsigned.controller),/<a\b[^>]*title="This release has no signed in-app update for this computer\."/);
  const supported=desktop(t);assert.match(notice(supported.controller),/<a\b/);assert.doesNotMatch(notice(supported.controller),/title=/);
