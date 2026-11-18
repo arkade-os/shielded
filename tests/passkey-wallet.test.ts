@@ -158,5 +158,6 @@ test('after a reload a 12-word wallet reveals its words through its passkey, sin
  const {readFileSync}=await import('node:fs');
  const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
  assert.match(wallet,/const phrase=phraseWords===12\?passkeyPhrase:/);
+ assert.match(wallet,/useLayoutEffect\(\(\)=>\{phraseCurrent\.current=!suspended&&viewActive&&!hidden;\},\[suspended,viewActive,hidden\]\);/,'the reveal gate follows the committed view, not a render that may be discarded');
  assert.match(wallet,/const showPhrase=\(\)=>\{\s*if\(!mounted\.current\|\|!phraseCurrent\.current\|\|document\.hidden[\s\S]*?sessionGuard\?\.\(\)[\s\S]*?if\(phrase\)\{setReveal\(true\);return;\}[\s\S]*?passkeyWords\(storage,/);
 });

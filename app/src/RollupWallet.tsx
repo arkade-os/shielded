@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useMemo,useRef,useState,type CSSProperties,type ReactNode} from 'react';
+import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSProperties,type ReactNode} from 'react';
 import {createPortal,flushSync} from 'react-dom';
 import {watchPageVisibility} from './page-visibility.ts';
 import {readWalletClipboard} from './wallet-clipboard.ts';
@@ -110,7 +110,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
  const [prf,setPrf]=useState<string>(),[passkeyOff,setPasskeyOff]=useState(false),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
  const phrasePrompt=useRef(createPasskeyRevealOwner()),phraseForeground=useRef(!document.hidden),phraseActive=useRef(true),phraseCurrent=useRef(true);
- phraseCurrent.current=!suspended&&viewActive&&!hidden;
+ // Committed state, never a discarded render, and a layout effect because the reveal reads it in the same tick a click or a publish arrives.
+ useLayoutEffect(()=>{phraseCurrent.current=!suspended&&viewActive&&!hidden;},[suspended,viewActive,hidden]);
  const [wallet,setWallet]=useState<ShieldedWallet>(),[tick,setTick]=useState(0);
  const [coins,setCoins]=useState<ArkCoin[]>([]),[arkAvailable,setArkAvailable]=useState<number>(),[arkAddress,setArkAddress]=useState(''),[rows,setRows]=useState<Activity[]>([]);
  const [sheet,setSheet]=useState<StepState>(),[busy,setBusy]=useState(false),[revealed,setRevealed]=useState<Record<string,string>>({});
