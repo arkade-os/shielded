@@ -42,9 +42,19 @@ test('swap discovery reads the registry from the pool mirror and solver cards th
 });
 
 test('a rendezvous the pool cannot serve fails the RFQ at once, and a card read that fails yields no card',async()=>{
- const fetcher=(async()=>new Response('Not Found',{status:404})) as unknown as typeof fetch,pool=rendezvousPool(fetcher,POOL),closed:string[]=[];
+ const fetcher=(async()=>new Response('Not Found',{status:404})) as unknown as typeof fetch,pool=rendezvousPool(fetcher,POOL),closed:string[]=[],wallet=generateSecretKey();
  pool.subscribeMany(['wss://nostr.arkade.sh'],{kinds:[38859],authors:[S],'#d':['mutinynet']},{onclose:reasons=>closed.push(...reasons.map(({reason})=>reason))});
- const [published]=pool.publish(['wss://nostr.arkade.sh'],finalizeEvent({kind:24859,created_at:0,tags:[['p',S]],content:'x'},generateSecretKey()));
+ pool.subscribeMany(['wss://nostr.arkade.sh'],{kinds:[24859],'#p':[getPublicKey(wallet)],authors:[S]},{});
+ const [published]=pool.publish(['wss://nostr.arkade.sh'],finalizeEvent({kind:24859,created_at:0,tags:[['p',S]],content:'x'},wallet));
  await assert.rejects(published!,/rendezvous answered 404/);
  assert.match(String(closed[0]),/rendezvous answered 404/);
+});
+
+test('an RFQ with no open reply subscription is refused before any request, rather than sent without a filter',async()=>{
+ let asked=0;const fetcher=(async()=>{asked++;return Response.json({events:[]});}) as unknown as typeof fetch,wallet=generateSecretKey();
+ const rfq=finalizeEvent({kind:24859,created_at:0,tags:[['p',S]],content:'x'},wallet),pool=rendezvousPool(fetcher,POOL);
+ await assert.rejects(pool.publish(['wss://nostr.arkade.sh'],rfq)[0]!,/no open reply subscription/,'never subscribed');
+ pool.subscribeMany(['wss://nostr.arkade.sh'],{kinds:[24859],'#p':[getPublicKey(wallet)],authors:[S]},{}).close();
+ await assert.rejects(pool.publish(['wss://nostr.arkade.sh'],rfq)[0]!,/no open reply subscription/,'subscription closed');
+ assert.equal(asked,0);
 });

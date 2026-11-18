@@ -41,7 +41,9 @@ export function rendezvousPool(fetcher:typeof fetch,poolOrigin:string):CarrierPo
   // The pool is the one relay here, so one outcome answers for any relays the card lists.
   publish(_relays:string[],event:Event){
    const sub=replies;
-   return [meet({kind:event.kind,event,filter:sub?.filter,waitMs:RENDEZVOUS_WAIT_MS}).then(events=>{if(sub&&!sub.closed)for(const reply of events)sub.on.onevent?.(reply);return '';})];
+   // Without its reply subscription an RFQ's answer has nowhere to go, so nothing is sent.
+   if(!sub||sub.closed)return [Promise.reject(new Error('the RFQ has no open reply subscription, so it was not sent to the pool\'s solver rendezvous'))];
+   return [meet({kind:event.kind,event,filter:sub.filter,waitMs:RENDEZVOUS_WAIT_MS}).then(events=>{if(!sub.closed)for(const reply of events)sub.on.onevent?.(reply);return '';})];
   },
   destroy(){},
  } as unknown as CarrierPool;
