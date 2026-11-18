@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {NATIVE_FOREGROUND_HOLD,nativeForegroundHold,openNativeVault,reopenNativeForeground,resumeNativeForeground} from '../app/src/native-open.ts';
+import {NATIVE_FOREGROUND_HOLD,NATIVE_MODE,nativeForegroundHold,openNativeVault,rememberedNativeMode,reopenNativeForeground,resumeNativeForeground} from '../app/src/native-open.ts';
 import {createNativeViewHandoff} from '../app/src/native-view-handoff.ts';
 
 test('native-only interruption retires a first opening candidate before reconstructing it',async()=>{
@@ -114,11 +114,28 @@ test('a visible renderer whose host still reports the background explains the wa
  assert.match(native,/onReconnect=\{\(\)=>\{if\(transition\.current\|\|creating\.current\)return;manualLock\.current=false;void \(resetPending\?finishReset\(\):open\(\)\);\}\}/,'reconnect gains no path around the latch');
 });
 
-test('the native wallet adopts the host session mode before its first start',()=>{
+test('a cold launch that prewarmed Tor opens the remembered Tor-off choice',async()=>{
+ const rows=new Map<string,string>(),storage={getItem:(key:string)=>rows.get(key)??null};
+ assert.equal(rememberedNativeMode(storage),'tor');
+ rows.set(NATIVE_MODE,'direct');assert.equal(rememberedNativeMode(storage),'direct');
+ rows.set(NATIVE_MODE,'bogus');assert.equal(rememberedNativeMode(storage),'tor');
+ rows.set(NATIVE_MODE,'direct');const modes:unknown[]=[];
+ const bridge=new NativeBridge({invoke:async(command,args)=>{
+  if(command!=='native_start')return {phase:'bootstrapping',generation:1,mode:'tor'};
+  modes.push(args?.mode);return {phase:'ready',generation:2,mode:args?.mode};
+ },channel:()=>{}},new NativePolicy('https://pool.example'));
+ const mode=await bridge.hostMode(rememberedNativeMode(storage)),current=()=>true;
+ const opened=await openNativeVault(()=>bridge.start(mode),async()=>'secret',current,{mode,current});
+ assert.deepEqual(modes,['direct']);assert.equal(opened?.status.mode,'direct');
+});
+
+test('the native wallet remembers the chosen mode and adopts it before its first start',()=>{
  const native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8');
  assert.match(native,/const selectedMode=useRef<NativeMode\|undefined>\(undefined\)/);
- assert.match(native,/const mode=selectedMode\.current\?\?=await nativeNetwork\.hostMode\(\);/);
+ assert.match(native,/const mode=selectedMode\.current\?\?=await nativeNetwork\.hostMode\(rememberedNativeMode\(localStorage\)\);/);
+ assert.match(native,/selectedMode\.current=mode;localStorage\.setItem\(NATIVE_MODE,mode\);await open\(\);/);
  assert.match(native,/const status=await nativeNetwork\.start\(mode\);/);
+ assert.match(native,/onConfirm=\{\(\)=>void switchMode\('direct'\)\}/,'Tor off still needs the confirmation');
  assert.doesNotMatch(native,/useRef<NativeMode>\('tor'\)/);
 });
 
