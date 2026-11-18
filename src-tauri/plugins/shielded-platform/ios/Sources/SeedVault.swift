@@ -40,6 +40,17 @@ final class SeedVault {
         } else if status != errSecSuccess { throw SeedVaultError.unavailable }
     }
 
+    func create(_ value: String) throws {
+        guard validSeed(value) else { throw SeedVaultError.unavailable }
+        var item = query
+        item[kSecValueData as String] = Data(value.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let status = SecItemAdd(item as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            guard try get() == value else { throw SeedVaultError.unavailable }
+        } else if status != errSecSuccess { throw SeedVaultError.unavailable }
+    }
+
     func clear() throws {
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw SeedVaultError.unavailable }

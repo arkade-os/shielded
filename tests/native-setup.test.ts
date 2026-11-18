@@ -32,3 +32,10 @@ test('confirmed direct setup uses the same ready gate and waits for the actual v
  await new Promise(resolve=>setImmediate(resolve));assert.equal(writes,1);assert.equal(settled,false);
  written.resolve();await saving;assert.equal(settled,true);
 });
+
+test('a delayed passkey derivation cannot write after its setup owner is cancelled',async()=>{
+ const derived=deferred<string>();let live=true,writes=0;
+ const saving=saveNativeSetup(ready,async()=>ready,()=>live,()=>derived.promise,async()=>{writes++;});
+ await new Promise(resolve=>setImmediate(resolve));live=false;derived.resolve('test-only');
+ await assert.rejects(saving,/changed/);assert.equal(writes,0);
+});

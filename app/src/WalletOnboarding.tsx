@@ -23,8 +23,9 @@ export interface WalletOnboardingProps {
  onToggleTor?:()=>void;
  transportBusy?:boolean;
  reconnectLabel?:string;
- /** Ignored on the native transport, which shows no passkey controls. */
  passkey?:{onCreate:(words:PasskeyWordCount)=>void;onRestore:()=>void};
+ passkeyUnavailable?:string;
+ pendingSetup?:boolean;
 }
 
 type PrivacyPanel='tor'|'privacy';
@@ -65,11 +66,11 @@ export function EngravedShield(){
  </svg></div>;
 }
 
-export default function WalletOnboarding({transport,setup,busy,opening=false,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false,reconnectLabel,passkey}:WalletOnboardingProps){
+export default function WalletOnboarding({transport,setup,busy,opening=false,phase,error,phrase,onPhraseChange,onCreate,onRestore,onReconnect,torHealth,onToggleTor,transportBusy=false,reconnectLabel,passkey,passkeyUnavailable,pendingSetup=false}:WalletOnboardingProps){
  const [restoring,setRestoring]=useState(false),[privacyPanel,changePrivacyPanel]=useReducer(walletPrivacyPanel,null),id=useId();
  const [passkeyWords,setPasskeyWords]=useState<PasskeyWordCount>(12),[passkeyAction,setPasskeyAction]=useState<'create'|'restore'>();
  const onTorOpenChange=useCallback((open:boolean)=>changePrivacyPanel({panel:'tor',open}),[]);
- const native=transport==='tor',direct=native&&(torHealth?.status.mode??'tor')==='direct',tor=native&&!direct,passkeys=native?undefined:passkey;
+ const native=transport==='tor',direct=native&&(torHealth?.status.mode??'tor')==='direct',tor=native&&!direct,passkeys=passkey;
  const titleId=`${id}-title`,phraseId=`${id}-phrase`,warningId=`${id}-warning`,privacyId=`${id}-privacy`,passkeyId=`${id}-passkey`;
  const restore=setup&&restoring;
  const waiting=setup&&native&&torHealth?.status.phase!=='ready',disabled=busy||transportBusy||waiting;
@@ -95,14 +96,15 @@ export default function WalletOnboarding({transport,setup,busy,opening=false,pha
      <p id={warningId} className="wallet-onboarding-restore-warning">Keep the original app data for outstanding Lightning swaps. The phrase alone cannot recover every pending swap.</p>
      <button className="wallet-onboarding-primary" type="submit" disabled={disabled||!phrase.trim()}>{busy?'Restoring wallet…':'Restore wallet'}</button>
     </form>:<div className="wallet-onboarding-actions">
-     {setup?<><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction(undefined);onCreate();}}}>{busy&&!passkeyAction?'Creating wallet…':'Create wallet'}</button><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setRestoring(true);}}>Restore a wallet</button>
+     {setup?<>{!pendingSetup&&<button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction(undefined);onCreate();}}}>{busy&&!passkeyAction?'Creating wallet…':'Create wallet'}</button>}<button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setRestoring(true);}}>{pendingSetup?'Finish with recovery phrase':'Restore a wallet'}</button>
+      {pendingSetup&&<p className="wallet-onboarding-description">A wallet setup is pending. Finish it with the same passkey or recovery phrase to confirm its vault storage.</p>}
       {passkeys&&<div className="wallet-onboarding-passkey" role="group" aria-labelledby={passkeyId}>
        <p id={passkeyId}>Passkey <span>Beta</span></p>
-       <button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction('create');passkeys.onCreate(passkeyWords);}}}>{busy&&passkeyAction==='create'?'Waiting for your passkey…':'Create with a passkey'}</button>
-       <label><input type="checkbox" checked={passkeyWords===24} disabled={disabled} onChange={event=>setPasskeyWords(event.target.checked?24:12)}/>24-word recovery phrase instead of 12</label>
-       <button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction('restore');passkeys.onRestore();}}}>{busy&&passkeyAction==='restore'?'Waiting for your passkey…':'Restore with a passkey'}</button>
+       {!pendingSetup&&<><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction('create');passkeys.onCreate(passkeyWords);}}}>{busy&&passkeyAction==='create'?'Waiting for your passkey…':'Create with a passkey'}</button>
+       <label><input type="checkbox" checked={passkeyWords===24} disabled={disabled} onChange={event=>setPasskeyWords(event.target.checked?24:12)}/>24-word recovery phrase instead of 12</label></>}
+       <button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction('restore');passkeys.onRestore();}}}>{busy&&passkeyAction==='restore'?'Waiting for your passkey…':pendingSetup?'Finish passkey setup':'Restore with a passkey'}</button>
        <small>Anyone who can use this passkey, including through the account it syncs with, can spend from this wallet.</small>
-      </div>}</>:<button className="wallet-onboarding-primary" type="button" disabled={busy||transportBusy} onClick={()=>{if(!busy&&!transportBusy)onReconnect();}}>{busy?'Please wait…':reconnectLabel??(native?'Unlock and reconnect':'Reload wallet')}</button>}
+      </div>}{passkeyUnavailable&&<small role="status">{passkeyUnavailable}</small>}</>:<button className="wallet-onboarding-primary" type="button" disabled={busy||transportBusy} onClick={()=>{if(!busy&&!transportBusy)onReconnect();}}>{busy?'Please wait…':reconnectLabel??(native?'Unlock and reconnect':'Reload wallet')}</button>}
     </div>)}
     {!opening&&waiting&&!busy&&!transportBusy&&<button className="wallet-onboarding-secondary" type="button" onClick={onReconnect}>Retry connection</button>}
    </section>
