@@ -14,6 +14,7 @@ import {createOhttpGateway} from './rollup/ohttp-gateway.ts';
 import {loadOhttpKey} from './rollup/ohttp-keys.ts';
 import {createRendezvousRouter,RFQ_RELAYS} from './rollup/rendezvous.ts';
 import {openRollupService,rollupDepositFeeFromEnv,type RollupService} from './rollup/service.ts';
+import {createSolverRegistryMirror} from './rollup/solver-registry.ts';
 import {MUTINY_ARK_URL,parseStockEndpoint} from './stock/network.ts';
 import {LNURL_BASE} from './shielded/network-privacy.ts';
 import {serveWeb} from './web.ts';
@@ -43,10 +44,10 @@ if(ohttpKey&&gatewayToken){
   upstreams:[{origin:ark,prefix:'/v1/'},{origin:indexer,prefix:'/v1/indexer/'},{origin:esplora.origin,prefix:esplora.pathname.replace(/\/?$/,'/')},{origin:lnurl,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']},{origin:lnurl,prefix:'/.well-known/lnurlp/'}],
   ...(process.env.SHIELDED_OHTTP_RATE?{rate:Number(process.env.SHIELDED_OHTTP_RATE)}:{})});
  app.use('/api/rollup',gateway);
- app.use('/api/rollup',createRendezvousRouter({relays:rfqRelays,fromGateway:gatewayCaller(gatewayToken)}));
+ app.use('/api/rollup',createRendezvousRouter({relays:rfqRelays,fromGateway:gatewayCaller(gatewayToken)}),createSolverRegistryMirror());
 }
 console.log(ohttpKey?`Oblivious HTTP gateway on (key id ${ohttpKey.keyId}, Nostr ${ohttpKey.nostrPublic.slice(0,8)}…, ${nostrRelays.length} relays, HTTP route ${ohttpHttp?'on':'off'}).`:'Oblivious HTTP gateway off.');
-app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean),gatewayToken}));
+app.use('/api/rollup',createRollupRouter(()=>service,{allowedOrigins:process.env.SHIELDED_ALLOWED_ORIGINS?.split(',').map(origin=>origin.trim()).filter(Boolean),gatewayToken,privateLightning:!!gateway}));
 for(const old of ['/stock-wallet','/rollup','/lab'])app.get(old,(_req,res)=>res.redirect(301,'/wallet'));
 serveWeb(app,web,data);
 const listener=app.listen(port,host,()=>console.log(`Shielded listening on port ${port}.`));

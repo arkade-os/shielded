@@ -46,7 +46,8 @@ export function gatewayCaller(gatewayToken?:string):(req:express.Request)=>boole
   return claimed.length===token.length&&timingSafeEqual(claimed,token);
  };
 }
-export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[],gatewayToken}:{allowedOrigins?:readonly string[];gatewayToken?:string}={}){
+/** `privateLightning` tells a sealed wallet this server carries its Lightning: the rendezvous, the registry mirror and the Lightning address upstream. */
+export function createRollupRouter(service:()=>RollupService|undefined,{allowedOrigins=[],gatewayToken,privateLightning=false}:{allowedOrigins?:readonly string[];gatewayToken?:string;privateLightning?:boolean}={}){
  // A file:, data: or other opaque entry normalises to "null", which sandboxed and local pages send as their Origin.
  const allowed=new Set(allowedOrigins.map(entry=>{const origin=new URL(entry).origin;if(origin==='null')throw new Error(`${entry} is not an http(s) origin.`);return origin;}));
  const router=express.Router();
@@ -80,7 +81,7 @@ export function createRollupRouter(service:()=>RollupService|undefined,{allowedO
   if(!service()){res.status(503).json({error:'The rollup pool is starting.'});return;}
   next();
  });
- router.get('/status',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(service()!.status());});
+ router.get('/status',(_req,res)=>{res.setHeader('Cache-Control','no-store');res.json(privateLightning?{...service()!.status(),privateLightning}:service()!.status());});
  router.get('/storage',(_req,res)=>{
   res.setHeader('Cache-Control','no-store');
   try{res.json(service()!.storage());}catch(error){logged('/storage',error);res.status(503).json({error:'Storage figures are unavailable.'});}
