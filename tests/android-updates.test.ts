@@ -9,7 +9,7 @@ const flush=()=>new Promise<void>(resolve=>setImmediate(resolve));
 function deferred<T>(){let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 const raw=nativeReleaseFixture(),release=parseNativeRelease({...raw,androidUpdate:androidUpdateFixture(raw)}),update=release.androidUpdate!;
 const installed:AndroidUpdateInfo={packageName:update.packageName,versionCode:update.versionCode-1,signerSha256:update.signerSha256,installerPackageName:null};
-function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?:NativeStatus;prepare?:()=>Promise<void>}={}){
+function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?:NativeStatus;prepare?:()=>Promise<void>;cancel?:()=>Promise<void>}={}){
  let visible=true,listener:(status:NativeStatus)=>void=()=>{},status:NativeStatus=options.status??{phase:'ready',generation:1,mode:'tor'};
  let info:AndroidUpdateInfo={...installed,...options.info};
  const downloads:{id:string;generation:number;progress:(value:{received:number;total:number})=>void;result:ReturnType<typeof deferred<{id:string;versionCode:number}>>}[]=[],cancelled:string[]=[],events:string[]=[];
@@ -17,7 +17,7 @@ function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?
  const backend:AndroidUpdateBackend={
   info:()=>{events.push('info');return infoRead();},
   download:(generation,id,_update,progress)=>{assert.equal(_update,update);const result=deferred<{id:string;versionCode:number}>();downloads.push({id,generation,progress,result});events.push('download');return result.promise;},
-  cancel:async id=>{cancelled.push(id);if(info.staged?.id===id)info={...info,staged:undefined};},
+  cancel:async id=>{cancelled.push(id);await options.cancel?.();if(info.staged?.id===id)info={...info,staged:undefined};},
   open:async id=>{events.push('open:'+id);return open(id);},
  };
  const lock=()=>{status={phase:'paused',generation:status.generation+1};listener(status);};
@@ -144,6 +144,14 @@ test('a saved update for another release is discarded and replaced by one tap',a
  const old={id:crypto.randomUUID(),versionCode:update.versionCode-1},f=fixture(t,{info:{staged:old}});await flush();
  assert.equal(f.state().staged,undefined);const pending=f.controller.update();await flush();
  assert.deepEqual(f.cancelled,[old.id]);assert.equal(f.downloads.length,1);await f.finish();await pending;assert.deepEqual(f.handoffs(),['prepare','open:'+f.downloads[0]!.id]);
+});
+
+test('discarding the older saved update counts only visible time',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date']});
+ const old={id:crypto.randomUUID(),versionCode:update.versionCode-1},discarding=deferred<void>();
+ const f=fixture(t,{info:{staged:old},cancel:()=>discarding.promise});await flush();const pending=f.controller.update();await flush();
+ f.visible(false);t.mock.timers.tick(60_000);f.visible(true);await flush();
+ discarding.resolve();await flush();assert.equal(f.state().phase,'downloading');assert.equal(f.downloads.length,1);await f.finish();await pending;
 });
 
 test('missing or failing wallet preparation prevents the handoff and keeps the verified file',async t=>{

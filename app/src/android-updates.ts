@@ -126,7 +126,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    let staged=info.staged?.versionCode===update.versionCode?info.staged:undefined;publish({staged});
    if(!staged){
     if(info.downloading)throw new Error('Another update download is still running. Try again in a moment.');
-    if(info.staged)await bounded(backend.cancel(info.staged.id));
+    if(info.staged)await visiblyBounded(backend.cancel(info.staged.id));
     if(!active(owner))return;
     staged=await download(owner,update);if(!staged)return;
    }
