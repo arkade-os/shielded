@@ -20,7 +20,8 @@ function fixture(t:TestContext,options:{info?:Partial<AndroidUpdateInfo>;status?
   cancel:async id=>{cancelled.push(id);if(info.staged?.id===id)info={...info,staged:undefined};},
   open:async id=>{events.push('open:'+id);return open(id);},
  };
- const controller=createAndroidUpdateController(backend,{status:async()=>status,subscribe:receive=>{listener=receive;return()=>{listener=()=>{};};}},async()=>{events.push('prepare');await options.prepare?.();},()=>visible);
+ const lock=()=>{status={phase:'paused',generation:status.generation+1};listener(status);};
+ const controller=createAndroidUpdateController(backend,{status:async()=>status,subscribe:receive=>{listener=receive;return()=>{listener=()=>{};};}},async()=>{events.push('prepare');await options.prepare?.();lock();},()=>visible);
  controller.setRelease(release);t.after(()=>controller.stop());
  const finish=async()=>{const pending=downloads.at(-1)!;info={...info,staged:{id:pending.id,versionCode:update.versionCode}};pending.result.resolve(info.staged!);await flush();};
  const handoffs=()=>events.filter(event=>event==='prepare'||event.startsWith('open:'));
@@ -162,11 +163,12 @@ test('a failed handoff keeps the verified file, and Try again reopens the instal
  assert.equal(f.downloads.length,1);assert.deepEqual(f.handoffs(),['prepare','open:'+staged.id,'prepare','open:'+staged.id]);assert.equal(f.state().phase,'available');
 });
 
-test('a file evicted before the handoff is downloaded again by Try again',async t=>{
+test('a file evicted before the handoff is downloaded again once the locked wallet reconnects',async t=>{
  const f=fixture(t);await flush();const first=f.controller.update();await flush();await f.finish();await first;
  f.open(async()=>{f.setInfo({staged:undefined});throw new Error('The downloaded update is no longer on this device. Try again to download it.');});
- await f.controller.update();assert.equal(f.state().phase,'failed');assert.match(f.state().error,/no longer on this device/);
- f.open(async()=>{});const retry=f.controller.update();await flush();assert.equal(f.downloads.length,2);await f.finish();await retry;
+ await f.controller.update();assert.equal(f.state().phase,'failed');assert.match(f.state().error,/no longer on this device/);assert.equal(f.state().networkReady,false);
+ f.open(async()=>{});await f.controller.update();assert.equal(f.downloads.length,1);assert.match(f.state().error,/Wait for the wallet to connect/);assert.equal(f.state().staged,undefined);
+ f.emit({phase:'ready',generation:4,mode:'tor'});const retry=f.controller.update();await flush();assert.equal(f.downloads.length,2);await f.finish();await retry;
  assert.equal(f.state().phase,'available');assert.equal(f.state().staged?.id,f.downloads[1]!.id);
 });
 

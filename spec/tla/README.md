@@ -477,7 +477,7 @@ The model abstracts DNS, TLS internals, actual body bytes, HTTP parsing, cache-a
 
 `AndroidUpdate.tla` models the one Android update flow: download, verify, save and lock the wallet, then hand the verified APK to Android's own installer. The controller reserves one update owner before awaiting network work. A download captures its session generation, over Tor or a direct connection; cancellation and pause can happen between byte completion, verification and publication. Only complete bytes with the advertised hash, the same application and signing certificate, and a strictly newer Android version may become the staged file. The native download asks the host mirror first and falls back to the pinned GitHub release under the same integrity checks; the model abstracts HTTP and redirects, so neither source appears in it. A staged file can stay ready while the session changes, so a later tap hands it over without downloading again.
 
-The tap that starts a download also asks for its handoff. Hiding the app does not stop a transfer, but a download that completes in the background, or a hide during save-and-lock, drops the pending handoff until a new foreground tap. The handoff starts only after the wallet has saved and locked. The host's handoff call leases the staged file: a discard cannot delete it until the call returns, and an evicted file clears the stage instead of being handed over. Kotlin rechecks the archive's identity and digest immediately before the handoff and deletes a file that fails, so the next attempt downloads again. `startActivity` runs only while the Activity is resumed, and a queued authorization that its timeout cancelled never runs later. The system installer owns everything after the handoff. None of these actions changes wallet storage.
+The tap that starts a download also asks for its handoff. Hiding the app does not stop a transfer, but a download that completes in the background, or a hide during save-and-lock, drops the pending handoff until a new foreground tap. The handoff starts only after the wallet has saved and locked. The host's handoff call leases the staged file: a discard cannot delete it until the call returns, and an evicted file clears the stage instead of being handed over. Kotlin rechecks the archive's identity and digest immediately before the handoff and deletes a file that fails, so a later attempt downloads it again; save-and-lock has paused the session by then, so that download waits for the wallet to reconnect. `startActivity` runs only while the Activity is resumed, and a queued authorization that its timeout cancelled never runs later. The system installer owns everything after the handoff. None of these actions changes wallet storage.
 
 | Model actions | Owning file and symbol boundary |
 | --- | --- |
@@ -501,7 +501,7 @@ stateDiagram-v2
     Saving --> Ready: hidden before the handoff call
     Saving --> HandingOff: host leases the staged file, archive rechecked
     Saving --> Ready: recheck fails and deletes the file
-    Saving --> Failed: staged file missing or replaced, next tap downloads again
+    Saving --> Failed: staged file missing or replaced; a tap after reconnecting downloads again
     HandingOff --> Ready: installer opened while resumed, file kept for another tap
     HandingOff --> Ready: background or timeout; a cancelled queue never runs later
 ```
