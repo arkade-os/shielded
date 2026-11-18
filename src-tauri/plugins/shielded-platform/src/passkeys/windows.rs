@@ -404,6 +404,13 @@ mod tests {
             failure(HRESULT::from_win32(ERROR_CANCELLED.0)),
             PasskeyError::Cancelled
         ));
+        for error in [
+            NTE_NOT_FOUND,
+            NTE_DEVICE_NOT_FOUND,
+            HRESULT::from_win32(ERROR_TIMEOUT.0),
+        ] {
+            assert!(matches!(failure(error), PasskeyError::Cancelled));
+        }
         assert!(matches!(
             failure(HRESULT(0x80004005u32 as i32)),
             PasskeyError::Unavailable
