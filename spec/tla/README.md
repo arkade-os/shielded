@@ -840,3 +840,37 @@ stateDiagram-v2
 Pinned TLC v1.7.4 and Java 25 on November 13, 2026: the base run fired every action and each of the seven mutations violated its named invariant; `node tools/check-native-model.mjs` matched all 120 configurations. `FoldRead` fires but adds no novel states in the base: refusing a downgrade is a no-op on the snapshot, so its effect is only observable under `BreakMonotonicFold`, the same shape as the `Terminal` self-loop above. Simulation passed 20,000 traces at depth 100 with three scripts and a wider budget. The `trace-No*.md` files hold the shortest counterexamples, and `tests/native-providers.test.ts` drives the real provider through the same steps.
 
 The read is ordered AFTER the stream reopens, so the model needs no assumption about arkd replaying a still-registered subscription id: `ReopenReplays` is optional and `NoMissedEvent` holds without it. `IndexerStreams_NoReopenOrder.cfg` is the read-first ordering, whose `read` phase is the window an event falls into. For a polled script the read IS the stream, so `Reopen` and `CatchUpRead` coincide and that window does not exist. Snapshot staleness beyond what the stream events and the reads fold in, per-origin HTTP rate limits, Tor circuit health, the indexer's own retention and liveness are outside this model.
+# Native passkey setup and recovery
+
+`ApplePasskeyPrompt` models the provider callback, queued main-thread start, runtime deadline, dropped caller, and delayed native cleanup as independent actors. Each request has a distinct ticket. Expiration retires that ticket before cleanup is queued; callback and cleanup can take only their own active slot. The model abstracts runtime clock progress and OS cancellation, checking safety when a deadline fires rather than real-time scheduling guarantees. Its 875-state graph and five disabled-guard counterexamples cover bounded pending results, expired starts, foreign cleanup/callbacks and a single settled result. A four-request simulation checks 20,000 wider traces.
+
+```mermaid
+stateDiagram-v2
+    idle --> queued: submit + ticket
+    queued --> active: ticket live + slot empty
+    queued --> unavailable: deadline or drop
+    active --> success: own callback first
+    active --> unavailable: deadline or drop
+    unavailable --> cleaned: take only own slot + cancel
+    success --> cleaned: release only own slot
+```
+
+`NativePasskeyFlow` separates the OS prompt, foreground return, vault read, public intent, native create and renderer reply. An external writer and retired owners can interleave with every step. Secret derivation, provider cryptography and operating-system persistence are abstracted as seed identities and atomic vault operations.
+
+```mermaid
+stateDiagram-v2
+    idle --> prompt: own ready setup
+    prompt --> seed: PRF result
+    seed --> read: inspect vault
+    read --> intent: current owner + foreground
+    intent --> sent: recoverable journal or fresh random + recheck
+    sent --> written: vault absent or identical
+    sent --> failed: refused or failed write
+    failed --> idle: retry fresh random while vault empty
+    written --> done: reconcile public metadata
+    done --> published: current owner + foreground
+    prompt --> cancelled: explicit revocation
+    intent --> cancelled: explicit revocation
+```
+
+Each disabled guard has a failing configuration: owner, foreground, recoverable journal, create-only vault admission, presentation and unknown random intents. Passkey and phrase setup persist their public intent before dispatch; an empty vault retains it and a retry must derive the same seed. A fresh random seed has no pre-write intent because the user cannot recover it after a rejected write. Its optional birth metadata is applied after acknowledgement; missing birth metadata scans from genesis. Late admitted writes reconcile metadata without presenting an old owner. The checked two-flow graph has 10,464 states; the wider simulation uses four flows and 20,000 traces.

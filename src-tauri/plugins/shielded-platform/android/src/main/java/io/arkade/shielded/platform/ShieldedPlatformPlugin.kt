@@ -137,6 +137,13 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun secretCreate(invoke: Invoke) = secret(invoke) {
+        val args = invoke.parseArgs(SeedArgs::class.java)
+        try { vault.create(args.value) } finally { args.value = "" }
+        null
+    }
+
+    @Command
     fun secretClear(invoke: Invoke) = secret(invoke) {
         vault.clear()
         null
@@ -175,6 +182,15 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
 
     @Command
     fun passkeyGet(invoke: Invoke) = passkey(invoke, ::getPasskey)
+
+    @Command
+    fun passkeySupport(invoke: Invoke) {
+        main.post {
+            if (destroyed || !trusted()) { invoke.reject(PASSKEY_UNAVAILABLE); return@post }
+            val available = android.os.Build.VERSION.SDK_INT >= 28
+            invoke.resolve(JSObject().put("available", available).put("reason", if (available) JSONObject.NULL else "Passkeys need Android 9 or newer. You can use a recovery phrase."))
+        }
+    }
 
     private fun update(invoke: Invoke, install: Boolean = false, operation: ((() -> Unit) -> Unit) -> JSObject?) {
         val dispatch = AndroidUpdateDispatch(install)

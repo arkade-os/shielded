@@ -61,11 +61,12 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install Linux native prerequisites
         if: runner.os == 'Linux'
-        timeout-minutes: 10
+        timeout-minutes: 13
         run: |
           packages=(libwebkit2gtk-4.1-dev build-essential pkg-config libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf libdbus-1-dev)
           apt_options=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- -o APT::Update::Error-Mode=any -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-          for mirror in https://mirrors.edge.kernel.org/ubuntu/ https://mirror.math.princeton.edu/pub/ubuntu/; do
+          runner_mirror=$(sed -n 's/^URIs: *//p' /etc/apt/sources.list.d/ubuntu.sources | head -n 1)
+          for mirror in $runner_mirror https://mirrors.edge.kernel.org/ubuntu/ https://mirror.math.princeton.edu/pub/ubuntu/; do
             sudo sed -i "s|^URIs:.*|URIs: $mirror|" /etc/apt/sources.list.d/ubuntu.sources
             if sudo timeout --kill-after=10s 60s apt-get "${apt_options[@]}" update &&
                sudo timeout --kill-after=10s 180s apt-get "${apt_options[@]}" install --download-only -y "${packages[@]}"; then
@@ -76,9 +77,18 @@ jobs:
           exit 1
       - run: npm ci
       - run: node --test tools/native-host.test.mjs tools/native-artifacts.test.mjs
+      - name: Check Apple entitlement preparation with plutil
+        if: runner.os == 'macOS'
+        run: node tools/apple-entitlements.check.mjs
+      - name: Check Apple passkey callback deadlines
+        if: runner.os == 'macOS'
+        run: node tools/apple-passkey-deadline.check.mjs
       - run: node tools/native-build.mjs icons
       - run: npm run native:frontend
       - run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - name: Check gated Apple passkey imports
+        if: runner.os == 'macOS'
+        run: node tools/apple-passkey-linkage.check.mjs
       - name: Build desktop package
         run: node tools/retry-command.mjs node tools/native-build.mjs desktop build ${{ env.NATIVE_BUILD_FLAG }} --bundles ${{ matrix.bundle }} ${{ runner.os == 'macOS' && '--target universal-apple-darwin' || '' }}
       - name: Verify universal macOS bundle
@@ -251,6 +261,12 @@ jobs:
       - uses: ./.github/actions/setup
       - run: node tools/reproducible-build.test.mjs
       - run: node tools/native-artifacts.mjs verify-network
+      - name: Check Apple entitlement preparation with plutil
+        if: runner.os == 'macOS'
+        run: node tools/apple-entitlements.check.mjs
+      - name: Check Apple passkey callback deadlines
+        if: runner.os == 'macOS'
+        run: node tools/apple-passkey-deadline.check.mjs
       - name: Select simulator architecture
         shell: bash
         run: |

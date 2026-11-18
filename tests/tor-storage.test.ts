@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {buildPoseidon} from 'circomlibjs';
 import {createNativeStorage,restoreNativeStorage} from '../app/src/native-storage.ts';
-import {BORN,CREATED,SENT,restorePageWallet} from '../app/src/shielded-page.ts';
+import {BORN,CREATED,PASSKEY,SENT,restorePageWallet,type PasskeyRecord} from '../app/src/shielded-page.ts';
 import {EpochAccount} from '../packages/protocol/src/rollup/epoch-account.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
@@ -36,6 +36,26 @@ test('native storage rejects plaintext seed copies, invalid seeds and destructiv
 });
 
 const restoreCache=(clear:()=>Promise<void>)=>({close(){},async drain(){},repository:{clear}}) as Parameters<typeof restorePageWallet>[1]['cache'];
+const record:PasskeyRecord={version:1,credentialId:'AQID',label:'Default',words:12};
+test('native passkey restore commits its credential record and phrase restore removes it',async()=>{
+ const base=memory(),old='11'.repeat(32),next='22'.repeat(32);let vault=old;
+ const view=createNativeStorage(old,base,async value=>{vault=value;});
+ await restorePageWallet(next,{cache:restoreCache(async()=>{}),storage:view.storage,stop:async()=>{},reload(){},passkey:record});
+ assert.deepEqual(JSON.parse(base.getItem(PASSKEY)!),record);
+ const reopened=createNativeStorage(vault,base,async value=>{vault=value;});
+ await restorePageWallet(old,{cache:restoreCache(async()=>{}),storage:reopened.storage,stop:async()=>{},reload(){}});
+ assert.equal(base.getItem(PASSKEY),null);
+});
+
+for(const committed of [false,true])test(`lost native restore acknowledgement recovers the ${committed?'new':'old'} passkey record`,async()=>{
+ const base=memory(),old='11'.repeat(32),next='22'.repeat(32),previous={...record,credentialId:'BAUG',words:24};let vault=old;
+ base.setItem(PASSKEY,JSON.stringify(previous));
+ const view=createNativeStorage(old,base,async value=>{if(committed)vault=value;throw new Error('reply lost');});
+ await assert.rejects(restorePageWallet(next,{cache:restoreCache(async()=>{}),storage:view.storage,stop:async()=>{},reload(){},passkey:record}),/reply lost/);
+ createNativeStorage(vault,base,async()=>{});
+ assert.deepEqual(JSON.parse(base.getItem(PASSKEY)!),committed?record:previous);
+});
+
 test('rejected native restore preserves account data and birth metadata',async()=>{
  const base=memory(),old='11'.repeat(32),next='22'.repeat(32);let cleared=false,reloaded=false;
  base.setItem(`${BORN}:old`,'12');base.setItem(CREATED,'100');base.setItem(SENT,'old receipts');

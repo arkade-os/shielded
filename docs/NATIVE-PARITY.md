@@ -1,6 +1,6 @@
 # Native capability parity
 
-Source audit: 2026-11-15, based on main `72ded16` plus the local platform parity changes. Source support is distinct from packaged-device qualification.
+Source audit: 2026-11-15, based on main `176651a` plus the native passkey follow-up. Source support is distinct from packaged-device qualification.
 
 | Capability | Android | iOS | macOS | Windows / Linux | Implementation |
 | --- | --- | --- | --- | --- | --- |
@@ -15,7 +15,7 @@ Source audit: 2026-11-15, based on main `72ded16` plus the local platform parity
 | Same-process background/return | Same owner retained | Same owner retained; native activation repair | Same owner retained | Same owner retained | Native session, shared page lifecycle and foreground-gated health monitor |
 | Update availability | Yes | Yes | Yes | Yes | `AppUpdates.tsx` |
 | Download, verify and launch installer inside the app | Yes, compatible signed sideload APK | No; Apple provisioning/store distribution needed | No; opens downloads | No; opens downloads | `android-updates.ts`; this remains a platform difference |
-| Native passkey onboarding | Not exposed | Not exposed | Not exposed | Not exposed | `WalletOnboarding` explicitly suppresses native passkey controls; the existing Android bridge is currently unused |
+| Passkey create/restore and recovery reveal | Credential Manager; provider PRF required | Platform PRF on iOS 18+, disabled until Apple build/signing/domain setup | Platform PRF on macOS 15+, disabled until Apple build/signing/domain setup | Windows WebAuthn API 6+; Linux requires the optional experimental Credential portal; provider PRF required | Shared SDK derivation and native bridges; [Apple setup](NATIVE.md#apple-passkeys) |
 
 The wallet features above share the same React and protocol implementation. Platform-specific failures can still arise from WebView versions, camera permissions, keychain providers, deep-link registration and operating-system suspension. The shared scanner uses WebView camera APIs; a camera permission description is not evidence of a successful physical-device scan.
 
@@ -33,6 +33,7 @@ Explicit Lock, reset, mode changes and window destruction retain their existing 
 2. On iOS, test Control Center, camera permission, interruption and device-lock returns; verify native activation becomes true and no fresh vault-open loop occurs.
 3. Test first-grant/deny/retry camera and clipboard access, plus cold/warm payment links. Test macOS on both Intel and Apple Silicon, and Linux on X11 and Wayland with a working Secret Service.
 4. Verify explicit Lock and reset during an in-flight read/proof cannot publish an old result or restart work. Use only a separate test wallet for money-path checks.
-5. Verify Android update progress survives switches; installation still requires a foreground action. iOS/macOS signing and store/updater distribution remain separate work, as does native passkey onboarding.
+5. Verify Android update progress survives switches; installation still requires a foreground action. iOS/macOS signing and store/updater distribution remain separate work.
+6. Use a separate test wallet to verify native passkey create, confirming authentication, restore and recovery reveal on each supported provider. Compare browser/native 12-word and 24-word recovery for the same credential; cover cancellation, system prompts, background/return and explicit lock during a prompt. On Android, attempt setup with the storage full: setup must fail, and after a restart the app must offer setup again rather than report a missing seed. Apple requires a real signing team and associated-domain setup before this test. Linux portal availability is experimental and is not broad Linux provider support.
 
-Local Node/Rust/model results do not replace these device checks. No physical Apple qualification, publisher credentials or native signing changes are included in this patch.
+Local Node/Rust/model results do not replace these device checks. No real credential ceremonies, physical Apple qualification, publisher credentials or published Apple domain association are included. The opt-in Apple entitlement preparation changes build configuration, without enrolling a team or supplying a signing identity.

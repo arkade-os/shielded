@@ -1,14 +1,15 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
+import {PASSKEY,type PasskeyRecord} from './passkey-record.ts';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1',SENT='shielded-rollup-sent-v1',RESTORE='shielded-native-restore-v1';
 const valid=(value:string)=>/^[0-9a-f]{64}$/.test(value);
 type Born={token:string;batches:number;at:number};
 type Metadata=[string,string][];
 type Restore={version:1;previous:string;next:string;before:Metadata;after:Metadata};
-const stateKey=(key:string)=>key.startsWith(BORN)||key===CREATED||key===SENT;
+const stateKey=(key:string)=>key.startsWith(BORN)||key===CREATED||key===SENT||key===PASSKEY;
 const tag=(secret:string)=>bytesToHex(sha256(hexToBytes(secret)));
-const restores=new WeakMap<object,(secret:string,born?:Born)=>Promise<void>>();
+const restores=new WeakMap<object,(secret:string,born?:Born,passkey?:PasskeyRecord)=>Promise<void>>();
 function metadata(base:Storage):Metadata{
  return Array.from({length:base.length},(_,i)=>base.key(i)).filter((key):key is string=>key!==null&&stateKey(key)).map(key=>[key,base.getItem(key)!]);
 }
@@ -25,7 +26,7 @@ function recoverRestore(base:Storage,secret:string){
  if(!values)throw new Error('The vault secret does not match the pending restore. Keep the app data.');
  applyMetadata(base,values);base.removeItem(RESTORE);
 }
-export const restoreNativeStorage=(storage:object,secret:string,born?:Born)=>restores.get(storage)?.(secret,born);
+export const restoreNativeStorage=(storage:object,secret:string,born?:Born,passkey?:PasskeyRecord)=>restores.get(storage)?.(secret,born,passkey);
 
 export function createNativeStorage(initial:string,base:Storage,persist:(secret:string)=>Promise<void>){
  if(!valid(initial))throw new Error('Invalid native wallet secret.');
@@ -45,12 +46,13 @@ export function createNativeStorage(initial:string,base:Storage,persist:(secret:
   removeItem(key){if(locked)throw new Error('The native wallet is locked.');if(key===SECRET)throw new Error('The wallet secret must be changed through the native vault.');base.removeItem(key);},
   clear(){throw new Error('A native wallet reset must preserve pending payment records.');},
  };
- restores.set(storage,(value,born)=>{
+ restores.set(storage,(value,born,passkey)=>{
   if(locked)throw new Error('The native wallet is locked.');
   if(!valid(value))throw new Error('Invalid native wallet secret.');
   writes=writes.then(async()=>{
    if(locked||secret===null)throw new Error('The native wallet is locked.');
    const after:Metadata=born?[[`${BORN}:${born.token}`,String(born.batches)],[CREATED,String(born.at)]]:[];
+   if(passkey)after.push([PASSKEY,JSON.stringify({version:1,credentialId:passkey.credentialId,label:passkey.label,words:passkey.words})]);
    // Vault replies can be lost after a write; tags reconcile metadata without storing a seed.
    const pending:Restore={version:1,previous:tag(secret),next:tag(value),before:metadata(base),after};
    base.setItem(RESTORE,JSON.stringify(pending));

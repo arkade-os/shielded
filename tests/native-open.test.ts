@@ -111,7 +111,7 @@ test('a visible renderer whose host still reports the background explains the wa
  const native=readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8');
  assert.match(native,/if\(!pageForeground\(\)\|\|!nativeForeground\.current\)\{setBusy\(false\);setPhase\(!pageForeground\(\)\?'Private connection paused':NATIVE_FOREGROUND_HOLD\);return Promise\.resolve\(\);\}/);
  assert.match(native,/const held=nativeForegroundHold\(health\.status,\{visible:pageForeground\(\),live:!!liveShown\(\),paused:manualLock\.current\|\|clearing\.current\}\);\s*if\(held\)\{setBusy\(false\);setPhase\(held\);\}/);
- assert.match(native,/onReconnect=\{\(\)=>\{if\(transition\.current\|\|creating\.current\)return;manualLock\.current=false;void \(resetPending\?finishReset\(\):open\(\)\);\}\}/,'reconnect gains no path around the latch');
+ assert.match(native,/onReconnect=\{\(\)=>\{if\(transition\.current\|\|creating\.current\|\|setupOperation\.current\)return;manualLock\.current=false;void \(resetPending\?finishReset\(\):open\(\)\);\}\}/,'reconnect gains no path around the latch');
 });
 
 test('the native wallet adopts the host session mode before its first start',()=>{

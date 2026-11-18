@@ -91,6 +91,16 @@ test('a 12-word passkey wallet shows its words again only through its own passke
  await assert.rejects(passkeyWords(storageOf(),{rpId:RP,client:synced.client()}),/not made with a passkey/);
 });
 
+test('a bound 24-word recovery reveal keeps its saved count when the provider omits the handle',async()=>{
+ const synced=syncedPasskeys(),storage=storageOf();
+ const made=await createPasskeyPageWallet(storage,{rpId:RP,wordCount:24,client:synced.client()});
+ const source=synced.client(),client:WebAuthnClient={...source,get:async options=>{
+  const credential=await source.get(options) as Credential&{response:{userHandle:Uint8Array|null}};
+  credential.response.userHandle=null;return credential;
+ }};
+ assert.equal(await passkeyWords(storage,{rpId:RP,client}),made.words);
+});
+
 test('each passkey failure lands on its next step, and leaves nothing stored',async()=>{
  const events:string[]=[],short=syncedPasskeys(()=>new Uint8Array(31));
  const failed=async(run:(storage:ReturnType<typeof storageOf>)=>Promise<unknown>)=>{
@@ -110,6 +120,14 @@ test('each passkey failure lands on its next step, and leaves nothing stored',as
  assert.equal(restoreCancelled.retry,true);
  const restoreUnavailable=await failed(storage=>restorePasskeyPageWallet({...restoreInto(storage,events),rpId:RP,client:short.client()}));
  assert.equal(restoreUnavailable.retry,false);assert.doesNotMatch(restoreUnavailable.message,/delete/);
+ const synced=syncedPasskeys();await createPasskeyPageWallet(storageOf(),{rpId:RP,wordCount:24,client:synced.client()});
+ const bare=synced.client(),handleless:WebAuthnClient={...bare,get:async options=>{
+  const credential=await bare.get(options) as Credential&{response:{userHandle:Uint8Array|null}};
+  credential.response.userHandle=null;return credential;
+ }};
+ const uncounted=await failed(storage=>restorePasskeyPageWallet({...restoreInto(storage,events),rpId:RP,client:handleless}));
+ assert.equal(uncounted.retry,false,'another prompt would read the same missing handle');
+ assert.match(uncounted.message,/how many recovery words[\s\S]*recovery phrase/);assert.doesNotMatch(uncounted.message,/delete/);
  assert.deepEqual(events,[],'a failed restore never stops the page');
  assert.equal(passkeyNextStep(new Error('offline')),undefined);
 });
@@ -140,5 +158,6 @@ test('after a reload a 12-word wallet reveals its words through its passkey, sin
  const {readFileSync}=await import('node:fs');
  const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
  assert.match(wallet,/const phrase=phraseWords===12\?passkeyPhrase:/);
- assert.match(wallet,/const showPhrase=\(\)=>\{\s*if\(phrase\)\{setReveal\(true\);return;\}[\s\S]*?passkeyWords\(storage,/);
+ assert.match(wallet,/useLayoutEffect\(\(\)=>\{phraseCurrent\.current=!suspended&&viewActive&&!hidden;\},\[suspended,viewActive,hidden\]\);/,'the reveal gate follows the committed view, not a render that may be discarded');
+ assert.match(wallet,/const showPhrase=\(\)=>\{\s*if\(!mounted\.current\|\|!phraseCurrent\.current\|\|document\.hidden[\s\S]*?sessionGuard\?\.\(\)[\s\S]*?if\(phrase\)\{setReveal\(true\);return;\}[\s\S]*?passkeyWords\(storage,/);
 });

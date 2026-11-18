@@ -58,6 +58,42 @@ test('a passkey seed restores to the same wallet it created, for 12 and for 24 w
  assert.deepEqual(PASSKEY_SEED_SALT,new TextEncoder().encode(DEFAULT_PASSKEY_LABEL));
 });
 
+test('a bound recovery word count restores 24 words when the provider omits its user handle',async()=>{
+ for(const handle of [null,new Uint8Array(32)]){
+  const fake=fakeClient({handle}),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fake.client});
+  const restored=await restorePasskeySeed({rpId:RP,credentialId:made.credentialId,wordCount:24,client:fake.client});
+  assert.deepEqual(restored,made);
+  const unhinted=restorePasskeySeed({rpId:RP,credentialId:made.credentialId,client:fake.client});
+  if(handle)assert.equal((await unhinted).wordCount,12,'a handle from elsewhere still names the default');
+  else await assert.rejects(unhinted,/how many recovery words/,'with no handle and no hint there is nothing to count');
+  made.master.fill(0);restored.master.fill(0);
+ }
+});
+
+test('a discovery restore refuses to guess the word count when the provider returns no user handle',async()=>{
+ for(const handle of [null,new Uint8Array()]){
+  const fake=fakeClient({handle}),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount:24,client:fake.client});
+  made.master.fill(0);
+  const refused=await caught(()=>restorePasskeySeed({rpId:RP,client:fake.client})) as Error;
+  assert.equal(refused.name,'PasskeyWordsUnknown');assert.match(refused.message,/how many recovery words/);
+  assert.deepEqual(passkeyFailure(refused),{outcome:'uncounted'},'the passkey is this wallet’s own, never an orphan to offer for deletion');
+ }
+});
+
+test('a recovery word count cannot override a known handle or another credential',async()=>{
+ for(const wordCount of [12,24] as PasskeyWordCount[]){
+  const fake=fakeClient(),made=await createPasskeySeed({rpId:RP,userName:'Shielded',wordCount,client:fake.client});
+  await assert.rejects(restorePasskeySeed({rpId:RP,credentialId:made.credentialId,wordCount:wordCount===12?24:12,client:fake.client}),/word count|recovery metadata/);
+  const otherId=made.credentialId.slice();otherId[0]^=1;
+  await assert.rejects(restorePasskeySeed({rpId:RP,credentialId:otherId,wordCount,client:fake.client}),/credential|passkey/);
+  made.master.fill(0);
+ }
+ const fake=fakeClient();
+ await assert.rejects(restorePasskeySeed({rpId:RP,wordCount:24,client:fake.client}),/credential/);
+ await assert.rejects(restorePasskeySeed({rpId:RP,credentialId:new Uint8Array(),wordCount:24,client:fake.client}),/credential/);
+ assert.equal(fake.calls.length,0,'unbound metadata cannot start a credential prompt');
+});
+
 test('the user handle carries the word count, and a handle from elsewhere restores as 12 words',async()=>{
  const id=passkeyUserId(24);
  assert.equal(id.length,32);
