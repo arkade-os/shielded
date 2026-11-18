@@ -15,10 +15,7 @@ fn main() {
             "native_android_update_info",
             "native_android_update_download",
             "native_android_update_cancel",
-            "native_android_update_permission",
-            "native_android_update_install",
             "native_android_update_open",
-            "native_android_update_confirm",
         ]),
     ))
     .expect("failed to build native host manifest");

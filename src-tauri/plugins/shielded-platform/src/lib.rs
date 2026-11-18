@@ -262,12 +262,6 @@ pub async fn android_update_info<R: Runtime>(
     android_update_request(app, "updateInfo", serde_json::json!({})).await
 }
 
-pub async fn android_update_permission<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    android_update_request(app, "updatePermission", serde_json::json!({}))
-        .await
-        .map(|_| ())
-}
-
 pub async fn android_verify_update<R: Runtime>(
     app: &AppHandle<R>,
     metadata: serde_json::Value,
@@ -277,24 +271,13 @@ pub async fn android_verify_update<R: Runtime>(
         .map(|_| ())
 }
 
-pub async fn android_install_update<R: Runtime>(
-    app: &AppHandle<R>,
-    metadata: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    android_update_request(app, "updateInstall", metadata).await
-}
-
 pub async fn android_open_update_installer<R: Runtime>(
     app: &AppHandle<R>,
     metadata: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    android_update_request(app, "updateOpenInstaller", metadata).await
-}
-
-pub async fn android_confirm_update<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<serde_json::Value, String> {
-    android_update_request(app, "updateConfirm", serde_json::json!({})).await
+) -> Result<(), String> {
+    android_update_request(app, "updateOpenInstaller", metadata)
+        .await
+        .map(|_| ())
 }
 
 pub fn init<R: Runtime>() -> TauriPlugin<R> {

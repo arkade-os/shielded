@@ -4,12 +4,12 @@ import {registerAppCache} from './app-cache.ts';
 import {nativeUpdateUrl,type NativeRelease} from '../../src/native-release.ts';
 import {createNativeUpdateMonitor} from './native-updates.ts';
 import {watchPageVisibility} from './page-visibility.ts';
-import {androidUpdateBackend,androidUpdateNotice,createAndroidUpdateController,type AndroidUpdateController} from './android-updates.ts';
+import {androidUpdateBackend,createAndroidUpdateController,type AndroidUpdateController} from './android-updates.ts';
 
 const native=typeof __NATIVE_BUILD__!=='undefined'&&__NATIVE_BUILD__;
 const android=native&&typeof __NATIVE_PLATFORM__!=='undefined'&&__NATIVE_PLATFORM__==='android-arm64';
 const AndroidAppUpdate=lazy(()=>import('./AndroidAppUpdate.tsx'));
-type Update={apply?:()=>void;release?:NativeRelease;android?:AndroidUpdateController;androidNotice?:string;openAndroid?:()=>void};
+type Update={apply?:()=>void;release?:NativeRelease;android?:AndroidUpdateController;openAndroid?:()=>void};
 const Updates=createContext<Update>({});
 let registered=false,browserApply:(()=>void)|undefined;
 const browserListeners=new Set<(apply:()=>void)=>void>();
@@ -17,26 +17,25 @@ const browserListeners=new Set<(apply:()=>void)=>void>();
 export function AppUpdatesProvider({children}:{children:ReactNode}){
  const [update,setUpdate]=useState<Update>({});
  const [androidController,setAndroidController]=useState<AndroidUpdateController>(),[androidOpen,setAndroidOpen]=useState(false);
- const [androidNotice,setAndroidNotice]=useState<string>();
  const closeAndroid=useCallback(()=>setAndroidOpen(false),[]);
  useEffect(()=>{
   if(native){
    let stopped=false,visible=!document.hidden,monitor:ReturnType<typeof createNativeUpdateMonitor>|undefined;
-   let controller:AndroidUpdateController|undefined,unsubscribeAndroid:(()=>void)|undefined;
+   let controller:AndroidUpdateController|undefined;
    const stopVisibility=watchPageVisibility(value=>{visible=value;monitor?.visibilityChanged();controller?.visibilityChanged();});
    void import('../../src/native/index.ts').then(({nativeNetwork,nativeReleaseFetch})=>{
     if(stopped)return;
-    if(android){controller=createAndroidUpdateController(androidUpdateBackend(),nativeNetwork,undefined,()=>visible&&!document.hidden);setAndroidController(controller);const owned=controller;unsubscribeAndroid=controller.subscribe(()=>setAndroidNotice(androidUpdateNotice(owned.getSnapshot())));}
+    if(android){controller=createAndroidUpdateController(androidUpdateBackend(),nativeNetwork,undefined,()=>visible&&!document.hidden);setAndroidController(controller);}
     monitor=createNativeUpdateMonitor({...nativeNetwork,fetch:nativeReleaseFetch},{commit:__APP_COMMIT__,buildNumber:__NATIVE_BUILD_NUMBER__,platform:__NATIVE_PLATFORM__,channel:'native-mutinynet',network:'mutinynet'},release=>{controller?.setRelease(release);setUpdate({release});},()=>visible&&!document.hidden);
    }).catch(()=>{});
-   return()=>{stopped=true;stopVisibility();unsubscribeAndroid?.();monitor?.stop();controller?.stop();};
+   return()=>{stopped=true;stopVisibility();monitor?.stop();controller?.stop();};
   }
   const receive=(apply:()=>void)=>setUpdate({apply});browserListeners.add(receive);
   if(browserApply)receive(browserApply);
   if(!registered){registered=true;registerAppCache(apply=>{browserApply=apply;for(const listener of browserListeners)listener(apply);});}
   return()=>{browserListeners.delete(receive);};
  },[]);
- return <Updates.Provider value={{...update,android:androidController,androidNotice,openAndroid:()=>{setAndroidOpen(true);void androidController?.refresh();}}}>{children}{androidOpen&&androidController&&<Suspense fallback={null}><AndroidAppUpdate controller={androidController} onClose={closeAndroid}/></Suspense>}</Updates.Provider>;
+ return <Updates.Provider value={{...update,android:androidController,openAndroid:()=>{setAndroidOpen(true);void androidController?.refresh();}}}>{children}{androidOpen&&androidController&&<Suspense fallback={null}><AndroidAppUpdate controller={androidController} onClose={closeAndroid}/></Suspense>}</Updates.Provider>;
 }
 
 export function NativeUpdateLink({tone='light'}:{tone?:'light'|'dark'}){
@@ -54,8 +53,8 @@ export function NativeUpdateFallback(){
 }
 
 export function AppUpdateNotice({tone='light'}:{tone?:'light'|'dark'}){
- const {apply,release,android:controller,androidNotice,openAndroid}=useContext(Updates);
- if(android&&(release||androidNotice))return <button className="app-update-notice" data-tone={tone} type="button" disabled={!controller} onClick={openAndroid} aria-label={androidNotice?`${androidNotice}. View Android installation.`:'Native app update available. View the update.'}><span className="app-update-dot" aria-hidden="true"/>{androidNotice??'Update available'}</button>;
+ const {apply,release,android:controller,openAndroid}=useContext(Updates);
+ if(android&&release)return <button className="app-update-notice" data-tone={tone} type="button" disabled={!controller} onClick={openAndroid} aria-label="Native app update available. View the update."><span className="app-update-dot" aria-hidden="true"/>Update available</button>;
  if(release)return <NativeUpdateLink tone={tone}/>;
  return apply?<button className="app-update-notice" data-tone={tone} type="button" onClick={apply} aria-label="Update app to the new version"><span className="app-update-dot" aria-hidden="true"/>Update available</button>:null;
 }

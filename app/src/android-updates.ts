@@ -3,26 +3,17 @@ import type {AndroidUpdatePackage,NativeRelease} from '../../src/native-release.
 import type {NativeStatus} from '../../src/native/transport.ts';
 import androidSigning from '../../src-tauri/android-signing.json' with {type:'json'};
 
-export type AndroidInstallStatus='idle'|'installing'|'confirmation-required'|'failed'|'installed';
-export interface AndroidUpdateInfo {
- packageName:string;versionCode:number;signerSha256:string;installerPackageName:string|null;canRequestInstalls:boolean;
- installStatus:AndroidInstallStatus;installError:string|null;staged?:{id:string;versionCode:number;ready?:boolean};downloading?:{id:string};
-}
-export interface AndroidInstallResult {installStatus:AndroidInstallStatus|'permission-required';installError?:string|null}
+export interface AndroidUpdateInfo {packageName:string;versionCode:number;signerSha256:string;installerPackageName:string|null;staged?:{id:string;versionCode:number};downloading?:{id:string}}
 export interface AndroidUpdateBackend {
  info():Promise<AndroidUpdateInfo>;
  download(generation:number,requestId:string,update:AndroidUpdatePackage,progress:(value:{received:number;total:number})=>void):Promise<{id:string;versionCode:number}>;
- cancel(id:string):Promise<void>;permission():Promise<void>;install(id:string):Promise<AndroidInstallResult>;open(id:string):Promise<AndroidInstallResult>;confirm():Promise<AndroidInstallResult>;
+ cancel(id:string):Promise<void>;open(id:string):Promise<void>;
 }
-export type AndroidUpdatePhase='idle'|'checking'|'available'|'blocked'|'downloading'|'ready'|'preparing'|'installing'|'confirmation-required'|'failed'|'unknown'|'installed';
+export type AndroidUpdatePhase='idle'|'checking'|'available'|'blocked'|'downloading'|'preparing'|'failed';
 export interface AndroidUpdateState {
- phase:AndroidUpdatePhase;release?:NativeRelease;info?:AndroidUpdateInfo;staged?:{id:string;versionCode:number};received:number;total:number;networkReady:boolean;torReady:boolean;opening:boolean;error:string;
+ phase:AndroidUpdatePhase;release?:NativeRelease;info?:AndroidUpdateInfo;staged?:{id:string;versionCode:number};received:number;total:number;networkReady:boolean;torReady:boolean;error:string;
 }
 interface UpdateNetwork {status():Promise<NativeStatus>;subscribe(listener:(status:NativeStatus)=>void):()=>void}
-export function androidUpdateNotice(state:AndroidUpdateState){
- if(['installing','confirmation-required','unknown'].includes(state.phase))return 'Update pending';
- if(state.phase==='failed'&&state.info?.installStatus==='failed')return 'Update needs attention';
-}
 const message=(error:unknown)=>error instanceof Error?error.message:String(error);
 const signingConflict='This installation uses a different signing key. Keep this installation and its wallet data.';
 let installationPreparation:(()=>Promise<void>)|undefined;
@@ -37,14 +28,12 @@ export function androidUpdateBackend():AndroidUpdateBackend {
  return {
   info:()=>invoke('native_android_update_info'),
   download:(generation,requestId,{url,bytes,sha256,versionCode,packageName,signerSha256},progress)=>invoke('native_android_update_download',{generation,requestId,update:{url,bytes,sha256,versionCode,packageName,signerSha256},onProgress:new Channel(progress)}),
-  cancel:id=>invoke('native_android_update_cancel',{id}),permission:()=>invoke('native_android_update_permission'),
-  install:id=>invoke('native_android_update_install',{id}),open:id=>invoke('native_android_update_open',{id}),
-  confirm:()=>invoke('native_android_update_confirm'),
+  cancel:id=>invoke('native_android_update_cancel',{id}),open:id=>invoke('native_android_update_open',{id}),
  };
 }
-// IPC may outlive this deadline; reconcile native status before another install.
+const NO_REPLY='Android did not respond. Try again.';
 const bounded=<T>(work:Promise<T>,milliseconds=10_000)=>new Promise<T>((resolve,reject)=>{
- const timer=setTimeout(()=>reject(new Error('Android did not respond. Check the update status and try again.')),milliseconds);
+ const timer=setTimeout(()=>reject(new Error(NO_REPLY)),milliseconds);
  work.then(value=>{clearTimeout(timer);resolve(value);},error=>{clearTimeout(timer);reject(error);});
 });
 const installationConflict=(info:AndroidUpdateInfo)=>{
@@ -63,51 +52,26 @@ const conflict=(info:AndroidUpdateInfo,update?:AndroidUpdatePackage)=>{
 };
 
 export function createAndroidUpdateController(backend:AndroidUpdateBackend,network:UpdateNetwork,prepare:()=>Promise<void>=prepareAndroidInstall,isVisible:()=>boolean=()=>!document.hidden){
- let state:AndroidUpdateState={phase:'checking',received:0,total:0,networkReady:false,torReady:false,opening:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0;
- let status:NativeStatus={phase:'idle',generation:0},poll:ReturnType<typeof setTimeout>|undefined,refreshing:Promise<void>|undefined;
- type Download={id:string;generation:number;revision:number;cancel:(error:Error)=>void};
- let downloading:Download|undefined,permissionOpening=false,rearmPreflight:(()=>void)|undefined;
+ let state:AndroidUpdateState={phase:'checking',received:0,total:0,networkReady:false,torReady:false,error:''},latest:NativeRelease|undefined,stopped=false,revision=0,networkRevision=0,updating=0;
+ let status:NativeStatus={phase:'idle',generation:0},refreshing:Promise<void>|undefined;
+ type Download={id:string;generation:number;cancel:(error:Error)=>void};
+ let downloading:Download|undefined,rearmPreflight:(()=>void)|undefined;
  const listeners=new Set<()=>void>();
  const publish=(change:Partial<AndroidUpdateState>)=>{if(stopped)return;state={...state,...change};for(const listener of listeners)listener();};
  const active=(owner:number)=>!stopped&&revision===owner;
- const installable=()=>!!state.staged&&(state.phase==='ready'||state.phase==='failed'&&state.info?.installStatus==='failed');
- const schedule=()=>{
-  clearTimeout(poll);poll=undefined;
-  if(!stopped&&isVisible()&&['installing','confirmation-required','unknown'].includes(state.phase))poll=setTimeout(()=>void refresh(),2500);
- };
+ const busy=()=>updating>0&&active(updating);
  const available=(info:AndroidUpdateInfo)=>{
-  const error=conflict(info,latest?.androidUpdate);
-  publish({info,release:latest,phase:latest?(error?'blocked':'available'):'idle',staged:undefined,error,received:0,total:latest?.androidUpdate?.bytes??0});
- };
- const reconcile=(info:AndroidUpdateInfo)=>{
-  const installed=info.installStatus==='installed',target=state.staged?.versionCode??state.release?.androidUpdate?.versionCode??latest?.androidUpdate?.versionCode;
-  const staged=installed?(info.staged&&info.staged.versionCode>info.versionCode?info.staged:state.staged&&state.staged.versionCode>info.versionCode?state.staged:undefined):info.staged;
-  const retryReady=info.staged?.ready===true&&info.staged.versionCode>info.versionCode;
-  const newer=Math.max(staged?.versionCode??0,latest?.androidUpdate?.versionCode??0,target??0)>info.versionCode;
-  if(installed&&!newer){publish({info,phase:'installed',error:'',staged:undefined});return;}
-  if(info.installStatus==='installing'||info.installStatus==='confirmation-required'){
-   publish({info,phase:info.installStatus,error:info.installError??'',staged:info.staged??state.staged});return;
-  }
-  if(info.installStatus==='failed'){publish({info,phase:'failed',staged:info.staged,error:info.installError??'Android did not install the update. Your wallet data stays on this device.'});return;}
-  if(['installing','confirmation-required','unknown'].includes(state.phase)&&!retryReady&&!(installed&&(target===undefined||info.versionCode>=target))){
-   publish({info,phase:'unknown',error:'Android has not confirmed the install status. Check again before starting another installation.'});return;
-  }
-  if(staged){
-   const release=state.staged?.id===staged.id?state.release:latest;
-   const error=conflict(info,release?.androidUpdate);
-   if(error||release?.androidUpdate?.versionCode!==staged.versionCode){publish({info,phase:'blocked',staged,error:error||'A different update is saved. Discard it before downloading this release.'});return;}
-   publish({info,phase:'ready',release,staged,received:release.androidUpdate.bytes,total:release.androidUpdate.bytes,error:''});return;
-  }
-  available(info);
+  const update=latest?.androidUpdate,error=conflict(info,update);
+  publish({info,release:latest,phase:latest?(error?'blocked':'available'):'idle',staged:info.staged?.versionCode===update?.versionCode?info.staged:undefined,error,received:0,total:update?.bytes??0});
  };
  async function refresh(){
-  if(stopped||!isVisible()||downloading||state.phase==='preparing')return;
+  if(stopped||!isVisible()||busy())return;
   if(refreshing)return refreshing;
   const owner=revision;
   refreshing=(async()=>{
-   try{const info=await bounded(backend.info());if(active(owner)&&isVisible())reconcile(info);}
-   catch(error){if(active(owner)&&isVisible())publish({phase:['installing','confirmation-required','unknown'].includes(state.phase)?'unknown':state.staged?'ready':'failed',error:message(error)});}
-  })().finally(()=>{refreshing=undefined;if(active(owner))schedule();else if(!stopped&&isVisible())void refresh();});
+   try{const info=await bounded(backend.info());if(active(owner)&&isVisible())available(info);}
+   catch(error){if(active(owner)&&isVisible())publish({phase:'failed',error:message(error)});}
+  })().finally(()=>{refreshing=undefined;});
   return refreshing;
  }
  const cancelDownload=(reason:string)=>{
@@ -120,7 +84,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   let timer:ReturnType<typeof setTimeout>|undefined,left=10_000,since=0;
   const arm=()=>{
    if(timer!==undefined){clearTimeout(timer);timer=undefined;left-=Date.now()-since;}
-   if(isVisible()){since=Date.now();timer=setTimeout(()=>reject(new Error('Android did not respond. Check the update status and try again.')),Math.max(0,left));}
+   if(isVisible()){since=Date.now();timer=setTimeout(()=>reject(new Error(NO_REPLY)),Math.max(0,left));}
   };
   const settle=()=>{clearTimeout(timer);if(rearmPreflight===arm)rearmPreflight=undefined;};
   rearmPreflight=arm;arm();
@@ -129,32 +93,51 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
  const accept=(next:NativeStatus)=>{
   if(stopped||next.generation<status.generation)return;
   networkRevision++;status=next;const ready=next.phase==='ready';publish({networkReady:ready,torReady:ready&&(next.mode??'tor')==='tor'});
-  if(downloading&&(!ready||next.generation!==downloading.generation))cancelDownload('The connection changed. Reconnect, then retry the download.');
+  if(downloading&&(!ready||next.generation!==downloading.generation))cancelDownload('The connection changed. Reconnect, then try again.');
  };
- // A handoff to Android's own installer shares this preflight, so it cannot skip the identity
- // checks, the saved-package match, the install permission or the wallet's final writes.
- async function run(mode:'install'|'confirm'|'open'){
-  const saved=state.staged,confirm=mode==='confirm';
-  if(stopped||!isVisible()||(confirm?state.phase!=='confirmation-required':!installable()))return;
-  const owner=++revision;let submitted=false;publish({phase:'preparing',error:''});
+ async function download(owner:number,update:AndroidUpdatePackage){
+  if(!state.networkReady)throw new Error('Wait for the wallet to connect before downloading this update.');
+  const transfer:Download={id:crypto.randomUUID(),generation:status.generation,cancel:()=>{}};
+  const cancelled=new Promise<never>((_,reject)=>{transfer.cancel=reject;});void cancelled.catch(()=>{});downloading=transfer;
+  publish({phase:'downloading',received:0,total:update.bytes});
   try{
-   const info=await bounded(backend.info());if(!active(owner))return;
-   if(!confirm&&info.installStatus==='failed'&&!info.staged){reconcile(info);return;}
-   const blocked=confirm?installationConflict(info):conflict(info,state.release?.androidUpdate);if(blocked)throw new Error(blocked);
-   publish({info});
-   if(confirm&&info.installStatus!=='confirmation-required'){reconcile(info);return;}
-   if(!confirm&&(info.installStatus==='installing'||info.installStatus==='confirmation-required')){reconcile(info);return;}
-   if(!confirm&&(!info.staged||info.staged.id!==saved!.id||info.staged.versionCode!==saved!.versionCode))throw new Error('The saved update is unavailable. Download it again before installing.');
-   if(!confirm&&!info.canRequestInstalls){publish({phase:'ready',info,error:'Allow Shielded to install updates in Android settings, then return and install again.'});return;}
+   const work=backend.download(transfer.generation,transfer.id,update,progress=>{
+    if(downloading!==transfer||!active(owner))return;
+    if(!Number.isSafeInteger(progress.received)||progress.received<0||progress.total!==update.bytes||progress.received>progress.total){cancelDownload('Android reported invalid download progress. Try again.');return;}
+    // Native reports 0 once as each source attempt starts, so a host-to-GitHub fallback restarts the count.
+    if(progress.received>state.received||(progress.received===0&&state.received>0))publish({received:progress.received});
+   });
+   void work.then(saved=>{if(downloading!==transfer||!active(owner))void backend.cancel(saved.id).catch(()=>{});},()=>{});
+   const saved=await Promise.race([work,cancelled]);
+   if(downloading!==transfer||!active(owner))return;
+   if(saved.versionCode!==update.versionCode||!saved.id)throw new Error('The saved update does not match this release. Try again.');
+   downloading=undefined;publish({staged:saved,received:update.bytes});return saved;
+  }catch(error){if(downloading===transfer){downloading=undefined;void backend.cancel(transfer.id).catch(()=>{});}throw error;}
+ }
+ async function update(){
+  const release=latest,update=release?.androidUpdate;
+  if(stopped||!isVisible()||!['available','failed'].includes(state.phase))return;
+  if(!update){publish({phase:'blocked',error:'This release does not include an installable Android update yet.'});return;}
+  if(!state.staged&&!state.networkReady){publish({error:'Wait for the wallet to connect before downloading this update.'});return;}
+  const owner=updating=++revision;publish({phase:'checking',release,error:''});
+  try{
+   const info=await visiblyBounded(backend.info());if(!active(owner))return;
+   const blocked=conflict(info,update);if(blocked){publish({phase:'blocked',info,staged:undefined,error:blocked});return;}
+   let staged=info.staged?.versionCode===update.versionCode?info.staged:undefined;publish({staged});
+   if(!staged){
+    if(info.downloading)throw new Error('Another update download is still running. Try again in a moment.');
+    if(info.staged)await bounded(backend.cancel(info.staged.id));
+    if(!active(owner))return;
+    staged=await download(owner,update);if(!staged)return;
+   }
+   // A download that finished in the background waits for a tap rather than opening the installer on return.
+   if(!isVisible()){publish({phase:'available',staged,received:0});return;}
+   publish({phase:'preparing',staged});
    await bounded(prepare(),30_000);if(!active(owner))return;
-   submitted=true;publish({phase:'installing'});
-   const result=await bounded(confirm?backend.confirm():mode==='open'?backend.open(saved!.id):backend.install(saved!.id),15_000);if(!active(owner))return;
-   // Handing the package over leaves no installer session of ours, so an idle reply is the handoff
-   // completing rather than a lost install.
-   const phase=result.installStatus==='permission-required'?'ready':result.installStatus==='idle'?(mode==='open'?'ready':'unknown'):result.installStatus;
-   publish({phase,info:{...info,...(result.installStatus==='permission-required'?{canRequestInstalls:false}:{installStatus:result.installStatus})},...(phase==='installed'?{staged:undefined}:{}),error:result.installError??(phase==='unknown'?'Android has not confirmed the install status. Check again before starting another installation.':'')});
-  }catch(error){if(active(owner))publish({phase:submitted?'unknown':confirm?'confirmation-required':saved?'ready':'failed',error:message(error)});}
-  finally{if(active(owner))schedule();}
+   await bounded(backend.open(staged.id),15_000);if(!active(owner))return;
+   publish({phase:'available'});
+  }catch(error){if(active(owner))publish({phase:'failed',received:0,error:message(error)});}
+  finally{if(updating===owner)updating=0;}
  }
  const unsubscribe=network.subscribe(accept),initialNetwork=networkRevision;
  void network.status().then(next=>{if(!stopped&&networkRevision===initialNetwork)accept(next);},()=>{});
@@ -164,66 +147,19 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   subscribe(listener:()=>void){listeners.add(listener);return()=>{listeners.delete(listener);};},
   setRelease(release:NativeRelease|undefined){
    latest=release;
-   if(downloading||['preparing','installing','confirmation-required','unknown'].includes(state.phase))return;
-   if(state.staged){if(!state.release){publish({release});void refresh();}return;}
+   if(busy())return;
    if(state.info)available(state.info);else{publish({release});void refresh();}
   },
   refresh,
-  async download(){
-   const release=latest,update=release?.androidUpdate;
-   if(stopped||downloading||state.staged||['preparing','installing','confirmation-required','unknown','installed'].includes(state.phase))return;
-   if(!update){publish({phase:'blocked',error:'This release does not include an installable Android update yet.'});return;}
-   if(!isVisible()||!state.networkReady){publish({error:'Wait for the wallet to connect before downloading this update.'});return;}
-   const owner:Download={id:crypto.randomUUID(),generation:status.generation,revision:++revision,cancel:()=>{}};
-   const cancelled=new Promise<never>((_,reject)=>{owner.cancel=reject;});void cancelled.catch(()=>{});downloading=owner;
-   publish({phase:'downloading',release,staged:undefined,received:0,total:update.bytes,error:''});
-   try{
-    const info=await Promise.race([visiblyBounded(backend.info()),cancelled]);
-    if(downloading!==owner||!active(owner.revision))return;
-    const blocked=conflict(info,update);if(blocked)throw new Error(blocked);
-    if(info.installStatus==='installing'||info.installStatus==='confirmation-required')throw new Error('An Android installation is already pending. Check its status before downloading another update.');
-    if(info.staged){downloading=undefined;reconcile(info);return;}
-    if(info.downloading)throw new Error('Another update download is pending. Check its status before retrying.');
-    publish({info});
-    const work=backend.download(owner.generation,owner.id,update,progress=>{
-     if(downloading!==owner||!active(owner.revision))return;
-     if(!Number.isSafeInteger(progress.received)||progress.received<0||progress.total!==update.bytes||progress.received>progress.total){cancelDownload('Android reported invalid download progress. Retry the update.');return;}
-     // Native reports 0 once as each source attempt starts, so a host-to-GitHub fallback restarts the count.
-     if(progress.received>state.received||(progress.received===0&&state.received>0))publish({received:progress.received});
-    });
-    void work.then(saved=>{if(downloading!==owner||!active(owner.revision))void backend.cancel(saved.id).catch(()=>{});},()=>{});
-    const saved=await Promise.race([work,cancelled]);
-    if(downloading!==owner||!active(owner.revision))return;
-    if(saved.versionCode!==update.versionCode||!saved.id)throw new Error('The saved update does not match this release. Retry the download.');
-    downloading=undefined;publish({phase:'ready',staged:saved,received:update.bytes,error:''});
-   }catch(error){if(downloading===owner&&active(owner.revision)){downloading=undefined;publish({phase:'failed',error:message(error)});void backend.cancel(owner.id).catch(()=>{});}}
-  },
+  update,
   cancel(){cancelDownload('Download cancelled. Your wallet is unchanged.');},
-  async discard(){
-   const staged=state.staged;if(stopped||!staged||!['ready','blocked','failed'].includes(state.phase))return;
-   const owner=++revision;publish({phase:'checking',error:''});
-   try{await bounded(backend.cancel(staged.id));if(active(owner)){publish({staged:undefined});await refresh();}}
-   catch(error){if(active(owner))publish({phase:'ready',error:message(error)});}
-  },
-  async permission(){
-   if(stopped||permissionOpening||!isVisible()||!installable())return;
-   permissionOpening=true;const owner=++revision;publish({opening:true,error:''});
-   try{await bounded(backend.permission());if(active(owner)&&isVisible())await refresh();}
-   catch(error){if(active(owner)&&isVisible())publish({error:message(error)});}
-   finally{permissionOpening=false;publish({opening:false});}
-  },
-  install:(confirm=false)=>run(confirm?'confirm':'install'),
-  openInstaller:()=>run('open'),
   visibilityChanged(){
    if(stopped)return;
    rearmPreflight?.();
-   if(!isVisible()){
-    clearTimeout(poll);poll=undefined;
-    if(state.phase==='preparing'){++revision;publish({phase:state.info?.installStatus==='confirmation-required'?'confirmation-required':'ready',error:'Installation paused. Tap Install update when you are ready.'});}
-   }
+   if(!isVisible()){if(state.phase==='preparing'){++revision;publish({phase:'available',error:''});}}
    else void refresh();
   },
-  stop(){if(stopped)return;cancelDownload('Update download stopped.');stopped=true;++revision;clearTimeout(poll);unsubscribe();listeners.clear();},
+  stop(){if(stopped)return;cancelDownload('Update download stopped.');stopped=true;++revision;unsubscribe();listeners.clear();},
  };
 }
 export type AndroidUpdateController=ReturnType<typeof createAndroidUpdateController>;

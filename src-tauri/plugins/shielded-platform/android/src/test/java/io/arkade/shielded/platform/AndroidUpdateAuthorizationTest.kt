@@ -139,10 +139,4 @@ class AndroidUpdateAuthorizationTest {
         queued.get().run()
         assertEquals(0, calls.get())
     }
-
-    @Test fun runningAuthorizationIsNotMisclassifiedAsAKnownPrecommitFailure() {
-        assertTrue(AndroidUpdatePolicy.mayHaveCommitted(false, AmbiguousUpdateAuthorization()))
-        assertTrue(AndroidUpdatePolicy.mayHaveCommitted(true, UpdateRejected("Installer result unavailable")))
-        assertFalse(AndroidUpdatePolicy.mayHaveCommitted(false, UpdateRejected("Authorization expired before running")))
-    }
 }

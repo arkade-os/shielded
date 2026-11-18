@@ -6,7 +6,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 
-internal class AmbiguousUpdateAuthorization : Exception("Android may still be handling this update. Check its status before retrying.")
+internal class AmbiguousUpdateAuthorization : Exception("Android may still be opening its installer.")
 
 internal class AndroidUpdateAuthorization(
     private val post: (Runnable) -> Boolean,
@@ -23,7 +23,6 @@ internal class AndroidUpdateAuthorization(
         val task = FutureTask<Unit> {
             if (!phase.compareAndSet(Phase.QUEUED, Phase.RUNNING)) throw UpdateRejected("Android update authorization expired")
             try {
-                // Journalled and replayed by info(), so it has to stay true when it is read back.
                 if (!allowed() || now() - deadline >= 0) throw UpdateRejected("Shielded was in the background, so Android did not open the installer. Try again.")
                 action()
             } finally { phase.set(Phase.FINISHED) }
