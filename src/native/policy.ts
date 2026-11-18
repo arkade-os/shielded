@@ -35,8 +35,8 @@ export class NativePolicy {
  registerArk(ark:string,indexer:string){this.arks.add(nativeUrl(ark).origin);this.indexers.add(nativeUrl(indexer).origin);}
  registerEsplora(base:string){this.esploras.add(nativeUrl(base).href.replace(/\/$/,''));}
  registerLnurl(base:string){this.lnurls.add(nativeUrl(base).origin);}
- /** Whether a request may carry the wallet's Authorization header: only the registered Lightning address service reads one. */
- authorizes(input:string):boolean {try{return this.lnurls.has(nativeUrl(input).origin);}catch{return false;}}
+ /** Whether a request may carry the wallet's Authorization header: only the registered Lightning address service's own address routes read one, never a pay request or its callback. */
+ authorizes(input:string):boolean {try{const url=nativeUrl(input);return this.lnurls.has(url.origin)&&/^\/lnurl\/address(\/|$)/.test(url.pathname);}catch{return false;}}
  subscription(id:string,script:string,origin:string){
   if(!id||!script)throw new Error('Invalid native subscription');
   const key=origin+'|'+id,next=route('indexer',origin+'|script|'+script),previous=this.subscriptions.get(key);

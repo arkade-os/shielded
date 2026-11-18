@@ -25,7 +25,7 @@ async function rig(t:TestContext,{pageOrigin=POOL,globals={},reply=()=>Response.
  // Node's own WebSocket reaches the six public relays, so a pool that lost its websocketImplementation fails here instead.
  const real=globalThis.WebSocket;globalThis.WebSocket=class {constructor(){throw new Error('a test reached for a public relay');}} as unknown as typeof WebSocket;t.after(()=>{globalThis.WebSocket=real;});
  const key=(await loadOhttpKey((await generateOhttpKey()).env))!,bus=createNostrBus(),calls:string[]=[],direct:string[]=[],made:unknown[]=[],sent:{url:string;init:RequestInit}[]=[];
- const router=createOhttpGateway({key,upstreams:[{origin:ARK,prefix:'/v1/'},{origin:new URL(ESPLORA).origin,prefix:'/api/'},{origin:LNURL,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:(async(url:string,init:RequestInit)=>{calls.push(url);sent.push({url,init});return reply(url);}) as unknown as typeof fetch});
+ const router=createOhttpGateway({key,upstreams:[{origin:ARK,prefix:'/v1/'},{origin:new URL(ESPLORA).origin,prefix:'/api/'},{origin:LNURL,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']},{origin:LNURL,prefix:'/.well-known/lnurlp/'}],poolOrigin:POOL,poolLoopback:LOOPBACK,gatewayToken:'token',fetch:(async(url:string,init:RequestInit)=>{calls.push(url);sent.push({url,init});return reply(url);}) as unknown as typeof fetch});
  // The relay pool hands each socket a normalized URL, so the gateway listens on the same strings.
  const carrier=startNostrCarrier({open:router.open,secret:key.nostrSecret,relays:NOSTR_RELAYS.map(normalizeURL),pool:bus.pool});t.after(()=>carrier.close());await settle();
  // The sentinel is a WebSocket over the bus, speaking NIP-01 to the sealed fetch's own relay pool.
@@ -104,10 +104,10 @@ test('arkd, indexer and Esplora requests are classified before they are sealed',
 
 test('the wallet\'s Lightning address bearer reaches its service alone, PATCH included, and nothing else carries it',async t=>{
  const g=await rig(t),headers={authorization:'Bearer token','content-type':'application/json'};g.transport.providers(ARK,ARK);
- for(const [url,method] of [[LNURL+'/lnurl/address','GET'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH'],[LNURL+'/lnurl/address/alice/arkade','POST'],[ARK+'/v1/info','GET'],['/api/rollup/status','GET']] as const)
+ for(const [url,method] of [[LNURL+'/lnurl/address','GET'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH'],[LNURL+'/lnurl/address/alice/arkade','POST'],[LNURL+'/.well-known/lnurlp/bob','GET'],[ARK+'/v1/info','GET'],['/api/rollup/status','GET']] as const)
   assert.equal((await g.transport.fetch(url,{method,headers,...(method==='GET'?{}:{body:'{}'})})).status,200,`${method} ${url}`);
- assert.deepEqual(g.sent.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[LNURL+'/lnurl/address','GET','Bearer token'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH','Bearer token'],[LNURL+'/lnurl/address/alice/arkade','POST','Bearer token'],[ARK+'/v1/info','GET',null],[LOOPBACK+'/api/rollup/status','GET',null]]);
- for(const request of await g.inner())assert.equal(request.headers.get('authorization'),request.url.startsWith(LNURL)?'Bearer token':null,'the client seals the bearer only toward its service: '+request.url);
+ assert.deepEqual(g.sent.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[LNURL+'/lnurl/address','GET','Bearer token'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH','Bearer token'],[LNURL+'/lnurl/address/alice/arkade','POST','Bearer token'],[LNURL+'/.well-known/lnurlp/bob','GET',null],[ARK+'/v1/info','GET',null],[LOOPBACK+'/api/rollup/status','GET',null]]);
+ for(const request of await g.inner())assert.equal(request.headers.get('authorization'),request.url.startsWith(LNURL+'/lnurl/address')?'Bearer token':null,'the client seals the bearer only toward the routes that read it: '+request.url);
  await assert.rejects(g.transport.fetch(LNURL+'/lnurl/address/alice',{method:'DELETE',headers}),/not approved/);
 });
 

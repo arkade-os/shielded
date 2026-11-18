@@ -43,8 +43,9 @@ test('a registered Lightning address service gets exactly its routes, one key pe
  p.registerLnurl('https://ark.example');
  assert.equal(p.classify('https://ark.example/v1/indexer/vtxos?scripts='+script,'GET').purpose,'indexer','an LNURL service on the indexer origin relabels no indexer route');
  assert.throws(()=>p.classify('https://ark.example/v1/indexer/vtxos?scripts='+script+'&scripts='+other,'GET'),/one|group/i);
- assert.ok(p.authorizes(lnurl+'/lnurl/address'));
- for(const url of ['https://pool.example/api/rollup/status','https://lnurl.example.evil/lnurl/address','http://lnurl.example/lnurl/address','not a url'])assert.equal(p.authorizes(url),false,url);
+ for(const path of ['/lnurl/address','/lnurl/address/alice?domain=lnurl.example','/lnurl/address/alice/arkade'])assert.ok(p.authorizes(lnurl+path),path);
+ for(const url of [lnurl+'/.well-known/lnurlp/bob',lnurl+'/.well-known/lnurlp/bob/callback?amount=1000',lnurl+'/lnurl/'+session+'/callback',lnurl+'/lnurl/addressbook',
+  'https://pool.example/api/rollup/status','https://lnurl.example.evil/lnurl/address','http://lnurl.example/lnurl/address','not a url'])assert.equal(p.authorizes(url),false,url);
 });
 test('server subscription identifiers inherit only their script scope',()=>{
  const p=policy();p.subscription('server-a',script,'https://ark.example');
