@@ -1315,17 +1315,17 @@ test('a completed exit leaves no payout row in history, while a stranded payout 
 const PAYOUTS=120,SWAPS=20;
 async function longLivedWallet(sealed:boolean){
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),manager=await f.base.getContractManager(),freshReads:string[]=[];
- const read=manager.getContractsWithVtxos;
- Object.assign(manager,{setContractWatchState:async(target:string,watch:string)=>{const contract=f.contracts.find(c=>c.script===target);if(contract)contract.watch=watch;},
-  getContractsWithVtxos:async(filter?:{script?:string[]})=>{freshReads.push(...filter?.script??[]);return read(filter);}});
+ const read=manager.getContractsWithVtxos,fail={retire:new Set<string>(),read:new Set<string>()},ended:string[]=[];
+ Object.assign(manager,{setContractWatchState:async(target:string,watch:string)=>{if(watch==='retained'&&fail.retire.has(target))throw new Error('write failed');const contract=f.contracts.find(c=>c.script===target);if(contract)contract.watch=watch;},
+  getContractsWithVtxos:async(filter?:{script?:string[]})=>{if(filter?.script?.some(script=>fail.read.has(script)))throw new Error('read failed');freshReads.push(...filter?.script??[]);return read(filter);}});
  const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}});
  const payout=async(i:number)=>{const row=receiveDestination(branch,i);await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});return row;};
  const rows=[];for(let i=0;i<PAYOUTS;i++)rows.push(await payout(i));
  await journal.savePayouts(ownerKey,pool,rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})));
- for(let i=0;i<=SWAPS;i++){const artifact=await materializeLightningArtifact(f.base,await journal.allocateArtifact(ownerKey,pool,i%2?'send':'receive'));await journal.updateArtifact(ownerKey,pool,i<SWAPS?{...artifact,state:'ended'}:artifact);}
+ for(let i=0;i<=SWAPS;i++){const artifact=await materializeLightningArtifact(f.base,await journal.allocateArtifact(ownerKey,pool,i%2?'send':'receive'));await journal.updateArtifact(ownerKey,pool,i<SWAPS?{...artifact,state:'ended'}:artifact);if(i<SWAPS)ended.push(artifact.script!);}
  const open=()=>createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,sealed});
  const polled=()=>f.contracts.filter(contract=>contract.watch!=='retained').map(contract=>contract.script as string);
- return {open,polled,rows,payout,freshReads,settle:async()=>{for(let i=0;i<500&&polled().length>PRIVATE_PAYOUT_WINDOW+2;i++)await new Promise(resolve=>setImmediate(resolve));}};
+ return {open,polled,rows,payout,freshReads,fail,ended,settle:async(left=PRIVATE_PAYOUT_WINDOW+2)=>{for(let i=0;i<500&&polled().length>left;i++)await new Promise(resolve=>setImmediate(resolve));}};
 }
 
 test(`sealed, ${PAYOUTS} Lightning address payouts and ${SWAPS} finished swaps poll only the newest ${PRIVATE_PAYOUT_WINDOW+1} payouts and the open swap: ${3*(PRIVATE_PAYOUT_WINDOW+2)} polling reads a minute, not ${3*(PAYOUTS+SWAPS+1)}`,async t=>{
@@ -1351,14 +1351,31 @@ test('unsealed, every payout and swap script stays watched, as before',async()=>
  assert.deepEqual([w.polled().length,w.freshReads.length],[PAYOUTS+SWAPS+1,0]);
 });
 
-test('sealed, a read of every companion contract syncs only the watched ones and still returns them all',async()=>{
+test('sealed, a finished swap whose retirement fails holds up none after it, and is tried again',async()=>{
+ const w=await longLivedWallet(true);w.fail.retire.add(w.ended[0]!);w.fail.read.add(w.ended[1]!);
+ const service=await w.open();await w.settle(PRIVATE_PAYOUT_WINDOW+4);await service[Symbol.asyncDispose]();
+ const polled=w.polled();
+ assert.ok(polled.includes(w.ended[0]!)&&polled.includes(w.ended[1]!),'the two that failed stay watched');
+ assert.equal(polled.length,PRIVATE_PAYOUT_WINDOW+4,'every other finished swap was retired past them');
+ w.fail.retire.clear();w.fail.read.clear();
+ const again=await w.open();await w.settle();await again[Symbol.asyncDispose]();
+ assert.equal(w.polled().length,PRIVATE_PAYOUT_WINDOW+2,'a later pass retires them');
+});
+
+// A real SDK ContractManager over a counting indexer, with the first `watched` contracts watched and the rest retained.
+async function realManager(count:number,watched:number){
  const reads:string[]=[],idle=(_id:string,signal:AbortSignal)=>({[Symbol.asyncIterator](){return this;},next:()=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve({done:true,value:undefined}),{once:true}))});
  const indexer={getVtxos:async({scripts}:{scripts?:string[]})=>{reads.push(...scripts??[]);return {vtxos:[]};},subscribeForScripts:async()=>'sub',unsubscribeForScripts:async()=>{},getSubscription:idle};
  const manager=await ContractManager.create({indexerProvider:indexer as never,contractRepository:new InMemoryContractRepository(),walletRepository:new InMemoryWalletRepository(),vtxoSyncMaxAgeMs:15_000});
+ const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}}),rows=Array.from({length:count},(_,i)=>receiveDestination(branch,i));
+ for(const [i,row] of rows.entries()){await manager.createContract({type:'default',watch:'watched',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});if(i>=watched)await manager.setContractWatchState(row.script,'retained');}
+ await flushTasks();reads.length=0;
+ return {manager,reads,rows,dispose:()=>(manager as unknown as {dispose?:()=>Promise<void>}).dispose?.()};
+}
+
+test('sealed, a read of every companion contract syncs only the watched ones and still returns them all',async()=>{
+ const {manager,reads,rows,dispose}=await realManager(12,3);
  try{
-  const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}}),rows=Array.from({length:12},(_,i)=>receiveDestination(branch,i));
-  for(const [i,row] of rows.entries()){await manager.createContract({type:'default',watch:'watched',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});if(i>=3)await manager.setContractWatchState(row.script,'retained');}
-  await flushTasks();reads.length=0;
   assert.equal((await manager.getContractsWithVtxos(undefined,undefined,{maxSyncAgeMs:0})).length,12);
   assert.equal(new Set(reads).size,12,'the SDK alone syncs every contract on a full read');
   reads.length=0;
@@ -1366,5 +1383,15 @@ test('sealed, a read of every companion contract syncs only the watched ones and
   assert.deepEqual([...new Set(reads)].sort(),rows.slice(0,3).map(row=>row.script).sort(),'split, it syncs the three watched and reads the nine retained from the store');
   reads.length=0;await manager.getContractsWithVtxos({script:[rows[5]!.script]},undefined,{maxSyncAgeMs:0});
   assert.deepEqual(reads,[rows[5]!.script],'a scoped read is left as asked');
- }finally{await (manager as unknown as {dispose?:()=>Promise<void>}).dispose?.();}
+ }finally{await dispose();}
+});
+
+test('sealed, a contract whose watch state moves during a full read comes back exactly once',async()=>{
+ const {manager,rows,dispose}=await realManager(12,3),read=manager.getContractsWithVtxos.bind(manager);let moved=false;
+ // The first inner read lets the other take its snapshot, then moves one contract each way before it reads.
+ manager.getContractsWithVtxos=async(...args)=>{if(!moved){moved=true;await new Promise(resolve=>setImmediate(resolve));await manager.setContractWatchState(rows[0]!.script,'retained');await manager.setContractWatchState(rows[5]!.script,'watched');}return read(...args);};
+ try{
+  const scripts=(await sealedContractReads(manager).getContractsWithVtxos()).map(row=>row.contract.script);
+  assert.ok(moved);assert.deepEqual([...scripts].sort(),rows.map(row=>row.script).sort());
+ }finally{await dispose();}
 });
