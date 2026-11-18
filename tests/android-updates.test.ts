@@ -180,7 +180,7 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.match(read('../src-tauri/src/android_updates.rs'),/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\(/);
  assert.match(read(plugin+'src/lib.rs'),/"updateOpenInstaller"/);
  const updater=read(platform+'AndroidUpdater.kt');
- assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+verify\(file, args\)\s+val uri = FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);
+ assert.match(updater,/val file = AndroidUpdatePolicy\.privateApk\(directory, args\.path\)\s+(\/\/.*\s+)?try \{ verify\(file, args\) \} catch \(error: UpdateRejected\) \{ file\.delete\(\); throw error \}\s+val uri = FileProvider\.getUriForFile\(context, "\$ownPackage\.updates", file\)/);
  assert.match(updater,/setDataAndType\(uri, "application\/vnd\.android\.package-archive"\)/);
  assert.match(updater,/addFlags\(Intent\.FLAG_GRANT_READ_URI_PERMISSION\)/);
  // The handoff must reach a preinstalled installer only; an implicit APK intent any app can claim.

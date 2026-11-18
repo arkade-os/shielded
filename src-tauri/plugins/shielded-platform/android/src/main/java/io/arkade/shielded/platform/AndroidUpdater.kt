@@ -83,7 +83,8 @@ internal class AndroidUpdater(context: Context) {
     // Android's installer asks for the install-unknown-apps permission itself and owns the outcome.
     fun openInstaller(args: UpdateArgs, activity: () -> Activity, authorize: (() -> Unit) -> Unit) = try {
         val file = AndroidUpdatePolicy.privateApk(directory, args.path)
-        verify(file, args)
+        // Without a discard action, a staged file that fails here would fail every retry; gone, it is downloaded again.
+        try { verify(file, args) } catch (error: UpdateRejected) { file.delete(); throw error }
         val uri = FileProvider.getUriForFile(context, "$ownPackage.updates", file)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
