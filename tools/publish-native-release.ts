@@ -3,8 +3,10 @@ import { createReadStream, lstatSync, mkdirSync, readdirSync, readFileSync, writ
 import { basename, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ANDROID_UPDATE_MAX_BYTES, NATIVE_PACKAGE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type AndroidUpdatePackage, type NativePlatform, type NativeRelease, type NativeReleasePackage } from '../src/native-release.ts';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { ANDROID_UPDATE_MAX_BYTES, DESKTOP_UPDATE_FORMATS, NATIVE_PACKAGE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type AndroidUpdatePackage, type NativePlatform, type NativeRelease, type NativeReleasePackage } from '../src/native-release.ts';
 import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
+import updateSigning from '../src-tauri/update-signing.json' with {type:'json'};
 
 const repository = 'arkade-os/shielded';
 const apiOrigin = `https://api.github.com/repos/${repository}`;
@@ -27,6 +29,16 @@ function safeNumber(value: string | undefined): number {
 export function nativePublicationIdentity(env: NodeJS.ProcessEnv): Identity {
   if (env.GITHUB_REPOSITORY !== repository || !['push', 'workflow_dispatch'].includes(env.GITHUB_EVENT_NAME ?? '') || !/^refs\/heads\/(main|master)$/.test(env.GITHUB_REF ?? '') || !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? '')) throw new Error('Native publication requires a trusted primary branch run');
   return { commit: env.GITHUB_SHA!, buildNumber: safeNumber(env.GITHUB_RUN_NUMBER), runId: safeNumber(env.GITHUB_RUN_ID), attempt: safeNumber(env.GITHUB_RUN_ATTEMPT), branch: env.GITHUB_REF!.slice('refs/heads/'.length) };
+}
+/** What the release key signs; the desktop host rebuilds the same text in `desktop_updates.rs`. */
+export function desktopUpdateMessage(release: Pick<NativeRelease, 'channel' | 'network' | 'commit' | 'buildNumber'>, item: Pick<NativeReleasePackage, 'platform' | 'file' | 'bytes' | 'sha256'>): string {
+  return ['shielded-native-update-v1', `channel=${release.channel}`, `network=${release.network}`, `platform=${item.platform}`, `file=${item.file}`, `bytes=${item.bytes}`, `sha256=${item.sha256}`, `commit=${release.commit}`, `buildNumber=${release.buildNumber}`].join('\n');
+}
+export function nativeUpdateSigningKey(env: NodeJS.ProcessEnv, publicKey = updateSigning.publicKey): Uint8Array {
+  const value = env.SHIELDED_UPDATE_SIGNING_KEY?.trim() ?? '', seed = Buffer.from(value, 'base64');
+  if (seed.length !== 32 || seed.toString('base64') !== value) throw new Error('Native publication requires SHIELDED_UPDATE_SIGNING_KEY: the base64 of a 32-byte ed25519 seed');
+  if (Buffer.from(ed25519.getPublicKey(seed)).toString('hex') !== publicKey) throw new Error('SHIELDED_UPDATE_SIGNING_KEY does not match the update key pinned in the app');
+  return seed;
 }
 function artifactFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -66,7 +78,7 @@ function selectNativeArtifacts(names: readonly string[], identity: Identity): { 
 export function selectNativeArtifactDirectories(names: readonly string[], identity: Identity): Map<NativePlatform, string> {
   return selectNativeArtifacts(names, identity).platforms;
 }
-export async function prepareNativeRelease(input: string, output: string, identity: Identity, version: string, now = new Date()): Promise<PreparedNativeRelease> {
+export async function prepareNativeRelease(input: string, output: string, identity: Identity, version: string, signingKey: Uint8Array, now = new Date()): Promise<PreparedNativeRelease> {
   const entries = readdirSync(input, { withFileTypes: true });
   if (entries.some(entry => !entry.isDirectory() || entry.isSymbolicLink())) throw new Error('Native downloads must contain platform artifact directories');
   const selected = selectNativeArtifacts(entries.map(entry => entry.name), identity);
@@ -96,6 +108,11 @@ export async function prepareNativeRelease(input: string, output: string, identi
       files.set(file, packagePath);
       packages.push({ platform, file, profile: item.profile, requiresSigning: item.requiresSigning, bytes: item.bytes, sha256: item.sha256, url: `https://github.com/${repository}/releases/download/${tag}/${file}` } as NativeReleasePackage);
     }
+  }
+  for (const [platform, suffix] of Object.entries(DESKTOP_UPDATE_FORMATS)) {
+    const installable = packages.filter(item => item.platform === platform && item.file.endsWith(suffix));
+    if (installable.length !== 1) throw new Error(`Expected exactly one in-app ${platform} update package`);
+    installable[0].signature = Buffer.from(ed25519.sign(Buffer.from(desktopUpdateMessage({ channel, network: 'mutinynet', commit: identity.commit, buildNumber: identity.buildNumber }, installable[0])), signingKey)).toString('base64');
   }
   if (environments.some(environment => JSON.stringify(environment) !== JSON.stringify(environments[0]))) throw new Error('Native platforms used different reproduction environments');
   let androidUpdate: AndroidUpdatePackage | undefined;
@@ -224,12 +241,13 @@ export async function publishNativeRelease(prepared: PreparedNativeRelease, gith
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const identity = nativePublicationIdentity(process.env);
+    const identity = nativePublicationIdentity(process.env), signingKey = nativeUpdateSigningKey(process.env);
+    delete process.env.SHIELDED_UPDATE_SIGNING_KEY;
     if (!process.env.GITHUB_TOKEN) throw new Error('Native publication requires GITHUB_TOKEN');
     const github = new GitHubNativeReleases(process.env.GITHUB_TOKEN);
     await github.waitForChecks(identity.commit);
     const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version as string;
-    const prepared = await prepareNativeRelease(resolve(process.argv[2] ?? 'native-downloads'), resolve(process.argv[3] ?? 'native-release'), identity, version);
+    const prepared = await prepareNativeRelease(resolve(process.argv[2] ?? 'native-downloads'), resolve(process.argv[3] ?? 'native-release'), identity, version, signingKey);
     if (!prepared.manifest.androidUpdate) throw new Error('Native publication requires the stable signed Android update artifact');
     const published = await publishNativeRelease(prepared, github);
     console.log(`Published ${published.releaseUrl}`);
