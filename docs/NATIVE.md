@@ -12,7 +12,7 @@ The native build targets Windows, Linux, macOS, Android and iOS. Source support 
 
 Open [Download Shielded](https://shielded.mutinynet.arkade.sh/download#download). Your platform appears first; **Other systems** expands the remaining platforms. Each row contains an install guide, the exact build's public download links, source commit and SHA-256 checksums. The native channel is **Mutinynet test coins only**. If release information cannot be checked, the page offers **Retry downloads**. The install guides and this source build guide remain available while checking or retrying.
 
-When this build detects a newer native release, **Update available** opens the Android update dialog or, on other platforms, the download page in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can use their platform update flow; Google Play installs cannot use the sideload updater.
+When this build detects a newer native release, **Update available** opens the update dialog on Android and on desktop installations that can replace themselves, or otherwise the download page in the system browser. Other external links keep the in-app copy fallback. Future store-distributed builds can use their platform update flow; Google Play installs cannot use the sideload updater.
 
 The desktop and mobile apps register the standard `bitcoin:`, `lightning:` and `arkade:` URI schemes. Opening a payment link fills the Send form with its destination and amount, preserving required-parameter checks, but it never sends without the normal quote and confirmation steps. Links opened before the private wallet is ready remain queued until it opens.
 
@@ -202,6 +202,12 @@ The public release manifest remains schema 1 and retains its nine legacy package
 The `release` transport purpose is an internal bridge policy bundled with its matching frontend. Older native binaries retain their own `public` policy; the remote metadata endpoint and legacy package schema remain compatible. Native builds use bundled assets with the service worker disabled, so a new host does not load an older cached wallet frontend.
 
 The sideload plugin declares `REQUEST_INSTALL_PACKAGES` in both debug and release builds so the installer path can be tested consistently. Installation still requires the pinned certificate, an explicit action and Android permission. Store distribution needs its own update integration and permission policy.
+
+### Desktop update signing
+
+Publication signs each desktop package that can replace an installation in place (the Windows `-setup.exe`, the Linux `.AppImage` and the macOS `.app.zip`) with an ed25519 release key. The signature covers the channel, network, platform, file name, size, SHA-256, commit and build number. The 32-byte seed is the repository secret `SHIELDED_UPDATE_SIGNING_KEY`, passed only to the publish step, and publication fails unless it derives the public key pinned in `src-tauri/update-signing.json`. Each desktop build installs only a newer package that verifies against the key it was built with.
+
+Rotating the key takes two releases: publish a build that pins the new key while the old key still signs it, then switch the secret once installations have taken that build. An installation that skips the transition build needs one manual install from the downloads page, as does every installation if the seed is lost. A leaked key cannot be revoked: an installation that still pins it accepts packages signed with it until it installs a build pinning a new key.
 
 ## Native boundary and storage
 
