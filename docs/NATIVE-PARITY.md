@@ -14,7 +14,7 @@ Source audit: 2026-11-15, based on main `72ded16` plus the local platform parity
 | bitcoin/lightning/arkade payment links | Yes | Yes | Yes | Yes | Tauri deep-link plugin and `native-deeplink.ts` |
 | Same-process background/return | Same owner retained | Same owner retained; native activation repair | Same owner retained | Same owner retained | Native session, shared page lifecycle and foreground-gated health monitor |
 | Update availability | Yes | Yes | Yes | Yes | `AppUpdates.tsx` |
-| Download, verify and launch installer inside the app | Yes, compatible signed sideload APK | No; Apple provisioning/store distribution needed | No; opens downloads | No; opens downloads | `android-updates.ts`; this remains a platform difference |
+| Download, verify and launch installer inside the app | Yes, compatible signed sideload APK | No; Apple provisioning/store distribution needed | Yes, release-key signed `.app.zip` swapped in place, then relaunch; opens downloads when the bundle cannot be replaced | Yes, release-key signed NSIS installer or AppImage, then relaunch; a `.deb` opens downloads | `android-updates.ts`, `desktop-updates.ts`; iOS remains a platform difference |
 | Native passkey onboarding | Not exposed | Not exposed | Not exposed | Not exposed | `WalletOnboarding` explicitly suppresses native passkey controls; the existing Android bridge is currently unused |
 
 The wallet features above share the same React and protocol implementation. Platform-specific failures can still arise from WebView versions, camera permissions, keychain providers, deep-link registration and operating-system suspension. The shared scanner uses WebView camera APIs; a camera permission description is not evidence of a successful physical-device scan.
