@@ -13,7 +13,7 @@ export function createSolverRegistryMirror({url=SOLVER_REGISTRY_URL,fetch:send=f
   for(;;){const {done,value}=await reader.read();if(done)break;if((size+=value.length)>MAX_BYTES){await reader.cancel();throw new Error(`larger than ${MAX_BYTES} bytes`);}chunks.push(value);}
   const body=Buffer.concat(chunks),index=JSON.parse(body.toString('utf8'));
   // Only the shape: the wallet's discovery client validates the index itself.
-  if(!index||typeof index!=='object'||!Array.isArray(index.solvers)||!Array.isArray(index.markets))throw new Error('not a solver registry index');
+  if(!index||typeof index!=='object'||!Array.isArray(index.markets)||index.solvers!==undefined&&!Array.isArray(index.solvers))throw new Error('not a solver registry index');
   held={body,at:now()};
  };
  const refresh=()=>pending??=read().catch(error=>warn(`Solver registry mirror: ${error instanceof Error?error.message:String(error)}`)).finally(()=>{pending=undefined;});

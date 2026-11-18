@@ -22,6 +22,12 @@ test('release metadata uses a separate purpose for the canonical query-free GET 
  for(const method of ['POST','HEAD','PUT'])assert.throws(()=>p.classify(url,method));
  for(const denied of [url+'?',url+'?wallet=hidden',url+'/',url+'/latest',url.replace('/releases','/%72eleases'),url.replace('shielded.mutinynet.arkade.sh','pool.example'),url.replace('https:','wss:')])assert.throws(()=>p.classify(denied));
 });
+test('the pool\'s swap routes are a rendezvous POST and a registry GET, nothing else',()=>{
+ const p=policy(),pool='https://pool.example/api/rollup';
+ assert.deepEqual([p.classify(pool+'/rendezvous','POST','{}').purpose,p.classify(pool+'/solver-registry').purpose],['swap','discovery']);
+ for(const [m,path] of [['GET','/rendezvous'],['POST','/solver-registry'],['PATCH','/rendezvous'],['GET','/rendezvous/x']])assert.throws(()=>p.classify(pool+path,m),/not approved/,`${m} ${path}`);
+ assert.throws(()=>p.classify('https://ark.example/api/rollup/rendezvous','POST','{}'),/not approved/,'only on the pool');
+});
 test('a registered Lightning address service gets exactly its routes, one key per handle, and only it may carry a bearer',()=>{
  const p=policy(),lnurl='https://lnurl.example',session='ab'.repeat(32);
  assert.throws(()=>p.classify(lnurl+'/lnurl/address','GET'),/not approved/,'nothing before registration');

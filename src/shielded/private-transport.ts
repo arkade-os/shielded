@@ -1,24 +1,51 @@
 import {ESPLORA_URL,RestArkProvider,type NetworkName,type OnchainProvider} from '@arkade-os/sdk';
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
-import {verifyEvent} from 'nostr-tools/pure';
+import type {Filter} from 'nostr-tools/filter';
+import {verifyEvent,type Event} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
 import {NOSTR_RELAYS} from '../../packages/protocol/src/nostr-carrier.ts';
 import {NATIVE_RELEASE_ENDPOINT} from '../native-release.ts';
 import {journalledRoute,makeNativeMutationJournal,reconcileJournal,type JournalWallet} from '../native/mutations.ts';
 import {NativePolicy} from '../native/policy.ts';
 import {IsolatedIndexerProvider,IsolatedOnchainProvider} from '../native/providers.ts';
-import {LNURL_BASE,PRIVATE_ONCHAIN_POLL_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
+import type {CarrierPool} from '../rollup/nostr-carrier.ts';
+import {CARD_KIND,LNURL_BASE,PRIVATE_ONCHAIN_POLL_MS,RENDEZVOUS_WAIT_MS,markPrivateFetch,markPrivatePoolPage,markSealedFetch} from './network-privacy.ts';
 import {createSealedFetch,SealedFetchError} from './sealed-fetch.ts';
 
 export const PRIVATE_PAGE=12;
 export const PRIVATE_GRACE_MS=900_000;
 export const PRIVATE_SHIELD_COINS=20;
 export interface PrivateTransportConfig {config:Uint8Array;gateway:string;poolOrigin:string;pageOrigin:string;relays?:readonly string[];lnurl?:string;storage?:Pick<Storage,'getItem'|'setItem'|'removeItem'>;socket?:typeof WebSocket;globals?:Record<string,unknown>}
-export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile(wallet?:JournalWallet):Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};close():void}
+export interface PrivateTransport {fetch:typeof fetch;poolOrigin:string;pageSize:number;journal:ReturnType<typeof makeNativeMutationJournal>;reconcile(wallet?:JournalWallet):Promise<boolean>;providers(arkUrl:string,indexerUrl:string):{arkProvider:RestArkProvider;indexerProvider:IsolatedIndexerProvider;onchainProvider:(network:NetworkName)=>OnchainProvider};rfqPool():CarrierPool;close():void}
 
 let installed:PrivateTransport|undefined;
 const refused=(what:string)=>class {constructor(){throw new Error('Private networking does not permit '+what);}};
 export function privateTransport():PrivateTransport|undefined {return installed;}
+type Listener={onevent?:(event:Event)=>void;oneose?:()=>void;onclose?:(reasons:{url:string;reason:string}[])=>void};
+/** The swap package's relay pool, as one round trip each to the pool's rendezvous: a card read on subscribing, an RFQ on publishing, whose answer feeds the RFQ's reply subscription. */
+export function rendezvousPool(fetcher:typeof fetch,poolOrigin:string):CarrierPool {
+ let replies:{filter:Filter;on:Listener;closed:boolean}|undefined;
+ const meet=async(body:Record<string,unknown>)=>{
+  const response=await fetcher(poolOrigin+'/api/rollup/rendezvous',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  const answer=await response.json().catch(()=>undefined) as {events?:unknown;error?:unknown}|undefined;
+  if(!response.ok||!Array.isArray(answer?.events))throw new Error(`the pool's solver rendezvous answered ${response.status}${typeof answer?.error==='string'?`: ${answer.error}`:''}`);
+  return answer.events as Event[];
+ };
+ return {
+  subscribeMany(_relays:string[],filter:Filter,on:Listener){
+   const sub={filter,on,closed:false};
+   if(filter.kinds?.length===1&&filter.kinds[0]===CARD_KIND)void meet({kind:CARD_KIND,filter,waitMs:10_000}).then(events=>{if(sub.closed)return;for(const event of events)on.onevent?.(event);on.oneose?.();},error=>{if(!sub.closed)on.onclose?.([{url:poolOrigin,reason:String(error)}]);});
+   else replies=sub;
+   return {close(){sub.closed=true;}};
+  },
+  // The pool is the one relay here, so one outcome answers for any relays the card lists.
+  publish(_relays:string[],event:Event){
+   const sub=replies;
+   return [meet({kind:event.kind,event,filter:sub?.filter,waitMs:RENDEZVOUS_WAIT_MS}).then(events=>{if(sub&&!sub.closed)for(const reply of events)sub.on.onevent?.(reply);return '';})];
+  },
+  destroy(){},
+ } as unknown as CarrierPool;
+}
 export function installPrivateTransport(config:PrivateTransportConfig):PrivateTransport {
  if(installed)return installed;
  const target=(config.globals??globalThis) as Record<string,unknown>,direct=target.fetch as typeof fetch,Original=config.socket??(target.WebSocket as typeof WebSocket);
@@ -58,6 +85,7 @@ export function installPrivateTransport(config:PrivateTransportConfig):PrivateTr
    policy.registerArk(arkUrl,indexerUrl);
    return {arkProvider:new RestArkProvider(arkUrl),indexerProvider:new IsolatedIndexerProvider(indexerUrl,undefined,undefined,undefined,0),onchainProvider:network=>{const url=ESPLORA_URL[network];policy.registerEsplora(url);return new IsolatedOnchainProvider(url,PRIVATE_ONCHAIN_POLL_MS);}};
   },
+  rfqPool:()=>rendezvousPool(privateFetch,poolOrigin),
   close(){sealedFetch.close();if(installed===transport)installed=undefined;},
  };
  const define=(name:string,value:unknown)=>Object.defineProperty(target,name,{value,writable:false,configurable:false});

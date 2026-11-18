@@ -60,6 +60,8 @@ export class NativePolicy {
    const spend=/^\/spends\/([^/]+)(\/sign)?$/.exec(suffix);
    if(spend&&((m==='GET'&&!spend[2])||(m==='POST'&&spend[2])))return route('pool-operation',origin+'|'+spend[1]);
    if(m==='POST'&&suffix==='/assets')return route('pool-operation',origin+'|asset|'+digest(body??''));
+   if(m==='GET'&&suffix==='/solver-registry')return route('discovery',origin+suffix);
+   if(m==='POST'&&suffix==='/rendezvous')return route('swap',origin+suffix+'|'+digest(body??''));
   }
   if(this.indexers.has(origin)&&path.startsWith('/v1/indexer/')){
    if(m==='GET'&&path==='/v1/indexer/vtxos'){

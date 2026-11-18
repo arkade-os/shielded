@@ -2,9 +2,10 @@ import express from 'express';
 import {AbstractSimplePool} from 'nostr-tools/abstract-pool';
 import {matchFilter,type Filter} from 'nostr-tools/filter';
 import {verifyEvent,type Event} from 'nostr-tools/pure';
+import {CARD_KIND,RENDEZVOUS_WAIT_MS,RFQ_KIND} from '../shielded/network-privacy.ts';
 import {ANSWER_BYTES,CappedSocket} from './nostr-carrier.ts';
 
-export const RFQ_KIND=24859,CARD_KIND=38859,RENDEZVOUS_WAIT_MS=25_000;
+export {CARD_KIND,RENDEZVOUS_WAIT_MS,RFQ_KIND};
 export const RFQ_RELAYS:readonly string[]=Object.freeze(['wss://nostr.arkade.sh']);
 const MAX_EVENTS=16,EVENT_BYTES=64<<10,CONTENT_CHARS=16<<10,MAX_AUTHORS=8,ANSWER_LIMIT=ANSWER_BYTES-1024;
 export type RendezvousPool=Pick<AbstractSimplePool,'subscribeMany'|'publish'|'destroy'>;

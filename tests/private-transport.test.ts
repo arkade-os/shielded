@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import {test,type TestContext} from 'node:test';
 import {buildOffchainTx,CSVMultisigTapscript,DefaultVtxo,ESPLORA_URL,SingleKey} from '@arkade-os/sdk';
 import {base64,hex} from '@scure/base';
+import {finalizeEvent,generateSecretKey,getPublicKey} from 'nostr-tools/pure';
 import {normalizeURL} from 'nostr-tools/utils';
 import {NOSTR_CHUNK_BYTES,NOSTR_RELAYS,NOSTR_REQUEST_KIND,readRequest} from '../packages/protocol/src/nostr-carrier.ts';
 import {IsolatedOnchainProvider} from '../src/native/providers.ts';
@@ -108,6 +109,19 @@ test('the wallet\'s Lightning address bearer reaches its service alone, PATCH in
  assert.deepEqual(g.sent.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[LNURL+'/lnurl/address','GET','Bearer token'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH','Bearer token'],[LNURL+'/lnurl/address/alice/arkade','POST','Bearer token'],[ARK+'/v1/info','GET',null],[LOOPBACK+'/api/rollup/status','GET',null]]);
  for(const request of await g.inner())assert.equal(request.headers.get('authorization'),request.url.startsWith(LNURL)?'Bearer token':null,'the client seals the bearer only toward its service: '+request.url);
  await assert.rejects(g.transport.fetch(LNURL+'/lnurl/address/alice',{method:'DELETE',headers}),/not approved/);
+});
+
+test('the rendezvous pool and the registry mirror ride the sealed transport to the pool, and the reply reaches the RFQ subscription',async t=>{
+ const solver=generateSecretKey(),wallet=generateSecretKey(),reply=finalizeEvent({kind:24859,created_at:0,tags:[['p',getPublicKey(wallet)]],content:'sealed quote'},solver),heard:string[]=[];
+ const g=await rig(t,{reply:url=>url.endsWith('/rendezvous')?Response.json({events:[reply]}):Response.json({version:0,markets:[]})}),pool=g.transport.rfqPool();
+ const filter={kinds:[24859],'#p':[getPublicKey(wallet)],authors:[getPublicKey(solver)]},event=finalizeEvent({kind:24859,created_at:0,tags:[['p',getPublicKey(solver)]],content:'sealed rfq'},wallet);
+ pool.subscribeMany(['wss://nostr.arkade.sh'],filter,{onevent:found=>heard.push(found.id)});
+ assert.deepEqual(await Promise.all(pool.publish(['wss://nostr.arkade.sh'],event)),['']);
+ assert.deepEqual(heard,[reply.id]);
+ assert.equal((await g.transport.fetch(POOL+'/api/rollup/solver-registry')).status,200);
+ assert.deepEqual(g.sent.map(({url,init})=>[url,init.method]),[[LOOPBACK+'/api/rollup/rendezvous','POST'],[LOOPBACK+'/api/rollup/solver-registry','GET']]);
+ assert.deepEqual(JSON.parse(new TextDecoder().decode(g.sent[0]!.init.body as ArrayBuffer)),{kind:24859,event:JSON.parse(JSON.stringify(event)),filter,waitMs:25_000});
+ assert.deepEqual(g.direct,[]);
 });
 
 test('the transport fetch is marked private and sealed',async t=>{

@@ -8,6 +8,8 @@ export const PRIVATE_VTXO_SYNC_MAX_AGE_MS=15_000;
 export const PRIVATE_SUBMIT_JITTER_MS=10_000,PRIVATE_SPEND_POLL_MS=20_000,PRIVATE_VERDICT_EVERY=5,PRIVATE_SIGN_POLL_MS=3_000;
 // Here, not in lightning.ts, so the private boot reaches it without loading the Lightning clients.
 export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
+/** The swap package's Nostr kinds the pool's rendezvous carries, and the longest it waits: inside the gateway's 30 s upstream deadline. */
+export const RFQ_KIND=24859,CARD_KIND=38859,RENDEZVOUS_WAIT_MS=25_000;
 export const privateInterval=(ms:number):number=>Math.round(ms*(1+Math.random()/4));
 /** Sealed, each watched script costs about 3 reads a minute, so only the current Lightning address payout and this many before it stay watched. */
 export const PRIVATE_PAYOUT_WINDOW=8;
