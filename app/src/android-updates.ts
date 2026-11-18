@@ -137,7 +137,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    await bounded(backend.open(staged.id),15_000);if(!active(owner))return;
    publish({phase:'available'});
   }catch(error){if(active(owner))publish({phase:'failed',received:0,error:message(error)});}
-  finally{if(updating===owner)updating=0;}
+  finally{if(updating===owner){updating=0;if(latest!==release)void refresh();}}
  }
  const unsubscribe=network.subscribe(accept),initialNetwork=networkRevision;
  void network.status().then(next=>{if(!stopped&&networkRevision===initialNetwork)accept(next);},()=>{});

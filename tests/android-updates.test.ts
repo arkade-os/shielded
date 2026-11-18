@@ -49,6 +49,17 @@ test('a download owns progress and the tap; a GitHub fallback restarts the count
  await f.finish();await pending;assert.equal(f.downloads.length,1);assert.deepEqual(f.handoffs(),['prepare','open:'+work.id]);
 });
 
+test('a release that arrives during an update is offered from fresh native state once the update ends',async t=>{
+ const later={...release,buildNumber:release.buildNumber+1,androidUpdate:{...update,versionCode:update.versionCode+1}};
+ const f=fixture(t);await flush();const pending=f.controller.update();await flush();
+ f.controller.setRelease(later);assert.equal(f.state().release,release);
+ f.downloads[0]!.result.reject(new Error('Tor download timed out'));await pending;await flush();
+ assert.equal(f.state().release,later);assert.equal(f.state().phase,'available');assert.equal(f.state().total,later.androidUpdate.bytes);
+ const g=fixture(t);await flush();const unchanged=g.controller.update();await flush();
+ g.downloads[0]!.result.reject(new Error('Tor download timed out'));await unchanged;await flush();
+ assert.equal(g.state().phase,'failed');assert.match(g.state().error,/timed out/);
+});
+
 test('Tor pause or generation replacement cancels the download and fences late progress and saved files',async t=>{
  for(const next of [{phase:'paused',generation:2},{phase:'ready',generation:2,mode:'tor'}] as NativeStatus[]){
   const f=fixture(t);await flush();const pending=f.controller.update();await flush();const work=f.downloads[0]!;
