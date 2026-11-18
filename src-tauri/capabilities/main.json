@@ -31,9 +31,11 @@
     },
     "shielded-platform:allow-secret-get",
     "shielded-platform:allow-secret-set",
+    "shielded-platform:allow-secret-create",
     "shielded-platform:allow-secret-clear",
     "shielded-platform:allow-clipboard-text",
     "shielded-platform:allow-passkey-create",
-    "shielded-platform:allow-passkey-get"
+    "shielded-platform:allow-passkey-get",
+    "shielded-platform:allow-passkey-support"
   ]
 }

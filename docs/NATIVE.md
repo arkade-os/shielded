@@ -106,6 +106,65 @@ Use the npm scripts for mobile initialization. Tauri uses that package-manager c
 
 Arti currently pins a `sysinfo` release that calls macOS-only process APIs on iOS. `src-tauri/vendor/sysinfo` backports the upstream iOS fix while retaining the pinned release and real memory metrics. Its `README.shielded.md` records the source and patch; remove this override when Arti accepts a fixed release.
 
+### Wallet setup
+
+Passkey and phrase setup retain a public recovery intent across an unknown vault-write outcome. A fresh random wallet records its optional birth metadata after the vault acknowledges creation, so a rejected first write cannot require a phrase that was never shown. If that acknowledgement or metadata is lost, reopening reads the native vault and scans from genesis when no birth cursor exists. A competing wallet is never replaced by setup.
+
+Public passkey metadata retains credential IDs up to 4,096 base64url characters for compatibility with existing browser wallets. Native passkey requests and responses accept decoded IDs up to 1,024 bytes. If an existing browser credential exceeds that native bound, native passkey recovery fails closed; use its original supported browser or restore the same wallet with its recovery phrase.
+
+### Passkey availability and PRF results
+
+`passkey_support` checks native API/build availability; it does not certify that the
+selected provider or credential will return PRF output. Android's API 28 threshold
+matches [Credential Manager's passkey minimum](https://developer.android.com/identity/passkeys#android-version-compatibility).
+Provider and service versions still matter. The existing Android bridge forwards
+WebAuthn extension requests and responses to Credential Manager. The SDK rejects
+missing or invalid PRF output before seed creation or any vault write; it never
+substitutes a random wallet. CI does not establish a physical-device PRF matrix.
+
+The protocol wipes the PRF bytes it owns after derivation and on failure. Native WebAuthn
+responses also contain encoded PRF material in JSON/IPC strings; those copies cannot
+be reliably wiped across the bridge and JavaScript runtime. They remain secret data
+and must not enter logs, public metadata or storage.
+
+### Apple passkeys
+
+The Apple bridge implements platform-passkey PRF on iOS 18 and macOS 15 or later. The app deployment minima remain iOS 14 and macOS 11; older systems can use phrase wallets. Hardware-security-key PRF is outside this Apple adapter. See [Apple's PRF API availability](https://developer.apple.com/documentation/authenticationservices/asauthorizationpublickeycredentialprfassertioninput-swift.struct).
+
+Apple passkeys are disabled in default builds. There is no Apple Developer team or associated-domain signing configured for Shielded yet. Unsigned compilation checks the bridge, but does not establish a usable Apple credential ceremony. Enabling the build flag alone does not configure or prove the domain association.
+
+Before enabling a signed build:
+
+1. Register `io.arkade.shielded` with the actual Apple Developer team, enable Associated Domains for that app identity, and use a signing identity/provisioning profile that permits it.
+2. Serve `https://shielded.mutinynet.arkade.sh/.well-known/apple-app-site-association` over HTTPS with a `webcredentials.apps` entry for the signed app's actual application-identifier prefix plus `.io.arkade.shielded`. Use the actual prefix from that app identity; do not assume it always equals the Team ID. No association file or signing identity is published by this change.
+3. Build with `SHIELDED_APPLE_PASSKEYS=1` and verify the resulting signed app contains `com.apple.developer.associated-domains = ["webcredentials:shielded.mutinynet.arkade.sh"]`. Follow [Apple's associated-domain setup](https://developer.apple.com/documentation/xcode/supporting-associated-domains) and [passkey requirements](https://developer.apple.com/documentation/authenticationservices/supporting-passkeys).
+
+On a configured Mac, keep the flag in the environment for the entire command:
+
+```sh
+SHIELDED_APPLE_PASSKEYS=1 npm run native:build
+SHIELDED_APPLE_PASSKEYS=1 npm run native:ios -- init --ci
+SHIELDED_APPLE_PASSKEYS=1 npm run native:ios -- prepare
+SHIELDED_APPLE_PASSKEYS=1 npm run native:ios -- build --target aarch64 --ci
+```
+
+Configure the real development team/signing through Xcode or the documented Tauri signing environment before the signed iPhone build. Do not put certificates or private keys in source. These commands do not enroll a team, create certificates, publish the domain association or submit an app.
+
+The desktop wrapper selects `macos/PasskeyEntitlements.plist`, which retains camera access. The iOS wrapper merges the domain into the entitlement file referenced by the generated app target's signing settings, using macOS `plutil`. This runs after initialization and before build/dev/prepare, retains other entitlements and associated domains, and rejects ambiguous projects, changed app identifiers or redirected paths before editing. Existing generated native edits are preserved; regeneration is not required merely to enable the domain. If those signing settings are customized, every app configuration must use the same entitlement file inside the generated project. After an opted-in build, unsetting the flag disables the bridge; it does not remove an association from a manually maintained iOS entitlement file.
+
+Before distributing an enabled build, verify create, confirming authentication, restore and recovery reveal on signed iOS and both Mac architectures. Compare 12-word and 24-word recovery phrases across browser/native use of the same passkey, and exercise cancellation, system-prompt inactivity, lock and background/return. The provider must return a valid PRF result; operating-system/API availability alone does not guarantee it. These credential/device checks remain unverified here.
+
+Apple provider waits have a 120-second runtime deadline. Expiration releases only that ceremony and cancels its captured controller; late callbacks or timer cleanup cannot cancel a newer request. This is independent of the renderer's immediate logical cancellation on lock or connection revocation. Device suspension and main-thread scheduling remain subject to the operating system.
+
+### Passkey relying-party changes
+
+The current native relying party is `shielded.mutinynet.arkade.sh`. Changing only the pool origin or one native constant fails closed; changing every constant does not migrate existing passkeys to another relying party. Before enabling a signed build with a different origin:
+
+1. Review the bundled `__SHIELDED_NATIVE__.poolOrigin` used by `NativeWallet.tsx` and `RollupWallet.tsx`; `passkeyRpId` derives their RP host from it. Browser recovery also depends on the website's actual hostname. Keep the native network policy and build metadata consistent with that origin.
+2. Update and rebuild the matching enforcement layers together: Rust `passkeys/mod.rs` (`RP`), Swift `Passkeys.swift` (`PasskeyInput.rpID`), Linux `passkeys/linux.rs` (`ORIGIN`, including its HTTPS scheme), macOS `macos/PasskeyEntitlements.plist`, and the iOS domain added by `tools/native-build.mjs`. Do not enable a mixed-origin build.
+3. Configure the new host's HTTPS `/.well-known/apple-app-site-association` and `/.well-known/assetlinks.json` for the actual Apple app identity and existing Android package/signing certificate. Verify the signed Apple associated-domain entitlement and Android association against that host before enabling passkey controls. Keep signing identities stable.
+4. Preserve access to the old RP's recovery path until a separately reviewed credential migration is available. Verify existing-wallet recovery and any new-RP credential with separate test wallets, across browser and native providers; compare the derived 12/24 words and test pending-setup recovery. This PR does not implement an RP migration or publish new domain associations.
+
 ## CI binaries and public releases
 
 Release inputs are pinned for reproduction. The workflow uses Node `24.22.2`, Rust `1.96.0`, immutable action commit SHAs, the committed npm and Cargo lockfiles, `SOURCE_DATE_EPOCH=1794240000`, and a Rust path remap. Each platform artifact records those inputs and SHA-256 hashes of both lockfiles. Publication rejects a mixed toolchain or mismatched reproduction metadata. `tools/reproducible-build.test.mjs` fails if a runtime or action becomes floating.
