@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {MnemonicIdentity,SingleKey,type CreateContractParams,type Wallet} from '@arkade-os/sdk';
 import {bech32m,hex} from '@scure/base';
-import {CHECK_EVERY_MS,HD_REFUSED,METHODS_NOT_WITHDRAWN,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
+import {CHECK_EVERY_MS,HD_REFUSED,METHODS_NOT_WITHDRAWN,METHODS_REFUSED,RECOVERY_GAP,ROTATE_AFTER_MS,SEALED_RECOVERY,createLnurlReceive,receiveBranch,receiveDestination,type LnurlPayout} from '../src/shielded/lnurl-receive.ts';
 
 const mnemonic='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const hdIdentity=MnemonicIdentity.fromMnemonic(mnemonic,{isMainnet:false});
@@ -637,6 +637,21 @@ test('phrase recovery watches every /2/7 child up to the last funded one and bin
 test('recovery on an unused seed binds index 0 after one gap of scanning',async()=>{
  const f=setup({aliases:[receiver]});await f.service.recover();
  assert.equal(f.bound()[0]!.arkadeAddress,at(0).address);assert.equal(f.scans(),RECOVERY_GAP/50);
+});
+
+test('sealed, an explicit recovery is refused before any request, with how to recover',async()=>{
+ const f=setup({aliases:[receiver]});
+ await assert.rejects(createLnurlReceive({...f.config,sealed:true}).recover(),error=>(error as Error).message===SEALED_RECOVERY);
+ assert.deepEqual([f.requests.length,f.scans()],[0,0]);
+});
+
+test('sealed, adopting an owned address binds without the 400-script scan, which stays owed to the next unsealed open',async()=>{
+ const f=setup({aliases:[receiver]});
+ await createLnurlReceive({...f.config,sealed:true}).claimName({privately:true});
+ assert.equal(f.bound().length,1);assert.ok(f.scans()<=1,`${f.scans()} indexer reads`);
+ assert.equal(Object.values(f.saved()!.servers)[0]!.recovering,true);
+ await createLnurlReceive(f.config).check();
+ assert.ok(f.scans()>=RECOVERY_GAP/50,`${f.scans()} indexer reads`);assert.equal(Object.values(f.saved()!.servers)[0]!.recovering,undefined);
 });
 
 test('claim does not take over an alias another wallet already owns',async()=>{

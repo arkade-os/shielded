@@ -20,6 +20,9 @@ import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} f
 import {LightningSwapRepository} from '../src/shielded/lightning-receipt.ts';
 import {pageActivityHistory} from '../app/src/shielded-page.ts';
 import {NO_SWAP_LINE,noSwapErrorText} from '../app/src/rollup-client.ts';
+import {receiveBranch,receiveDestination} from '../src/shielded/lnurl-receive.ts';
+import {PRIVATE_PAYOUT_WINDOW} from '../src/shielded/network-privacy.ts';
+import {IsolatedIndexerProvider} from '../src/native/providers.ts';
 
 globalThis.indexedDB=indexedDB;
 const owner='owner',pool='pool',secret='11'.repeat(32);
@@ -1306,4 +1309,40 @@ test('a completed exit leaves no payout row in history, while a stranded payout 
   assert.equal(rows.length,1,'a payout still sitting on its key stays visible for recovery');
   assert.deepEqual([rows[0]!.intent?.label,rows[0]!.amount],['On-chain exit payout',20_041]);
  }finally{await service[Symbol.asyncDispose]();}
+});
+
+// Four months of daily Lightning address payouts and some finished swaps, plus one swap still open, as a long-lived wallet has them.
+const PAYOUTS=120,SWAPS=20;
+async function longLivedWallet(sealed:boolean){
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),manager=await f.base.getContractManager(),freshReads:string[]=[];
+ Object.assign(manager,{setContractWatchState:async(target:string,watch:string)=>{const contract=f.contracts.find(c=>c.script===target);if(contract)contract.watch=watch;}});
+ Object.assign(f.base,{indexerProvider:{getVtxos:async({scripts}:{scripts:string[]})=>{freshReads.push(...scripts);return {vtxos:[]};}}});
+ const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}}),rows=Array.from({length:PAYOUTS},(_,i)=>receiveDestination(branch,i));
+ for(const row of rows)await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});
+ await journal.savePayouts(ownerKey,pool,rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})));
+ for(let i=0;i<=SWAPS;i++){const artifact=await materializeLightningArtifact(f.base,await journal.allocateArtifact(ownerKey,pool,i%2?'send':'receive'));await journal.updateArtifact(ownerKey,pool,i<SWAPS?{...artifact,state:'ended'}:artifact);}
+ const open=()=>createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,sealed});
+ const polled=()=>f.contracts.filter(contract=>contract.watch!=='retained').map(contract=>contract.script as string);
+ return {open,polled,rows,freshReads,settle:async()=>{for(let i=0;i<500&&polled().length>PRIVATE_PAYOUT_WINDOW+2;i++)await new Promise(resolve=>setImmediate(resolve));}};
+}
+
+test(`sealed, ${PAYOUTS} Lightning address payouts and ${SWAPS} finished swaps poll only the newest ${PRIVATE_PAYOUT_WINDOW+1} payouts and the open swap: ${3*(PRIVATE_PAYOUT_WINDOW+2)} sealed reads a minute, not ${3*(PAYOUTS+SWAPS+1)}`,async t=>{
+ const w=await longLivedWallet(true),service=await w.open();
+ await w.settle();await service[Symbol.asyncDispose]();
+ const polled=w.polled(),newest=w.rows.slice(-(PRIVATE_PAYOUT_WINDOW+1)).map(row=>row.script);
+ assert.equal(polled.length,PRIVATE_PAYOUT_WINDOW+2);assert.ok(newest.every(script=>polled.includes(script)),'the current payout and the 8 before it stay watched');
+ assert.equal(w.freshReads.length,SWAPS,'each finished swap is read once before it is retained');
+ const again=await w.open();await flushTasks();await again[Symbol.asyncDispose]();
+ assert.deepEqual([w.polled(),w.freshReads.length],[polled,SWAPS],'a retained swap script stays retained across a restart, unread');
+ t.mock.method(Math,'random',()=>0.5);t.mock.timers.enable({apis:['setTimeout']});
+ const reads:string[]=[],provider=new IsolatedIndexerProvider('https://indexer.example',undefined,{getVtxos:async({scripts}:{scripts:string[]})=>{reads.push(scripts[0]!);return {vtxos:[]};}} as never,20_000,0),stop=new AbortController();
+ provider.getSubscription(await provider.subscribeForScripts(polled),stop.signal);
+ for(let ms=0;ms<60_000;ms+=1000){t.mock.timers.tick(1000);for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));}
+ stop.abort();
+ assert.equal(reads.length,3*(PRIVATE_PAYOUT_WINDOW+2),`${reads.length} sealed reads in a minute`);
+});
+
+test('unsealed, every payout and swap script stays watched, as before',async()=>{
+ const w=await longLivedWallet(false),service=await w.open();await flushTasks();await service[Symbol.asyncDispose]();
+ assert.deepEqual([w.polled().length,w.freshReads.length],[PAYOUTS+SWAPS+1,0]);
 });

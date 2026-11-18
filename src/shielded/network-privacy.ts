@@ -9,6 +9,8 @@ export const PRIVATE_SUBMIT_JITTER_MS=10_000,PRIVATE_SPEND_POLL_MS=20_000,PRIVAT
 // Here, not in lightning.ts, so the private boot reaches it without loading the Lightning clients.
 export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
 export const privateInterval=(ms:number):number=>Math.round(ms*(1+Math.random()/4));
+/** Sealed, each watched script costs about 3 reads a minute, so only the current Lightning address payout and this many before it stay watched. */
+export const PRIVATE_PAYOUT_WINDOW=8;
 // Every display read re-syncs each watched script; a staleness budget collapses a burst of them into one indexer round. Watcher events sync their own script, so a payment still lands inside the window.
 export const cacheVtxoSync=<T,>(manager:T):T=>{(manager as {setVtxoSyncMaxAge?:(ms:number)=>void}).setVtxoSyncMaxAge?.(PRIVATE_VTXO_SYNC_MAX_AGE_MS);return manager;};
 
