@@ -57,7 +57,12 @@ class AndroidSeedVault(context: Context) {
         check(cipher.iv.size == 12)
         val blob = byteArrayOf(1) + cipher.iv + encrypted
         check(!Thread.currentThread().isInterrupted)
-        check(records.edit().putString("seed", Base64.encodeToString(blob, Base64.NO_WRAP)).commit())
+        val previous = records.getString("seed", null)
+        // SharedPreferences updates its map before the file, so a failed write puts the durable record back: get() would otherwise report a seed the disk lacks, and a plain remove would drop the seed a restore is replacing.
+        if (!records.edit().putString("seed", Base64.encodeToString(blob, Base64.NO_WRAP)).commit()) {
+            records.edit().apply { if (previous == null) remove("seed") else putString("seed", previous) }.commit()
+            error("The wallet seed could not be stored.")
+        }
     }
 
     fun clear() = synchronized(access) {
