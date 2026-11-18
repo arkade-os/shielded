@@ -921,6 +921,8 @@ mod tests {
         assert_eq!(lock_installer(&staged, &update).unwrap_err(), CHANGED);
         drop(writer);
         let installer = lock_installer(&staged, &update).unwrap();
+        assert!(std::fs::File::open(&staged).is_ok());
+        assert!(lock_installer(&staged, &update).is_ok());
         assert!(std::fs::OpenOptions::new().write(true).open(&staged).is_err());
         assert!(std::fs::rename(&staged, directory.0.join("swapped.exe")).is_err());
         assert!(std::fs::remove_file(&staged).is_err());
