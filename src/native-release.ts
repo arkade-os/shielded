@@ -65,6 +65,8 @@ const formats: Record<NativePlatform, readonly string[]> = {
 };
 /** The package each desktop host installs in place of itself; publication signs exactly these. */
 export const DESKTOP_UPDATE_FORMATS: Partial<Record<NativePlatform, string>> = { 'windows-x86_64': '-setup.exe', 'linux-x86_64': '.AppImage', 'macos-universal': '.app.zip' };
+/** The host's download cap per installer (`transport/update.rs`); a larger one is published unsigned. */
+export const DESKTOP_UPDATE_MAX_BYTES: Partial<Record<NativePlatform, number>> = { 'windows-x86_64': 512 * 1024 * 1024, 'linux-x86_64': 256 * 1024 * 1024, 'macos-universal': 256 * 1024 * 1024 };
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid native release object');

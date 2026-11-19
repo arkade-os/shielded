@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type NativePlatform, type NativeRelease } from '../src/native-release.ts';
+import { DESKTOP_UPDATE_FORMATS, DESKTOP_UPDATE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type NativePlatform, type NativeRelease } from '../src/native-release.ts';
 import { nativeReleaseFixture } from './fixtures/native-release.ts';
 import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
 import { assertNativeReleaseAdvancement, desktopUpdateMessage, extractNativeLinuxArchive, GitHubNativeReleases, nativePublicationIdentity, nativeUpdateSigningKey, prepareNativeRelease, publishNativeRelease, selectNativeArtifactDirectories, type NativeReleaseIndex, type PreparedNativeRelease } from '../tools/publish-native-release.ts';
@@ -92,6 +92,24 @@ test('publication fails rather than ship a desktop platform without its signed i
   const f = fixture(t), path = join(f.artifact('linux-x86_64'), 'manifest.json'), original = JSON.parse(readFileSync(path, 'utf8'));
   writeFileSync(path, JSON.stringify({ ...original, packages: original.packages.filter((item: { file: string }) => !item.file.endsWith('.AppImage')) }));
   await assert.rejects(f.prepare(), /one in-app linux-x86_64 update package/);
+});
+
+test('an installer above the host cap is published unsigned with a warning instead of failing publication', async t => {
+  const warnings: string[] = [], cap = DESKTOP_UPDATE_MAX_BYTES['linux-x86_64'];
+  t.mock.method(console, 'warn', (message: string) => { warnings.push(message); });
+  DESKTOP_UPDATE_MAX_BYTES['linux-x86_64'] = 10; t.after(() => { DESKTOP_UPDATE_MAX_BYTES['linux-x86_64'] = cap; });
+  const packages = (await fixture(t).prepare()).manifest.packages;
+  assert.equal(packages.find(item => item.file.endsWith('.AppImage'))!.signature, undefined);
+  assert.ok(packages.find(item => item.file.endsWith('-setup.exe'))!.signature);
+  assert.match(warnings.join('\n'), /^::warning::.*AppImage.*publishing it unsigned/);
+});
+
+test('publication caps each desktop installer exactly as the host transport does', () => {
+  const transport = readFileSync(new URL('../src-tauri/src/transport/update.rs', import.meta.url), 'utf8');
+  for (const [platform, suffix] of Object.entries(DESKTOP_UPDATE_FORMATS)) {
+    const cap = new RegExp(`\\("shielded-mutinynet-${platform}-", "${suffix.replaceAll('.', '\\.')}", (\\d+) \\* MIB\\)`).exec(transport)?.[1];
+    assert.equal(Number(cap) * 1024 * 1024, DESKTOP_UPDATE_MAX_BYTES[platform as NativePlatform], platform);
+  }
 });
 
 test('the update signing key must be a base64 32-byte seed of the pinned key and is never echoed', () => {

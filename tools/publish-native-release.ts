@@ -4,7 +4,7 @@ import { basename, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { ANDROID_UPDATE_MAX_BYTES, DESKTOP_UPDATE_FORMATS, NATIVE_PACKAGE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type AndroidUpdatePackage, type NativePlatform, type NativeRelease, type NativeReleasePackage } from '../src/native-release.ts';
+import { ANDROID_UPDATE_MAX_BYTES, DESKTOP_UPDATE_FORMATS, DESKTOP_UPDATE_MAX_BYTES, NATIVE_PACKAGE_MAX_BYTES, NATIVE_PLATFORMS, NATIVE_RELEASE_ORIGIN, parseNativeRelease, type AndroidUpdatePackage, type NativePlatform, type NativeRelease, type NativeReleasePackage } from '../src/native-release.ts';
 import androidSigning from '../src-tauri/android-signing.json' with {type:'json'};
 import updateSigning from '../src-tauri/update-signing.json' with {type:'json'};
 
@@ -112,6 +112,10 @@ export async function prepareNativeRelease(input: string, output: string, identi
   for (const [platform, suffix] of Object.entries(DESKTOP_UPDATE_FORMATS)) {
     const installable = packages.filter(item => item.platform === platform && item.file.endsWith(suffix));
     if (installable.length !== 1) throw new Error(`Expected exactly one in-app ${platform} update package`);
+    if (installable[0].bytes > DESKTOP_UPDATE_MAX_BYTES[platform as NativePlatform]!) {
+      console.warn(`::warning::${installable[0].file} is ${installable[0].bytes} bytes, above the ${platform} in-app update cap; publishing it unsigned, so apps offer the downloads page`);
+      continue;
+    }
     installable[0].signature = Buffer.from(ed25519.sign(Buffer.from(desktopUpdateMessage({ channel, network: 'mutinynet', commit: identity.commit, buildNumber: identity.buildNumber }, installable[0])), signingKey)).toString('base64');
   }
   if (environments.some(environment => JSON.stringify(environment) !== JSON.stringify(environments[0]))) throw new Error('Native platforms used different reproduction environments');
