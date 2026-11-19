@@ -27,6 +27,8 @@ test('every phase offers at most one primary action, and failures pair their err
   [{phase:'downloading'},['Cancel download']],[{phase:'checking'},[]],[{phase:'preparing',staged},[]],[{phase:'blocked',error:'Google Play manages this installation.'},[]],[{phase:'idle',release:undefined},[]],
  ] as [Partial<AndroidUpdateState>,string[]][])assert.deepEqual(actions(render(state)),expected,JSON.stringify(state));
  assert.match(render({phase:'failed',error:'Tor download timed out'}),/role="alert">Tor download timed out</);
+ assert.match(render({phase:'failed',error:'x'}),/<a href="https:[^"]+" data-native-external="true">install it from the download page<\/a>/);
+ assert.match(readFileSync(new URL('../app/src/AndroidAppUpdate.tsx',import.meta.url),'utf8'),/querySelectorAll<HTMLElement>\('button:not\(:disabled\),a\[href\],summary,input'\)/,'the focus trap includes the download link and its copy fallback');
 });
 
 test('download progress shows percent, received bytes, total bytes and a cancel action',()=>{

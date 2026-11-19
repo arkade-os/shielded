@@ -1,19 +1,22 @@
-import {useEffect,useRef,useSyncExternalStore} from 'react';
+import {useEffect,useRef,useState,useSyncExternalStore} from 'react';
 import {createPortal} from 'react-dom';
+import {openUrl} from '@tauri-apps/plugin-opener';
+import {nativeUpdateUrl} from '../../src/native-release.ts';
+import {NativeUpdateFallback} from './AppUpdates.tsx';
 import type {UpdateController,UpdateState} from './android-updates.ts';
 import {installedBuild} from './installed-build.ts';
 import './android-app-update.css';
 
 const size=(bytes:number)=>`${(bytes/1024/1024).toFixed(1)} MB`;
 export function AndroidAppUpdateDialog({state,onClose,onUpdate,onCancel,desktop=false}:{state:UpdateState;onClose:()=>void;onUpdate:()=>void;onCancel:()=>void;desktop?:boolean}){
- const dialog=useRef<HTMLElement>(null),close=useRef<HTMLButtonElement>(null);
+ const dialog=useRef<HTMLElement>(null),close=useRef<HTMLButtonElement>(null),[openFailed,setOpenFailed]=useState(false);
  useEffect(()=>{
   const previous=document.activeElement instanceof HTMLElement?document.activeElement:undefined,overflow=document.body.style.overflow;
   close.current?.focus();document.body.style.overflow='hidden';
   const key=(event:KeyboardEvent)=>{
    if(event.key==='Escape')onClose();
    if(event.key!=='Tab')return;
-   const buttons=[...dialog.current!.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')],first=buttons[0],last=buttons.at(-1);
+   const buttons=[...dialog.current!.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],summary,input')],first=buttons[0],last=buttons.at(-1);
    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
   };
@@ -34,6 +37,7 @@ export function AndroidAppUpdateDialog({state,onClose,onUpdate,onCancel,desktop=
    {phase==='downloading'&&<div className="android-update-progress" role="status" aria-live="polite"><div><strong>{percent}%</strong><span>{size(state.received)} of {size(state.total)}</span></div><progress max={100} value={percent} aria-label="Update download"/></div>}
    {canUpdate&&staged&&<p className="android-update-verified">Download verified. Your wallet will lock and finish saving before installation.</p>}
    {error&&<p className="android-update-error" role="alert">{error}</p>}
+   {phase==='failed'&&<p className="android-update-help">Or <a href={nativeUpdateUrl()} data-native-external="true" onClick={event=>{event.preventDefault();setOpenFailed(false);void openUrl(nativeUpdateUrl()).catch(()=>setOpenFailed(true));}}>install it from the download page</a>.</p>}{phase==='failed'&&openFailed&&<NativeUpdateFallback/>}
    {canUpdate&&offline&&<p className="android-update-help">Open or reconnect your wallet, then download.</p>}{canUpdate&&!staged&&networkReady&&!torReady&&<p className="android-update-help">Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it. Shielded still verifies it before installing.</p>}
    <div className="android-update-actions">
     {canUpdate&&<button type="button" onClick={onUpdate} disabled={offline}>{phase==='failed'?'Try again':`Update${bytes?` · ${size(bytes)}`:''}`}</button>}
