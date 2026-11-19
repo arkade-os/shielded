@@ -433,7 +433,7 @@ pub async fn native_android_update_open(
     )?;
     let opened = tauri_plugin_shielded_platform::android_open_update_installer(
         &app,
-        json!({ "path": prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code, "deadline": deadline.as_millis() as u64 }),
+        json!({ "path": prepared.file.path, "sha256": request.sha256, "bytes": request.bytes, "versionCode": request.version_code, "deadline": u64::try_from(deadline.as_millis()).unwrap_or(u64::MAX) }),
     )
     .await;
     if opened.is_err() {
