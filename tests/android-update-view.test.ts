@@ -49,7 +49,15 @@ test('signing conflicts protect the current installation without offering destru
 
 test('the update dialog stays above the wallet with mobile safe areas and reduced-motion support',()=>{
  const css=readFileSync(new URL('../app/src/android-app-update.css',import.meta.url),'utf8');assert.match(css,/z-index:160/);assert.match(css,/env\(safe-area-inset-top\)/);assert.match(css,/env\(safe-area-inset-bottom\)/);assert.match(css,/max-height:calc\(100dvh/);assert.match(css,/overflow:auto/);assert.match(css,/prefers-reduced-motion:reduce/);
- const provider=readFileSync(new URL('../app/src/AppUpdates.tsx',import.meta.url),'utf8');assert.match(provider,/\{children\}\{androidOpen&&androidController/);
+ const provider=readFileSync(new URL('../app/src/AppUpdates.tsx',import.meta.url),'utf8');assert.match(provider,/\{children\}\{updateOpen&&updateController/);
+});
+
+test('the desktop dialog sizes its own installer, says Shielded closes and reopens, and never mentions Android',()=>{
+ const desktop=(state:Partial<AndroidUpdateState>)=>renderToStaticMarkup(createElement(AndroidAppUpdateDialog,{state:{...defaults,...state},onClose:()=>{},onUpdate:()=>{},onCancel:()=>{},desktop:true}));
+ assert.deepEqual(actions(desktop({})),['Update · 50.0 MB']);assert.match(desktop({}),/Download inside Shielded through Tor\. Shielded closes, installs the update and reopens\./);
+ for(const phase of ['idle','checking','available','blocked','downloading','preparing','installing','failed'] as const)assert.doesNotMatch(desktop({phase,staged}),/Android/,phase);
+ assert.match(desktop({phase:'preparing',staged}),/before Shielded closes to install the update/);
+ const installing=desktop({phase:'installing',staged});assert.match(installing,/Installing your update/);assert.deepEqual(actions(installing),[]);
 });
 
 test('the update dialog names the installed build beside the release it offers',()=>{

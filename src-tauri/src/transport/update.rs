@@ -2,7 +2,25 @@ use super::{NativeRequest, PrivacyTransport, policy::check_request};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub(super) const MAX_APK_BYTES: u64 = 128 * 1024 * 1024;
+const MIB: u64 = 1024 * 1024;
+/// The release assets an update may fetch: file prefix, suffix and size cap.
+const PACKAGES: [(&str, &str, u64); 4] = [
+    ("shielded-mutinynet-android-arm64-", ".apk", 128 * MIB),
+    ("shielded-mutinynet-windows-x86_64-", "-setup.exe", 512 * MIB),
+    ("shielded-mutinynet-linux-x86_64-", ".AppImage", 256 * MIB),
+    ("shielded-mutinynet-macos-universal-", ".app.zip", 256 * MIB),
+];
+
+pub(super) fn package_limit(file: &str) -> Option<u64> {
+    PACKAGES
+        .iter()
+        .find(|(prefix, suffix, _)| {
+            file.len() > prefix.len() + suffix.len()
+                && file.starts_with(prefix)
+                && file.ends_with(suffix)
+        })
+        .map(|&(_, _, limit)| limit)
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,8 +74,7 @@ pub(super) fn initial_url(value: &str) -> Result<Url, String> {
         || !component(parts[4])
         || !parts[4].starts_with("native-mutinynet-")
         || !component(parts[5])
-        || !parts[5].starts_with("shielded-mutinynet-android-arm64-")
-        || !parts[5].ends_with(".apk")
+        || package_limit(parts[5]).is_none()
     {
         return Err("Update package must come from Shielded's Mutinynet releases".into());
     }
@@ -85,8 +102,14 @@ pub(super) fn redirect_url(value: &str) -> Result<Url, String> {
 
 impl UpdateDownload {
     pub(super) fn validate(&self) -> Result<Url, String> {
+        let url = initial_url(&self.url)?;
+        let limit = url
+            .path_segments()
+            .and_then(Iterator::last)
+            .and_then(package_limit)
+            .unwrap_or(0);
         if self.bytes == 0
-            || self.bytes > MAX_APK_BYTES
+            || self.bytes > limit
             || self.sha256.len() != 64
             || !self
                 .sha256
@@ -95,7 +118,17 @@ impl UpdateDownload {
         {
             return Err("Update package size or checksum is invalid".into());
         }
-        initial_url(&self.url)
+        Ok(url)
+    }
+
+    /// The release asset this download fetches, once its URL, size and checksum are valid.
+    pub(crate) fn file(&self) -> Result<String, String> {
+        let url = self.validate()?;
+        Ok(url
+            .path_segments()
+            .and_then(Iterator::last)
+            .unwrap_or_default()
+            .into())
     }
 
     /// The host serves verified copies of this exact release asset under one derived path.

@@ -1,6 +1,7 @@
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod android_updates;
+mod desktop_updates;
 pub mod transport;
 
 #[cfg(target_os = "ios")]
@@ -51,6 +52,10 @@ pub fn run() {
             transport::native_socket,
             transport::native_socket_send,
             transport::native_cancel,
+            desktop_updates::native_desktop_update_info,
+            desktop_updates::native_desktop_update_download,
+            desktop_updates::native_desktop_update_cancel,
+            desktop_updates::native_desktop_update_install,
             android_updates::native_android_update_info,
             android_updates::native_android_update_download,
             android_updates::native_android_update_cancel,
@@ -68,6 +73,7 @@ pub fn run() {
             let transport = transport::PrivacyTransport::remembering(data.join("tor"), data.join("native-mode"))
                 .map_err(std::io::Error::other)?;
             app.manage(transport.clone());
+            app.manage(desktop_updates::DesktopUpdates::new(app.handle())?);
             #[cfg(target_os = "ios")]
             let _ = IOS_APP.set(app.handle().clone());
             app.manage(android_updates::AndroidUpdates::new(app.path().app_cache_dir()?.join("shielded-updates"))

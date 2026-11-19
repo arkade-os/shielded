@@ -14,6 +14,8 @@ export interface NativeReleasePackage {
   requiresSigning: boolean;
   bytes: number;
   sha256: string;
+  /** Base64 ed25519 release-key signature over the desktop update message. */
+  signature?: string;
 }
 export interface AndroidUpdatePackage extends NativeReleasePackage {
   platform: 'android-arm64';
@@ -61,6 +63,10 @@ const formats: Record<NativePlatform, readonly string[]> = {
   'macos-universal': ['.dmg', '.app.zip'], 'android-arm64': ['release.apk', 'debug.apk'],
   ios: ['.ipa', '-simulator.app.zip'],
 };
+/** The package each desktop host installs in place of itself; publication signs exactly these. */
+export const DESKTOP_UPDATE_FORMATS: Partial<Record<NativePlatform, string>> = { 'windows-x86_64': '-setup.exe', 'linux-x86_64': '.AppImage', 'macos-universal': '.app.zip' };
+/** The host's download cap per installer (`transport/update.rs`); a larger one is published unsigned. */
+export const DESKTOP_UPDATE_MAX_BYTES: Partial<Record<NativePlatform, number>> = { 'windows-x86_64': 512 * 1024 * 1024, 'linux-x86_64': 256 * 1024 * 1024, 'macos-universal': 256 * 1024 * 1024 };
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid native release object');
@@ -99,7 +105,9 @@ export function parseNativeRelease(input: unknown): NativeRelease {
     if (!positive(item.bytes, NATIVE_PACKAGE_MAX_BYTES) || typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256)) throw new Error('Invalid native package size or SHA256');
     const url = safeUrl(item.url);
     if (url !== `${NATIVE_RELEASES_BASE}/download/${tag}/${item.file}` || files.has(item.file) || urls.has(url)) throw new Error('Invalid or duplicate native package download');
-    const result = { platform: item.platform, file: item.file, url, profile: item.profile, requiresSigning: item.requiresSigning, bytes: item.bytes, sha256: item.sha256 } as NativeReleasePackage;
+    // Canonical base64 of 64 bytes: the character before the padding may carry only two bits.
+    if (item.signature !== undefined && (typeof item.signature !== 'string' || !/^[A-Za-z0-9+/]{85}[AQgw]==$/.test(item.signature))) throw new Error('Invalid native package signature');
+    const result = { platform: item.platform, file: item.file, url, profile: item.profile, requiresSigning: item.requiresSigning, bytes: item.bytes, sha256: item.sha256, ...(item.signature === undefined ? {} : { signature: item.signature }) } as NativeReleasePackage;
     const format = packageFormat(result);
     const signing = (result.platform === 'android-arm64' && result.profile === 'release') || (result.platform === 'ios' && format === '.ipa');
     if (!format || (result.platform === 'android-arm64' && !result.file.endsWith('.apk')) || (result.platform !== 'android-arm64' && result.profile !== 'release') || signing !== result.requiresSigning || (signing && !result.file.includes('-unsigned-')) || (!signing && result.file.includes('-unsigned-'))) throw new Error('Invalid native package format or signing label');
@@ -120,8 +128,9 @@ export function parseNativeRelease(input: unknown): NativeRelease {
   if (value.environment === undefined) {
     if (value.buildNumber >= FIRST_REPRODUCIBLE_BUILD) throw new Error('Missing native build environment');
   } else {
-    const candidate = record(value.environment);
-    if (candidate.node !== '24.22.2' || candidate.rust !== '1.96.0' || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
+    const candidate = record(value.environment), version = (field: unknown) => typeof field === 'string' && /^\d+\.\d+\.\d+$/.test(field);
+    // Shape only, so installed apps survive a CI toolchain bump; the publisher pins the exact toolchain.
+    if (!version(candidate.node) || !version(candidate.rust) || !positive(candidate.sourceDateEpoch) || typeof candidate.lockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.lockfileSha256) || typeof candidate.rustLockfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.rustLockfileSha256)) throw new Error('Invalid native build environment');
     environment = candidate as unknown as NativeBuildEnvironment;
   }
   return { schema: 1, channel: 'native-mutinynet', network: 'mutinynet', commit: value.commit, buildNumber: value.buildNumber, version: value.version, publishedAt: value.publishedAt, releaseUrl, ...(environment ? { environment } : {}), packages, ...(androidUpdate ? { androidUpdate } : {}) };

@@ -331,3 +331,4 @@ jobs:
         run: node --import tsx tools/publish-native-release.ts native-downloads native-release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SHIELDED_UPDATE_SIGNING_KEY: ${{ secrets.SHIELDED_UPDATE_SIGNING_KEY }}
