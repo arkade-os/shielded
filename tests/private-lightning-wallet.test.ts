@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {indexedDB} from 'fake-indexeddb';
-import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,DefaultVtxo,InMemoryContractRepository,MnemonicIdentity,P2A,SingleKey,Transaction,UnilateralExit,VtxoScript,deriveDescriptorLeafPubKey,getNetwork,onchainRail,provisionClaimSecret,provisionRefundKey,resolveDescriptorSigner,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
+import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,ContractManager,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,MnemonicIdentity,P2A,ProviderUnavailableError,SingleKey,Transaction,UnilateralExit,VtxoScript,deriveDescriptorLeafPubKey,getNetwork,onchainRail,provisionClaimSecret,provisionRefundKey,resolveDescriptorSigner,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
 import {Script} from '@scure/btc-signer';
 import {sha256} from '@noble/hashes/sha2.js';
 import {ripemd160} from '@noble/hashes/legacy.js';
@@ -13,13 +13,16 @@ import {recoveryPhraseOf} from '../packages/protocol/src/wallet-keys.ts';
 import {destinationFieldOf} from '../packages/protocol/src/rollup/notes.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {IndexedDbLightningRepository,InMemoryLightningRepository,type LightningRepository} from '../src/shielded/lightning-repository.ts';
-import {LightningSessionBusy,artifactWallet,createPrivateLightning,lightningOwner,lightningSigner,materializeLightningArtifact,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
+import {LightningSessionBusy,artifactWallet,createPrivateLightning,lightningOwner,lightningSigner,materializeLightningArtifact,sealedContractReads,type PrivateLightningService} from '../src/shielded/lightning-wallet.ts';
 import {ShieldedWallet} from '../src/shielded/wallet.ts';
 import {checkRecoveryWitnessRepair,completeRecoveryWitnesses} from '../src/shielded/lightning-exit-witness.ts';
 import {submitLightningSpend,validateLightningSpend,type LightningSpendRecord} from '../src/shielded/lightning-spend.ts';
 import {LightningSwapRepository} from '../src/shielded/lightning-receipt.ts';
 import {pageActivityHistory} from '../app/src/shielded-page.ts';
 import {NO_SWAP_LINE,noSwapErrorText} from '../app/src/rollup-client.ts';
+import {receiveBranch,receiveDestination} from '../src/shielded/lnurl-receive.ts';
+import {PRIVATE_PAYOUT_WINDOW} from '../src/shielded/network-privacy.ts';
+import {IsolatedIndexerProvider} from '../src/native/providers.ts';
 
 globalThis.indexedDB=indexedDB;
 const owner='owner',pool='pool',secret='11'.repeat(32);
@@ -1306,4 +1309,107 @@ test('a completed exit leaves no payout row in history, while a stranded payout 
   assert.equal(rows.length,1,'a payout still sitting on its key stays visible for recovery');
   assert.deepEqual([rows[0]!.intent?.label,rows[0]!.amount],['On-chain exit payout',20_041]);
  }finally{await service[Symbol.asyncDispose]();}
+});
+
+// Four months of daily Lightning address payouts and some finished swaps, plus one swap still open, as a long-lived wallet has them.
+const PAYOUTS=120,SWAPS=20;
+async function longLivedWallet(sealed:boolean){
+ const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),manager=await f.base.getContractManager(),freshReads:string[]=[];
+ const read=manager.getContractsWithVtxos,fail={retire:new Set<string>(),read:new Set<string>()},ended:string[]=[];
+ Object.assign(manager,{setContractWatchState:async(target:string,watch:string)=>{if(watch==='retained'&&fail.retire.has(target))throw new Error('write failed');const contract=f.contracts.find(c=>c.script===target);if(contract)contract.watch=watch;},
+  getContractsWithVtxos:async(filter?:{script?:string[]},_pageSize?:number,options?:{requireSynced?:boolean})=>{if(filter?.script?.some(script=>fail.read.has(script))){if(options?.requireSynced)throw new Error('sync failed');return read(filter);}freshReads.push(...filter?.script??[]);return read(filter);}});
+ const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}});
+ const payout=async(i:number)=>{const row=receiveDestination(branch,i);await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});return row;};
+ const rows=[];for(let i=0;i<PAYOUTS;i++)rows.push(await payout(i));
+ await journal.savePayouts(ownerKey,pool,rows.map(({id,descriptor,address,script})=>({id,descriptor,address,script})));
+ for(let i=0;i<=SWAPS;i++){const artifact=await materializeLightningArtifact(f.base,await journal.allocateArtifact(ownerKey,pool,i%2?'send':'receive'));await journal.updateArtifact(ownerKey,pool,i<SWAPS?{...artifact,state:'ended'}:artifact);if(i<SWAPS)ended.push(artifact.script!);}
+ const open=()=>createPrivateLightning({wallet:f.wallet,companion:f.base,journal,repositoryFor:f.repositoryFor,clientFactory:f.clientFactory,acquireSession:f.acquireSession,legacyRecovery:false,sealed});
+ const polled=()=>f.contracts.filter(contract=>contract.watch!=='retained').map(contract=>contract.script as string);
+ return {open,polled,rows,payout,freshReads,fail,ended,settle:async(left=PRIVATE_PAYOUT_WINDOW+2)=>{for(let i=0;i<500&&polled().length>left;i++)await new Promise(resolve=>setImmediate(resolve));}};
+}
+
+test(`sealed, ${PAYOUTS} Lightning address payouts and ${SWAPS} finished swaps poll only the newest ${PRIVATE_PAYOUT_WINDOW+1} payouts and the open swap: ${3*(PRIVATE_PAYOUT_WINDOW+2)} polling reads a minute, not ${3*(PAYOUTS+SWAPS+1)}`,async t=>{
+ const w=await longLivedWallet(true),service=await w.open();
+ await w.settle();await service[Symbol.asyncDispose]();
+ const polled=w.polled(),newest=w.rows.slice(-(PRIVATE_PAYOUT_WINDOW+1)).map(row=>row.script);
+ assert.equal(polled.length,PRIVATE_PAYOUT_WINDOW+2);assert.ok(newest.every(script=>polled.includes(script)),'the current payout and the 8 before it stay watched');
+ assert.equal(w.freshReads.length,SWAPS,'each finished swap is read once before it is retained');
+ const again=await w.open();await flushTasks();
+ assert.deepEqual([w.polled(),w.freshReads.length],[polled,SWAPS],'a retained swap script stays retained across a restart, unread');
+ const {id,descriptor,address,script}=await w.payout(PAYOUTS);await again.registerPayouts([{id,descriptor,address,script}]);await again[Symbol.asyncDispose]();
+ assert.deepEqual([w.polled().includes(script),w.polled().includes(newest[0]!),w.polled().length],[true,false,PRIVATE_PAYOUT_WINDOW+2],'a new payout pushes the oldest watched one out of the window');
+ t.mock.method(Math,'random',()=>0.5);t.mock.timers.enable({apis:['setTimeout']});
+ const reads:string[]=[],provider=new IsolatedIndexerProvider('https://indexer.example',undefined,{getVtxos:async({scripts}:{scripts:string[]})=>{reads.push(scripts[0]!);return {vtxos:[]};}} as never,20_000,0),stop=new AbortController();
+ provider.getSubscription(await provider.subscribeForScripts(polled),stop.signal);
+ for(let ms=0;ms<60_000;ms+=1000){t.mock.timers.tick(1000);for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve));}
+ stop.abort();
+ assert.equal(reads.length,3*(PRIVATE_PAYOUT_WINDOW+2),`${reads.length} sealed reads in a minute`);
+});
+
+test(`sealed, two payouts registered at once still leave only the newest ${PRIVATE_PAYOUT_WINDOW+1} watched`,async()=>{
+ const w=await longLivedWallet(true),service=await w.open();await w.settle();
+ const added=[await w.payout(PAYOUTS),await w.payout(PAYOUTS+1)];
+ await Promise.all(added.map(({id,descriptor,address,script})=>service.registerPayouts([{id,descriptor,address,script}])));await service[Symbol.asyncDispose]();
+ const polled=w.polled();
+ assert.deepEqual([polled.length,polled.includes(w.rows[PAYOUTS-PRIVATE_PAYOUT_WINDOW]!.script),added.every(row=>polled.includes(row.script))],[PRIVATE_PAYOUT_WINDOW+2,false,true]);
+});
+
+test('unsealed, every payout and swap script stays watched, as before',async()=>{
+ const w=await longLivedWallet(false),service=await w.open();await flushTasks();await service[Symbol.asyncDispose]();
+ assert.deepEqual([w.polled().length,w.freshReads.length],[PAYOUTS+SWAPS+1,0]);
+});
+
+test('sealed, a finished swap whose retirement fails holds up none after it, and is tried again',async()=>{
+ const w=await longLivedWallet(true);w.fail.retire.add(w.ended[0]!);w.fail.read.add(w.ended[1]!);
+ const service=await w.open();await w.settle(PRIVATE_PAYOUT_WINDOW+4);await service[Symbol.asyncDispose]();
+ const polled=w.polled();
+ assert.ok(polled.includes(w.ended[0]!)&&polled.includes(w.ended[1]!),'the two that failed stay watched, the unsynced one too although its stored rows show no coin');
+ assert.equal(polled.length,PRIVATE_PAYOUT_WINDOW+4,'every other finished swap was retired past them');
+ w.fail.retire.clear();w.fail.read.clear();
+ const again=await w.open();await w.settle();await again[Symbol.asyncDispose]();
+ assert.equal(w.polled().length,PRIVATE_PAYOUT_WINDOW+2,'a later pass retires them');
+});
+
+// A real SDK ContractManager over a counting indexer, with the first `watched` contracts watched and the rest retained.
+async function realManager(count:number,watched:number){
+ const reads:string[]=[],outage={on:false},idle=(_id:string,signal:AbortSignal)=>({[Symbol.asyncIterator](){return this;},next:()=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve({done:true,value:undefined}),{once:true}))});
+ const indexer={getVtxos:async({scripts}:{scripts?:string[]})=>{if(outage.on)throw new ProviderUnavailableError('indexer request failed');reads.push(...scripts??[]);return {vtxos:[]};},subscribeForScripts:async()=>'sub',unsubscribeForScripts:async()=>{},getSubscription:idle};
+ const manager=await ContractManager.create({indexerProvider:indexer as never,contractRepository:new InMemoryContractRepository(),walletRepository:new InMemoryWalletRepository(),vtxoSyncMaxAgeMs:15_000});
+ const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}}),rows=Array.from({length:count},(_,i)=>receiveDestination(branch,i));
+ for(const [i,row] of rows.entries()){await manager.createContract({type:'default',watch:'watched',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});if(i>=watched)await manager.setContractWatchState(row.script,'retained');}
+ await flushTasks();reads.length=0;
+ return {manager,reads,rows,outage,dispose:()=>(manager as unknown as {dispose?:()=>Promise<void>}).dispose?.()};
+}
+
+test('sealed, the retirer\'s read of one script rejects while the indexer is down, where the SDK alone would answer from its store',async()=>{
+ const {manager,reads,rows,outage,dispose}=await realManager(2,2),split=sealedContractReads(manager),scope={script:[rows[0]!.script]},options={maxSyncAgeMs:0,unspentOnly:true};
+ try{
+  assert.equal((await split.getContractsWithVtxos(scope,undefined,{...options,requireSynced:true})).length,1);assert.deepEqual(reads,scope.script);
+  outage.on=true;
+  await assert.rejects(split.getContractsWithVtxos(scope,undefined,{...options,requireSynced:true}),/requires an online contract sync/);
+  assert.equal((await split.getContractsWithVtxos(scope,undefined,options)).length,1);
+ }finally{await dispose();}
+});
+
+test('sealed, a read of every companion contract syncs only the watched ones and still returns them all',async()=>{
+ const {manager,reads,rows,dispose}=await realManager(12,3);
+ try{
+  assert.equal((await manager.getContractsWithVtxos(undefined,undefined,{maxSyncAgeMs:0})).length,12);
+  assert.equal(new Set(reads).size,12,'the SDK alone syncs every contract on a full read');
+  reads.length=0;
+  assert.equal((await sealedContractReads(manager).getContractsWithVtxos(undefined,undefined,{maxSyncAgeMs:0})).length,12);
+  assert.deepEqual([...new Set(reads)].sort(),rows.slice(0,3).map(row=>row.script).sort(),'split, it syncs the three watched and reads the nine retained from the store');
+  reads.length=0;await manager.getContractsWithVtxos({script:[rows[5]!.script]},undefined,{maxSyncAgeMs:0});
+  assert.deepEqual(reads,[rows[5]!.script],'a scoped read is left as asked');
+ }finally{await dispose();}
+});
+
+test('sealed, a contract whose watch state moves during a full read comes back exactly once',async()=>{
+ const {manager,rows,dispose}=await realManager(12,3),read=manager.getContractsWithVtxos.bind(manager);let moved=false;
+ // The first inner read lets the other take its snapshot, then moves one contract each way before it reads.
+ manager.getContractsWithVtxos=async(...args)=>{if(!moved){moved=true;await new Promise(resolve=>setImmediate(resolve));await manager.setContractWatchState(rows[0]!.script,'retained');await manager.setContractWatchState(rows[5]!.script,'watched');}return read(...args);};
+ try{
+  const scripts=(await sealedContractReads(manager).getContractsWithVtxos()).map(row=>row.contract.script);
+  assert.ok(moved);assert.deepEqual([...scripts].sort(),rows.map(row=>row.script).sort());
+ }finally{await dispose();}
 });

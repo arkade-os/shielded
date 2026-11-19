@@ -4,13 +4,14 @@ import {deriveSessionTokenForIdentity} from '@arkade-os/lnurl-client/arkade';
 import {HDKey} from '@scure/bip32';
 import {hex} from '@scure/base';
 import {LNURL_BASE} from './lightning.ts';
+import {isSealedFetch} from './network-privacy.ts';
 
 interface ReceiveBranch {descriptor:string;serverPubKey:string;hrp:'ark'|'tark';exitDelay:{type:'seconds'|'blocks';value:number}}
 export interface LnurlPayout {id:string;descriptor:string;address:string;script:string}
 export interface PaymentMethod {type:string;destination:string}
 export interface LnurlReceiver {handle:string;domain:string;lightningAddress:string|undefined;lnurl:string;status:string;nameless?:boolean;sessionLnurl?:string;paymentMethods?:PaymentMethod[]}
 export interface PrivateReceiveState {on:boolean;pending:boolean;refused:boolean;withdrawing:boolean;listed:'own'|'foreign'|null}
-export type UnifiedReceiveStage='Reading your saved receiver'|'Checking the Lightning address service through Tor'|'Registering your unified address'|'Restoring payout watches'|'Binding your payment routes'|'Unified address ready';
+export type UnifiedReceiveStage='Reading your saved receiver'|'Checking the Lightning address service'|'Registering your unified address'|'Restoring payout watches'|'Binding your payment routes'|'Unified address ready';
 export interface LnurlReceiveJournal {
  getReceiveState<T>(owner:string,pool:string,key:string):Promise<T|undefined>;
  saveReceiveState(owner:string,pool:string,key:string,state:unknown):Promise<void>;
@@ -31,12 +32,15 @@ export interface LnurlReceiveConfig {
  onPayoutReady?:(revision:number)=>void;
  watchStartupGraceMs?:number;
  shieldedAddress?:()=>string;
+ /** Defaults to whether the fetch this service uses is sealed. */
+ sealed?:boolean;
 }
 // Each idle rotation leaves one unused index, so daily keeps a year of idle rotations inside RECOVERY_GAP.
 export const ROTATE_AFTER_MS=24*60*60_000,CHECK_EVERY_MS=10*60_000,RECOVERY_GAP=400;
 export const HD_REFUSED='This Lightning address is still in HD receive mode, and its service cannot switch it to a private static address until the service is updated. Earlier payouts stay watched; the wallet retries automatically.';
 export const METHODS_REFUSED='The service for this Lightning address did not keep the private receive address, so payers are not offered it. The wallet stops sending it until Shielded opens again.';
 export const METHODS_NOT_WITHDRAWN='The service for this Lightning address still lists the private receive address after it was withdrawn, so payers may still be offered it. The wallet keeps asking the service to remove it and retries automatically.';
+export const SEALED_RECOVERY='With private networking on, this wallet does not search for Lightning address payouts made before it was opened in this browser: that takes hundreds of private requests. To recover them, turn private networking off and open the wallet again.';
 /** A method still listed after its withdrawal outranks a refusal: payers may still be offered it. */
 export const privateReceiveNotice=({refused,withdrawing,listed}:PrivateReceiveState)=>withdrawing&&listed!==null?METHODS_NOT_WITHDRAWN:refused?METHODS_REFUSED:'';
 const SCAN_BATCH=50,STATE_POOL='lnurl-receive',STATE_KEY='state-v1';
@@ -78,7 +82,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
  const url=new URL(config.baseUrl??LNURL_BASE);
  if(!['https:','http:'].includes(url.protocol)||url.username||url.password||url.search||url.hash)throw new Error('Invalid Lightning address service URL');
  const baseUrl=url.href.replace(/\/+$/,''),domain=(config.domain??url.hostname).toLowerCase(),serverKey=JSON.stringify([baseUrl,domain]),now=config.now??Date.now;
- const abort=new AbortController(),stop=()=>abort.abort(),fallbackFetcher=config.fetch??((input,init)=>globalThis.fetch(input,init));
+ const abort=new AbortController(),stop=()=>abort.abort(),fallbackFetcher=config.fetch??((input,init)=>globalThis.fetch(input,init)),sealed=config.sealed??isSealedFetch(config.fetch??globalThis.fetch);
  if(config.signal?.aborted)abort.abort();else config.signal?.addEventListener('abort',stop,{once:true});
    const untilStopped=<T,>(work:Promise<T>)=>new Promise<T>((resolve,reject)=>{
     const stop=()=>reject(new Error('Lightning address service is disposed'));
@@ -267,7 +271,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    if(!server.refused){server.refused=true;await save(state);}
    throw new Error(HD_REFUSED,{cause:error});
   }
-  if(server.boundAt===undefined||server.refused||server.migrated||server.recovering){server.boundAt??=now();delete server.refused;delete server.migrated;delete server.recovering;await save(state);}
+  if(server.boundAt===undefined||server.refused||!sealed&&(server.migrated||server.recovering)){server.boundAt??=now();delete server.refused;if(!sealed){delete server.migrated;delete server.recovering;}await save(state);}
   if(refusal){
    // A listing that cannot be read may still hold the method from an earlier bind, so the withdrawal is owed.
    await relist(state,server).catch(()=>{server.withdraw=true;});
@@ -278,8 +282,10 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   if(!server.receivers.some(row=>row.status==='active'))return;
   await restoreWatches(state);
   // HD services hand out /2/7 children the journal never saw: catch up until the first static bind lands, then follow them while refused.
-  if(server.refused||server.migrated||server.recovering){
-   const branch=await currentBranch(),high=await scan(branch,state.next,server.migrated||server.recovering?RECOVERY_GAP:SCAN_BATCH);
+  // Sealed, the 400-script recovery scan stays owed, kept by bind, until the wallet opens without private networking.
+  const deep=!sealed&&(server.migrated||server.recovering);
+  if(server.refused||deep){
+   const branch=await currentBranch(),high=await scan(branch,state.next,deep?RECOVERY_GAP:SCAN_BATCH);
    if(high>=state.next)await adopt(state,branch,state.next,high);
   }
   const current=state.payouts.find(row=>row.script===server.current);
@@ -314,7 +320,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
    config.onStage?.('Reading your saved receiver');
   const state=await load(),existing=state.servers[serverKey],server=existing??{receivers:[]};
   if(!existing){state.servers[serverKey]=server;await save(state);}
-   config.onStage?.('Checking the Lightning address service through Tor');
+   config.onStage?.('Checking the Lightning address service');
   const branch=currentBranch();void branch.catch(()=>{});
   const owned=(await registeredReceivers()).filter(row=>row.status==='active');
   const tracked=server.receivers.find(row=>row.status==='active');
@@ -380,6 +386,7 @@ export function createLnurlReceive(config:LnurlReceiveConfig){
   }),
   // Fresh device or restored seed: every /2/7 child up to the last one that ever held a coin is watched again.
   recover:()=>serial(async()=>{
+   if(sealed)throw new Error(SEALED_RECOVERY);
    const state=await load(),server=state.servers[serverKey]??={receivers:[]};await save(state);
    server.receivers=(await registeredReceivers()).filter(row=>row.status==='active');delete server.pending;
    await restoreWatches(state);

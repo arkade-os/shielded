@@ -22,6 +22,31 @@ test('release metadata uses a separate purpose for the canonical query-free GET 
  for(const method of ['POST','HEAD','PUT'])assert.throws(()=>p.classify(url,method));
  for(const denied of [url+'?',url+'?wallet=hidden',url+'/',url+'/latest',url.replace('/releases','/%72eleases'),url.replace('shielded.mutinynet.arkade.sh','pool.example'),url.replace('https:','wss:')])assert.throws(()=>p.classify(denied));
 });
+test('the pool\'s swap routes are a rendezvous POST and a registry GET, nothing else',()=>{
+ const p=policy(),pool='https://pool.example/api/rollup';
+ assert.deepEqual([p.classify(pool+'/rendezvous','POST','{}').purpose,p.classify(pool+'/solver-registry').purpose],['swap','discovery']);
+ for(const [m,path] of [['GET','/rendezvous'],['POST','/solver-registry'],['PATCH','/rendezvous'],['GET','/rendezvous/x']])assert.throws(()=>p.classify(pool+path,m),/not approved/,`${m} ${path}`);
+ assert.throws(()=>p.classify('https://ark.example/api/rollup/rendezvous','POST','{}'),/not approved/,'only on the pool');
+});
+test('a registered Lightning address service gets exactly its routes, one key per handle, and only it may carry a bearer',()=>{
+ const p=policy(),lnurl='https://lnurl.example',session='ab'.repeat(32);
+ assert.throws(()=>p.classify(lnurl+'/lnurl/address','GET'),/not approved/,'nothing before registration');
+ assert.equal(p.authorizes(lnurl+'/lnurl/address'),false);
+ p.registerLnurl(lnurl);
+ for(const [m,path] of [['GET','/lnurl/address'],['POST','/lnurl/address'],['PATCH','/lnurl/address/alice?domain=lnurl.example'],['POST','/lnurl/address/alice/arkade'],['GET','/.well-known/lnurlp/bob'],['GET','/.well-known/lnurlp/bob/callback?amount=1000'],['GET','/lnurl/'+session],['GET','/lnurl/'+session+'/callback?amount=1000']])
+  assert.equal(p.classify(lnurl+path,m).purpose,'lnurl',`${m} ${path}`);
+ assert.notEqual(p.classify(lnurl+'/lnurl/address/alice/arkade','POST').key,p.classify(lnurl+'/lnurl/address/bob/arkade','POST').key);
+ assert.equal(p.classify(lnurl+'/lnurl/address/alice/arkade','POST').key,p.classify(lnurl+'/lnurl/address/alice','PATCH').key);
+ for(const [m,path] of [['DELETE','/lnurl/address/alice'],['PATCH','/lnurl/address'],['GET','/lnurl/address/alice'],['GET','/lnurl/address/alice/payments'],['PATCH','/lnurl/address/alice/arkade'],['POST','/.well-known/lnurlp/bob'],['GET','/lnurl/address/callback'],['GET','/lnurl/a/b'],['GET','/v1/info'],['GET','/other'],['GET','/']])
+  assert.throws(()=>p.classify(lnurl+path,m),/not approved/,`${m} ${path}`);
+ assert.throws(()=>p.classify('https://ark.example/lnurl/address','GET'),/not approved/,'an LNURL path elsewhere is not an LNURL route');
+ p.registerLnurl('https://ark.example');
+ assert.equal(p.classify('https://ark.example/v1/indexer/vtxos?scripts='+script,'GET').purpose,'indexer','an LNURL service on the indexer origin relabels no indexer route');
+ assert.throws(()=>p.classify('https://ark.example/v1/indexer/vtxos?scripts='+script+'&scripts='+other,'GET'),/one|group/i);
+ for(const path of ['/lnurl/address','/lnurl/address/alice?domain=lnurl.example','/lnurl/address/alice/arkade'])assert.ok(p.authorizes(lnurl+path),path);
+ for(const url of [lnurl+'/.well-known/lnurlp/bob',lnurl+'/.well-known/lnurlp/bob/callback?amount=1000',lnurl+'/lnurl/'+session+'/callback',lnurl+'/lnurl/addressbook',
+  'https://pool.example/api/rollup/status','https://lnurl.example.evil/lnurl/address','http://lnurl.example/lnurl/address','not a url'])assert.equal(p.authorizes(url),false,url);
+});
 test('server subscription identifiers inherit only their script scope',()=>{
  const p=policy();p.subscription('server-a',script,'https://ark.example');
  assert.equal(p.classify('https://ark.example/v1/indexer/script/subscription/server-a','GET').key,p.classify('https://ark.example/v1/indexer/vtxos?scripts='+script,'GET').key);

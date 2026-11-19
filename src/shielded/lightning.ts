@@ -1,11 +1,13 @@
 import {isLnurl,type PaymentRail,type PaymentRequest,type RouteQuote,type RouterContext} from '@arkade-os/sdk';
-import {LnurlError,LnurlTransportError,createLnurlClient,type LnurlClient,type PayRequest} from '@arkade-os/lnurl-client';
+import {LnurlError,LnurlTransportError,createLnurlClient,toPayRequestUrl,type LnurlClient,type PayRequest} from '@arkade-os/lnurl-client';
 import {lnurlRails} from '@arkade-os/lnurl-client/arkade';
 import {lightningRail,type SwapClient,type SwapRailClient} from '@arkade-os/swap';
+import {LNURL_BASE,isSealedFetch} from './network-privacy.ts';
 import {shieldedRail,shieldedTargetOf,shieldedWithdrawRail} from './rails.ts';
 import type {ShieldedWallet} from './wallet.ts';
 
-export const LNURL_BASE='https://lnurl.mutinynet.arkade.sh';
+export {LNURL_BASE};
+export const FOREIGN_LNURL=`With private networking on, this wallet pays only Lightning addresses at ${new URL(LNURL_BASE).host} for now. Ask the payee for a Lightning invoice instead.`;
 const sats=(value:number)=>value.toLocaleString('en-US');
 // A network blip is not a refusal: falling back on one would charge a swap fee for a payment the pool could make free.
 const transient=(error:unknown)=>error instanceof LnurlTransportError||(error instanceof LnurlError&&(error.retryable||(error.httpStatus??0)>=500));
@@ -77,5 +79,9 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
  const shielded=lnurlShieldedRail(wallet,client);
  // A hand-over from the private route lands on a public one, and the quote's copy says so before anything is sent.
  const lnurlShielded:PaymentRail={...shielded,quote:async(req,ctx)=>{try{return await shielded.quote(req,ctx);}catch(error){return handOver(error,req,ctx,lnurlArkade,viaLightning);}}};
- return [lightning,lnurlArkade,viaLightning,lnurlShielded];
+ if(!isSealedFetch(fetcher??globalThis.fetch))return [lightning,lnurlArkade,viaLightning,lnurlShielded];
+ // Sealed, the gateway reaches one Lightning address service: an address elsewhere gets this rail alone, which refuses it before any request.
+ const foreign=(req:PaymentRequest)=>{const raw=req.raw.trim();if(!isLnurl(raw))return false;try{return new URL(toPayRequestUrl(raw).url).origin!==new URL(LNURL_BASE).origin;}catch{return true;}};
+ return [lightning,...[lnurlArkade,viaLightning,lnurlShielded].map(rail=>({...rail,match:(req:PaymentRequest,ctx:RouterContext)=>!foreign(req)&&rail.match(req,ctx)})),
+  {id:'lnurl-foreign',match:foreign,available:()=>true,quote:async()=>{throw new Error(FOREIGN_LNURL);}}];
 }

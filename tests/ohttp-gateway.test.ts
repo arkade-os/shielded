@@ -87,6 +87,33 @@ test('hostile headers never reach the upstream',async t=>{
  assert.equal(ark!.url,ARK);assert.deepEqual(Object.fromEntries(new Headers(ark!.init.headers)),{accept:'application/json','content-type':'application/json'});
 });
 
+const LNURL='https://lnurl.example',LNURL_UPSTREAMS=[...UPSTREAMS,{origin:LNURL,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']},{origin:LNURL,prefix:'/.well-known/lnurlp/'}];
+test('Authorization and PATCH reach the Lightning address service alone',async t=>{
+ const g=await gateway(t,{upstreams:LNURL_UPSTREAMS}),headers={authorization:'Bearer token','content-type':'application/json'};
+ for(const [url,method] of [[LNURL+'/lnurl/address','GET'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH'],[LNURL+'/lnurl/address/alice/arkade','POST'],[LNURL+'/.well-known/lnurlp/alice','GET'],[ARK,'GET'],['https://pool.example/api/rollup/status','GET'],['https://esplora.example/api/blocks','GET']] as const)
+  assert.equal((await g.open(url,{method,headers,...(method==='GET'?{}:{body:'{}'})})).status,200,`${method} ${url}`);
+ assert.deepEqual(g.calls.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[LNURL+'/lnurl/address','GET','Bearer token'],[LNURL+'/lnurl/address/alice?domain=lnurl.example','PATCH','Bearer token'],[LNURL+'/lnurl/address/alice/arkade','POST','Bearer token'],
+  [LNURL+'/.well-known/lnurlp/alice','GET',null],[ARK,'GET',null],[LOOPBACK+'/api/rollup/status','GET',null],['https://esplora.example/api/blocks','GET',null]]);
+ assert.equal(new TextDecoder().decode(g.calls[1]!.init.body as ArrayBuffer),'{}','a PATCH carries its body');
+});
+
+test('PATCH and DELETE are refused everywhere else, and the Lightning address origin serves only its prefixes',async t=>{
+ const g=await gateway(t,{upstreams:LNURL_UPSTREAMS});
+ for(const [url,method] of [['https://ark.example/v1/tx/submit','PATCH'],['https://pool.example/api/rollup/spends','PATCH'],[LNURL+'/.well-known/lnurlp/alice','PATCH'],[LNURL+'/lnurl/address/alice','DELETE'],['https://ark.example/v1/info','DELETE'],
+  [LNURL+'/lnurl/../v1/info','GET'],[LNURL+'/lnurl/%2e%2e/v1/info','GET'],[LNURL+'/lnurl/..%2fv1/info','GET'],[LNURL+'/lnurl//address','GET'],[LNURL+'/v1/info','GET'],[LNURL+'/','GET'],[LNURL+'/other','GET']] as const)
+  assert.equal((await g.open(url,{method,...(method==='GET'?{}:{body:'{}'})})).status,403,`${method} ${url}`);
+ assert.equal(g.calls.length,0);
+ for(const [extra,message] of [[{methods:['patch']},/upper case/],[{headers:['Authorization']},/lower case/]] as const)assert.throws(()=>createOhttpGateway(optionsOf(g.key,{upstreams:[{origin:LNURL,prefix:'/lnurl/',...extra}]})),message);
+});
+
+test('on one origin the most specific upstream decides, so a broader entry listed first cannot hide the Lightning address permissions',async t=>{
+ const shared='https://services.example',headers={authorization:'Bearer token','content-type':'application/json'};
+ const g=await gateway(t,{upstreams:[{origin:shared,prefix:'/'},{origin:shared,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']}]});
+ for(const [path,method,status] of [['/lnurl/address','GET',200],['/lnurl/address/alice','PATCH',200],['/api/blocks','GET',200],['/api/blocks','PATCH',403]] as const)
+  assert.equal((await g.open(shared+path,{method,headers,...(method==='GET'?{}:{body:'{}'})})).status,status,`${method} ${path}`);
+ assert.deepEqual(g.calls.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[shared+'/lnurl/address','GET','Bearer token'],[shared+'/lnurl/address/alice','PATCH','Bearer token'],[shared+'/api/blocks','GET',null]]);
+});
+
 test('streaming requests are refused 400',async t=>{
  const g=await gateway(t);
  assert.equal((await g.open(ARK,{headers:{accept:'text/event-stream'}})).status,400);

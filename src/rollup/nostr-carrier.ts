@@ -24,12 +24,12 @@ export class CappedSocket extends WebSocket {
  send(...args:unknown[]){if(this.bufferedAmount<=4<<20||!String(args[0]).startsWith('["EVENT"'))super.send(...args);}
 }
 
-export function nostrRelaysFromEnv(value:string|undefined):readonly string[] {
- if(!value?.trim())return NOSTR_RELAYS;
+export function nostrRelaysFromEnv(value:string|undefined,fallback=NOSTR_RELAYS,name='SHIELDED_NOSTR_RELAYS'):readonly string[] {
+ if(!value?.trim())return fallback;
  const relays=value.split(',').map(relay=>relay.trim());
- if(!relays.every(relay=>URL.canParse(relay)&&new URL(relay).protocol==='wss:'))throw new Error('SHIELDED_NOSTR_RELAYS is a comma-separated list of wss:// relay URLs.');
+ if(!relays.every(relay=>URL.canParse(relay)&&new URL(relay).protocol==='wss:'))throw new Error(`${name} is a comma-separated list of wss:// relay URLs.`);
  const unique=[...new Set(relays.map(normalizeURL))];
- if(unique.length>MAX_RELAYS)throw new Error(`SHIELDED_NOSTR_RELAYS lists at most ${MAX_RELAYS} relays.`);
+ if(unique.length>MAX_RELAYS)throw new Error(`${name} lists at most ${MAX_RELAYS} relays.`);
  return unique;
 }
 

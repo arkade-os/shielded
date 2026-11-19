@@ -19,7 +19,7 @@ const tooLarge=()=>new SealedFetchError('too-large','The sealed request is large
 const outcomeUnknown=()=>new SealedFetchError('outcome-unknown','The request went out and no answer came back, so it may have run.');
 
 // No enableReconnect: it resubscribes at since=lastEmitted+1, and the next attempt covers a dropped relay. Pure's verifyEvent caches the verdict readAnswer reads.
-export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,getTimeoutMs=9_000,sealedForMs=45_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;getTimeoutMs?:number;sealedForMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
+export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pick=2,timeoutMs=40_000,getTimeoutMs=9_000,sealedForMs=45_000,attempts=3,pool=new AbstractSimplePool({verifyEvent,maxWaitForConnection:3000}),random=Math.random,authorized=()=>false}:{config:Uint8Array;gateway:string;origin:string;relays?:readonly string[];pick?:number;timeoutMs?:number;getTimeoutMs?:number;sealedForMs?:number;attempts?:number;pool?:CarrierPool;random?:()=>number;authorized?:(url:string)=>boolean}):((input:string|URL|Request,init?:RequestInit)=>Promise<Response>)&{close():void} {
  const client=new OHTTPClient(SUITE,KeyConfig.select(SUITE,KeyConfig.parseMultiple(config)),{maxMessageSize:5<<20}),urls=[...new Set(relays)],bench=new Map<string,number>();
  if(!(urls.length&&pick>=1&&attempts>=1&&timeoutMs>0&&getTimeoutMs>0&&sealedForMs>0))throw new RangeError('A sealed fetch needs a relay, a pick and attempts of at least 1, and positive timeouts.');
  // nostr-tools' publish normalizes each URL synchronously, so a bad one would throw unheard inside a later hedge round and leave the attempt to its deadline.
@@ -29,7 +29,7 @@ export function createSealedFetch({config,gateway,origin,relays=NOSTR_RELAYS,pic
  const sealedFetch=async(input:string|URL|Request,init?:RequestInit):Promise<Response>=>{
   if(closed)throw shut();
   const signal=init?.signal??(input instanceof Request?input.signal:undefined),source=new Request(input instanceof Request?input:new URL(input,origin),init),headers=new Headers();
-  for(const name of ['content-type','accept','x-digest']){const value=source.headers.get(name);if(value!==null)headers.set(name,value);}
+  for(const name of ['content-type','accept','x-digest',...(authorized(source.url)?['authorization']:[])]){const value=source.headers.get(name);if(value!==null)headers.set(name,value);}
   const {url,method}=source,attemptMs=method==='GET'?getTimeoutMs:timeoutMs,body=source.body?await source.arrayBuffer():undefined,tried=new Set<string>(),cleanup:(()=>void)[]=[],heard=new Map<string,Event[]>();
   // Sealing only adds bytes, so a body over one event never fits; past 5 MiB ohttp-ts would throw its own error instead.
   if((body?.byteLength??0)>NOSTR_CHUNK_BYTES)throw tooLarge();

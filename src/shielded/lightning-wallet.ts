@@ -5,7 +5,7 @@ import {recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
 import {BTC_ASSET} from '../../packages/protocol/src/rollup/constants.ts';
 import {depositFeeOf} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {DUST} from './pool.ts';
-import {cacheVtxoSync} from './network-privacy.ts';
+import {PRIVATE_PAYOUT_WINDOW,cacheVtxoSync,isSealedFetch} from './network-privacy.ts';
 import type {LightningArtifact,LightningPayout,LightningRepository} from './lightning-repository.ts';
 import {feeRefused} from './lightning-spend.ts';
 import type {ShieldedWallet} from './wallet.ts';
@@ -33,12 +33,27 @@ export interface PrivateLightningService extends SwapRailClient,Pick<SwapClient,
  [Symbol.asyncDispose]():Promise<void>;
 }
 export const lightningOwner=async(wallet:Pick<Wallet,'identity'>)=>hex.encode(await wallet.identity.xOnlyPublicKey());
+type ContractReads=Pick<Awaited<ReturnType<Wallet['getContractManager']>>,'getContracts'|'getContractsWithVtxos'>;
+const splitReads=new WeakSet<object>();
+/** Sealed, a read of every contract re-syncs each one, a sealed read apiece, once any is stale: watched contracts still sync, and retained ones, which nothing polls, come from the store their last sync filled. A scoped read is the caller's to choose. */
+export function sealedContractReads<M extends ContractReads>(manager:M):M {
+ if(splitReads.has(manager))return manager;
+ const read=manager.getContractsWithVtxos.bind(manager);
+ manager.getContractsWithVtxos=async(filter,pageSize,options)=>{
+  if(filter!==undefined||options?.requireSynced)return read(filter,pageSize,options);
+  // One snapshot split by script, not two reads by state: a contract whose state moves mid-read would come back twice, or not at all.
+  const contracts=await manager.getContracts(),kept=contracts.filter(contract=>contract.watch==='retained').map(contract=>contract.script),live=contracts.filter(contract=>contract.watch!=='retained').map(contract=>contract.script);
+  const [synced,stored]=await Promise.all([live.length?read({script:live},pageSize,options):[],kept.length?read({script:kept},pageSize,{...options,maxSyncAgeMs:Number.MAX_SAFE_INTEGER}):[]]);
+  return [...synced,...stored];
+ };
+ splitReads.add(manager);return manager;
+}
 export async function createLightningWallet(secret:string,config:Omit<WalletConfig,'identity'|'walletMode'|'settlementConfig'|'storage'>):Promise<Wallet>{
  const identity=MnemonicIdentity.fromMnemonic(recoveryPhraseOf(secret),{isMainnet:false}),name=`shielded-lightning-${await lightningOwner({identity})}`;
  const wallet=await Wallet.create({...config,identity,walletMode:'hd',settlementConfig:false,
   storage:{walletRepository:new IndexedDBWalletRepository(`${name}-wallet`),contractRepository:new IndexedDBContractRepository(`${name}-contracts`)}});
- const manager=wallet.getContractManager.bind(wallet);
- wallet.getContractManager=async()=>cacheVtxoSync(await manager());
+ const manager=wallet.getContractManager.bind(wallet),sealed=isSealedFetch(globalThis.fetch);
+ wallet.getContractManager=async()=>{const held=cacheVtxoSync(await manager());return sealed?sealedContractReads(held):held;};
  return wallet;
 }
 function hdIdentity(wallet:Wallet){
@@ -98,10 +113,12 @@ interface PrivateLightningOptions extends ClientOptions {
  legacyRecovery?:boolean;
  onError?:(error:Error)=>void;
  signal?:AbortSignal;
+ /** Sealed transport: every watched script is polled on its own, so watching is bounded. Defaults to whether the page's fetch is sealed. */
+ sealed?:boolean;
 }
 interface Session {artifact:LightningArtifact;repository:AssetSwapRepository;client:SwapClient;view:IWallet;release:()=>Promise<void>;off:()=>void;initialized:boolean;accepting:boolean;funding?:Promise<void>;retiring?:Promise<void>;needsFundingRetry?:boolean;quote?:Quote;closing?:Promise<void>}
 export async function createPrivateLightning(options:PrivateLightningOptions):Promise<PrivateLightningService>{
- const {wallet,companion,journal,repositoryFor=name=>new LightningSwapRepository(name),clientFactory=createSwapClient,acquireSession=acquireLightningSession,legacyRecovery=true,onError,signal,...config}=options;
+ const {wallet,companion,journal,repositoryFor=name=>new LightningSwapRepository(name),clientFactory=createSwapClient,acquireSession=acquireLightningSession,legacyRecovery=true,onError,signal,sealed=isSealedFetch(globalThis.fetch),...config}=options;
  if(signal?.aborted)throw new Error('Lightning startup was cancelled');
  const operations=new AbortController(),cancel=()=>operations.abort();
  signal?.addEventListener('abort',cancel,{once:true});
@@ -245,15 +262,48 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  const recovery=createLightningRecovery({owner,pool,companion,journal,acquireSession,options:async outpoint=>(await recoveryOptions(outpoint)).options,
   stopShielding:async outpoint=>{shieldingControllers.get(outpoint)?.abort();await shielding.get(outpoint)?.catch(()=>{});},
   reconcileShielding:outpoint=>wallet.reconcileLightningPayout(outpoint,journal),changed:()=>wallet.changed(),report});
+ const lnurlIndex=(descriptor:string)=>Number(/\/2\/7\/(\d+)\)$/.exec(descriptor)?.[1]??NaN);
+ // Sealed: only the newest Lightning address payouts stay watched, and a swap script the retirer retained stays retained. Unsealed, everything is watched as before.
+ const watchPlan=async(manager:Awaited<ReturnType<Wallet['getContractManager']>>,records:LightningPayout[])=>{
+  const plan=new Map<string,'watched'|'retained'>(records.map(record=>[record.script,'watched']));
+  if(!sealed)return plan;
+  const current=new Map((await manager.getContracts()).map(contract=>[contract.script,contract.watch??'watched']));
+  for(const record of records)if(current.get(record.script)==='retained')plan.set(record.script,'retained');
+  const lnurl=[...new Map([...payouts.values(),...records].map(payout=>[payout.script,payout])).values()].filter(payout=>Number.isSafeInteger(lnurlIndex(payout.descriptor)));
+  // One registered past the window is retained at once, on purpose: the SDK read its contract from the indexer as it created it, so a coin already there is in the store the scan reads.
+  lnurl.sort((a,b)=>lnurlIndex(b.descriptor)-lnurlIndex(a.descriptor)).forEach((payout,rank)=>{const state=rank<=PRIVATE_PAYOUT_WINDOW?'watched':'retained';if(plan.has(payout.script)||current.get(payout.script)!==state)plan.set(payout.script,state);});
+  return plan;
+ };
+ let planned:Promise<unknown>=Promise.resolve();
  const registerPayouts=async(records:LightningPayout[],rescan=true,signal?:AbortSignal)=>{
   const assertActive=()=>{if(stopped||signal?.aborted)throw new Error('Private Lightning service is closed');};
   assertActive();await validatePayouts(records,signal);assertActive();const manager=await waitForStartup(companion.getContractManager());assertActive();
   await waitForStartup(journal.savePayouts(owner,pool,records));assertActive();
-  // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
-  for(const record of records){await waitForStartup(manager.setContractWatchState(record.script,'watched'));assertActive();payouts.set(record.script,record);}
+  const apply=async()=>{
+   const plan=await waitForStartup(watchPlan(manager,records)),registering=new Set(records.map(record=>record.script));assertActive();
+   // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
+   for(const record of records){await waitForStartup(manager.setContractWatchState(record.script,plan.get(record.script)!));assertActive();payouts.set(record.script,record);}
+   for(const [script,state] of plan)if(!registering.has(script)){await waitForStartup(manager.setContractWatchState(script,state));assertActive();}
+  };
+  const turn=sealed?planned.then(apply):apply();if(sealed)planned=turn.catch(()=>{});await turn;
   wallet.changed();
   if(rescan)await scan();
  };
+ // Sealed: a swap's script is single-use, so once its swap has ended and a fresh sync finds no unspent coin on it, nothing is left to poll for. The sync goes through the manager, so the store a retained script is read from never keeps a coin the indexer has seen spent.
+ const retireScripts=async()=>{
+  const manager=await companion.getContractManager(),retained=new Set((await manager.getContracts()).filter(contract=>contract.watch==='retained').map(contract=>contract.script));
+  for(const {state,script} of await journal.artifacts(owner,pool)){
+   if(stopped)return;
+   if(state!=='ended'||!script||retained.has(script)||exiting.has(script))continue;
+   // Each script on its own: one that fails is tried again next tick and holds up none after it.
+   try{
+    const synced=(await manager.getContractsWithVtxos({script:[script]},undefined,{maxSyncAgeMs:0,unspentOnly:true,requireSynced:true})).find(row=>row.contract.script===script);
+    if(synced&&!synced.vtxos.some(coin=>!isVtxoSpent(coin)&&!coin.isSwept)&&!stopped)await manager.setContractWatchState(script,'retained');
+   }catch{}
+  }
+ };
+ let retirement:Promise<void>|undefined;
+ const retire=()=>sealed?retirement??=retireScripts().catch(()=>{}).finally(()=>{retirement=undefined;}):Promise.resolve();
  const watchArtifact=async(artifact:LightningArtifact,startupSignal?:AbortSignal)=>{
   if(!artifact.descriptor||!artifact.address||!artifact.script||!artifact.serverPubKey||!artifact.csvTimelock)throw new Error('Incomplete saved Lightning artifact');
   const pubKey=deriveDescriptorLeafPubKey(artifact.descriptor),manager=await waitForStartup(companion.getContractManager());
@@ -401,7 +451,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
  try{
    const artifacts=await waitForStartup(journal.artifacts(owner,pool)),restoredPayouts=await waitForStartup(journal.payouts(owner,pool));
    for(const artifact of artifacts)if(artifact.descriptor){restoredPayouts.push(await watchArtifact(artifact,signal));if(artifact.kind==='exit')exitScripts.add(artifact.script!);}
-   await waitForStartup(registerPayouts(restoredPayouts,true,signal));
+   await waitForStartup(registerPayouts(restoredPayouts,true,signal));void retire();
    taking=takeOver(true);await waitForStartup(taking);
   for(const artifact of artifacts){
    if(artifact.state==='ended'&&artifact.kind==='send'&&artifact.quoteId){
@@ -424,7 +474,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    if(event.type!=='connection_reset'&&!payouts.has(event.contractScript))return;
    wallet.changed();if(event.type==='vtxo_received'||event.type==='connection_reset')void scan().catch(report);
   });
-  const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}taking=takeOver(false);await taking;await scan();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
+  const tick=async()=>{if(stopped)return;try{for(const session of [...sessions.values()]){if(session.artifact.state==='quoted'&&(session.artifact.expiresAt??0)*1000<=Date.now())await close(session);else if(session.needsFundingRetry)await startSession(session);}taking=takeOver(false);await taking;await scan();void retire();}catch(error){report(error);}finally{if(!stopped)timer=setTimeout(()=>void tick(),20_000);}};
   timer=setTimeout(()=>void tick(),20_000);
   return {resolve:input=>discovery.resolve(input),markets:()=>discovery.markets(),quote,accept,receive,exitPayout,registerPayouts:(records,signal)=>registerPayouts(records,true,signal),getActivityHistory,recordLightning,quoteRecovery,getRecovery:recovery.get,prepareRecovery:recovery.prepare,repairRecovery:recovery.repair,startRecovery:recovery.start,pauseRecovery:recovery.pause,
    onUpdate(listener){for(const update of updates.values())listener(update);listeners.add(listener);return()=>listeners.delete(listener);},[Symbol.asyncDispose]:dispose};
