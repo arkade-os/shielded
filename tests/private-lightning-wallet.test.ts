@@ -1346,6 +1346,14 @@ test(`sealed, ${PAYOUTS} Lightning address payouts and ${SWAPS} finished swaps p
  assert.equal(reads.length,3*(PRIVATE_PAYOUT_WINDOW+2),`${reads.length} sealed reads in a minute`);
 });
 
+test(`sealed, two payouts registered at once still leave only the newest ${PRIVATE_PAYOUT_WINDOW+1} watched`,async()=>{
+ const w=await longLivedWallet(true),service=await w.open();await w.settle();
+ const added=[await w.payout(PAYOUTS),await w.payout(PAYOUTS+1)];
+ await Promise.all(added.map(({id,descriptor,address,script})=>service.registerPayouts([{id,descriptor,address,script}])));await service[Symbol.asyncDispose]();
+ const polled=w.polled();
+ assert.deepEqual([polled.length,polled.includes(w.rows[PAYOUTS-PRIVATE_PAYOUT_WINDOW]!.script),added.every(row=>polled.includes(row.script))],[PRIVATE_PAYOUT_WINDOW+2,false,true]);
+});
+
 test('unsealed, every payout and swap script stays watched, as before',async()=>{
  const w=await longLivedWallet(false),service=await w.open();await flushTasks();await service[Symbol.asyncDispose]();
  assert.deepEqual([w.polled().length,w.freshReads.length],[PAYOUTS+SWAPS+1,0]);

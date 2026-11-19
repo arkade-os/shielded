@@ -274,14 +274,18 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
   lnurl.sort((a,b)=>lnurlIndex(b.descriptor)-lnurlIndex(a.descriptor)).forEach((payout,rank)=>{const state=rank<=PRIVATE_PAYOUT_WINDOW?'watched':'retained';if(plan.has(payout.script)||current.get(payout.script)!==state)plan.set(payout.script,state);});
   return plan;
  };
+ let planned:Promise<unknown>=Promise.resolve();
  const registerPayouts=async(records:LightningPayout[],rescan=true,signal?:AbortSignal)=>{
   const assertActive=()=>{if(stopped||signal?.aborted)throw new Error('Private Lightning service is closed');};
   assertActive();await validatePayouts(records,signal);assertActive();const manager=await waitForStartup(companion.getContractManager());assertActive();
   await waitForStartup(journal.savePayouts(owner,pool,records));assertActive();
-  const plan=await waitForStartup(watchPlan(manager,records)),registering=new Set(records.map(record=>record.script));assertActive();
-  // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
-  for(const record of records){await waitForStartup(manager.setContractWatchState(record.script,plan.get(record.script)!));assertActive();payouts.set(record.script,record);}
-  for(const [script,state] of plan)if(!registering.has(script)){await waitForStartup(manager.setContractWatchState(script,state));assertActive();}
+  const apply=async()=>{
+   const plan=await waitForStartup(watchPlan(manager,records)),registering=new Set(records.map(record=>record.script));assertActive();
+   // Recorded only once watched, so a failed watch is retried; an event missed meanwhile is caught by the scan that follows.
+   for(const record of records){await waitForStartup(manager.setContractWatchState(record.script,plan.get(record.script)!));assertActive();payouts.set(record.script,record);}
+   for(const [script,state] of plan)if(!registering.has(script)){await waitForStartup(manager.setContractWatchState(script,state));assertActive();}
+  };
+  const turn=sealed?planned.then(apply):apply();if(sealed)planned=turn.catch(()=>{});await turn;
   wallet.changed();
   if(rescan)await scan();
  };
