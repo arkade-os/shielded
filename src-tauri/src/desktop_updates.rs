@@ -555,6 +555,7 @@ fn install(staged: &Path, target: Option<&Path>, _update: &DesktopUpdate) -> Res
     let bundle = target.ok_or(UNSUPPORTED)?;
     let staging = bundle.with_file_name(format!("{STAGING}{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&staging).map_err(|_| UNSUPPORTED)?;
+    // ditto reopens the verified archive by path; only a same-user process could swap it, and that process can already rewrite the bundle.
     let unpacked = std::process::Command::new("/usr/bin/ditto")
         .args(["-x", "-k"])
         .arg(staged)

@@ -246,6 +246,7 @@ export async function publishNativeRelease(prepared: PreparedNativeRelease, gith
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const identity = nativePublicationIdentity(process.env), signingKey = nativeUpdateSigningKey(process.env);
+    // Keeps the seed out of child processes; its bytes stay in this short-lived CI process's heap, which JavaScript cannot wipe.
     delete process.env.SHIELDED_UPDATE_SIGNING_KEY;
     if (!process.env.GITHUB_TOKEN) throw new Error('Native publication requires GITHUB_TOKEN');
     const github = new GitHubNativeReleases(process.env.GITHUB_TOKEN);
