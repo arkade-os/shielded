@@ -3,7 +3,7 @@ import {DESKTOP_UPDATE_FORMATS,type NativePlatform,type NativeRelease,type Nativ
 import type {UpdateBackend,UpdatePolicy} from './android-updates.ts';
 
 export interface DesktopStagedUpdate {id:string;buildNumber:number}
-/** `unsupported` says why this installation cannot replace itself (a .deb, a read-only bundle, a build without a release number). */
+/** `unsupported` says why this installation cannot replace itself (a .deb, a read-only bundle, a build without a release run number and commit). */
 export interface DesktopUpdateInfo {platform:NativePlatform|null;buildNumber:number;commit:string;unsupported:string|null;staged:DesktopStagedUpdate|null;downloading:string|null}
 export interface DesktopUpdatePackage extends NativeReleasePackage {signature:string;commit:string;buildNumber:number}
 export type DesktopUpdateBackend=UpdateBackend<DesktopUpdateInfo,DesktopUpdatePackage,DesktopStagedUpdate>;

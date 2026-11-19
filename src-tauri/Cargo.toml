@@ -51,3 +51,6 @@ tokio = { version = "=1.54.1", features = ["test-util"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = { version = "=2.5.5", features = ["deep-link"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "=0.2.191"

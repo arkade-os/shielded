@@ -36,13 +36,27 @@ const INSTALLER_ARGUMENTS: [&str; 3] = ["/P", "/UPDATE", "/R"];
 
 /// The run number and commit CI compiles in, the same values as the renderer's build identity.
 fn installed() -> Result<(u64, &'static str), String> {
-    option_env!("GITHUB_RUN_NUMBER")
+    release_identity(option_env!("GITHUB_RUN_NUMBER"), option_env!("GITHUB_SHA"))
+}
+
+fn release_identity(
+    build: Option<&str>,
+    commit: Option<&'static str>,
+) -> Result<(u64, &'static str), String> {
+    build
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|build| *build > 0)
-        .map(|build| (build, option_env!("GITHUB_SHA").unwrap_or("")))
+        .zip(commit.filter(|commit| is_commit(commit)))
         .ok_or_else(|| {
-            "This build has no release number. Download updates from the downloads page.".into()
+            "This build has no release identity. Download updates from the downloads page.".into()
         })
+}
+
+fn is_commit(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[derive(Clone, Deserialize)]
@@ -99,12 +113,7 @@ fn check(
     if !file.starts_with(&format!("shielded-mutinynet-{platform}-")) || !file.ends_with(suffix) {
         return Err("This update package is for a different platform".into());
     }
-    if update.commit.len() != 40
-        || !update
-            .commit
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
+    if !is_commit(&update.commit) {
         return Err("The update identity is invalid".into());
     }
     if update.build_number <= installed.0 || update.commit == installed.1 {
@@ -460,23 +469,31 @@ fn bundle_root(binary: &Path) -> Result<PathBuf, String> {
     Ok(bundle.to_path_buf())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
+fn exchange(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let (from, to) = (
+        CString::new(from.as_os_str().as_bytes())?,
+        CString::new(to.as_os_str().as_bytes())?,
+    );
+    // SAFETY: both pointers are NUL-terminated paths that outlive the call.
+    match unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_SWAP) } {
+        0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+/// One atomic exchange, so the installed path always holds a complete app and a failure
+/// changes nothing; on success the staging folder holds the previous version.
+#[cfg(target_os = "macos")]
 fn swap_bundle(bundle: &Path, staging: &Path) -> Result<(), String> {
-    let (update, previous) = (staging.join("Shielded.app"), staging.join("previous.app"));
+    let update = staging.join("Shielded.app");
     if !std::fs::symlink_metadata(&update).is_ok_and(|item| item.is_dir()) {
         return Err("The update archive does not contain Shielded.app".into());
     }
-    std::fs::rename(bundle, &previous).map_err(|_| UNSUPPORTED)?;
-    if let Err(error) = std::fs::rename(&update, bundle) {
-        std::fs::rename(&previous, bundle).map_err(|_| {
-            format!(
-                "Could not restore Shielded after a failed update; it is at {}",
-                previous.display()
-            )
-        })?;
-        return Err(format!("Could not replace Shielded: {error}"));
-    }
-    Ok(())
+    exchange(&update, bundle).map_err(|error| {
+        format!("Could not replace Shielded in place ({error}); it is unchanged. Try again, or install the update from the downloads page.")
+    })
 }
 
 /// What install replaces in place; Windows hands that to the NSIS installer.
@@ -549,8 +566,8 @@ fn install(staged: &Path, target: Option<&Path>, _update: &DesktopUpdate) -> Res
     } else {
         Err("Could not unpack the update".into())
     };
-    // The staging folder may hold the only copy of the app until it is back in place.
-    if result.is_err() && bundle.exists() {
+    // A failed exchange moved nothing, so staging holds only the unpacked update.
+    if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
     result.map(|()| true)
@@ -931,24 +948,41 @@ mod tests {
         assert_eq!(lock_installer(&staged, &local(b"another installer")).unwrap_err(), CHANGED);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn a_bundle_swap_moves_the_old_app_aside_and_keeps_it_when_the_archive_is_wrong() {
+    fn a_bundle_swap_exchanges_atomically_and_changes_nothing_when_it_cannot() {
         let directory = scratch();
         let bundle = directory.0.join("Shielded.app");
         let staging = directory.0.join(format!("{STAGING}{}", uuid::Uuid::new_v4()));
+        let version = |app: &Path| std::fs::read(app.join("Contents/version")).unwrap();
         std::fs::create_dir_all(bundle.join("Contents")).unwrap();
         std::fs::write(bundle.join("Contents/version"), b"old").unwrap();
         std::fs::create_dir_all(staging.join("Other.app")).unwrap();
         assert!(swap_bundle(&bundle, &staging).is_err());
-        assert_eq!(std::fs::read(bundle.join("Contents/version")).unwrap(), b"old");
+        assert!(exchange(&staging.join("Shielded.app"), &bundle).is_err());
+        assert_eq!(version(&bundle), b"old");
         std::fs::create_dir_all(staging.join("Shielded.app/Contents")).unwrap();
         std::fs::write(staging.join("Shielded.app/Contents/version"), b"new").unwrap();
         swap_bundle(&bundle, &staging).unwrap();
-        assert_eq!(std::fs::read(bundle.join("Contents/version")).unwrap(), b"new");
-        assert_eq!(
-            std::fs::read(staging.join("previous.app/Contents/version")).unwrap(),
-            b"old"
-        );
+        assert_eq!(version(&bundle), b"new");
+        assert_eq!(version(&staging.join("Shielded.app")), b"old");
+    }
+
+    #[test]
+    fn only_a_build_with_a_run_number_and_a_full_commit_can_update_itself() {
+        let full = "7a90ca067003650a87163c1ffc0f6203c72e6722";
+        assert_eq!(release_identity(Some("274"), Some(full)), Ok((274, full)));
+        for (build, commit) in [
+            (Some("274"), None),
+            (Some("274"), Some("")),
+            (Some("274"), Some("7a90ca0")),
+            (Some("274"), Some("7A90CA067003650A87163C1FFC0F6203C72E6722")),
+            (None, Some(full)),
+            (Some("0"), Some(full)),
+            (Some("x"), Some(full)),
+        ] {
+            assert!(release_identity(build, commit).is_err(), "{build:?} {commit:?}");
+        }
     }
 
     #[test]
@@ -967,7 +1001,7 @@ mod tests {
         ] {
             std::fs::write(directory.0.join(name), b"").unwrap();
         }
-        std::fs::create_dir_all(directory.0.join(format!("{STAGING}{id}/previous.app"))).unwrap();
+        std::fs::create_dir_all(directory.0.join(format!("{STAGING}{id}/Shielded.app"))).unwrap();
         DesktopUpdates::at(directory.0.clone());
         remove_leftovers(&directory.0, staging_id);
         assert_eq!(
