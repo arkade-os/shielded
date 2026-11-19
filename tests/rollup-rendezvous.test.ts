@@ -25,7 +25,7 @@ const RFQ_FILTER={kinds:[RFQ_KIND],'#p':[W],authors:[S]},CARD_FILTER={kinds:[CAR
 type Socket={send(data:string):void;on(event:string,listener:(raw:Buffer)=>void):void;terminate():void};
 
 /** A NIP-01 relay on a real socket: it answers REQ with what it stores and EOSE, takes EVENTs (or refuses them) and forwards them live. */
-async function relay(t:TestContext,{stored=[],refuse=false,react,ackDelayMs=0}:{stored?:Event[];refuse?:boolean;react?:(event:Event,deliver:(event:Event)=>void)=>void;ackDelayMs?:number}={}){
+async function relay(t:TestContext,{stored=[],refuse=false,react,ackDelayMs=0,acks=true}:{stored?:Event[];refuse?:boolean;react?:(event:Event,deliver:(event:Event)=>void)=>void;ackDelayMs?:number;acks?:boolean}={}){
  const server=new WebSocketServer({port:0,host:'127.0.0.1'});await once(server,'listening');
  const subs=new Map<Socket,Map<string,Filter[]>>(),published:Event[]=[];
  const send=(socket:Socket,message:unknown[])=>socket.send(JSON.stringify(message));
@@ -36,7 +36,7 @@ async function relay(t:TestContext,{stored=[],refuse=false,react,ackDelayMs=0}:{
    const [type,first,...rest]=JSON.parse(String(raw));
    if(type==='REQ'){subs.get(socket)!.set(first,rest);for(const event of stored)if(matchFilters(rest,event))send(socket,['EVENT',first,event]);send(socket,['EOSE',first]);}
    if(type==='CLOSE')subs.get(socket)!.delete(first);
-   if(type==='EVENT'){if(refuse){send(socket,['OK',first.id,false,'blocked: not here']);return;}published.push(first);const ok=()=>send(socket,['OK',first.id,true,'']);if(ackDelayMs)setTimeout(ok,ackDelayMs);else ok();deliver(first);react?.(first,deliver);}
+   if(type==='EVENT'){if(refuse){send(socket,['OK',first.id,false,'blocked: not here']);return;}published.push(first);const ok=()=>send(socket,['OK',first.id,true,'']);if(ackDelayMs)setTimeout(ok,ackDelayMs);else if(acks)ok();deliver(first);react?.(first,deliver);}
   });
  });
  t.after(()=>new Promise<void>(resolve=>{for(const socket of server.clients as Set<Socket>)socket.terminate();server.close(()=>resolve());}));
@@ -122,6 +122,13 @@ test('an RFQ no relay takes is a 502, and an unanswered one comes back empty at 
  const started=performance.now(),empty=await (await route(t,{relays:[silent.url]}))({kind:RFQ_KIND,event:rfq(),filter:RFQ_FILTER,waitMs:400});
  assert.deepEqual([empty.status,await empty.json()],[200,{events:[]}]);assert.ok(performance.now()-started>=380);
  assert.equal(silent.published.length,1);
+});
+
+test('one relay that takes the RFQ is enough while another never acknowledges it',async t=>{
+ const taking=await relay(t),mute=await relay(t,{acks:false});
+ const response=await (await route(t,{relays:[taking.url,mute.url]}))({kind:RFQ_KIND,event:rfq(),filter:RFQ_FILTER,waitMs:400});
+ assert.deepEqual([response.status,await response.json()],[200,{events:[]}]);
+ assert.deepEqual([taking.published.length,mute.published.length],[1,1]);
 });
 
 test('its own rate and in-flight caps answer 429 and 503 with Retry-After',async t=>{

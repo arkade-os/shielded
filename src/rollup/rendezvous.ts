@@ -12,8 +12,6 @@ export type RendezvousPool=Pick<AbstractSimplePool,'subscribeMany'|'publish'|'de
 class Refused extends Error {}
 const hex64=(value:unknown):value is string=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
 const exactly=(filter:Record<string,unknown>,want:Record<string,unknown>)=>Object.keys(filter).length===Object.keys(want).length&&Object.entries(want).every(([key,value])=>JSON.stringify(filter[key])===JSON.stringify(value));
-const accepted=(result:PromiseSettledResult<string>)=>result.status==='fulfilled'&&!String(result.value).startsWith('connection failure');
-
 function requestOf(body:unknown,maxWaitMs:number):{event?:Event;filter:Filter;waitMs:number} {
  if(!body||typeof body!=='object'||Array.isArray(body))throw new Refused('A rendezvous is a JSON object.');
  const {kind,event,filter,waitMs,...rest}=body as Record<string,unknown>;
@@ -55,8 +53,12 @@ export function createRendezvousRouter({relays,fromGateway,rate=4,maxInFlight=8,
     if(heard.length>=MAX_EVENTS||size>EVENT_BYTES||bytes+size>ANSWER_LIMIT){dropped++;return;}
     heard.push(found);bytes+=size;if(event)end();
    }});
-   // A reply can arrive before the relay's OK, and it proves the RFQ was delivered.
-   if(event&&!(await Promise.race([Promise.allSettled(relay.publish([...relays],event)),ended]))?.some(accepted)&&!heard.length)return {published:false,heard,dropped};
+   // A relay counts as soon as it takes the RFQ, whatever the others do by the wait; a reply can arrive before any OK, and it proves the RFQ was delivered too.
+   if(event){
+    let taken=false;
+    await Promise.race([Promise.allSettled(relay.publish([...relays],event).map(sent=>sent.then(value=>{if(!String(value).startsWith('connection failure'))taken=true;}))),ended]);
+    if(!taken&&!heard.length)return {published:false,heard,dropped};
+   }
    await ended;return {published:true,heard,dropped};
   }finally{clearTimeout(timer);relay.destroy();}
  };
