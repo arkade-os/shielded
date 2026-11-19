@@ -26,7 +26,7 @@ export function createOhttpGateway({key,upstreams,poolOrigin,poolLoopback,gatewa
   // The checks read the path decoded once, as the upstream routes it (arkd serves /v1/tx%73 as its stream); an encoded slash or an empty segment is refused raw.
   // Express routes ignore case and a trailing slash, so the pool route matches any case: /OHTTP/ or /api/ROLLUP/ohttp would reach this gateway again.
   let routed:string;try{routed=decodeURIComponent(path);}catch{return answer(403,'refused');}
-  const lower=routed.toLowerCase(),toPool=url.origin===pool&&lower.startsWith('/api/rollup/'),entry=toPool?undefined:allowed.find(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix)),listed=toPool?!lower.startsWith('/api/rollup/ohttp'):!!entry;
+  const lower=routed.toLowerCase(),toPool=url.origin===pool&&lower.startsWith('/api/rollup/'),entry=toPool?undefined:allowed.filter(entry=>entry.origin===url.origin&&routed.startsWith(entry.prefix)).reduce<typeof allowed[number]|undefined>((best,entry)=>best&&best.prefix.length>=entry.prefix.length?best:entry,undefined),listed=toPool?!lower.startsWith('/api/rollup/ohttp'):!!entry;
   if(!listed||!['GET','POST',...entry?.methods??[]].includes(request.method)||/%2f|%5c/i.test(path)||path.includes('//'))return answer(403,'refused');
   if(/text\/event-stream/i.test(request.headers.get('accept')??'')||STREAMS.some(stream=>lower.startsWith(stream)))return answer(400,'stream');
   const headers=copied(request.headers,['content-type','accept','x-digest',...entry?.headers??[]]),timeout=AbortSignal.timeout(timeoutMs),signal=AbortSignal.any([timeout,gone]);

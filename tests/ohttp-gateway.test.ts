@@ -106,6 +106,14 @@ test('PATCH and DELETE are refused everywhere else, and the Lightning address or
  for(const [extra,message] of [[{methods:['patch']},/upper case/],[{headers:['Authorization']},/lower case/]] as const)assert.throws(()=>createOhttpGateway(optionsOf(g.key,{upstreams:[{origin:LNURL,prefix:'/lnurl/',...extra}]})),message);
 });
 
+test('on one origin the most specific upstream decides, so a broader entry listed first cannot hide the Lightning address permissions',async t=>{
+ const shared='https://services.example',headers={authorization:'Bearer token','content-type':'application/json'};
+ const g=await gateway(t,{upstreams:[{origin:shared,prefix:'/'},{origin:shared,prefix:'/lnurl/',methods:['PATCH'],headers:['authorization']}]});
+ for(const [path,method,status] of [['/lnurl/address','GET',200],['/lnurl/address/alice','PATCH',200],['/api/blocks','GET',200],['/api/blocks','PATCH',403]] as const)
+  assert.equal((await g.open(shared+path,{method,headers,...(method==='GET'?{}:{body:'{}'})})).status,status,`${method} ${path}`);
+ assert.deepEqual(g.calls.map(({url,init})=>[url,init.method,new Headers(init.headers).get('authorization')]),[[shared+'/lnurl/address','GET','Bearer token'],[shared+'/lnurl/address/alice','PATCH','Bearer token'],[shared+'/api/blocks','GET',null]]);
+});
+
 test('streaming requests are refused 400',async t=>{
  const g=await gateway(t);
  assert.equal((await g.open(ARK,{headers:{accept:'text/event-stream'}})).status,400);
