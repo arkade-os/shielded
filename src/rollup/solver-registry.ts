@@ -1,7 +1,7 @@
 import express from 'express';
 
 export const SOLVER_REGISTRY_URL='https://arkade-os.github.io/solver-registry/mutinynet.json';
-const MAX_BYTES=128<<10,TIMEOUT_MS=10_000,RETRY_MS=60_000;
+const MAX_BYTES=128<<10,TIMEOUT_MS=10_000;
 
 /** The Mutinynet solver registry, mirrored so a sealed wallet reads it from the pool instead of asking the gateway for a foreign host. A held copy answers at once and is refreshed behind the answer. */
 export function createSolverRegistryMirror({url=SOLVER_REGISTRY_URL,fetch:send=fetch,now=Date.now,freshMs=5*60_000,staleMs=24*60*60_000,warn=(message:string)=>console.warn(message)}:{url?:string;fetch?:typeof fetch;now?:()=>number;freshMs?:number;staleMs?:number;warn?:(message:string)=>void}={}){
@@ -21,7 +21,7 @@ export function createSolverRegistryMirror({url=SOLVER_REGISTRY_URL,fetch:send=f
  const refresh=()=>pending??=read().catch(error=>{failedAt=now();warn(`Solver registry mirror: ${error instanceof Error?error.message:String(error)}`);}).finally(()=>{pending=undefined;});
  const router=express.Router();
  router.get('/solver-registry',async(_req,res)=>{
-  if(pending||now()-failedAt>=RETRY_MS){if(!held)await refresh();else if(now()-held.at>=freshMs)void refresh();}
+  if(pending||now()-failedAt>=freshMs){if(!held)await refresh();else if(now()-held.at>=freshMs)void refresh();}
   res.setHeader('Cache-Control','no-store');
   if(!held||now()-held.at>=staleMs){res.status(503).json({error:'The solver registry is unavailable.'});return;}
   res.setHeader('Content-Type','application/json').end(held.body);
