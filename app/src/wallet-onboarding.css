@@ -53,7 +53,7 @@
 .wallet-onboarding-privacy>summary::-webkit-details-marker {display:none}
 .wallet-onboarding-privacy>summary>svg {width:14px;height:14px;transform:rotate(180deg);transition:transform .18s ease}
 .wallet-onboarding-privacy[open]>summary>svg {transform:rotate(0)}
-.wallet-onboarding-privacy-menu {position:absolute;right:0;bottom:calc(100% + 12px);width:min(340px,calc(100vw - 44px));max-height:min(52dvh,320px);padding:18px 20px;border:1px solid #849bb34d;border-radius:14px;background:#182b3d;box-shadow:0 18px 60px #030a1480;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;text-align:left;animation:wallet-onboarding-privacy-in .18s ease-out both}
+.wallet-onboarding-privacy-menu {position:absolute;z-index:40;right:0;bottom:calc(100% + 12px);width:min(340px,calc(100vw - 44px));max-height:min(52dvh,320px);padding:18px 20px;border:1px solid #849bb34d;border-radius:14px;background:#182b3d;box-shadow:0 18px 60px #030a1480;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;text-align:left;animation:wallet-onboarding-privacy-in .18s ease-out both}
 .wallet-onboarding-privacy-menu>p {margin:0;font-size:12px;line-height:1.75;color:#c1cfda}
 .wallet-onboarding-phase {display:flex;align-items:center;gap:9px;margin:22px 0 0;font-size:13px;line-height:1.6;color:#d8c29e}
 .wallet-onboarding-spinner {width:14px;height:14px;border:1.5px solid #d2ae7540;border-top-color:#d2ae75;border-radius:50%;animation:wallet-onboarding-spin 1s linear infinite;flex:none}

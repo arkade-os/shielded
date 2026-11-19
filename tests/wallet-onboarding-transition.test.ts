@@ -49,6 +49,9 @@ test('the mobile onboarding footer gives connection and privacy copy separate ro
  const css=readFileSync(new URL('../app/src/wallet-onboarding.css',import.meta.url),'utf8');
  assert.match(css,/@media\(max-width:520px\)\s*\{[\s\S]*?\.wallet-onboarding-footer\s*\{[^}]*grid-template-columns:minmax\(0,1fr\)/);
  assert.match(css,/\.wallet-onboarding-footer \.native-tor-trigger>\[role=status\][^{]*\{[^}]*text-overflow:ellipsis/);
+ const zIndex=(source:string,rule:string)=>Number(new RegExp(`${rule} ?\\{[^}]*z-index:(\\d+)`).exec(source)?.[1]);
+ const tor=zIndex(readFileSync(new URL('../app/src/native-tor-health.css',import.meta.url),'utf8'),'\\.native-tor-health');
+ assert.ok(zIndex(css,'\\.wallet-onboarding-privacy-menu')>tor,'the open privacy popover covers the Tor status it opens over');
 });
 
 test('the wallet entry reveals mounted wallet children with a pointer-inert shared shield handoff',()=>{
