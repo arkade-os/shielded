@@ -49,6 +49,17 @@ test('a failed, oversize or malformed upstream answer is never served, and a goo
  clock=24*60*60_000;assert.equal((await m.get()).status,503,'never older than a day');
 });
 
+test('after a failed read the upstream is left alone for a minute, while the held copy or a 503 answers',async t=>{
+ let clock=0,ok=false;const m=await mirror(t,()=>ok?new Response(INDEX):new Response('nope',{status:502}),{now:()=>clock});
+ for(let i=0;i<3;i++)assert.equal((await m.get()).status,503);
+ assert.equal(m.calls.length,1);
+ clock=60_000;ok=true;assert.equal((await m.get()).status,200);
+ clock+=5*60_000;ok=false;assert.equal((await m.get()).status,200);
+ for(let i=0;i<50&&m.warnings.length<2;i++)await new Promise(resolve=>setTimeout(resolve,10));
+ for(let i=0;i<3;i++)assert.equal(await (await m.get()).text(),INDEX);
+ assert.equal(m.calls.length,3);
+});
+
 test('a sealed wallet learns from the pool status whether this server carries its Lightning',async t=>{
  const service={ready:()=>true,status:()=>({phase:'ready',message:''})} as unknown as RollupService;
  const plain=await serve(t,createRollupRouter(()=>service)),carrying=await serve(t,createRollupRouter(()=>service,{privateLightning:true}));
