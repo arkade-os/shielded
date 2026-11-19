@@ -293,7 +293,7 @@ export async function createPrivateLightning(options:PrivateLightningOptions):Pr
    if(state!=='ended'||!script||retained.has(script)||exiting.has(script))continue;
    // Each script on its own: one that fails is tried again next tick and holds up none after it.
    try{
-    const synced=(await manager.getContractsWithVtxos({script:[script]},undefined,{maxSyncAgeMs:0,unspentOnly:true})).find(row=>row.contract.script===script);
+    const synced=(await manager.getContractsWithVtxos({script:[script]},undefined,{maxSyncAgeMs:0,unspentOnly:true,requireSynced:true})).find(row=>row.contract.script===script);
     if(synced&&!synced.vtxos.some(coin=>!isVtxoSpent(coin)&&!coin.isSwept)&&!stopped)await manager.setContractWatchState(script,'retained');
    }catch{}
   }

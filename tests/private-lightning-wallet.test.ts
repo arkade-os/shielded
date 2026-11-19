@@ -1317,7 +1317,7 @@ async function longLivedWallet(sealed:boolean){
  const f=serviceFixture(),journal=new InMemoryLightningRepository(),ownerKey=hex.encode(await root.xOnlyPublicKey()),manager=await f.base.getContractManager(),freshReads:string[]=[];
  const read=manager.getContractsWithVtxos,fail={retire:new Set<string>(),read:new Set<string>()},ended:string[]=[];
  Object.assign(manager,{setContractWatchState:async(target:string,watch:string)=>{if(watch==='retained'&&fail.retire.has(target))throw new Error('write failed');const contract=f.contracts.find(c=>c.script===target);if(contract)contract.watch=watch;},
-  getContractsWithVtxos:async(filter?:{script?:string[]})=>{if(filter?.script?.some(script=>fail.read.has(script)))throw new Error('read failed');freshReads.push(...filter?.script??[]);return read(filter);}});
+  getContractsWithVtxos:async(filter?:{script?:string[]},_pageSize?:number,options?:{requireSynced?:boolean})=>{if(filter?.script?.some(script=>fail.read.has(script))){if(options?.requireSynced)throw new Error('sync failed');return read(filter);}freshReads.push(...filter?.script??[]);return read(filter);}});
  const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}});
  const payout=async(i:number)=>{const row=receiveDestination(branch,i);await manager.createContract({type:'default',watch:'awaiting-funds',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});return row;};
  const rows=[];for(let i=0;i<PAYOUTS;i++)rows.push(await payout(i));
@@ -1355,7 +1355,7 @@ test('sealed, a finished swap whose retirement fails holds up none after it, and
  const w=await longLivedWallet(true);w.fail.retire.add(w.ended[0]!);w.fail.read.add(w.ended[1]!);
  const service=await w.open();await w.settle(PRIVATE_PAYOUT_WINDOW+4);await service[Symbol.asyncDispose]();
  const polled=w.polled();
- assert.ok(polled.includes(w.ended[0]!)&&polled.includes(w.ended[1]!),'the two that failed stay watched');
+ assert.ok(polled.includes(w.ended[0]!)&&polled.includes(w.ended[1]!),'the two that failed stay watched, the unsynced one too although its stored rows show no coin');
  assert.equal(polled.length,PRIVATE_PAYOUT_WINDOW+4,'every other finished swap was retired past them');
  w.fail.retire.clear();w.fail.read.clear();
  const again=await w.open();await w.settle();await again[Symbol.asyncDispose]();
