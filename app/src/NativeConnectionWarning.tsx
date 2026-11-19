@@ -9,7 +9,7 @@ export default function NativeConnectionWarning({onCancel,onConfirm}:{onCancel:(
   <span className="native-connection-warning-eyebrow">Network privacy</span>
   <h2 id="direct-connection-title">Turn off Tor?</h2>
   <p id="direct-connection-detail">Wallet services will see your IP address. Your network and DNS provider can see which services you contact. Separate Tor circuits will no longer protect unrelated wallet items.</p>
-  <p>Your wallet will reconnect directly for this app session. Tor starts again the next time you launch Shielded.</p>
+  <p>Your wallet will reconnect directly. Tor stays off, even after you restart Shielded, until you turn it back on.</p>
   <div><button type="button" autoFocus onClick={onCancel}>Keep Tor on</button><button type="button" className="native-connection-confirm" onClick={onConfirm}>Turn off Tor and reconnect</button></div>
  </dialog>;
 }

@@ -11,50 +11,40 @@ import {androidUpdateFixture,nativeReleaseFixture} from './fixtures/native-relea
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {AndroidAppUpdateDialog}=await import('../app/src/AndroidAppUpdate.tsx');
 const raw=nativeReleaseFixture(),release=parseNativeRelease({...raw,androidUpdate:androidUpdateFixture(raw)});
-const defaults:AndroidUpdateState={phase:'available',release,received:0,total:50*1024*1024,networkReady:true,torReady:true,opening:false,error:'',info:{packageName:'io.arkade.shielded',versionCode:100122,signerSha256:release.androidUpdate!.signerSha256,installerPackageName:null,canRequestInstalls:true,installStatus:'idle',installError:null}};
-const render=(state:Partial<AndroidUpdateState>)=>renderToStaticMarkup(createElement(AndroidAppUpdateDialog,{state:{...defaults,...state},onClose:()=>{},onDownload:()=>{},onCancel:()=>{},onDiscard:()=>{},onPermission:()=>{},onInstall:()=>{},onOpen:()=>{},onConfirm:()=>{},onRefresh:()=>{}}));
+const defaults:AndroidUpdateState={phase:'available',release,received:0,total:50*1024*1024,networkReady:true,torReady:true,error:'',info:{packageName:'io.arkade.shielded',versionCode:100122,signerSha256:release.androidUpdate!.signerSha256,installerPackageName:null}};
+const staged={id:'saved',versionCode:100123};
+const render=(state:Partial<AndroidUpdateState>)=>renderToStaticMarkup(createElement(AndroidAppUpdateDialog,{state:{...defaults,...state},onClose:()=>{},onUpdate:()=>{},onCancel:()=>{}}));
+const actions=(html:string)=>[...html.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map(match=>match[1]).filter(label=>label!=='Close');
 
-test('Android update is an accessible in-app dialog with its version and build',()=>{
- const html=render({});assert.match(html,/role="dialog" aria-modal="true"/);assert.match(html,/Shielded 0.1.0/);assert.match(html,/Build 123/);assert.match(html,/Download update/);assert.match(html,/through Tor/);assert.doesNotMatch(html,/<a\b|target=|Copy download link|uninstall/i);
+test('Android update is an accessible in-app dialog with its version, build and one Update action',()=>{
+ const html=render({});assert.match(html,/role="dialog" aria-modal="true"/);assert.match(html,/Shielded 0.1.0/);assert.match(html,/Build 123/);assert.match(html,/through Tor/);
+ assert.deepEqual(actions(html),['Update · 0.0 MB']);assert.doesNotMatch(html,/<a\b|target=|Copy download link|uninstall/i);
+});
+
+test('every phase offers at most one primary action, and failures pair their error with Try again',()=>{
+ for(const [state,expected] of [
+  [{},['Update · 0.0 MB']],[{staged},['Update · 0.0 MB']],[{phase:'failed',error:'Tor download timed out'},['Try again']],
+  [{phase:'downloading'},['Cancel download']],[{phase:'checking'},[]],[{phase:'preparing',staged},[]],[{phase:'blocked',error:'Google Play manages this installation.'},[]],[{phase:'idle',release:undefined},[]],
+ ] as [Partial<AndroidUpdateState>,string[]][])assert.deepEqual(actions(render(state)),expected,JSON.stringify(state));
+ assert.match(render({phase:'failed',error:'Tor download timed out'}),/role="alert">Tor download timed out</);
 });
 
 test('download progress shows percent, received bytes, total bytes and a cancel action',()=>{
  const html=render({phase:'downloading',received:20*1024*1024,total:50*1024*1024});
- assert.match(html,/40%/);assert.match(html,/20.0 MB of 50.0 MB/);assert.match(html,/<progress max="100" value="40" aria-label="Update download"/);assert.match(html,/Cancel download/);assert.doesNotMatch(html,/Install update/);
+ assert.match(html,/40%/);assert.match(html,/20.0 MB of 50.0 MB/);assert.match(html,/<progress max="100" value="40" aria-label="Update download"/);assert.match(html,/Cancel download/);
 });
 
 test('with Tor off the download stays available and names both direct destinations',()=>{
- const html=render({torReady:false});assert.match(html,/<button type="button">Download update/);assert.match(html,/Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it/);assert.doesNotMatch(html,/through Tor|<a\b/);
+ const html=render({torReady:false});assert.match(html,/<button type="button">Update/);assert.match(html,/Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it/);assert.doesNotMatch(html,/through Tor|<a\b/);
 });
 
-test('a connecting wallet disables downloading until it is ready',()=>{
- const html=render({networkReady:false,torReady:false});assert.match(html,/Wait for the wallet to connect/);assert.match(html,/<button type="button" disabled="">Download update/);
-});
-
-test('without the install permission the settings action is the only primary, and it reports being opened',()=>{
- const pending={phase:'ready',staged:{id:'saved',versionCode:100123},info:{...defaults.info!,canRequestInstalls:false}} as Partial<AndroidUpdateState>;
- const html=render(pending);
- assert.match(html,/<button type="button">Allow installation in Android settings/);
- assert.doesNotMatch(html,/Install update|Android’s installer/);
- assert.match(html,/Download verified/);assert.match(html,/wallet will lock and finish saving/);assert.match(html,/Discard downloaded update/);
- const opening=render({...pending,opening:true});
- assert.match(opening,/<button type="button" disabled="">Opening Android settings…/);assert.doesNotMatch(opening,/Allow installation/);
-});
-
-test('a granted permission leaves one install primary beside a secondary handoff to Android',()=>{
- const html=render({phase:'ready',staged:{id:'saved',versionCode:100123}});
- assert.match(html,/<button type="button">Install update<\/button><button type="button" class="android-update-secondary">Install with Android’s installer/);
- assert.doesNotMatch(html,/disabled=""/);
-});
-
-test('verified updates install only through the explicit install action',()=>{
- const html=render({phase:'ready',staged:{id:'saved',versionCode:100123}});assert.match(html,/<button type="button">Install update/);assert.doesNotMatch(html,/Download update|Allow installation/);
- const pending=render({phase:'confirmation-required'});assert.match(pending,/Continue in Android installer/);assert.doesNotMatch(pending,/Download update|>Install update</);
- const unknown=render({phase:'unknown',error:'Installer response lost'});assert.match(unknown,/Check install status/);assert.match(unknown,/role="alert"/);assert.doesNotMatch(unknown,/Retry download|>Install update</);
+test('a connecting wallet disables a download but not a verified update, which locks the wallet first',()=>{
+ const html=render({networkReady:false,torReady:false});assert.match(html,/Open or reconnect your wallet/);assert.match(html,/<button type="button" disabled="">Update/);
+ const ready=render({networkReady:false,torReady:false,staged});assert.match(ready,/<button type="button">Update/);assert.match(ready,/Download verified/);assert.match(ready,/wallet will lock and finish saving/);assert.doesNotMatch(ready,/Wait for the wallet|Tor is off/);
 });
 
 test('signing conflicts protect the current installation without offering destructive workarounds',()=>{
- const html=render({phase:'blocked',error:'This installation uses a different signing key. Keep this installation and its wallet data.'});assert.match(html,/different signing key/);assert.match(html,/Keep this installation and its wallet data/);assert.doesNotMatch(html,/Download update|Install update|uninstall|clear wallet/i);
+ const html=render({phase:'blocked',error:'This installation uses a different signing key. Keep this installation and its wallet data.'});assert.match(html,/different signing key/);assert.match(html,/Keep this installation and its wallet data/);assert.doesNotMatch(html,/Update ·|Try again|uninstall|clear wallet/i);
 });
 
 test('the update dialog stays above the wallet with mobile safe areas and reduced-motion support',()=>{

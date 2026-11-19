@@ -1,7 +1,8 @@
 ---- MODULE TorStartup ----
 EXTENDS Naturals, FiniteSets
 
-\* SetupReserve/RequestStart: lib.rs run -> PrivacyTransport::prewarm -> Inner::prepare_start.
+\* SetupReserve/RequestStart: lib.rs run -> PrivacyTransport::prewarm -> Inner::prepare_start,
+\*   in the mode Inner::remembered_mode read, which may be either.
 \* WorkerBegin/DrainAck: StartupWork::run_with_bootstrap, Inner::check_start, Session::start_matches.
 \* Commit/OwnerAbort/Complete: Inner::finish_start, StartupWork::drop, Startup::finish.
 \* Read/Bind/Observe/Pause: Startup::waiter, StartWaiter::wait, Session::invalidate.
@@ -47,14 +48,16 @@ Init ==
     /\ callerMode = [c \in Callers |-> "tor"]
     /\ reply = [c \in Callers |-> "none"] /\ bad = {}
 
-SetupReserve ==
+SetupReserve(m) ==
     /\ ~hostQueued /\ issued = 0
     /\ hostQueued' = TRUE /\ issued' = 1 /\ currentJob' = 1
     /\ generation' = IF BreakReservation THEN 0 ELSE 1
     /\ phase' = IF BreakReservation THEN "locked" ELSE "bootstrapping"
+    /\ mode' = IF BreakReservation THEN mode ELSE m
     /\ jobStage' = [jobStage EXCEPT ![1] = IF BreakReservation THEN "unreserved" ELSE "queued"]
     /\ jobGeneration' = [jobGeneration EXCEPT ![1] = IF BreakReservation THEN 0 ELSE 1]
-    /\ UNCHANGED <<mode, intentEpoch, visible, oldResources, jobMode,
+    /\ jobMode' = [jobMode EXCEPT ![1] = m]
+    /\ UNCHANGED <<intentEpoch, visible, oldResources,
                    jobEpoch, result, terminal, firstResult, done, callerStage, callerJob,
                    callerGeneration, callerMode, reply, bad>>
 
@@ -67,10 +70,10 @@ ShowWebview ==
 
 ReserveLate(j) ==
     /\ jobStage[j] = "unreserved" /\ generation < MaxGeneration
-    /\ generation' = generation + 1 /\ phase' = "bootstrapping" /\ mode' = "tor"
+    /\ generation' = generation + 1 /\ phase' = "bootstrapping" /\ mode' = jobMode[j]
     /\ currentJob' = j /\ jobStage' = [jobStage EXCEPT ![j] = "queued"]
     /\ jobGeneration' = [jobGeneration EXCEPT ![j] = generation + 1]
-    /\ oldResources' = (oldResources \/ mode # "tor"
+    /\ oldResources' = (oldResources \/ mode # jobMode[j]
                         \/ (\E o \in 1..issued : o # j /\ jobStage[o] \notin {"unreserved", "done"}))
     /\ done' = [o \in Jobs |-> IF o = j THEN FALSE ELSE IF o = currentJob THEN (done[o] \/ ~BreakNotification) ELSE done[o]]
     /\ terminal' = [o \in Jobs |-> IF o = j THEN "none" ELSE IF o = currentJob /\ ~done[o] THEN "aborted" ELSE terminal[o]]
@@ -231,8 +234,8 @@ CancelCaller(c) ==
                    callerGeneration, callerMode, reply>>
 
 Terminal == UNCHANGED vars
-Next == SetupReserve \/ ShowWebview \/ Pause \/ DrainAck \/ DuplicateStart \/ Terminal
-        \/ (\E m \in Modes : RequestStart(m))
+Next == ShowWebview \/ Pause \/ DrainAck \/ DuplicateStart \/ Terminal
+        \/ (\E m \in Modes : SetupReserve(m) \/ RequestStart(m))
         \/ (\E j \in Jobs : ReserveLate(j) \/ WorkerBegin(j) \/ AbortQueued(j)
               \/ Commit(j) \/ OwnerAbort(j) \/ (\E o \in {"ready", "error"} : Capture(j, o)))
         \/ (\E c \in Callers : Read(c) \/ Bind(c) \/ Observe(c) \/ CancelCaller(c))

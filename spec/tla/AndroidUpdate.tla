@@ -3,35 +3,35 @@ EXTENDS Naturals, FiniteSets
 
 (* Begin/Cancel/Retire: AndroidUpdates::reserve/cancel, DownloadOwner::drop.
    Receive/Publish: PrivacyTransport::download_update/finish_update, DownloadOwner::publish.
-   Verify/BeginInstall: check_candidate, AndroidUpdater.verify, AndroidUpdates::begin_install.
-   Click/PermissionReturn: createAndroidUpdateController.install/permission/visibilityChanged.
-   Submit/Reply/Reconcile: AndroidUpdater.install/receive/reconcile; InstallOwner::finish. *)
+   Verify: check_candidate, AndroidUpdater.verify after staging.
+   Tap/Hide/Prepare/Saved: createAndroidUpdateController.update/visibilityChanged, prepareAndroidInstall.
+   Queue/Gone/Refuse: native_android_update_open, AndroidUpdates::prepared, AndroidUpdater.openInstaller.
+   Run/Background/Timeout/LateRun: AndroidUpdateAuthorization.run around startActivity. *)
 
-CONSTANTS WorkerCount, MaxGeneration, MaxCrashes,
+CONSTANTS WorkerCount, MaxGeneration, MaxCrashes, MaxHandoffs,
     BreakOwner, BreakTransport, BreakFence, BreakLength, BreakHash,
-    BreakCertificate, BreakPackage, BreakVersion, BreakRecheck,
-    BreakConsent, BreakFileLease, BreakCommitOnce, BreakPending
+    BreakCertificate, BreakPackage, BreakVersion, BreakRecheck, BreakConsent,
+    BreakPrepare, BreakFileLease, BreakMissingFile, BreakAuthFence
 
 Workers == 1..WorkerCount
-Phases == {"idle", "downloading", "received", "checked", "rejected", "ready",
-    "permission", "installing", "submitted", "user", "unknown", "done", "failed"}
+Phases == {"idle", "downloading", "received", "checked", "rejected", "ready", "failed"}
 NetworkPhases == {"downloading", "received", "checked", "rejected"}
 Bytes == {"good", "short", "hash"}
 Identities == {"good", "certificate", "package", "version"}
-OSStates == {"none", "pending", "success", "failure"}
+Handoffs == {"none", "preparing", "saved", "queued"}
+Faults == {"unchecked", "unconsented", "unsaved", "late"}
 
-VARIABLES jobs, generation, mode, owner, staged, permission, crashes
-vars == <<jobs, generation, mode, owner, staged, permission, crashes>>
+VARIABLES jobs, generation, mode, owner, staged, crashes, visible, bad
+vars == <<jobs, generation, mode, owner, staged, crashes, visible, bad>>
 
 Init ==
-    /\ generation = 0 /\ mode = "tor" /\ owner = 0 /\ staged = 0
-    /\ permission = FALSE /\ crashes = 0
+    /\ generation = 0 /\ mode = "tor" /\ owner = 0 /\ staged = 0 /\ crashes = 0
+    /\ visible = TRUE /\ bad = {}
     /\ jobs = [w \in Workers |-> [phase |-> "idle", ticket |-> 0,
         throughReady |-> TRUE, bytes |-> "good", identity |-> "good",
         cancelled |-> FALSE, published |-> FALSE, publishCurrent |-> FALSE,
-        file |-> FALSE, archiveValid |-> TRUE, click |-> FALSE,
-        afterSettings |-> FALSE, rechecked |-> FALSE, installConsent |-> FALSE,
-        commits |-> 0, os |-> "none", approved |-> FALSE]]
+        file |-> FALSE, archiveValid |-> TRUE, tap |-> FALSE, fresh |-> FALSE,
+        handoff |-> "none", stale |-> FALSE, handoffs |-> 0]]
 
 Current(w) == jobs[w].ticket = generation /\ mode # "paused" /\ ~jobs[w].cancelled
 BytesGood(w) == jobs[w].bytes = "good"
@@ -43,174 +43,188 @@ AllowedChecks(w) ==
     /\ (jobs[w].identity # "package" \/ BreakPackage)
     /\ (jobs[w].identity # "version" \/ BreakVersion)
 
+\* The tap that starts a download also asks for its handoff.
 Begin(w) ==
-    /\ jobs[w].phase = "idle" /\ staged = 0
+    /\ jobs[w].phase = "idle" /\ staged = 0 /\ visible
     /\ (owner = 0 \/ BreakOwner) /\ (mode # "paused" \/ BreakTransport)
-    /\ jobs' = [jobs EXCEPT ![w].phase = "downloading",
-        ![w].ticket = generation, ![w].throughReady = (mode # "paused")]
+    /\ jobs' = [jobs EXCEPT ![w].phase = "downloading", ![w].ticket = generation,
+        ![w].throughReady = (mode # "paused"), ![w].tap = TRUE, ![w].fresh = TRUE]
     /\ owner' = w
-    /\ UNCHANGED <<generation, mode, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, staged, crashes, visible, bad>>
 
 Receive(w, bytes, identity) ==
     /\ jobs[w].phase = "downloading"
     /\ jobs' = [jobs EXCEPT ![w].phase = "received", ![w].bytes = bytes,
         ![w].identity = identity, ![w].file = TRUE]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
 Verify(w) ==
     /\ jobs[w].phase = "received" /\ AllowedChecks(w)
     /\ jobs' = [jobs EXCEPT ![w].phase = "checked"]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
 Reject(w) ==
     /\ jobs[w].phase = "received" /\ ~(BytesGood(w) /\ IdentityGood(w))
     /\ jobs' = [jobs EXCEPT ![w].phase = "rejected"]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
+\* A download that completes in the background keeps its file but waits for a new tap.
 Publish(w) ==
     /\ jobs[w].phase = "checked" /\ owner = w /\ staged = 0
     /\ (Current(w) \/ BreakFence)
     /\ jobs' = [jobs EXCEPT ![w].phase = "ready", ![w].published = TRUE,
-        ![w].publishCurrent = Current(w)]
+        ![w].publishCurrent = Current(w), ![w].tap = @ /\ (visible \/ BreakConsent),
+        ![w].fresh = visible]
     /\ owner' = 0 /\ staged' = w
-    /\ UNCHANGED <<generation, mode, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, crashes, visible, bad>>
 
 Cancel(w) ==
     /\ jobs[w].phase \in NetworkPhases /\ ~jobs[w].cancelled
     /\ jobs' = [jobs EXCEPT ![w].cancelled = TRUE]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
 Retire(w) ==
     /\ jobs[w].phase \in NetworkPhases
     /\ (jobs[w].cancelled \/ jobs[w].phase = "rejected")
     /\ jobs' = [jobs EXCEPT ![w].phase = "failed", ![w].file = FALSE]
     /\ owner' = IF owner = w THEN 0 ELSE owner
-    /\ UNCHANGED <<generation, mode, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, staged, crashes, visible, bad>>
 
 Invalidate ==
     /\ generation < MaxGeneration /\ mode # "paused"
     /\ generation' = generation + 1 /\ mode' = "paused"
     /\ jobs' = [w \in Workers |-> IF jobs[w].phase \in NetworkPhases
         THEN [jobs[w] EXCEPT !.cancelled = TRUE] ELSE jobs[w]]
-    /\ UNCHANGED <<owner, staged, permission, crashes>>
+    /\ UNCHANGED <<owner, staged, crashes, visible, bad>>
 
 Resume(nextMode) ==
     /\ mode = "paused" /\ mode' = nextMode
-    /\ UNCHANGED <<jobs, generation, owner, staged, permission, crashes>>
+    /\ UNCHANGED <<jobs, generation, owner, staged, crashes, visible, bad>>
 
-Click(w) ==
-    /\ staged = w /\ jobs[w].phase = "ready"
-    /\ (~jobs[w].click \/ jobs[w].afterSettings)
-    /\ jobs' = [jobs EXCEPT ![w].click = TRUE, ![w].afterSettings = FALSE]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+Tap(w) ==
+    /\ visible /\ staged = w /\ jobs[w].phase = "ready"
+    /\ jobs[w].handoff = "none" /\ ~jobs[w].tap /\ jobs[w].handoffs < MaxHandoffs
+    /\ jobs' = [jobs EXCEPT ![w].tap = TRUE, ![w].fresh = TRUE]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
-NeedPermission(w) ==
-    /\ staged = w /\ jobs[w].phase = "ready" /\ jobs[w].click /\ ~permission
-    /\ jobs' = [jobs EXCEPT ![w].phase = "permission"]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+\* A transfer in flight continues in the background; a verified update's pending handoff does not.
+Hide ==
+    /\ visible /\ visible' = FALSE
+    /\ jobs' = [w \in Workers |-> IF jobs[w].phase # "ready" THEN jobs[w]
+        ELSE [jobs[w] EXCEPT !.fresh = FALSE, !.tap = @ /\ BreakConsent,
+            !.handoff = IF @ \in {"preparing", "saved"} /\ ~BreakConsent THEN "none" ELSE @]]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, bad>>
 
-PermissionReturn(w) ==
-    /\ jobs[w].phase = "permission"
-    /\ jobs' = [jobs EXCEPT ![w].phase = "ready", ![w].click = BreakConsent,
-        ![w].afterSettings = TRUE]
-    /\ permission' = TRUE
-    /\ UNCHANGED <<generation, mode, owner, staged, crashes>>
+Show ==
+    /\ ~visible /\ visible' = TRUE
+    /\ UNCHANGED <<jobs, generation, mode, owner, staged, crashes, bad>>
+
+Prepare(w) ==
+    /\ staged = w /\ jobs[w].phase = "ready" /\ jobs[w].tap
+    /\ jobs[w].handoff = "none" /\ jobs[w].handoffs < MaxHandoffs
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "preparing", ![w].tap = FALSE]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
+
+Saved(w) ==
+    /\ jobs[w].handoff = "preparing"
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "saved"]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
+
+\* The host's handoff call leases the staged file until it returns.
+Queue(w) ==
+    /\ jobs[w].handoff = "saved" \/ (BreakPrepare /\ jobs[w].handoff = "preparing")
+    /\ staged = w /\ (jobs[w].file \/ BreakMissingFile)
+    /\ (jobs[w].archiveValid \/ BreakRecheck)
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "queued"]
+    /\ bad' = bad \cup (IF jobs[w].handoff = "preparing" THEN {"unsaved"} ELSE {})
+        \cup (IF ~jobs[w].archiveValid THEN {"unchecked"} ELSE {})
+        \cup (IF ~jobs[w].fresh THEN {"unconsented"} ELSE {})
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible>>
+
+Gone(w) ==
+    /\ jobs[w].handoff = "saved"
+    /\ staged # w \/ (~jobs[w].file /\ ~BreakMissingFile)
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "none",
+        ![w].phase = IF staged = w THEN "failed" ELSE @]
+    /\ staged' = IF staged = w THEN 0 ELSE staged
+    /\ UNCHANGED <<generation, mode, owner, crashes, visible, bad>>
+
+\* A file that fails the recheck is deleted, so the next attempt downloads again.
+Refuse(w) ==
+    /\ jobs[w].handoff = "saved" /\ staged = w /\ jobs[w].file
+    /\ ~jobs[w].archiveValid /\ ~BreakRecheck
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "none", ![w].file = FALSE]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
+
+Released(w) == IF staged = w THEN jobs[w].file ELSE FALSE
+
+Run(w) ==
+    /\ jobs[w].handoff = "queued" /\ visible
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "none", ![w].handoffs = @ + 1,
+        ![w].file = Released(w)]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
+
+Background(w) ==
+    /\ jobs[w].handoff = "queued" /\ ~visible
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "none", ![w].file = Released(w)]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
+
+Timeout(w) ==
+    /\ jobs[w].handoff = "queued"
+    /\ jobs' = [jobs EXCEPT ![w].handoff = "none", ![w].stale = TRUE,
+        ![w].file = Released(w)]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
+
+LateRun(w) ==
+    /\ jobs[w].stale
+    /\ jobs' = [jobs EXCEPT ![w].stale = FALSE]
+    /\ bad' = bad \cup (IF BreakAuthFence THEN {"late"} ELSE {})
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible>>
 
 Tamper(w) ==
     /\ jobs[w].phase = "ready" /\ jobs[w].archiveValid
     /\ jobs' = [jobs EXCEPT ![w].archiveValid = FALSE]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
-BeginInstall(w) ==
-    /\ staged = w /\ jobs[w].phase = "ready" /\ permission
-    /\ (jobs[w].click \/ BreakConsent)
-    /\ (jobs[w].archiveValid \/ BreakRecheck)
-    /\ jobs' = [jobs EXCEPT ![w].phase = "installing",
-        ![w].rechecked = jobs[w].archiveValid,
-        ![w].installConsent = (jobs[w].click /\ ~jobs[w].afterSettings),
-        ![w].click = FALSE]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
+Evict(w) ==
+    /\ jobs[w].phase = "ready" /\ jobs[w].file /\ jobs[w].handoff # "queued"
+    /\ jobs' = [jobs EXCEPT ![w].file = FALSE]
+    /\ UNCHANGED <<generation, mode, owner, staged, crashes, visible, bad>>
 
 Discard(w) ==
-    /\ staged = w
-    /\ (jobs[w].phase \in {"ready", "permission"}
-        \/ (BreakFileLease /\ jobs[w].phase = "installing"))
-    /\ jobs' = [jobs EXCEPT ![w].file = FALSE,
-        ![w].phase = IF @ = "installing" THEN @ ELSE "failed"]
+    /\ staged = w /\ jobs[w].phase = "ready"
+    /\ jobs' = [jobs EXCEPT ![w].phase = "failed", ![w].tap = FALSE,
+        ![w].file = @ /\ jobs[w].handoff = "queued" /\ ~BreakFileLease]
     /\ staged' = 0
-    /\ UNCHANGED <<generation, mode, owner, permission, crashes>>
-
-Submit(w) ==
-    /\ (jobs[w].phase = "installing"
-        \/ (BreakCommitOnce /\ jobs[w].phase = "submitted"))
-    /\ jobs[w].commits < 2
-    /\ jobs' = [jobs EXCEPT ![w].phase = "submitted", ![w].commits = @ + 1]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
-
-Reply(w, status) ==
-    /\ jobs[w].phase = "submitted"
-    /\ jobs' = [jobs EXCEPT ![w].os = status,
-        ![w].phase = IF status = "pending" THEN IF BreakPending THEN "done" ELSE "user"
-            ELSE IF status = "success" THEN "done" ELSE "failed"]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
-
-UserDecision(w, approve) ==
-    /\ jobs[w].phase = "user"
-    /\ jobs' = [jobs EXCEPT ![w].phase = IF approve THEN "done" ELSE "failed",
-        ![w].approved = approve]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
-
-LoseCallback(w) ==
-    /\ jobs[w].phase \in {"submitted", "user"}
-    /\ jobs' = [jobs EXCEPT ![w].phase = "unknown"]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
-
-Reconcile(w, status) ==
-    /\ jobs[w].phase = "unknown"
-    /\ jobs' = [jobs EXCEPT ![w].os = status,
-        ![w].phase = IF status = "pending" THEN "user"
-            ELSE IF status = "success" THEN "done" ELSE "failed"]
-    /\ UNCHANGED <<generation, mode, owner, staged, permission, crashes>>
-
-Finish(w) ==
-    /\ staged = w /\ jobs[w].phase \in {"done", "failed"}
-    /\ jobs' = [jobs EXCEPT ![w].file = FALSE]
-    /\ staged' = 0
-    /\ UNCHANGED <<generation, mode, owner, permission, crashes>>
+    /\ UNCHANGED <<generation, mode, owner, crashes, visible, bad>>
 
 Crash ==
     /\ crashes < MaxCrashes /\ generation < MaxGeneration
     /\ crashes' = crashes + 1 /\ generation' = generation + 1 /\ mode' = "paused"
-    /\ owner' = 0
-    /\ staged' = IF staged # 0 /\ jobs[staged].phase \in {"submitted", "user", "unknown"}
-        THEN staged ELSE 0
+    /\ owner' = 0 /\ staged' = 0
     /\ jobs' = [w \in Workers |-> [jobs[w] EXCEPT
-        !.phase = IF @ \in NetworkPhases \cup {"ready", "permission", "installing"}
-            THEN "failed" ELSE IF @ \in {"submitted", "user"} THEN "unknown" ELSE @,
-        !.file = FALSE, !.click = FALSE]]
-    /\ UNCHANGED permission
+        !.phase = IF @ \in NetworkPhases \cup {"ready"} THEN "failed" ELSE @,
+        !.file = FALSE, !.tap = FALSE, !.fresh = FALSE, !.handoff = "none", !.stale = FALSE]]
+    /\ UNCHANGED <<visible, bad>>
 
 Next ==
     \/ \E w \in Workers : Begin(w) \/ Verify(w) \/ Reject(w) \/ Publish(w)
-        \/ Cancel(w) \/ Retire(w) \/ Click(w) \/ NeedPermission(w)
-        \/ PermissionReturn(w) \/ Tamper(w) \/ BeginInstall(w) \/ Discard(w)
-        \/ Submit(w) \/ LoseCallback(w) \/ Finish(w)
+        \/ Cancel(w) \/ Retire(w) \/ Tap(w) \/ Prepare(w) \/ Saved(w)
+        \/ Queue(w) \/ Gone(w) \/ Refuse(w) \/ Run(w) \/ Background(w)
+        \/ Timeout(w) \/ LateRun(w) \/ Tamper(w) \/ Evict(w) \/ Discard(w)
     \/ \E w \in Workers, bytes \in Bytes, identity \in Identities : Receive(w, bytes, identity)
-    \/ \E w \in Workers, status \in OSStates \ {"none"} : Reply(w, status) \/ Reconcile(w, status)
-    \/ \E w \in Workers, approve \in BOOLEAN : UserDecision(w, approve)
     \/ \E nextMode \in {"tor", "direct"} : Resume(nextMode)
-    \/ Invalidate \/ Crash
+    \/ Invalidate \/ Crash \/ Hide \/ Show
 
 TypeOK ==
     /\ generation \in 0..MaxGeneration /\ mode \in {"tor", "direct", "paused"}
     /\ owner \in Workers \cup {0} /\ staged \in Workers \cup {0}
-    /\ permission \in BOOLEAN /\ crashes \in 0..MaxCrashes
+    /\ crashes \in 0..MaxCrashes /\ visible \in BOOLEAN /\ bad \subseteq Faults
     /\ jobs \in [Workers -> [phase: Phases, ticket: 0..MaxGeneration,
         throughReady: BOOLEAN, bytes: Bytes, identity: Identities, cancelled: BOOLEAN,
         published: BOOLEAN, publishCurrent: BOOLEAN, file: BOOLEAN,
-        archiveValid: BOOLEAN, click: BOOLEAN, afterSettings: BOOLEAN,
-        rechecked: BOOLEAN, installConsent: BOOLEAN, commits: 0..2,
-        os: OSStates, approved: BOOLEAN]]
+        archiveValid: BOOLEAN, tap: BOOLEAN, fresh: BOOLEAN, handoff: Handoffs,
+        stale: BOOLEAN, handoffs: 0..MaxHandoffs]]
 
 OneDownloader == Cardinality({w \in Workers : jobs[w].phase \in NetworkPhases}) <= 1
 ReadyTransportOnly == \A w \in Workers : jobs[w].throughReady
@@ -220,14 +234,11 @@ MatchingHash == \A w \in Workers : jobs[w].published => jobs[w].bytes # "hash"
 MatchingCertificate == \A w \in Workers : jobs[w].published => jobs[w].identity # "certificate"
 MatchingPackage == \A w \in Workers : jobs[w].published => jobs[w].identity # "package"
 NewerVersion == \A w \in Workers : jobs[w].published => jobs[w].identity # "version"
-RecheckedInstall == \A w \in Workers :
-    (jobs[w].phase = "installing" \/ jobs[w].commits > 0) => jobs[w].rechecked
-ExplicitInstall == \A w \in Workers :
-    (jobs[w].phase = "installing" \/ jobs[w].commits > 0) => jobs[w].installConsent
-PreparedFileLeased == \A w \in Workers : jobs[w].phase = "installing" => jobs[w].file
-OneInstallerCommit == \A w \in Workers : jobs[w].commits <= 1
-PendingRequiresUser == \A w \in Workers :
-    (jobs[w].phase = "done" /\ jobs[w].os = "pending") => jobs[w].approved
+RecheckedHandoff == "unchecked" \notin bad
+ExplicitHandoff == "unconsented" \notin bad
+SavedBeforeHandoff == "unsaved" \notin bad
+HandoffHasFile == \A w \in Workers : jobs[w].handoff = "queued" => jobs[w].file
+NoCancelledHandoff == "late" \notin bad
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

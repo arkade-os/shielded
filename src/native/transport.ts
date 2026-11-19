@@ -74,10 +74,11 @@ export class NativeBridge {
   }
   this.current={...status,mode};for(const fn of this.listeners)try{fn(this.current);}catch{}return this.current;
  }
- // The app session's mode lives in the host and outlives this renderer, which acceptsStatus fences out until it has asked for that mode.
+ // The host launches in the mode it last started and keeps it while paused or failed, so a renderer rebuilt after a lock,
+ // reset or failed start adopts it; acceptsStatus fences this renderer out until it has asked for that mode.
  async hostMode():Promise<NativeMode>{
   const status:NativeStatus=await this.backend.invoke('native_status');
-  return ['ready','bootstrapping'].includes(status.phase)?status.mode??'tor':'tor';
+  return ['ready','bootstrapping','paused','error'].includes(status.phase)?status.mode??'tor':'tor';
  }
  subscribe(fn:(status:NativeStatus)=>void){this.listeners.add(fn);return()=>{this.listeners.delete(fn);};}
  acceptLifecycle(status:NativeStatus){if(!this.acceptsStatus(status))return this.current;++this.statusRevision;return this.acceptStatus(status);}

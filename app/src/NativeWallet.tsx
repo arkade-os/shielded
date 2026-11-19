@@ -153,7 +153,6 @@ export default function NativeWallet(){
    await cleanup.current.drain();
    if(mine!==attempt.current)return;
    await previousClose.catch(()=>{});
-   // Tor off lasts the host's app session, so a replaced renderer adopts a running session's mode instead of restarting Tor.
    const mode=selectedMode.current??=await nativeNetwork.hostMode();
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    setPhase(mode==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');

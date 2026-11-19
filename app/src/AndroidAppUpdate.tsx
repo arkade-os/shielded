@@ -5,7 +5,7 @@ import {installedBuild} from './installed-build.ts';
 import './android-app-update.css';
 
 const size=(bytes:number)=>`${(bytes/1024/1024).toFixed(1)} MB`;
-export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDiscard,onPermission,onInstall,onOpen,onConfirm,onRefresh}:{state:AndroidUpdateState;onClose:()=>void;onDownload:()=>void;onCancel:()=>void;onDiscard:()=>void;onPermission:()=>void;onInstall:()=>void;onOpen:()=>void;onConfirm:()=>void;onRefresh:()=>void}){
+export function AndroidAppUpdateDialog({state,onClose,onUpdate,onCancel}:{state:AndroidUpdateState;onClose:()=>void;onUpdate:()=>void;onCancel:()=>void}){
  const dialog=useRef<HTMLElement>(null),close=useRef<HTMLButtonElement>(null);
  useEffect(()=>{
   const previous=document.activeElement instanceof HTMLElement?document.activeElement:undefined,overflow=document.body.style.overflow;
@@ -19,35 +19,29 @@ export function AndroidAppUpdateDialog({state,onClose,onDownload,onCancel,onDisc
   };
   addEventListener('keydown',key);return()=>{document.body.style.overflow=overflow;removeEventListener('keydown',key);if(previous?.isConnected)previous.focus();};
  },[onClose]);
- const {phase,release,info,staged,error,networkReady,torReady,opening}=state,percent=state.total?Math.min(100,Math.floor(state.received/state.total*100)):0,build=installedBuild();
- const canDownload=['available','failed'].includes(phase)&&!staged,canInstall=phase==='ready'||phase==='failed'&&!!staged&&info?.installStatus==='failed';
- const headings:Record<AndroidUpdateState['phase'],string>={idle:'Shielded updates',checking:'Checking this installation',available:'A new Shielded is ready',blocked:'Keep this installation',downloading:torReady?'Bringing your update through Tor':'Downloading your update',ready:'Ready to install',preparing:'Saving and locking your wallet',installing:'Installing with Android','confirmation-required':'Finish in the Android installer',failed:'The update needs another try',unknown:'Check the Android installer',installed:'Shielded is up to date'};
+ const {phase,release,staged,error,networkReady,torReady}=state,percent=state.total?Math.min(100,Math.floor(state.received/state.total*100)):0,build=installedBuild();
+ const canUpdate=['available','failed'].includes(phase),offline=!staged&&!networkReady;
+ const headings:Record<AndroidUpdateState['phase'],string>={idle:'Shielded updates',checking:'Checking this installation',available:'A new Shielded is ready',blocked:'Keep this installation',downloading:torReady?'Bringing your update through Tor':'Downloading your update',preparing:'Saving and locking your wallet',failed:'The update needs another try'};
  return <div className="android-update-layer" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
   <section ref={dialog} className="android-update-dialog" role="dialog" aria-modal="true" aria-labelledby="android-update-title" aria-describedby="android-update-description">
    <header><span className="android-update-mark" aria-hidden="true">S</span><button ref={close} type="button" className="android-update-close" onClick={onClose} aria-label="Close update">Close</button></header>
    <h2 id="android-update-title">{headings[phase]}</h2>
    {release&&<p className="android-update-version">Shielded {release.version}<span>Build {release.buildNumber}</span></p>}
    {build&&<p className="android-update-installed">This wallet is {build}</p>}
-   <p id="android-update-description">{phase==='downloading'?'The download keeps going if you switch apps while your wallet is unlocked. Closing Shielded stops it.':phase==='preparing'?'Finishing wallet writes before opening Android’s installer.':phase==='installing'?'Android is handling this update. Your wallet stays on this device.':phase==='confirmation-required'?'Android needs your confirmation to finish installing Shielded.':phase==='unknown'?'An installation may still be pending. Check its status before trying another install.':phase==='installed'?'The Android installation completed. Your wallet data stays on this device.':(torReady?'Download inside Shielded through Tor.':'Download inside Shielded.')+' Android installs the update over this app and keeps your wallet data.'}</p>
+   <p id="android-update-description">{phase==='downloading'?'The download keeps going if you switch apps while your wallet is unlocked. Closing Shielded stops it.':phase==='preparing'?'Finishing wallet writes before opening Android’s installer.':(torReady?'Download inside Shielded through Tor.':'Download inside Shielded.')+' Android installs the update over this app and keeps your wallet data.'}</p>
    {phase==='downloading'&&<div className="android-update-progress" role="status" aria-live="polite"><div><strong>{percent}%</strong><span>{size(state.received)} of {size(state.total)}</span></div><progress max={100} value={percent} aria-label="Update download"/></div>}
-   {phase==='ready'&&<p className="android-update-verified">Download verified. Your wallet will lock and finish saving before installation.</p>}
+   {canUpdate&&staged&&<p className="android-update-verified">Download verified. Your wallet will lock and finish saving before installation.</p>}
    {error&&<p className="android-update-error" role="alert">{error}</p>}
-   {canDownload&&!networkReady&&<p className="android-update-help">Wait for the wallet to connect, then download.</p>}{canDownload&&networkReady&&!torReady&&<p className="android-update-help">Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it. Shielded still verifies it before installing.</p>}
+   {canUpdate&&offline&&<p className="android-update-help">Open or reconnect your wallet, then download.</p>}{canUpdate&&!staged&&networkReady&&!torReady&&<p className="android-update-help">Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it. Shielded still verifies it before installing.</p>}
    <div className="android-update-actions">
-    {canDownload&&<button type="button" onClick={onDownload} disabled={!networkReady}>{phase==='failed'?'Retry download':'Download update'}{release?.androidUpdate?` · ${size(release.androidUpdate.bytes)}`:''}</button>}
+    {canUpdate&&<button type="button" onClick={onUpdate} disabled={offline}>{phase==='failed'?'Try again':`Update${release?.androidUpdate?` · ${size(release.androidUpdate.bytes)}`:''}`}</button>}
     {phase==='downloading'&&<button type="button" className="android-update-secondary" onClick={onCancel}>Cancel download</button>}
-    {canInstall&&(info?.canRequestInstalls
-     ?<><button type="button" onClick={onInstall}>Install update</button><button type="button" className="android-update-secondary" onClick={onOpen}>Install with Android’s installer</button></>
-     :<button type="button" onClick={onPermission} disabled={opening}>{opening?'Opening Android settings…':'Allow installation in Android settings'}</button>)}
-    {phase==='confirmation-required'&&<button type="button" onClick={onConfirm}>Continue in Android installer</button>}
-    {['unknown','installing','failed','checking'].includes(phase)&&<button type="button" className="android-update-secondary" onClick={onRefresh}>Check install status</button>}
-    {staged&&['ready','blocked','failed'].includes(phase)&&<button type="button" className="android-update-secondary" onClick={onDiscard}>Discard downloaded update</button>}
    </div>
   </section>
  </div>;
 }
 export default function AndroidAppUpdate({controller,onClose}:{controller:AndroidUpdateController;onClose:()=>void}){
  const state=useSyncExternalStore(controller.subscribe,controller.getSnapshot,controller.getSnapshot);
- const view=<AndroidAppUpdateDialog state={state} onClose={onClose} onDownload={()=>void controller.download()} onCancel={controller.cancel} onDiscard={()=>void controller.discard()} onPermission={()=>void controller.permission()} onInstall={()=>void controller.install()} onOpen={()=>void controller.openInstaller()} onConfirm={()=>void controller.install(true)} onRefresh={()=>void controller.refresh()}/>;
+ const view=<AndroidAppUpdateDialog state={state} onClose={onClose} onUpdate={()=>void controller.update()} onCancel={controller.cancel}/>;
  return typeof document==='undefined'?view:createPortal(view,document.body);
 }

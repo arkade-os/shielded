@@ -24,6 +24,7 @@ import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.WeakHashMap
 import org.json.JSONObject
 
@@ -36,6 +37,7 @@ class UpdateArgs {
     var sha256: String = ""
     var bytes: Long = 0
     var versionCode: Long = 0
+    var deadline: Long = 0
 }
 
 @InvokeArg
@@ -192,17 +194,9 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         }
     }
 
-    private fun update(invoke: Invoke, install: Boolean = false, operation: ((() -> Unit) -> Unit) -> JSObject?) {
-        val dispatch = AndroidUpdateDispatch(install)
-        fun fail(message: String) {
-            when (dispatch.fail()) {
-                UpdateDispatchFailure.INSTALL_FAILED -> invoke.resolve(JSObject().apply {
-                    put("installStatus", "failed"); put("installError", message)
-                })
-                UpdateDispatchFailure.REJECTED -> invoke.reject(message)
-                null -> Unit
-            }
-        }
+    private fun update(invoke: Invoke, operation: ((() -> Unit) -> Unit) -> JSObject?) {
+        val replied = AtomicBoolean(false)
+        fun fail(message: String) { if (replied.compareAndSet(false, true)) invoke.reject(message) }
         fun message(error: Exception) = (error as? UpdateRejected)?.message ?: "Android update unavailable. You can retry."
         try {
             val accepted = main.post {
@@ -222,12 +216,11 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
                             val allowed = try { main.post(authorization) && authorization.get(10, TimeUnit.SECONDS) }
                                 finally { if (!authorization.isDone) authorization.cancel(false) }
                             if (!allowed) throw UpdateRejected("Android update authorization unavailable")
-                            if (!dispatch.begin()) return@execute
                             val result = operation(authorize)
                             val replyAccepted = main.post {
                                 try {
                                     if (generation != ticket || destroyed || webview !== source || !trusted()) fail("Android update unavailable")
-                                    else if (dispatch.complete()) { if (result == null) invoke.resolve() else invoke.resolve(result) }
+                                    else if (replied.compareAndSet(false, true)) { if (result == null) invoke.resolve() else invoke.resolve(result) }
                                 } catch (error: Exception) { fail(message(error)) }
                             }
                             if (!replyAccepted) fail("Android update response unavailable")
@@ -252,28 +245,11 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     }
 
     @Command
-    fun updatePermission(invoke: Invoke) = update(invoke) { authorize ->
-        authorize { updater.permission(activeActivity ?: throw UpdateRejected("Shielded is not on screen, so Android settings could not open. Try again.")) }
-        null
-    }
-
-    @Command
-    fun updateInstall(invoke: Invoke) = update(invoke, install = true) { authorize ->
-        updater.install(invoke.parseArgs(UpdateArgs::class.java), authorize)
-    }
-
-    @Command
-    fun updateOpenInstaller(invoke: Invoke) = update(invoke, install = true) { authorize ->
+    fun updateOpenInstaller(invoke: Invoke) = update(invoke) { authorize ->
         updater.openInstaller(invoke.parseArgs(UpdateArgs::class.java), {
             activeActivity ?: throw UpdateRejected("Shielded is not on screen, so the Android installer could not open. Try again.")
         }, authorize)
-    }
-
-    @Command
-    fun updateConfirm(invoke: Invoke) = update(invoke) { authorize ->
-        var result: JSObject? = null
-        authorize { result = updater.confirm(activeActivity ?: throw UpdateRejected("Shielded is not on screen, so the Android installer could not open. Try again.")) }
-        result
+        null
     }
 
     override fun onResume(activity: AppCompatActivity) {
@@ -281,7 +257,6 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
         activeActivity = activity
         destroyed = false
         if (updateWorker.isShutdown) updateWorker = Executors.newSingleThreadExecutor()
-        updater.resumed()
     }
 
     override fun onDestroy(activity: AppCompatActivity) {

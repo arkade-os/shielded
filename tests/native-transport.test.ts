@@ -283,11 +283,13 @@ test('native starts select Tor by default and send an explicit direct selection'
  assert.deepEqual(selections,['tor','direct']);
 });
 
-test('the host session mode is read from a running session only, where the fenced status read cannot reach it',async()=>{
+test('the host session mode is read from a running, paused or failed session, where the fenced status read cannot reach it',async()=>{
  for(const [status,mode] of [
   [{phase:'ready',generation:7,mode:'direct'},'direct'],
   [{phase:'bootstrapping',generation:7,mode:'direct'},'direct'],
-  [{phase:'paused',generation:7,mode:'direct'},'tor'],
+  [{phase:'paused',generation:7,mode:'direct'},'direct'],
+  [{phase:'error',generation:7,mode:'direct'},'direct'],
+  [{phase:'error',generation:7,mode:'tor'},'tor'],
   [{phase:'locked',generation:0,mode:'tor'},'tor'],
   [{phase:'ready',generation:7},'tor'],
  ] as [NativeStatus,string][]){
