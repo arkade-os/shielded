@@ -115,6 +115,12 @@ test('an answer stays inside the sealed answer cap however much the relay offers
  assert.deepEqual(lines,['[rendezvous] dropped 1, answered 1, refused 1']);
 });
 
+test('the answer cap counts UTF-8 bytes, so multibyte cards stay inside it too',async t=>{
+ const r=await relay(t,{stored:Array.from({length:12},(_,i)=>card('mutinynet','界'.repeat(20_000),at()-i))}),post=await route(t,{relays:[r.url]});
+ const response=await post({kind:CARD_KIND,filter:CARD_FILTER,waitMs:20_000}),body=Buffer.from(await response.arrayBuffer()),{events}=JSON.parse(String(body)) as {events:Event[]};
+ assert.equal(response.status,200);assert.ok(body.length<=ANSWER_BYTES,`${body.length} bytes`);assert.ok(events.length>0&&events.length<12,String(events.length));
+});
+
 test('an RFQ no relay takes is a 502, and an unanswered one comes back empty at its wait',async t=>{
  const refusing=await relay(t,{refuse:true}),silent=await relay(t);
  const refused=await (await route(t,{relays:[refusing.url]}))({kind:RFQ_KIND,event:rfq(),filter:RFQ_FILTER,waitMs:20_000});

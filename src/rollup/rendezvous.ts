@@ -49,7 +49,7 @@ export function createRendezvousRouter({relays,fromGateway,rate=4,maxInFlight=8,
   try{
    relay.subscribeMany([...relays],filter,{onclose:end,oneose:()=>{if(!event)end();},onevent:found=>{
     if(!matchFilter(filter,found))return;
-    const size=JSON.stringify(found).length;
+    const size=Buffer.byteLength(JSON.stringify(found));
     if(heard.length>=MAX_EVENTS||size>EVENT_BYTES||bytes+size>ANSWER_LIMIT){dropped++;return;}
     heard.push(found);bytes+=size;if(event)end();
    }});
