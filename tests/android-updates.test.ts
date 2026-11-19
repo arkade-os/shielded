@@ -34,6 +34,7 @@ test('one tap downloads, saves and locks, then hands the verified file to Androi
   const pending=f.controller.update();await flush();assert.equal(f.state().phase,'downloading');assert.equal(f.downloads[0]!.generation,3);
   await f.finish();await pending;const id=f.downloads[0]!.id;
   assert.deepEqual(f.handoffs(),['prepare','open:'+id]);assert.equal(f.state().phase,'available');assert.equal(f.state().staged?.id,id);assert.equal(f.state().error,'');
+  await flush();assert.equal(f.events.at(-1),'info','a finished handoff re-reads native state');
  }
  const g=fixture(t,{status:{phase:'bootstrapping',generation:4,mode:'tor'}});await flush();await g.controller.update();
  assert.equal(g.downloads.length,0);assert.match(g.state().error,/Open or reconnect your wallet/);
@@ -199,7 +200,7 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.deepEqual(read('../src-tauri/src/lib.rs').match(/native_android_update_\w+/g),commands);
  assert.deepEqual((JSON.parse(read('../src-tauri/capabilities/main.json')).permissions as unknown[]).filter(item=>typeof item==='string'&&item.startsWith('allow-native-android-update-')),commands.map(name=>'allow-'+name.replaceAll('_','-')));
  const rust=read('../src-tauri/src/android_updates.rs');
- assert.match(rust,/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let deadline = [^;]*?\+ HANDOFF_DEADLINE;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\([\s\S]*?"deadline": deadline\.as_millis\(\) as u64[\s\S]*?\.await;\s+if opened\.is_err\(\) \{\s+let _ = updates\.retire_if_missing\(&prepared\);/,'one deadline from the start of the handoff, and a failed handoff retires a stage whose file the recheck deleted');
+ assert.match(rust,/pub async fn native_android_update_open\([\s\S]*?crate::ensure_local\(&window\)\?;\s+let deadline = [^;]*?\+ HANDOFF_DEADLINE;\s+let prepared = updates\.prepared\(&id\)\?;[\s\S]*?check_candidate\([\s\S]*?android_open_update_installer\([\s\S]*?"deadline": u64::try_from\(deadline\.as_millis\(\)\)\.unwrap_or\(u64::MAX\)[\s\S]*?\.await;\s+if opened\.is_err\(\) \{\s+let _ = updates\.retire_if_missing\(&prepared\);/,'one deadline from the start of the handoff, and a failed handoff retires a stage whose file the recheck deleted');
  const deadline=Number(rust.match(/HANDOFF_DEADLINE: std::time::Duration = std::time::Duration::from_secs\((\d+)\)/)![1])*1000;
  const backstop=Number(read('../app/src/android-updates.ts').match(/bounded\(backend\.open\(staged\.id\),([\d_]+)\)/)![1].replace(/_/g,''));
  assert.ok(backstop>deadline,'the renderer outwaits the host deadline, so it never gives up on a handoff that can still open the installer');

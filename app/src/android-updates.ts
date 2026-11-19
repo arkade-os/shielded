@@ -119,7 +119,7 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
   if(stopped||!isVisible()||!['available','failed'].includes(state.phase))return;
   if(!update){publish({phase:'blocked',error:'This release does not include an installable Android update yet.'});return;}
   if(!state.staged&&!state.networkReady){publish({error:OFFLINE});return;}
-  const owner=updating=++revision;publish({phase:'checking',release,error:''});
+  const owner=updating=++revision;let opened=false;publish({phase:'checking',release,error:''});
   try{
    const info=await visiblyBounded(backend.info());if(!active(owner))return;
    const blocked=conflict(info,update);if(blocked){publish({phase:'blocked',info,staged:undefined,error:blocked});return;}
@@ -136,9 +136,9 @@ export function createAndroidUpdateController(backend:AndroidUpdateBackend,netwo
    await bounded(prepare(),30_000);if(!active(owner))return;
    // Outlasts the host's 45-second HANDOFF_DEADLINE, after which the installer can no longer open.
    await bounded(backend.open(staged.id),60_000);if(!active(owner))return;
-   publish({phase:'available'});
+   publish({phase:'available'});opened=true;
   }catch(error){if(active(owner))publish({phase:'failed',received:0,error:message(error)});}
-  finally{if(updating===owner){updating=0;if(latest!==release)void refresh();}}
+  finally{if(updating===owner){updating=0;if(opened||latest!==release)void refresh();}}
  }
  const unsubscribe=network.subscribe(accept),initialNetwork=networkRevision;
  void network.status().then(next=>{if(!stopped&&networkRevision===initialNetwork)accept(next);},()=>{});
