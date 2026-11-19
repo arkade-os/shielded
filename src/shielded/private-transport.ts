@@ -35,7 +35,7 @@ export function rendezvousPool(fetcher:typeof fetch,poolOrigin:string):CarrierPo
   subscribeMany(_relays:string[],filter:Filter,on:Listener){
    const sub={filter,on,closed:false};
    if(filter.kinds?.length===1&&filter.kinds[0]===CARD_KIND)void meet({kind:CARD_KIND,filter,waitMs:10_000}).then(events=>{if(sub.closed)return;for(const event of events)on.onevent?.(event);on.oneose?.();},error=>{if(!sub.closed)on.onclose?.([{url:poolOrigin,reason:String(error)}]);});
-   else replies=sub;
+   else{const previous=replies;if(previous&&!previous.closed){previous.closed=true;previous.on.onclose?.([{url:poolOrigin,reason:'a newer RFQ reply subscription replaced this one'}]);}replies=sub;}
    return {close(){sub.closed=true;}};
   },
   // The pool is the one relay here, so one outcome answers for any relays the card lists.

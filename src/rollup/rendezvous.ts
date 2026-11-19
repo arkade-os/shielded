@@ -55,7 +55,8 @@ export function createRendezvousRouter({relays,fromGateway,rate=4,maxInFlight=8,
     if(heard.length>=MAX_EVENTS||size>EVENT_BYTES||bytes+size>ANSWER_LIMIT){dropped++;return;}
     heard.push(found);bytes+=size;if(event)end();
    }});
-   if(event&&!(await Promise.race([Promise.allSettled(relay.publish([...relays],event)),ended]))?.some(accepted))return {published:false,heard,dropped};
+   // A reply can arrive before the relay's OK, and it proves the RFQ was delivered.
+   if(event&&!(await Promise.race([Promise.allSettled(relay.publish([...relays],event)),ended]))?.some(accepted)&&!heard.length)return {published:false,heard,dropped};
    await ended;return {published:true,heard,dropped};
   }finally{clearTimeout(timer);relay.destroy();}
  };

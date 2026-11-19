@@ -25,7 +25,7 @@ const RFQ_FILTER={kinds:[RFQ_KIND],'#p':[W],authors:[S]},CARD_FILTER={kinds:[CAR
 type Socket={send(data:string):void;on(event:string,listener:(raw:Buffer)=>void):void;terminate():void};
 
 /** A NIP-01 relay on a real socket: it answers REQ with what it stores and EOSE, takes EVENTs (or refuses them) and forwards them live. */
-async function relay(t:TestContext,{stored=[],refuse=false,react}:{stored?:Event[];refuse?:boolean;react?:(event:Event,deliver:(event:Event)=>void)=>void}={}){
+async function relay(t:TestContext,{stored=[],refuse=false,react,ackDelayMs=0}:{stored?:Event[];refuse?:boolean;react?:(event:Event,deliver:(event:Event)=>void)=>void;ackDelayMs?:number}={}){
  const server=new WebSocketServer({port:0,host:'127.0.0.1'});await once(server,'listening');
  const subs=new Map<Socket,Map<string,Filter[]>>(),published:Event[]=[];
  const send=(socket:Socket,message:unknown[])=>socket.send(JSON.stringify(message));
@@ -36,7 +36,7 @@ async function relay(t:TestContext,{stored=[],refuse=false,react}:{stored?:Event
    const [type,first,...rest]=JSON.parse(String(raw));
    if(type==='REQ'){subs.get(socket)!.set(first,rest);for(const event of stored)if(matchFilters(rest,event))send(socket,['EVENT',first,event]);send(socket,['EOSE',first]);}
    if(type==='CLOSE')subs.get(socket)!.delete(first);
-   if(type==='EVENT'){if(refuse){send(socket,['OK',first.id,false,'blocked: not here']);return;}published.push(first);send(socket,['OK',first.id,true,'']);deliver(first);react?.(first,deliver);}
+   if(type==='EVENT'){if(refuse){send(socket,['OK',first.id,false,'blocked: not here']);return;}published.push(first);const ok=()=>send(socket,['OK',first.id,true,'']);if(ackDelayMs)setTimeout(ok,ackDelayMs);else ok();deliver(first);react?.(first,deliver);}
   });
  });
  t.after(()=>new Promise<void>(resolve=>{for(const socket of server.clients as Set<Socket>)socket.terminate();server.close(()=>resolve());}));
@@ -61,6 +61,12 @@ test('an RFQ is published to the configured relay and the solver\'s reply comes 
  assert.ok(performance.now()-started<5_000,'the first reply ends the wait');
  assert.deepEqual(r.published.map(sent=>sent.id),[event.id]);
  await until(()=>r.sockets()===0);
+});
+
+test('a solver reply that arrives before the relay acknowledges the RFQ still comes back',async t=>{
+ const r=await relay(t,{react:solving(0),ackDelayMs:500}),post=await route(t,{relays:[r.url]});
+ const response=await post({kind:RFQ_KIND,event:rfq(),filter:RFQ_FILTER,waitMs:20_000});
+ assert.equal(response.status,200);assert.equal((await response.json() as {events:Event[]}).events.length,1);
 });
 
 test('a card read returns the stored cards at the end of stored events, and only the named solver\'s on the named network',async t=>{

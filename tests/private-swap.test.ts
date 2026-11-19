@@ -50,6 +50,16 @@ test('a rendezvous the pool cannot serve fails the RFQ at once, and a card read 
  assert.match(String(closed[0]),/rendezvous answered 404/);
 });
 
+test('a newer RFQ reply subscription closes the one it replaces, and its RFQ carries the newer filter',async()=>{
+ const bodies:{filter:unknown}[]=[],fetcher=(async(_url:string,init:RequestInit)=>{bodies.push(JSON.parse(String(init.body)));return Response.json({events:[]});}) as unknown as typeof fetch;
+ const pool=rendezvousPool(fetcher,POOL),closed:string[]=[],first=generateSecretKey(),second=generateSecretKey();
+ pool.subscribeMany(['wss://nostr.arkade.sh'],{kinds:[24859],'#p':[getPublicKey(first)],authors:[S]},{onclose:reasons=>closed.push(...reasons.map(({reason})=>reason))});
+ pool.subscribeMany(['wss://nostr.arkade.sh'],{kinds:[24859],'#p':[getPublicKey(second)],authors:[S]},{});
+ assert.match(String(closed[0]),/replaced/);
+ await pool.publish(['wss://nostr.arkade.sh'],finalizeEvent({kind:24859,created_at:0,tags:[['p',S]],content:'x'},second))[0];
+ assert.deepEqual(bodies.map(body=>body.filter),[{kinds:[24859],'#p':[getPublicKey(second)],authors:[S]}]);
+});
+
 test('an RFQ with no open reply subscription is refused before any request, rather than sent without a filter',async()=>{
  let asked=0;const fetcher=(async()=>{asked++;return Response.json({events:[]});}) as unknown as typeof fetch,wallet=generateSecretKey();
  const rfq=finalizeEvent({kind:24859,created_at:0,tags:[['p',S]],content:'x'},wallet),pool=rendezvousPool(fetcher,POOL);
