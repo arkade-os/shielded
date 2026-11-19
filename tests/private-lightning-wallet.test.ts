@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {indexedDB} from 'fake-indexeddb';
-import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,ContractManager,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,MnemonicIdentity,P2A,SingleKey,Transaction,UnilateralExit,VtxoScript,deriveDescriptorLeafPubKey,getNetwork,onchainRail,provisionClaimSecret,provisionRefundKey,resolveDescriptorSigner,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
+import {ArkAddress,ConditionMultisigTapscript,ConditionWitness,ContractManager,DefaultVtxo,InMemoryContractRepository,InMemoryWalletRepository,MnemonicIdentity,P2A,ProviderUnavailableError,SingleKey,Transaction,UnilateralExit,VtxoScript,deriveDescriptorLeafPubKey,getNetwork,onchainRail,provisionClaimSecret,provisionRefundKey,resolveDescriptorSigner,sequenceToTimelock,setArkPsbtField,timelockToSequence,type Wallet} from '@arkade-os/sdk';
 import {Script} from '@scure/btc-signer';
 import {sha256} from '@noble/hashes/sha2.js';
 import {ripemd160} from '@noble/hashes/legacy.js';
@@ -1372,14 +1372,24 @@ test('sealed, a finished swap whose retirement fails holds up none after it, and
 
 // A real SDK ContractManager over a counting indexer, with the first `watched` contracts watched and the rest retained.
 async function realManager(count:number,watched:number){
- const reads:string[]=[],idle=(_id:string,signal:AbortSignal)=>({[Symbol.asyncIterator](){return this;},next:()=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve({done:true,value:undefined}),{once:true}))});
- const indexer={getVtxos:async({scripts}:{scripts?:string[]})=>{reads.push(...scripts??[]);return {vtxos:[]};},subscribeForScripts:async()=>'sub',unsubscribeForScripts:async()=>{},getSubscription:idle};
+ const reads:string[]=[],outage={on:false},idle=(_id:string,signal:AbortSignal)=>({[Symbol.asyncIterator](){return this;},next:()=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve({done:true,value:undefined}),{once:true}))});
+ const indexer={getVtxos:async({scripts}:{scripts?:string[]})=>{if(outage.on)throw new ProviderUnavailableError('indexer request failed');reads.push(...scripts??[]);return {vtxos:[]};},subscribeForScripts:async()=>'sub',unsubscribeForScripts:async()=>{},getSubscription:idle};
  const manager=await ContractManager.create({indexerProvider:indexer as never,contractRepository:new InMemoryContractRepository(),walletRepository:new InMemoryWalletRepository(),vtxoSyncMaxAgeMs:15_000});
  const branch=receiveBranch(root.descriptor,{serverPubKey:hex.encode(server),hrp:'tark',exitDelay:{type:'seconds',value:1024}}),rows=Array.from({length:count},(_,i)=>receiveDestination(branch,i));
  for(const [i,row] of rows.entries()){await manager.createContract({type:'default',watch:'watched',script:row.script,address:row.address,params:row.params!,metadata:{signingDescriptor:row.descriptor}});if(i>=watched)await manager.setContractWatchState(row.script,'retained');}
  await flushTasks();reads.length=0;
- return {manager,reads,rows,dispose:()=>(manager as unknown as {dispose?:()=>Promise<void>}).dispose?.()};
+ return {manager,reads,rows,outage,dispose:()=>(manager as unknown as {dispose?:()=>Promise<void>}).dispose?.()};
 }
+
+test('sealed, the retirer\'s read of one script rejects while the indexer is down, where the SDK alone would answer from its store',async()=>{
+ const {manager,reads,rows,outage,dispose}=await realManager(2,2),split=sealedContractReads(manager),scope={script:[rows[0]!.script]},options={maxSyncAgeMs:0,unspentOnly:true};
+ try{
+  assert.equal((await split.getContractsWithVtxos(scope,undefined,{...options,requireSynced:true})).length,1);assert.deepEqual(reads,scope.script);
+  outage.on=true;
+  await assert.rejects(split.getContractsWithVtxos(scope,undefined,{...options,requireSynced:true}),/requires an online contract sync/);
+  assert.equal((await split.getContractsWithVtxos(scope,undefined,options)).length,1);
+ }finally{await dispose();}
+});
 
 test('sealed, a read of every companion contract syncs only the watched ones and still returns them all',async()=>{
  const {manager,reads,rows,dispose}=await realManager(12,3);
