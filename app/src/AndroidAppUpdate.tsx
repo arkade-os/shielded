@@ -1,5 +1,7 @@
 import {useEffect,useRef,useSyncExternalStore} from 'react';
 import {createPortal} from 'react-dom';
+import {openUrl} from '@tauri-apps/plugin-opener';
+import {nativeUpdateUrl} from '../../src/native-release.ts';
 import type {UpdateController,UpdateState} from './android-updates.ts';
 import {installedBuild} from './installed-build.ts';
 import './android-app-update.css';
@@ -34,6 +36,7 @@ export function AndroidAppUpdateDialog({state,onClose,onUpdate,onCancel,desktop=
    {phase==='downloading'&&<div className="android-update-progress" role="status" aria-live="polite"><div><strong>{percent}%</strong><span>{size(state.received)} of {size(state.total)}</span></div><progress max={100} value={percent} aria-label="Update download"/></div>}
    {canUpdate&&staged&&<p className="android-update-verified">Download verified. Your wallet will lock and finish saving before installation.</p>}
    {error&&<p className="android-update-error" role="alert">{error}</p>}
+   {phase==='failed'&&<p className="android-update-help">Or <a href={nativeUpdateUrl()} data-native-external="true" onClick={event=>{event.preventDefault();void openUrl(nativeUpdateUrl()).catch(()=>{});}}>install it from the download page</a>.</p>}
    {canUpdate&&offline&&<p className="android-update-help">Open or reconnect your wallet, then download.</p>}{canUpdate&&!staged&&networkReady&&!torReady&&<p className="android-update-help">Tor is off, so the download connects directly to the Shielded download server, or to GitHub if that server can’t provide it. Shielded still verifies it before installing.</p>}
    <div className="android-update-actions">
     {canUpdate&&<button type="button" onClick={onUpdate} disabled={offline}>{phase==='failed'?'Try again':`Update${bytes?` · ${size(bytes)}`:''}`}</button>}

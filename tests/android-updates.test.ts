@@ -213,7 +213,9 @@ test('one handoff command lines up across the capability, Rust and Kotlin, and t
  assert.match(updater,/intent\.setPackage\(systemInstaller\(intent\)\)\s+authorize \{\s+if \(AndroidUpdatePolicy\.handoffExpired\(args\.deadline, System\.currentTimeMillis\(\)\)\)\s+throw UpdateRejected\([^)]*\)\s+activity\(\)\.startActivity\(intent\)\s+\}/,'the deadline is checked on the main thread right before the installer starts');
  assert.match(updater,/\(error as\? AmbiguousUpdateAuthorization\)\?\.message/,'an installer launch that may have started keeps its own message');
  assert.match(updater,/PackageManager\.MATCH_SYSTEM_ONLY or PackageManager\.MATCH_DEFAULT_ONLY/);
- assert.match(updater,/resolved\?\.activityInfo\?\.packageName\s+\?: throw UpdateRejected\(/);
+ assert.match(updater,/queryIntentActivities\([\s\S]*?AndroidUpdatePolicy\.installer\([\s\S]*?Manifest\.permission\.INSTALL_PACKAGES[\s\S]*?\?: throw UpdateRejected\(/);
+ assert.doesNotMatch(updater,/resolveActivity\(/,'resolveActivity returns the chooser when several system apps handle APKs');
+ assert.match(updater,/in its installer \(\$\{error\.javaClass\.simpleName\}\)/,'an unexpected failure names its exception');
  assert.doesNotMatch(updater,/PackageInstaller|SharedPreferences|canRequestPackageInstalls|permission-required/);
  const manifest=read(plugin+'android/src/main/AndroidManifest.xml');
  assert.match(manifest,/REQUEST_INSTALL_PACKAGES/);assert.doesNotMatch(manifest,/UpdateReceiver/);

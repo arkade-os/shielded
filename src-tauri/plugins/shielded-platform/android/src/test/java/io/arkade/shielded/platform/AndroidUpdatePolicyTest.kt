@@ -103,4 +103,12 @@ class AndroidUpdatePolicyTest {
         assertTrue(AndroidUpdatePolicy.handoffExpired(1_000, 1_000))
         assertTrue(AndroidUpdatePolicy.handoffExpired(1_000, 1_001))
     }
+
+    @Test fun theInstallerIsASystemHandlerThatCanInstallAndNeverTheChooser() {
+        val installer = "com.android.packageinstaller"
+        assertEquals(installer, AndroidUpdatePolicy.installer(listOf("com.oplus.files", installer)) { it == installer })
+        assertEquals("com.oplus.files", AndroidUpdatePolicy.installer(listOf("android", "com.oplus.files")) { false })
+        assertNull(AndroidUpdatePolicy.installer(listOf("android")) { true })
+        assertNull(AndroidUpdatePolicy.installer(emptyList()) { true })
+    }
 }

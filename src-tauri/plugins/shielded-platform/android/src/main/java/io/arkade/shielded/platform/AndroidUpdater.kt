@@ -1,5 +1,6 @@
 package io.arkade.shielded.platform
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -70,14 +71,16 @@ internal class AndroidUpdater(context: Context) {
 
     // An implicit APK-MIME view intent is offered to every app that claims it, so the handoff goes
     // to a preinstalled handler or nowhere; any other app could fake the install screen.
+    // Not resolveActivity: with several system handlers it returns Android's chooser, and setPackage("android") then fails.
     @Suppress("DEPRECATION")
     private fun systemInstaller(intent: Intent): String {
         val flags = PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY
-        val resolved = if (Build.VERSION.SDK_INT >= 33)
-            manager.resolveActivity(intent, PackageManager.ResolveInfoFlags.of(flags.toLong()))
-        else manager.resolveActivity(intent, flags)
-        return resolved?.activityInfo?.packageName
-            ?: throw UpdateRejected("This device has no system installer for update packages. Install the update from the Shielded download page.")
+        val handlers = if (Build.VERSION.SDK_INT >= 33)
+            manager.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(flags.toLong()))
+        else manager.queryIntentActivities(intent, flags)
+        return AndroidUpdatePolicy.installer(handlers.map { it.activityInfo.packageName }) {
+            manager.checkPermission(Manifest.permission.INSTALL_PACKAGES, it) == PackageManager.PERMISSION_GRANTED
+        } ?: throw UpdateRejected("This device has no system installer for update packages. Install the update from the Shielded download page.")
     }
 
     // Android's installer asks for the install-unknown-apps permission itself and owns the outcome.
@@ -98,6 +101,6 @@ internal class AndroidUpdater(context: Context) {
         }
     } catch (error: Exception) {
         throw error as? UpdateRejected ?: UpdateRejected((error as? AmbiguousUpdateAuthorization)?.message
-            ?: "Android could not open this update in its installer. You can retry.")
+            ?: "Android could not open this update in its installer (${error.javaClass.simpleName}). You can retry.")
     }
 }

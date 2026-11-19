@@ -56,5 +56,8 @@ internal object AndroidUpdatePolicy {
 
     fun handoffExpired(deadline: Long, now: Long) = deadline > 0 && now >= deadline
 
+    fun installer(handlers: List<String>, installs: (String) -> Boolean): String? =
+        handlers.filter { it != "android" }.let { packages -> packages.firstOrNull(installs) ?: packages.firstOrNull() }
+
     fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 }
