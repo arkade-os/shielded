@@ -13,9 +13,10 @@ import {pausedErrorText,satsText} from './rollup-client.ts';
 import {restoreNativeStorage} from './native-storage.ts';
 import {passkeyRecord,savePasskey,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
 export {PASSKEY,passkeyRecord,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
+import {LOCKED,lockedRecordOf} from './locked-wallet.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
-type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
+export type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 function fetchErrorText(error:unknown){
  if(!(error instanceof FetchError))return;
  if(!['GET','HEAD'].includes((error.method??'GET').toUpperCase()))return 'The wallet service request did not finish. Its outcome may be unknown. Check its status before trying again.';
@@ -268,27 +269,30 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
  if(!wallet.repositoryError&&current()&&storage.getItem(SENT)===raw)storage.removeItem(SENT);
 }
 
-const WALLET_EXISTS='A wallet already exists in this browser. Reload to open it.';
+export const WALLET_EXISTS='A wallet already exists in this browser. Reload to open it.';
+export const passkeyUserName=(at:number)=>`Shielded wallet · ${new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`;
+/** A browser that reports no PRF returns no PRF result at create, which the SDK calls 'unknown', not 'unsupported': no fallback, only an orphan passkey. */
+export const offersPasskeys=(prf:'yes'|'no'|'unknown'|undefined)=>prf!==undefined&&prf!=='no';
 export function createPageWallet(storage:PageStorage,seed?:PasskeySeed){
- if(storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
+ if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
  const secret=bytesToHex(seed?.master??crypto.getRandomValues(new Uint8Array(32)));
  storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));savePasskey(storage,seed&&passkeyRecord(seed));storage.setItem(SECRET,secret);
  return secret;
 }
 export async function createPasskeyPageWallet(storage:PageStorage,o:{rpId:string;wordCount:PasskeyWordCount;client?:WebAuthnClient}){
  // Checked before the prompt as well, so a wallet another tab made never costs an orphan passkey.
- if(storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
- const seed=await createPasskeySeed({rpId:o.rpId,userName:`Shielded wallet · ${new Date().toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`,wordCount:o.wordCount,client:o.client});
+ if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
+ const at=Date.now(),seed=await createPasskeySeed({rpId:o.rpId,userName:passkeyUserName(at),createdAt:at,wordCount:o.wordCount,client:o.client});
  try{
-  if(storage.getItem(SECRET))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
+  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
   return {secret:createPageWallet(storage,seed),words:seed.words};
  }finally{seed.master.fill(0);}
 }
 export async function restorePasskeyPageWallet(o:Parameters<typeof restorePageWallet>[1]&{rpId:string;client?:WebAuthnClient}){
  const seed=await restorePasskeySeed({rpId:o.rpId,client:o.client});
  try{
-  if(o.storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
-  await restorePageWallet(bytesToHex(seed.master),{...o,passkey:passkeyRecord(seed)});
+  if(o.storage.getItem(SECRET)||lockedRecordOf(o.storage))throw new Error(WALLET_EXISTS);
+  await restorePageWallet(bytesToHex(seed.master),{...o,passkey:passkeyRecord(seed),refuseExisting:true});
  }finally{seed.master.fill(0);}
 }
 /** Twelve words cannot be read back from their stretched secret, so they come from the wallet's own passkey again, checked against that secret. */
@@ -301,25 +305,33 @@ export async function passkeyWords(storage:Pick<Storage,'getItem'>,o:{rpId:strin
   return seed.words;
  }finally{seed.master.fill(0);}
 }
-const PASSKEY_STEPS:Record<PasskeyOutcome,string>={
+export const PASSKEY_STEPS:Record<PasskeyOutcome,string>={
  cancelled:'The passkey request ended before it finished, so nothing was saved. Try again, or use a recovery phrase.',
  unavailable:'This device’s passkeys cannot create a wallet key. Create or restore a wallet with a recovery phrase instead.',
  unconfirmed:'The passkey was made but could not be used, so no wallet was created. Create a wallet with a recovery phrase instead.',
  uncounted:'That passkey did not say how many recovery words its wallet has, so no wallet was restored. Restore with your recovery phrase, or with the device that created the passkey.',
+ fallback:'This passkey can’t make wallet keys on this device, so no wallet was created. Create a wallet with a recovery phrase instead.',
 };
+const RESTORE_UNAVAILABLE='This passkey can’t make wallet keys on this device. If its wallet was made on another device without passkey keys, only that wallet’s recovery phrase can restore it.';
 /** Only a cancel offers the passkey again: a retry of the others would make another passkey that fails the same way. */
-export function passkeyNextStep(error:unknown){
- const failure=passkeyFailure(error);
- return failure&&{retry:failure.outcome==='cancelled',message:PASSKEY_STEPS[failure.outcome]+(failure.credentialId?' You can delete the passkey it made in your passkey settings.':'')};
+export function passkeyNextStep(error:unknown,mode:'create'|'restore'='create'){
+ const failure=passkeyFailure(error),name=(error as {userName?:unknown})?.userName;
+ return failure&&{retry:failure.outcome==='cancelled',message:(mode==='restore'&&failure.outcome==='unavailable'?RESTORE_UNAVAILABLE:PASSKEY_STEPS[failure.outcome])+(failure.credentialId?` You can delete the passkey ${typeof name==='string'?`“${name}”`:'it made'} in your passkey settings.`:'')};
+}
+/** A failed restore never makes passkeys unavailable: the user can still create one. */
+export function passkeyFailureView(error:unknown,mode:'create'|'restore'){
+ const step=passkeyNextStep(error,mode);
+ return {message:step?.message,disablePasskeys:mode==='create'&&!!step&&!step.retry};
 }
 
-export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number};passkey?:PasskeyRecord}){
+export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number};passkey?:PasskeyRecord;refuseExisting?:boolean}){
  const parsed=bytesToHex(parseMasterSecret(phrase));
- o.cache.close();await o.stop();await o.cache.drain();
+ const guard=()=>{if(o.refuseExisting&&(o.storage.getItem(SECRET)||lockedRecordOf(o.storage)))throw new Error(WALLET_EXISTS);};
+ o.cache.close();await o.stop();await o.cache.drain();guard();
  const nativeRestore=restoreNativeStorage(o.storage,parsed,o.born,o.passkey);
  if(nativeRestore){await nativeRestore;await o.cache.repository.clear();o.reload();return;}
- await o.cache.repository.clear();
- savePasskey(o.storage,o.passkey);o.storage.setItem(SECRET,parsed);
+ await o.cache.repository.clear();guard();
+ savePasskey(o.storage,o.passkey);o.storage.setItem(SECRET,parsed);o.storage.removeItem(LOCKED);
  for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
  if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);
  o.storage.removeItem(SENT);o.reload();

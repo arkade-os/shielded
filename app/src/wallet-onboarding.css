@@ -72,6 +72,9 @@
 .wallet-onboarding-restore-form>textarea::placeholder {color:#879cad}
 .wallet-onboarding-restore-form>textarea:disabled {opacity:.6}
 .wallet-onboarding-restore-warning {margin:0 0 8px;color:#acbdca;font-size:12px;line-height:1.6}
+.passkey-fallback {width:min(420px,calc(100% - 40px));box-sizing:border-box;padding:26px;border:1px solid #d2ae7540;border-radius:20px;background:var(--onboarding-ink);color:var(--onboarding-ivory);box-shadow:0 30px 90px #000000a6}
+.passkey-fallback::backdrop {background:#060e18cc;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.passkey-fallback>p:first-child {margin:0;color:var(--onboarding-muted);font-size:15px;line-height:1.6}
 .wallet-onboarding-restoring .wallet-onboarding-stage {padding:28px 0 34px}
 .wallet-onboarding-restoring .wallet-onboarding-description {max-width:31ch}
 .wallet-onboarding-connecting .wallet-onboarding-description {max-width:32ch}

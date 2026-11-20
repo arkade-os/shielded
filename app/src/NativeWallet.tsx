@@ -15,7 +15,7 @@ import {commitNativeSetup,waitNativePasskeyForeground} from './native-passkey-op
 import {nativePasskeys,nativePasskeySupport,type NativePasskeySupport} from './native-passkeys.ts';
 import {passkeyRecord} from './passkey-record.ts';
 import {pendingNativeSetup,reconcileNativeSetup} from './native-setup-journal.ts';
-import {passkeyNextStep} from './shielded-page.ts';
+import {passkeyFailureView} from './shielded-page.ts';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
 import NativeConnectionWarning,{NativeExternalLink} from './NativeConnectionWarning.tsx';
 import {createNativeTorMonitor,type NativeTorHealthState} from './native-tor-monitor.ts';
@@ -251,7 +251,7 @@ export default function NativeWallet(){
    }}));
    check();setupOperation.current=undefined;setSaving(false);setPhrase('');await open();
   // An unconfirmed credential is not retried implicitly; the SDK may already have created it.
-  }catch(cause){if(current()){const step=passkeyNextStep(cause);setError(step?.message??(cause instanceof Error?cause.message:String(cause)));if(step&&!step.retry)setPasskeySupport({available:false,reason:step.message});try{setSetupIntent(pendingNativeSetup(localStorage));}catch(error){fail(error);setupAllowed.current=false;setSetup(false);}setBusy(false);}}
+  }catch(cause){if(current()){const view=passkeyFailureView(cause,restore?'restore':'create');setError(view.message??(cause instanceof Error?cause.message:String(cause)));if(view.disablePasskeys)setPasskeySupport({available:false,reason:view.message!});try{setSetupIntent(pendingNativeSetup(localStorage));}catch(error){fail(error);setupAllowed.current=false;setSetup(false);}setBusy(false);}}
   finally{if(setupOperation.current===operation){setupOperation.current=undefined;setSaving(false);}}
  };
  const switchMode=async(mode:NativeMode)=>{
