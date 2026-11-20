@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {prepareNativeSetup,pendingNativeSetup,reconcileNativeSetup,NATIVE_SETUP} from '../app/src/native-setup-journal.ts';
+import {prepareNativeSetup,pendingNativeSetup,reconcileNativeSetup,NATIVE_LOCK,NATIVE_SETUP} from '../app/src/native-setup-journal.ts';
 import {PASSKEY,type PasskeyRecord} from '../app/src/passkey-record.ts';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
@@ -61,4 +61,25 @@ test('invalid setup records fail closed without exposing their contents',()=>{
   assert.equal(base.getItem(NATIVE_SETUP),value);
  }
  assert.throws(()=>prepareNativeSetup(memory(),'bad',{}),/secret/);
+});
+
+test('a lock setup journals its word count, and its marker follows the wallet the vault holds',()=>{
+ const base=memory();base.setItem(PASSKEY,JSON.stringify(record));
+ prepareNativeSetup(base,secret,{created:123,lock:{words:12}});
+ assert.deepEqual(JSON.parse(base.getItem(NATIVE_SETUP)!).lock,{words:12});
+ reconcileNativeSetup(base,secret);
+ assert.deepEqual(JSON.parse(base.getItem(NATIVE_LOCK)!),{version:1,words:12});assert.equal(base.getItem(PASSKEY),null);
+ prepareNativeSetup(base,other,{});reconcileNativeSetup(base,other);
+ assert.equal(base.getItem(NATIVE_LOCK),null,'a phrase restore over a locked wallet drops its marker');
+ for(const options of [{lock:{words:15 as 12}},{passkey:record,lock:{words:12 as const}}])assert.throws(()=>prepareNativeSetup(memory(),secret,options),/metadata/);
+ for(const value of [{version:1,tag:secret,lock:{words:15}},{version:1,tag:secret,passkey:record,lock:{words:12}}]){
+  base.setItem(NATIVE_SETUP,JSON.stringify(value));assert.throws(()=>pendingNativeSetup(base),/invalid/,'a locked wallet is never a passkey wallet');
+ }
+});
+
+test('a lock setup with nothing in the vault is dropped, since its phrase lived only in memory',()=>{
+ const base=memory();prepareNativeSetup(base,secret,{created:123,lock:{words:24}});
+ assert.equal(reconcileNativeSetup(base,null),undefined);assert.equal(base.getItem(NATIVE_SETUP),null);
+ prepareNativeSetup(base,secret,{passkey:record,created:123});
+ assert.ok(reconcileNativeSetup(base,null),'a passkey setup can still finish with its passkey');
 });
