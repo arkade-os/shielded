@@ -268,6 +268,7 @@ test('a native tick syncs as soon as the pool count moves, and its auto-shield a
 test('a private pull reads only /status while the pool reports the count the account holds, and pages once it moves',async()=>{
  for(const fetcher of [sealedStub(),nativeStub()]){
   const {asked,pool,account,wallet}=tickRig(140,140,fetcher);
+  // A fresh statusAt keeps the rig out of operator-down, so only the pull's own changed() can count.
   let changes=0;Object.assign(wallet,{changed(){changes++;},statusAt:Date.now()});
   assert.equal(await wallet.syncIfMoved(),0);
   assert.deepEqual(asked,['/status']);assert.equal(changes,1);
