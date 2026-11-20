@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {assetAmountError,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
+import {assetAmountError,assetMetadata,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 const id='1e291e28'.padEnd(64,'0')+'0000';
 const tether={name:'Tether USD',ticker:'USDT',decimals:6};
@@ -54,4 +54,51 @@ test('every asset text carries the Unverified mark, whatever its metadata claims
 test('amount errors name the unit and the decimal places',()=>{
  assert.equal(assetAmountError(0,'units'),'Enter a whole number of units above zero, without leading zeros.');
  assert.equal(assetAmountError(6,'USDT'),'Enter an amount of USDT above zero, with at most 6 decimal places.');
+});
+
+const KEY='shielded-asset-metadata-v1:';
+const memoryStorage=(refuse=false)=>{const m=new Map<string,string>();return {m,getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>{if(refuse)throw new Error('quota');m.set(k,v);}};};
+const harness=(over:{refuse?:boolean;details?:(id:string)=>Promise<any>}={})=>{
+ const storage=memoryStorage(over.refuse),calls:string[]=[];let t=1_000_000_000,changes=0;
+ const cache=assetMetadata({storage,now:()=>t,onChange:()=>{changes++;},details:async id=>{calls.push(id);return over.details?over.details(id):{metadata:{...tether,icon:'https://x'}};}});
+ return {storage,calls,cache,at:(n:number)=>{t=n;},now:()=>t,changes:()=>changes};
+};
+const settle=()=>new Promise(r=>setTimeout(r,0));
+
+test('a cached entry serves without a lookup until it is a day old, then refreshes once',async()=>{
+ const h=harness(),now=h.now();
+ h.storage.m.set(KEY+id,JSON.stringify({name:'Old',decimals:2,at:now-1000}));
+ h.cache.want([id]);await settle();assert.equal(h.calls.length,0);assert.equal(h.cache.get(id)?.name,'Old');
+ h.storage.m.set(KEY+id,JSON.stringify({name:'Old',decimals:2,at:now-86_400_001}));
+ const stale=harness();stale.storage.m.set(KEY+id,JSON.stringify({name:'Old',decimals:2,at:stale.now()-86_400_001}));
+ stale.cache.want([id]);assert.equal(stale.cache.get(id)?.name,'Old');
+ await settle();assert.equal(stale.calls.length,1);assert.equal(stale.cache.get(id)?.name,'Tether USD');
+ assert.equal(JSON.parse(stale.storage.m.get(KEY+id)!).at,stale.now());assert.equal(stale.changes(),1);
+});
+
+for(const hang of [false,true])test(`a failed or unanswered lookup keeps the fallback and retries no sooner than a minute after it began (${hang?'hangs':'rejects'})`,async()=>{
+ const h=harness({details:()=>hang?new Promise(()=>{}):Promise.reject(new Error('down'))}),start=h.now();
+ h.cache.want([id]);await settle();assert.equal(h.cache.get(id),undefined);assert.equal(h.changes(),0);assert.equal(h.calls.length,1);
+ h.at(start+59_999);h.cache.want([id]);await settle();assert.equal(h.calls.length,1);
+ h.at(start+60_000);h.cache.want([id]);await settle();assert.equal(h.calls.length,2);assert.equal(h.changes(),0);
+});
+
+test('only valid asset ids are looked up, once each, at most 100 per call',async()=>{
+ const h=harness();h.cache.want(['nothex',id,id,id.toUpperCase()]);await settle();assert.deepEqual(h.calls,[id]);
+ const many=harness();many.cache.want(Array.from({length:150},(_,i)=>i.toString(16).padStart(68,'0')));await settle();assert.equal(many.calls.length,100);
+});
+
+test('the stored entry is the sanitized metadata, and is sanitized again on read',async()=>{
+ const h=harness();h.cache.want([id]);await settle();
+ assert.deepEqual(JSON.parse(h.storage.m.get(KEY+id)!),{name:'Tether USD',ticker:'USDT',decimals:6,at:h.now()});
+ h.storage.m.set(KEY+id,JSON.stringify({decimals:99,ticker:'$',name:'\u202eX',at:h.now()}));
+ assert.deepEqual(harness().cache.get(id),undefined);
+ const t=memoryStorage();t.m.set(KEY+id,JSON.stringify({decimals:99,ticker:'$',name:'\u202eX',at:1}));
+ assert.deepEqual(assetMetadata({storage:t,details:async()=>({}),onChange:()=>{}}).get(id),{decimals:0,name:'X'});
+});
+
+test('a storage that refuses writes keeps the metadata for this page',async()=>{
+ const h=harness({refuse:true});h.cache.want([id]);await settle();
+ assert.equal(h.cache.get(id)?.ticker,'USDT');assert.equal(h.changes(),1);
+ h.cache.want([id]);await settle();assert.equal(h.calls.length,1);
 });

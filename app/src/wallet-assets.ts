@@ -1,3 +1,4 @@
+import type {AssetDetails} from '@arkade-os/sdk';
 export const UNVERIFIED='Unverified';
 export const MAX_ASSET_DECIMALS=18;
 export type AssetMeta={name?:string;ticker?:string;decimals:number};
@@ -58,4 +59,47 @@ export function assetText(atomic:bigint,assetId:string,meta?:AssetMeta):string{
  const amount=formatAssetAmount(atomic,meta?.decimals??0);
  const body=meta?.ticker?`${amount} ${meta.ticker}`:`${amount} units of asset ${shortId(assetId)}`;
  return `${body} · ${UNVERIFIED}`;
+}
+
+export const ASSET_METADATA_KEY='shielded-asset-metadata-v1:';
+export const ASSET_METADATA_TTL_MS=86_400_000;
+export const ASSET_METADATA_RETRY_MS=60_000;
+export const MAX_ASSET_LOOKUPS=100;
+
+const ASSET_ID=/^[0-9a-f]{68}$/;
+type Entry={meta:AssetMeta;at:number};
+
+export function assetMetadata(o:{storage:Pick<Storage,'getItem'|'setItem'>;details:(assetId:string)=>Promise<Pick<AssetDetails,'metadata'>>;onChange:()=>void;now?:()=>number}){
+ const now=o.now??Date.now,memory=new Map<string,Entry>(),began=new Map<string,number>();
+ function entry(id:string):Entry|undefined{
+  const held=memory.get(id);if(held)return held;
+  try{
+   const raw=JSON.parse(o.storage.getItem(ASSET_METADATA_KEY+id)??'null');
+   if(raw&&typeof raw==='object'&&Number.isFinite(raw.at)){const e={meta:assetMetaOf(raw),at:raw.at};memory.set(id,e);return e;}
+  }catch{}
+  return undefined;
+ }
+ async function lookup(id:string){
+  try{
+   const meta=assetMetaOf((await o.details(id)).metadata),at=now();
+   memory.set(id,{meta,at});
+   try{o.storage.setItem(ASSET_METADATA_KEY+id,JSON.stringify({...meta,at}));}catch{}
+   o.onChange();
+  }catch{}
+ }
+ return {
+  get:(id:string)=>entry(id)?.meta,
+  want(ids:Iterable<string>){
+   const t=now(),todo=new Set<string>();
+   for(const id of ids){
+    if(todo.size>=MAX_ASSET_LOOKUPS)break;
+    if(!ASSET_ID.test(id)||todo.has(id))continue;
+    const e=entry(id),tried=began.get(id);
+    if(e&&t-e.at<=ASSET_METADATA_TTL_MS)continue;
+    if(tried!==undefined&&t-tried<ASSET_METADATA_RETRY_MS)continue;
+    todo.add(id);began.set(id,t);
+   }
+   for(const id of todo)void lookup(id);
+  },
+ };
 }

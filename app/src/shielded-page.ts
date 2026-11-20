@@ -13,6 +13,7 @@ import {pausedErrorText,satsText} from './rollup-client.ts';
 import {restoreNativeStorage} from './native-storage.ts';
 import {passkeyRecord,savePasskey,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
 export {PASSKEY,passkeyRecord,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
+import {ASSET_METADATA_KEY} from './wallet-assets.ts';
 import {LOCKED,lockedRecordOf} from './locked-wallet.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
@@ -332,7 +333,7 @@ export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof
  if(nativeRestore){await nativeRestore;await o.cache.repository.clear();o.reload();return;}
  await o.cache.repository.clear();guard();
  savePasskey(o.storage,o.passkey);o.storage.setItem(SECRET,parsed);o.storage.removeItem(LOCKED);
- for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
+ for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN)||key?.startsWith(ASSET_METADATA_KEY))o.storage.removeItem(key);}
  if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);
  o.storage.removeItem(SENT);o.reload();
 }
