@@ -1,4 +1,6 @@
-import type {AssetDetails} from '@arkade-os/sdk';
+import {arkTarget,isValidArkAddress,type AssetDetails} from '@arkade-os/sdk';
+import {arkAssetHoldings} from './rollup-client.ts';
+import type {ArkCoin} from '../../src/shielded/pool.ts';
 export const UNVERIFIED='Unverified';
 export const MAX_ASSET_DECIMALS=18;
 export type AssetMeta={name?:string;ticker?:string;decimals:number};
@@ -103,3 +105,31 @@ export function assetMetadata(o:{storage:Pick<Storage,'getItem'|'setItem'>;detai
   },
  };
 }
+
+export type HeldAsset={assetId:string;shielded:bigint;unshielded:bigint};
+export type HoldingKind='shielded'|'unshielded'|'both';
+export const KIND_TEXT={shielded:'Shielded',unshielded:'Unshielded',both:'Shielded and unshielded'};
+export const UNSHIELDED_ASSET_RECIPIENT='This asset is outside the pool, so it can be sent only to an Arkade address. Shielded addresses, Lightning and Bitcoin addresses cannot receive it.';
+
+export function heldAssets(o:{reserves:readonly string[];shielded:(assetId:string)=>bigint;coins:readonly ArkCoin[]}):HeldAsset[]{
+ const rows=new Map<string,HeldAsset>();
+ const row=(assetId:string)=>{let r=rows.get(assetId);if(!r)rows.set(assetId,r={assetId,shielded:0n,unshielded:0n});return r;};
+ for(const id of o.reserves)row(id).shielded+=o.shielded(id);
+ for(const h of arkAssetHoldings(o.coins,()=>false))row(h.assetId).unshielded+=h.units;
+ return [...rows.values()].filter(r=>r.shielded>0n||r.unshielded>0n).sort((a,b)=>a.assetId<b.assetId?-1:1);
+}
+
+export const holdingKind=(a:HeldAsset):HoldingKind=>a.shielded>0n?(a.unshielded>0n?'both':'shielded'):'unshielded';
+
+export function requestAssets(mode:'unified'|'shielded'|'arkade',held:readonly HeldAsset[],reserves:readonly string[],known:(assetId:string)=>boolean):string[]{
+ const ids=mode==='arkade'?held.map(h=>h.assetId):mode==='shielded'?reserves:[];
+ return ids.filter(known);
+}
+
+export function assetRecipientError(asset:HeldAsset|undefined,to:string):string{
+ if(!asset||asset.shielded!==0n||!to.trim())return '';
+ try{const ark=arkTarget(to.trim());if(ark&&isValidArkAddress(ark))return '';}catch{}
+ return UNSHIELDED_ASSET_RECIPIENT;
+}
+
+export const unshieldedLimitLine=(amount:string,unit:string)=>`Up to ${amount} ${unit} on Arkade, outside the pool. Sending it makes the amount public.`;

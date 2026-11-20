@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {assetAmountError,assetMetadata,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
+import {KIND_TEXT,UNSHIELDED_ASSET_RECIPIENT,assetAmountError,assetMetadata,assetRecipientError,heldAssets,holdingKind,requestAssets,unshieldedLimitLine,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 const id='1e291e28'.padEnd(64,'0')+'0000';
 const tether={name:'Tether USD',ticker:'USDT',decimals:6};
@@ -101,4 +101,36 @@ test('a storage that refuses writes keeps the metadata for this page',async()=>{
  const h=harness({refuse:true});h.cache.want([id]);await settle();
  assert.equal(h.cache.get(id)?.ticker,'USDT');assert.equal(h.changes(),1);
  h.cache.want([id]);await settle();assert.equal(h.calls.length,1);
+});
+
+const SHROL_ADDR='shrol21'+'q'.repeat(60);
+const ARK='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mcfz88xtqfr9pxprckm7tkha23m0d0tnqzpw0r8gqtwfz8ete';
+const coin=(assets:{assetId:string;amount:bigint}[])=>({txid:'a'.repeat(64),vout:0,value:330,assets});
+const held=(shielded:bigint,unshielded:bigint)=>({assetId:'a',shielded,unshielded});
+
+test('the held list merges pool notes and Arkade coins per asset, payouts included, and names each kind',()=>{
+ const list=heldAssets({reserves:['a','b'],shielded:x=>x==='a'?10n:0n,coins:[coin([{assetId:'a',amount:3n}]),coin([{assetId:'c',amount:5n}]),{txid:'b'.repeat(64),vout:1,value:900}]});
+ assert.deepEqual(list,[{assetId:'a',shielded:10n,unshielded:3n},{assetId:'c',shielded:0n,unshielded:5n}]);
+ assert.deepEqual(list.map(holdingKind),['both','unshielded']);
+ assert.equal(holdingKind({assetId:'x',shielded:1n,unshielded:0n}),'shielded');
+ assert.equal(KIND_TEXT.both,'Shielded and unshielded');
+});
+
+test('the receive picker offers held assets on Arkade and pool reserves on Shielded, only once their details are known, and nothing on Unified',()=>{
+ const h=[held(1n,0n),{assetId:'c',shielded:0n,unshielded:5n}],known=(x:string)=>x!=='c';
+ assert.deepEqual(requestAssets('arkade',h,['a','b'],known),['a']);
+ assert.deepEqual(requestAssets('shielded',h,['a','b'],known),['a','b']);
+ assert.deepEqual(requestAssets('shielded',h,['a','b'],x=>x==='b'),['b']);
+ assert.deepEqual(requestAssets('unified',h,['a','b'],()=>true),[]);
+});
+
+test('an asset outside the pool can be sent only to an Arkade address',()=>{
+ const out=held(0n,4n);
+ for(const to of [SHROL_ADDR,'alice@lnurl.example','tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx','lnbc1500n1pj9abcdefghijklmnop'])assert.equal(assetRecipientError(out,to),UNSHIELDED_ASSET_RECIPIENT);
+ for(const to of [ARK,`bitcoin:?ark=${ARK}`,'',' '])assert.equal(assetRecipientError(out,to),'');
+ for(const a of [held(2n,4n),held(2n,0n),undefined])assert.equal(assetRecipientError(a,SHROL_ADDR),'');
+});
+
+test('the limit line for Arkade units says they are public',()=>{
+ assert.equal(unshieldedLimitLine('12.5','USDT'),'Up to 12.5 USDT on Arkade, outside the pool. Sending it makes the amount public.');
 });
