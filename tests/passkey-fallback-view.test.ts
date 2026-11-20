@@ -32,12 +32,20 @@ const onClickOf=(node:ReactNode,label:string):(()=>void)|undefined=>{
  });
  return found;
 };
+const keyAbove=(node:ReactNode,label:string):string|null|undefined=>{
+ let found:string|null|undefined;
+ Children.forEach(node,child=>{
+  if(found!==undefined||!isValidElement<{children?:ReactNode}>(child))return;
+  found=Children.toArray(child.props.children).some(item=>isValidElement<{children?:ReactNode}>(item)&&item.type==='button'&&item.props.children===label)?child.key:keyAbove(child.props.children,label);
+ });
+ return found;
+};
 const defaults:WalletOnboardingProps={transport:'browser',setup:true,busy:false,phase:'',error:'',phrase:'',onPhraseChange:()=>{},onCreate:()=>{},onRestore:()=>{},onReconnect:()=>{}};
 /** Clicks during render are render-phase updates, so each click's state shows in the next pass of the same static render. */
-const onboarding=(props:Partial<WalletOnboardingProps>,clicks:string[]=[])=>{
+const onboarding=(props:Partial<WalletOnboardingProps>,clicks:string[]=[],seen?:(view:ReactNode)=>void)=>{
  let step=0;
  function Capture(){
-  const view=WalletOnboarding({...defaults,...props}),label=clicks[step];
+  const view=WalletOnboarding({...defaults,...props}),label=clicks[step];seen?.(view);
   if(label!==undefined){const click=onClickOf(view,label);assert.ok(click,label);step++;click();}
   return view;
  }
@@ -92,6 +100,14 @@ test('a locked browser wallet opens on the unlock screen with a way out',async()
  assert.match(restore,/<textarea[^>]*placeholder="Enter your recovery phrase"/);assert.match(restore,/>Restore wallet<\/button>/);assert.equal(chosen,1);
  assert.match(onboarding({unlock},['Use recovery phrase instead','Back']),/>Unlock with passkey<\/button>/);
  assert.match(onboarding({unlock,transport:'tor',torHealth:{status:{phase:'ready',generation:1},check:'ok'}}),/>Unlock<\/button>/);
+});
+
+test('the way-out confirmation mounts its own buttons, so a second Enter cannot press Enter recovery phrase',()=>{
+ const unlock={label:NAME,onUnlock:()=>{},onUsePhrase:()=>{}};
+ let unlocking:string|null|undefined,confirming:string|null|undefined;
+ onboarding({unlock},[],view=>{unlocking=keyAbove(view,'Use recovery phrase instead');});
+ onboarding({unlock},['Use recovery phrase instead'],view=>{confirming=keyAbove(view,'Enter recovery phrase');});
+ assert.ok(unlocking&&confirming&&unlocking!==confirming,'distinct keys replace the focused button instead of relabelling it');
 });
 
 test('the passkey group shows when the PRF probe says yes or unknown, and stays off when it says no',async t=>{
