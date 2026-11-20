@@ -645,7 +645,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    // Nothing to gain from a pull the edge is still refusing, and its own sync would spend the next allowance; the balance card already shows the countdown.
    if((refreshRef.current?.waitingMs??0)>0)return;
    let syncError='';
-   try{await wallet.sync();}
+   try{await wallet.syncIfMoved();}
    catch(error){syncError=errorText(error);}
    if(!active||!mounted.current)return;
    setPullSyncError(syncError);

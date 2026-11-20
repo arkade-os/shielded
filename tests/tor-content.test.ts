@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test,type TestContext} from 'node:test';
 import {DefaultVtxo,SingleKey,Wallet} from '@arkade-os/sdk';
 import {buildPoseidon} from 'circomlibjs';
@@ -262,6 +263,27 @@ test('a native tick syncs as soon as the pool count moves, and its auto-shield a
  assert.equal(account.batchCount,141);
  assert.deepEqual(ran.toSorted(),['recover','renew','shield']);
  assert.deepEqual(pages(),['/batches?from=128&limit=12','/batches?from=140&limit=12']);
+});
+
+test('a private pull reads only /status while the pool reports the count the account holds, and pages once it moves',async()=>{
+ for(const fetcher of [sealedStub(),nativeStub()]){
+  const {asked,pool,account,wallet}=tickRig(140,140,fetcher);
+  // A fresh statusAt keeps the rig out of operator-down, so only the pull's own changed() can count.
+  let changes=0;Object.assign(wallet,{changed(){changes++;},statusAt:Date.now()});
+  assert.equal(await wallet.syncIfMoved(),0);
+  assert.deepEqual(asked,['/status']);assert.equal(changes,1);
+  asked.length=0;pool.batches=141;
+  assert.equal(await wallet.syncIfMoved(),1);
+  assert.equal(account.batchCount,141);
+  assert.deepEqual(asked,['/status','/batches?from=128&limit=12','/batches?from=140&limit=12']);
+ }
+ assert.match(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),/try\{await wallet\.syncIfMoved\(\);\}/,'pull-to-refresh and the foreground return take the skip');
+});
+
+test('a direct pull syncs at once, with no status read',async()=>{
+ const {asked,wallet}=tickRig(140,140,stub());
+ assert.equal(await wallet.syncIfMoved(),0);
+ assert.deepEqual(asked,['/batches?from=140&limit=50']);
 });
 
 test('create marks only a sealed pool fetcher as a sealed transport',async t=>{
