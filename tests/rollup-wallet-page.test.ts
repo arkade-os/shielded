@@ -207,6 +207,42 @@ test('only that explanation offers Combine notes, which merges the selected asse
  assert.equal(wallet.match(/Combine notes/g)?.length,1,'no other path shows the link');
 });
 
+const walletPage=()=>readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
+test('metadata comes from the wallet\'s own indexer, and its arrival re-renders without a network refresh',()=>{
+ const wallet=walletPage(),assets=readFileSync(new URL('../app/src/wallet-assets.ts',import.meta.url),'utf8');
+ const onChange=/assetMetadata\(\{storage,details:id=>wallet\.assetManager\.getAssetDetails\(id\),onChange:\(\)=>\{([^}]*)\}\}\)/.exec(wallet)?.[1]??'';
+ assert.match(onChange,/setAssetRevision\(/);
+ assert.doesNotMatch(onChange,/setTick/,'a tick starts a network refresh');
+ assert.equal(wallet.match(/getAssetDetails/g)?.length,1);
+ assert.doesNotMatch(assets,/fetch\(|https?:\/\//);
+ assert.ok(wallet.includes('const referenced=new Set([...held.map(h=>h.assetId),...rows.flatMap(row=>row.txs.flatMap(tx=>tx.assets??[]).map(a=>a.assetId)),...reserves])'),'never an id only a scanned or pasted link names');
+ assert.ok(wallet.includes('useEffect(()=>{metadata?.want(referenced);},[metadata,referencedKey,tick]);'));
+ const early=wallet.indexOf('if(!secret||!wallet)return'),history=wallet.indexOf('const historyItems=');
+ for(const hook of ['assetMetadata(','metadata?.want('])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<Math.min(early,history),hook);
+});
+
+test('the Home list names every held asset with its kind and the Unverified mark',()=>{
+ const wallet=walletPage(),card=/const balanceCard=\(\)=>([\s\S]*?)<\/section>;/.exec(wallet)?.[1]??'';
+ assert.ok(wallet.includes('const held=heldAssets({reserves,shielded:assetUnits,coins});'));
+ assert.ok(card.includes('{(unshielded>0||held.length>0)&&<div className="stock-balance-side">'));
+ assert.ok(card.includes('{held.map(h=>{const meta=metadata?.get(h.assetId);return <div key={h.assetId}><small>{assetTitle(h.assetId,meta)} · {KIND_TEXT[holdingKind(h)]} · {UNVERIFIED}</small><b>{formatAssetAmount(h.shielded+h.unshielded,meta?.decimals??0)} {assetUnit(meta)}</b></div>;})}'));
+ assert.doesNotMatch(wallet,/shownAssets/,'shownAssets is gone');
+ const titles=wallet.match(/assetTitle\(/g)?.length??0;
+ assert.ok(titles>0);
+ assert.equal(wallet.match(/\{assetTitle\([^)]*\)\} · [^<]*\{UNVERIFIED\}<\/small>/g)?.length,titles,'every asset title on the page carries the mark');
+});
+
+test('no asset amount on the page skips the formatter',()=>{
+ const wallet=walletPage();
+ for(const raw of [/units of \$\{assetName/,/\} units<\/b>/,/const assetName=/,/sats\(n\.amount\)\} units/,/sats\(a\.units\)/])assert.doesNotMatch(wallet,raw,String(raw));
+ const history=/const historyItems=rows\.map\(item=>\{([\s\S]*?)const historyContent=/.exec(wallet)?.[1]??'',snapshot=/onResumeSnapshot\(\{([\s\S]*?)\}\)\}\);/.exec(wallet)?.[1]??'';
+ for(const body of [history,snapshot])assert.match(body,/assetText\(/);
+ assert.ok(wallet.includes('const assetLabel=(id:string,amount:bigint)=>assetText(amount,id,metadata?.get(id));'));
+ const claims=wallet.match(/holdingsText\(/g)?.length??0;
+ assert.ok(claims>0);
+ assert.equal(wallet.match(/,field=>wallet\?\.assetIdOf\(field\),assetLabel\)/g)?.length,claims,'every claim text names its asset through the formatter');
+});
+
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{
  const a='aa'.repeat(34),b='bb'.repeat(34),coin=(txid:string,assetId?:string,amount=0n)=>({txid,vout:0,value:330,...(assetId?{assets:[{assetId,amount}]}:{})});
  const rows=arkAssetHoldings([coin('paid',a,39n),coin('own',a,10n),coin('own2',b,5n),coin('sats')],c=>c.txid==='paid');

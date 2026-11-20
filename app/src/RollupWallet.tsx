@@ -22,6 +22,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,noteCapped,openPaymentRequest,payTarget,routeCopy,satsText,sendLimitLine,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
+import {KIND_TEXT,UNVERIFIED,assetMetadata,assetText,assetTitle,assetUnit,formatAssetAmount,heldAssets,holdingKind} from './wallet-assets.ts';
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
@@ -142,6 +143,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const lnurlRef=useRef<ReturnType<typeof createLnurlReceive>|undefined>(undefined),unifiedAddressRef=useRef(''),payoutWatchRevision=useRef(0),lnLimits=useRef<unknown>(undefined),lnLimitsRead=useRef(0),startingRef=useRef<Promise<unknown>|undefined>(undefined),securityRef=useRef<HTMLDetailsElement>(null);
  const invoiceTried=useRef<bigint|undefined>(undefined),[invoiceBusy,setInvoiceBusy]=useState(false),[invoiceError,setInvoiceError]=useState(''),[privateNotice,setPrivateNotice]=useState('');
  const [,setQuoteRevision]=useState(0);
+ const [assetRevision,setAssetRevision]=useState(0);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
  if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
@@ -635,6 +637,11 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const reserves=Object.keys(pool?.pool?.reserves??{}),address=receiveBlocked?'':wallet?.shieldedAddress()??(early?.secret===secret?early.address:''),funding=receiveBlocked?'':arkAddress||(early?.secret===secret?early.ark??'':''),listingFull=listingBlocked(pool?.pool);
  const synced=!!wallet,balance=wallet?.shieldedBalance()??0n;
  const assetUnits=(id:string)=>wallet?.shieldedBalance(assetFieldOfId(id))??0n;
+ const held=heldAssets({reserves,shielded:assetUnits,coins});
+ const metadata=useMemo(()=>wallet?assetMetadata({storage,details:id=>wallet.assetManager.getAssetDetails(id),onChange:()=>{if(mounted.current)setAssetRevision(v=>v+1);}}):undefined,[wallet,storage]);
+ const referenced=new Set([...held.map(h=>h.assetId),...rows.flatMap(row=>row.txs.flatMap(tx=>tx.assets??[]).map(a=>a.assetId)),...reserves]),referencedKey=[...referenced].join();
+ useEffect(()=>{metadata?.want(referenced);},[metadata,referencedKey,tick]);
+ const assetLabel=(id:string,amount:bigint)=>assetText(amount,id,metadata?.get(id));
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
  const expiring=coins.filter(c=>!wallet?.isPoolPayout(c)&&!c.assets?.length&&c.expiresAt!==undefined&&c.expiresAt-Date.now()<=SHIELD_FLOOR_MS).reduce((sum,c)=>sum+c.value,0);
  // The funding address shows before the wallet opens, so until then the fee comes from the pool's own status.
@@ -713,7 +720,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    request.publish(foreground,()=>{check();setPasskeyPhrase(words);setReveal(true);});
   })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(source==='locked'?`${errorText(error)} Use the passkey “${passkeyUserName(created)}”.`:errorText(error));}).finally(()=>{request.finish();revealing.current=false;});
  };
- const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity,open:(link:string)=>void)=>{
   const link=wallet?.revealLinkOfActivity(item),shown=revealed[item.id];
   if(!link)return null;
@@ -815,7 +821,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='lightning-send'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
   const tx=txOf(newest.key),asset=newest.assets?.[0];
   const feePaid=wallet&&kind==='shield'?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):wallet&&kind==='lightning-receive'?lightningShieldFeeOf(wallet.shieldedHistory(),item.intent?.metadata?.shieldTxid,item.amount):undefined;
-  const amount=`${direction==='in'?'+':direction==='out'?'−':''}${asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}`;
+  const amount=`${direction==='in'?'+':direction==='out'?'−':''}${asset?assetText(asset.amount<0n?-asset.amount:asset.amount,asset.assetId,metadata?.get(asset.assetId)):`${sats(Math.abs(item.amount))} sats`}`;
   const open=(view:Pick<TxView,'kind'|'value'|'explorer'>)=>setTxView({...view,title:label,facts:[['Amount',amount],['Status',status],['Time',when(item.createdAt)]]});
   const txLink=(kind:TxKind,txid:string)=>{const explorer=PRIVATE?undefined:explorerUrl(kind,txid);return <ActivityLink value={txid} copy={explorer??txid} onOpen={()=>open({kind,value:txid,explorer})}/>;};
   return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
@@ -837,19 +843,19 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    </dl></details></li>;
  });
  const historyContent=(items:typeof historyItems)=>!rows.length?<p className="stock-muted">{synced?'No activity yet.':'Reading the pool…'}</p>:<ul>{items}</ul>;
-  const shownAssets=reserves.filter(id=>assetUnits(id)>0n),unshielded=arkAvailable??0;
+  const unshielded=arkAvailable??0;
  useEffect(()=>{
   if(!onResumeSnapshot||!synced||!ready||!pageVisible||!viewActive||suspended||hidden)return;
   onResumeSnapshot({balance:`${sats(balance)} sats`,unshielded:unshielded>0?`${sats(unshielded)} sats`:undefined,activity:rows.slice(0,3).map(item=>{
    const asset=item.txs[item.txs.length-1]?.assets?.[0],direction=historyDirection(item);
    return {title:item.intent?.label??(activityReceived(item)?'Arkade funding':'Arkade payment'),detail:when(item.createdAt),
-    amount:`${direction==='in'?'+':direction==='out'?'−':''}${asset?`${(asset.amount<0n?-asset.amount:asset.amount).toLocaleString('en-US')} units of ${assetName(asset.assetId)}`:`${sats(Math.abs(item.amount))} sats`}`};
+    amount:`${direction==='in'?'+':direction==='out'?'−':''}${asset?assetText(asset.amount<0n?-asset.amount:asset.amount,asset.assetId,metadata?.get(asset.assetId)):`${sats(Math.abs(item.amount))} sats`}`};
   })});
- },[onResumeSnapshot,synced,ready,pageVisible,viewActive,suspended,hidden,balance,unshielded,rows]);
+ },[onResumeSnapshot,synced,ready,pageVisible,viewActive,suspended,hidden,balance,unshielded,rows,metadata,assetRevision]);
   const balanceCard=()=> <section className="stock-card stock-balance">
    <div className="stock-balance-main"><small>Your private balance</small><strong>{sats(balance)} <em>sats</em></strong><WalletSyncStatus privateReady={synced} error={startupError||refreshError||refreshBusy} onRetry={nativeHost?undefined:startupError||refreshFailed.current?(busy||handleBusy.current||actions.current!.busy?undefined:()=>{if(!busyRef.current&&!handleBusy.current&&!actions.current!.busy)reload();}):()=>refreshRef.current?.request(true)}/></div>
-   {(unshielded>0||shownAssets.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
-   {shownAssets.map(id=><div key={id}><small>ASSET {short(id)}</small><b>{assetUnits(id).toLocaleString('en-US')} units</b></div>)}</div>}
+   {(unshielded>0||held.length>0)&&<div className="stock-balance-side">{unshielded>0&&<div><small>Unshielded</small><b>{sats(unshielded)} sats</b></div>}
+   {held.map(h=>{const meta=metadata?.get(h.assetId);return <div key={h.assetId}><small>{assetTitle(h.assetId,meta)} · {KIND_TEXT[holdingKind(h)]} · {UNVERIFIED}</small><b>{formatAssetAmount(h.shielded+h.unshielded,meta?.decimals??0)} {assetUnit(meta)}</b></div>;})}</div>}
   </section>;
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
@@ -879,7 +885,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      :!claimView?<p className="stock-muted">Reading the link…</p>
      :'error' in claimView?<p className="stock-blocked">{claimView.error}</p>
      :!claimView.notes.length?<p className="stock-muted">This link is empty or already claimed.</p>
-     :<><p><b>{holdingsText(claimView.notes,field=>wallet?.assetIdOf(field))}</b></p>
+     :<><p><b>{holdingsText(claimView.notes,field=>wallet?.assetIdOf(field),assetLabel)}</b></p>
       <p className="stock-muted">{claimView.mine?'You created this link and nobody has claimed it yet. Taking it back returns it to your shielded balance.':'Claiming moves it privately into this wallet. Onlookers see neither the amount nor who claimed it; whoever made the link sees only that it was claimed.'}</p>
       <button className="stock-primary" disabled={busy||restoring.current||!wallet} onClick={()=>void claimNow()}>{claimView.mine?'Take back':'Claim'}</button></>}
     <button className="stock-ghost stock-mini" onClick={leaveClaim}>Dismiss</button></section>}
@@ -905,12 +911,12 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
         {!receiveBlocked&&receiveMode==='arkade'&&<><details className="stock-more"><summary>Fees & test funds</summary><p className="stock-muted">{fundingFee||'Sats sent here move into the pool while this wallet is open.'}{expiring>0&&` ${sats(expiring)} sats expire within a day, so the pool will not take them.`}</p><p className="stock-muted">Need test sats? Use the <a href="https://faucet.mutinynet.com" target="_blank" rel="noreferrer">Mutinynet faucet</a> after a GitHub sign-in.</p></details>{expiring>0&&(batchStreams?<button type="button" className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void renew()}>Renew expiring sats</button>:<p className="stock-muted">Private networking cannot renew them yet, because renewal joins a batch swap. To renew them, turn private networking off: remove {PRIVATE_FLAG} from this site&apos;s local storage, then open this page again without ?private=1 in its address. The wallet&apos;s requests then go direct, so the services it uses see this browser&apos;s address.</p>)}</>}
       </ReceivePortal>
      {!receiveBlocked&&paidOutSats>=DUST&&<div className="stock-address"><small>BACK ON ARKADE FROM THE POOL</small><b>{sats(paidOutSats)} sats</b><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(paidOut),'Shielding again')}>Shield again</button></div>}
-     {!receiveBlocked&&arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=><div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} {short(a.assetId)}</small><b>{sats(a.units)} units</b>
+     {!receiveBlocked&&arkAssetHoldings(coins,c=>!!wallet?.isPoolPayout(c)).map(a=>{const meta=metadata?.get(a.assetId);return <div key={a.assetId+':'+a.payout} className="stock-address"><small>{a.payout?'BACK ON ARKADE FROM THE POOL':'ARKADE ASSET'} · {assetTitle(a.assetId,meta)} · {UNVERIFIED}</small><b>{formatAssetAmount(a.units,meta?.decimals??0)} {assetUnit(meta)}</b>
       {a.payout?<><p className="stock-muted">Withdrawals stay on Arkade until you move them back.{payoutFee}</p><button className="stock-ghost stock-mini" disabled={busy||!!feePaused} onClick={()=>void run(()=>wallet!.shield(a.coins),'Shielding again')}>Shield again</button></>
        :reserves.includes(a.assetId)?<p className="stock-muted">{(fee&&listedAssetLine(a.coins,fee,new Set(reserves),Date.now(),SHIELD_FLOOR_MS,!!feePaused))||'Listed in the pool, so it moves in on its own.'}</p>
        :listingFull?<p className="stock-blocked">{listingFull}</p>
        :listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>
-       :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}{!a.payout&&listingError?.id===a.assetId&&<p className="stock-blocked" role="alert">{listingError.message}</p>}</div>)}
+       :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}{!a.payout&&listingError?.id===a.assetId&&<p className="stock-blocked" role="alert">{listingError.message}</p>}</div>;})}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
      {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
      <div className="stock-to"><label>To<input ref={recipientNode} id="stock-to" value={to} onChange={e=>{setTo(e.target.value);setCodeError('');}} placeholder={lightningOn?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'} autoComplete="off" spellCheck={false}/></label>
@@ -931,7 +937,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {docked&&sheetOpen&&(['previous','next'] as const).map(side=>{const name=DOCK[(DOCK as readonly string[]).indexOf(tab)+(side==='next'?1:-1)];return name&&<div key={side} className={'stock-panel-peek is-'+side} data-sheet-page={side} aria-hidden="true"><h2>{titled(name)}</h2><div className={'is-'+name}>{PEEK[name].map((shape,i)=><i key={i} className={'is-'+shape}/>)}</div></div>;})}
     </section></div>
     {(docked||tab==='home')&&links.length>0&&<div className="stock-col"><section className="stock-card"><h2>Your claim links</h2><div className="stock-notes">
-    {links.map(link=><div key={link.key}><span>{holdingsText([{asset:BigInt(link.asset),amount:BigInt(link.amount)}],field=>wallet?.assetIdOf(field))}</span><span className={link.state==='unclaimed'?'wait':'ok'}>{LINK_STATE[link.state]}</span>
+    {links.map(link=><div key={link.key}><span>{holdingsText([{asset:BigInt(link.asset),amount:BigInt(link.amount)}],field=>wallet?.assetIdOf(field),assetLabel)}</span><span className={link.state==='unclaimed'?'wait':'ok'}>{LINK_STATE[link.state]}</span>
      {link.state==='unclaimed'&&<div className="stock-actions"><CopyButton value={claimUrl(POOL_ORIGIN||location.origin,link.token)} label="Copy link"/><button className="stock-ghost stock-mini" disabled={busy||restoring.current} onClick={()=>void run(()=>wallet!.claimLink(link.token),'Taking back a link').then(()=>setClaimRead(n=>n+1))}>Take back</button></div>}</div>)}
     </div></section></div>}</div>
   </>}
@@ -953,7 +959,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     {(docked||tab==='home')&&ready&&<details className="stock-card stock-advanced stock-technical"><summary>Wallet details</summary><p className="stock-muted">Pool activity: {wallet?.batchCount()??0} batches</p>
     {((wallet?.shieldedNotes().length??0)>0||reserves.some(id=>assetUnits(id)>0n))&&<div className="stock-notes">
      {(wallet?.shieldedNotes()??[]).map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} sats</span>{recovering.has(n.nullifier)?<span className="wait">Recovering</span>:needsRecovery.has(n.nullifier)?<span className="wait">Needs recovery</span>:wallet!.inFlight.has(n.nullifier)?<span className="wait">In flight</span>:<span className="ok">Spendable</span>}</div>)}
-     {reserves.flatMap(id=>(wallet?.shieldedNotes(assetFieldOfId(id))??[]).map(n=><div key={String(n.nullifier)}><span>{sats(n.amount)} units</span><span className={wallet!.inFlight.has(n.nullifier)||needsRecovery.has(n.nullifier)?'wait':'ok'}>{recovering.has(n.nullifier)?'Recovering':needsRecovery.has(n.nullifier)?'Needs recovery':wallet!.inFlight.has(n.nullifier)?'In flight':`Asset ${short(id)}`}</span></div>))}
+     {reserves.flatMap(id=>(wallet?.shieldedNotes(assetFieldOfId(id))??[]).map(n=><div key={String(n.nullifier)}><span>{assetText(n.amount,id,metadata?.get(id))}</span><span className={wallet!.inFlight.has(n.nullifier)||needsRecovery.has(n.nullifier)?'wait':'ok'}>{recovering.has(n.nullifier)?'Recovering':needsRecovery.has(n.nullifier)?'Needs recovery':wallet!.inFlight.has(n.nullifier)?'In flight':'Spendable'}</span></div>))}
     </div>}
    </details>}
  </main>
