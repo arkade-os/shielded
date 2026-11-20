@@ -29,8 +29,8 @@ test('a ticker or name that passes for a bitcoin unit is dropped, so the id titl
   assert.equal(assetText(500_000n,id,m),'500,000 units of asset 1e291e28…0000 · Unverified',t);
  }
  for(const t of ['USDT','TKN'])assert.equal(assetMetaOf({ticker:t}).ticker,t);
- for(const n of ['Bitcoin',' B i t c o i n ','BTC!','₿','Ｂｉｔｃｏｉｎ','Bitcoin'+' '.repeat(25)+'x','sat0shi','B\u0308TC','\u0412\u0422\u0421','\u0392itcoin','My Bitcoin Fund','bit coin','B\u00edtcoin'])assert.equal(meta({name:n}).name,undefined,JSON.stringify(n));
- for(const n of ['Tether USD','Saturn Token'])assert.equal(meta({name:n}).name,n);
+ for(const n of ['Bitcoin',' B i t c o i n ','BTC!','₿','Ｂｉｔｃｏｉｎ','Bitcoin'+' '.repeat(25)+'x','sat0shi','B\u0308TC','\u0412\u0422\u0421','\u0392itcoin','My Bitcoin Fund','bit coin','B\u00edtcoin','sat','msat','bit','bits','B i t s','SAT.','Bits'+' '.repeat(28)+'x'])assert.equal(meta({name:n}).name,undefined,JSON.stringify(n));
+ for(const n of ['Tether USD','Saturn Token','Orbit','Habitat'])assert.equal(meta({name:n}).name,n);
  assert.equal(assetTitle(id,meta(tether)),'Tether USD (USDT)');
  assert.deepEqual(meta({name:'₿ Tether $USD',ticker:'USDT'}),{name:'Tether USD',ticker:'USDT',decimals:6},'a kept name loses its currency signs');
 });

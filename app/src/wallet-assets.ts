@@ -6,7 +6,7 @@ export const MAX_ASSET_DECIMALS=18;
 export type AssetMeta={name?:string;ticker?:string;decimals:number};
 
 const TICKER=/^[A-Za-z0-9.-]{1,12}$/;
-const TICKER_UNIT=/btc|xbt|sat|bit/,NAME_UNIT=/bitcoin|btc|xbt|satoshi|sats/;
+const TICKER_UNIT=/btc|xbt|sat|bit/,NAME_UNIT=/bitcoin|btc|xbt|satoshi|sats|^(?:sat|sats|msat|msats|btc|xbt|mbtc|bit|bits|bitcoin|satoshi|satoshis)$/;
 const LOOKALIKE:Record<string,string>={'\u0430':'a','\u0432':'b','\u0441':'c','\u0455':'s','\u0442':'t','\u0456':'i','\u0445':'x','\u043e':'o','\u03b1':'a','\u03b2':'b','\u03c4':'t','\u03b9':'i','\u03c7':'x','\u03bf':'o',0:'o',1:'i',5:'s',8:'b'};
 const latin=(folded:string)=>Array.from(folded,c=>LOOKALIKE[c]??c).join('');
 const TYPED=/^(0|[1-9]\d*)(\.\d+)?$/;
