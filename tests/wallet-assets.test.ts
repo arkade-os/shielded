@@ -13,7 +13,7 @@ test('decimals outside 0 to 18, or not a whole number, read as 0',()=>{
 });
 
 test('a ticker shows only as letters, digits, dots and dashes, and a name loses control and direction characters',()=>{
- for(const t of ['USDT','cbBTC','USD.e'])assert.equal(meta({ticker:t}).ticker,t);
+ for(const t of ['USDT','cbETH','USD.e'])assert.equal(meta({ticker:t}).ticker,t);
  for(const t of ['$','US DT','USDT\u202e','ABCDEFGHIJKLM'])assert.equal(meta({ticker:t}).ticker,undefined);
  assert.equal(meta({name:'\u202eDSU rehteT'}).name,'DSU rehteT');
  assert.equal(meta({name:'a\u0000b'}).name,'ab');
@@ -22,13 +22,15 @@ test('a ticker shows only as letters, digits, dots and dashes, and a name loses 
 });
 
 test('a ticker or name that passes for a bitcoin unit is dropped, so the id title and the mark show instead',()=>{
- for(const t of ['sat','sats','msat','msats','btc','xbt','mbtc','bit','bits','bitcoin','satoshi','satoshis','BTC','B.T.C','s.a.t.s','Sats-']){
+ for(const t of ['sat','sats','msat','msats','btc','xbt','mbtc','bit','bits','bitcoin','satoshi','satoshis','BTC','B.T.C','s.a.t.s','Sats-','uBTC','BTC1','btc-x','s.a.t','WBIT','cbBTC','8TC']){
   const m=assetMetaOf({ticker:t});
   assert.equal(m.ticker,undefined,t);
   assert.equal(assetTitle(id,m),'Asset 1e291e28…0000',t);
   assert.equal(assetText(500_000n,id,m),'500,000 units of asset 1e291e28…0000 · Unverified',t);
  }
- for(const n of ['Bitcoin',' B i t c o i n ','BTC!','₿','Ｂｉｔｃｏｉｎ','Bitcoin'+' '.repeat(25)+'x'])assert.equal(meta({name:n}).name,undefined,JSON.stringify(n));
+ for(const t of ['USDT','TKN'])assert.equal(assetMetaOf({ticker:t}).ticker,t);
+ for(const n of ['Bitcoin',' B i t c o i n ','BTC!','₿','Ｂｉｔｃｏｉｎ','Bitcoin'+' '.repeat(25)+'x','sat0shi','B\u0308TC','\u0412\u0422\u0421','\u0392itcoin','My Bitcoin Fund','bit coin','B\u00edtcoin'])assert.equal(meta({name:n}).name,undefined,JSON.stringify(n));
+ for(const n of ['Tether USD','Saturn Token'])assert.equal(meta({name:n}).name,n);
  assert.equal(assetTitle(id,meta(tether)),'Tether USD (USDT)');
  assert.deepEqual(meta({name:'₿ Tether $USD',ticker:'USDT'}),{name:'Tether USD',ticker:'USDT',decimals:6},'a kept name loses its currency signs');
 });
