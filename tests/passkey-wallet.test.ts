@@ -221,7 +221,7 @@ test('a malformed locked record is an error, not an empty browser',()=>{
 
 test('unlocking with a passkey that returns another handle changes nothing in storage',async()=>{
  const {storage,id}=await lockedWallet(),before=[...storage.rows];
- await assert.rejects(unlockPageWallet(storage,{rpId:RP,client:handleClient(id,crypto.getRandomValues(new Uint8Array(64)))}));
+ await assert.rejects(unlockPageWallet(storage,{rpId:RP,client:handleClient(id,crypto.getRandomValues(new Uint8Array(64)))}),/does not open this wallet/);
  assert.deepEqual([...storage.rows],before);
  await assert.rejects(unlockPageWallet(storageOf(),{rpId:RP}),/locked/i);
 });

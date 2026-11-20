@@ -23,6 +23,7 @@ export function lockedRecordOf(storage:Pick<Storage,'getItem'>):LockedRecord|und
  if(value&&typeof value==='object'&&value.version===1&&value.lock==='handle'&&typeof value.credentialId==='string'&&B64.test(value.credentialId)&&typeof value.blob==='string'&&B64.test(value.blob)&&(value.words===12||value.words===24))return value as LockedRecord;
  throw new Error("The locked wallet record is invalid. Keep this browser's data.");
 }
+const secretOf=(words:string)=>{const master=parseMasterSecret(words);try{return bytesToHex(master);}finally{master.fill(0);}};
 /** `created` is the passkey's own time, so the unlock screen names the passkey as it was saved. Nothing is written until the passkey gives this handle back to unlock's own request; LOCKED goes last, so a torn write never leaves a lock without its date. */
 export async function createLockedPageWallet(storage:PageStorage,o:{rpId:string;credentialId:Uint8Array;userHandle:Uint8Array;wordCount:12|24;created?:number;client?:WebAuthnClient}){
  try{
@@ -31,7 +32,7 @@ export async function createLockedPageWallet(storage:PageStorage,o:{rpId:string;
   const returned=await passkeyUserHandle(o).catch((cause:unknown)=>{throw unconfirmed(cause);});
   const same=returned.length===o.userHandle.length&&returned.every((byte,i)=>byte===o.userHandle[i]);returned.fill(0);
   if(!same)throw unconfirmed();
-  const words=randomRecoveryPhrase(o.wordCount),secret=bytesToHex(parseMasterSecret(words));
+  const words=randomRecoveryPhrase(o.wordCount),secret=secretOf(words);
   const blob=await lockWithHandle({credentialId:o.credentialId,userHandle:o.userHandle,words});
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
   const record:LockedRecord={version:1,lock:'handle',credentialId:base64urlnopad.encode(o.credentialId),words:o.wordCount,blob:base64urlnopad.encode(blob)};
@@ -45,6 +46,6 @@ export async function unlockPageWallet(storage:Pick<Storage,'getItem'>,o:{rpId:s
  const credentialId=base64urlnopad.decode(record.credentialId),userHandle=await passkeyUserHandle({rpId:o.rpId,credentialId,client:o.client});
  try{
   const words=await unlockWithHandle({credentialId,userHandle,blob:base64urlnopad.decode(record.blob)});
-  return {secret:bytesToHex(parseMasterSecret(words)),words};
+  return {secret:secretOf(words),words};
  }finally{userHandle.fill(0);}
 }

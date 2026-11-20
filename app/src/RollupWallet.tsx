@@ -711,7 +711,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    const words=revealSource(storage)==='locked'?await unlockPageWallet(storage,{rpId:PASSKEY_RP_ID}).then(opened=>{if(opened.secret!==secret)throw new Error('That passkey does not open this wallet.');return opened.words;}):await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
    if(expected)do{await waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground);}while(!foreground());
    request.publish(foreground,()=>{check();setPasskeyPhrase(words);setReveal(true);});
-  })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(errorText(error));}).finally(()=>{request.finish();revealing.current=false;});
+  })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(source==='locked'?`${errorText(error)} Use the passkey “${passkeyUserName(created)}”.`:errorText(error));}).finally(()=>{request.finish();revealing.current=false;});
  };
  const assetName=(id:string)=>`asset ${short(id)}`;
  const revealFor=(item:Activity,open:(link:string)=>void)=>{

@@ -194,8 +194,8 @@ test('a handle lock opens only with its own handle and credential',async()=>{
  assert.equal(blob[0],2);
  assert.equal(await unlockWithHandle({credentialId,userHandle,blob}),words);
  const flipped=userHandle.slice();flipped[10]^=1;
- await assert.rejects(unlockWithHandle({credentialId,userHandle:flipped,blob}));
- await assert.rejects(unlockWithHandle({credentialId:new Uint8Array(16).fill(2),userHandle,blob}));
+ await assert.rejects(unlockWithHandle({credentialId,userHandle:flipped,blob}),/^Error: That passkey does not open this wallet\.$/);
+ await assert.rejects(unlockWithHandle({credentialId:new Uint8Array(16).fill(2),userHandle,blob}),/does not open this wallet/);
  const old=blob.slice();old[0]=1;
  await assert.rejects(unlockWithHandle({credentialId,userHandle,blob:old}),/not one this app wrote/);
  const fake=fakeClient(),wrapped=await wrapWalletSecret({rpId:RP,credentialId,secret:words,client:fake.client});

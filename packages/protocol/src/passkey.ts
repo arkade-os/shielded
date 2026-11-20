@@ -99,7 +99,7 @@ async function open(keyOf:()=>Promise<CryptoKey>,version:number,credentialId:Uin
  const aad=new Uint8Array(1+credentialId.length);
  aad[0]=version;aad.set(credentialId,1);
  const key=await keyOf();
- const plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(blob.subarray(1,1+IV_BYTES)),additionalData:aad},key,new Uint8Array(blob.subarray(1+IV_BYTES))));
+ const plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(blob.subarray(1,1+IV_BYTES)),additionalData:aad},key,new Uint8Array(blob.subarray(1+IV_BYTES))).catch(()=>{throw new Error('That passkey does not open this wallet.');}));
  const secret=new TextDecoder().decode(plain);
  wipe(plain);
  return secret;

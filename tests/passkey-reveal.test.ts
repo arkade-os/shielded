@@ -35,4 +35,5 @@ test('Backup asks the passkey again for a locked wallet and never calls passkeyW
  assert.equal(revealSource(storage),'passkey');
  const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
  assert.match(wallet,/const words=revealSource\(storage\)==='locked'\?await unlockPageWallet\(storage,[\s\S]*?:await passkeyWords\(storage,/);
+ assert.match(wallet,/setRevealError\(source==='locked'\?`\$\{errorText\(error\)\} Use the passkey “\$\{passkeyUserName\(created\)\}”\.`:errorText\(error\)\)/,'a locked wallet’s Backup names its passkey');
 });
