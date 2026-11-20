@@ -223,3 +223,13 @@ test('randomRecoveryPhrase gives 12 or 24 valid words',()=>{
   assert.equal(parseMasterSecret(words).length,32);
  }
 });
+
+test('a foreign or torn lock record is refused before any passkey prompt',async()=>{
+ const credentialId=new Uint8Array(16).fill(1),prompting:WebAuthnClient={async create(){throw new Error('prompted');},async get(){throw new Error('prompted');}};
+ const wrapped=await wrapWalletSecret({rpId:RP,credentialId,secret:'x',client:fakeClient().client});
+ const wrongVersion=wrapped.slice();wrongVersion[0]=2;
+ for(const blob of [wrongVersion,wrapped.slice(0,10)])await assert.rejects(unwrapWalletSecret({rpId:RP,credentialId,blob,client:prompting}),/not one this app wrote/);
+ const lock=await lockWithHandle({credentialId,userHandle:passkeyUserId(12),words:'x'});
+ const old=lock.slice();old[0]=1;
+ await assert.rejects(unlockWithHandle({credentialId,userHandle:passkeyUserId(12),blob:old}),/not one this app wrote/);
+});

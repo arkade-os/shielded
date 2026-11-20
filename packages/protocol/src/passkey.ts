@@ -92,10 +92,12 @@ async function seal(key:CryptoKey,version:number,credentialId:Uint8Array,secret:
  blob[0]=version;blob.set(iv,1);blob.set(sealed,1+IV_BYTES);
  return blob;
 }
-async function open(key:CryptoKey,version:number,credentialId:Uint8Array,blob:Uint8Array):Promise<string> {
+/** The key is a thunk so a foreign or torn record is refused before any passkey prompt. */
+async function open(keyOf:()=>Promise<CryptoKey>,version:number,credentialId:Uint8Array,blob:Uint8Array):Promise<string> {
  if(blob.length<1+IV_BYTES+TAG_BYTES||blob[0]!==version)throw new Error('That wallet lock record is not one this app wrote.');
  const aad=new Uint8Array(1+credentialId.length);
  aad[0]=version;aad.set(credentialId,1);
+ const key=await keyOf();
  const plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(blob.subarray(1,1+IV_BYTES)),additionalData:aad},key,new Uint8Array(blob.subarray(1+IV_BYTES))));
  const secret=new TextDecoder().decode(plain);
  wipe(plain);
@@ -106,7 +108,7 @@ export async function wrapWalletSecret(o:{rpId:string;credentialId:Uint8Array;se
  return seal(await wrapKey(o),WRAP_VERSION,o.credentialId,o.secret);
 }
 export async function unwrapWalletSecret(o:{rpId:string;credentialId:Uint8Array;blob:Uint8Array;client?:WebAuthnClient}):Promise<string> {
- return open(await wrapKey(o),WRAP_VERSION,o.credentialId,o.blob);
+ return open(()=>wrapKey(o),WRAP_VERSION,o.credentialId,o.blob);
 }
 
 const HANDLE_LOCK_VERSION=2,HANDLE_LOCK_INFO=utf8.encode(`${KEY_DOMAIN}:handle-lock:v1`);
@@ -119,7 +121,7 @@ export async function lockWithHandle(o:{credentialId:Uint8Array;userHandle:Uint8
  return seal(await handleKey(o.userHandle),HANDLE_LOCK_VERSION,o.credentialId,o.words);
 }
 export async function unlockWithHandle(o:{credentialId:Uint8Array;userHandle:Uint8Array;blob:Uint8Array}):Promise<string> {
- return open(await handleKey(o.userHandle),HANDLE_LOCK_VERSION,o.credentialId,o.blob);
+ return open(()=>handleKey(o.userHandle),HANDLE_LOCK_VERSION,o.credentialId,o.blob);
 }
 /** Reads a passkey's user handle with a plain assertion, no PRF. */
 export async function passkeyUserHandle(o:{rpId:string;credentialId:Uint8Array;client?:WebAuthnClient}):Promise<Uint8Array> {
