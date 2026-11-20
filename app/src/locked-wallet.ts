@@ -23,14 +23,15 @@ export function lockedRecordOf(storage:Pick<Storage,'getItem'>):LockedRecord|und
  if(value&&typeof value==='object'&&value.version===1&&value.lock==='handle'&&typeof value.credentialId==='string'&&B64.test(value.credentialId)&&typeof value.blob==='string'&&B64.test(value.blob)&&(value.words===12||value.words===24))return value as LockedRecord;
  throw new Error("The locked wallet record is invalid. Keep this browser's data.");
 }
-export async function createLockedPageWallet(storage:PageStorage,o:{credentialId:Uint8Array;userHandle:Uint8Array;wordCount:12|24}){
+/** `created` is the passkey's own time, so the unlock screen names the passkey as it was saved. LOCKED goes last: a torn write never leaves a lock without its date. */
+export async function createLockedPageWallet(storage:PageStorage,o:{credentialId:Uint8Array;userHandle:Uint8Array;wordCount:12|24;created?:number}){
  try{
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
   const words=randomRecoveryPhrase(o.wordCount),secret=bytesToHex(parseMasterSecret(words));
   const blob=await lockWithHandle({credentialId:o.credentialId,userHandle:o.userHandle,words});
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
   const record:LockedRecord={version:1,lock:'handle',credentialId:base64urlnopad.encode(o.credentialId),words:o.wordCount,blob:base64urlnopad.encode(blob)};
-  storage.setItem(LOCKED,JSON.stringify(record));storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));savePasskey(storage);
+  storage.setItem(BORN,'new');storage.setItem(CREATED,String(o.created??Date.now()));savePasskey(storage);storage.setItem(LOCKED,JSON.stringify(record));
   return {secret,words};
  }finally{o.userHandle.fill(0);}
 }

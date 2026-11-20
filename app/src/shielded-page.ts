@@ -271,6 +271,8 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
 
 export const WALLET_EXISTS='A wallet already exists in this browser. Reload to open it.';
 export const passkeyUserName=(at:number)=>`Shielded wallet · ${new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`;
+/** A browser that reports no PRF returns no PRF result at create, which the SDK calls 'unknown', not 'unsupported': no fallback, only an orphan passkey. */
+export const offersPasskeys=(prf:'yes'|'no'|'unknown'|undefined)=>prf!==undefined&&prf!=='no';
 export function createPageWallet(storage:PageStorage,seed?:PasskeySeed){
  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
  const secret=bytesToHex(seed?.master??crypto.getRandomValues(new Uint8Array(32)));
@@ -280,7 +282,7 @@ export function createPageWallet(storage:PageStorage,seed?:PasskeySeed){
 export async function createPasskeyPageWallet(storage:PageStorage,o:{rpId:string;wordCount:PasskeyWordCount;client?:WebAuthnClient}){
  // Checked before the prompt as well, so a wallet another tab made never costs an orphan passkey.
  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
- const seed=await createPasskeySeed({rpId:o.rpId,userName:passkeyUserName(Date.now()),wordCount:o.wordCount,client:o.client});
+ const at=Date.now(),seed=await createPasskeySeed({rpId:o.rpId,userName:passkeyUserName(at),createdAt:at,wordCount:o.wordCount,client:o.client});
  try{
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
   return {secret:createPageWallet(storage,seed),words:seed.words};

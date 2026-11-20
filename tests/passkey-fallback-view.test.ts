@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {registerHooks} from 'node:module';
-import {test,type TestContext} from 'node:test';
+import {test} from 'node:test';
 import {Children,createElement,isValidElement,type ReactNode} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {prfSupport} from '@arkade-os/sdk';
 import {createLockedPageWallet,isWindowsBrowser} from '../app/src/locked-wallet.ts';
-import {CREATED,passkeyNextStep,passkeyUserName} from '../app/src/shielded-page.ts';
+import {CREATED,offersPasskeys,passkeyNextStep,passkeyUserName} from '../app/src/shielded-page.ts';
 import type {WalletOnboardingProps} from '../app/src/WalletOnboarding.tsx';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
@@ -23,7 +24,6 @@ const sheetProps:SheetProps={platform:'browser',windowsWarning:false,passkeyName
 const sheet=(props:Partial<SheetProps>={})=>renderToStaticMarkup(createElement(PasskeyFallbackSheet,{...sheetProps,...props}));
 const memory=()=>{const rows=new Map<string,string>();return {getItem:(k:string)=>rows.get(k)??null,setItem:(k:string,v:string)=>{rows.set(k,v);},removeItem:(k:string)=>{rows.delete(k);},key:(i:number)=>[...rows.keys()][i]??null,get length(){return rows.size;}};};
 const wallet=(storage:ReturnType<typeof memory>)=>renderToStaticMarkup(createElement(RollupWallet as (props:{storage:Storage})=>ReactNode,{storage:storage as unknown as Storage}));
-const webAuthn=(t:TestContext)=>{Object.assign(globalThis,{PublicKeyCredential:{getClientCapabilities:async()=>({'extension:prf':false})}});t.after(()=>{Reflect.deleteProperty(globalThis,'PublicKeyCredential');});};
 const onClickOf=(node:ReactNode,label:string):(()=>void)|undefined=>{
  let found:(()=>void)|undefined;
  Children.forEach(node,child=>{
@@ -73,8 +73,7 @@ test('the Windows warning shows only on Windows',t=>{
  assert.equal(on({userAgent:'Mozilla/5.0 (Linux; Android 14; Pixel 8)'}),false);
 });
 
-test('a locked browser wallet opens on the unlock screen with a way out',async t=>{
- webAuthn(t);
+test('a locked browser wallet opens on the unlock screen with a way out',async()=>{
  const storage=memory();
  await createLockedPageWallet(storage,{credentialId:new Uint8Array(16).fill(1),userHandle:new Uint8Array(32).fill(2),wordCount:12});
  const html=wallet(storage),name=passkeyUserName(Number(storage.getItem(CREATED)));
@@ -84,6 +83,7 @@ test('a locked browser wallet opens on the unlock screen with a way out',async t
  assert.doesNotMatch(html,/Create wallet|Restore a wallet|Create with a passkey|Restore with a passkey/);
  let unlocked=0,chosen=0;const unlock={label:name,onUnlock:()=>{unlocked++;},onUsePhrase:()=>{chosen++;}};
  onboarding({unlock},['Unlock with passkey']);assert.equal(unlocked,1);
+ assert.doesNotMatch(onboarding({unlock,passkey:{onCreate:()=>{},onRestore:()=>{}}}),/Create with a passkey|Restore with a passkey/,'no second wallet beside a locked one');
  const confirm=onboarding({unlock},['Use recovery phrase instead']);
  assert.ok(confirm.includes('This replaces the locked wallet on this device. Your funds are safe if this is its recovery phrase.'));
  assert.doesNotMatch(confirm,/<textarea/);assert.equal(chosen,0);
@@ -93,10 +93,13 @@ test('a locked browser wallet opens on the unlock screen with a way out',async t
  assert.match(onboarding({unlock,transport:'tor',torHealth:{status:{phase:'ready',generation:1},check:'ok'}}),/>Unlock<\/button>/);
 });
 
-test('the passkey group shows whenever WebAuthn exists, even when the PRF probe says no',async t=>{
- webAuthn(t);
- assert.equal(await prfSupport(),'no');
- assert.match(wallet(memory()),/>Create with a passkey<\/button>/);
- Reflect.deleteProperty(globalThis,'PublicKeyCredential');
- assert.doesNotMatch(wallet(memory()),/Create with a passkey/,'no group without WebAuthn');
+test('the passkey group shows when the PRF probe says yes or unknown, and stays off when it says no',async t=>{
+ t.after(()=>{Reflect.deleteProperty(globalThis,'PublicKeyCredential');});
+ const probe=(prf?:boolean)=>{Object.assign(globalThis,{PublicKeyCredential:{getClientCapabilities:async()=>prf===undefined?{}:{'extension:prf':prf}}});return prfSupport();};
+ assert.deepEqual([await probe(false),await probe(true),await probe()],['no','yes','unknown']);
+ assert.deepEqual((['no','yes','unknown',undefined] as const).map(offersPasskeys),[false,true,true,false]);
+ assert.doesNotMatch(wallet(memory()),/Create with a passkey/,'nothing shows before the probe answers');
+ const source=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
+ assert.match(source,/useEffect\(\(\)=>\{if\(!nativeHost\)void prfSupport\(\)\.then\(setPrf\);\},\[nativeHost\]\);/);
+ assert.match(source,/passkey=\{offersPasskeys\(prf\)&&!passkeyOff\?/);
 });

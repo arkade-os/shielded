@@ -6,11 +6,11 @@ import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex as hex} from '@noble/hashes/utils.js';
 import {base64urlnopad} from '@scure/base';
 import type {WebAuthnClient} from '@arkade-os/sdk';
-import {PASSKEY_SEED_SALT,type PasskeyWordCount} from '../packages/protocol/src/passkey.ts';
+import {PASSKEY_SEED_SALT,type PasskeyFallback,type PasskeyWordCount} from '../packages/protocol/src/passkey.ts';
 import {parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {LOCKED,createLockedPageWallet,lockedRecordOf,unlockPageWallet} from '../app/src/locked-wallet.ts';
-import {BORN,CREATED,PASSKEY,SECRET,createPageWallet,createPasskeyPageWallet,pageCache,passkeyNextStep,passkeyRecordOf,passkeyWords,restorePageWallet,restorePasskeyPageWallet} from '../app/src/shielded-page.ts';
+import {BORN,CREATED,PASSKEY,SECRET,createPageWallet,createPasskeyPageWallet,pageCache,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,restorePageWallet,restorePasskeyPageWallet} from '../app/src/shielded-page.ts';
 import {WalletBackupCard} from '../app/src/WalletSecurityMenu.tsx';
 
 const RP='shielded.mutinynet.arkade.sh';
@@ -223,4 +223,28 @@ test('unlocking with a passkey that returns another handle changes nothing in st
  await assert.rejects(unlockPageWallet(storage,{rpId:RP,client:handleClient(id,crypto.getRandomValues(new Uint8Array(64)))}));
  assert.deepEqual([...storage.rows],before);
  await assert.rejects(unlockPageWallet(storageOf(),{rpId:RP}),/locked/i);
+});
+
+const noPrf:WebAuthnClient={
+ async create(o){return {id:'x',type:'public-key',rawId:new Uint8Array(16).fill(7),response:{userHandle:view(o.publicKey!.user.id)},getClientExtensionResults:()=>({prf:{enabled:false}})} as unknown as Credential;},
+ async get(){throw new Error('no assertion expected');},
+};
+
+test('a locked wallet is dated by its passkey, however long Continue waits',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.UTC(2026,10,20,17,45,50)});
+ const storage=storageOf(),fallback=await createPasskeyPageWallet(storage,{rpId:RP,wordCount:12,client:noPrf}).then(()=>{throw new Error('expected the fallback');},(error:unknown)=>error as PasskeyFallback);
+ assert.equal(fallback.name,'PasskeyFallback');assert.equal(fallback.userName,passkeyUserName(fallback.createdAt));
+ t.mock.timers.tick(120_000);
+ await createLockedPageWallet(storage,{credentialId:fallback.credentialId,userHandle:fallback.userHandle,wordCount:fallback.wordCount,created:fallback.createdAt});
+ assert.equal(passkeyUserName(Number(storage.getItem(CREATED))),fallback.userName,'the unlock screen names the passkey as it was saved');
+ const {readFileSync}=await import('node:fs');
+ assert.match(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8'),/createLockedPageWallet\(storage,\{[^}]*created:offer\.createdAt\}\)/,'Continue passes it on');
+});
+
+test('a locked create writes its dates before the lock, so a torn write leaves no undated lock',async()=>{
+ const storage=storageOf(),write=storage.setItem,handle=crypto.getRandomValues(new Uint8Array(32));
+ storage.setItem=(k:string,v:string)=>{if(k===LOCKED)throw new Error('quota exceeded');write(k,v);};
+ await assert.rejects(createLockedPageWallet(storage,{credentialId:new Uint8Array(16).fill(1),userHandle:handle,wordCount:12,created:1234}),/quota/);
+ assert.deepEqual([storage.getItem(BORN),storage.getItem(CREATED),storage.getItem(LOCKED),storage.getItem(SECRET)],['new','1234',null,null]);
+ assert.ok(handle.every(byte=>byte===0));
 });

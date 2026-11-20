@@ -9,7 +9,7 @@ export const PASSKEY_RP_NAME='Shielded' as const;
 export const PASSKEY_SEED_SALT=utf8.encode(DEFAULT_PASSKEY_LABEL);
 export const PASSKEY_UNLOCK_SALT=utf8.encode('shielded-unlock-v1');
 export type PasskeyWordCount=12|24;
-export interface PasskeyFallback extends Error {name:'PasskeyFallback';credentialId:Uint8Array;userHandle:Uint8Array;userName:string;wordCount:PasskeyWordCount}
+export interface PasskeyFallback extends Error {name:'PasskeyFallback';credentialId:Uint8Array;userHandle:Uint8Array;userName:string;wordCount:PasskeyWordCount;createdAt:number}
 export interface PasskeySeed {credentialId:Uint8Array;wordCount:PasskeyWordCount;words:string;master:Uint8Array}
 
 /**
@@ -42,15 +42,16 @@ function seedOf(credentialId:Uint8Array,prf:Uint8Array,wordCount:PasskeyWordCoun
  }finally{wipe(prf);}
 }
 
-export async function createPasskeySeed(o:{rpId:string;userName:string;wordCount?:PasskeyWordCount;client?:WebAuthnClient}):Promise<PasskeySeed> {
- const wordCount=o.wordCount??12;
+/** `createdAt` is the time `userName` was made from, so a fallback wallet can be dated, and named again, as its passkey. */
+export async function createPasskeySeed(o:{rpId:string;userName:string;createdAt?:number;wordCount?:PasskeyWordCount;client?:WebAuthnClient}):Promise<PasskeySeed> {
+ const wordCount=o.wordCount??12,createdAt=o.createdAt??Date.now();
  const userHandle=passkeyUserId(wordCount);
  try{
   const {credentialId,prf}=await createPrfPasskey({rp:{id:o.rpId,name:PASSKEY_RP_NAME},userId:userHandle,userName:o.userName,salt:PASSKEY_SEED_SALT,client:o.client});
   return seedOf(credentialId,prf,wordCount);
  }catch(error){
   const {name,reason,credentialId}=error as {name?:string;reason?:string;credentialId?:Uint8Array};
-  if(name==='PrfUnavailable'&&reason==='unsupported'&&credentialId)throw Object.assign(new Error("This passkey can't make wallet keys on this device."),{name:'PasskeyFallback',credentialId,userHandle,userName:o.userName,wordCount});
+  if(name==='PrfUnavailable'&&reason==='unsupported'&&credentialId)throw Object.assign(new Error("This passkey can't make wallet keys on this device."),{name:'PasskeyFallback',credentialId,userHandle,userName:o.userName,wordCount,createdAt});
   throw error;
  }
 }

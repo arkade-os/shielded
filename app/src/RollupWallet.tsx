@@ -2,7 +2,7 @@ import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSPr
 import {createPortal,flushSync} from 'react-dom';
 import {watchPageVisibility} from './page-visibility.ts';
 import {readWalletClipboard} from './wallet-clipboard.ts';
-import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
+import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
@@ -25,7 +25,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,offersPasskeys,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
 import {createLockedPageWallet,isWindowsBrowser,lockedRecordOf,revealSource,unlockPageWallet} from './locked-wallet.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
 import PasskeyFallbackSheet from './PasskeyFallbackSheet.tsx';
@@ -111,7 +111,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[lockName]=useState(()=>!nativeHost&&revealSource(storage)==='locked'?passkeyUserName(Number(storage.getItem(CREATED))):''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
- const [passkeyOff,setPasskeyOff]=useState(false),[fallbackName,setFallbackName]=useState(''),fallback=useRef<PasskeyFallback|undefined>(undefined),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
+ const [prf,setPrf]=useState<'yes'|'no'|'unknown'>(),[passkeyOff,setPasskeyOff]=useState(false),[fallbackName,setFallbackName]=useState(''),fallback=useRef<PasskeyFallback|undefined>(undefined),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
  const phrasePrompt=useRef(createPasskeyRevealOwner()),phraseForeground=useRef(!document.hidden),phraseActive=useRef(true),phraseCurrent=useRef(true);
  // Committed state, never a discarded render, and a layout effect because the reveal reads it in the same tick a click or a publish arrives.
  useLayoutEffect(()=>{phraseCurrent.current=!suspended&&viewActive&&!hidden;},[suspended,viewActive,hidden]);
@@ -192,6 +192,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   try{const fresh=createPageWallet(storage);createdHere.current=true;setSecret(fresh);}
   catch(error){setRestoreError(errorText(error));busyRef.current=false;setBusy(false);}
  };
+ useEffect(()=>{if(!nativeHost)void prfSupport().then(setPrf);},[nativeHost]);
  const setupFailed=(error:unknown)=>{const step=passkeyNextStep(error);setRestoreError(step?.message??errorText(error));if(step&&!step.retry)setPasskeyOff(true);};
  const createWithPasskey=async(wordCount:PasskeyWordCount)=>{
   if(busyRef.current||secret)return;
@@ -210,7 +211,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const offer=fallback.current;
   if(!offer||busyRef.current)return;
   busyRef.current=true;setBusy(true);setRestoreError('');
-  try{const made=await createLockedPageWallet(storage,offer);if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
+  try{const made=await createLockedPageWallet(storage,{credentialId:offer.credentialId,userHandle:offer.userHandle,wordCount:offer.wordCount,created:offer.createdAt});if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
   catch(error){if(mounted.current){setRestoreError(`${errorText(error)} You can delete the passkey “${offer.userName}” in your passkey settings.`);setPasskeyOff(true);busyRef.current=false;setBusy(false);}}
   finally{fallback.current=undefined;if(mounted.current)setFallbackName('');}
  };
@@ -853,7 +854,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
   const inactive=hidden||suspended||!viewActive;
-  if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={!nativeHost&&typeof PublicKeyCredential!=='undefined'&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined} unlock={lockName&&!secret?{label:lockName,onUnlock:()=>void unlockWallet(),onUsePhrase:()=>setRestoreError('')}:undefined}>{fallbackName&&<PasskeyFallbackSheet platform="browser" windowsWarning={isWindowsBrowser()} passkeyName={fallbackName} busy={busy} onContinue={()=>void continueFallback()} onCancel={cancelFallback}/>}</WalletOnboarding></div>;
+  if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={offersPasskeys(prf)&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined} unlock={lockName&&!secret?{label:lockName,onUnlock:()=>void unlockWallet(),onUsePhrase:()=>setRestoreError('')}:undefined}>{fallbackName&&<PasskeyFallbackSheet platform="browser" windowsWarning={isWindowsBrowser()} passkeyName={fallbackName} busy={busy} onContinue={()=>void continueFallback()} onCancel={cancelFallback}/>}</WalletOnboarding></div>;
   return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><span><Icon name="reset" size={16}/>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{headerControls}<AppUpdateNotice/>{!headerControls&&<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/>}</div></header>
    {nativePending&&<section className="stock-warning" role="status"><span>Some payments have unresolved outcomes. Their inputs stay reserved until this wallet can prove they cannot land, which it rechecks every minute; a dropped status alone is no proof.</span>
     {confirmRelease

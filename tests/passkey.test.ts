@@ -169,8 +169,9 @@ test('create falls back only for an unsupported PRF failure',async()=>{
   async create(o){const id=new Uint8Array(16).fill(7);return {id:'x',type:'public-key',rawId:id,response:{userHandle:view(o.publicKey!.user.id)},getClientExtensionResults:()=>enabled===undefined?{}:{prf:{enabled}}} as unknown as Credential;},
   async get(){return {id:'x',type:'public-key',rawId:new Uint8Array(16).fill(7),response:{userHandle:null},getClientExtensionResults:()=>({prf:{}})} as unknown as Credential;},
  });
- const fallback=await caught(()=>createPasskeySeed({rpId:RP,userName:'Me',client:noPrf(false)})) as Error&{userHandle:Uint8Array;userName:string;credentialId:Uint8Array;wordCount:number};
+ const fallback=await caught(()=>createPasskeySeed({rpId:RP,userName:'Me',createdAt:1234,client:noPrf(false)})) as Error&{userHandle:Uint8Array;userName:string;credentialId:Uint8Array;wordCount:number;createdAt:number};
  assert.equal(fallback.name,'PasskeyFallback');
+ assert.equal(fallback.createdAt,1234,'the time its name was made from');
  assert.equal(fallback.message,"This passkey can't make wallet keys on this device.");
  assert.equal(fallback.userHandle.length,32);
  assert.deepEqual([...fallback.userHandle.slice(0,2)],[0x53,0x4b]);
