@@ -273,6 +273,25 @@ async fn locked_secret_get<R: Runtime>(
 }
 
 #[tauri::command]
+async fn locked_secret_clear<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    ensure_local(&window)?;
+    #[cfg(target_os = "android")]
+    {
+        android_vault_request(&app, "lockedSecretClear", serde_json::json!({}))
+            .await
+            .map(|_| ())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn vault_kind<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
@@ -515,6 +534,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             secret_clear,
             locked_secret_create,
             locked_secret_get,
+            locked_secret_clear,
             vault_kind,
             device_lock_available,
             clipboard_text,

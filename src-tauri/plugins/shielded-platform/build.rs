@@ -11,6 +11,7 @@ fn main() {
         "secret_clear",
         "locked_secret_create",
         "locked_secret_get",
+        "locked_secret_clear",
         "vault_kind",
         "device_lock_available",
         "clipboard_text",

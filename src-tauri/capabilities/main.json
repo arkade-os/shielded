@@ -39,6 +39,7 @@
     "shielded-platform:allow-secret-clear",
     "shielded-platform:allow-locked-secret-create",
     "shielded-platform:allow-locked-secret-get",
+    "shielded-platform:allow-locked-secret-clear",
     "shielded-platform:allow-vault-kind",
     "shielded-platform:allow-device-lock-available",
     "shielded-platform:allow-clipboard-text",

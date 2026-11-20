@@ -176,6 +176,12 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun lockedSecretClear(invoke: Invoke) = secret(invoke) {
+        lockedVault.clear()
+        null
+    }
+
+    @Command
     fun vaultKind(invoke: Invoke) = secret(invoke) {
         JSObject().put("kind", AndroidLockPolicy.vaultKind(vault.exists(), lockedVault.exists()))
     }
