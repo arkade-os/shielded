@@ -1,0 +1,39 @@
+import type {WebAuthnClient} from '@arkade-os/sdk';
+import {bytesToHex} from '@noble/hashes/utils.js';
+import {base64urlnopad} from '@scure/base';
+import {lockWithHandle,passkeyUserHandle,unlockWithHandle} from '../../packages/protocol/src/passkey.ts';
+import {parseMasterSecret,randomRecoveryPhrase} from '../../packages/protocol/src/wallet-keys.ts';
+import {BORN,CREATED,SECRET,WALLET_EXISTS,type PageStorage} from './shielded-page.ts';
+import {savePasskey} from './passkey-record.ts';
+
+export const LOCKED='shielded-rollup-wallet-locked-v1';
+export type LockedRecord={version:1;lock:'handle';credentialId:string;words:12|24;blob:string};
+const B64=/^[A-Za-z0-9_-]{1,4096}$/;
+export function lockedRecordOf(storage:Pick<Storage,'getItem'>):LockedRecord|undefined{
+ const raw=storage.getItem(LOCKED);
+ if(raw===null)return undefined;
+ let value:Partial<LockedRecord>|null=null;
+ try{value=JSON.parse(raw);}catch{}
+ if(value&&typeof value==='object'&&value.version===1&&value.lock==='handle'&&typeof value.credentialId==='string'&&B64.test(value.credentialId)&&typeof value.blob==='string'&&B64.test(value.blob)&&(value.words===12||value.words===24))return value as LockedRecord;
+ throw new Error("The locked wallet record is invalid. Keep this browser's data.");
+}
+export async function createLockedPageWallet(storage:PageStorage,o:{credentialId:Uint8Array;userHandle:Uint8Array;wordCount:12|24}){
+ try{
+  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
+  const words=randomRecoveryPhrase(o.wordCount),secret=bytesToHex(parseMasterSecret(words));
+  const blob=await lockWithHandle({credentialId:o.credentialId,userHandle:o.userHandle,words});
+  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
+  const record:LockedRecord={version:1,lock:'handle',credentialId:base64urlnopad.encode(o.credentialId),words:o.wordCount,blob:base64urlnopad.encode(blob)};
+  storage.setItem(LOCKED,JSON.stringify(record));storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));savePasskey(storage);
+  return {secret,words};
+ }finally{o.userHandle.fill(0);}
+}
+export async function unlockPageWallet(storage:Pick<Storage,'getItem'>,o:{rpId:string;client?:WebAuthnClient}){
+ const record=lockedRecordOf(storage);
+ if(!record)throw new Error('This browser has no locked wallet.');
+ const credentialId=base64urlnopad.decode(record.credentialId),userHandle=await passkeyUserHandle({rpId:o.rpId,credentialId,client:o.client});
+ try{
+  const words=await unlockWithHandle({credentialId,userHandle,blob:base64urlnopad.decode(record.blob)});
+  return {secret:bytesToHex(parseMasterSecret(words)),words};
+ }finally{userHandle.fill(0);}
+}

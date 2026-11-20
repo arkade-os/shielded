@@ -13,9 +13,10 @@ import {pausedErrorText,satsText} from './rollup-client.ts';
 import {restoreNativeStorage} from './native-storage.ts';
 import {passkeyRecord,savePasskey,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
 export {PASSKEY,passkeyRecord,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
+import {LOCKED,lockedRecordOf} from './locked-wallet.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
-type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
+export type PageStorage=Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;
 function fetchErrorText(error:unknown){
  if(!(error instanceof FetchError))return;
  if(!['GET','HEAD'].includes((error.method??'GET').toUpperCase()))return 'The wallet service request did not finish. Its outcome may be unknown. Check its status before trying again.';
@@ -268,26 +269,26 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
  if(!wallet.repositoryError&&current()&&storage.getItem(SENT)===raw)storage.removeItem(SENT);
 }
 
-const WALLET_EXISTS='A wallet already exists in this browser. Reload to open it.';
+export const WALLET_EXISTS='A wallet already exists in this browser. Reload to open it.';
 export function createPageWallet(storage:PageStorage,seed?:PasskeySeed){
- if(storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
+ if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
  const secret=bytesToHex(seed?.master??crypto.getRandomValues(new Uint8Array(32)));
  storage.setItem(BORN,'new');storage.setItem(CREATED,String(Date.now()));savePasskey(storage,seed&&passkeyRecord(seed));storage.setItem(SECRET,secret);
  return secret;
 }
 export async function createPasskeyPageWallet(storage:PageStorage,o:{rpId:string;wordCount:PasskeyWordCount;client?:WebAuthnClient}){
  // Checked before the prompt as well, so a wallet another tab made never costs an orphan passkey.
- if(storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
+ if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
  const seed=await createPasskeySeed({rpId:o.rpId,userName:`Shielded wallet · ${new Date().toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`,wordCount:o.wordCount,client:o.client});
  try{
-  if(storage.getItem(SECRET))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
+  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
   return {secret:createPageWallet(storage,seed),words:seed.words};
  }finally{seed.master.fill(0);}
 }
 export async function restorePasskeyPageWallet(o:Parameters<typeof restorePageWallet>[1]&{rpId:string;client?:WebAuthnClient}){
  const seed=await restorePasskeySeed({rpId:o.rpId,client:o.client});
  try{
-  if(o.storage.getItem(SECRET))throw new Error(WALLET_EXISTS);
+  if(o.storage.getItem(SECRET)||lockedRecordOf(o.storage))throw new Error(WALLET_EXISTS);
   await restorePageWallet(bytesToHex(seed.master),{...o,passkey:passkeyRecord(seed)});
  }finally{seed.master.fill(0);}
 }
@@ -320,7 +321,7 @@ export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof
  const nativeRestore=restoreNativeStorage(o.storage,parsed,o.born,o.passkey);
  if(nativeRestore){await nativeRestore;await o.cache.repository.clear();o.reload();return;}
  await o.cache.repository.clear();
- savePasskey(o.storage,o.passkey);o.storage.setItem(SECRET,parsed);
+ savePasskey(o.storage,o.passkey);o.storage.setItem(SECRET,parsed);o.storage.removeItem(LOCKED);
  for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
  if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);
  o.storage.removeItem(SENT);o.reload();

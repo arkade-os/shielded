@@ -9,6 +9,7 @@ import type {WebAuthnClient} from '@arkade-os/sdk';
 import {PASSKEY_SEED_SALT,type PasskeyWordCount} from '../packages/protocol/src/passkey.ts';
 import {parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
+import {LOCKED,createLockedPageWallet,lockedRecordOf,unlockPageWallet} from '../app/src/locked-wallet.ts';
 import {BORN,CREATED,PASSKEY,SECRET,createPageWallet,createPasskeyPageWallet,pageCache,passkeyNextStep,passkeyRecordOf,passkeyWords,restorePageWallet,restorePasskeyPageWallet} from '../app/src/shielded-page.ts';
 import {WalletBackupCard} from '../app/src/WalletSecurityMenu.tsx';
 
@@ -160,4 +161,66 @@ test('after a reload a 12-word wallet reveals its words through its passkey, sin
  assert.match(wallet,/const phrase=phraseWords===12\?passkeyPhrase:/);
  assert.match(wallet,/useLayoutEffect\(\(\)=>\{phraseCurrent\.current=!suspended&&viewActive&&!hidden;\},\[suspended,viewActive,hidden\]\);/,'the reveal gate follows the committed view, not a render that may be discarded');
  assert.match(wallet,/const showPhrase=\(\)=>\{\s*if\(!mounted\.current\|\|!phraseCurrent\.current\|\|document\.hidden[\s\S]*?sessionGuard\?\.\(\)[\s\S]*?if\(phrase\)\{setReveal\(true\);return;\}[\s\S]*?passkeyWords\(storage,/);
+});
+
+const handleClient=(id:Uint8Array,handle:Uint8Array):WebAuthnClient=>({
+ async create(){throw new Error('no create');},
+ async get(){return {rawId:id,response:{userHandle:handle.slice()}} as unknown as Credential;},
+});
+const lockedWallet=async(wordCount:12|24=24)=>{
+ const storage=storageOf(),id=crypto.getRandomValues(new Uint8Array(16)),handle=crypto.getRandomValues(new Uint8Array(64));
+ const made=await createLockedPageWallet(storage,{credentialId:id,userHandle:handle.slice(),wordCount});
+ return {storage,id,handle,made};
+};
+
+test('a locked browser wallet stores no secret and unlocks to the same words and secret',async()=>{
+ for(const wordCount of [12,24] as const){
+  const {storage,id,handle,made}=await lockedWallet(wordCount);
+  assert.equal(storage.getItem(SECRET),null);
+  assert.equal(lockedRecordOf(storage)?.words,wordCount);
+  assert.equal(made.words.split(' ').length,wordCount);
+  assert.equal(made.secret,hex(parseMasterSecret(made.words)));
+  assert.equal(storage.getItem(BORN),'new');assert.ok(storage.getItem(CREATED));
+  for(const value of storage.rows.values())assert.ok(!value.includes(made.words)&&!value.includes(made.secret),'nothing in the clear');
+  assert.deepEqual(await unlockPageWallet(storage,{rpId:RP,client:handleClient(id,handle)}),made);
+ }
+});
+
+test('the handle is wiped only after the lock has resolved',async()=>{
+ const id=crypto.getRandomValues(new Uint8Array(16)),handle=crypto.getRandomValues(new Uint8Array(64)),storage=storageOf();
+ const made=await createLockedPageWallet(storage,{credentialId:id,userHandle:handle,wordCount:12});
+ assert.ok(handle.every(byte=>byte===0));
+ assert.equal((await unlockPageWallet(storage,{rpId:RP,client:handleClient(id,crypto.getRandomValues(new Uint8Array(64)))}).catch(()=>'wrong')),'wrong');
+ assert.ok(made.words);
+});
+
+test('no create path runs over a locked wallet',async()=>{
+ const {storage}=await lockedWallet(),synced=syncedPasskeys();await createPasskeyPageWallet(storageOf(),{rpId:RP,wordCount:12,client:synced.client()});const before=[...storage.rows];
+ assert.throws(()=>createPageWallet(storage),/A wallet already exists/);
+ await assert.rejects(createPasskeyPageWallet(storage,{rpId:RP,wordCount:12,client:synced.client()}),/A wallet already exists/);
+ await assert.rejects(restorePasskeyPageWallet({...restoreInto(storage,[]),rpId:RP,client:synced.client()}),/A wallet already exists/);
+ assert.equal(synced.made.length,1);assert.deepEqual([...storage.rows],before);
+});
+
+test('restoring a phrase replaces a locked wallet',async()=>{
+ const {storage}=await lockedWallet(),phrase='cd'.repeat(32);
+ await restorePageWallet(phrase,restoreInto(storage,[]));
+ assert.equal(storage.getItem(LOCKED),null);assert.equal(storage.getItem(SECRET),phrase);
+});
+
+test('a malformed locked record is an error, not an empty browser',()=>{
+ const storage=storageOf();
+ assert.equal(lockedRecordOf(storage),undefined);
+ for(const bad of ['not json','null','{"version":2}',JSON.stringify({version:1,lock:'handle',credentialId:'AA',words:13,blob:'AA'}),JSON.stringify({version:1,lock:'prf',credentialId:'AA',words:12,blob:'AA'}),JSON.stringify({version:1,lock:'handle',credentialId:'A A',words:12,blob:'AA'})]){
+  storage.setItem(LOCKED,bad);
+  assert.throws(()=>lockedRecordOf(storage),/locked wallet record is invalid\. Keep this browser's data\./);
+  assert.throws(()=>createPageWallet(storage),/locked wallet record is invalid/);
+ }
+});
+
+test('unlocking with a passkey that returns another handle changes nothing in storage',async()=>{
+ const {storage,id}=await lockedWallet(),before=[...storage.rows];
+ await assert.rejects(unlockPageWallet(storage,{rpId:RP,client:handleClient(id,crypto.getRandomValues(new Uint8Array(64)))}));
+ assert.deepEqual([...storage.rows],before);
+ await assert.rejects(unlockPageWallet(storageOf(),{rpId:RP}),/locked/i);
 });
