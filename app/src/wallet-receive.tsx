@@ -5,6 +5,7 @@ import {QrCode} from './wallet-qr.tsx';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSwipeGesture} from './wallet-gestures.ts';
 import {invoiceInRange,type InvoiceBounds} from './rollup-client.ts';
+import {formatAssetAmount,parseAssetAmount} from './wallet-assets.ts';
 import './wallet-receive.css';
 
 export type ReceiveMode='unified'|'shielded'|'arkade';
@@ -44,11 +45,16 @@ type InvoiceState={amount:bigint;outcome:string};
 /** A lapsed invoice is replaced; a paid or failed one stays shown until the amount is edited. */
 export const needsInvoice=(amount:bigint|undefined,invoice:InvoiceState|undefined,tried:bigint|undefined)=>amount!==undefined&&tried!==amount&&(invoice?.amount!==amount||invoice.outcome==='lapsed');
 export const keptInvoice=<T extends InvoiceState>(invoice:T|undefined)=>invoice&&(invoice.outcome==='open'||invoice.outcome==='accepted')?invoice:undefined;
-export function amountQrValue(mode:Exclude<ReceiveMode,'unified'>,value:string,amount:string):string|undefined{
+export function amountQrValue(mode:Exclude<ReceiveMode,'unified'>,value:string,amount:string,asset?:{assetId:string;decimals:number}):string|undefined{
+ const key=mode==='shielded'?'shielded':'ark';
+ if(asset){
+  const atomic=parseAssetAmount(amount,asset.decimals);
+  return value.trim()&&atomic!==undefined?`bitcoin:?${key}=${value}&assetid=${asset.assetId}&amount=${formatAssetAmount(atomic,asset.decimals,false)}`:undefined;
+ }
  const sats=receiveAmount(amount);
  if(!value.trim()||sats===undefined)return undefined;
  const btc=(sats/100000000n).toString()+'.'+String(sats%100000000n).padStart(8,'0');
- return `bitcoin:?${mode==='shielded'?'shielded':'ark'}=${value}&amount=${btc}`;
+ return `bitcoin:?${key}=${value}&amount=${btc}`;
 }
 
 export function ReceiveQrButton({value,label,disabled=false}:{value:string;label:string;disabled?:boolean}){

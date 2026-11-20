@@ -397,6 +397,23 @@ test('the claim card reads a link\'s token and holdings without the network',()=
  assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
 });
 
+test('claim-link holdings take a label for assets and keep their default text',()=>{
+ const id='1e291e28'.padEnd(64,'0')+'0000',assetIdOf=(f:bigint)=>f===7n?id:undefined;
+ const label=(assetId:string,amount:bigint)=>`${amount} of ${assetId.slice(0,4)}`;
+ assert.equal(holdingsText([{asset:7n,amount:9n},{asset:0n,amount:1n}],assetIdOf,label),'9 of 1e29 and 1 sat');
+ assert.equal(holdingsText([{asset:3n,amount:2n}],assetIdOf,label),'2 units of an unlisted asset');
+});
+
+test('an asset payment link names its asset and display amount, never sats',()=>{
+ const id='ee'.repeat(34);
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&assetid='+id+'&amount=12.5'),{to:'tark1abc',asset:{assetId:id,amount:'12.5'}});
+ assert.deepEqual(payTarget('BITCOIN:?ARK=TARK1ABC&ASSETID='+id.toUpperCase()+'&AMOUNT=12.5'),{to:'tark1abc',asset:{assetId:id,amount:'12.5'}});
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&assetid='+id),{to:'tark1abc',asset:{assetId:id}});
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&assetid='+id+'&amount=1e3'),{to:'tark1abc',asset:{assetId:id}});
+ for(const bad of ['xyz','','ee'.repeat(33)])assert.throws(()=>payTarget('bitcoin:?ark=tark1abc&assetid='+bad+'&amount=1'),{message:'This payment link names an asset this wallet cannot read.'});
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&amount=1.5'),{to:'tark1abc',amount:150_000_000});
+});
+
 test('the keep-out line names the plain sats only the fee leaves under the minimum',()=>{
  const now=1_000_000,floor=25*3600_000,at=(n:number,value:number,hours=100):ArkCoin=>({...coinOf(n,value),expiresAt:now+hours*3600_000}),out=(coins:ArkCoin[])=>depositFeeOutsideLine(coins,flat,now,floor);
  assert.equal(out([at(1,400)]),'400 sats stay outside the pool: after the 100-sat deposit fee they would be below the 330-sat minimum.');

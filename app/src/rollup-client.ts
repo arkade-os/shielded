@@ -36,7 +36,7 @@ export const invoiceQr=(bolt11:string)=>'LIGHTNING:'+bolt11.toUpperCase();
 // Lower case: '@' keeps it out of QR alphanumeric mode anyway, and a payer may not fold the name.
 export const lightningAddressQr=(address:string)=>'lightning:'+address;
 /** A scanned or pasted payment code as the send form takes it: the destination, and the amount in sats when the code names one. */
-export function payTarget(raw:string):{to:string;amount?:number}{
+export function payTarget(raw:string):{to:string;amount?:number;asset?:{assetId:string;amount?:string}}{
  // QR codes often carry bech32 in capitals (alphanumeric mode is denser); bech32 is case-insensitive.
  const text=raw.trim(),plain=(s:string)=>/^[A-Z0-9]+$/.test(s)?s.toLowerCase():s,unescape=(s:string)=>{try{return decodeURIComponent(s);}catch{return s;}};
  if(/^lightning:/i.test(text))return {to:plain(text.slice(10))};
@@ -48,7 +48,13 @@ export function payTarget(raw:string):{to:string;amount?:number}{
  if(required.length)throw new Error(`This payment link requires ${required.join(', ')}, which this wallet does not support.`);
  const to=legs.get('ark')||(scheme==='arkade'?legs.get('address'):undefined)||legs.get('shielded')||legs.get('lightning')||path;
  if(!to)throw new Error('This payment link names no destination.');
- const btc=legs.get('amount'),[whole='0',fraction='']=btc?.split('.')??[];
+ const btc=legs.get('amount');
+ if(legs.has('assetid')){
+  const assetId=legs.get('assetid')!.toLowerCase();
+  if(!/^[0-9a-f]{68}$/.test(assetId))throw new Error('This payment link names an asset this wallet cannot read.');
+  return {to:plain(to),asset:{assetId,...(btc&&/^(0|[1-9]\d*)(\.\d+)?$/.test(btc)?{amount:btc}:{})}};
+ }
+ const [whole='0',fraction='']=btc?.split('.')??[];
  return {to:plain(to),...(btc&&/^\d+(\.\d{1,8})?$/.test(btc)?{amount:Number(whole)*1e8+Number(fraction.padEnd(8,'0'))}:{})};
 }
 
@@ -142,11 +148,12 @@ export const claimTokenError=(token:string)=>{try{decodeClaimToken(token);return
 export const claimUrl=(origin:string,token:string)=>`${origin}/claim#${token}`;
 /** A long value as its first 20 and last 12 characters; copy, QR and share always take the whole value. */
 export const shortValue=(value:string)=>value.length>48?`${value.slice(0,20)}…${value.slice(-12)}`:value;
-export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],assetIdOf:(field:bigint)=>string|undefined){
+export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],assetIdOf:(field:bigint)=>string|undefined,label?:(assetId:string,amount:bigint)=>string){
  const totals=new Map<bigint,bigint>();
  for(const n of notes)totals.set(n.asset,(totals.get(n.asset)??0n)+n.amount);
  return [...totals].map(([asset,amount])=>{
   const count=amount.toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
+  if(id&&label)return label(id,amount);
   return asset===0n?satsText(amount):`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
  }).join(' and ');
 }

@@ -5,6 +5,7 @@ import {Children,createElement,isValidElement,type ReactNode} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {registerHooks} from 'node:module';
 import {payTarget} from '../app/src/rollup-client.ts';
+import {parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount}=await import('../app/src/wallet-receive.tsx');
@@ -177,4 +178,22 @@ test('editing the amount keeps a payable invoice and forgets a finished one, so 
  for(const outcome of ['open','accepted'])assert.equal(keptInvoice({amount:1000n,outcome})?.outcome,outcome);
  for(const outcome of ['funding','funded','claimed','lapsed','failed','needs_recovery'])assert.equal(keptInvoice({amount:1000n,outcome}),undefined,outcome);
  assert.equal(needsInvoice(1000n,keptInvoice({amount:1000n,outcome:'claimed'}),undefined),true);
+});
+
+test('asset request QRs carry the asset id and display units, as the Arkade wallet writes them',()=>{
+ const assetId='ee'.repeat(34),asset={assetId,decimals:2};
+ assert.equal(amountQrValue('arkade','tark_example','12.5',asset),'bitcoin:?ark=tark_example&assetid='+assetId+'&amount=12.5');
+ assert.equal(amountQrValue('arkade','tark_example','12.50',asset),'bitcoin:?ark=tark_example&assetid='+assetId+'&amount=12.5');
+ assert.equal(amountQrValue('shielded','shrol_example','12.5',asset),'bitcoin:?shielded=shrol_example&assetid='+assetId+'&amount=12.5');
+ assert.equal(amountQrValue('arkade','tark_example','7',{assetId,decimals:0}),'bitcoin:?ark=tark_example&assetid='+assetId+'&amount=7');
+ for(const amount of ['12.555','1,000','','0'])assert.equal(amountQrValue('arkade','tark_example',amount,asset),undefined,amount);
+});
+
+test('asset request QRs roundtrip through the payment decoder',()=>{
+ const assetId='ab'.repeat(34);
+ for(const [amount,decimals]of [['12.5',2],['0.01',2],['123456789',0],['0.000000000000000001',18]]as const){
+  const uri=amountQrValue('arkade','tark_example',amount,{assetId,decimals})!,target=payTarget(uri);
+  assert.equal(target.amount,undefined);
+  assert.equal(parseAssetAmount(target.asset!.amount!,decimals),parseAssetAmount(amount,decimals));
+ }
 });
