@@ -270,6 +270,7 @@ export async function importLegacySent(wallet:Pick<ShieldedWallet,'account'|'rec
 }
 
 export const WALLET_EXISTS='A wallet already exists in this browser. Reload to open it.';
+export const passkeyUserName=(at:number)=>`Shielded wallet · ${new Date(at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`;
 export function createPageWallet(storage:PageStorage,seed?:PasskeySeed){
  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
  const secret=bytesToHex(seed?.master??crypto.getRandomValues(new Uint8Array(32)));
@@ -279,7 +280,7 @@ export function createPageWallet(storage:PageStorage,seed?:PasskeySeed){
 export async function createPasskeyPageWallet(storage:PageStorage,o:{rpId:string;wordCount:PasskeyWordCount;client?:WebAuthnClient}){
  // Checked before the prompt as well, so a wallet another tab made never costs an orphan passkey.
  if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
- const seed=await createPasskeySeed({rpId:o.rpId,userName:`Shielded wallet · ${new Date().toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`,wordCount:o.wordCount,client:o.client});
+ const seed=await createPasskeySeed({rpId:o.rpId,userName:passkeyUserName(Date.now()),wordCount:o.wordCount,client:o.client});
  try{
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(`${WALLET_EXISTS} You can delete the passkey it made in your passkey settings.`);
   return {secret:createPageWallet(storage,seed),words:seed.words};
@@ -307,12 +308,12 @@ const PASSKEY_STEPS:Record<PasskeyOutcome,string>={
  unavailable:'This device’s passkeys cannot create a wallet key. Create or restore a wallet with a recovery phrase instead.',
  unconfirmed:'The passkey was made but could not be used, so no wallet was created. Create a wallet with a recovery phrase instead.',
  uncounted:'That passkey did not say how many recovery words its wallet has, so no wallet was restored. Restore with your recovery phrase, or with the device that created the passkey.',
- fallback:"This passkey can't make wallet keys on this device.",
+ fallback:'This passkey can’t make wallet keys on this device, so no wallet was created. Create a wallet with a recovery phrase instead.',
 };
 /** Only a cancel offers the passkey again: a retry of the others would make another passkey that fails the same way. */
 export function passkeyNextStep(error:unknown){
- const failure=passkeyFailure(error);
- return failure&&{retry:failure.outcome==='cancelled',message:PASSKEY_STEPS[failure.outcome]+(failure.credentialId?' You can delete the passkey it made in your passkey settings.':'')};
+ const failure=passkeyFailure(error),name=(error as {userName?:unknown})?.userName;
+ return failure&&{retry:failure.outcome==='cancelled',message:PASSKEY_STEPS[failure.outcome]+(failure.credentialId?` You can delete the passkey ${typeof name==='string'?`“${name}”`:'it made'} in your passkey settings.`:'')};
 }
 
 export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number};passkey?:PasskeyRecord}){

@@ -4,9 +4,15 @@ import {base64urlnopad} from '@scure/base';
 import {lockWithHandle,passkeyUserHandle,unlockWithHandle} from '../../packages/protocol/src/passkey.ts';
 import {parseMasterSecret,randomRecoveryPhrase} from '../../packages/protocol/src/wallet-keys.ts';
 import {BORN,CREATED,SECRET,WALLET_EXISTS,type PageStorage} from './shielded-page.ts';
-import {savePasskey} from './passkey-record.ts';
+import {passkeyRecordOf,savePasskey} from './passkey-record.ts';
 
 export const LOCKED='shielded-rollup-wallet-locked-v1';
+export const isWindowsBrowser=()=>(navigator as Navigator&{userAgentData?:{platform?:string}}).userAgentData?.platform==='Windows'||/Windows/.test(navigator.userAgent);
+/** Where Backup reads the words: a stored secret wins over a lock an interrupted restore left behind. */
+export function revealSource(storage:Pick<Storage,'getItem'>):'locked'|'passkey'|'secret'{
+ if(!storage.getItem(SECRET)&&storage.getItem(LOCKED)!==null)return 'locked';
+ return passkeyRecordOf(storage)?.words===12?'passkey':'secret';
+}
 export type LockedRecord={version:1;lock:'handle';credentialId:string;words:12|24;blob:string};
 const B64=/^[A-Za-z0-9_-]{1,4096}$/;
 export function lockedRecordOf(storage:Pick<Storage,'getItem'>):LockedRecord|undefined{

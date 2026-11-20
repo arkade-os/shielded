@@ -2,12 +2,12 @@ import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type CSSPr
 import {createPortal,flushSync} from 'react-dom';
 import {watchPageVisibility} from './page-visibility.ts';
 import {readWalletClipboard} from './wallet-clipboard.ts';
-import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,prfSupport,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
+import {ESPLORA_URL,InMemoryContractRepository,InMemoryWalletRepository,RestArkProvider,RestIndexerProvider,SingleKey,arkTarget,isValidArkAddress,type Activity,type NetworkName,type PaymentHandle,type PaymentRequest,type Wallet} from '@arkade-os/sdk';
 import type {Outcome} from '@arkade-os/swap';
 import {acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import {assetFieldOfId,type Hash} from '../../packages/protocol/src/rollup/notes.ts';
 import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/src/wallet-keys.ts';
-import {passkeyRpId,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
+import {passkeyFailure,passkeyRpId,type PasskeyFallback,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
 import {nativePasskeys} from './native-passkeys.ts';
 import {waitNativePasskeyForeground} from './native-passkey-operation.ts';
 import {createPasskeyRevealOwner} from './passkey-reveal.ts';
@@ -25,8 +25,10 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {createLockedPageWallet,isWindowsBrowser,lockedRecordOf,revealSource,unlockPageWallet} from './locked-wallet.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
+import PasskeyFallbackSheet from './PasskeyFallbackSheet.tsx';
 import WalletEntrance from './WalletEntrance.tsx';
 import WalletSyncStatus from './WalletSyncStatus.tsx';
 import {createWalletOpeningProgress} from './wallet-opening-progress.ts';
@@ -108,8 +110,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [startupError,setStartupError]=useState(''),[startupFailure,setStartupFailure]=useState(''),[refreshError,setRefreshError]=useState(''),[refreshBusy,setRefreshBusy]=useState(''),[feeNotice,setFeeNotice]=useState(''),[feeConfirmed,setFeeConfirmed]=useState(false);
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
- const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
- const [prf,setPrf]=useState<string>(),[passkeyOff,setPasskeyOff]=useState(false),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
+ const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[lockName]=useState(()=>!nativeHost&&revealSource(storage)==='locked'?passkeyUserName(Number(storage.getItem(CREATED))):''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
+ const [passkeyOff,setPasskeyOff]=useState(false),[fallbackName,setFallbackName]=useState(''),fallback=useRef<PasskeyFallback|undefined>(undefined),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
  const phrasePrompt=useRef(createPasskeyRevealOwner()),phraseForeground=useRef(!document.hidden),phraseActive=useRef(true),phraseCurrent=useRef(true);
  // Committed state, never a discarded render, and a layout effect because the reveal reads it in the same tick a click or a publish arrives.
  useLayoutEffect(()=>{phraseCurrent.current=!suspended&&viewActive&&!hidden;},[suspended,viewActive,hidden]);
@@ -164,7 +166,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    closeAbout:()=>setAboutOpen(false),
    closeSecurity:()=>{if(mode!=='background')phrasePrompt.current.cancel();if(mode!=='background'||!phrasePrompt.current.active)setSecurityView(null);setPasskeyPhrase('');setReveal(false);setShowView(false);setShowFull(false);},
  },mode),[]);
- useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;phrasePrompt.current.cancel();sheetOwner.stop();quotes.clear();};},[]);
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;phrasePrompt.current.cancel();sheetOwner.stop();quotes.clear();fallback.current?.userHandle.fill(0);};},[]);
    useEffect(()=>{if(!suspended&&viewActive)return;closeTransient();},[closeTransient,suspended,viewActive]);
    useEffect(()=>watchPageVisibility(visible=>{phraseForeground.current=visible;setPageVisible(visible);if(!visible)closeTransient('background');}),[closeTransient]);
    useEffect(()=>{
@@ -190,14 +192,39 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   try{const fresh=createPageWallet(storage);createdHere.current=true;setSecret(fresh);}
   catch(error){setRestoreError(errorText(error));busyRef.current=false;setBusy(false);}
  };
- useEffect(()=>{if(!nativeHost)void prfSupport().then(setPrf);},[nativeHost]);
  const setupFailed=(error:unknown)=>{const step=passkeyNextStep(error);setRestoreError(step?.message??errorText(error));if(step&&!step.retry)setPasskeyOff(true);};
  const createWithPasskey=async(wordCount:PasskeyWordCount)=>{
   if(busyRef.current||secret)return;
   busyRef.current=true;setBusy(true);setRestoreError('');
   reportStartupStage('Creating private wallet keys');
   try{const made=await createPasskeyPageWallet(storage,{rpId:PASSKEY_RP_ID,wordCount});if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
-  catch(error){if(mounted.current){setupFailed(error);busyRef.current=false;setBusy(false);}}
+  catch(error){
+   const offer=passkeyFailure(error)?.outcome==='fallback'?error as PasskeyFallback:undefined;
+   if(!mounted.current){offer?.userHandle.fill(0);return;}
+   if(offer){fallback.current=offer;setFallbackName(offer.userName);}else setupFailed(error);
+   busyRef.current=false;setBusy(false);
+  }
+ };
+ // The user handle is the lock's key: it stays in this ref, never in state, and is wiped once either choice is made.
+ const continueFallback=async()=>{
+  const offer=fallback.current;
+  if(!offer||busyRef.current)return;
+  busyRef.current=true;setBusy(true);setRestoreError('');
+  try{const made=await createLockedPageWallet(storage,offer);if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
+  catch(error){if(mounted.current){setRestoreError(`${errorText(error)} You can delete the passkey “${offer.userName}” in your passkey settings.`);setPasskeyOff(true);busyRef.current=false;setBusy(false);}}
+  finally{fallback.current=undefined;if(mounted.current)setFallbackName('');}
+ };
+ const cancelFallback=()=>{
+  const offer=fallback.current;
+  if(!offer||busyRef.current)return;
+  fallback.current=undefined;offer.userHandle.fill(0);setFallbackName('');setupFailed(offer);
+ };
+ const unlockWallet=async()=>{
+  if(busyRef.current||secret)return;
+  busyRef.current=true;setBusy(true);setRestoreError('');
+  try{const opened=await unlockPageWallet(storage,{rpId:PASSKEY_RP_ID});if(mounted.current)setSecret(opened.secret);}
+  catch(error){if(mounted.current)setRestoreError(`${passkeyFailure(error)?.outcome==='cancelled'?'The passkey request ended before it finished.':errorText(error)} This wallet unlocks with the passkey “${lockName}”, or with its recovery phrase.`);}
+  finally{if(mounted.current){busyRef.current=false;setBusy(false);}}
  };
  // The wallet needs the pool phase, network and token before creation.
  useEffect(()=>{
@@ -663,8 +690,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   // A return while the view is inactive or suspended has no sync yet; it runs once the effect above installs one.
   if(pageVisible&&!was){if(syncRef.current)void syncRef.current().catch(()=>{});else pendingForeground.current=true;}
  },[pageVisible]);
- const passkeyRecord=useMemo(()=>secret?passkeyRecordOf(storage):undefined,[secret,storage]),phraseWords=passkeyRecord?.words??24;
- const phrase=phraseWords===12?passkeyPhrase:secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
+ const source=useMemo(()=>secret?revealSource(storage):undefined,[secret,storage]),phraseWords=useMemo(()=>(source==='locked'?lockedRecordOf(storage):source&&passkeyRecordOf(storage))?.words??24,[secret,source,storage]);
+ const phrase=phraseWords===12?passkeyPhrase:source==='locked'?passkeyPhrase:secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  useEffect(()=>{if(!reveal&&backedUp)setPasskeyPhrase('');},[reveal,backedUp]);
  const showPhrase=()=>{
   if(!mounted.current||!phraseCurrent.current||document.hidden||!phraseForeground.current||nativeHost&&!phraseActive.current)return;
@@ -680,7 +707,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    const expected=nativeHost?await nativeNetwork.status():undefined;check();
    const foreground=()=>phraseForeground.current&&phraseActive.current&&!document.hidden;
    const before=expected?()=>waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground):undefined;
-   const words=await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
+   const words=revealSource(storage)==='locked'?await unlockPageWallet(storage,{rpId:PASSKEY_RP_ID}).then(opened=>{if(opened.secret!==secret)throw new Error('That passkey does not open this wallet.');return opened.words;}):await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
    if(expected)do{await waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground);}while(!foreground());
    request.publish(foreground,()=>{check();setPasskeyPhrase(words);setReveal(true);});
   })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(errorText(error));}).finally(()=>{request.finish();revealing.current=false;});
@@ -826,7 +853,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
 
   const inactive=hidden||suspended||!viewActive;
-  if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={prf&&prf!=='no'&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined}/></div>;
+  if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={!nativeHost&&typeof PublicKeyCredential!=='undefined'&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined} unlock={lockName&&!secret?{label:lockName,onUnlock:()=>void unlockWallet(),onUsePhrase:()=>setRestoreError('')}:undefined}>{fallbackName&&<PasskeyFallbackSheet platform="browser" windowsWarning={isWindowsBrowser()} passkeyName={fallbackName} busy={busy} onContinue={()=>void continueFallback()} onCancel={cancelFallback}/>}</WalletOnboarding></div>;
   return <WalletEntrance enabled={animateEntrance}><div ref={pageNode} hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive} className={'stock-page'+(docked?' has-dock':'')+(docked&&sheetOpen?' has-sheet':'')+(docked&&sheetOpen&&tab==='activity'?' has-activity':'')}><div className="wallet-pull-refresh" role="status" aria-live="polite" aria-hidden={pullRefresh.distance===0&&!pullRefresh.refreshing}><span><Icon name="reset" size={16}/>{pullRefresh.refreshing?'Syncing wallet…':pullRefresh.ready?'Release to sync':'Pull to sync'}</span></div>{notice&&<WalletBalanceNotice notice={notice} onDismiss={dismissNotice}/>}<div className="wallet-glass-field" aria-hidden="true"><svg viewBox="0 0 640 900" preserveAspectRatio="xMidYMid slice"><defs><pattern id="wallet-contours" width="96" height="96" patternUnits="userSpaceOnUse"><path d="M-24 48Q24 0 72 48T168 48M-24 64Q24 16 72 64T168 64M-24 80Q24 32 72 80T168 80M-24 96Q24 48 72 96T168 96" fill="none" stroke="currentColor" strokeWidth=".6"/></pattern></defs><path d="M320 76Q442 130 542 130V394Q542 610 320 752Q98 610 98 394V130Q198 130 320 76Z" fill="url(#wallet-contours)" stroke="currentColor"/></svg></div><main className="stock-shell"><header className="stock-header"><WalletBrand native={nativeHost} onAbout={()=>setAboutOpen(true)}/><div className="app-header-status">{headerControls}<AppUpdateNotice/>{!headerControls&&<WalletHeaderActions native={nativeHost} onAbout={()=>setAboutOpen(true)}/>}</div></header>
    {nativePending&&<section className="stock-warning" role="status"><span>Some payments have unresolved outcomes. Their inputs stay reserved until this wallet can prove they cannot land, which it rechecks every minute; a dropped status alone is no proof.</span>
     {confirmRelease
