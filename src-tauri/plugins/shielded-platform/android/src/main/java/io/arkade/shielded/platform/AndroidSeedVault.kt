@@ -32,6 +32,8 @@ class AndroidSeedVault(context: Context) {
         return generator.generateKey()
     }
 
+    fun exists() = synchronized(access) { records.contains("seed") }
+
     fun get(): String? = synchronized(access) {
         val encoded = records.getString("seed", null) ?: return@synchronized null
         check(encoded.length <= 128)

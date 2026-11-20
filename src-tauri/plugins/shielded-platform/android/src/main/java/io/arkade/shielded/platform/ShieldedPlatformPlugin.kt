@@ -13,6 +13,7 @@ import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.doOnAttach
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -52,6 +53,7 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     private var updateWorker = Executors.newSingleThreadExecutor()
     private val updater = AndroidUpdater(activity)
     private val vault = AndroidSeedVault(activity)
+    private val lockedVault = AndroidLockedVault(activity)
     private var webview: WebView? = null
     @Volatile private var generation = 0L
     private var destroyed = false
@@ -118,8 +120,8 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
                             if (generation != ticket || destroyed || webview !== source || !trusted()) invoke.reject("Secure wallet storage unavailable")
                             else if (result == null) invoke.resolve() else invoke.resolve(result)
                         }
-                    } catch (_: Exception) {
-                        main.post { invoke.reject("Secure wallet storage unavailable") }
+                    } catch (error: Exception) {
+                        main.post { invoke.reject((error as? LockFailure)?.message ?: "Secure wallet storage unavailable") }
                     }
                 }
             } catch (_: Exception) { invoke.reject("Secure wallet storage unavailable") }
@@ -148,8 +150,38 @@ class ShieldedPlatformPlugin(activity: Activity) : Plugin(activity) {
     @Command
     fun secretClear(invoke: Invoke) = secret(invoke) {
         vault.clear()
+        lockedVault.clear()
         null
     }
+
+    // `host` runs on the main thread; `live` runs on the worker, which must not touch the WebView.
+    private fun locked(invoke: Invoke, operation: (() -> FragmentActivity?, () -> Boolean) -> JSObject?) = secret(invoke) {
+        val ticket = generation
+        operation({ (activeActivity as? FragmentActivity)?.takeIf { generation == ticket && !destroyed && trusted() } }, { generation == ticket })
+    }
+
+    @Command
+    fun lockedSecretCreate(invoke: Invoke) = locked(invoke) { host, live ->
+        val args = invoke.parseArgs(SeedArgs::class.java)
+        try {
+            check(!vault.exists())
+            lockedVault.create(args.value, host, live)
+        } finally { args.value = "" }
+        null
+    }
+
+    @Command
+    fun lockedSecretGet(invoke: Invoke) = locked(invoke) { host, live ->
+        JSObject().put("value", lockedVault.get(host, live) ?: JSONObject.NULL) as JSObject
+    }
+
+    @Command
+    fun vaultKind(invoke: Invoke) = secret(invoke) {
+        JSObject().put("kind", AndroidLockPolicy.vaultKind(vault.exists(), lockedVault.exists()))
+    }
+
+    @Command
+    fun deviceLockAvailable(invoke: Invoke) = secret(invoke) { JSObject().put("available", lockedVault.available()) }
 
     @Command
     fun clipboardText(invoke: Invoke) {

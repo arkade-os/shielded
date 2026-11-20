@@ -203,6 +203,119 @@ async fn secret_clear<R: Runtime>(
     }
 }
 
+#[cfg(target_os = "android")]
+async fn android_vault_request<R: Runtime>(
+    app: &AppHandle<R>,
+    command: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    app.state::<Mobile<R>>()
+        .0
+        .run_mobile_plugin_async(command, payload)
+        .await
+        .map_err(|error| match error.to_string() {
+            code if matches!(code.as_str(), "cancelled" | "lock-gone") => code,
+            _ => UNAVAILABLE.into(),
+        })
+}
+
+#[tauri::command]
+async fn locked_secret_create<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    value: String,
+) -> Result<(), String> {
+    ensure_local(&window)?;
+    let value = Zeroizing::new(value);
+    if !policy::valid_entropy(&value) {
+        return Err("Invalid wallet seed".into());
+    }
+    #[cfg(target_os = "android")]
+    {
+        android_vault_request(
+            &app,
+            "lockedSecretCreate",
+            serde_json::json!({"value": &*value}),
+        )
+        .await
+        .map(|_| ())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err(UNAVAILABLE.into())
+    }
+}
+
+#[tauri::command]
+async fn locked_secret_get<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<Option<String>, String> {
+    ensure_local(&window)?;
+    #[cfg(target_os = "android")]
+    {
+        let response =
+            android_vault_request(&app, "lockedSecretGet", serde_json::json!({})).await?;
+        match response.get("value") {
+            Some(serde_json::Value::Null) => Ok(None),
+            Some(serde_json::Value::String(value)) if policy::valid_entropy(value) => {
+                Ok(Some(value.clone()))
+            }
+            _ => Err(UNAVAILABLE.into()),
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err(UNAVAILABLE.into())
+    }
+}
+
+#[tauri::command]
+async fn vault_kind<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<&'static str, String> {
+    #[cfg(target_os = "android")]
+    {
+        ensure_local(&window)?;
+        let response = android_vault_request(&app, "vaultKind", serde_json::json!({})).await?;
+        let kind = response.get("kind").and_then(serde_json::Value::as_str);
+        ["none", "plain", "locked"]
+            .into_iter()
+            .find(|known| kind == Some(*known))
+            .ok_or_else(|| UNAVAILABLE.into())
+    }
+    // Only Android has a locked vault so far, so elsewhere a stored wallet is the plain seed.
+    #[cfg(not(target_os = "android"))]
+    {
+        let seed = secret_get(app, window).await?.map(Zeroizing::new);
+        Ok(if seed.is_some() { "plain" } else { "none" })
+    }
+}
+
+#[tauri::command]
+async fn device_lock_available<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<bool, String> {
+    ensure_local(&window)?;
+    #[cfg(target_os = "android")]
+    {
+        android_vault_request(&app, "deviceLockAvailable", serde_json::json!({}))
+            .await?
+            .get("available")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| UNAVAILABLE.into())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(false)
+    }
+}
+
 #[tauri::command]
 async fn clipboard_text<R: Runtime>(
     app: AppHandle<R>,
@@ -400,6 +513,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             secret_set,
             secret_create,
             secret_clear,
+            locked_secret_create,
+            locked_secret_get,
+            vault_kind,
+            device_lock_available,
             clipboard_text,
             passkey_create,
             passkey_get,
