@@ -112,6 +112,7 @@ export async function unwrapWalletSecret(o:{rpId:string;credentialId:Uint8Array;
  return open(()=>wrapKey(o),WRAP_VERSION,o.credentialId,o.blob);
 }
 
+/** Permanent recovery constants: another info string or version byte leaves every handle-locked wallet unopenable. */
 const HANDLE_LOCK_VERSION=2,HANDLE_LOCK_INFO=utf8.encode(`${KEY_DOMAIN}:handle-lock:v1`);
 async function handleKey(userHandle:Uint8Array) {
  const material=hkdf(sha256,userHandle,KEY_SALT,HANDLE_LOCK_INFO,32);

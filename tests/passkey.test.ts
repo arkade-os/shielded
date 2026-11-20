@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {hkdf} from '@noble/hashes/hkdf.js';
 import {sha256} from '@noble/hashes/sha2.js';
-import {bytesToHex} from '@noble/hashes/utils.js';
+import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import {DEFAULT_PASSKEY_LABEL,type WebAuthnClient} from '@arkade-os/sdk';
 import {randomRecoveryPhrase,parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {PASSKEY_SEED_SALT,PASSKEY_UNLOCK_SALT,createPasskeySeed,lockWithHandle,unlockWithHandle,passkeyUserHandle,passkeyFailure,passkeyRpId,passkeyUserId,restorePasskeySeed,unwrapWalletSecret,wordCountFromUserHandle,wrapWalletSecret,type PasskeyWordCount} from '../packages/protocol/src/passkey.ts';
@@ -200,6 +201,17 @@ test('a handle lock opens only with its own handle and credential',async()=>{
  const fake=fakeClient(),wrapped=await wrapWalletSecret({rpId:RP,credentialId,secret:words,client:fake.client});
  assert.equal(wrapped[0],1);
  assert.equal(await unwrapWalletSecret({rpId:RP,credentialId,blob:wrapped,client:fake.client}),words);
+});
+
+test('the handle lock format is fixed: this handle, credential and phrase under this IV give this blob',async()=>{
+ const utf8=new TextEncoder(),userHandle=hexToBytes('534b11000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c'),credentialId=hexToBytes('c0c1c2c3c4c5c6c7c8c9cacbcccdcecf');
+ const words='abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+ const blob=hexToBytes('02a0a1a2a3a4a5a6a7a8a9aaab8f075cfa2ce9f359fffe77412870e82da6bdb14c8f52bb79bda0daad22627ce1c51c64d975f91ff839ab9bf5698815dc0bfd146d2b671067c692f10842d02adfabaee417cac39a1a1d9165fe4105f3d83cec7521e31a65bb26256eefb722298b0eb4881d21ac5134bff25b7371');
+ const key=hkdf(sha256,userHandle,utf8.encode('arkade-shielded:master-secret:v1'),utf8.encode('arkade-shielded:wallet-key-derivation:v1:handle-lock:v1'),32);
+ assert.equal(hex(key),'15193fd5bc52ceec80393bfb2a2f8e5a32baeb1b781c48819ac3b0947fb827da');
+ const aes=await crypto.subtle.importKey('raw',key,'AES-GCM',false,['decrypt']);
+ assert.equal(new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:blob.slice(1,13),additionalData:Uint8Array.from([2,...credentialId])},aes,blob.slice(13))),words,'0x02‖iv‖AES-256-GCM under that key, with 0x02‖credential id as associated data');
+ assert.equal(await unlockWithHandle({credentialId,userHandle,blob}),words);
 });
 
 test('passkeyUserHandle refuses another credential and a missing handle',async()=>{
