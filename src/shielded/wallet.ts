@@ -1,4 +1,4 @@
-import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkAssetRail,arkRail,isVtxoSpent,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,ReadonlyWallet,VtxoScript,Wallet,arkRail,isVtxoSpent,onchainRail,walletFeeSource,type Activity,type ArkTransaction,type ExtendedVirtualCoin,type IWallet,type Identity,type NormalizedExtendedVirtualCoin,type PaymentHandle,type WalletConfig} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {Script} from '@scure/btc-signer';
 import {EpochAccount,type EpochAnchorPlan,type EpochHistoryEntry,type EpochOwnedNote,type EpochSpendRequest} from '../../packages/protocol/src/rollup/epoch-account.ts';
@@ -25,7 +25,7 @@ import type {LightningRepository} from './lightning-repository.ts';
 import {lightningRails} from './lightning.ts';
 import {feeRefused,sameLightningSpendRequest,submitLightningSpend,validateLightningSpend,type LightningSpendRecord,type LightningSpendStore} from './lightning-spend.ts';
 import {DUST,depositFeeFor,pickNote,planFeeOf,poolApiOf,rejected,shieldPlan,shieldableWithFee,type ArkCoin,type Groth16Proof,type PoolApi,type RollupPoolStatus,type ShieldPlan,type SpendStatus} from './pool.ts';
-import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail} from './rails.ts';
+import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedWithdrawRail,unshieldedAssetRail} from './rails.ts';
 import type {SentRecord,ShieldedNoteRepository,ShieldedSnapshot} from './repository.ts';
 import {randomSubmissionId,submitAll,type SubmitDeps,type SubmitMember} from './submit.ts';
 import {PRIVATE_SUBMIT_JITTER_MS,cacheVtxoSync,isPrivatePoolApi,isSealedFetch,markPrivatePoolApi,markPrivatePoolPage,privateInterval,privatePoolPage} from './network-privacy.ts';
@@ -252,7 +252,7 @@ export class ShieldedWallet extends Wallet {
   const feeInfo=walletFeeSource(this);
   const router=new PaymentRouter({wallet:this,prefs:{priority:SHIELDED_PRIORITY}})
    .use(shieldedRail(this)).use(shieldedWithdrawRail(this))
-   .use(arkRail()).use(arkAssetRail()).use(poolFundedExit(this,onchainRail({feeInfo}),feeInfo));
+   .use(arkRail()).use(unshieldedAssetRail(this)).use(poolFundedExit(this,onchainRail({feeInfo}),feeInfo));
   for(const rail of this.swaps?lightningRails(this,this.swaps,this.lnurlFetch):[])router.use(rail);
   return router;
  }
