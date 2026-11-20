@@ -446,7 +446,7 @@ export class ShieldedWallet extends Wallet {
  /** A pull's sync: in private mode the status read decides first, as in tick(), so an unchanged head skips the epoch re-read. */
  async syncIfMoved():Promise<number>{
   if(this.networkPrivacy&&!this.offline){
-   if(await this.refreshPoolStatus())this.changed();
+   await this.refreshPoolStatus();this.changed();
    if(this.pool.status.pool?.batches===this.account.batchCount)return 0;
   }
   return this.sync();
