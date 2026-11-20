@@ -41,11 +41,12 @@ export async function createLockedPageWallet(storage:PageStorage,o:{rpId:string;
  }finally{o.userHandle.fill(0);}
 }
 export async function unlockPageWallet(storage:Pick<Storage,'getItem'>,o:{rpId:string;client?:WebAuthnClient}){
- const record=lockedRecordOf(storage);
+ const record=lockedRecordOf(storage),raw=storage.getItem(LOCKED);
  if(!record)throw new Error('This browser has no locked wallet.');
  const credentialId=base64urlnopad.decode(record.credentialId),userHandle=await passkeyUserHandle({rpId:o.rpId,credentialId,client:o.client});
  try{
   const words=await unlockWithHandle({credentialId,userHandle,blob:base64urlnopad.decode(record.blob)});
+  if(storage.getItem(SECRET)||storage.getItem(LOCKED)!==raw)throw new Error('This wallet changed in another tab. Reload to continue.');
   return {secret:secretOf(words),words};
  }finally{userHandle.fill(0);}
 }

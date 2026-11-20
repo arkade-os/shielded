@@ -292,7 +292,7 @@ export async function restorePasskeyPageWallet(o:Parameters<typeof restorePageWa
  const seed=await restorePasskeySeed({rpId:o.rpId,client:o.client});
  try{
   if(o.storage.getItem(SECRET)||lockedRecordOf(o.storage))throw new Error(WALLET_EXISTS);
-  await restorePageWallet(bytesToHex(seed.master),{...o,passkey:passkeyRecord(seed)});
+  await restorePageWallet(bytesToHex(seed.master),{...o,passkey:passkeyRecord(seed),refuseExisting:true});
  }finally{seed.master.fill(0);}
 }
 /** Twelve words cannot be read back from their stretched secret, so they come from the wallet's own passkey again, checked against that secret. */
@@ -324,12 +324,13 @@ export function passkeyFailureView(error:unknown,mode:'create'|'restore'){
  return {message:step?.message,disablePasskeys:mode==='create'&&!!step&&!step.retry};
 }
 
-export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number};passkey?:PasskeyRecord}){
+export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number};passkey?:PasskeyRecord;refuseExisting?:boolean}){
  const parsed=bytesToHex(parseMasterSecret(phrase));
- o.cache.close();await o.stop();await o.cache.drain();
+ const guard=()=>{if(o.refuseExisting&&(o.storage.getItem(SECRET)||lockedRecordOf(o.storage)))throw new Error(WALLET_EXISTS);};
+ o.cache.close();await o.stop();await o.cache.drain();guard();
  const nativeRestore=restoreNativeStorage(o.storage,parsed,o.born,o.passkey);
  if(nativeRestore){await nativeRestore;await o.cache.repository.clear();o.reload();return;}
- await o.cache.repository.clear();
+ await o.cache.repository.clear();guard();
  savePasskey(o.storage,o.passkey);o.storage.setItem(SECRET,parsed);o.storage.removeItem(LOCKED);
  for(let i=o.storage.length-1;i>=0;i--){const key=o.storage.key(i);if(key?.startsWith(BORN))o.storage.removeItem(key);}
  if(o.born){o.storage.setItem(`${BORN}:${o.born.token}`,String(o.born.batches));o.storage.setItem(CREATED,String(o.born.at));}else o.storage.removeItem(CREATED);

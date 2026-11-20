@@ -226,6 +226,31 @@ test('unlocking with a passkey that returns another handle changes nothing in st
  await assert.rejects(unlockPageWallet(storageOf(),{rpId:RP}),/locked/i);
 });
 
+test('an unlock refuses when another tab changed the wallet during the passkey prompt',async()=>{
+ for(const change of [(s:ReturnType<typeof storageOf>)=>s.setItem(SECRET,'ab'.repeat(32)),(s:ReturnType<typeof storageOf>)=>s.setItem(LOCKED,'{}'),(s:ReturnType<typeof storageOf>)=>s.removeItem(LOCKED)]){
+  const {storage,id,handle}=await lockedWallet(),client=handleClient(id,handle),get=client.get.bind(client);
+  let after:[string,string][]=[];
+  client.get=async options=>{const credential=await get(options);change(storage);after=[...storage.rows];return credential;};
+  await assert.rejects(unlockPageWallet(storage,{rpId:RP,client}),/changed in another tab/);
+  assert.deepEqual([...storage.rows],after,'unlock wrote nothing');
+ }
+});
+
+test('a passkey restore never deletes a lock another tab saved while it worked, but a phrase restore still replaces it',async()=>{
+ const synced=syncedPasskeys();await createPasskeyPageWallet(storageOf(),{rpId:RP,wordCount:12,client:synced.client()});
+ for(const stage of ['stop','clear'] as const){
+  const storage=storageOf(),other=JSON.stringify({version:1,lock:'handle',credentialId:'AA',words:12,blob:'AA'}),plant=()=>storage.setItem(LOCKED,other);
+  const options=restoreInto(storage,[]);
+  if(stage==='stop')options.stop=async()=>plant();
+  else{const clear=options.cache.repository.clear.bind(options.cache.repository);options.cache.repository.clear=async()=>{await clear();plant();};}
+  await assert.rejects(restorePasskeyPageWallet({...options,rpId:RP,client:synced.client()}),/already exists/);
+  assert.equal(storage.getItem(LOCKED),other);assert.equal(storage.getItem(SECRET),null);
+ }
+ const storage=storageOf(),options=restoreInto(storage,[]);options.stop=async()=>storage.setItem(LOCKED,'{}');
+ await restorePageWallet('ef'.repeat(32),options);
+ assert.equal(storage.getItem(LOCKED),null);assert.equal(storage.getItem(SECRET),'ef'.repeat(32));
+});
+
 /** A passkey with PRF off that keeps the user id it was made with and, as WebAuthn allows, returns it only to an assertion with no allow list. */
 function noPrfPasskey(){
  const asked:PublicKeyCredentialRequestOptions[]=[],given:Uint8Array[]=[];let made:{id:Uint8Array;handle:Uint8Array}|undefined;
