@@ -235,6 +235,7 @@ test('the Home list names every held asset with its kind and the Unverified mark
 test('no asset amount on the page skips the formatter',()=>{
  const wallet=walletPage();
  for(const raw of [/units of \$\{assetName/,/\} units<\/b>/,/const assetName=/,/sats\(n\.amount\)\} units/,/sats\(a\.units\)/])assert.doesNotMatch(wallet,raw,String(raw));
+ assert.match(wallet,/<span>\{assetText\(n\.amount,id,metadata\?\.get\(id\)\)\}<\/span>[^\n]*?<code>\{short\(id\)\}<\/code><\/div>\)\)\}/,'a note row keeps the asset id beside its amount');
  const history=/const historyItems=rows\.map\(item=>\{([\s\S]*?)const historyContent=/.exec(wallet)?.[1]??'',snapshot=/onResumeSnapshot\(\{([\s\S]*?)\}\)\}\);/.exec(wallet)?.[1]??'';
  for(const body of [history,snapshot])assert.match(body,/assetText\(/);
  assert.ok(wallet.includes('const assetLabel=(id:string,amount:bigint)=>assetText(amount,id,metadata?.get(id));'));

@@ -21,6 +21,18 @@ test('a ticker shows only as letters, digits, dots and dashes, and a name loses 
  assert.equal(meta({name:'  '}).name,undefined);
 });
 
+test('a ticker or name that passes for a bitcoin unit is dropped, so the id title and the mark show instead',()=>{
+ for(const t of ['sat','sats','msat','msats','btc','xbt','mbtc','bit','bits','bitcoin','satoshi','satoshis','BTC','B.T.C','s.a.t.s','Sats-']){
+  const m=assetMetaOf({ticker:t});
+  assert.equal(m.ticker,undefined,t);
+  assert.equal(assetTitle(id,m),'Asset 1e291e28…0000',t);
+  assert.equal(assetText(500_000n,id,m),'500,000 units of asset 1e291e28…0000 · Unverified',t);
+ }
+ for(const n of ['Bitcoin',' B i t c o i n ','BTC!','₿','Ｂｉｔｃｏｉｎ','Bitcoin'+' '.repeat(25)+'x'])assert.equal(meta({name:n}).name,undefined,JSON.stringify(n));
+ assert.equal(assetTitle(id,meta(tether)),'Tether USD (USDT)');
+ assert.deepEqual(meta({name:'₿ Tether $USD',ticker:'USDT'}),{name:'Tether USD',ticker:'USDT',decimals:6},'a kept name loses its currency signs');
+});
+
 test('amounts format with their decimals, grouped for display and plain for links',()=>{
  assert.equal(formatAssetAmount(1_250_000n,6),'1.25');
  assert.equal(formatAssetAmount(1_000_000n,6),'1');
