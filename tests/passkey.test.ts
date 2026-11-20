@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {DEFAULT_PASSKEY_LABEL,type WebAuthnClient} from '@arkade-os/sdk';
-import {PASSKEY_SEED_SALT,PASSKEY_UNLOCK_SALT,createPasskeySeed,passkeyFailure,passkeyRpId,passkeyUserId,restorePasskeySeed,unwrapWalletSecret,wordCountFromUserHandle,wrapWalletSecret,type PasskeyWordCount} from '../packages/protocol/src/passkey.ts';
+import {randomRecoveryPhrase,parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
+import {PASSKEY_SEED_SALT,PASSKEY_UNLOCK_SALT,createPasskeySeed,lockWithHandle,unlockWithHandle,passkeyUserHandle,passkeyFailure,passkeyRpId,passkeyUserId,restorePasskeySeed,unwrapWalletSecret,wordCountFromUserHandle,wrapWalletSecret,type PasskeyWordCount} from '../packages/protocol/src/passkey.ts';
 
 const RP='shielded.mutinynet.arkade.sh';
 const hex=(value:Uint8Array)=>bytesToHex(value);
@@ -161,4 +162,64 @@ test('each passkey failure the SDK raises maps to one outcome the app can act on
  assert.equal(passkeyFailure(unconfirmed)?.outcome,'unconfirmed');
  assert.equal(passkeyFailure(unconfirmed)?.credentialId?.length,16);
  for(const other of [new Error('offline'),'nope',null,{name:'NotAllowedError'}])assert.equal(passkeyFailure(other),undefined);
+});
+
+test('create falls back only for an unsupported PRF failure',async()=>{
+ const noPrf=(enabled:boolean|undefined):WebAuthnClient=>({
+  async create(o){const id=new Uint8Array(16).fill(7);return {id:'x',type:'public-key',rawId:id,response:{userHandle:view(o.publicKey!.user.id)},getClientExtensionResults:()=>enabled===undefined?{}:{prf:{enabled}}} as unknown as Credential;},
+  async get(){return {id:'x',type:'public-key',rawId:new Uint8Array(16).fill(7),response:{userHandle:null},getClientExtensionResults:()=>({prf:{}})} as unknown as Credential;},
+ });
+ const fallback=await caught(()=>createPasskeySeed({rpId:RP,userName:'Me',client:noPrf(false)})) as Error&{userHandle:Uint8Array;userName:string;credentialId:Uint8Array;wordCount:number};
+ assert.equal(fallback.name,'PasskeyFallback');
+ assert.equal(fallback.message,"This passkey can't make wallet keys on this device.");
+ assert.equal(fallback.userHandle.length,32);
+ assert.deepEqual([...fallback.userHandle.slice(0,2)],[0x53,0x4b]);
+ assert.equal(fallback.userName,'Me');
+ assert.equal(fallback.wordCount,12);
+ assert.equal(fallback.credentialId.length,16);
+ assert.equal((await caught(()=>createPasskeySeed({rpId:RP,userName:'Me',client:noPrf(undefined)}))as Error).name,'PrfUnavailable');
+ assert.equal((await caught(()=>createPasskeySeed({rpId:RP,userName:'Me',client:noPrf(true)}))as Error).name,'PrfUnavailable');
+});
+
+test('passkeyFailure maps PasskeyFallback to fallback with its credential id',()=>{
+ const credentialId=new Uint8Array([1,2,3]);
+ assert.deepEqual(passkeyFailure(Object.assign(new Error('x'),{name:'PasskeyFallback',credentialId})),{outcome:'fallback',credentialId});
+});
+
+test('a handle lock opens only with its own handle and credential',async()=>{
+ const credentialId=new Uint8Array(16).fill(1),userHandle=passkeyUserId(12),words=randomRecoveryPhrase(12);
+ const blob=await lockWithHandle({credentialId,userHandle,words});
+ assert.equal(blob[0],2);
+ assert.equal(await unlockWithHandle({credentialId,userHandle,blob}),words);
+ const flipped=userHandle.slice();flipped[10]^=1;
+ await assert.rejects(unlockWithHandle({credentialId,userHandle:flipped,blob}));
+ await assert.rejects(unlockWithHandle({credentialId:new Uint8Array(16).fill(2),userHandle,blob}));
+ const old=blob.slice();old[0]=1;
+ await assert.rejects(unlockWithHandle({credentialId,userHandle,blob:old}),/not one this app wrote/);
+ const fake=fakeClient(),wrapped=await wrapWalletSecret({rpId:RP,credentialId,secret:words,client:fake.client});
+ assert.equal(wrapped[0],1);
+ assert.equal(await unwrapWalletSecret({rpId:RP,credentialId,blob:wrapped,client:fake.client}),words);
+});
+
+test('passkeyUserHandle refuses another credential and a missing handle',async()=>{
+ const credentialId=new Uint8Array(16).fill(1),handle=passkeyUserId(24);
+ const getting=(rawId:Uint8Array,userHandle:Uint8Array|null|'deny'):WebAuthnClient=>({
+  async create(){throw new Error('unused');},
+  async get(){
+   if(userHandle==='deny')return dismissed();
+   return {id:'x',type:'public-key',rawId,response:{userHandle},getClientExtensionResults:()=>({})} as unknown as Credential;
+  },
+ });
+ assert.deepEqual(await passkeyUserHandle({rpId:RP,credentialId,client:getting(credentialId,handle)}),handle);
+ await assert.rejects(passkeyUserHandle({rpId:RP,credentialId,client:getting(new Uint8Array(16).fill(9),handle)}));
+ assert.equal((await caught(()=>passkeyUserHandle({rpId:RP,credentialId,client:getting(credentialId,null)}))as Error).name,'PasskeyHandleMissing');
+ assert.equal((await caught(()=>passkeyUserHandle({rpId:RP,credentialId,client:getting(credentialId,'deny')}))as Error).name,'PasskeyCancelled');
+});
+
+test('randomRecoveryPhrase gives 12 or 24 valid words',()=>{
+ for(const n of [12,24] as const){
+  const words=randomRecoveryPhrase(n);
+  assert.equal(words.split(' ').length,n);
+  assert.equal(parseMasterSecret(words).length,32);
+ }
 });

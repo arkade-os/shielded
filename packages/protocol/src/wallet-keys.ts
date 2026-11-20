@@ -35,6 +35,9 @@ export const recoveryPhraseOf=(masterSecret:Uint8Array|string)=>{
  return entropyToMnemonic(typeof masterSecret==='string'?phraseEntropy(masterSecret)??parseMasterSecret(masterSecret):masterSecret,wordlist);
 };
 
+/** A fresh random recovery phrase of 12 or 24 words. */
+export const randomRecoveryPhrase=(words:12|24):string=>entropyToMnemonic(crypto.getRandomValues(new Uint8Array(words===12?16:32)),wordlist);
+
 function scalar(master:Uint8Array,network:string,purpose:string,order:bigint):bigint {
  if(!/^[a-z0-9][a-z0-9.-]{0,62}$/.test(network))throw new Error('Invalid wallet network label.');
  for(let counter=0;counter<4096;counter++){
