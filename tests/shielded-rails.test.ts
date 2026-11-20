@@ -7,7 +7,7 @@ import {buildPoseidon} from 'circomlibjs';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {lightningRails,lnurlShieldedRail} from '../src/shielded/lightning.ts';
-import {ASSET_CARRIER_SHORT,SHIELDED_PRIORITY,assetCarrierShortfall,poolFundedExit,shieldedRail,shieldedTargetOf,shieldedWithdrawRail,unshieldedAssetRail} from '../src/shielded/rails.ts';
+import {ASSET_CARRIER_SHORT,ASSET_CARRIER_SHORT_BARE,SHIELDED_PRIORITY,assetCarrierShortfall,poolFundedExit,shieldedRail,shieldedTargetOf,shieldedWithdrawRail,unshieldedAssetRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
@@ -17,7 +17,7 @@ const POOL='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mc
 // A second real address under the same operator key, so the checksum holds where a hand-edited one would not.
 const decoded=ArkAddress.decode(POOL);
 const ELSEWHERE=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();
-const ASSET='ee'.repeat(34);
+const ASSET='ee'.repeat(34),OTHER='ff'.repeat(34);
 
 const paid:{to:string;amount:bigint;asset?:string}[]=[],exited:{to:string;amount:bigint;opts:unknown}[]=[],sent:unknown[]=[],reads:unknown[]=[];
 const fake=(o:{canWithdraw?:boolean|(()=>never);max?:bigint|(()=>bigint);restore?:()=>Promise<void>;coins?:unknown[]}={})=>({
@@ -222,7 +222,7 @@ test('explicit invalid URI carriers are rejected unless a valid request amount o
 });
 
 test("the carrier shortfall follows the SDK's own coin choice",()=>{
- const OTHER='ff'.repeat(34),nine=coin(9n);
+ const nine=coin(9n);
  const rows:[string,Parameters<typeof assetCarrierShortfall>[0],bigint,number,number][]=[
   ['all 9 units',[nine],9n,330,0],
   ['5 units',[nine],5n,330,330],
@@ -249,6 +249,13 @@ test('an unlisted asset to an Arkade address quotes ark-asset, and a partial sen
  assert.deepEqual(sent,[]);
  await (await whole.send()).settled();
  assert.deepEqual(sent,[{address:ELSEWHERE,amount:330,assets:[{assetId:ASSET,amount:9n}]}],'only the whole send reaches wallet.send');
+});
+
+test('the refusal advises sending all of the asset only when that send would pass',async()=>{
+ const refusal=(coins:unknown[],amount:bigint)=>{const wallet=fake({coins});return unshieldedAssetRail(wallet).quote({raw:ELSEWHERE,assets:[{assetId:ASSET,amount}]},ctx(wallet));};
+ await assert.rejects(refusal([coin(9n)],5n),{message:ASSET_CARRIER_SHORT},'all 9 units at 330 sats would pass');
+ await assert.rejects(refusal([{value:330,assets:[{assetId:ASSET,amount:4n},{assetId:OTHER,amount:1n}]}],4n),{message:ASSET_CARRIER_SHORT_BARE},'sending all of either asset is refused too');
+ await assert.rejects(refusal([coin(9n,100)],5n),{message:ASSET_CARRIER_SHORT_BARE},'a lone sub-dust coin cannot carry even all of it');
 });
 
 test('an asset held in the pool and on Arkade withdraws from the pool first, and spends Arkade coins only when no note covers it',async()=>{
