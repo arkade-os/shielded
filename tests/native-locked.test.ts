@@ -5,12 +5,15 @@ import {test} from 'node:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {bytesToHex} from '@noble/hashes/utils.js';
+import {base64urlnopad} from '@scure/base';
 import {invoke} from '@tauri-apps/api/core';
+import {createPasskeySeed,type PasskeyFallback} from '../packages/protocol/src/passkey.ts';
 import {parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
+import {nativePasskeys} from '../app/src/native-passkeys.ts';
 import {commitNativeSetup} from '../app/src/native-passkey-operation.ts';
 import {NATIVE_SETUP,nativeLockOf,pendingNativeSetup,reconcileNativeSetup} from '../app/src/native-setup-journal.ts';
 import {PASSKEY} from '../app/src/passkey-record.ts';
-import {passkeyFailureView} from '../app/src/shielded-page.ts';
+import {passkeyFailureView,passkeyUserName} from '../app/src/shielded-page.ts';
 import {deviceLockFallback,lockedPhrase,lockedReadBack,lockedSecretCache,lockedSecretCreate,masterOfEntropy,newLockedSecret,readNativeSecret,restoreOverLock} from '../app/src/native-locked.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
@@ -133,6 +136,16 @@ test('no device lock means no fallback',async()=>{
  assert.match(native,/const lockOffer=restore\|\|offer\?undefined:await deviceLockFallback\(cause\);/);
  assert.match(native,/passkeyFailureView\(cause,restore\?'restore':'create'\)/);
  assert.match(native,/\{setup&&fallbackName&&<PasskeyFallbackSheet platform=\{LOCK_PLATFORM\} windowsWarning=\{false\}/);
+});
+
+test('a native passkey that reports PRF off at creation reaches the device-lock offer',async()=>{
+ const calls:string[]=[],id=base64urlnopad.encode(Uint8Array.of(4,5,6));
+ const client=nativePasskeys(async command=>{calls.push(command);return JSON.stringify({id,rawId:id,type:'public-key',clientExtensionResults:{prf:{enabled:false}}});});
+ const offer=await createPasskeySeed({rpId:'shielded.mutinynet.arkade.sh',userName:passkeyUserName(77),createdAt:77,wordCount:24,client}).then(()=>assert.fail('a wallet was made'),(cause:unknown)=>cause as PasskeyFallback);
+ assert.equal(offer.name,'PasskeyFallback');assert.equal(offer.createdAt,77);assert.equal(offer.wordCount,24);assert.equal(offer.userName,passkeyUserName(77));
+ assert.deepEqual([...offer.credentialId],[4,5,6]);assert.equal(offer.userHandle.length,32);
+ assert.deepEqual(calls,['plugin:shielded-platform|passkey_create'],'no confirming prompt for a passkey that said no');
+ use();assert.equal(await deviceLockFallback(offer),offer);assert.ok(offer.userHandle.every(byte=>byte===0));
 });
 
 test('lock-gone leads to the recovery-phrase way out',async()=>{
