@@ -25,7 +25,7 @@ import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,cla
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
-import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,offersPasskeys,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
+import {BORN,CREATED,SECRET,activityReceived,createPageWallet,createPasskeyPageWallet,disposeAfterPageReads,historyDirection,errorText,importLegacySent,openPageWallet,pageActions,pageActivityHistory,pageActivityNotice,pageCache,pageClose,pageReadErrors,pageRefresh,pageQuoteFunds,pageQuoteRoute,pageQuotes,pageSheet,offersPasskeys,passkeyFailureView,passkeyRecordOf,passkeyUserName,passkeyWords,renewPageCoins,restorePageWallet,restorePasskeyPageWallet,retryPageRead,startPageLightning,type ActivityNotice,type ActivitySeen,type PageLightning} from './shielded-page.ts';
 import {createLockedPageWallet,isWindowsBrowser,lockedRecordOf,revealSource,unlockPageWallet} from './locked-wallet.ts';
 import WalletOnboarding from './WalletOnboarding.tsx';
 import PasskeyFallbackSheet from './PasskeyFallbackSheet.tsx';
@@ -193,7 +193,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   catch(error){setRestoreError(errorText(error));busyRef.current=false;setBusy(false);}
  };
  useEffect(()=>{if(!nativeHost)void prfSupport().then(setPrf);},[nativeHost]);
- const setupFailed=(error:unknown)=>{const step=passkeyNextStep(error);setRestoreError(step?.message??errorText(error));if(step&&!step.retry)setPasskeyOff(true);};
+ const setupFailed=(error:unknown,mode:'create'|'restore'='create')=>{const view=passkeyFailureView(error,mode);setRestoreError(view.message??errorText(error));if(view.disablePasskeys)setPasskeyOff(true);};
  const createWithPasskey=async(wordCount:PasskeyWordCount)=>{
   if(busyRef.current||secret)return;
   busyRef.current=true;setBusy(true);setRestoreError('');

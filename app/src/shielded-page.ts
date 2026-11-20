@@ -312,10 +312,16 @@ const PASSKEY_STEPS:Record<PasskeyOutcome,string>={
  uncounted:'That passkey did not say how many recovery words its wallet has, so no wallet was restored. Restore with your recovery phrase, or with the device that created the passkey.',
  fallback:'This passkey can’t make wallet keys on this device, so no wallet was created. Create a wallet with a recovery phrase instead.',
 };
+const RESTORE_UNAVAILABLE='This passkey can’t make wallet keys on this device. If its wallet was made on another device without passkey keys, only that wallet’s recovery phrase can restore it.';
 /** Only a cancel offers the passkey again: a retry of the others would make another passkey that fails the same way. */
-export function passkeyNextStep(error:unknown){
+export function passkeyNextStep(error:unknown,mode:'create'|'restore'='create'){
  const failure=passkeyFailure(error),name=(error as {userName?:unknown})?.userName;
- return failure&&{retry:failure.outcome==='cancelled',message:PASSKEY_STEPS[failure.outcome]+(failure.credentialId?` You can delete the passkey ${typeof name==='string'?`“${name}”`:'it made'} in your passkey settings.`:'')};
+ return failure&&{retry:failure.outcome==='cancelled',message:(mode==='restore'&&failure.outcome==='unavailable'?RESTORE_UNAVAILABLE:PASSKEY_STEPS[failure.outcome])+(failure.credentialId?` You can delete the passkey ${typeof name==='string'?`“${name}”`:'it made'} in your passkey settings.`:'')};
+}
+/** A failed restore never makes passkeys unavailable: the user can still create one. */
+export function passkeyFailureView(error:unknown,mode:'create'|'restore'){
+ const step=passkeyNextStep(error,mode);
+ return {message:step?.message,disablePasskeys:mode==='create'&&!!step&&!step.retry};
 }
 
 export async function restorePageWallet(phrase:string,o:{cache:ReturnType<typeof pageCache>;storage:PageStorage;stop:()=>Promise<void>;reload:()=>void;born?:{token:string;batches:number;at:number};passkey?:PasskeyRecord}){

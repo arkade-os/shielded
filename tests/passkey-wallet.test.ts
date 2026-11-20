@@ -10,7 +10,7 @@ import {PASSKEY_SEED_SALT,type PasskeyFallback,type PasskeyWordCount} from '../p
 import {parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
 import {LOCKED,createLockedPageWallet,lockedRecordOf,unlockPageWallet} from '../app/src/locked-wallet.ts';
-import {BORN,CREATED,PASSKEY,SECRET,createPageWallet,createPasskeyPageWallet,pageCache,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,restorePageWallet,restorePasskeyPageWallet} from '../app/src/shielded-page.ts';
+import {BORN,CREATED,PASSKEY,SECRET,createPageWallet,createPasskeyPageWallet,pageCache,passkeyFailureView,passkeyNextStep,passkeyRecordOf,passkeyUserName,passkeyWords,restorePageWallet,restorePasskeyPageWallet} from '../app/src/shielded-page.ts';
 import {WalletBackupCard} from '../app/src/WalletSecurityMenu.tsx';
 
 const RP='shielded.mutinynet.arkade.sh';
@@ -247,4 +247,16 @@ test('a locked create writes its dates before the lock, so a torn write leaves n
  await assert.rejects(createLockedPageWallet(storage,{credentialId:new Uint8Array(16).fill(1),userHandle:handle,wordCount:12,created:1234}),/quota/);
  assert.deepEqual([storage.getItem(BORN),storage.getItem(CREATED),storage.getItem(LOCKED),storage.getItem(SECRET)],['new','1234',null,null]);
  assert.ok(handle.every(byte=>byte===0));
+});
+
+test('a no-PRF passkey on restore names the recovery phrase as the only way back, and never turns passkeys off',()=>{
+ const named=(name:string)=>Object.assign(new Error('x'),{name});
+ const unavailable=named('PrfUnavailable');
+ assert.match(passkeyNextStep(unavailable,'restore')!.message,/only that wallet’s recovery phrase can restore it/);
+ assert.match(passkeyNextStep(unavailable)!.message,/Create or restore a wallet with a recovery phrase/,'create text is unchanged');
+ assert.deepEqual(passkeyFailureView(unavailable,'restore'),{message:passkeyNextStep(unavailable,'restore')!.message,disablePasskeys:false});
+ assert.equal(passkeyFailureView(unavailable,'create').disablePasskeys,true);
+ assert.equal(passkeyFailureView(named('PasskeyUnconfirmed'),'create').disablePasskeys,true);
+ assert.equal(passkeyFailureView(named('PasskeyCancelled'),'create').disablePasskeys,false);
+ assert.equal(passkeyFailureView(new Error('offline'),'restore').message,undefined);
 });
