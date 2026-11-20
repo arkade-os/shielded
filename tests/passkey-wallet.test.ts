@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -259,4 +260,10 @@ test('a no-PRF passkey on restore names the recovery phrase as the only way back
  assert.equal(passkeyFailureView(named('PasskeyUnconfirmed'),'create').disablePasskeys,true);
  assert.equal(passkeyFailureView(named('PasskeyCancelled'),'create').disablePasskeys,false);
  assert.equal(passkeyFailureView(new Error('offline'),'restore').message,undefined);
+});
+
+test('the restore call sites pass the restore mode',()=>{
+ const src=(f:string)=>readFileSync(new URL(`../app/src/${f}`,import.meta.url),'utf8');
+ assert.match(src('RollupWallet.tsx'),/catch\(error\)\{if\(mounted\.current\)setupFailed\(error,'restore'\);\}/);
+ assert.match(src('NativeWallet.tsx'),/passkeyFailureView\(cause,restore\?'restore':'create'\)/);
 });

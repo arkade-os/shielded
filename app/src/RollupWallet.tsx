@@ -193,7 +193,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   catch(error){setRestoreError(errorText(error));busyRef.current=false;setBusy(false);}
  };
  useEffect(()=>{if(!nativeHost)void prfSupport().then(setPrf);},[nativeHost]);
- const setupFailed=(error:unknown,mode:'create'|'restore'='create')=>{const view=passkeyFailureView(error,mode);setRestoreError(view.message??errorText(error));if(view.disablePasskeys)setPasskeyOff(true);};
+ const setupFailed=(error:unknown,mode:'create'|'restore')=>{const view=passkeyFailureView(error,mode);setRestoreError(view.message??errorText(error));if(view.disablePasskeys)setPasskeyOff(true);};
  const createWithPasskey=async(wordCount:PasskeyWordCount)=>{
   if(busyRef.current||secret)return;
   busyRef.current=true;setBusy(true);setRestoreError('');
@@ -202,7 +202,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   catch(error){
    const offer=passkeyFailure(error)?.outcome==='fallback'?error as PasskeyFallback:undefined;
    if(!mounted.current){offer?.userHandle.fill(0);return;}
-   if(offer){fallback.current=offer;setFallbackName(offer.userName);}else setupFailed(error);
+   if(offer){fallback.current=offer;setFallbackName(offer.userName);}else setupFailed(error,'create');
    busyRef.current=false;setBusy(false);
   }
  };
@@ -218,7 +218,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const cancelFallback=()=>{
   const offer=fallback.current;
   if(!offer||busyRef.current)return;
-  fallback.current=undefined;offer.userHandle.fill(0);setFallbackName('');setupFailed(offer);
+  fallback.current=undefined;offer.userHandle.fill(0);setFallbackName('');setupFailed(offer,'create');
  };
  const unlockWallet=async()=>{
   if(busyRef.current||secret)return;
@@ -332,7 +332,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     await Promise.all([...sessions.current].map(close=>close()));setWallet(undefined);setEarly(undefined);
    }};
    await (withPasskey?restorePasskeyPageWallet({...options,rpId:PASSKEY_RP_ID}):restorePageWallet(restore,options));
-  }catch(error){if(mounted.current)setupFailed(error);}
+  }catch(error){if(mounted.current)setupFailed(error,'restore');}
   finally{
    if(!restoring.current){
     restoreRequested.current=false;
