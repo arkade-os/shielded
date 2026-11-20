@@ -47,7 +47,7 @@ const shortId=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 
 export function assetTitle(assetId:string,meta?:AssetMeta):string{
  if(meta?.name)return meta.ticker?`${meta.name} (${meta.ticker})`:meta.name;
- return meta?.ticker??`Asset ${shortId(assetId)}`;
+ return `Asset ${shortId(assetId)}${meta?.ticker?` (${meta.ticker})`:''}`;
 }
 
 export function assetUnit(meta?:AssetMeta):string{

@@ -44,8 +44,9 @@ test('every asset text carries the Unverified mark, whatever its metadata claims
  assert.equal(assetText(1_250_000n,id,tether),'1.25 USDT · Unverified');
  assert.equal(assetText(9n,id),'9 units of asset 1e291e28…0000 · Unverified');
  assert.ok(assetText(1n,id,{name:'Bitcoin',ticker:'BTC',decimals:8}).endsWith(' · Unverified'));
- assert.equal(assetTitle(id),'Asset 1e291e28…0000');
+ assert.equal(assetTitle(id),'Asset 1e291e28\u20260000');
  assert.equal(assetTitle(id,tether),'Tether USD (USDT)');
+ assert.equal(assetTitle(id,{ticker:'BTC',decimals:8}),'Asset 1e291e28\u20260000 (BTC)');
  assert.equal(assetUnit(tether),'USDT');
  assert.equal(assetUnit(),'units');
 });
