@@ -305,7 +305,7 @@ export async function passkeyWords(storage:Pick<Storage,'getItem'>,o:{rpId:strin
   return seed.words;
  }finally{seed.master.fill(0);}
 }
-const PASSKEY_STEPS:Record<PasskeyOutcome,string>={
+export const PASSKEY_STEPS:Record<PasskeyOutcome,string>={
  cancelled:'The passkey request ended before it finished, so nothing was saved. Try again, or use a recovery phrase.',
  unavailable:'This device’s passkeys cannot create a wallet key. Create or restore a wallet with a recovery phrase instead.',
  unconfirmed:'The passkey was made but could not be used, so no wallet was created. Create a wallet with a recovery phrase instead.',

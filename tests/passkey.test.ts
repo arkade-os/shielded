@@ -224,7 +224,7 @@ test('passkeyUserHandle refuses another credential and a missing handle',async()
   },
  });
  assert.deepEqual(await passkeyUserHandle({rpId:RP,credentialId,client:getting(credentialId,handle)}),handle);
- await assert.rejects(passkeyUserHandle({rpId:RP,credentialId,client:getting(new Uint8Array(16).fill(9),handle)}));
+ assert.equal((await caught(()=>passkeyUserHandle({rpId:RP,credentialId,client:getting(new Uint8Array(16).fill(9),handle)}))as Error).name,'PasskeyMismatch');
  assert.equal((await caught(()=>passkeyUserHandle({rpId:RP,credentialId,client:getting(credentialId,null)}))as Error).name,'PasskeyHandleMissing');
  assert.equal((await caught(()=>passkeyUserHandle({rpId:RP,credentialId,client:getting(credentialId,'deny')}))as Error).name,'PasskeyCancelled');
 });

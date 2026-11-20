@@ -26,7 +26,8 @@ test('a browser recovery result that arrives while hidden cannot reveal on retur
 
 test('Backup asks the passkey again for a locked wallet and never calls passkeyWords',async()=>{
  const rows=new Map<string,string>(),storage={getItem:(k:string)=>rows.get(k)??null,setItem:(k:string,v:string)=>{rows.set(k,v);},removeItem:(k:string)=>{rows.delete(k);},key:(i:number)=>[...rows.keys()][i]??null,get length(){return rows.size;}};
- await createLockedPageWallet(storage,{credentialId:new Uint8Array(16).fill(1),userHandle:new Uint8Array(32).fill(2),wordCount:24});
+ const id=new Uint8Array(16).fill(1),handle=new Uint8Array(32).fill(2);
+ await createLockedPageWallet(storage,{rpId:'localhost',client:{create:async()=>null,get:async()=>({rawId:id,response:{userHandle:handle.slice()}}) as unknown as Credential},credentialId:id,userHandle:handle.slice(),wordCount:24});
  assert.equal(revealSource(storage),'locked','even 24 words, which the secret could show, wait for the passkey');
  rows.set(SECRET,'ab'.repeat(32));
  assert.equal(revealSource(storage),'secret','an interrupted restore leaves both, and its phrase wallet opens');

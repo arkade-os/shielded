@@ -125,19 +125,19 @@ export async function lockWithHandle(o:{credentialId:Uint8Array;userHandle:Uint8
 export async function unlockWithHandle(o:{credentialId:Uint8Array;userHandle:Uint8Array;blob:Uint8Array}):Promise<string> {
  return open(()=>handleKey(o.userHandle),HANDLE_LOCK_VERSION,o.credentialId,o.blob);
 }
-/** Reads a passkey's user handle with a plain assertion, no PRF. */
+/** Reads a passkey's user handle with a plain assertion, no PRF. The allow list stays empty: only then must a discoverable credential return its handle, so the credential is checked here instead. */
 export async function passkeyUserHandle(o:{rpId:string;credentialId:Uint8Array;client?:WebAuthnClient}):Promise<Uint8Array> {
  const credentials=o.client??navigator.credentials;
  let cred:Credential|null;
  try{
-  cred=await credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),rpId:o.rpId,allowCredentials:[{type:'public-key',id:o.credentialId as BufferSource}],userVerification:'required'}});
+  cred=await credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),rpId:o.rpId,allowCredentials:[],userVerification:'required'}});
  }catch(error){
   if((error as {name?:string})?.name==='NotAllowedError')throw Object.assign(new Error('The passkey prompt was dismissed.'),{name:'PasskeyCancelled'});
   throw error;
  }
  if(!cred)throw Object.assign(new Error('The passkey prompt was dismissed.'),{name:'PasskeyCancelled'});
  const raw=new Uint8Array((cred as PublicKeyCredential).rawId);
- if(raw.length!==o.credentialId.length||!raw.every((byte,i)=>byte===o.credentialId[i]))throw new Error('That passkey does not match the recovery credential.');
+ if(raw.length!==o.credentialId.length||!raw.every((byte,i)=>byte===o.credentialId[i]))throw Object.assign(new Error('That is another passkey.'),{name:'PasskeyMismatch'});
  const handle=(cred as PublicKeyCredential&{response:AuthenticatorAssertionResponse}).response.userHandle;
  if(!handle?.byteLength)throw Object.assign(new Error('That passkey did not return its lock key.'),{name:'PasskeyHandleMissing'});
  return new Uint8Array(handle);

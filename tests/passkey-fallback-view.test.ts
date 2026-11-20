@@ -75,7 +75,8 @@ test('the Windows warning shows only on Windows',t=>{
 
 test('a locked browser wallet opens on the unlock screen with a way out',async()=>{
  const storage=memory();
- await createLockedPageWallet(storage,{credentialId:new Uint8Array(16).fill(1),userHandle:new Uint8Array(32).fill(2),wordCount:12});
+ const id=new Uint8Array(16).fill(1),handle=new Uint8Array(32).fill(2);
+ await createLockedPageWallet(storage,{rpId:'localhost',client:{create:async()=>null,get:async()=>({rawId:id,response:{userHandle:handle.slice()}}) as unknown as Credential},credentialId:id,userHandle:handle.slice(),wordCount:12});
  const html=wallet(storage),name=passkeyUserName(Number(storage.getItem(CREATED)));
  assert.match(html,/<span>Unlock your<\/span><span>wallet\.<\/span>/);
  assert.ok(html.includes(`Use the passkey “${name}” to open this wallet.`),'the screen names the passkey');

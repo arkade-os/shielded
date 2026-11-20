@@ -3,7 +3,7 @@ import {bytesToHex} from '@noble/hashes/utils.js';
 import {base64urlnopad} from '@scure/base';
 import {lockWithHandle,passkeyUserHandle,unlockWithHandle} from '../../packages/protocol/src/passkey.ts';
 import {parseMasterSecret,randomRecoveryPhrase} from '../../packages/protocol/src/wallet-keys.ts';
-import {BORN,CREATED,SECRET,WALLET_EXISTS,type PageStorage} from './shielded-page.ts';
+import {BORN,CREATED,PASSKEY_STEPS,SECRET,WALLET_EXISTS,type PageStorage} from './shielded-page.ts';
 import {passkeyRecordOf,savePasskey} from './passkey-record.ts';
 
 export const LOCKED='shielded-rollup-wallet-locked-v1';
@@ -23,10 +23,14 @@ export function lockedRecordOf(storage:Pick<Storage,'getItem'>):LockedRecord|und
  if(value&&typeof value==='object'&&value.version===1&&value.lock==='handle'&&typeof value.credentialId==='string'&&B64.test(value.credentialId)&&typeof value.blob==='string'&&B64.test(value.blob)&&(value.words===12||value.words===24))return value as LockedRecord;
  throw new Error("The locked wallet record is invalid. Keep this browser's data.");
 }
-/** `created` is the passkey's own time, so the unlock screen names the passkey as it was saved. LOCKED goes last: a torn write never leaves a lock without its date. */
-export async function createLockedPageWallet(storage:PageStorage,o:{credentialId:Uint8Array;userHandle:Uint8Array;wordCount:12|24;created?:number}){
+/** `created` is the passkey's own time, so the unlock screen names the passkey as it was saved. Nothing is written until the passkey gives this handle back to unlock's own request; LOCKED goes last, so a torn write never leaves a lock without its date. */
+export async function createLockedPageWallet(storage:PageStorage,o:{rpId:string;credentialId:Uint8Array;userHandle:Uint8Array;wordCount:12|24;created?:number;client?:WebAuthnClient}){
  try{
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);
+  const unconfirmed=(cause?:unknown)=>Object.assign(new Error(PASSKEY_STEPS.unconfirmed,{cause}),{name:'PasskeyUnconfirmed',credentialId:o.credentialId});
+  const returned=await passkeyUserHandle(o).catch((cause:unknown)=>{throw unconfirmed(cause);});
+  const same=returned.length===o.userHandle.length&&returned.every((byte,i)=>byte===o.userHandle[i]);returned.fill(0);
+  if(!same)throw unconfirmed();
   const words=randomRecoveryPhrase(o.wordCount),secret=bytesToHex(parseMasterSecret(words));
   const blob=await lockWithHandle({credentialId:o.credentialId,userHandle:o.userHandle,words});
   if(storage.getItem(SECRET)||lockedRecordOf(storage))throw new Error(WALLET_EXISTS);

@@ -211,7 +211,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const offer=fallback.current;
   if(!offer||busyRef.current)return;
   busyRef.current=true;setBusy(true);setRestoreError('');
-  try{const made=await createLockedPageWallet(storage,{credentialId:offer.credentialId,userHandle:offer.userHandle,wordCount:offer.wordCount,created:offer.createdAt});if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
+  try{const made=await createLockedPageWallet(storage,{rpId:PASSKEY_RP_ID,credentialId:offer.credentialId,userHandle:offer.userHandle,wordCount:offer.wordCount,created:offer.createdAt});if(!mounted.current)return;createdHere.current=true;setPasskeyPhrase(made.words);setSecret(made.secret);}
   catch(error){if(mounted.current){setRestoreError(`${errorText(error)} You can delete the passkey “${offer.userName}” in your passkey settings.`);setPasskeyOff(true);busyRef.current=false;setBusy(false);}}
   finally{fallback.current=undefined;if(mounted.current)setFallbackName('');}
  };
