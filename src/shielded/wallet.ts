@@ -443,6 +443,14 @@ export class ShieldedWallet extends Wallet {
   if(applied)this.changed();
   return applied;
  }
+ /** A pull's sync: in private mode the status read decides first, as in tick(), so an unchanged head skips the epoch re-read. */
+ async syncIfMoved():Promise<number>{
+  if(this.networkPrivacy&&!this.offline){
+   if(await this.refreshPoolStatus())this.changed();
+   if(this.pool.status.pool?.batches===this.account.batchCount)return 0;
+  }
+  return this.sync();
+ }
  private openLinkNullifiers(){return [...this.linkRecords.values()].flatMap(link=>link.open.map(BigInt));}
  /** Finds the links a batch minted and marks those it claimed; replaying the pool rebuilds them, so a restore needs nothing else. */
  private async watchLinks(number:number,batch:RollupEpochRecord,account:EpochAccount){
