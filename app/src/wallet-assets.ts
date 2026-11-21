@@ -122,8 +122,8 @@ export const ASSET_LINK_TYPED='This payment link asks for an asset. Use Paste or
 export function heldAssets(o:{reserves:readonly string[];shielded:(assetId:string)=>bigint;coins:readonly ArkCoin[]}):HeldAsset[]{
  const rows=new Map<string,HeldAsset>();
  const row=(assetId:string)=>{let r=rows.get(assetId);if(!r)rows.set(assetId,r={assetId,shielded:0n,unshielded:0n});return r;};
- for(const id of o.reserves)row(id).shielded+=o.shielded(id);
- for(const h of arkAssetHoldings(o.coins,()=>false))row(h.assetId).unshielded+=h.units;
+ for(const id of o.reserves)if(ASSET_ID.test(id))row(id).shielded+=o.shielded(id);
+ for(const h of arkAssetHoldings(o.coins,()=>false))if(ASSET_ID.test(h.assetId))row(h.assetId).unshielded+=h.units;
  return [...rows.values()].filter(r=>r.shielded>0n||r.unshielded>0n).sort((a,b)=>a.assetId<b.assetId?-1:1);
 }
 

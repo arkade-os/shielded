@@ -287,6 +287,12 @@ test('a payment link for an asset waits for the first coin read and its details,
  assert.ok(wallet.includes(`onChange={e=>{setTo(e.target.value);setCodeError('');setPendingLink(undefined);}}`),'typing another recipient drops a waiting link');
 });
 
+test('details arriving clear the typed digits before a waiting link replays, so the replayed amount stays',()=>{
+ const wallet=walletPage(),reset=wallet.indexOf('useEffect(()=>{const [id,was]=amountScale.current;'),replay=wallet.indexOf('useEffect(()=>{if(pendingLink&&holdingsKnown)');
+ assert.ok(reset>=0&&replay>=0,'both effects are found');
+ assert.ok(reset<replay,'effects run in declaration order');
+});
+
 test('while a payment link waits, neither a quote nor a claim link can start',()=>{
  const wallet=walletPage(),form=/<form className="stock-send"[\s\S]*?<\/form>/.exec(wallet)?.[0]??'';
  assert.ok(wallet.includes('sendBlocked=!!pendingLink||(!!assetId&&(!sendAsset||units===undefined))'));

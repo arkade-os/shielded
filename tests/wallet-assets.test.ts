@@ -96,7 +96,6 @@ test('a cached entry serves without a lookup until it is a day old, then refresh
  const h=harness(),now=h.now();
  h.storage.m.set(KEY+id,JSON.stringify({name:'Old',decimals:2,at:now-1000}));
  h.cache.want([id]);await settle();assert.equal(h.calls.length,0);assert.equal(h.cache.get(id)?.name,'Old');
- h.storage.m.set(KEY+id,JSON.stringify({name:'Old',decimals:2,at:now-86_400_001}));
  const stale=harness();stale.storage.m.set(KEY+id,JSON.stringify({name:'Old',decimals:2,at:stale.now()-86_400_001}));
  stale.cache.want([id]);assert.equal(stale.cache.get(id)?.name,'Old');
  await settle();assert.equal(stale.calls.length,1);assert.equal(stale.cache.get(id)?.name,'Tether USD');
@@ -118,8 +117,6 @@ test('only valid asset ids are looked up, once each, at most 100 per call',async
 test('the stored entry is the sanitized metadata, and is sanitized again on read',async()=>{
  const h=harness();h.cache.want([id]);await settle();
  assert.deepEqual(JSON.parse(h.storage.m.get(KEY+id)!),{name:'Tether USD',ticker:'USDT',decimals:6,at:h.now()});
- h.storage.m.set(KEY+id,JSON.stringify({decimals:99,ticker:'$',name:'\u202eX',at:h.now()}));
- assert.deepEqual(harness().cache.get(id),undefined);
  const t=memoryStorage();t.m.set(KEY+id,JSON.stringify({decimals:99,ticker:'$',name:'\u202eX',at:1}));
  assert.deepEqual(assetMetadata({storage:t,details:async()=>({}),onChange:()=>{}}).get(id),{decimals:0,name:'X'});
 });
@@ -136,11 +133,19 @@ const coin=(assets:{assetId:string;amount:bigint}[])=>({txid:'a'.repeat(64),vout
 const held=(shielded:bigint,unshielded:bigint)=>({assetId:'a',shielded,unshielded});
 
 test('the held list merges pool notes and Arkade coins per asset, payouts included, and names each kind',()=>{
- const list=heldAssets({reserves:['a','b'],shielded:x=>x==='a'?10n:0n,coins:[coin([{assetId:'a',amount:3n}]),coin([{assetId:'c',amount:5n}]),{txid:'b'.repeat(64),vout:1,value:900}]});
- assert.deepEqual(list,[{assetId:'a',shielded:10n,unshielded:3n},{assetId:'c',shielded:0n,unshielded:5n}]);
+ const [a,b,c]=['aa','bb','cc'].map(x=>x.repeat(34));
+ const list=heldAssets({reserves:[a,b],shielded:x=>x===a?10n:0n,coins:[coin([{assetId:a,amount:3n}]),coin([{assetId:c,amount:5n}]),{txid:'b'.repeat(64),vout:1,value:900}]});
+ assert.deepEqual(list,[{assetId:a,shielded:10n,unshielded:3n},{assetId:c,shielded:0n,unshielded:5n}]);
  assert.deepEqual(list.map(holdingKind),['both','unshielded']);
  assert.equal(holdingKind({assetId:'x',shielded:1n,unshielded:0n}),'shielded');
  assert.equal(KIND_TEXT.both,'Shielded and unshielded');
+});
+
+test('an asset id that is not 68 lowercase hex characters is never held, so the page never parses it',()=>{
+ const good='aa'.repeat(34),bad=['nothex','AA'.repeat(34),'aa'.repeat(33),'aa'.repeat(35)];
+ const shielded=(x:string)=>{if(x!==good)throw new Error('not an asset id');return 1n;};
+ const list=heldAssets({reserves:[good,bad[0]!],shielded,coins:[...bad.map(assetId=>coin([{assetId,amount:5n}])),coin([{assetId:good,amount:2n}])]});
+ assert.deepEqual(list,[{assetId:good,shielded:1n,unshielded:2n}]);
 });
 
 test('the receive picker offers held assets on Arkade and pool reserves on Shielded, only once their details are known, and nothing on Unified',()=>{
