@@ -13,7 +13,7 @@ import {pausedErrorText,satsText} from './rollup-client.ts';
 import {restoreNativeStorage} from './native-storage.ts';
 import {passkeyRecord,savePasskey,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
 export {PASSKEY,passkeyRecord,passkeyRecordOf,type PasskeyRecord} from './passkey-record.ts';
-import {ASSET_METADATA_KEY} from './wallet-assets.ts';
+import {ASSET_METADATA_KEY,assetText} from './wallet-assets.ts';
 import {LOCKED,lockedRecordOf} from './locked-wallet.ts';
 
 export const SECRET='shielded-rollup-wallet-secret-v1',SENT='shielded-rollup-sent-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1';
@@ -55,14 +55,14 @@ export function pageActivityHistory(history:Activity[],lightning:Activity[]){
 export type ActivityNotice={id:string;text:string;detail:string;received:boolean;more:number};
 export type ActivitySeen={ids:ReadonlySet<string>;sources:number};
 /** The newest money movement these rows added, for a toast. `sources` flags the history readers that have answered; the first answer from any of them seeds silently, so startup, restore and a late Lightning start never announce old history. */
-export function pageActivityNotice(rows:readonly Activity[],seen:ActivitySeen|undefined,sources:number):{seen:ActivitySeen;notice?:ActivityNotice}{
+export function pageActivityNotice(rows:readonly Activity[],seen:ActivitySeen|undefined,sources:number,label=(assetId:string,amount:bigint)=>assetText(amount,assetId)):{seen:ActivitySeen;notice?:ActivityNotice}{
  const ids=new Set(seen?.ids??[]);for(const row of rows)ids.add(row.id);
  if(!seen||seen.sources!==sources)return {seen:{ids,sources}};
  const fresh=rows.filter(row=>!seen.ids.has(row.id)&&row.amount!==0&&historyDirection(row)!=='own').sort((a,b)=>b.createdAt-a.createdAt);
  const newest=fresh[0];if(!newest)return {seen:{ids,sources}};
- const received=historyDirection(newest)==='in';
+ const received=historyDirection(newest)==='in',asset=newest.txs.at(-1)?.assets?.[0];
  return {seen:{ids,sources},notice:{id:newest.id,received,more:fresh.length-1,
-  text:`${received?'Received':'Sent'} ${satsText(Math.abs(newest.amount))}`,
+  text:`${received?'Received':'Sent'} ${asset?label(asset.assetId,asset.amount<0n?-asset.amount:asset.amount):satsText(Math.abs(newest.amount))}`,
   detail:newest.settled?'':received?'Arriving; not settled yet':'Not settled yet'}};
 }
 

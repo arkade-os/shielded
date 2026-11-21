@@ -520,7 +520,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(data.coins){setCoins(data.coins);setCoinsRead(true);}if(data.balance)setArkAvailable(data.balance.available);if(data.address!==undefined)setArkAddress(data.address);
    if(data.history||data.lightningHistory){
     const history=pageActivityHistory(data.history??[],data.lightningHistory??[]);setRows(history);
-    const moved=pageActivityNotice(history,seen,(data.history?1:0)|(data.lightningHistory?2:0));seen=moved.seen;
+    const moved=pageActivityNotice(history,seen,(data.history?1:0)|(data.lightningHistory?2:0),assetLabel);seen=moved.seen;
     if(moved.notice)setNotice(moved.notice);
    }
    if(nativeHost)refreshFailed.current=!!errors.coins&&!!errors.balance&&!!errors.history;
