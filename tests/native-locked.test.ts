@@ -61,7 +61,7 @@ test('a locked wallet prompts once at open and not on reconnect, Tor switch or r
  const native=src('NativeWallet.tsx');
  assert.match(native,/^const lockedSecret=lockedSecretCache\(\);$/m);
  assert.match(native,/openNativeVault\([\s\S]*?\(\)=>readNativeSecret\(getSecret,lockedSecret,unlockHeld,localStorage\),generationGuard/,'every open reads through the one cache');
- assert.equal(native.match(/lockedSecret\.forget\(\)/g)?.length,1,'pause, suspend, the Tor switch and reload keep it');
+ assert.equal(native.match(/lockedSecret\.forget\(\)/g)?.length,3,'only Lock and the two resets forget it: pause, suspend, the Tor switch and reload keep it');
 });
 
 test('Lock forgets the secret so the next open prompts',async()=>{
@@ -70,7 +70,10 @@ test('Lock forgets the secret so the next open prompts',async()=>{
  cache.forget();const late=deferred<string>(),asked=cache.read(()=>late.promise);cache.forget();late.resolve(made.entropy);
  assert.equal(await asked,made.entropy,'the open that asked still gets its answer');
  await open(cache);assert.equal(vault.prompts,3,'a Lock during the prompt keeps the next open locked');
- assert.match(src('NativeWallet.tsx'),/aria-label="Lock wallet" onClick=\{\(\)=>\{manualLock\.current=true;lockedSecret\.forget\(\);setConfirmDirect\(false\);void pause\(\);\}\}/);
+ const native=src('NativeWallet.tsx');
+ assert.match(native,/aria-label="Lock wallet" onClick=\{\(\)=>\{manualLock\.current=true;lockedSecret\.forget\(\);setConfirmDirect\(false\);void pause\(\);\}\}/);
+ assert.match(native,/const finishReset=useCallback\(\(\)=>\{\s*if\(openingOperation\.current\)return openingOperation\.current;\s*lockedSecret\.forget\(\);/);
+ assert.match(native,/const clearWallet=useCallback\(async\(\)=>\{\s*if\(transition\.current\|\|creating\.current\)throw new Error\('[^']*'\);\s*lockedSecret\.forget\(\);/);
 });
 
 test('a cancelled unlock waits for the user before it prompts again',async()=>{
@@ -199,5 +202,7 @@ test('a later Backup reveal prompts once and shows the stored words',async()=>{
  assert.match(wallet,/nativeLock\?await lockedPhrase\(secret,before\):/,'a locked native wallet never tries PRF');
  assert.match(wallet,/source==='locked'\|\|nativeLock\?passkeyPhrase:/,'nor shows words before that prompt');
  assert.match(wallet,/useState\(setupPhrase\?\?''\)/,'the setup words reach the first backup without a prompt');
- assert.match(src('NativeWallet.tsx'),/setupPhrase=\{view\.session\.words\}/);
+ const native=src('NativeWallet.tsx');
+ assert.match(native,/setupPhrase=\{view\.session\.words\}/);
+ assert.match(native,/const pause=useCallback\(\(\)=>\{[\s\S]*?const previous=active\.current;active\.current=undefined;setupWords\.current=undefined;if\(previous\)previous\.words=undefined;[\s\S]*?\},\[clearResume,cancelSetup\]\);/,'a pause drops the setup words');
 });

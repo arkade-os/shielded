@@ -98,7 +98,7 @@ export default function NativeWallet(){
   ++attempt.current;
   connectionPending.current=true;setReconnecting(false);
   setupAllowed.current=false;setSetup(false);
-  const previous=active.current;active.current=undefined;
+  const previous=active.current;active.current=undefined;setupWords.current=undefined;if(previous)previous.words=undefined;
   const retiring=handoff.current.retire(false);setViews(handoff.current.snapshot);
   const pending=openingOperation.current;setBusy(false);setPhase('Private connection paused');
   // An ambiguous vault write must settle before a new open reconciles its metadata.
@@ -129,7 +129,7 @@ export default function NativeWallet(){
  }),[pause]);
  const finishReset=useCallback(()=>{
   if(openingOperation.current)return openingOperation.current;
-  clearing.current=true;setResetPending(true);setBusy(true);setError('');setPhase('Finishing wallet reset');
+  lockedSecret.forget();clearing.current=true;setResetPending(true);setBusy(true);setError('');setPhase('Finishing wallet reset');
   const run=(async()=>{
    try{
     await nativeNetwork.pause();
@@ -211,7 +211,7 @@ export default function NativeWallet(){
  },[finishReset,suspend,clearResume,pageForeground]);
  const clearWallet=useCallback(async()=>{
   if(transition.current||creating.current)throw new Error('Wait for the current wallet operation to finish before clearing it.');
-  transition.current=true;clearing.current=true;setResetPending(true);localStorage.setItem(RESET_PENDING,'1');setBusy(true);setSaving(true);setError('');setPhase('Clearing wallet');
+  lockedSecret.forget();transition.current=true;clearing.current=true;setResetPending(true);localStorage.setItem(RESET_PENDING,'1');setBusy(true);setSaving(true);setError('');setPhase('Clearing wallet');
   try{
    await pause();
    await clearNativeWalletData(clearSecret,{onBlocked:()=>setPhase('Waiting for wallet data to close')});
