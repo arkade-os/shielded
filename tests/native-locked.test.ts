@@ -62,7 +62,7 @@ test('a locked wallet prompts once at open and not on reconnect, Tor switch or r
  const native=src('NativeWallet.tsx');
  assert.match(native,/^const lockedSecret=lockedSecretCache\(\);$/m);
  assert.match(native,/openNativeVault\([\s\S]*?\(\)=>readNativeSecret\(getSecret,lockedSecret,unlockHeld,localStorage,read\),generationGuard/,'every open reads through the one cache');
- assert.equal(native.match(/lockedSecret\.forget\(\)/g)?.length,3,'only Lock and the two resets forget it: pause, suspend, the Tor switch and reload keep it');
+ assert.equal(native.match(/lockedSecret\.forget\(\)/g)?.length,5,'only Lock (again once its pause settles), update preparation and the two resets forget it: pause, suspend, the Tor switch and reload keep it');
 });
 
 test('Lock forgets the secret so the next open prompts',async()=>{
@@ -72,7 +72,7 @@ test('Lock forgets the secret so the next open prompts',async()=>{
  assert.equal(await asked,made.entropy,'the open that asked still gets its answer');
  await open(cache);assert.equal(vault.prompts,3,'a Lock during the prompt keeps the next open locked');
  const native=src('NativeWallet.tsx');
- assert.match(native,/aria-label="Lock wallet" onClick=\{\(\)=>\{manualLock\.current=true;lockedSecret\.forget\(\);setConfirmDirect\(false\);void pause\(\);\}\}/);
+ assert.match(native,/aria-label="Lock wallet" onClick=\{\(\)=>\{manualLock\.current=true;lockedSecret\.forget\(\);setConfirmDirect\(false\);void pause\(\)\.finally\(\(\)=>lockedSecret\.forget\(\)\)\.catch\(\(\)=>\{\}\);\}\}/,'a setup write that settles during the pause cannot refill it');
  assert.match(native,/const finishReset=useCallback\(\(\)=>\{\s*if\(openingOperation\.current\)return openingOperation\.current;\s*lockedSecret\.forget\(\);/);
  assert.match(native,/const clearWallet=useCallback\(async\(\)=>\{\s*if\(transition\.current\|\|creating\.current\)throw new Error\('[^']*'\);\s*lockedSecret\.forget\(\);/);
 });
@@ -98,6 +98,13 @@ test('a locked open marks a wallet as here even after it drops a setup record th
  assert.equal(await open(undefined,undefined,storage),made.master);
  assert.equal(pendingNativeSetup(storage),undefined);
  assert.equal(storage.getItem('shielded-native-wallet'),'1');assert.deepEqual(nativeLockOf(storage),{words:12});
+ const refused=memory();use({locked:made.entropy,cancel:1});prepareNativeSetup(refused,made.master,{created:123});
+ await assert.rejects(open(undefined,undefined,refused),{name:'NativeUnlock'});
+ assert.equal(pendingNativeSetup(refused),undefined);assert.equal(refused.getItem('shielded-native-wallet'),'1','a refused prompt still marks the wallet');
+});
+
+test('update preparation locks like Lock: it forgets the secret once its pause settles, so a failed handoff reopens with a prompt',()=>{
+ assert.match(src('NativeWallet.tsx'),/registerAndroidInstallPreparation\(async\(\)=>\{[\s\S]{0,200}?manualLock\.current=true;setConfirmDirect\(false\);try\{await pause\(\);\}finally\{lockedSecret\.forget\(\);\}/);
 });
 
 test('the fallback setup journal never holds the entropy or the master',async()=>{

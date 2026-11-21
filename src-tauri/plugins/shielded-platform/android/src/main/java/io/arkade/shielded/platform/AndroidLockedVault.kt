@@ -101,7 +101,7 @@ class AndroidLockedVault(context: Context) {
         return generator.generateKey()
     }
 
-    // A window key's cipher cannot ride the prompt, so it is made again inside the key's validity window.
+    // A window key's cipher cannot ride the prompt, so it is made again inside the key's validity window; the first make only surfaces a removed screen lock before prompting.
     private fun unlocked(lock: LockMode, mode: Int, key: SecretKey, iv: ByteArray?, title: String, host: () -> FragmentActivity?, live: () -> Boolean): Cipher {
         if (lock == LockMode.PER_USE) return cipher(mode, key, iv).also { authorize(title, it, host, live) }
         try { cipher(mode, key, iv) } catch (_: UserNotAuthenticatedException) { }

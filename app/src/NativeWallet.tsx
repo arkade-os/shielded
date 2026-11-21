@@ -124,7 +124,7 @@ export default function NativeWallet(){
  useEffect(()=>{let live=true;void nativePasskeySupport().then(support=>{if(live)setPasskeySupport(support);},()=>{if(live)setPasskeySupport({available:false,reason:'Passkeys are unavailable on this device. Use a recovery phrase to create or restore a wallet.'});});return()=>{live=false;};},[]);
  useEffect(()=>registerAndroidInstallPreparation(async()=>{
   if(clearing.current||localStorage.getItem(RESET_PENDING)==='1')throw new Error('The wallet is being cleared. Finish that operation before installing an update.');
-  manualLock.current=true;setConfirmDirect(false);await pause();
+  manualLock.current=true;setConfirmDirect(false);try{await pause();}finally{lockedSecret.forget();}
   if(clearing.current||localStorage.getItem(RESET_PENDING)==='1')throw new Error('The wallet is being cleared. Finish that operation before installing an update.');
  }),[pause]);
  const finishReset=useCallback(()=>{
@@ -353,7 +353,7 @@ export default function NativeWallet(){
  const opening=candidateOpening||reconnectOpening;
  const frozen=resumeMemory.current.snapshot;
  const showOpening=presentation.showOpening&&!frozen;
- const controls=<div className="native-wallet-controls"><NativeTorHealth health={torHealth} compact onToggleTor={toggleTor} onReconnect={walletConnection?.reconnect} reconnectBusy={walletConnection?.busy} problem={walletConnection?.problem} transportBusy={switching||saving}/><button className="native-wallet-lock" type="button" aria-label="Lock wallet" onClick={()=>{manualLock.current=true;lockedSecret.forget();setConfirmDirect(false);void pause();}}><Icon name="lock" size={19}/></button></div>;
+ const controls=<div className="native-wallet-controls"><NativeTorHealth health={torHealth} compact onToggleTor={toggleTor} onReconnect={walletConnection?.reconnect} reconnectBusy={walletConnection?.busy} problem={walletConnection?.problem} transportBusy={switching||saving}/><button className="native-wallet-lock" type="button" aria-label="Lock wallet" onClick={()=>{manualLock.current=true;lockedSecret.forget();setConfirmDirect(false);void pause().finally(()=>lockedSecret.forget()).catch(()=>{});}}><Icon name="lock" size={19}/></button></div>;
  return <>
   {confirmDirect&&<NativeConnectionWarning onCancel={()=>setConfirmDirect(false)} onConfirm={()=>void switchMode('direct')}/>}
   {externalLink&&<NativeExternalLink url={externalLink} onClose={()=>setExternalLink('')}/>}

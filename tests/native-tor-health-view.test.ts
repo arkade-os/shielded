@@ -43,7 +43,7 @@ test('the compact header control is an icon whose name, live text and badge carr
  assert.match(delayed,/data-health="error"/);assert.match(delayed,/aria-label="Wallet connection: Tor connected · wallet data delayed"/);
  const css=readFileSync(new URL('../app/src/native-tor-health.css',import.meta.url),'utf8');
  assert.match(css,/\.native-wallet-controls \.native-tor-trigger,\.native-wallet-controls \.native-wallet-lock\{[^}]*width:44px;height:44px/);
- assert.match(readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8'),/<button className="native-wallet-lock" type="button" aria-label="Lock wallet"[^>]*onClick=\{\(\)=>\{manualLock\.current=true;lockedSecret\.forget\(\);setConfirmDirect\(false\);void pause\(\);\}\}>/);
+ assert.match(readFileSync(new URL('../app/src/NativeWallet.tsx',import.meta.url),'utf8'),/<button className="native-wallet-lock" type="button" aria-label="Lock wallet"[^>]*onClick=\{\(\)=>\{manualLock\.current=true;lockedSecret\.forget\(\);setConfirmDirect\(false\);void pause\(\)\.finally\(\(\)=>lockedSecret\.forget\(\)\)\.catch\(\(\)=>\{\}\);\}\}>/);
 });
 
 test('legacy Tor status renders an accessible enabled Tor switch',()=>{
