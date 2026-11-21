@@ -31,8 +31,13 @@ test('a ticker or name that passes for a bitcoin unit is dropped, so the id titl
  for(const t of ['USDT','TKN'])assert.equal(assetMetaOf({ticker:t}).ticker,t);
  for(const n of ['Bitcoin',' B i t c o i n ','BTC!','₿','Ｂｉｔｃｏｉｎ','Bitcoin'+' '.repeat(25)+'x','sat0shi','B\u0308TC','\u0412\u0422\u0421','\u0392itcoin','My Bitcoin Fund','bit coin','B\u00edtcoin','sat','msat','bit','bits','B i t s','SAT.','Bits'+' '.repeat(28)+'x'])assert.equal(meta({name:n}).name,undefined,JSON.stringify(n));
  for(const n of ['Tether USD','Saturn Token','Orbit','Habitat'])assert.equal(meta({name:n}).name,n);
- assert.equal(assetTitle(id,meta(tether)),'Tether USD (USDT)');
+ assert.equal(assetTitle(id,meta(tether)),'Tether USD (USDT) · 1e291e28…0000');
  assert.deepEqual(meta({name:'₿ Tether $USD',ticker:'USDT'}),{name:'Tether USD',ticker:'USDT',decimals:6},'a kept name loses its currency signs');
+});
+
+test('a name that claims verification is dropped, so the id title shows instead',()=>{
+ for(const n of ['Tether USD ✓ Verified','VERIFIED','Ver1fied USD','Ｖｅｒｉｆｉｅｄ','v e r i f i e d','Vérifié'])assert.equal(meta({name:n}).name,undefined,n);
+ assert.equal(assetTitle(id,assetMetaOf({name:'Verified Tether',decimals:6})),'Asset 1e291e28…0000');
 });
 
 test('amounts format with their decimals, grouped for display and plain for links',()=>{
@@ -59,10 +64,18 @@ test('every asset text carries the Unverified mark, whatever its metadata claims
  assert.equal(assetText(9n,id),'9 units of asset 1e291e28…0000 · Unverified');
  assert.ok(assetText(1n,id,{name:'Bitcoin',ticker:'BTC',decimals:8}).endsWith(' · Unverified'));
  assert.equal(assetTitle(id),'Asset 1e291e28\u20260000');
- assert.equal(assetTitle(id,tether),'Tether USD (USDT)');
- assert.equal(assetTitle(id,{ticker:'BTC',decimals:8}),'Asset 1e291e28\u20260000 (BTC)');
+ assert.equal(assetTitle(id,tether),'Tether USD (USDT) \u00b7 1e291e28\u20260000');
+ assert.equal(assetTitle(id,{ticker:'BTC',decimals:8}),'BTC \u00b7 1e291e28\u20260000');
  assert.equal(assetUnit(tether),'USDT');
  assert.equal(assetUnit(),'units');
+});
+
+test('a title that shows a name or ticker ends with the short id, so a look-alike asset reads differently',()=>{
+ const other='ee'.repeat(34);
+ assert.equal(assetTitle(id,{name:'Tether USD',decimals:6}),'Tether USD \u00b7 1e291e28\u20260000');
+ assert.equal(assetTitle(id,{ticker:'USDT',decimals:6}),'USDT \u00b7 1e291e28\u20260000');
+ assert.equal(assetTitle(other,tether),'Tether USD (USDT) \u00b7 eeeeeeee\u2026eeee');
+ assert.equal(assetTitle(id,{decimals:6}),'Asset 1e291e28\u20260000');
 });
 
 test('amount errors name the unit and the decimal places',()=>{

@@ -21,7 +21,8 @@ export function assetMetaOf(metadata:unknown):AssetMeta{
  const meta:AssetMeta={decimals:decimalsOf(m.decimals)};
  const name=typeof m.name==='string'?Array.from(m.name.replace(/[\p{Cc}\p{Cf}\p{Sc}]/gu,'').trim()).slice(0,32).join('').trim():'';
  // NFKD, not NFKC: composing would keep a precomposed accent (í) out of reach of the mark strip.
- if(name&&!NAME_UNIT.test(latin(name.normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[\s\p{P}\p{Sc}]/gu,''))))meta.name=name;
+ const folded=latin(name.normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[\s\p{P}\p{Sc}]/gu,''));
+ if(name&&!NAME_UNIT.test(folded)&&!folded.includes('verif'))meta.name=name;
  if(typeof m.ticker==='string'&&TICKER.test(m.ticker)&&!TICKER_UNIT.test(latin(m.ticker.toLowerCase().replace(/[.-]/g,''))))meta.ticker=m.ticker;
  return meta;
 }
@@ -53,8 +54,8 @@ export function assetAmountError(decimals:number,unit:string):string{
 const shortId=(id:string)=>`${id.slice(0,8)}…${id.slice(-4)}`;
 
 export function assetTitle(assetId:string,meta?:AssetMeta):string{
- if(meta?.name)return meta.ticker?`${meta.name} (${meta.ticker})`:meta.name;
- return `Asset ${shortId(assetId)}${meta?.ticker?` (${meta.ticker})`:''}`;
+ const label=meta?.name?(meta.ticker?`${meta.name} (${meta.ticker})`:meta.name):meta?.ticker;
+ return label?`${label} · ${shortId(assetId)}`:`Asset ${shortId(assetId)}`;
 }
 
 export function assetUnit(meta?:AssetMeta):string{

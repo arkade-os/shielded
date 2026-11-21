@@ -231,7 +231,9 @@ test('the Home list names every held asset with its kind and the Unverified mark
  const wallet=walletPage(),card=/const balanceCard=\(\)=>([\s\S]*?)<\/section>;/.exec(wallet)?.[1]??'';
  assert.ok(wallet.includes('const held=heldAssets({reserves,shielded:assetUnits,coins});'));
  assert.ok(card.includes('{(unshielded>0||held.length>0)&&<div className="stock-balance-side">'));
- assert.ok(card.includes('{held.map(h=>{const meta=metadata?.get(h.assetId);return <div key={h.assetId}><small>{assetTitle(h.assetId,meta)} · {KIND_TEXT[holdingKind(h)]} · {UNVERIFIED}</small><b>{formatAssetAmount(h.shielded+h.unshielded,meta?.decimals??0)} {assetUnit(meta)}</b></div>;})}'));
+ assert.ok(card.includes('{held.map(h=>{const meta=metadata?.get(h.assetId);return <div key={h.assetId}><small>{assetTitle(h.assetId,meta)} · {KIND_TEXT[holdingKind(h)]} · {UNVERIFIED}</small><b>{formatAssetAmount(h.shielded+h.unshielded,meta?.decimals??0)} {markedUnit(meta)}</b></div>;})}'));
+ assert.ok(wallet.includes('<b>{formatAssetAmount(a.units,meta?.decimals??0)} {markedUnit(meta)}</b>'),'the Receive holdings amount');
+ assert.doesNotMatch(wallet,/\bassetUnit\(/,'no asset amount on the page goes unmarked');
  assert.doesNotMatch(wallet,/shownAssets/,'shownAssets is gone');
  const titles=wallet.match(/assetTitle\(/g)?.length??0;
  assert.ok(titles>0);
@@ -248,6 +250,10 @@ test('no asset amount on the page skips the formatter',()=>{
  const claims=wallet.match(/holdingsText\(/g)?.length??0;
  assert.ok(claims>0);
  assert.equal(wallet.match(/,field=>wallet\?\.assetIdOf\(field\),assetLabel\)/g)?.length,claims,'every claim text names its asset through the formatter');
+});
+
+test('the transaction sheet of an asset row names its full asset id',()=>{
+ assert.ok(walletPage().includes(`facts:[['Amount',amount],...(asset?[['Asset',asset.assetId] as const]:[]),['Status',status],['Time',when(item.createdAt)]]`));
 });
 
 test('an asset send reads display units, keys its quote on the atomic units, and refuses what only an Arkade address can take',()=>{
@@ -496,7 +502,7 @@ test('the claim card reads a link\'s token and holdings without the network',()=
  const id='1e291e28'.padEnd(64,'0')+'0000',field=7n,assetIdOf=(f:bigint)=>f===field?id:undefined;
  assert.equal(holdingsText([{asset:0n,amount:600n},{asset:0n,amount:400n}],assetIdOf),'1,000 sats');
  assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
- assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sat');
+ assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset · Unverified and 1 sat');
  assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
 });
 
@@ -504,7 +510,7 @@ test('claim-link holdings take a label for assets and keep their default text',(
  const id='1e291e28'.padEnd(64,'0')+'0000',assetIdOf=(f:bigint)=>f===7n?id:undefined;
  const label=(assetId:string,amount:bigint)=>`${amount} of ${assetId.slice(0,4)}`;
  assert.equal(holdingsText([{asset:7n,amount:9n},{asset:0n,amount:1n}],assetIdOf,label),'9 of 1e29 and 1 sat');
- assert.equal(holdingsText([{asset:3n,amount:2n}],assetIdOf,label),'2 units of an unlisted asset');
+ assert.equal(holdingsText([{asset:3n,amount:2n}],assetIdOf,label),'2 units of an unlisted asset · Unverified');
 });
 
 test('an asset payment link names its asset and display amount, never sats',()=>{

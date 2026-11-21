@@ -3,7 +3,7 @@ import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {Market} from '@arkade-os/swap';
-import {formatAssetAmount} from './wallet-assets.ts';
+import {UNVERIFIED,formatAssetAmount} from './wallet-assets.ts';
 
 export * from '../../src/shielded/pool.ts';
 export * from '../../src/shielded/epoch-pool.ts';
@@ -155,6 +155,6 @@ export function holdingsText(notes:readonly {asset:bigint;amount:bigint}[],asset
  return [...totals].map(([asset,amount])=>{
   const count=amount.toLocaleString('en-US'),id=asset===0n?undefined:assetIdOf(asset);
   if(id&&label)return label(id,amount);
-  return asset===0n?satsText(amount):`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:'an unlisted asset'}`;
+  return asset===0n?satsText(amount):`${count} units of ${id?`asset ${id.slice(0,8)}…${id.slice(-4)}`:`an unlisted asset · ${UNVERIFIED}`}`;
  }).join(' and ');
 }
