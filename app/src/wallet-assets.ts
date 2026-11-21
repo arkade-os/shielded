@@ -137,3 +137,15 @@ export function assetRecipientError(asset:HeldAsset|undefined,to:string):string{
 }
 
 export const unshieldedLimitLine=(amount:string,unit:string)=>`Up to ${amount} ${unit} on Arkade, outside the pool. Sending it makes the amount public.`;
+
+export const NOT_HELD_ASSET='This payment link asks for an asset this wallet does not hold.';
+export const ASSET_DETAILS_PENDING="This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.";
+
+/** The send form's asset and amount for an asset link; until its decimals are read, the amount could be off by 10^decimals, so it waits. */
+export function assetLinkFill(link:{assetId:string;amount?:string},held:readonly HeldAsset[],meta:AssetMeta|undefined){
+ if(!held.some(h=>h.assetId===link.assetId))throw new Error(NOT_HELD_ASSET);
+ const {assetId,amount}=link,empty={assetId,amount:'',error:''};
+ if(amount===undefined)return empty;
+ if(!meta)return {...empty,error:ASSET_DETAILS_PENDING};
+ return parseAssetAmount(amount,meta.decimals)===undefined?{...empty,error:assetAmountError(meta.decimals,assetUnit(meta))}:{...empty,amount};
+}

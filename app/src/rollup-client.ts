@@ -3,6 +3,7 @@ import {decodeClaimToken} from '../../packages/protocol/src/rollup/bearer.ts';
 import {CARRIER_FREE_SATS,acceptsDepositFee,type DepositFeeSchedule} from '../../packages/protocol/src/rollup/deposit-fee.ts';
 import type {EpochHistoryEntry} from '../../packages/protocol/src/rollup/epoch-account.ts';
 import type {Market} from '@arkade-os/swap';
+import {formatAssetAmount} from './wallet-assets.ts';
 
 export * from '../../src/shielded/pool.ts';
 export * from '../../src/shielded/epoch-pool.ts';
@@ -72,7 +73,7 @@ const grouped=(n:number|bigint)=>n.toLocaleString('en-US');
 export const satsText=(n:number|bigint)=>`${grouped(n)} ${Number(n)===1?'sat':'sats'}`;
 /** `notes` counts the spendable ones. topThree caps a payment at three; notes in flight or awaiting recovery are another gap, which the line does not explain and merging does not close. */
 export const noteCapped=(max:bigint,balance:bigint,notes:number)=>max>0n&&max<balance&&notes>3;
-export const sendLimitLine=(max:bigint,unit:string,capped:boolean)=>capped?`Up to ${grouped(max)} ${unit} in one payment, which can combine at most three of your notes.`:`Up to ${grouped(max)} ${unit} available privately.`;
+export const sendLimitLine=(max:bigint,unit:string,capped:boolean,decimals=0)=>`Up to ${formatAssetAmount(max,decimals)} ${unit} ${capped?'in one payment, which can combine at most three of your notes':'available privately'}.`;
 const charges=(fee:DepositFeeSchedule|undefined):fee is DepositFeeSchedule=>!!(fee&&(fee.fixedSats||fee.bps));
 const feeTerms=({fixedSats,bps}:DepositFeeSchedule)=>{
  const fixed=satsText(fixedSats),share=`${bps/100}% of each deposit`;

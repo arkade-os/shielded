@@ -22,7 +22,7 @@ import {epochIdle} from '../../src/shielded/epoch-sync.ts';
 import {SHIELD_FLOOR_MS,ShieldedWallet,shieldedKeysOf} from '../../src/shielded/wallet.ts';
 import {DUST,bornAtFor,depositFeeFor,poolApiOf,rollupApi,type ArkCoin,type RollupPoolStatus} from '../../src/shielded/pool.ts';
 import {ACCEPT_FEE,PAUSED_LINE,PAUSED_TITLE,arkAssetHoldings,claimTokenError,claimUrl,depositFeeAmountLine,depositFeeBanner,depositFeeLine,depositFeeOutsideLine,holdingsText,invoiceBounds,invoiceCarriesAmount,invoiceFeeClause,invoiceInRange,invoiceLimitsLine,invoiceQr,isInvoice,lightningAddressQr,lightningMinimumLine,lightningShieldFeeOf,listedAssetLine,listingBlocked,noSwapErrorText,noteCapped,openPaymentRequest,payTarget,routeCopy,satsText,sendLimitLine,shieldFeeOfTx,shortValue,type InvoiceBounds} from './rollup-client.ts';
-import {KIND_TEXT,UNVERIFIED,assetMetadata,assetText,assetTitle,assetUnit,formatAssetAmount,heldAssets,holdingKind} from './wallet-assets.ts';
+import {KIND_TEXT,UNVERIFIED,assetAmountError,assetLinkFill,assetMetadata,assetRecipientError,assetText,assetTitle,assetUnit,formatAssetAmount,heldAssets,holdingKind,parseAssetAmount,unshieldedLimitLine} from './wallet-assets.ts';
 import type {IncomingPayment} from './native-deeplink.ts';
 import type {NativeResumeSnapshot} from './native-resume-presentation.ts';
 import {browserProver,prefetchProvingKeys} from './shielded-prover.ts';
@@ -597,21 +597,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{if(!viewActive||suspended||!securityRef.current?.open)return;securityRef.current.querySelector<HTMLElement>(securityView?'.stock-security-subview h3':'.stock-security-menu button')?.focus();},[securityView,viewActive,suspended]);
  // A finished action leaves the bar after a moment; a failure stays until it is dismissed.
  useEffect(()=>{if(!shouldAutoDismissPaymentResult(sheet,pageVisible&&viewActive&&!suspended&&!hidden))return;const timer=setTimeout(()=>sheetOwner.clear(),5000);return()=>clearTimeout(timer);},[sheet,pageVisible,viewActive,suspended,hidden]);
- const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
- const requestKey=JSON.stringify([tab,to,amount,assetId,carrier]);
- const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};
- const {quote,error:quoteError,pending:quoting}=quotes.read(quoteContext);
- useEffect(()=>{
-  quotes.invalidate(quoteContext);
- },[wallet,requestKey,quoteContext.revision]);
- const getQuote=()=>{
-  if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||busyRef.current||restoring.current||quoting)return;
-  const funds=fundsRef.current;if(funds?.wallet!==wallet)return;
-  quotes.load({...quoteContext,revision:funds.watch.update()},()=>{
-   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(carrier||DUST),assets:[{assetId,amount:BigInt(amount)}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
-   return pageQuoteRoute(()=>wallet.router().route(request),()=>startingRef.current);
-  });
- };
  // Each read builds the bearer key's account, so it runs when the link or wallet changes, not on every tick.
  useEffect(()=>{
   setClaimView(undefined);
@@ -629,7 +614,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const claimNow=async()=>{if(await run(()=>wallet!.claimLink(claim),claimView&&'mine' in claimView&&claimView.mine?'Taking back a link':'Claiming a link'))leaveClaim();else setClaimRead(n=>n+1);};
  const mintLink=async()=>{
   const before=new Set(wallet?.links().map(l=>l.key));
-  if(await run(()=>wallet!.mintLink(BigInt(amount),assetId||undefined),'Creating a claim link'))setMinted(wallet!.links().find(l=>!before.has(l.key))?.token??'');
+  if(await run(()=>wallet!.mintLink(assetId?units!:BigInt(amount),assetId||undefined),'Creating a claim link'))setMinted(wallet!.links().find(l=>!before.has(l.key))?.token??'');
  };
  const links=wallet?.links()??[],mintedLink=links.find(l=>l.token===minted),claimProblem=claim?claimTokenError(claim):'';
 
@@ -642,6 +627,26 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const referenced=new Set([...held.map(h=>h.assetId),...rows.flatMap(row=>row.txs.flatMap(tx=>tx.assets??[]).map(a=>a.assetId)),...reserves]),referencedKey=[...referenced].join();
  useEffect(()=>{metadata?.want(referenced);},[metadata,referencedKey,tick]);
  const assetLabel=(id:string,amount:bigint)=>assetText(amount,id,metadata?.get(id));
+ const sendAsset=held.find(h=>h.assetId===assetId),sendMeta=assetId?metadata?.get(assetId):undefined,decimals=sendMeta?.decimals??0,units=assetId?parseAssetAmount(amount,decimals):undefined,recipientError=assetRecipientError(sendAsset,to);
+ // The picker lists only held assets, so one sent away falls back to Bitcoin; details arriving rescale typed digits by 10^decimals, so they go.
+ useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);
+ const amountScale=useRef<[string,number]>(['',0]);
+ useEffect(()=>{const [id,was]=amountScale.current;amountScale.current=[assetId,decimals];if(id===assetId&&was!==decimals)setAmount('');},[assetId,decimals]);
+ const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
+ const requestKey=JSON.stringify([tab,to,amount,assetId,carrier,String(units)]);
+ const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};
+ const {quote,error:quoteError,pending:quoting}=quotes.read(quoteContext);
+ useEffect(()=>{
+  quotes.invalidate(quoteContext);
+ },[wallet,requestKey,quoteContext.revision]);
+ const getQuote=()=>{
+  if(!wallet||tab!=='send'||!to.trim()||(!amount&&!isInvoice(to))||(!!assetId&&units===undefined)||!!recipientError||busyRef.current||restoring.current||quoting)return;
+  const funds=fundsRef.current;if(funds?.wallet!==wallet)return;
+  quotes.load({...quoteContext,revision:funds.watch.update()},()=>{
+   const request:PaymentRequest={raw:to.trim(),...(assetId?{amount:Number(carrier||DUST),assets:[{assetId,amount:units!}]}:amount&&!invoiceCarriesAmount(to)?{amount:Number(amount)}:{})};
+   return pageQuoteRoute(()=>wallet.router().route(request),()=>startingRef.current);
+  });
+ };
  const paidOut=coins.filter(c=>wallet?.isPoolPayout(c)&&!c.assets?.length),paidOutSats=paidOut.reduce((sum,c)=>sum+c.value,0);
  const expiring=coins.filter(c=>!wallet?.isPoolPayout(c)&&!c.assets?.length&&c.expiresAt!==undefined&&c.expiresAt-Date.now()<=SHIELD_FLOOR_MS).reduce((sum,c)=>sum+c.value,0);
  // The funding address shows before the wallet opens, so until then the fee comes from the pool's own status.
@@ -651,7 +656,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const fundingFee=fee?[feeLine,feePaused&&PAUSED_LINE,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' '):'';
  useEffect(()=>{if(feePaused)setFeeConfirmed(false);},[!!feePaused]);
  const requestedAmount=receiveAmount(lnAmount),invoiceAmount=invoiceRequestAmount(lnAmount,lnBounds);
- const ready=pool?.phase==='ready'&&!!secret,connectionProblem=ready?startupError||refreshError:'',unit=assetId?'units':'sats',lnOutside=requestedAmount!==undefined&&!!lnBounds&&!invoiceInRange(lnBounds,requestedAmount);
+ const ready=pool?.phase==='ready'&&!!secret,connectionProblem=ready?startupError||refreshError:'',unit=assetId?assetUnit(sendMeta):'sats',lnOutside=requestedAmount!==undefined&&!!lnBounds&&!invoiceInRange(lnBounds,requestedAmount);
  const receiveOpen=tab==='receive'&&(!docked||sheetOpen)&&viewActive&&!suspended;
  const walletBusy=busy||handleBusy.current||!!actions.current?.busy;
  // Reconnect shuts the wallet down, so like the old balance-card retry it waits out a payment or exit in flight.
@@ -739,13 +744,14 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  },routeCopy(quote.railId).title);}else getQuote();};
 
  const fill=(code:string,replace=false)=>{
-  let target:ReturnType<typeof payTarget>;
-  try{target=payTarget(code);}catch(error){
+  let target:ReturnType<typeof payTarget>,linked:ReturnType<typeof assetLinkFill>|undefined;
+  try{target=payTarget(code);if(target.asset)linked=assetLinkFill(target.asset,held,metadata?.get(target.asset.assetId));}catch(error){
    setCodeError(errorText(error));
    if(replace){setTo('');setAmount('');setAssetId('');setWithSats('');}
    return;
   }
-  setCodeError('');setTo(target.to);
+  setCodeError(linked?.error??'');setTo(target.to);
+  if(linked){setAssetId(linked.assetId);setAmount(linked.amount);if(replace)setWithSats('');return;}
   if(replace){setAssetId('');setWithSats('');setAmount(invoiceCarriesAmount(target.to)?'':target.amount!==undefined?String(target.amount):'');return;}
   // A link's amount is in sats, so it switches an asset send back to Bitcoin; a fixed-amount invoice's own amount wins.
   if(invoiceCarriesAmount(target.to))setAmount('');
@@ -918,19 +924,21 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
        :listed===a.assetId?<p className="stock-muted">Listing sent; the pool registers it within a minute.</p>
        :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}{!a.payout&&listingError?.id===a.assetId&&<p className="stock-blocked" role="alert">{listingError.message}</p>}</div>;})}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
-     {reserves.length>0&&<label>Asset<select value={assetId} onChange={e=>setAssetId(e.target.value)}><option value="">Bitcoin</option>{reserves.map(id=><option key={id} value={id}>Asset {short(id)}</option>)}</select></label>}
+     {held.length>0&&<label>Asset<select value={assetId} onChange={e=>{setAssetId(e.target.value);setAmount('');}}><option value="">Bitcoin</option>{held.map(h=>{const meta=metadata?.get(h.assetId);return <option key={h.assetId} value={h.assetId}>{assetTitle(h.assetId,meta)} · {UNVERIFIED}</option>;})}</select></label>}
      <div className="stock-to"><label>To<input ref={recipientNode} id="stock-to" value={to} onChange={e=>{setTo(e.target.value);setCodeError('');}} placeholder={lightningOn?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'} autoComplete="off" spellCheck={false}/></label>
       <button type="button" className="icon-button" aria-label="Scan a payment code" disabled={suspended||!viewActive||!pageVisible||hidden} onClick={()=>{if(!suspended&&viewActive&&pageVisible&&!hidden){onScannerIntentChange?.(true);setScanning(true);}}}><Icon name="scan"/></button><button type="button" className="icon-button" aria-label="Paste" onClick={()=>void paste()}><Icon name="paste"/></button></div>
      {codeError&&<p className="stock-blocked" role="alert">{codeError}</p>}
-     <label>Amount ({unit})<input inputMode="numeric" value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(e.target.value.replace(/\D/g,''))}/></label>
+     {recipientError&&<p className="stock-blocked" role="alert">{recipientError}</p>}
+     <label>Amount ({unit})<input inputMode={decimals>0?'decimal':'numeric'} value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(assetId?e.target.value:e.target.value.replace(/\D/g,''))}/></label>
+     {assetId&&amount&&units===undefined&&<p className="stock-blocked" role="alert">{assetAmountError(decimals,unit)}</p>}
      {arkAssetRecipient&&<label>Sats with it<input inputMode="numeric" value={withSats} placeholder={String(DUST)} onChange={e=>setWithSats(e.target.value.replace(/\D/g,''))}/></label>}
-      <p className="stock-muted">{synced?<>{sendLimitLine(maxSend,unit,sendCapped)}{sendCapped&&<> <button type="button" className="stock-textlink" disabled={walletBusy} onClick={()=>void run(()=>wallet!.merge(sendField,3),'Merging two notes')}>Combine notes</button></>}</>:'Syncing your wallet…'}</p>
+      <p className="stock-muted">{synced?<>{sendAsset?.shielded===0n?unshieldedLimitLine(formatAssetAmount(sendAsset.unshielded,decimals),unit):sendLimitLine(maxSend,unit,sendCapped,decimals)}{sendCapped&&<> <button type="button" className="stock-textlink" disabled={walletBusy} onClick={()=>void run(()=>wallet!.merge(sendField,3),'Merging two notes')}>Combine notes</button></>}</>:'Syncing your wallet…'}</p>
      <details className="stock-more"><summary>Where each kind of payment goes</summary><p className="stock-muted">A shielded address pays privately inside the pool. An Arkade address leaves the pool, and the amount and destination become public.{batchStreams?' A Bitcoin address leaves the pool through a fresh key used only for that payment, so it is not linked to your deposit address.':' Private networking does not carry Bitcoin payments yet.'}{!lightningOn?' This server does not carry Lightning payments over private networking yet.':PRIVATE?` Lightning funds its swap directly from one pool note. With private networking on, it pays invoices and Lightning addresses at ${new URL(LNURL_BASE).host}, not addresses at other services yet.`:' Lightning funds its swap directly from one pool note.'} A claim link pays whoever opens it first.</p>{lightningOn&&to.trim()&&<p className="stock-muted">Get quote contacts the payment service for Lightning invoices and addresses. It shares the invoice or address and amount; payment happens after you confirm the quote.</p>}</details>
      {quote&&<div className="stock-route"><b>{routeCopy(quote.railId).title}</b><span className="stock-muted">{routeCopy(quote.railId).detail}</span>
       {quote.fee>0&&<small>Fee {sats(quote.fee)} sats · total {sats(quote.total)} sats</small>}</div>}
      {quoteError&&<p className="stock-blocked">{quoteError}</p>}
-     <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))} aria-busy={busy||quoting}>{busy||quoting?<><span className="stock-spinner" aria-hidden="true"/>{busy?'Preparing…':'Getting quote…'}</>:quote?routeCopy(quote.railId).title:'Get quote'}</button>
-     {!to.trim()&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount} onClick={()=>void mintLink()}>Create a claim link</button>}
+     <button className="stock-primary" disabled={busy||restoring.current||!synced||quoting||!to.trim()||(!amount&&!isInvoice(to))||(!!assetId&&units===undefined)||!!recipientError} aria-busy={busy||quoting}>{busy||quoting?<><span className="stock-spinner" aria-hidden="true"/>{busy?'Preparing…':'Getting quote…'}</>:quote?routeCopy(quote.railId).title:'Get quote'}</button>
+     {!to.trim()&&sendAsset?.shielded!==0n&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount||(!!assetId&&units===undefined)} onClick={()=>void mintLink()}>Create a claim link</button>}
      {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(POOL_ORIGIN||location.origin,minted)} qr={claimUrl(POOL_ORIGIN||location.origin,minted)} label="QR code of the claim link"/>
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
      </form>}</>}</div>
