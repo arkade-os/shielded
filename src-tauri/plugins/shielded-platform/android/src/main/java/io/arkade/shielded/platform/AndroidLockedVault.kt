@@ -49,7 +49,8 @@ class AndroidLockedVault(context: Context) {
         check((blob.size == 61 || blob.size == 93) && blob[0] == 1.toByte())
         // A blob without its key can never open; some Android versions delete auth-bound keys when the screen lock is removed.
         val key = store().getKey(alias, null) as? SecretKey ?: throw LockFailure(LOCK_GONE)
-        val cipher = unlocked(Cipher.DECRYPT_MODE, key, blob.copyOfRange(1, 13), "Unlock your Shielded wallet", host, live)
+        val lock = AndroidLockPolicy.unlockPath(records.getString("mode", null), Build.VERSION.SDK_INT)
+        val cipher = unlocked(lock, Cipher.DECRYPT_MODE, key, blob.copyOfRange(1, 13), "Unlock your Shielded wallet", host, live)
         cipher.updateAAD(aad)
         val plaintext = cipher.doFinal(blob, 13, blob.size - 13)
         try {
@@ -60,13 +61,14 @@ class AndroidLockedVault(context: Context) {
     fun create(value: String, host: () -> FragmentActivity?, live: () -> Boolean) = synchronized(access) {
         requireEntropy(value)
         check(available() && !records.contains("entropy"))
-        val cipher = unlocked(Cipher.ENCRYPT_MODE, generate(), null, "Lock your Shielded wallet", host, live)
+        val cipher = unlocked(spec.mode, Cipher.ENCRYPT_MODE, generate(), null, "Lock your Shielded wallet", host, live)
         cipher.updateAAD(aad)
         val plaintext = value.toByteArray(Charsets.UTF_8)
         val encrypted = try { cipher.doFinal(plaintext) } finally { plaintext.fill(0) }
         check(cipher.iv.size == 12)
-        if (!records.edit().putString("entropy", Base64.encodeToString(byteArrayOf(1) + cipher.iv + encrypted, Base64.NO_WRAP)).commit()) {
-            records.edit().remove("entropy").commit()
+        val record = Base64.encodeToString(byteArrayOf(1) + cipher.iv + encrypted, Base64.NO_WRAP)
+        if (!records.edit().putString("entropy", record).putString("mode", spec.mode.name).commit()) {
+            records.edit().clear().commit()
             error("The locked wallet could not be stored.")
         }
     }
@@ -90,16 +92,16 @@ class AndroidLockedVault(context: Context) {
             .setUserAuthenticationRequired(spec.authRequired)
             .setInvalidatedByBiometricEnrollment(spec.invalidatedByEnrollment)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-            builder.setUserAuthenticationParameters(spec.validitySeconds, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
+            builder.setUserAuthenticationParameters(spec.validitySeconds, spec.keyAuth)
         else builder.setUserAuthenticationValidityDurationSeconds(spec.validitySeconds)
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         generator.init(builder.build())
         return generator.generateKey()
     }
 
-    // Below API 30 the prompt cannot carry this cipher, so the cipher is made again inside the key's validity window.
-    private fun unlocked(mode: Int, key: SecretKey, iv: ByteArray?, title: String, host: () -> FragmentActivity?, live: () -> Boolean): Cipher {
-        if (spec.perUse) return cipher(mode, key, iv).also { authorize(title, it, host, live) }
+    // A window key's cipher cannot ride the prompt, so it is made again inside the key's validity window.
+    private fun unlocked(lock: LockMode, mode: Int, key: SecretKey, iv: ByteArray?, title: String, host: () -> FragmentActivity?, live: () -> Boolean): Cipher {
+        if (lock == LockMode.PER_USE) return cipher(mode, key, iv).also { authorize(title, it, host, live) }
         try { cipher(mode, key, iv) } catch (_: UserNotAuthenticatedException) { }
         authorize(title, null, host, live)
         return cipher(mode, key, iv)
