@@ -254,24 +254,39 @@ test('an asset send reads display units, keys its quote on the atomic units, and
  const wallet=walletPage(),form=/<form className="stock-send"[\s\S]*?<\/form>/.exec(wallet)?.[0]??'',early=wallet.indexOf('if(!secret||!wallet)return');
  assert.ok(wallet.includes('units=assetId?parseAssetAmount(amount,decimals):undefined'));
  assert.ok(wallet.includes('const requestKey=JSON.stringify([tab,to,amount,assetId,carrier,String(units)]);'),'details arriving change the units, so the quote is redone');
- assert.ok(wallet.includes('assets:[{assetId,amount:units!}]'));
- assert.doesNotMatch(wallet,/amount:BigInt\(amount\)/);
- assert.ok(form.includes(`{held.length>0&&<label>Asset<select value={assetId} onChange={e=>{setAssetId(e.target.value);setAmount('');}}><option value="">Bitcoin</option>{held.map(h=>{const meta=metadata?.get(h.assetId);return <option key={h.assetId} value={h.assetId}>{assetTitle(h.assetId,meta)} · {UNVERIFIED}</option>;})}</select></label>}`));
+ assert.ok(wallet.includes('{raw:sendTarget(sendAsset,to),...(assetId?{amount:Number(carrier||DUST),assets:[{assetId,amount:units!}]}'),'a unified link pays an Arkade-only asset on its Arkade leg');
+ assert.doesNotMatch(wallet,/amount:BigInt\(amount\)|raw:to\.trim\(\)/);
+ assert.ok(form.includes(`{held.length>0&&<label>Asset<select value={assetId} onChange={e=>{setAssetId(e.target.value);setAmount('');setPendingLink(undefined);setCodeError(c=>c===ASSET_DETAILS_PENDING?'':c);}}><option value="">Bitcoin</option>{held.map(h=>{const meta=metadata?.get(h.assetId);return <option key={h.assetId} value={h.assetId}>{assetTitle(h.assetId,meta)} · {UNVERIFIED}</option>;})}</select></label>}`));
  assert.doesNotMatch(form,/reserves\.map/);
  assert.ok(form.includes(`inputMode={decimals>0?'decimal':'numeric'}`));
+ assert.ok(wallet.includes(`unit=assetId?markedUnit(sendMeta):'sats'`),'the label, both limit lines and the amount error carry the mark');
  assert.ok(wallet.includes('recipientError=assetRecipientError(sendAsset,to)'));
- for(const gate of [/if\(!wallet\|\|tab!=='send'[^\n]*\|\|\(!!assetId&&units===undefined\)\|\|!!recipientError\|\|/,/<button className="stock-primary" disabled=\{[^}]*\|\|\(!!assetId&&units===undefined\)\|\|!!recipientError\}/])assert.match(wallet,gate);
  assert.ok(form.includes('{recipientError&&<p className="stock-blocked" role="alert">{recipientError}</p>}'));
  assert.ok(form.includes('{!to.trim()&&sendAsset?.shielded!==0n&&<button type="button" className="stock-ghost"'),'no claim link for units outside the pool');
  assert.ok(wallet.includes('wallet!.mintLink(assetId?units!:BigInt(amount),assetId||undefined)'));
- for(const hook of [`useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);`,`if(id===assetId&&was!==decimals)setAmount('');`])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<early,hook);
+ for(const hook of [`useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);`,`if(id===assetId&&was!==decimals)setAmount('');`,`useEffect(()=>{if(sendMeta&&!pendingLink)setCodeError(c=>c===ASSET_DETAILS_PENDING?'':c);},[sendMeta,pendingLink]);`])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<early,hook);
 });
 
-test('a payment link for an asset fills the form only through the held and read-decimals checks',()=>{
- const fill=/const fill=\(code:string,replace=false\)=>\{[\s\S]*?\n \};/.exec(walletPage())?.[0]??'';
- assert.ok(fill.includes('if(target.asset)linked=assetLinkFill(target.asset,held,metadata?.get(target.asset.assetId));'),'inside the try, so an asset not held is refused like an unreadable link');
+test('a payment link for an asset waits for the first coin read, then fills only through the held and read-decimals checks',()=>{
+ const wallet=walletPage(),fill=/const fill=\(code:string,replace=false\)=>\{[\s\S]*?\n \};/.exec(wallet)?.[0]??'',early=wallet.indexOf('if(!secret||!wallet)return');
+ assert.ok(wallet.includes('if(data.coins){setCoins(data.coins);setCoinsRead(true);}'));
+ assert.ok(wallet.includes('holdingsKnown=!!wallet&&coinsRead'));
+ assert.ok(fill.includes('setPendingLink(undefined);'),'every fill drops the link it may be replaying');
+ assert.ok(fill.includes('linked=target.asset&&assetLinkFill(target.asset,holdingsKnown?held:undefined,metadata?.get(target.asset.assetId));}catch(error){'),'inside the try, so an asset not held is refused like an unreadable link');
+ assert.ok(fill.includes('if(target.asset&&!linked){setPendingLink({code,replace});stop(ASSET_DETAILS_PENDING);return;}'));
  assert.ok(fill.includes(`setCodeError(linked?.error??'');setTo(target.to);`));
  assert.ok(fill.includes('if(linked){setAssetId(linked.assetId);setAmount(linked.amount);'));
+ const rerun='useEffect(()=>{if(pendingLink&&holdingsKnown)fill(pendingLink.code,pendingLink.replace);},[pendingLink,holdingsKnown]);';
+ assert.ok(wallet.includes(rerun)&&wallet.indexOf(rerun)<early,'it runs again once holdings are known');
+ assert.ok(wallet.includes(`onChange={e=>{setTo(e.target.value);setCodeError('');setPendingLink(undefined);}}`),'typing another recipient drops a waiting link');
+});
+
+test('while a payment link waits, neither a quote nor a claim link can start',()=>{
+ const wallet=walletPage(),form=/<form className="stock-send"[\s\S]*?<\/form>/.exec(wallet)?.[0]??'';
+ assert.ok(wallet.includes('sendBlocked=!!pendingLink||(!!assetId&&(!sendAsset||units===undefined))'));
+ assert.match(wallet,/if\(!wallet\|\|tab!=='send'[^\n]*\|\|sendBlocked\|\|!!recipientError\|\|/);
+ assert.match(form,/<button className="stock-primary" disabled=\{[^}]*\|\|sendBlocked\|\|!!recipientError\}/);
+ assert.match(form,/<button type="button" className="stock-ghost" disabled=\{[^}]*\|\|!amount\|\|sendBlocked\} onClick=\{\(\)=>void mintLink\(\)\}>Create a claim link/);
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{

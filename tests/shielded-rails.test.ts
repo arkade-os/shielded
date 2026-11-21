@@ -9,6 +9,7 @@ import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {lightningRails,lnurlShieldedRail} from '../src/shielded/lightning.ts';
 import {ASSET_CARRIER_SHORT,ASSET_CARRIER_SHORT_BARE,SHIELDED_PRIORITY,assetCarrierShortfall,poolFundedExit,shieldedRail,shieldedTargetOf,shieldedWithdrawRail,unshieldedAssetRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
+import {sendTarget} from '../app/src/wallet-assets.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet');
@@ -266,6 +267,15 @@ test('an asset held in the pool and on Arkade withdraws from the pool first, and
  assert.equal((await rich.route(request)).railId,'shielded-withdraw');
  assert.deepEqual(reads,[],'the pool route never reads the Arkade coins');
  assert.equal((await poor.route(request)).railId,'ark-asset');
+});
+
+test('an asset held only on Arkade routes a unified link on its Arkade leg, so it never quotes a private payment',async()=>{
+ const unified=`bitcoin:?ark=${ELSEWHERE}&shielded=${SHROL}`,request=(raw:string)=>({raw,amount:330,assets:[{assetId:ASSET,amount:9n}]});
+ const router=routerOf(fake({canWithdraw:false,coins:[coin(9n)]}));
+ assert.equal((await router.route(request(unified))).railId,'shielded','the raw link quotes a private payment the pool cannot make');
+ assert.equal((await router.route(request(sendTarget({assetId:ASSET,shielded:0n,unshielded:9n},unified)))).railId,'ark-asset');
+ assert.equal(sendTarget({assetId:ASSET,shielded:4n,unshielded:9n},unified),unified,'an asset in the pool keeps its private route');
+ assert.equal(sendTarget(undefined,` ${unified} `),unified);
 });
 
 test("a caller's own coin selection passes the guard untouched",async()=>{

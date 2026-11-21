@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ASSET_DETAILS_PENDING,KIND_TEXT,NOT_HELD_ASSET,UNSHIELDED_ASSET_RECIPIENT,assetAmountError,assetLinkFill,assetMetadata,assetRecipientError,heldAssets,holdingKind,requestAssets,unshieldedLimitLine,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
+import {ASSET_DETAILS_PENDING,KIND_TEXT,NOT_HELD_ASSET,UNSHIELDED_ASSET_RECIPIENT,assetAmountError,assetLinkFill,assetMetadata,markedUnit,assetRecipientError,heldAssets,holdingKind,requestAssets,unshieldedLimitLine,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 const id='1e291e28'.padEnd(64,'0')+'0000';
 const tether={name:'Tether USD',ticker:'USDT',decimals:6};
@@ -153,10 +153,16 @@ test('a payment link fills an asset amount only at the decimals this wallet has 
  const h=[held(0n,9n)],usdt={ticker:'USDT',decimals:2};
  assert.equal(NOT_HELD_ASSET,'This payment link asks for an asset this wallet does not hold.');
  assert.equal(ASSET_DETAILS_PENDING,"This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.");
+ for(const id of ['a','b'])assert.equal(assetLinkFill({assetId:id,amount:'12.5'},undefined,usdt),undefined,'before the first coin read nothing is refused: the link waits');
  assert.throws(()=>assetLinkFill({assetId:'b',amount:'1'},h,usdt),{message:NOT_HELD_ASSET});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.5'},h,undefined),{assetId:'a',amount:'',error:ASSET_DETAILS_PENDING});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.5'},h,usdt),{assetId:'a',amount:'12.5',error:''});
- assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.555'},h,usdt),{assetId:'a',amount:'',error:assetAmountError(2,'USDT')});
- assert.deepEqual(assetLinkFill({assetId:'a',amount:'1.5'},h,{decimals:0}),{assetId:'a',amount:'',error:assetAmountError(0,'units')});
+ assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.555'},h,usdt),{assetId:'a',amount:'',error:'Enter an amount of USDT · Unverified above zero, with at most 2 decimal places.'});
+ assert.deepEqual(assetLinkFill({assetId:'a',amount:'1.5'},h,{decimals:0}),{assetId:'a',amount:'',error:assetAmountError(0,'units · Unverified')});
  assert.deepEqual(assetLinkFill({assetId:'a'},h,undefined),{assetId:'a',amount:'',error:''},'a link without an amount has none to wait for');
+});
+
+test('the send form names an asset unit with the Unverified mark',()=>{
+ assert.equal(markedUnit(tether),'USDT · Unverified');
+ assert.equal(markedUnit(),'units · Unverified');
 });

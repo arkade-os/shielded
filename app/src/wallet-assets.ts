@@ -61,6 +61,8 @@ export function assetUnit(meta?:AssetMeta):string{
  return meta?.ticker??'units';
 }
 
+export const markedUnit=(meta?:AssetMeta)=>`${assetUnit(meta)} · ${UNVERIFIED}`;
+
 export function assetText(atomic:bigint,assetId:string,meta?:AssetMeta):string{
  const amount=formatAssetAmount(atomic,meta?.decimals??0);
  const body=meta?.ticker?`${amount} ${meta.ticker}`:`${amount} units of asset ${shortId(assetId)}`;
@@ -138,14 +140,18 @@ export function assetRecipientError(asset:HeldAsset|undefined,to:string):string{
 
 export const unshieldedLimitLine=(amount:string,unit:string)=>`Up to ${amount} ${unit} on Arkade, outside the pool. Sending it makes the amount public.`;
 
+/** Only the Arkade leg can take an asset outside the pool, so a unified link is routed on that leg, never on its shielded one. */
+export const sendTarget=(asset:HeldAsset|undefined,to:string)=>asset?.shielded===0n?arkTarget(to.trim())??to.trim():to.trim();
+
 export const NOT_HELD_ASSET='This payment link asks for an asset this wallet does not hold.';
 export const ASSET_DETAILS_PENDING="This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.";
 
-/** The send form's asset and amount for an asset link; until its decimals are read, the amount could be off by 10^decimals, so it waits. */
-export function assetLinkFill(link:{assetId:string;amount?:string},held:readonly HeldAsset[],meta:AssetMeta|undefined){
+/** The send form's asset and amount for an asset link, or undefined while `held` is unread; until its decimals are read, the amount could be off by 10^decimals, so it waits. */
+export function assetLinkFill(link:{assetId:string;amount?:string},held:readonly HeldAsset[]|undefined,meta:AssetMeta|undefined){
+ if(!held)return undefined;
  if(!held.some(h=>h.assetId===link.assetId))throw new Error(NOT_HELD_ASSET);
  const {assetId,amount}=link,empty={assetId,amount:'',error:''};
  if(amount===undefined)return empty;
  if(!meta)return {...empty,error:ASSET_DETAILS_PENDING};
- return parseAssetAmount(amount,meta.decimals)===undefined?{...empty,error:assetAmountError(meta.decimals,assetUnit(meta))}:{...empty,amount};
+ return parseAssetAmount(amount,meta.decimals)===undefined?{...empty,error:assetAmountError(meta.decimals,markedUnit(meta))}:{...empty,amount};
 }
