@@ -235,7 +235,7 @@ test('the Home list names every held asset with its kind and the Unverified mark
  assert.doesNotMatch(wallet,/shownAssets/,'shownAssets is gone');
  const titles=wallet.match(/assetTitle\(/g)?.length??0;
  assert.ok(titles>0);
- assert.equal(wallet.match(/\{assetTitle\([^)]*\)\} · [^<]*\{UNVERIFIED\}<\/(?:small|option)>/g)?.length,titles,'every asset title on the page carries the mark');
+ assert.equal(wallet.match(/\{assetTitle\([^)]*\)\} · [^<]*\{UNVERIFIED\}(?:<\/(?:small|option)>|`)/g)?.length,titles,'every asset title on the page carries the mark');
 });
 
 test('no asset amount on the page skips the formatter',()=>{
@@ -287,6 +287,17 @@ test('while a payment link waits, neither a quote nor a claim link can start',()
  assert.match(wallet,/if\(!wallet\|\|tab!=='send'[^\n]*\|\|sendBlocked\|\|!!recipientError\|\|/);
  assert.match(form,/<button className="stock-primary" disabled=\{[^}]*\|\|sendBlocked\|\|!!recipientError\}/);
  assert.match(form,/<button type="button" className="stock-ghost" disabled=\{[^}]*\|\|!amount\|\|sendBlocked\} onClick=\{\(\)=>void mintLink\(\)\}>Create a claim link/);
+});
+
+test('a receive request names only an asset whose details are read, and asks in its units',()=>{
+ const wallet=walletPage(),early=wallet.indexOf('if(!secret||!wallet)return');
+ assert.ok(wallet.includes(`requestIds=requestAssets(receiveMode,held,reserves,id=>!!metadata?.get(id)),requestAsset=requestIds.includes(chosenRequestAsset)?chosenRequestAsset:''`));
+ assert.ok(wallet.includes('amountQrValue(receiveMode,receiveValue,lnAmount,requestMeta&&{assetId:requestAsset,decimals:requestMeta.decimals})'),'the requested asset\'s decimals, not the send form\'s');
+ assert.ok(wallet.includes("label:`${assetTitle(id,meta)} · ${UNVERIFIED}`,unit:markedUnit(meta),decimals:meta?.decimals??0"));
+ assert.ok(wallet.includes("request={{options:requestOptions,assetId:requestAsset,onAsset:id=>{setRequestAsset(id);setLnAmount('');}}}"));
+ const clear="useEffect(()=>{setLnAmount('');},[requestAsset,requestMeta?.decimals]);";
+ assert.ok(wallet.includes(clear)&&wallet.indexOf(clear)<early,'a tab switch or a lost holding changes the asset without a pick');
+ assert.ok(wallet.includes('Requested {requestMeta?assetText(parseAssetAmount(lnAmount,requestMeta.decimals)!,requestAsset,requestMeta):satsText(requestedAmount!)}.'),'a whole-number asset amount never reads as sats');
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{

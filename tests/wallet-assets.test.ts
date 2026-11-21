@@ -152,7 +152,7 @@ test('the limit line for Arkade units says they are public',()=>{
 test('a payment link fills an asset amount only at the decimals this wallet has read, and never for an asset it does not hold',()=>{
  const h=[held(0n,9n)],usdt={ticker:'USDT',decimals:2};
  assert.equal(NOT_HELD_ASSET,'This payment link asks for an asset this wallet does not hold.');
- assert.equal(ASSET_DETAILS_PENDING,"This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.");
+ assert.equal(ASSET_DETAILS_PENDING,"This wallet is still reading this asset's details. The link's amount will fill in a moment.");
  assert.throws(()=>assetLinkFill({assetId:'b',amount:'1'},h,usdt),{message:NOT_HELD_ASSET});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.5'},h,usdt),{assetId:'a',amount:'12.5',error:''});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.555'},h,usdt),{assetId:'a',amount:'',error:'Enter an amount of USDT · Unverified above zero, with at most 2 decimal places.'});

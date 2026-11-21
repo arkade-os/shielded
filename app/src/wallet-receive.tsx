@@ -5,11 +5,12 @@ import {QrCode} from './wallet-qr.tsx';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindSwipeGesture} from './wallet-gestures.ts';
 import {invoiceInRange,type InvoiceBounds} from './rollup-client.ts';
-import {formatAssetAmount,parseAssetAmount} from './wallet-assets.ts';
+import {assetAmountError,formatAssetAmount,parseAssetAmount} from './wallet-assets.ts';
 import './wallet-receive.css';
 
 export type ReceiveMode='unified'|'shielded'|'arkade';
 export type ReceivePayload='unified'|'shielded'|'lightning'|'invoice'|'arkade';
+export type ReceiveAsset={id:string;label:string;unit:string;decimals:number};
 
 type ReceivePortalProps={
  active?:boolean;
@@ -21,6 +22,7 @@ type ReceivePortalProps={
  qrValue?:string;
  amount?:string;
  onAmount?:(amount:string)=>void;
+ request?:{options:readonly ReceiveAsset[];assetId:string;onAsset:(assetId:string)=>void};
  loading?:string;
  description:string;
  action?:ReactNode;
@@ -72,7 +74,7 @@ export function ReceiveQrButton({value,label,disabled=false}:{value:string;label
  return <div className="receive-qr-control"><button type="button" className="receive-qr-wrap" aria-label={`Copy ${label} from QR code`} title={`Copy ${label}`} disabled={disabled||copyState==='copying'} aria-busy={copyState==='copying'} onClick={copy}><QrCode value={value} label={`QR code for your ${label}`}/></button>{(copyState==='copied'||copyState==='failed')&&<span className={'receive-qr-feedback'+(copyState==='failed'?' is-error':'')} role="status" aria-live="polite">{copyState==='copied'?'Copied':'Couldn’t copy. Try again.'}</span>}</div>;
 }
 
-export function ReceivePortal({active=true,unified=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,loading,description,action,children}:ReceivePortalProps){
+export function ReceivePortal({active=true,unified=true,mode,payload,onModeChange,value,qrValue,amount,onAmount,request,loading,description,action,children}:ReceivePortalProps){
  const [expanded,setExpanded]=useState(false),[amountOpen,setAmountOpen]=useState(false),focusNext=useRef(false);
  const buttons=useRef<(HTMLButtonElement|null)[]>([]);
  const strip=useRef<HTMLDivElement>(null),lens=useRef<HTMLSpanElement>(null);
@@ -82,7 +84,8 @@ export function ReceivePortal({active=true,unified=true,mode,payload,onModeChang
  const navigation=useRef({selected,onModeChange,modes});navigation.current={selected,onModeChange,modes};
  const canShare=typeof navigator!=='undefined'&&typeof navigator.share==='function';
  const invoice=payload==='invoice';
- const invalidAmount=!!amount&&receiveAmount(amount)===undefined;
+ const asset=request?.options.find(option=>option.id===request.assetId),unit=asset?.unit??'sats';
+ const invalidAmount=!!amount&&(asset?parseAssetAmount(amount,asset.decimals):receiveAmount(amount))===undefined;
  const displayValue=invalidAmount?'':value;
  useEffect(()=>setExpanded(false),[mode,value]);
  useEffect(()=>{
@@ -122,10 +125,11 @@ export function ReceivePortal({active=true,unified=true,mode,payload,onModeChang
   </div>
   {children&&<div className="receive-details">{children}</div>}
   {onAmount&&(amountOpen||amount?<div className="receive-details receive-amount">
-   <label className="receive-amount-field">Exact amount<input ref={focusIfAsked} inputMode="numeric" aria-label="Receive amount in sats" aria-invalid={invalidAmount||undefined} aria-describedby={invalidAmount?'receive-amount-error':undefined} placeholder="Amount in sats" value={amount??''} onChange={event=>onAmount(event.target.value)}/></label>
-   <span className="receive-amount-unit" aria-hidden="true">sats</span>
+   {!!request?.options.length&&<select aria-label="Asset to request" value={request.assetId} onChange={event=>{setAmountOpen(true);request.onAsset(event.target.value);}}><option value="">Bitcoin</option>{request.options.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}</select>}
+   <label className="receive-amount-field">Exact amount<input ref={focusIfAsked} inputMode={asset?.decimals?'decimal':'numeric'} aria-label={`Receive amount in ${unit}`} aria-invalid={invalidAmount||undefined} aria-describedby={invalidAmount?'receive-amount-error':undefined} placeholder={`Amount in ${unit}`} value={amount??''} onChange={event=>onAmount(event.target.value)}/></label>
+   <span className="receive-amount-unit" aria-hidden="true">{unit}</span>
    <button type="button" className="icon-button receive-amount-remove" aria-label="Remove amount" onClick={()=>{focusNext.current=true;setAmountOpen(false);onAmount('');}}><Icon name="close" size={16}/></button>
-   {invalidAmount&&<p id="receive-amount-error" className="receive-amount-error" role="alert">Enter a whole number from 1 to 9,999,999,999 sats, without leading zeros.</p>}
+   {invalidAmount&&<p id="receive-amount-error" className="receive-amount-error" role="alert">{asset?assetAmountError(asset.decimals,unit):'Enter a whole number from 1 to 9,999,999,999 sats, without leading zeros.'}</p>}
   </div>:<div className="receive-details receive-amount"><button ref={focusIfAsked} type="button" className="receive-amount-toggle" onClick={()=>{focusNext.current=true;setAmountOpen(true);}}>Request an exact amount</button></div>)}
   <GlassRefraction target={lens} active={active} radius={999} bezel={9} strength={14}/>
  </section>;

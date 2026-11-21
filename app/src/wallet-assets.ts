@@ -144,7 +144,7 @@ export const unshieldedLimitLine=(amount:string,unit:string)=>`Up to ${amount} $
 export const sendTarget=(asset:HeldAsset|undefined,to:string)=>asset?.shielded===0n?arkTarget(to.trim())??to.trim():to.trim();
 
 export const NOT_HELD_ASSET='This payment link asks for an asset this wallet does not hold.';
-export const ASSET_DETAILS_PENDING="This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.";
+export const ASSET_DETAILS_PENDING="This wallet is still reading this asset's details. The link's amount will fill in a moment.";
 
 /** The send form's asset and amount for an asset link, or undefined while it must wait: until `held` is read, and until a linked amount's decimals are, since it could be off by 10^decimals. */
 export function assetLinkFill(link:{assetId:string;amount?:string},held:readonly HeldAsset[]|undefined,meta:AssetMeta|undefined){

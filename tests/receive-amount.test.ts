@@ -189,6 +189,30 @@ test('asset request QRs carry the asset id and display units, as the Arkade wall
  for(const amount of ['12.555','1,000','','0'])assert.equal(amountQrValue('arkade','tark_example',amount,asset),undefined,amount);
 });
 
+test('an asset request labels, validates and reads its amount in the asset\'s units',()=>{
+ const id='ee'.repeat(34),usdt={id,label:'Tether USD (USDT) · Unverified',unit:'USDT',decimals:2},picked:string[]=[];
+ const props=(amount:string,assetId=id,options:readonly typeof usdt[]=[usdt])=>({mode:'arkade',payload:'arkade',value:'tark_example',description:'Test receive',amount,onAmount:()=>{},onModeChange:()=>{},request:{options,assetId,onAsset:(chosen:string)=>{picked.push(chosen);}}}) as const;
+ const html=(...args:Parameters<typeof props>)=>renderToStaticMarkup(createElement(ReceivePortal,props(...args)));
+ const valid=html('12.5');
+ assert.ok(valid.includes(`<select aria-label="Asset to request"><option value="">Bitcoin</option><option value="${id}" selected="">Tether USD (USDT) · Unverified</option></select>`));
+ for(const part of ['aria-label="Receive amount in USDT"','placeholder="Amount in USDT"','inputMode="decimal"','aria-hidden="true">USDT</span>','class="stock-qr"'])assert.ok(valid.includes(part),part);
+ assert.doesNotMatch(valid,/aria-invalid/);
+ const invalid=html('12.555');
+ assert.match(invalid,/aria-invalid="true"/);
+ assert.ok(invalid.includes('role="alert">Enter an amount of USDT above zero, with at most 2 decimal places.</p>'));
+ assert.doesNotMatch(invalid,/class="stock-qr"/);
+ assert.match(html('330',''),/aria-label="Receive amount in sats"/);
+ assert.ok(html('12.5','').includes('role="alert">Enter a whole number from 1 to 9,999,999,999 sats, without leading zeros.</p>'));
+ assert.doesNotMatch(html('330','',[]),/<select/,'nothing to pick, no picker');
+ let view:ReactNode;
+ function Capture(){view=ReceivePortal(props('12.5'));return view;}
+ renderToStaticMarkup(createElement(Capture));
+ type Select={children?:ReactNode;onChange?:(event:{target:{value:string}})=>void};
+ const select=(function find(node:ReactNode):Select|undefined{for(const child of Children.toArray(node)){if(!isValidElement<Select>(child))continue;if(child.type==='select')return child.props;const found=find(child.props.children);if(found)return found;}})(view);
+ select?.onChange?.({target:{value:''}});
+ assert.deepEqual(picked,['']);
+});
+
 test('asset request QRs roundtrip through the payment decoder',()=>{
  const assetId='ab'.repeat(34);
  for(const [amount,decimals]of [['12.5',2],['0.01',2],['123456789',0],['0.000000000000000001',18]]as const){
