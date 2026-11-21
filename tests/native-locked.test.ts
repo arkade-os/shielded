@@ -86,10 +86,10 @@ test('a cancelled unlock waits for the user before it prompts again',async()=>{
  assert.match(src('NativeWallet.tsx'),/onUnlock:\(\)=>\{unlockHeld\.current=undefined;void open\(\);\}/);
 });
 
-test('a weak biometric that cannot release the key asks for the PIN or fingerprint and keeps the unlock screen',async()=>{
+test('a weak biometric that cannot release the key asks for the screen-lock credential and keeps the unlock screen',async()=>{
  const made=newLockedSecret(12),cache=lockedSecretCache(),hold:{current?:Error}={};use({locked:made.entropy,weak:1});
- await assert.rejects(open(cache,hold),{name:'NativeUnlock',gone:false,message:'Unlock with your PIN or fingerprint.'});
- hold.current=undefined;assert.equal(await open(cache,hold),made.master,'a retry with the PIN or a fingerprint opens it');assert.equal(vault.prompts,2);
+ await assert.rejects(open(cache,hold),{name:'NativeUnlock',gone:false,message:'This phone’s fingerprint or face unlock cannot open the lock. Use your screen-lock PIN, pattern or password.'});
+ hold.current=undefined;assert.equal(await open(cache,hold),made.master,'a retry with the screen-lock credential opens it');assert.equal(vault.prompts,2);
 });
 
 test('the fallback setup journal never holds the entropy or the master',async()=>{
