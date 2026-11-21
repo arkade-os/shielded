@@ -2,11 +2,11 @@
   "schema": 1,
   "channel": "native-mutinynet",
   "network": "mutinynet",
-  "commit": "0d29b4626698ecec34dbcb770e182d7ebadb8199",
-  "buildNumber": 314,
+  "commit": "967fbb5d678c3e8cf833737d3e87b51bfa2af800",
+  "buildNumber": 324,
   "version": "0.1.0",
-  "publishedAt": "2026-11-20T23:12:42.225Z",
-  "releaseUrl": "https://github.com/arkade-os/shielded/releases/tag/native-mutinynet-0d29b4626698-run44817055809-attempt2",
+  "publishedAt": "2026-11-21T04:00:00.582Z",
+  "releaseUrl": "https://github.com/arkade-os/shielded/releases/tag/native-mutinynet-967fbb5d678c-run44861307629-attempt1",
   "environment": {
     "node": "24.22.2",
     "rust": "1.96.0",
@@ -17,99 +17,99 @@
   "packages": [
     {
       "platform": "windows-x86_64",
-      "file": "shielded-mutinynet-windows-x86_64-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_x64-setup.exe",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-windows-x86_64-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_x64-setup.exe",
+      "file": "shielded-mutinynet-windows-x86_64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_x64-setup.exe",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-windows-x86_64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_x64-setup.exe",
       "profile": "release",
       "requiresSigning": false,
-      "bytes": 306802789,
-      "sha256": "40a365266f304a0eb74474b0f2da3e9e18e6deba2b336c9ab72ac4b2f759feb5",
-      "signature": "Dx5OYcNEugmNx+bz43r941abF6ZlWzJ6DmRxN7J5CrqqrQKY37ar60VQJsDJ8d50R1jo1aohSJp3q2D73704Bg=="
+      "bytes": 306822624,
+      "sha256": "da0fd1acb741c4c2edd7e08d9c8b0f5626ec4690f757d3dc0e139aa78755edbb",
+      "signature": "7+Q1iVTIs/EpoxvyyAlFwKD3bLAr0SI8QigxFXazX1XRmbtGFj35RPKMAIYqLA8H5bhZ9+y0P1m/WLwe30/fCA=="
     },
     {
       "platform": "linux-x86_64",
-      "file": "shielded-mutinynet-linux-x86_64-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_amd64.AppImage",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-linux-x86_64-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_amd64.AppImage",
+      "file": "shielded-mutinynet-linux-x86_64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_amd64.AppImage",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-linux-x86_64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_amd64.AppImage",
       "profile": "release",
       "requiresSigning": false,
-      "bytes": 94108152,
-      "sha256": "d9a0b1e4ae4039492dc3df84f48db3084e1ed7780ac1b92df764e3c9219364cb",
-      "signature": "nVtOKTRZ0k3PVrvImLb2p7JQ3ZOS3vQbxbVNa7BDktdS5lywZ75UaOVdJgeDx6Fu+trUmJXayomuYt24dopUDg=="
+      "bytes": 94136824,
+      "sha256": "38020317ca2206deb53875bf0e6e8530e90cf36208d64f72a7c0f7e90dfa3d67",
+      "signature": "MmX+SzHQL7CC2zliPUeJizilI7iZhHlTgO3OPvJgWkaN1COKIuMuCbS8ues5cA/EZy+Qm9JkGiUwdwlGuwnACg=="
     },
     {
       "platform": "linux-x86_64",
-      "file": "shielded-mutinynet-linux-x86_64-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_amd64.deb",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-linux-x86_64-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_amd64.deb",
+      "file": "shielded-mutinynet-linux-x86_64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_amd64.deb",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-linux-x86_64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_amd64.deb",
       "profile": "release",
       "requiresSigning": false,
-      "bytes": 16876540,
-      "sha256": "90e7f88a593061cbad12caeb2d00e47b1f04a8393a32a6a602bc7dfdc9f4b945"
+      "bytes": 16923554,
+      "sha256": "e89903270a9af7a0d56ce0cddaa6abc5e0dc18ac827a694c1ebc9d8aa0fcad02"
     },
     {
       "platform": "macos-universal",
-      "file": "shielded-mutinynet-macos-universal-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_universal.dmg",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-macos-universal-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded_0.1.0_universal.dmg",
+      "file": "shielded-mutinynet-macos-universal-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_universal.dmg",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-macos-universal-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded_0.1.0_universal.dmg",
       "profile": "release",
       "requiresSigning": false,
-      "bytes": 25734927,
-      "sha256": "6325fde9cd9bc6bf6633f71cf33cd1c24b5a2e9df6d1d95eb0c0d133ffc1c3ab"
+      "bytes": 25785898,
+      "sha256": "80f6d974238e783ac1c1a7f0a88b82e8d14968e2438b228625fbbff1d3b2615a"
     },
     {
       "platform": "macos-universal",
-      "file": "shielded-mutinynet-macos-universal-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded.app.zip",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-macos-universal-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded.app.zip",
+      "file": "shielded-mutinynet-macos-universal-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded.app.zip",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-macos-universal-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded.app.zip",
       "profile": "release",
       "requiresSigning": false,
-      "bytes": 25600901,
-      "sha256": "e0d07b37a28bf17ff1126328fc3db4dd1b51ed4f67bc9a3517c5f6bfab9ee645",
-      "signature": "gaVLeO4GhuO080jjlvkxjX+lhr2cX43p5UDWtOfs/0E+lHxrjFkDVOVl68zbGxGrCQDs7kmYHZ9utxGoQPL7DQ=="
+      "bytes": 25657452,
+      "sha256": "106f62b32b5c095c09f5c36e9f6d29f103f4518bbe853f2ae2b198ecc3dbc137",
+      "signature": "uQQ6R3tcmPgyNiQEVHn8jPJA7hsqi/Aa7q1+18nS2/WJ+/lNj4ImJaRSrDZwNjun5e9RhRZP+d7PGZu50tyXDw=="
     },
     {
       "platform": "android-arm64",
-      "file": "shielded-mutinynet-android-arm64-0d29b4626698-run44817055809-attempt2-mutinynet-debug-app-universal-debug.apk",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-android-arm64-0d29b4626698-run44817055809-attempt2-mutinynet-debug-app-universal-debug.apk",
+      "file": "shielded-mutinynet-android-arm64-967fbb5d678c-run44861307629-attempt1-mutinynet-debug-app-universal-debug.apk",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-android-arm64-967fbb5d678c-run44861307629-attempt1-mutinynet-debug-app-universal-debug.apk",
       "profile": "debug",
       "requiresSigning": false,
-      "bytes": 44669814,
-      "sha256": "320656ee88bd6ab0ee47f27a27e25ef4f7c675f7dfdfc4411ce69e3746a5c714"
+      "bytes": 44689670,
+      "sha256": "7f1ae201ad735193bf797182993e0f82be19590b71af21119dd77e65cfdc1f39"
     },
     {
       "platform": "android-arm64",
-      "file": "shielded-mutinynet-android-arm64-0d29b4626698-run44817055809-attempt2-mutinynet-release-unsigned-app-universal-release-unsigned.apk",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-android-arm64-0d29b4626698-run44817055809-attempt2-mutinynet-release-unsigned-app-universal-release-unsigned.apk",
+      "file": "shielded-mutinynet-android-arm64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-unsigned-app-universal-release-unsigned.apk",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-android-arm64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-unsigned-app-universal-release-unsigned.apk",
       "profile": "release",
       "requiresSigning": true,
-      "bytes": 35555130,
-      "sha256": "f95cc052f8d88f9f9dd72efb2a0b609475c28105bbbbf33c6592b12fdeb8c8a3"
+      "bytes": 35818608,
+      "sha256": "d3b7c844d73784e3236264c02e71e6949437a3de6c481eaf6c4ec1bc03779f30"
     },
     {
       "platform": "ios",
-      "file": "shielded-mutinynet-ios-0d29b4626698-run44817055809-attempt2-mutinynet-release-unsigned-Shielded.ipa",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-ios-0d29b4626698-run44817055809-attempt2-mutinynet-release-unsigned-Shielded.ipa",
+      "file": "shielded-mutinynet-ios-967fbb5d678c-run44861307629-attempt1-mutinynet-release-unsigned-Shielded.ipa",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-ios-967fbb5d678c-run44861307629-attempt1-mutinynet-release-unsigned-Shielded.ipa",
       "profile": "release",
       "requiresSigning": true,
-      "bytes": 10399440,
-      "sha256": "59355bb01cfc2f249acbc2376bea9937c1fb5bb3f8c0e9b654f3cf76477013b2"
+      "bytes": 10426106,
+      "sha256": "8260d2e3ffa32210684b98434e8b87ecf9627aae51976f1767708a5d51503c16"
     },
     {
       "platform": "ios",
-      "file": "shielded-mutinynet-ios-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded-simulator.app.zip",
-      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-ios-0d29b4626698-run44817055809-attempt2-mutinynet-release-Shielded-simulator.app.zip",
+      "file": "shielded-mutinynet-ios-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded-simulator.app.zip",
+      "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-ios-967fbb5d678c-run44861307629-attempt1-mutinynet-release-Shielded-simulator.app.zip",
       "profile": "release",
       "requiresSigning": false,
-      "bytes": 10245333,
-      "sha256": "68c33cf628a2964e5d12e5bc3df17746a9a88b56441dd23cfeeef09902c3a952"
+      "bytes": 10271417,
+      "sha256": "cdd2abde889ffc414432d4ef82c4a3b9d8821f9694dd27ae210aae19ad76b464"
     }
   ],
   "androidUpdate": {
     "platform": "android-arm64",
-    "file": "shielded-mutinynet-android-arm64-0d29b4626698-run44817055809-attempt2-mutinynet-release-signed.apk",
-    "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-0d29b4626698-run44817055809-attempt2/shielded-mutinynet-android-arm64-0d29b4626698-run44817055809-attempt2-mutinynet-release-signed.apk",
+    "file": "shielded-mutinynet-android-arm64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-signed.apk",
+    "url": "https://github.com/arkade-os/shielded/releases/download/native-mutinynet-967fbb5d678c-run44861307629-attempt1/shielded-mutinynet-android-arm64-967fbb5d678c-run44861307629-attempt1-mutinynet-release-signed.apk",
     "profile": "release",
     "requiresSigning": false,
-    "bytes": 35623273,
-    "sha256": "2bca694bf109b67babe7ce6c8d48cda772869d3ee300b63303f44301e9d6867c",
+    "bytes": 35890103,
+    "sha256": "da670a4eefba03c0f06617b655f4309ec0996223b5ce025ec1d5f8f1a32dec09",
     "packageName": "io.arkade.shielded",
-    "versionCode": 100314,
+    "versionCode": 100324,
     "signerSha256": "374219922ff53597fc064bd511f8af6475118ddc681d47f6b86bbc884a252855"
   }
 }
