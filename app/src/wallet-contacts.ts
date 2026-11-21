@@ -22,11 +22,16 @@ export const contactAddress=(raw:string)=>{
 };
 
 const unescape=(s:string)=>{try{return decodeURIComponent(s);}catch{return s;}};
-/** The legs of a canonical `bitcoin:` URI, read as `payTarget` does: keys lowercased, values decoded. */
-function uriLegs(text:string):{path:string;legs:Map<string,string>}|undefined{
+/** The legs of a canonical `bitcoin:` URI, read as `payTarget` does: keys lowercased, values decoded. A repeated key keeps every value, and a second `?` splits legs like `&`, so nothing can hide an invoice. */
+function uriLegs(text:string):{path:string;legs:Map<string,string[]>}|undefined{
  if(!/^bitcoin:/i.test(text))return undefined;
- const [path='',query='']=text.slice(8).split('?');
- return {path:unescape(path),legs:new Map(query.split('&').filter(Boolean).map(pair=>{const at=pair.indexOf('=');return [(at<0?pair:pair.slice(0,at)).toLowerCase(),unescape(at<0?'':pair.slice(at+1))];}))};
+ const rest=text.slice(8),at0=rest.indexOf('?'),path=at0<0?rest:rest.slice(0,at0),legs=new Map<string,string[]>();
+ for(const pair of at0<0?[]:rest.slice(at0+1).split(/[&?]/)){
+  if(!pair)continue;
+  const at=pair.indexOf('='),key=(at<0?pair:pair.slice(0,at)).toLowerCase();
+  legs.set(key,[...legs.get(key)??[],unescape(at<0?'':pair.slice(at+1))]);
+ }
+ return {path:unescape(path),legs};
 }
 const isInvoice=(v:string)=>isLightningInvoice(v.toLowerCase());
 // Base58 is case-sensitive: folding it would let a near-miss address borrow a contact's name.
@@ -34,20 +39,20 @@ const keyOf=(v:string)=>isBtcAddress(v)&&!/^(bc|tb|bcrt)1/i.test(v)?v:v.toLowerC
 
 export function contactKeys(raw:string):string[]{
  const text=contactAddress(raw),uri=uriLegs(text);
- const values=uri?[uri.legs.get('shielded'),uri.legs.get('ark'),uri.legs.get('lightning'),uri.path]:[text];
- return [...new Set(values.filter((v):v is string=>!!v&&!isInvoice(v)).map(keyOf))];
+ const values=uri?[...(uri.legs.get('shielded')??[]),...(uri.legs.get('ark')??[]),...(uri.legs.get('lightning')??[]),uri.path]:[text];
+ return [...new Set(values.filter(v=>v&&!isInvoice(v)).map(keyOf))];
 }
 
 export function contactAddressError(raw:string):string|undefined{
  const text=contactAddress(raw);
  if(!text)return CONTACT_ADDRESS_MISSING;
- const uri=uriLegs(text),lightning=uri?uri.legs.get('lightning'):text;
- if(isInvoice(text)||(lightning&&isInvoice(lightning)))return CONTACT_INVOICE;
+ const uri=uriLegs(text),lightning=uri?uri.legs.get('lightning')??[]:[text];
+ if(isInvoice(text)||lightning.some(isInvoice))return CONTACT_INVOICE;
  if(uri&&[...uri.legs.keys()].some(key=>key==='amount'||key==='assetid'||key.startsWith('req-')))return CONTACT_REQUEST;
- const ark=uri?uri.legs.get('ark'):text,btc=uri?uri.path:text;
+ const ark=uri?uri.legs.get('ark')??[]:[text],btc=uri?uri.path:text;
  const reusable=shieldedTargetOf(text)!==undefined
-  ||(!!ark&&isValidArkAddress(ark.toLowerCase()))
-  ||(!!lightning&&isLnurl(lightning.toLowerCase()))
+  ||ark.some(v=>isValidArkAddress(v.toLowerCase()))
+  ||lightning.some(v=>isLnurl(v.toLowerCase()))
   ||(!!btc&&(isBtcAddress(btc)||isBtcAddress(btc.toLowerCase())));
  return reusable?undefined:CONTACT_UNKNOWN;
 }

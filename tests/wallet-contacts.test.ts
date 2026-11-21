@@ -30,7 +30,7 @@ test('every reusable kind is accepted and canonicalized',()=>{
 });
 
 test('single-use codes and requests are refused with their reason',()=>{
- for(const bad of [INVOICE,`lightning:${INVOICE}`,`bitcoin:${TB}?lightning=${INVOICE}`])assert.equal(contactAddressError(bad),CONTACT_INVOICE,bad);
+ for(const bad of [INVOICE,`lightning:${INVOICE}`,`bitcoin:${TB}?lightning=${INVOICE}`,`bitcoin:${TB}?lightning=${INVOICE}&lightning=${LN}`,`bitcoin:${TB}?label=x?lightning=${INVOICE}`])assert.equal(contactAddressError(bad),CONTACT_INVOICE,bad);
  for(const bad of [`bitcoin:${TB}?amount=0.001`,`bitcoin:?ark=${ARK}&assetid=${'ab'.repeat(34)}`,`bitcoin:${TB}?req-pop=x`])assert.equal(contactAddressError(bad),CONTACT_REQUEST,bad);
  assert.equal(contactAddressError(''),CONTACT_ADDRESS_MISSING);
  for(const bad of ['hello','bitcoin:?label=x'])assert.equal(contactAddressError(bad),CONTACT_UNKNOWN,bad);
@@ -43,6 +43,7 @@ test('keys match exactly, folding case only where the address ignores it',()=>{
  assert.deepEqual(contactKeys('lightning:Alice@Pay.Example'),contactKeys(LN));
  assert.deepEqual(contactKeys(UNIFIED),[SH,ARK]);
  assert.deepEqual(contactKeys(`bitcoin:${TB}?lightning=${INVOICE}`),[TB]);
+ assert.deepEqual(contactKeys(`bitcoin:${TB}?lightning=${INVOICE}&lightning=${LN}`),[LN,TB]);
 });
 
 test('a contact name shows only for an address it holds',()=>{
