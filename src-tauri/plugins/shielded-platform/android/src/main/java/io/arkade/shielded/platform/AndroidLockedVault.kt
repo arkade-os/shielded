@@ -47,7 +47,8 @@ class AndroidLockedVault(context: Context) {
         check(encoded.length <= 128)
         val blob = Base64.decode(encoded, Base64.NO_WRAP)
         check((blob.size == 61 || blob.size == 93) && blob[0] == 1.toByte())
-        // A blob without its key can never open; some Android versions delete auth-bound keys when the screen lock is removed.
+        // Removing the screen lock invalidates every lock-bound key, and some Android versions delete them: the blob can never open.
+        if (!available()) throw LockFailure(LOCK_GONE)
         val key = store().getKey(alias, null) as? SecretKey ?: throw LockFailure(LOCK_GONE)
         val lock = AndroidLockPolicy.unlockPath(records.getString("mode", null), Build.VERSION.SDK_INT)
         val cipher = unlocked(lock, Cipher.DECRYPT_MODE, key, blob.copyOfRange(1, 13), "Unlock your Shielded wallet", host, live)
