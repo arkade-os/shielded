@@ -23,6 +23,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 internal const val LOCK_CANCELLED = "cancelled"
 internal const val LOCK_GONE = "lock-gone"
+internal const val LOCK_WEAK = "weak-biometric"
 
 internal class LockFailure(code: String) : Exception(code)
 
@@ -105,7 +106,8 @@ class AndroidLockedVault(context: Context) {
         if (lock == LockMode.PER_USE) return cipher(mode, key, iv).also { authorize(title, it, host, live) }
         try { cipher(mode, key, iv) } catch (_: UserNotAuthenticatedException) { }
         authorize(title, null, host, live)
-        return cipher(mode, key, iv)
+        // On API 28-29 a weak (Class 2) biometric passes this prompt but cannot release the key; the PIN or a fingerprint can.
+        return try { cipher(mode, key, iv) } catch (_: UserNotAuthenticatedException) { throw LockFailure(LOCK_WEAK) }
     }
 
     private fun cipher(mode: Int, key: SecretKey, iv: ByteArray?): Cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {

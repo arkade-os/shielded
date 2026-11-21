@@ -214,7 +214,7 @@ async fn android_vault_request<R: Runtime>(
         .run_mobile_plugin_async(command, payload)
         .await
         .map_err(|error| match error.to_string() {
-            code if matches!(code.as_str(), "cancelled" | "lock-gone") => code,
+            code if matches!(code.as_str(), "cancelled" | "lock-gone" | "weak-biometric") => code,
             _ => UNAVAILABLE.into(),
         })
 }
@@ -309,6 +309,7 @@ async fn vault_kind<R: Runtime>(
     // Only Android has a locked vault so far, so elsewhere a stored wallet is the plain seed.
     #[cfg(not(target_os = "android"))]
     {
+        ensure_local(&window)?;
         let seed = secret_get(app, window).await?.map(Zeroizing::new);
         Ok(if seed.is_some() { "plain" } else { "none" })
     }

@@ -40,6 +40,7 @@ export const lockedReadBack=async(master:string)=>await vaultKind()==='locked'?m
 const UNLOCK:Record<string,string>={
  cancelled:'The device lock request ended before it finished.',
  'lock-gone':'This device’s screen lock was removed or reset, so it can no longer open this wallet. Restore it with its recovery phrase.',
+ 'weak-biometric':'Unlock with your PIN or fingerprint.',
 };
 export const unlockError=(cause:unknown):Error&{gone:boolean}=>cause instanceof Error&&cause.name==='NativeUnlock'?cause as Error&{gone:boolean}
  :Object.assign(new Error(typeof cause==='string'&&UNLOCK[cause]||(cause instanceof Error?cause.message:String(cause))),{name:'NativeUnlock',gone:cause==='lock-gone'});

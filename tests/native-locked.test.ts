@@ -19,9 +19,9 @@ import {deviceLockFallback,lockedPhrase,lockedReadBack,lockedSecretCache,lockedS
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {default:WalletOnboarding}=await import('../app/src/WalletOnboarding.tsx');
 
-type Vault={plain:string|null;locked:string|null;lock:boolean;gone:boolean;cancel:number;failPlain:boolean;failClear:boolean;calls:string[];prompts:number};
+type Vault={plain:string|null;locked:string|null;lock:boolean;gone:boolean;cancel:number;weak:number;failPlain:boolean;failClear:boolean;calls:string[];prompts:number};
 let vault:Vault;
-const use=(o:Partial<Vault>={})=>vault={plain:null,locked:null,lock:true,gone:false,cancel:0,failPlain:false,failClear:false,calls:[],prompts:0,...o};
+const use=(o:Partial<Vault>={})=>vault={plain:null,locked:null,lock:true,gone:false,cancel:0,weak:0,failPlain:false,failClear:false,calls:[],prompts:0,...o};
 // Tauri rejects with the plugin's bare string, never an Error.
 const prompt=()=>{vault.prompts++;if(vault.cancel){vault.cancel--;throw 'cancelled';}};
 const commands:Record<string,(args:{value?:string})=>unknown>={
@@ -30,7 +30,7 @@ const commands:Record<string,(args:{value?:string})=>unknown>={
  vault_kind:()=>vault.plain!==null?'plain':vault.locked!==null?'locked':'none',
  device_lock_available:()=>vault.lock,
  locked_secret_create:({value})=>{prompt();vault.locked=value!;},
- locked_secret_get:()=>{if(vault.locked===null)return null;if(vault.gone)throw 'lock-gone';prompt();return vault.locked;},
+ locked_secret_get:()=>{if(vault.locked===null)return null;if(vault.gone)throw 'lock-gone';prompt();if(vault.weak){vault.weak--;throw 'weak-biometric';}return vault.locked;},
  locked_secret_clear:()=>{if(vault.failClear)throw 'Secure wallet storage unavailable';vault.locked=null;},
 };
 Object.defineProperty(globalThis,'window',{value:globalThis,configurable:true});
@@ -84,6 +84,12 @@ test('a cancelled unlock waits for the user before it prompts again',async()=>{
  assert.equal(vault.prompts,1,'a resume or Tor switch shows the unlock screen again, not the prompt');
  hold.current=undefined;assert.equal(await open(cache,hold),made.master);assert.equal(vault.prompts,2,'a refused read is never kept');
  assert.match(src('NativeWallet.tsx'),/onUnlock:\(\)=>\{unlockHeld\.current=undefined;void open\(\);\}/);
+});
+
+test('a weak biometric that cannot release the key asks for the PIN or fingerprint and keeps the unlock screen',async()=>{
+ const made=newLockedSecret(12),cache=lockedSecretCache(),hold:{current?:Error}={};use({locked:made.entropy,weak:1});
+ await assert.rejects(open(cache,hold),{name:'NativeUnlock',gone:false,message:'Unlock with your PIN or fingerprint.'});
+ hold.current=undefined;assert.equal(await open(cache,hold),made.master,'a retry with the PIN or a fingerprint opens it');assert.equal(vault.prompts,2);
 });
 
 test('the fallback setup journal never holds the entropy or the master',async()=>{
