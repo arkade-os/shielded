@@ -773,3 +773,11 @@ test('a quote refused without a Lightning rail routes once more after the start 
  assert.equal(await pageQuoteRoute(async()=>{if(++attempts===1)throw new Error('no rail for: lnbc1');return 'quoted';},()=>Promise.reject(new Error('Lightning could not start'))),'quoted');
  assert.equal(attempts,2);
 });
+
+test('a phrase restore removes the asset cache with the birth markers',async()=>{
+ const storage=storageOf(),cache=pageCache(new InMemoryShieldedNoteRepository());
+ storage.setItem(SECRET,'old');storage.setItem(BORN+':pool','10');
+ storage.setItem('shielded-asset-metadata-v1:'+'ab'.repeat(34),'{}');storage.setItem('other','keep');
+ await restorePageWallet('11'.repeat(32),{cache,storage,stop:async()=>{},reload:()=>{}});
+ assert.equal(storage.getItem('shielded-asset-metadata-v1:'+'ab'.repeat(34)),null);assert.equal(storage.getItem('other'),'keep');
+});

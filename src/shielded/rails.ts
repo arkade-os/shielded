@@ -1,4 +1,4 @@
-import {ArkAddress,Estimator,arkTarget,assertNoSelection,btcTarget,isValidArkAddress,tryResolveSendAmount,type FeeInfo,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
+import {ArkAddress,Estimator,arkAssetRail,arkTarget,assertNoSelection,btcTarget,isValidArkAddress,tryResolveSendAmount,type FeeInfo,type PaymentRail,type PaymentRequest,type RouteQuote} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import {assetFieldOfId} from '../../packages/protocol/src/rollup/notes.ts';
 import {parseRollupAddress} from '../../packages/protocol/src/rollup/wallet.ts';
@@ -98,5 +98,30 @@ export function poolFundedExit(wallet:ShieldedWallet,rail:PaymentRail,feeInfo:()
   if(!wallet.canExitPrivately())throw new Error('A private on-chain exit needs the recoverable companion wallet, which is not open. Reload and try again.');
   return {...quote,railId:'shielded-exit',fee:gross-quote.amount,total:gross,
    send:async()=>wallet.exitFromPool(gross,`Sending ${sats(quote.amount)} sats on-chain`,async(coin,payout)=>(await rail.quote({...req,selectedVtxos:[coin]},{...ctx,wallet:payout})).send(),{to:btcTarget(req.raw)??req.raw,sats:quote.amount})};
+ }};
+}
+export const ASSET_CARRIER_SHORT_BARE='Sending this asset needs more sats on Arkade than this wallet keeps there, because it moves its Arkade sats into the pool.';
+export const ASSET_CARRIER_SHORT=`${ASSET_CARRIER_SHORT_BARE} Send all of it, with the default 330-sat carrier.`;
+const unitsOf=(coin:{assets?:readonly {assetId:string;amount:bigint}[]},assetId:string)=>coin.assets?.find(a=>a.assetId===assetId)?.amount??0n;
+/** The sats an Arkade asset send lacks when it picks coins as the SDK send does: that asset's smallest-first, then any coin's sats. */
+export function assetCarrierShortfall(coins:readonly {value:number;assets?:readonly {assetId:string;amount:bigint}[]}[],assetId:string,units:bigint,carrier:number):number{
+ let picked=0n,otherAssets=false;
+ for(const coin of coins.filter(c=>c.assets?.some(a=>a.assetId===assetId)).sort((a,b)=>Number(unitsOf(a,assetId)-unitsOf(b,assetId)))){
+  if(picked>=units)break;
+  picked+=unitsOf(coin,assetId);otherAssets||=coin.assets!.some(a=>a.assetId!==assetId);
+ }
+ if(picked<units)return 0;
+ // ponytail: a pulled-in coin's own asset change can need another 330 sats. The SDK refuses that at send time, before building.
+ const need=picked>units||otherAssets?carrier+DUST:Math.max(carrier,DUST);
+ return Math.max(0,need-coins.reduce((sum,c)=>sum+c.value,0));
+}
+export function unshieldedAssetRail(wallet:Pick<ShieldedWallet,'getSpendableVtxos'>,rail:PaymentRail=arkAssetRail()):PaymentRail{
+ return {...rail,async quote(req,ctx){
+  const quote=await rail.quote(req,ctx),spent=quote.assets?.spent;
+  if(req.selectedVtxos||!spent)return quote;
+  const coins=await wallet.getSpendableVtxos({withRecoverable:false,genericallySpendableOnly:true}),{assetId}=spent;
+  if(assetCarrierShortfall(coins,assetId,spent.amount,quote.amount)===0)return quote;
+  const all=coins.reduce((sum,c)=>sum+unitsOf(c,assetId),0n);
+  throw new Error(assetCarrierShortfall(coins,assetId,all,DUST)===0?ASSET_CARRIER_SHORT:ASSET_CARRIER_SHORT_BARE);
  }};
 }

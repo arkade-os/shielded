@@ -1,13 +1,14 @@
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import {PASSKEY,type PasskeyRecord} from './passkey-record.ts';
+import {ASSET_METADATA_KEY} from './wallet-assets.ts';
 
 const SECRET='shielded-rollup-wallet-secret-v1',BORN='shielded-rollup-wallet-born-v1',CREATED='shielded-rollup-wallet-created-v1',SENT='shielded-rollup-sent-v1',RESTORE='shielded-native-restore-v1';
 const valid=(value:string)=>/^[0-9a-f]{64}$/.test(value);
 type Born={token:string;batches:number;at:number};
 type Metadata=[string,string][];
 type Restore={version:1;previous:string;next:string;before:Metadata;after:Metadata};
-const stateKey=(key:string)=>key.startsWith(BORN)||key===CREATED||key===SENT||key===PASSKEY;
+const stateKey=(key:string)=>key.startsWith(BORN)||key.startsWith(ASSET_METADATA_KEY)||key===CREATED||key===SENT||key===PASSKEY;
 const tag=(secret:string)=>bytesToHex(sha256(hexToBytes(secret)));
 const restores=new WeakMap<object,(secret:string,born?:Born,passkey?:PasskeyRecord)=>Promise<void>>();
 function metadata(base:Storage):Metadata{

@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
-import {ArkAddress,PaymentRouter,SingleKey,arkAssetRail,arkRail,isValidArkAddress,onchainRail,type PaymentRequest} from '@arkade-os/sdk';
+import {ArkAddress,PaymentRouter,SingleKey,arkRail,isValidArkAddress,onchainRail,type PaymentRequest} from '@arkade-os/sdk';
 import {createLnurlClient,type PaymentOption} from '@arkade-os/lnurl-client';
 import {buildPoseidon} from 'circomlibjs';
 import {rollupAddressOf,rollupRecipientOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveRollupKeys2} from '../packages/protocol/src/wallet-keys.ts';
 import {lightningRails,lnurlShieldedRail} from '../src/shielded/lightning.ts';
-import {SHIELDED_PRIORITY,poolFundedExit,shieldedRail,shieldedTargetOf,shieldedWithdrawRail} from '../src/shielded/rails.ts';
+import {ASSET_CARRIER_SHORT,ASSET_CARRIER_SHORT_BARE,SHIELDED_PRIORITY,assetCarrierShortfall,poolFundedExit,shieldedRail,shieldedTargetOf,shieldedWithdrawRail,unshieldedAssetRail} from '../src/shielded/rails.ts';
 import type {ShieldedWallet} from '../src/shielded/wallet.ts';
+import {sendTarget} from '../app/src/wallet-assets.ts';
 
 const poseidon=await buildPoseidon(),hash=(v:bigint[])=>BigInt(poseidon.F.toObject(poseidon(v)));
 const keys=deriveRollupKeys2('11'.repeat(32),'mutinynet');
@@ -16,10 +18,10 @@ const POOL='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf84ckejct66mc
 // A second real address under the same operator key, so the checksum holds where a hand-edited one would not.
 const decoded=ArkAddress.decode(POOL);
 const ELSEWHERE=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();
-const ASSET='ee'.repeat(34);
+const ASSET='ee'.repeat(34),OTHER='ff'.repeat(34);
 
-const paid:{to:string;amount:bigint;asset?:string}[]=[],exited:{to:string;amount:bigint;opts:unknown}[]=[];
-const fake=(o:{canWithdraw?:boolean|(()=>never);max?:bigint|(()=>bigint);restore?:()=>Promise<void>}={})=>({
+const paid:{to:string;amount:bigint;asset?:string}[]=[],exited:{to:string;amount:bigint;opts:unknown}[]=[],sent:unknown[]=[],reads:unknown[]=[];
+const fake=(o:{canWithdraw?:boolean|(()=>never);max?:bigint|(()=>bigint);restore?:()=>Promise<void>;coins?:unknown[]}={})=>({
  pool:{status:{pool:{address:POOL}}},
  poolAddress:POOL,
  canWithdraw:typeof o.canWithdraw==='function'?o.canWithdraw:()=>o.canWithdraw??true,
@@ -27,9 +29,14 @@ const fake=(o:{canWithdraw?:boolean|(()=>never);max?:bigint|(()=>bigint);restore
  maxPrivatePayment:typeof o.max==='function'?o.max:()=>o.max??1_000_000n,
  pay:async(to:string,amount:bigint,asset?:string)=>{paid.push({to,amount,...(asset?{asset}:{})});return {id:'h',status:'pending'};},
  withdraw:async(to:string,amount:bigint,opts:unknown)=>{exited.push({to,amount,opts});return {id:'h',status:'pending'};},
+ getSpendableVtxos:async(filter:unknown)=>{reads.push(filter);return o.coins??[];},
+ send:async(params:unknown)=>{sent.push(params);return 'cd'.repeat(32);},
 } as unknown as ShieldedWallet);
 const ctx=(wallet:ShieldedWallet)=>({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never);
 const req=(raw:string,amount?:number):PaymentRequest=>({raw,...(amount!==undefined?{amount}:{})});
+const routerOf=(wallet:ShieldedWallet)=>new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never)
+ .use(shieldedRail(wallet)).use(shieldedWithdrawRail(wallet)).use(arkRail()).use(unshieldedAssetRail(wallet));
+const coin=(units:bigint,value=330,assetId=ASSET)=>({value,assets:[{assetId,amount:units}]});
 
 test('a real second Arkade address and the shielded address are both well formed, and differ from the pool',()=>{
  assert.equal(isValidArkAddress(ELSEWHERE),true);
@@ -105,8 +112,6 @@ test('the withdraw rail matches an Arkade address, bare or in a BIP21 URI, but n
 });
 
 test('the wallet router ranks shielded first, withdraw second, and falls through to ark when the pool is short',async()=>{
- const routerOf=(wallet:ShieldedWallet)=>new PaymentRouter({wallet,prefs:{priority:SHIELDED_PRIORITY}} as never)
-  .use(shieldedRail(wallet)).use(shieldedWithdrawRail(wallet)).use(arkRail()).use(arkAssetRail());
  const rich=routerOf(fake({canWithdraw:true})),poor=routerOf(fake({canWithdraw:false}));
  assert.deepEqual((await rich.options(req(SHROL,500))).map(o=>o.railId),['shielded']);
  assert.deepEqual((await rich.options(req(ELSEWHERE,500))).map(o=>o.railId),['shielded-withdraw','ark']);
@@ -215,6 +220,79 @@ test('explicit invalid URI carriers are rejected unless a valid request amount o
   assert.equal(await rail.available!(encoded,c),true);
   assert.equal((await rail.quote(encoded,c)).amount,rail.id==='shielded'?0:500);
  }
+});
+
+test("the carrier shortfall follows the SDK's own coin choice",()=>{
+ const nine=coin(9n);
+ const rows:[string,Parameters<typeof assetCarrierShortfall>[0],bigint,number,number][]=[
+  ['all 9 units',[nine],9n,330,0],
+  ['5 units',[nine],5n,330,330],
+  ['5 units, plus a 330-sat plain coin',[nine,{value:330}],5n,330,0],
+  ['5 units, plus a 1000-sat coin of another asset the SDK pulls in',[nine,coin(1n,1000,OTHER)],5n,330,0],
+  ['all 9 units, with a 1000-sat carrier',[nine],9n,1000,670],
+  ['5 units from two 5-unit coins',[coin(5n),coin(5n)],5n,330,0],
+  ['7 units from two 5-unit coins',[coin(5n),coin(5n)],7n,330,0],
+  ['20 units, more than the coins hold',[nine],20n,330,0],
+  ['2 units with a 1000-sat carrier take the smallest coin whole',[nine,coin(2n)],2n,1000,340],
+  ['5 units with a sub-dust carrier need only carrier plus change',[nine,{value:100}],5n,100,0],
+  ['all 9 units from a coin that also holds another asset',[{value:330,assets:[{assetId:ASSET,amount:9n},{assetId:OTHER,amount:1n}]}],9n,330,330],
+ ];
+ for(const [label,coins,units,carrier,short] of rows)assert.equal(assetCarrierShortfall(coins,ASSET,units,carrier),short,label);
+});
+
+test('an unlisted asset to an Arkade address quotes ark-asset, and a partial send the wallet cannot carry is refused at quote',async()=>{
+ sent.length=0;reads.length=0;
+ const router=routerOf(fake({canWithdraw:false,coins:[coin(9n)]})),send=(amount:bigint)=>({raw:ELSEWHERE,assets:[{assetId:ASSET,amount}]});
+ const whole=await router.route(send(9n)),filter={withRecoverable:false,genericallySpendableOnly:true};
+ assert.deepEqual([whole.railId,whole.amount,whole.total],['ark-asset',330,330]);
+ await assert.rejects(router.route(send(5n)),{message:ASSET_CARRIER_SHORT});
+ assert.deepEqual(reads,[filter,filter],'the coins the SDK send itself would spend');
+ assert.deepEqual(sent,[]);
+ await (await whole.send()).settled();
+ assert.deepEqual(sent,[{address:ELSEWHERE,amount:330,assets:[{assetId:ASSET,amount:9n}]}],'only the whole send reaches wallet.send');
+});
+
+test('the refusal advises sending all of the asset only when that send would pass',async()=>{
+ const refusal=(coins:unknown[],amount:bigint)=>{const wallet=fake({coins});return unshieldedAssetRail(wallet).quote({raw:ELSEWHERE,assets:[{assetId:ASSET,amount}]},ctx(wallet));};
+ await assert.rejects(refusal([coin(9n)],5n),{message:ASSET_CARRIER_SHORT},'all 9 units at 330 sats would pass');
+ await assert.rejects(refusal([{value:330,assets:[{assetId:ASSET,amount:4n},{assetId:OTHER,amount:1n}]}],4n),{message:ASSET_CARRIER_SHORT_BARE},'sending all of either asset is refused too');
+ await assert.rejects(refusal([coin(9n,100)],5n),{message:ASSET_CARRIER_SHORT_BARE},'a lone sub-dust coin cannot carry even all of it');
+});
+
+test('an asset held in the pool and on Arkade withdraws from the pool first, and spends Arkade coins only when no note covers it',async()=>{
+ reads.length=0;
+ const request={raw:ELSEWHERE,assets:[{assetId:ASSET,amount:9n}]};
+ const rich=routerOf(fake({canWithdraw:true,coins:[coin(9n)]})),poor=routerOf(fake({canWithdraw:false,coins:[coin(9n)]}));
+ assert.deepEqual((await rich.options(request)).map(o=>o.railId),['shielded-withdraw','ark-asset']);
+ assert.equal((await rich.route(request)).railId,'shielded-withdraw');
+ assert.deepEqual(reads,[],'the pool route never reads the Arkade coins');
+ assert.equal((await poor.route(request)).railId,'ark-asset');
+});
+
+test('an asset held only on Arkade routes a unified link on its Arkade leg, so it never quotes a private payment',async()=>{
+ const unified=`bitcoin:?ark=${ELSEWHERE}&shielded=${SHROL}`,request=(raw:string)=>({raw,amount:330,assets:[{assetId:ASSET,amount:9n}]});
+ const router=routerOf(fake({canWithdraw:false,coins:[coin(9n)]}));
+ assert.equal((await router.route(request(unified))).railId,'shielded','the raw link quotes a private payment the pool cannot make');
+ assert.equal((await router.route(request(sendTarget({assetId:ASSET,shielded:0n,unshielded:9n},unified)))).railId,'ark-asset');
+ assert.equal(sendTarget({assetId:ASSET,shielded:4n,unshielded:9n},unified),unified,'an asset in the pool keeps its private route');
+ assert.equal(sendTarget(undefined,` ${unified} `),unified);
+});
+
+test("a caller's own coin selection passes the guard untouched",async()=>{
+ sent.length=0;reads.length=0;
+ const wallet=fake({coins:[coin(9n)]}),selectedVtxos=[{txid:'ab'.repeat(32),vout:0,...coin(9n,660)}] as never[];
+ const quote=await unshieldedAssetRail(wallet).quote({raw:ELSEWHERE,assets:[{assetId:ASSET,amount:5n}],selectedVtxos},ctx(wallet));
+ assert.equal(quote.railId,'ark-asset');
+ await (await quote.send()).settled();
+ assert.deepEqual(reads,[]);
+ assert.deepEqual(sent,[{recipients:[{address:ELSEWHERE,amount:330,assets:[{assetId:ASSET,amount:5n}]}],selectedVtxos}]);
+});
+
+test('the wallet router registers the guarded rail under the same id',()=>{
+ const source=readFileSync(new URL('../src/shielded/wallet.ts',import.meta.url),'utf8');
+ assert.match(source,/\.use\(unshieldedAssetRail\(this\)\)/);
+ assert.doesNotMatch(source,/\barkAssetRail\b/);
+ assert.equal(unshieldedAssetRail(fake()).id,'ark-asset');
 });
 
 const lnurlJson=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});

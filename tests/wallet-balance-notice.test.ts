@@ -6,6 +6,7 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {TxType,type Activity} from '@arkade-os/sdk';
 import {pageActivityNotice} from '../app/src/shielded-page.ts';
+import {assetText} from '../app/src/wallet-assets.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
 const {WalletBalanceNotice}=await import('../app/src/components.tsx');
@@ -64,6 +65,16 @@ test('a history source answering after another, such as Lightning starting late,
  const both=pageActivityNotice([row('a',1000,100),row('l',2000,50)],lightningOnly,3);
  assert.equal(both.notice,undefined);
  assert.equal(pageActivityNotice([row('a',1000,100),row('l',2000,50),row('n',700,300)],both.seen,3).notice?.id,'n');
+});
+
+test('an asset movement names the asset through the page\'s label, not its carrier sats',()=>{
+ const id='1e291e28'.padEnd(64,'0')+'0000',seen=pageActivityNotice([],undefined,3).seen;
+ const moved=(rowId:string,sats:number,amount:bigint)=>{const r=row(rowId,sats,200);r.txs[0]!.assets=[{assetId:id,amount}];return r;};
+ const label=(assetId:string,amount:bigint)=>assetText(amount,assetId,{ticker:'USDT',decimals:6});
+ assert.equal(pageActivityNotice([moved('r',330,25_000_000n)],seen,3,label).notice?.text,'Received 25 USDT · Unverified');
+ assert.equal(pageActivityNotice([moved('s',-330,-25_000_000n)],seen,3,label).notice?.text,'Sent 25 USDT · Unverified');
+ assert.equal(pageActivityNotice([moved('u',330,9n)],seen,3).notice?.text,'Received 9 units of asset 1e291e28…0000 · Unverified');
+ assert.ok(readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8').includes('pageActivityNotice(history,seen,(data.history?1:0)|(data.lightningHistory?2:0),assetLabel)'));
 });
 
 const render=(notice:Parameters<typeof WalletBalanceNotice>[0]['notice'])=>renderToStaticMarkup(createElement(WalletBalanceNotice,{notice,onDismiss:()=>{}}));

@@ -67,3 +67,9 @@ test('an operation releases every isolated route it opened exactly once',async()
  assert.deepEqual(released,[p.explicit('https://lnurl.example','lnurl','operation|https://lnurl.example').key,p.explicit('https://pay.example','lnurl','operation|https://pay.example').key]);
  assert.throws(()=>scope.track(p.explicit('https://late.example','lnurl','operation|https://late.example')),/closed/i);
 });
+test("the indexer's asset route is one GET per id at a registered indexer",()=>{
+ const p=policy(),url='https://ark.example/v1/indexer/asset/'+'ee'.repeat(34);
+ assert.equal(p.classify(url,'GET').purpose,'indexer');
+ assert.throws(()=>p.classify(url,'POST'));
+ assert.throws(()=>p.classify('https://tracker.example/v1/indexer/asset/'+'ee'.repeat(34),'GET'),/not approved/);
+});

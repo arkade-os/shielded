@@ -200,11 +200,126 @@ test('the send line says why one payment cannot take the whole balance, only whe
  assert.equal(line(0n,700n,4),'Up to 0 sats available privately.','notes the wallet cannot anchor yet are not the limit');
 });
 
+test('the send limit formats asset decimals',()=>{
+ assert.equal(sendLimitLine(1_250_000n,'USDT',false,6),'Up to 1.25 USDT available privately.');
+ assert.equal(sendLimitLine(1_250_000n,'USDT',true,6),'Up to 1.25 USDT in one payment, which can combine at most three of your notes.');
+ assert.equal(sendLimitLine(1_250_000n,'units',false),'Up to 1,250,000 units available privately.');
+});
+
 test('only that explanation offers Combine notes, which merges the selected asset\'s notes above three through the progress sheet',()=>{
  const wallet=readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
  assert.match(wallet,/const sendCapped=noteCapped\(maxSend,assetId\?assetUnits\(assetId\):balance,/);
- assert.match(wallet,/<p className="stock-muted">\{synced\?<>\{sendLimitLine\(maxSend,unit,sendCapped\)\}\{sendCapped&&<> <button type="button" className="stock-textlink" disabled=\{walletBusy\} onClick=\{\(\)=>void run\(\(\)=>wallet!\.merge\(sendField,3\),'Merging two notes'\)\}>Combine notes<\/button><\/>\}<\/>:'Syncing your wallet…'\}<\/p>/);
+ assert.match(wallet,/<p className="stock-muted">\{synced\?<>\{sendAsset\?\.shielded===0n\?unshieldedLimitLine\(formatAssetAmount\(sendAsset\.unshielded,decimals\),unit\):sendLimitLine\(maxSend,unit,sendCapped,decimals\)\}\{sendCapped&&<> <button type="button" className="stock-textlink" disabled=\{walletBusy\} onClick=\{\(\)=>void run\(\(\)=>wallet!\.merge\(sendField,3\),'Merging two notes'\)\}>Combine notes<\/button><\/>\}<\/>:'Syncing your wallet…'\}<\/p>/);
  assert.equal(wallet.match(/Combine notes/g)?.length,1,'no other path shows the link');
+});
+
+const walletPage=()=>readFileSync(new URL('../app/src/RollupWallet.tsx',import.meta.url),'utf8');
+test('metadata comes from the wallet\'s own indexer, and its arrival re-renders without a network refresh',()=>{
+ const wallet=walletPage(),assets=readFileSync(new URL('../app/src/wallet-assets.ts',import.meta.url),'utf8');
+ const onChange=/assetMetadata\(\{storage,details:id=>wallet\.assetManager\.getAssetDetails\(id\),onChange:\(\)=>\{([^}]*)\}\}\)/.exec(wallet)?.[1]??'';
+ assert.match(onChange,/setAssetRevision\(/);
+ assert.doesNotMatch(onChange,/setTick/,'a tick starts a network refresh');
+ assert.equal(wallet.match(/getAssetDetails/g)?.length,1);
+ assert.doesNotMatch(assets,/fetch\(|https?:\/\//);
+ assert.ok(wallet.includes('const referenced=new Set([...held.map(h=>h.assetId),...rows.flatMap(row=>row.txs.flatMap(tx=>tx.assets??[]).map(a=>a.assetId)),...reserves])'),'never an id only a scanned or pasted link names');
+ assert.ok(wallet.includes('useEffect(()=>{metadata?.want(referenced);},[metadata,referencedKey,tick]);'));
+ const early=wallet.indexOf('if(!secret||!wallet)return'),history=wallet.indexOf('const historyItems=');
+ for(const hook of ['assetMetadata(','metadata?.want('])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<Math.min(early,history),hook);
+});
+
+test('the Home list names every held asset with its kind and the Unverified mark',()=>{
+ const wallet=walletPage(),card=/const balanceCard=\(\)=>([\s\S]*?)<\/section>;/.exec(wallet)?.[1]??'';
+ assert.ok(wallet.includes('const held=heldAssets({reserves,shielded:assetUnits,coins});'));
+ assert.ok(card.includes('{(unshielded>0||held.length>0)&&<div className="stock-balance-side">'));
+ assert.ok(card.includes('{held.map(h=>{const meta=metadata?.get(h.assetId);return <div key={h.assetId}><small>{assetTitle(h.assetId,meta)} · {KIND_TEXT[holdingKind(h)]} · {UNVERIFIED}</small><b>{formatAssetAmount(h.shielded+h.unshielded,meta?.decimals??0)} {markedUnit(meta)}</b></div>;})}'));
+ assert.ok(wallet.includes('<b>{formatAssetAmount(a.units,meta?.decimals??0)} {markedUnit(meta)}</b>'),'the Receive holdings amount');
+ assert.doesNotMatch(wallet,/\bassetUnit\(/,'no asset amount on the page goes unmarked');
+ assert.doesNotMatch(wallet,/shownAssets/,'shownAssets is gone');
+ const titles=wallet.match(/assetTitle\(/g)?.length??0;
+ assert.ok(titles>0);
+ assert.equal(wallet.match(/\{assetTitle\([^)]*\)\} · [^<]*\{UNVERIFIED\}(?:<\/(?:small|option)>|`)/g)?.length,titles,'every asset title on the page carries the mark');
+});
+
+test('no asset amount on the page skips the formatter',()=>{
+ const wallet=walletPage();
+ for(const raw of [/units of \$\{assetName/,/\} units<\/b>/,/const assetName=/,/sats\(n\.amount\)\} units/,/sats\(a\.units\)/])assert.doesNotMatch(wallet,raw,String(raw));
+ assert.match(wallet,/<span>\{assetText\(n\.amount,id,metadata\?\.get\(id\)\)\}<\/span>[^\n]*?<code>\{short\(id\)\}<\/code><\/div>\)\)\}/,'a note row keeps the asset id beside its amount');
+ const history=/const historyItems=rows\.map\(item=>\{([\s\S]*?)const historyContent=/.exec(wallet)?.[1]??'',snapshot=/onResumeSnapshot\(\{([\s\S]*?)\}\)\}\);/.exec(wallet)?.[1]??'';
+ for(const body of [history,snapshot])assert.match(body,/assetText\(/);
+ assert.ok(wallet.includes('const assetLabel=(id:string,amount:bigint)=>assetText(amount,id,metadata?.get(id));'));
+ const claims=wallet.match(/holdingsText\(/g)?.length??0;
+ assert.ok(claims>0);
+ assert.equal(wallet.match(/,field=>wallet\?\.assetIdOf\(field\),assetLabel\)/g)?.length,claims,'every claim text names its asset through the formatter');
+});
+
+test('the transaction sheet of an asset row names its full asset id',()=>{
+ assert.ok(walletPage().includes(`facts:[['Amount',amount],...(asset?[['Asset',asset.assetId] as const]:[]),['Status',status],['Time',when(item.createdAt)]]`));
+});
+
+test('an asset send reads display units, keys its quote on the atomic units, and refuses what only an Arkade address can take',()=>{
+ const wallet=walletPage(),form=/<form className="stock-send"[\s\S]*?<\/form>/.exec(wallet)?.[0]??'',early=wallet.indexOf('if(!secret||!wallet)return');
+ assert.ok(wallet.includes('units=assetId?parseAssetAmount(amount,decimals):undefined'));
+ assert.ok(wallet.includes('const requestKey=JSON.stringify([tab,to,amount,assetId,carrier,String(units)]);'),'details arriving change the units, so the quote is redone');
+ assert.ok(wallet.includes('{raw:sendTarget(sendAsset,to),...(assetId?{amount:Number(carrier||DUST),assets:[{assetId,amount:units!}]}'),'a unified link pays an Arkade-only asset on its Arkade leg');
+ assert.doesNotMatch(wallet,/amount:BigInt\(amount\)|raw:to\.trim\(\)/);
+ assert.ok(form.includes(`{held.length>0&&<label>Asset<select value={assetId} onChange={e=>{setAssetId(e.target.value);setAmount('');setPendingLink(undefined);setCodeError(c=>c===ASSET_DETAILS_PENDING?'':c);}}><option value="">Bitcoin</option>{held.map(h=>{const meta=metadata?.get(h.assetId);return <option key={h.assetId} value={h.assetId}>{assetTitle(h.assetId,meta)} · {UNVERIFIED}</option>;})}</select></label>}`));
+ assert.doesNotMatch(form,/reserves\.map/);
+ assert.ok(form.includes(`inputMode={decimals>0?'decimal':'numeric'}`));
+ assert.ok(wallet.includes(`unit=assetId?markedUnit(sendMeta):'sats'`),'the label, both limit lines and the amount error carry the mark');
+ assert.ok(wallet.includes('recipientError=assetRecipientError(sendAsset,to)'));
+ assert.ok(form.includes('{recipientError&&<p className="stock-blocked" role="alert">{recipientError}</p>}'));
+ assert.ok(form.includes('{!to.trim()&&sendAsset?.shielded!==0n&&<button type="button" className="stock-ghost"'),'no claim link for units outside the pool');
+ assert.ok(wallet.includes('wallet!.mintLink(assetId?units!:BigInt(amount),assetId||undefined)'));
+ for(const hook of [`useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);`,`if(id===assetId&&was!==decimals)setAmount('');`])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<early,hook);
+});
+
+test('a payment link for an asset waits for the first coin read and its details, then fills only through the held and read-decimals checks',()=>{
+ const wallet=walletPage(),fill=/const fill=\(code:string,replace=false\)=>\{[\s\S]*?\n \};/.exec(wallet)?.[0]??'',early=wallet.indexOf('if(!secret||!wallet)return');
+ assert.ok(wallet.includes('if(data.coins){setCoins(data.coins);setCoinsRead(true);}'));
+ assert.ok(wallet.includes('holdingsKnown=!!wallet&&coinsRead'));
+ assert.ok(fill.includes('linked=target.asset&&assetLinkFill(target.asset,holdingsKnown?held:undefined,metadata?.get(target.asset.assetId));}catch(error){setPendingLink(undefined);stop(errorText(error));return;}'),'inside the try, so an asset not held is refused like an unreadable link, and stops waiting');
+ assert.ok(fill.includes('if(target.asset&&!linked){if(pendingLink?.code!==code||pendingLink?.replace!==replace){setPendingLink({code,replace});stop(ASSET_DETAILS_PENDING);}return;}'),'waiting again on the same link changes nothing, so a replay cannot loop');
+ assert.ok(fill.includes(`setPendingLink(undefined);setCodeError(linked?.error??'');setTo(target.to);`));
+ assert.ok(fill.includes('if(linked){setAssetId(linked.assetId);setAmount(linked.amount);'));
+ const rerun='useEffect(()=>{if(pendingLink&&holdingsKnown)fill(pendingLink.code,pendingLink.replace);},[pendingLink,holdingsKnown,assetRevision]);';
+ assert.ok(wallet.includes(rerun)&&wallet.indexOf(rerun)<early,'it replays at the first coin read and whenever details arrive');
+ assert.doesNotMatch(wallet,/if\(sendMeta&&!pendingLink\)/,'the replay replaces the waiting message itself');
+ assert.ok(wallet.includes(`onChange={e=>{setTo(e.target.value);setCodeError('');setPendingLink(undefined);}}`),'typing another recipient drops a waiting link');
+});
+
+test('details arriving clear the typed digits before a waiting link replays, so the replayed amount stays',()=>{
+ const wallet=walletPage(),reset=wallet.indexOf('useEffect(()=>{const [id,was]=amountScale.current;'),replay=wallet.indexOf('useEffect(()=>{if(pendingLink&&holdingsKnown)');
+ assert.ok(reset>=0&&replay>=0,'both effects are found');
+ assert.ok(reset<replay,'effects run in declaration order');
+});
+
+test('while a payment link waits, neither a quote nor a claim link can start',()=>{
+ const wallet=walletPage(),form=/<form className="stock-send"[\s\S]*?<\/form>/.exec(wallet)?.[0]??'';
+ assert.ok(wallet.includes('sendBlocked=!!pendingLink||(!!assetId&&(!sendAsset||units===undefined))'));
+ assert.match(wallet,/if\(!wallet\|\|tab!=='send'[^\n]*\|\|sendBlocked\|\|!!recipientError\|\|/);
+ assert.match(form,/<button className="stock-primary" disabled=\{[^}]*\|\|sendBlocked\|\|!!recipientError\}/);
+ assert.match(form,/<button type="button" className="stock-ghost" disabled=\{[^}]*\|\|!amount\|\|sendBlocked\} onClick=\{\(\)=>void mintLink\(\)\}>Create a claim link/);
+});
+
+test('a receive request names only an asset whose details are read, and asks in its units',()=>{
+ const wallet=walletPage(),early=wallet.indexOf('if(!secret||!wallet)return');
+ assert.ok(wallet.includes(`requestIds=requestAssets(receiveMode,held,reserves,id=>!!metadata?.get(id)),requestAsset=requestIds.includes(chosenRequestAsset)?chosenRequestAsset:''`));
+ assert.ok(wallet.includes(`receiveMode!=='unified'&&amountNow?amountQrValue(receiveMode,receiveValue,amountNow,requestMeta&&{assetId:requestAsset,decimals:requestMeta.decimals})`),'the requested asset\'s decimals, not the send form\'s');
+ assert.ok(wallet.includes("label:`${assetTitle(id,meta)} · ${UNVERIFIED}`,unit:markedUnit(meta),decimals:meta?.decimals??0"));
+ assert.ok(wallet.includes("request={{options:requestOptions,assetId:requestAsset,onAsset:id=>{setRequestAsset(id);setLnAmount('');}}}"));
+ const clear="useEffect(()=>{setLnAmount('');},[requestAsset,requestMeta?.decimals]);";
+ assert.ok(wallet.includes(clear)&&wallet.indexOf(clear)<early,'a tab switch or a lost holding changes the asset without a pick');
+ assert.ok(wallet.includes('Requested {requestMeta?assetText(parseAssetAmount(amountNow,requestMeta.decimals)!,requestAsset,requestMeta):satsText(requestedAmount!)}.'),'a whole-number asset amount never reads as sats');
+});
+
+test('a typed receive amount renders only in the unit it was typed in, even in the render that switches tabs',()=>{
+ const wallet=walletPage();
+ assert.ok(wallet.includes('amountNow=typedAmount(lnAmount,lnAmountFor,requestAsset)'));
+ assert.ok(wallet.includes(`amount={amountNow} onAmount={typed=>{setLnAmount(typed);setLnAmountFor(requestAsset);}}`),'typing records the unit in view');
+ assert.ok(wallet.includes(`wantsInvoice=receiveMode==='unified'&&receiveAmount(typedAmount(lnAmount,lnAmountFor,''))!==undefined`),'Unified only ever shows sats');
+ assert.ok(wallet.includes('requestedAmount=receiveAmount(amountNow),invoiceAmount=invoiceRequestAmount(amountNow,lnBounds)'));
+ assert.doesNotMatch(wallet,/receiveAmount\(lnAmount\)|invoiceRequestAmount\(lnAmount|amountQrValue\([^)]*lnAmount|parseAssetAmount\(lnAmount/,'no QR, link, invoice or Requested line reads the raw digits');
+ assert.equal(wallet.match(/\blnAmount\b/g)?.length,4,'its declaration, the two typedAmount reads and the invoice reset on edit; any other raw read must come through here');
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{
@@ -393,8 +508,25 @@ test('the claim card reads a link\'s token and holdings without the network',()=
  const id='1e291e28'.padEnd(64,'0')+'0000',field=7n,assetIdOf=(f:bigint)=>f===field?id:undefined;
  assert.equal(holdingsText([{asset:0n,amount:600n},{asset:0n,amount:400n}],assetIdOf),'1,000 sats');
  assert.equal(holdingsText([{asset:field,amount:9n}],assetIdOf),'9 units of asset 1e291e28…0000');
- assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset and 1 sat');
+ assert.equal(holdingsText([{asset:3n,amount:2n},{asset:0n,amount:1n}],assetIdOf),'2 units of an unlisted asset · Unverified and 1 sat');
  assert.equal(holdingsText([{asset:field,amount:2n**60n+1n}],assetIdOf),'1,152,921,504,606,846,977 units of asset 1e291e28…0000');
+});
+
+test('claim-link holdings take a label for assets and keep their default text',()=>{
+ const id='1e291e28'.padEnd(64,'0')+'0000',assetIdOf=(f:bigint)=>f===7n?id:undefined;
+ const label=(assetId:string,amount:bigint)=>`${amount} of ${assetId.slice(0,4)}`;
+ assert.equal(holdingsText([{asset:7n,amount:9n},{asset:0n,amount:1n}],assetIdOf,label),'9 of 1e29 and 1 sat');
+ assert.equal(holdingsText([{asset:3n,amount:2n}],assetIdOf,label),'2 units of an unlisted asset · Unverified');
+});
+
+test('an asset payment link names its asset and display amount, never sats',()=>{
+ const id='ee'.repeat(34);
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&assetid='+id+'&amount=12.5'),{to:'tark1abc',asset:{assetId:id,amount:'12.5'}});
+ assert.deepEqual(payTarget('BITCOIN:?ARK=TARK1ABC&ASSETID='+id.toUpperCase()+'&AMOUNT=12.5'),{to:'tark1abc',asset:{assetId:id,amount:'12.5'}});
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&assetid='+id),{to:'tark1abc',asset:{assetId:id}});
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&assetid='+id+'&amount=1e3'),{to:'tark1abc',asset:{assetId:id}});
+ for(const bad of ['xyz','','ee'.repeat(33)])assert.throws(()=>payTarget('bitcoin:?ark=tark1abc&assetid='+bad+'&amount=1'),{message:'This payment link names an asset this wallet cannot read.'});
+ assert.deepEqual(payTarget('bitcoin:?ark=tark1abc&amount=1.5'),{to:'tark1abc',amount:150_000_000});
 });
 
 test('the keep-out line names the plain sats only the fee leaves under the minimum',()=>{

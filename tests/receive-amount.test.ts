@@ -5,9 +5,10 @@ import {Children,createElement,isValidElement,type ReactNode} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {registerHooks} from 'node:module';
 import {payTarget} from '../app/src/rollup-client.ts';
+import {parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
-const {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount}=await import('../app/src/wallet-receive.tsx');
+const {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount,typedAmount}=await import('../app/src/wallet-receive.tsx');
 const recipients=[
  ['shielded','shrol_example','shielded','shrol_example'],
  ['arkade','tark_example','ark','tark_example'],
@@ -177,4 +178,54 @@ test('editing the amount keeps a payable invoice and forgets a finished one, so 
  for(const outcome of ['open','accepted'])assert.equal(keptInvoice({amount:1000n,outcome})?.outcome,outcome);
  for(const outcome of ['funding','funded','claimed','lapsed','failed','needs_recovery'])assert.equal(keptInvoice({amount:1000n,outcome}),undefined,outcome);
  assert.equal(needsInvoice(1000n,keptInvoice({amount:1000n,outcome:'claimed'}),undefined),true);
+});
+
+test('asset request QRs carry the asset id and display units, as the Arkade wallet writes them',()=>{
+ const assetId='ee'.repeat(34),asset={assetId,decimals:2};
+ assert.equal(amountQrValue('arkade','tark_example','12.5',asset),'bitcoin:?ark=tark_example&assetid='+assetId+'&amount=12.5');
+ assert.equal(amountQrValue('arkade','tark_example','12.50',asset),'bitcoin:?ark=tark_example&assetid='+assetId+'&amount=12.5');
+ assert.equal(amountQrValue('shielded','shrol_example','12.5',asset),'bitcoin:?shielded=shrol_example&assetid='+assetId+'&amount=12.5');
+ assert.equal(amountQrValue('arkade','tark_example','7',{assetId,decimals:0}),'bitcoin:?ark=tark_example&assetid='+assetId+'&amount=7');
+ for(const amount of ['12.555','1,000','','0'])assert.equal(amountQrValue('arkade','tark_example',amount,asset),undefined,amount);
+});
+
+test('an asset request labels, validates and reads its amount in the asset\'s units',()=>{
+ const id='ee'.repeat(34),usdt={id,label:'Tether USD (USDT) · Unverified',unit:'USDT',decimals:2},picked:string[]=[];
+ const props=(amount:string,assetId=id,options:readonly typeof usdt[]=[usdt])=>({mode:'arkade',payload:'arkade',value:'tark_example',description:'Test receive',amount,onAmount:()=>{},onModeChange:()=>{},request:{options,assetId,onAsset:(chosen:string)=>{picked.push(chosen);}}}) as const;
+ const html=(...args:Parameters<typeof props>)=>renderToStaticMarkup(createElement(ReceivePortal,props(...args)));
+ const valid=html('12.5');
+ assert.ok(valid.includes(`<select aria-label="Asset to request"><option value="">Bitcoin</option><option value="${id}" selected="">Tether USD (USDT) · Unverified</option></select>`));
+ for(const part of ['aria-label="Receive amount in USDT"','placeholder="Amount in USDT"','inputMode="decimal"','aria-hidden="true">USDT</span>','class="stock-qr"'])assert.ok(valid.includes(part),part);
+ assert.doesNotMatch(valid,/aria-invalid/);
+ const invalid=html('12.555');
+ assert.match(invalid,/aria-invalid="true"/);
+ assert.ok(invalid.includes('role="alert">Enter an amount of USDT above zero, with at most 2 decimal places.</p>'));
+ assert.doesNotMatch(invalid,/class="stock-qr"/);
+ assert.match(html('330',''),/aria-label="Receive amount in sats"/);
+ assert.ok(html('12.5','').includes('role="alert">Enter a whole number from 1 to 9,999,999,999 sats, without leading zeros.</p>'));
+ assert.doesNotMatch(html('330','',[]),/<select/,'nothing to pick, no picker');
+ let view:ReactNode;
+ function Capture(){view=ReceivePortal(props('12.5'));return view;}
+ renderToStaticMarkup(createElement(Capture));
+ type Select={children?:ReactNode;onChange?:(event:{target:{value:string}})=>void};
+ const select=(function find(node:ReactNode):Select|undefined{for(const child of Children.toArray(node)){if(!isValidElement<Select>(child))continue;if(child.type==='select')return child.props;const found=find(child.props.children);if(found)return found;}})(view);
+ select?.onChange?.({target:{value:''}});
+ assert.deepEqual(picked,['']);
+});
+
+test('a typed amount reads only in the unit it was typed in, so a tab switch never puts it in another unit\'s QR or link',()=>{
+ const id='ee'.repeat(34),qr=(mode:'arkade'|'shielded',typedFor:string,inView:string)=>amountQrValue(mode,mode==='arkade'?'tark_example':'shrol_example',typedAmount('100',typedFor,inView),inView?{assetId:id,decimals:2}:undefined);
+ assert.equal(qr('arkade',id,id),`bitcoin:?ark=tark_example&assetid=${id}&amount=100`);
+ assert.equal(qr('shielded',id,''),undefined,'100 of the asset, then the Shielded tab showing Bitcoin: no 100-sat request');
+ assert.equal(qr('arkade','',id),undefined,'100 sats, then a tab with the asset selected: no request for 100 of it');
+ assert.equal(qr('shielded','',''),'bitcoin:?shielded=shrol_example&amount=0.00000100');
+});
+
+test('asset request QRs roundtrip through the payment decoder',()=>{
+ const assetId='ab'.repeat(34);
+ for(const [amount,decimals]of [['12.5',2],['0.01',2],['123456789',0],['0.000000000000000001',18]]as const){
+  const uri=amountQrValue('arkade','tark_example',amount,{assetId,decimals})!,target=payTarget(uri);
+  assert.equal(target.amount,undefined);
+  assert.equal(parseAssetAmount(target.asset!.amount!,decimals),parseAssetAmount(amount,decimals));
+ }
 });
