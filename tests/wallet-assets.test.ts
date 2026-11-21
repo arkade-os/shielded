@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {ASSET_DETAILS_PENDING,KIND_TEXT,NOT_HELD_ASSET,UNSHIELDED_ASSET_RECIPIENT,assetAmountError,assetLinkFill,assetMetadata,markedUnit,assetRecipientError,heldAssets,holdingKind,requestAssets,unshieldedLimitLine,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
+import {ASSET_DETAILS_PENDING,ASSET_LINK_TYPED,KIND_TEXT,NOT_HELD_ASSET,UNSHIELDED_ASSET_RECIPIENT,assetAmountError,assetLinkFill,assetMetadata,markedUnit,assetRecipientError,heldAssets,holdingKind,requestAssets,unshieldedLimitLine,assetMetaOf,assetText,assetTitle,assetUnit,formatAssetAmount,parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 const id='1e291e28'.padEnd(64,'0')+'0000';
 const tether={name:'Tether USD',ticker:'USDT',decimals:6};
@@ -143,6 +143,18 @@ test('an asset outside the pool can be sent only to an Arkade address',()=>{
  for(const to of [SHROL_ADDR,'alice@lnurl.example','tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx','lnbc1500n1pj9abcdefghijklmnop'])assert.equal(assetRecipientError(out,to),UNSHIELDED_ASSET_RECIPIENT);
  for(const to of [ARK,`bitcoin:?ark=${ARK}`,'',' '])assert.equal(assetRecipientError(out,to),'');
  for(const a of [held(2n,4n),held(2n,0n),undefined])assert.equal(assetRecipientError(a,SHROL_ADDR),'');
+});
+
+test('a typed link that asks for another asset, or for any asset while Bitcoin is picked, is refused until Paste or Scan fills it',()=>{
+ const link=(assetId:string,leg=`ark=${ARK}`)=>`bitcoin:?${leg}&assetid=${assetId}&amount=25`;
+ const out={assetId:id,shielded:0n,unshielded:4n},pool={assetId:id,shielded:4n,unshielded:0n};
+ assert.equal(ASSET_LINK_TYPED,'This payment link asks for an asset. Use Paste or Scan to fill it.');
+ for(const a of [undefined,out,pool])assert.equal(assetRecipientError(a,link('ee'.repeat(34))),ASSET_LINK_TYPED);
+ assert.equal(assetRecipientError(undefined,link(id)),ASSET_LINK_TYPED,'Bitcoin picked');
+ for(const a of [out,pool])for(const to of [link(id),link(id.toUpperCase())])assert.equal(assetRecipientError(a,to),'');
+ assert.equal(assetRecipientError(out,link(id,`shielded=${SHROL_ADDR}`)),UNSHIELDED_ASSET_RECIPIENT,'a matching link keeps today\'s rule');
+ for(const a of [undefined,out])assert.equal(assetRecipientError(a,link('nothex')),'','an unreadable link keeps its own error');
+ assert.equal(assetRecipientError(undefined,`bitcoin:?ark=${ARK}&amount=0.0001`),'');
 });
 
 test('the limit line for Arkade units says they are public',()=>{

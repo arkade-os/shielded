@@ -1,5 +1,5 @@
 import {arkTarget,isValidArkAddress,type AssetDetails} from '@arkade-os/sdk';
-import {arkAssetHoldings} from './rollup-client.ts';
+import {arkAssetHoldings,payTarget} from './rollup-client.ts';
 import type {ArkCoin} from '../../src/shielded/pool.ts';
 export const UNVERIFIED='Unverified';
 export const MAX_ASSET_DECIMALS=18;
@@ -116,6 +116,7 @@ export type HeldAsset={assetId:string;shielded:bigint;unshielded:bigint};
 export type HoldingKind='shielded'|'unshielded'|'both';
 export const KIND_TEXT={shielded:'Shielded',unshielded:'Unshielded',both:'Shielded and unshielded'};
 export const UNSHIELDED_ASSET_RECIPIENT='This asset is outside the pool, so it can be sent only to an Arkade address. Shielded addresses, Lightning and Bitcoin addresses cannot receive it.';
+export const ASSET_LINK_TYPED='This payment link asks for an asset. Use Paste or Scan to fill it.';
 
 export function heldAssets(o:{reserves:readonly string[];shielded:(assetId:string)=>bigint;coins:readonly ArkCoin[]}):HeldAsset[]{
  const rows=new Map<string,HeldAsset>();
@@ -133,6 +134,8 @@ export function requestAssets(mode:'unified'|'shielded'|'arkade',held:readonly H
 }
 
 export function assetRecipientError(asset:HeldAsset|undefined,to:string):string{
+ let linked:string|undefined;try{linked=payTarget(to).asset?.assetId;}catch{}
+ if(linked!==undefined&&linked!==asset?.assetId)return ASSET_LINK_TYPED;
  if(!asset||asset.shielded!==0n||!to.trim())return '';
  try{const ark=arkTarget(to.trim());if(ark&&isValidArkAddress(ark))return '';}catch{}
  return UNSHIELDED_ASSET_RECIPIENT;
