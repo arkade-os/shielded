@@ -307,6 +307,7 @@ test('a typed receive amount renders only in the unit it was typed in, even in t
  assert.ok(wallet.includes(`wantsInvoice=receiveMode==='unified'&&receiveAmount(typedAmount(lnAmount,lnAmountFor,''))!==undefined`),'Unified only ever shows sats');
  assert.ok(wallet.includes('requestedAmount=receiveAmount(amountNow),invoiceAmount=invoiceRequestAmount(amountNow,lnBounds)'));
  assert.doesNotMatch(wallet,/receiveAmount\(lnAmount\)|invoiceRequestAmount\(lnAmount|amountQrValue\([^)]*lnAmount|parseAssetAmount\(lnAmount/,'no QR, link, invoice or Requested line reads the raw digits');
+ assert.equal(wallet.match(/\blnAmount\b/g)?.length,4,'its declaration, the two typedAmount reads and the invoice reset on edit; any other raw read must come through here');
 });
 
 test('withdrawn asset units are listed apart from the rest, so the wallet never promises to shield them',()=>{
