@@ -47,6 +47,14 @@ test('native passkey restore commits its credential record and phrase restore re
  assert.equal(base.getItem(PASSKEY),null);
 });
 
+test('a native phrase restore removes the asset cache with the birth markers',async()=>{
+ const base=memory(),asset='shielded-asset-metadata-v1:'+'ab'.repeat(34);
+ base.setItem(`${BORN}:old`,'12');base.setItem(asset,'{}');base.setItem('other','keep');
+ const view=createNativeStorage('11'.repeat(32),base,async()=>{});
+ await restorePageWallet('22'.repeat(32),{cache:restoreCache(async()=>{}),storage:view.storage,stop:async()=>{},reload(){}});
+ assert.equal(base.getItem(asset),null);assert.equal(base.getItem(`${BORN}:old`),null);assert.equal(base.getItem('other'),'keep');
+});
+
 for(const committed of [false,true])test(`lost native restore acknowledgement recovers the ${committed?'new':'old'} passkey record`,async()=>{
  const base=memory(),old='11'.repeat(32),next='22'.repeat(32),previous={...record,credentialId:'BAUG',words:24};let vault=old;
  base.setItem(PASSKEY,JSON.stringify(previous));
