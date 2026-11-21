@@ -4,6 +4,8 @@ import {RestArkProvider,RestIndexerProvider,SingleKey} from '@arkade-os/sdk';
 import {hex} from '@scure/base';
 import info from './fixtures/ark-info.json' with {type:'json'};
 import {createShieldedWallet,depositFeeOf,shieldedWalletConfig,type DepositFee,type DepositFeeSchedule} from '../packages/shielded/src/index.ts';
+import * as sdk from '../packages/shielded/src/index.ts';
+import {ASSET_CARRIER_SHORT,ASSET_CARRIER_SHORT_BARE} from '../src/shielded/rails.ts';
 import {rollupAddressOf} from '../packages/protocol/src/rollup/wallet.ts';
 import {deriveWalletKeyMaterial} from '../packages/protocol/src/wallet-keys.ts';
 import {InMemoryShieldedNoteRepository,type ShieldedNoteRepository} from '../src/shielded/repository.ts';
@@ -13,6 +15,11 @@ import type {ShieldedSyncProgress} from '../src/shielded/sync-progress.ts';
 const secret='11'.repeat(32),origin='https://pool.example';
 const ready={phase:'ready',message:'',network:{network:'mutinynet',arkUrl:'https://ark.example'},proving:{spend:{wasm:'w',zkey:'z'},join:{wasm:'w',zkey:'z'}},pool:{token:'t',script:'s',address:'a',batches:3}};
 const serving=(status:unknown)=>{const urls:string[]=[];return {urls,fetch:(async(url:unknown)=>{urls.push(String(url));return Response.json(status);}) as typeof fetch};};
+
+test('the package exports the asset carrier refusals, so a caller can tell them apart',()=>{
+ assert.equal(sdk.ASSET_CARRIER_SHORT,ASSET_CARRIER_SHORT);
+ assert.equal(sdk.ASSET_CARRIER_SHORT_BARE,ASSET_CARRIER_SHORT_BARE);
+});
 
 test('a pool that is not open, or not on Mutinynet, is refused before a wallet is built',async()=>{
  await assert.rejects(shieldedWalletConfig({pool:origin,secret,fetch:serving({...ready,phase:'funding',message:'Funding the pool'}).fetch}),/not open: Funding the pool/);

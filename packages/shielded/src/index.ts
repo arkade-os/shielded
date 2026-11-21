@@ -9,6 +9,7 @@ import {ShieldedWallet,type ShieldedProver,type ShieldedWalletConfig} from '../.
 import type {SyncProgressObserver} from '../../../src/shielded/sync-progress.ts';
 
 export {ShieldedWallet,type ShieldedPoolConfig,type ShieldedProver,type ShieldedWalletConfig} from '../../../src/shielded/wallet.ts';
+export {ASSET_CARRIER_SHORT,ASSET_CARRIER_SHORT_BARE} from '../../../src/shielded/rails.ts';
 export type {ShieldedSyncProgress,SyncProgressObserver} from '../../../src/shielded/sync-progress.ts';
 export type {ShieldedPaymentHandle} from '../../../src/shielded/handle.ts';
 export type {RollupPoolStatus} from '../../../src/shielded/pool.ts';
