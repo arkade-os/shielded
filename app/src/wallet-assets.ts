@@ -146,12 +146,12 @@ export const sendTarget=(asset:HeldAsset|undefined,to:string)=>asset?.shielded==
 export const NOT_HELD_ASSET='This payment link asks for an asset this wallet does not hold.';
 export const ASSET_DETAILS_PENDING="This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.";
 
-/** The send form's asset and amount for an asset link, or undefined while `held` is unread; until its decimals are read, the amount could be off by 10^decimals, so it waits. */
+/** The send form's asset and amount for an asset link, or undefined while it must wait: until `held` is read, and until a linked amount's decimals are, since it could be off by 10^decimals. */
 export function assetLinkFill(link:{assetId:string;amount?:string},held:readonly HeldAsset[]|undefined,meta:AssetMeta|undefined){
  if(!held)return undefined;
  if(!held.some(h=>h.assetId===link.assetId))throw new Error(NOT_HELD_ASSET);
  const {assetId,amount}=link,empty={assetId,amount:'',error:''};
  if(amount===undefined)return empty;
- if(!meta)return {...empty,error:ASSET_DETAILS_PENDING};
+ if(!meta)return undefined;
  return parseAssetAmount(amount,meta.decimals)===undefined?{...empty,error:assetAmountError(meta.decimals,markedUnit(meta))}:{...empty,amount};
 }

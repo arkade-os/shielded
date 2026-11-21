@@ -632,7 +632,6 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);
  const amountScale=useRef<[string,number]>(['',0]);
  useEffect(()=>{const [id,was]=amountScale.current;amountScale.current=[assetId,decimals];if(id===assetId&&was!==decimals)setAmount('');},[assetId,decimals]);
- useEffect(()=>{if(sendMeta&&!pendingLink)setCodeError(c=>c===ASSET_DETAILS_PENDING?'':c);},[sendMeta,pendingLink]);
  const arkAssetRecipient=!!assetId&&isValidArkAddress(arkTarget(to.trim())??''),carrier=arkAssetRecipient?withSats:'';
  const requestKey=JSON.stringify([tab,to,amount,assetId,carrier,String(units)]);
  const quoteContext={wallet:wallet??quotes,revision:wallet&&fundsRef.current?.wallet===wallet?fundsRef.current.watch.revision:0,key:requestKey};
@@ -747,18 +746,17 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const fill=(code:string,replace=false)=>{
   let target:ReturnType<typeof payTarget>,linked:ReturnType<typeof assetLinkFill>;
   const stop=(message:string)=>{setCodeError(message);if(replace){setTo('');setAmount('');setAssetId('');setWithSats('');}};
-  setPendingLink(undefined);
-  try{target=payTarget(code);linked=target.asset&&assetLinkFill(target.asset,holdingsKnown?held:undefined,metadata?.get(target.asset.assetId));}catch(error){stop(errorText(error));return;}
-  // Before the first coin read an asset held only on Arkade looks unheld, so its link waits rather than being refused.
-  if(target.asset&&!linked){setPendingLink({code,replace});stop(ASSET_DETAILS_PENDING);return;}
-  setCodeError(linked?.error??'');setTo(target.to);
+  try{target=payTarget(code);linked=target.asset&&assetLinkFill(target.asset,holdingsKnown?held:undefined,metadata?.get(target.asset.assetId));}catch(error){setPendingLink(undefined);stop(errorText(error));return;}
+  // An asset held only on Arkade looks unheld until the first coin read, and a linked amount is unreadable until its decimals are: the link waits for both.
+  if(target.asset&&!linked){if(pendingLink?.code!==code||pendingLink?.replace!==replace){setPendingLink({code,replace});stop(ASSET_DETAILS_PENDING);}return;}
+  setPendingLink(undefined);setCodeError(linked?.error??'');setTo(target.to);
   if(linked){setAssetId(linked.assetId);setAmount(linked.amount);if(replace)setWithSats('');return;}
   if(replace){setAssetId('');setWithSats('');setAmount(invoiceCarriesAmount(target.to)?'':target.amount!==undefined?String(target.amount):'');return;}
   // A link's amount is in sats, so it switches an asset send back to Bitcoin; a fixed-amount invoice's own amount wins.
   if(invoiceCarriesAmount(target.to))setAmount('');
   else if(target.amount!==undefined){setAssetId('');setAmount(String(target.amount));}
  };
- useEffect(()=>{if(pendingLink&&holdingsKnown)fill(pendingLink.code,pendingLink.replace);},[pendingLink,holdingsKnown]);
+ useEffect(()=>{if(pendingLink&&holdingsKnown)fill(pendingLink.code,pendingLink.replace);},[pendingLink,holdingsKnown,assetRevision]);
  const paste=async()=>{try{fill(await readWalletClipboard());}catch{recipientNode.current?.focus();}};
  const selectTab=(name:'home'|'activity'|'receive'|'send')=>{if(name!==tab){if((name==='receive'||name==='send')&&(tab==='receive'||tab==='send'))setTo('');setTab(name);}if(name!=='home'){phrasePrompt.current.cancel();setPasskeyPhrase('');setSecurityView(null);setReveal(false);setShowView(false);setShowFull(false);}};
  const openPanel=(name:'activity'|'receive'|'send')=>{selectTab(name);setSheetOpen(true);};

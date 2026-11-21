@@ -153,13 +153,24 @@ test('a payment link fills an asset amount only at the decimals this wallet has 
  const h=[held(0n,9n)],usdt={ticker:'USDT',decimals:2};
  assert.equal(NOT_HELD_ASSET,'This payment link asks for an asset this wallet does not hold.');
  assert.equal(ASSET_DETAILS_PENDING,"This wallet has not read this asset's details yet, so it cannot read the link's amount. Enter the amount, or open the link again in a moment.");
- for(const id of ['a','b'])assert.equal(assetLinkFill({assetId:id,amount:'12.5'},undefined,usdt),undefined,'before the first coin read nothing is refused: the link waits');
  assert.throws(()=>assetLinkFill({assetId:'b',amount:'1'},h,usdt),{message:NOT_HELD_ASSET});
- assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.5'},h,undefined),{assetId:'a',amount:'',error:ASSET_DETAILS_PENDING});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.5'},h,usdt),{assetId:'a',amount:'12.5',error:''});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'12.555'},h,usdt),{assetId:'a',amount:'',error:'Enter an amount of USDT · Unverified above zero, with at most 2 decimal places.'});
  assert.deepEqual(assetLinkFill({assetId:'a',amount:'1.5'},h,{decimals:0}),{assetId:'a',amount:'',error:assetAmountError(0,'units · Unverified')});
  assert.deepEqual(assetLinkFill({assetId:'a'},h,undefined),{assetId:'a',amount:'',error:''},'a link without an amount has none to wait for');
+});
+
+test('an asset link waits for the first coin read and for its amount\'s decimals, then fills; an asset not held is refused at that read',()=>{
+ const link={assetId:'a',amount:'1.5'},h=[held(0n,9n)],two={ticker:'USDT',decimals:2};
+ assert.equal(assetLinkFill(link,undefined,undefined),undefined,'details arrive later: before the first coin read');
+ assert.equal(assetLinkFill(link,h,undefined),undefined,'then held, its decimals still unread');
+ const filled=assetLinkFill(link,h,two);
+ assert.deepEqual(filled,{assetId:'a',amount:'1.5',error:''});
+ assert.deepEqual([parseAssetAmount(filled!.amount,2),formatAssetAmount(150n,2)],[150n,'1.5']);
+ assert.equal(assetLinkFill(link,undefined,two),undefined,'details cached: it still waits for the first coin read');
+ assert.deepEqual(assetLinkFill(link,h,two),filled,'and fills on it');
+ assert.equal(assetLinkFill({...link,assetId:'b'},undefined,undefined),undefined);
+ assert.throws(()=>assetLinkFill({...link,assetId:'b'},h,undefined),{message:NOT_HELD_ASSET},'refused at the first read, without waiting for details');
 });
 
 test('the send form names an asset unit with the Unverified mark',()=>{

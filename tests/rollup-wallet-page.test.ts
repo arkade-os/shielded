@@ -264,20 +264,20 @@ test('an asset send reads display units, keys its quote on the atomic units, and
  assert.ok(form.includes('{recipientError&&<p className="stock-blocked" role="alert">{recipientError}</p>}'));
  assert.ok(form.includes('{!to.trim()&&sendAsset?.shielded!==0n&&<button type="button" className="stock-ghost"'),'no claim link for units outside the pool');
  assert.ok(wallet.includes('wallet!.mintLink(assetId?units!:BigInt(amount),assetId||undefined)'));
- for(const hook of [`useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);`,`if(id===assetId&&was!==decimals)setAmount('');`,`useEffect(()=>{if(sendMeta&&!pendingLink)setCodeError(c=>c===ASSET_DETAILS_PENDING?'':c);},[sendMeta,pendingLink]);`])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<early,hook);
+ for(const hook of [`useEffect(()=>{if(assetId&&!sendAsset){setAssetId('');setAmount('');}},[assetId,!!sendAsset]);`,`if(id===assetId&&was!==decimals)setAmount('');`])assert.ok(wallet.includes(hook)&&wallet.indexOf(hook)<early,hook);
 });
 
-test('a payment link for an asset waits for the first coin read, then fills only through the held and read-decimals checks',()=>{
+test('a payment link for an asset waits for the first coin read and its details, then fills only through the held and read-decimals checks',()=>{
  const wallet=walletPage(),fill=/const fill=\(code:string,replace=false\)=>\{[\s\S]*?\n \};/.exec(wallet)?.[0]??'',early=wallet.indexOf('if(!secret||!wallet)return');
  assert.ok(wallet.includes('if(data.coins){setCoins(data.coins);setCoinsRead(true);}'));
  assert.ok(wallet.includes('holdingsKnown=!!wallet&&coinsRead'));
- assert.ok(fill.includes('setPendingLink(undefined);'),'every fill drops the link it may be replaying');
- assert.ok(fill.includes('linked=target.asset&&assetLinkFill(target.asset,holdingsKnown?held:undefined,metadata?.get(target.asset.assetId));}catch(error){'),'inside the try, so an asset not held is refused like an unreadable link');
- assert.ok(fill.includes('if(target.asset&&!linked){setPendingLink({code,replace});stop(ASSET_DETAILS_PENDING);return;}'));
- assert.ok(fill.includes(`setCodeError(linked?.error??'');setTo(target.to);`));
+ assert.ok(fill.includes('linked=target.asset&&assetLinkFill(target.asset,holdingsKnown?held:undefined,metadata?.get(target.asset.assetId));}catch(error){setPendingLink(undefined);stop(errorText(error));return;}'),'inside the try, so an asset not held is refused like an unreadable link, and stops waiting');
+ assert.ok(fill.includes('if(target.asset&&!linked){if(pendingLink?.code!==code||pendingLink?.replace!==replace){setPendingLink({code,replace});stop(ASSET_DETAILS_PENDING);}return;}'),'waiting again on the same link changes nothing, so a replay cannot loop');
+ assert.ok(fill.includes(`setPendingLink(undefined);setCodeError(linked?.error??'');setTo(target.to);`));
  assert.ok(fill.includes('if(linked){setAssetId(linked.assetId);setAmount(linked.amount);'));
- const rerun='useEffect(()=>{if(pendingLink&&holdingsKnown)fill(pendingLink.code,pendingLink.replace);},[pendingLink,holdingsKnown]);';
- assert.ok(wallet.includes(rerun)&&wallet.indexOf(rerun)<early,'it runs again once holdings are known');
+ const rerun='useEffect(()=>{if(pendingLink&&holdingsKnown)fill(pendingLink.code,pendingLink.replace);},[pendingLink,holdingsKnown,assetRevision]);';
+ assert.ok(wallet.includes(rerun)&&wallet.indexOf(rerun)<early,'it replays at the first coin read and whenever details arrive');
+ assert.doesNotMatch(wallet,/if\(sendMeta&&!pendingLink\)/,'the replay replaces the waiting message itself');
  assert.ok(wallet.includes(`onChange={e=>{setTo(e.target.value);setCodeError('');setPendingLink(undefined);}}`),'typing another recipient drops a waiting link');
 });
 
