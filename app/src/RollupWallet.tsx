@@ -37,7 +37,7 @@ import {AppUpdateNotice} from './AppUpdates.tsx';
 import {CopyButton,Icon,WalletBalanceNotice} from './components.tsx';
 import {ActivityLink,REVEAL_LINE,TxSheet,explorerUrl,txOf,when,type TxKind,type TxView} from './tx-details.tsx';
 import {QrCode,Scanner} from './wallet-qr.tsx';
-import {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount,type ReceiveMode} from './wallet-receive.tsx';
+import {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount,typedAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
 import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS,type TransientWalletDismissal} from './wallet-recovery.ts';
@@ -134,7 +134,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const dockLens=useRef<HTMLSpanElement>(null),mainLens=useRef<HTMLSpanElement>(null);
  const [listed,setListed]=useState(''),[restoreError,setRestoreError]=useState(''),[clearError,setClearError]=useState(''),[pullSyncError,setPullSyncError]=useState(''),[showView,setShowView]=useState(false),[showFull,setShowFull]=useState(false),[securityView,setSecurityView]=useState<WalletSecurityView|null>(null),[restoreStarted,setRestoreStarted]=useState(false),[aboutOpen,setAboutOpen]=useState(false);
  const [listingError,setListingError]=useState<{id:string;message:string}>();
- const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[payoutWatchError,setPayoutWatchError]=useState(''),[unifiedStage,setUnifiedStage]=useState('Reading your saved receiver'),[unifiedStalled,setUnifiedStalled]=useState(false),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
+ const [invoice,setInvoice]=useState<Invoice>(),[lnAmount,setLnAmount]=useState(''),[lnAmountFor,setLnAmountFor]=useState(''),[unifiedAddress,setUnifiedAddress]=useState(''),[lnBusy,setLnBusy]=useState(false),[lnError,setLnError]=useState(''),[payoutWatchError,setPayoutWatchError]=useState(''),[unifiedStage,setUnifiedStage]=useState('Reading your saved receiver'),[unifiedStalled,setUnifiedStalled]=useState(false),[lnBounds,setLnBounds]=useState<InvoiceBounds>();
  const [documentVisible,setPageVisible]=useState(()=>!document.hidden),[nativeActive,setNativeActive]=useState(true);
  const pageVisible=documentVisible&&nativeActive;
  const handledResumeScanner=useRef<number|undefined>(undefined);
@@ -569,7 +569,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(current())setLnBounds(bounds);
   })().catch(error=>{if(current())setLnBoundsError(noSwapErrorText(error)??errorText(error));});
  };
- const wantsInvoice=receiveMode==='unified'&&receiveAmount(lnAmount)!==undefined;
+ const wantsInvoice=receiveMode==='unified'&&receiveAmount(typedAmount(lnAmount,lnAmountFor,''))!==undefined;
  useEffect(()=>{if(wantsInvoice&&!suspended)readLnBounds();},[wantsInvoice,wallet,wallet?.swaps,suspended]);
 
  useEffect(()=>{
@@ -627,9 +627,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const referenced=new Set([...held.map(h=>h.assetId),...rows.flatMap(row=>row.txs.flatMap(tx=>tx.assets??[]).map(a=>a.assetId)),...reserves]),referencedKey=[...referenced].join();
  useEffect(()=>{metadata?.want(referenced);},[metadata,referencedKey,tick]);
  const assetLabel=(id:string,amount:bigint)=>assetText(amount,id,metadata?.get(id));
- const requestIds=requestAssets(receiveMode,held,reserves,id=>!!metadata?.get(id)),requestAsset=requestIds.includes(chosenRequestAsset)?chosenRequestAsset:'',requestMeta=requestAsset?metadata?.get(requestAsset):undefined;
+ const requestIds=requestAssets(receiveMode,held,reserves,id=>!!metadata?.get(id)),requestAsset=requestIds.includes(chosenRequestAsset)?chosenRequestAsset:'',requestMeta=requestAsset?metadata?.get(requestAsset):undefined,amountNow=typedAmount(lnAmount,lnAmountFor,requestAsset);
  const requestOptions=requestIds.map(id=>{const meta=metadata?.get(id);return {id,label:`${assetTitle(id,meta)} · ${UNVERIFIED}`,unit:markedUnit(meta),decimals:meta?.decimals??0};});
- // A tab switch or a lost holding changes the requested asset without a pick, and typed digits must not carry to another unit.
+ // A tab switch or a lost holding changes the unit without a pick: amountNow hides the old digits in that render, and this then drops them.
  useEffect(()=>{setLnAmount('');},[requestAsset,requestMeta?.decimals]);
  const sendAsset=held.find(h=>h.assetId===assetId),sendMeta=assetId?metadata?.get(assetId):undefined,decimals=sendMeta?.decimals??0,units=assetId?parseAssetAmount(amount,decimals):undefined,recipientError=assetRecipientError(sendAsset,to),holdingsKnown=!!wallet&&coinsRead,sendBlocked=!!pendingLink||(!!assetId&&(!sendAsset||units===undefined));
  // The picker lists only held assets, so one sent away falls back to Bitcoin; details arriving rescale typed digits by 10^decimals, so they go.
@@ -659,7 +659,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const feePaused=wallet?.depositFeePaused,payoutFee=fee?` A single payout moves back into the pool without the deposit fee, and two or more together would pay it, so Shield again moves one payout at a time.${feePaused?' Accept the new fee above to move payouts back.':''}`:'';
  const fundingFee=fee?[feeLine,feePaused&&PAUSED_LINE,wallet&&nextPlan?.kind==='btc'?depositFeeAmountLine(wallet.depositFeeOnPlan(nextPlan),nextPlan.amount):'',depositFeeOutsideLine(coins.filter(c=>!wallet?.isPoolPayout(c)),fee,Date.now(),SHIELD_FLOOR_MS)].filter(Boolean).join(' '):'';
  useEffect(()=>{if(feePaused)setFeeConfirmed(false);},[!!feePaused]);
- const requestedAmount=receiveAmount(lnAmount),invoiceAmount=invoiceRequestAmount(lnAmount,lnBounds);
+ const requestedAmount=receiveAmount(amountNow),invoiceAmount=invoiceRequestAmount(amountNow,lnBounds);
  const ready=pool?.phase==='ready'&&!!secret,connectionProblem=ready?startupError||refreshError:'',unit=assetId?markedUnit(sendMeta):'sats',lnOutside=requestedAmount!==undefined&&!!lnBounds&&!invoiceInRange(lnBounds,requestedAmount);
  const receiveOpen=tab==='receive'&&(!docked||sheetOpen)&&viewActive&&!suspended;
  const walletBusy=busy||handleBusy.current||!!actions.current?.busy;
@@ -814,7 +814,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const liveInvoice=shownInvoice&&(shownInvoice.outcome==='open'||shownInvoice.outcome==='accepted')?shownInvoice:undefined;
  const receivePayload=receiveMode!=='unified'?receiveMode:wantsInvoice?'invoice':'lightning';
  const receiveValue=receiveBlocked?'':receivePayload==='arkade'?funding:receivePayload==='shielded'?address:receivePayload==='invoice'?liveInvoice?.bolt11??'':unifiedAddress;
- const receivePaymentValue=receiveMode!=='unified'&&lnAmount?amountQrValue(receiveMode,receiveValue,lnAmount,requestMeta&&{assetId:requestAsset,decimals:requestMeta.decimals}):undefined;
+ const receivePaymentValue=receiveMode!=='unified'&&amountNow?amountQrValue(receiveMode,receiveValue,amountNow,requestMeta&&{assetId:requestAsset,decimals:requestMeta.decimals}):undefined;
  const receiveQr=receivePayload==='invoice'?liveInvoice&&invoiceQr(liveInvoice.bolt11):receivePayload==='lightning'?receiveValue?lightningAddressQr(receiveValue):undefined:receivePaymentValue;
  const receiveDescription=receiveBlocked?'Receive is unavailable while the wallet is being restored.':receivePayload==='arkade'?feePaused?'New deposits are paused until you accept the updated fee.':'Eligible deposits move into your private balance while this wallet is open.'
   :receivePayload==='invoice'?liveInvoice?invoiceLine(liveInvoice,fee):'A Lightning invoice for this exact amount.'
@@ -907,9 +907,9 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     {docked&&sheetOpen&&activity&&<div className="stock-sheet-status" role="status" aria-live="polite"><span className={'stock-sheet-status-dot is-'+activity.state} aria-hidden="true"/><span><b>{activity.title}</b>{activity.line&&<> · {activity.line}</>}</span>{activity.state!=='active'&&<button type="button" onClick={()=>sheetOwner.clear()} aria-label="Dismiss wallet status">×</button>}</div>}
      <div ref={panelBody} className="stock-panel-body" data-sheet-page="">{tab==='home'?(!docked?<div className="stock-home-view">{balanceCard()}{recentPreview}</div>:null):tab==='activity'?<section className="stock-card stock-history stock-history-full">{!docked&&<h2>Activity</h2>}{historyContent(historyItems)}{synced&&!rows.length&&<button type="button" className="stock-primary" onClick={()=>docked?openPanel('receive'):selectTab('receive')}>Receive your first payment</button>}</section>:<>
      {tab==='receive'?<div className="stock-receive">
-       <ReceivePortal active={viewActive&&!suspended&&(!docked||sheetOpen)} unified={lightningOn} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receivePaymentValue??receiveValue} qrValue={receiveQr} amount={lnAmount} onAmount={setLnAmount} request={{options:requestOptions,assetId:requestAsset,onAsset:id=>{setRequestAsset(id);setLnAmount('');}}} loading={receiveLoading} description={receiveDescription} action={receiveAction}>
+       <ReceivePortal active={viewActive&&!suspended&&(!docked||sheetOpen)} unified={lightningOn} mode={receiveMode} payload={receivePayload} onModeChange={setReceiveMode} value={receivePaymentValue??receiveValue} qrValue={receiveQr} amount={amountNow} onAmount={typed=>{setLnAmount(typed);setLnAmountFor(requestAsset);}} request={{options:requestOptions,assetId:requestAsset,onAsset:id=>{setRequestAsset(id);setLnAmount('');}}} loading={receiveLoading} description={receiveDescription} action={receiveAction}>
 
-        {receivePaymentValue&&<p className="stock-muted" role="status">Requested {requestMeta?assetText(parseAssetAmount(lnAmount,requestMeta.decimals)!,requestAsset,requestMeta):satsText(requestedAmount!)}.</p>}
+        {receivePaymentValue&&<p className="stock-muted" role="status">Requested {requestMeta?assetText(parseAssetAmount(amountNow,requestMeta.decimals)!,requestAsset,requestMeta):satsText(requestedAmount!)}.</p>}
         {!receiveBlocked&&receiveMode==='unified'&&<>
         {wantsInvoice&&lnBoundsError&&<p className="stock-blocked" role="alert">{lnBoundsError} <button type="button" className="stock-ghost stock-mini" onClick={readLnBounds}>Retry invoice limits</button></p>}
         {wantsInvoice&&invoiceError&&<p className="stock-blocked" role="alert">{invoiceError}</p>}

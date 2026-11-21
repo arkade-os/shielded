@@ -8,7 +8,7 @@ import {payTarget} from '../app/src/rollup-client.ts';
 import {parseAssetAmount} from '../app/src/wallet-assets.ts';
 
 registerHooks({load:(url,context,next)=>url.endsWith('.css')?{format:'module',source:'export {}',shortCircuit:true}:next(url,context)});
-const {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount}=await import('../app/src/wallet-receive.tsx');
+const {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount,typedAmount}=await import('../app/src/wallet-receive.tsx');
 const recipients=[
  ['shielded','shrol_example','shielded','shrol_example'],
  ['arkade','tark_example','ark','tark_example'],
@@ -211,6 +211,14 @@ test('an asset request labels, validates and reads its amount in the asset\'s un
  const select=(function find(node:ReactNode):Select|undefined{for(const child of Children.toArray(node)){if(!isValidElement<Select>(child))continue;if(child.type==='select')return child.props;const found=find(child.props.children);if(found)return found;}})(view);
  select?.onChange?.({target:{value:''}});
  assert.deepEqual(picked,['']);
+});
+
+test('a typed amount reads only in the unit it was typed in, so a tab switch never puts it in another unit\'s QR or link',()=>{
+ const id='ee'.repeat(34),qr=(mode:'arkade'|'shielded',typedFor:string,inView:string)=>amountQrValue(mode,mode==='arkade'?'tark_example':'shrol_example',typedAmount('100',typedFor,inView),inView?{assetId:id,decimals:2}:undefined);
+ assert.equal(qr('arkade',id,id),`bitcoin:?ark=tark_example&assetid=${id}&amount=100`);
+ assert.equal(qr('shielded',id,''),undefined,'100 of the asset, then the Shielded tab showing Bitcoin: no 100-sat request');
+ assert.equal(qr('arkade','',id),undefined,'100 sats, then a tab with the asset selected: no request for 100 of it');
+ assert.equal(qr('shielded','',''),'bitcoin:?shielded=shrol_example&amount=0.00000100');
 });
 
 test('asset request QRs roundtrip through the payment decoder',()=>{

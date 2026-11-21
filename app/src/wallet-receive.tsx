@@ -47,6 +47,7 @@ type InvoiceState={amount:bigint;outcome:string};
 /** A lapsed invoice is replaced; a paid or failed one stays shown until the amount is edited. */
 export const needsInvoice=(amount:bigint|undefined,invoice:InvoiceState|undefined,tried:bigint|undefined)=>amount!==undefined&&tried!==amount&&(invoice?.amount!==amount||invoice.outcome==='lapsed');
 export const keptInvoice=<T extends InvoiceState>(invoice:T|undefined)=>invoice&&(invoice.outcome==='open'||invoice.outcome==='accepted')?invoice:undefined;
+export const typedAmount=(amount:string,typedFor:string,assetId:string)=>typedFor===assetId?amount:'';
 export function amountQrValue(mode:Exclude<ReceiveMode,'unified'>,value:string,amount:string,asset?:{assetId:string;decimals:number}):string|undefined{
  const key=mode==='shielded'?'shielded':'ark';
  if(asset){
