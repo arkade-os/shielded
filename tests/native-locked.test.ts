@@ -45,9 +45,10 @@ const memory=()=>{
 };
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>{resolve=r;});return {promise,resolve};};
 const src=(file:string)=>readFileSync(new URL(`../app/src/${file}`,import.meta.url),'utf8');
-const open=(cache=lockedSecretCache(),hold:{current?:Error}={},storage=memory())=>readNativeSecret(getSecret,cache,hold,storage);
+const open=(cache=lockedSecretCache(),hold:{current?:Error}={},storage=memory(),read:{locked?:boolean}={})=>readNativeSecret(getSecret,cache,hold,storage,read);
 type Made=ReturnType<typeof newLockedSecret>;
 const commit=(storage:Storage,made:Made,write=()=>lockedSecretCreate(made.entropy))=>commitNativeSetup({expected,status:async()=>expected,current(){},foreground:()=>true,storage,secret:made.master,metadata:{created:123,lock:{words:made.words.split(' ').length as 12|24}},read:()=>lockedReadBack(made.master),write});
+const wayOut=(storage:Storage,phrase:string)=>commitNativeSetup({expected,status:async()=>expected,current(){},foreground:()=>true,storage,secret:bytesToHex(parseMasterSecret(phrase)),metadata:{},read:getSecret,write:value=>restoreOverLock(()=>createSecret(value))});
 
 test('a locked wallet prompts once at open and not on reconnect, Tor switch or reload',async()=>{
  const made=newLockedSecret(12),cache=lockedSecretCache();use({locked:made.entropy});
@@ -60,7 +61,7 @@ test('a locked wallet prompts once at open and not on reconnect, Tor switch or r
  assert.equal(vault.prompts,2,'an answer that reaches a retired open still serves the next one');
  const native=src('NativeWallet.tsx');
  assert.match(native,/^const lockedSecret=lockedSecretCache\(\);$/m);
- assert.match(native,/openNativeVault\([\s\S]*?\(\)=>readNativeSecret\(getSecret,lockedSecret,unlockHeld,localStorage\),generationGuard/,'every open reads through the one cache');
+ assert.match(native,/openNativeVault\([\s\S]*?\(\)=>readNativeSecret\(getSecret,lockedSecret,unlockHeld,localStorage,read\),generationGuard/,'every open reads through the one cache');
  assert.equal(native.match(/lockedSecret\.forget\(\)/g)?.length,3,'only Lock and the two resets forget it: pause, suspend, the Tor switch and reload keep it');
 });
 
@@ -112,9 +113,9 @@ test('an interrupted fallback setup reconciles by tag with one prompt',async()=>
  assert.deepEqual(pendingNativeSetup(storage)?.lock,{words:24});assert.equal(nativeLockOf(storage),undefined);
  const prompts=vault.prompts,secret=await open(lockedSecretCache(),{},storage);
  assert.equal(secret,made.master);assert.equal(vault.prompts-prompts,1);
- reconcileNativeSetup(storage,secret);
+ reconcileNativeSetup(storage,secret,true);
  assert.equal(pendingNativeSetup(storage),undefined);assert.deepEqual(nativeLockOf(storage),{words:24});assert.equal(storage.getItem('shielded-rollup-wallet-created-v1'),'123');
- assert.match(src('NativeWallet.tsx'),/const pending=reconcileNativeSetup\(localStorage,secret\);/);
+ assert.match(src('NativeWallet.tsx'),/const pending=reconcileNativeSetup\(localStorage,secret,!!read\.locked\);/);
 });
 
 test('a cancelled lock prompt leaves nothing that blocks a new setup',async()=>{
@@ -122,7 +123,7 @@ test('a cancelled lock prompt leaves nothing that blocks a new setup',async()=>{
  await assert.rejects(commit(storage,made),error=>error==='cancelled');
  assert.ok(pendingNativeSetup(storage)?.lock);
  const secret=await open();assert.equal(secret,null);
- assert.equal(reconcileNativeSetup(storage,secret),undefined);assert.equal(pendingNativeSetup(storage),undefined);
+ assert.equal(reconcileNativeSetup(storage,secret,false),undefined);assert.equal(pendingNativeSetup(storage),undefined);
  const next=newLockedSecret(12);await commit(storage,next);assert.equal(vault.locked,next.entropy);
  assert.match(src('NativeWallet.tsx'),/if\(offer\)\{setupAllowed\.current=false;setSetup\(false\);\}/,'a failed Continue reopens, which drops or reconciles its journal');
 });
@@ -177,13 +178,12 @@ test('the way out writes the plain secret before clearing the locked one',async(
 
 test('a way out whose write failed gives way to the locked wallet at its next unlock',async()=>{
  const made=newLockedSecret(12),other=newLockedSecret(24),CREATED='shielded-rollup-wallet-created-v1';
- const wayOut=(storage:Storage,phrase:string)=>commitNativeSetup({expected,status:async()=>expected,current(){},foreground:()=>true,storage,secret:bytesToHex(parseMasterSecret(phrase)),metadata:{},read:getSecret,write:value=>restoreOverLock(()=>createSecret(value))});
  for(const phrase of [made.words,other.words]){
   const storage=memory();use({locked:made.entropy,failPlain:true});
   storage.setItem(NATIVE_LOCK,JSON.stringify({version:1,words:12}));storage.setItem(CREATED,'123');
   await assert.rejects(wayOut(storage,phrase));assert.ok(pendingNativeSetup(storage)&&!pendingNativeSetup(storage)!.lock);
-  const secret=await open(lockedSecretCache(),{},storage);
-  assert.equal(secret,made.master);assert.equal(reconcileNativeSetup(storage,secret),undefined,'the locked wallet opens');
+  const read:{locked?:boolean}={},secret=await open(lockedSecretCache(),{},storage,read);
+  assert.equal(secret,made.master);assert.equal(reconcileNativeSetup(storage,secret,!!read.locked),undefined,'the locked wallet opens');
   assert.deepEqual(nativeLockOf(storage),{words:12},'Backup still asks the device lock');assert.equal(storage.getItem(CREATED),'123');
  }
  const gone=memory();use({locked:made.entropy,failPlain:true,gone:true});
@@ -192,6 +192,18 @@ test('a way out whose write failed gives way to the locked wallet at its next un
  vault.failPlain=false;await wayOut(gone,made.words);assert.equal(vault.plain,made.master,'a lock that is gone never blocks another phrase');
  const long=newLockedSecret(24),bare=memory();use({locked:long.entropy});
  await open(lockedSecretCache(),{},bare);assert.deepEqual(nativeLockOf(bare),{words:24},'the marker follows the vault');
+});
+
+test('a restore with the phrase of an interrupted lock setup ends plain, without the lock marker',async()=>{
+ const made=newLockedSecret(12),storage=memory();use();
+ await assert.rejects(commit(storage,made,async()=>{await lockedSecretCreate(made.entropy);throw new Error('reply lost');}),/reply lost/);
+ assert.deepEqual(pendingNativeSetup(storage)?.lock,{words:12});
+ await wayOut(storage,made.words);
+ assert.equal(vault.plain,made.master);assert.equal(vault.locked,null);assert.equal(pendingNativeSetup(storage),undefined);
+ assert.equal(nativeLockOf(storage),undefined,'Backup takes the plain path');assert.equal(storage.getItem('shielded-rollup-wallet-created-v1'),'123');
+ storage.setItem(NATIVE_LOCK,JSON.stringify({version:1,words:12}));
+ const read:{locked?:boolean}={},secret=await open(lockedSecretCache(),{},storage,read);reconcileNativeSetup(storage,secret,!!read.locked);
+ assert.equal(secret,made.master);assert.equal(nativeLockOf(storage),undefined,'an open of a plain vault drops a stale marker');
 });
 
 test('a later Backup reveal prompts once and shows the stored words',async()=>{

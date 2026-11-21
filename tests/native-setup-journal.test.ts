@@ -22,7 +22,7 @@ test('a setup intent contains only the seed tag and public recovery metadata',()
 test('an empty vault preserves the intent and only the same seed can retry it',()=>{
  const base=memory();prepareNativeSetup(base,secret,{passkey:record,created:123});
  const raw=base.getItem(NATIVE_SETUP);
- assert.equal(reconcileNativeSetup(base,null)?.tag,pendingNativeSetup(base)?.tag);
+ assert.equal(reconcileNativeSetup(base,null,false)?.tag,pendingNativeSetup(base)?.tag);
  assert.equal(base.getItem(NATIVE_SETUP),raw);
  assert.throws(()=>prepareNativeSetup(base,other,{created:456}),/pending|match/);
  prepareNativeSetup(base,secret,{passkey:{...record,credentialId:'BAUG'},created:999});
@@ -31,9 +31,9 @@ test('an empty vault preserves the intent and only the same seed can retry it',(
 
 test('a committed or lost-ack setup applies metadata only to its matching vault',()=>{
  const base=memory();prepareNativeSetup(base,secret,{passkey:record,created:123});
- assert.throws(()=>reconcileNativeSetup(base,other),/match/);assert.ok(base.getItem(NATIVE_SETUP));
+ assert.throws(()=>reconcileNativeSetup(base,other,false),/match/);assert.ok(base.getItem(NATIVE_SETUP));
  assert.equal(base.getItem('shielded-native-wallet'),null);
- reconcileNativeSetup(base,secret);
+ reconcileNativeSetup(base,secret,false);
  assert.equal(pendingNativeSetup(base),undefined);assert.equal(base.getItem('shielded-native-wallet'),'1');
  assert.equal(base.getItem(BORN),'new');assert.equal(base.getItem(CREATED),'123');
  assert.deepEqual(JSON.parse(base.getItem(PASSKEY)!),record);assert.equal(base.getItem(SECRET),null);
@@ -43,13 +43,13 @@ test('an interrupted metadata commit is replayed without changing its birthday',
  const source=memory();let interrupted=true;
  const base:Storage={get length(){return source.length;},key:i=>source.key(i),getItem:key=>source.getItem(key),removeItem:key=>source.removeItem(key),clear:()=>source.clear(),setItem(key,value){if(key===CREATED&&interrupted){interrupted=false;throw new Error('storage unavailable');}source.setItem(key,value);}};
  prepareNativeSetup(base,secret,{passkey:record,created:123});
- assert.throws(()=>reconcileNativeSetup(base,secret),/storage unavailable/);assert.ok(base.getItem(NATIVE_SETUP));
- reconcileNativeSetup(base,secret);assert.equal(base.getItem(CREATED),'123');assert.equal(base.getItem(NATIVE_SETUP),null);
+ assert.throws(()=>reconcileNativeSetup(base,secret,false),/storage unavailable/);assert.ok(base.getItem(NATIVE_SETUP));
+ reconcileNativeSetup(base,secret,false);assert.equal(base.getItem(CREATED),'123');assert.equal(base.getItem(NATIVE_SETUP),null);
 });
 
 test('phrase setup clears stale passkey metadata and restored setup scans its full history',()=>{
  const base=memory();base.setItem(PASSKEY,JSON.stringify(record));base.setItem(`${BORN}:old`,'9');base.setItem(CREATED,'12');
- prepareNativeSetup(base,secret,{});reconcileNativeSetup(base,secret);
+ prepareNativeSetup(base,secret,{});reconcileNativeSetup(base,secret,false);
  assert.equal(base.getItem(PASSKEY),null);assert.equal(base.getItem(`${BORN}:old`),null);assert.equal(base.getItem(CREATED),null);
 });
 
@@ -67,9 +67,9 @@ test('a lock setup journals its word count, and its marker follows the wallet th
  const base=memory();base.setItem(PASSKEY,JSON.stringify(record));
  prepareNativeSetup(base,secret,{created:123,lock:{words:12}});
  assert.deepEqual(JSON.parse(base.getItem(NATIVE_SETUP)!).lock,{words:12});
- reconcileNativeSetup(base,secret);
+ reconcileNativeSetup(base,secret,true);
  assert.deepEqual(JSON.parse(base.getItem(NATIVE_LOCK)!),{version:1,words:12});assert.equal(base.getItem(PASSKEY),null);
- prepareNativeSetup(base,other,{});reconcileNativeSetup(base,other);
+ prepareNativeSetup(base,other,{});reconcileNativeSetup(base,other,false);
  assert.equal(base.getItem(NATIVE_LOCK),null,'a phrase restore over a locked wallet drops its marker');
  for(const options of [{lock:{words:15 as 12}},{passkey:record,lock:{words:12 as const}}])assert.throws(()=>prepareNativeSetup(memory(),secret,options),/metadata/);
  for(const value of [{version:1,tag:secret,lock:{words:15}},{version:1,tag:secret,passkey:record,lock:{words:12}}]){
@@ -79,7 +79,23 @@ test('a lock setup journals its word count, and its marker follows the wallet th
 
 test('a lock setup with nothing in the vault is dropped, since its phrase lived only in memory',()=>{
  const base=memory();prepareNativeSetup(base,secret,{created:123,lock:{words:24}});
- assert.equal(reconcileNativeSetup(base,null),undefined);assert.equal(base.getItem(NATIVE_SETUP),null);
+ assert.equal(reconcileNativeSetup(base,null,false),undefined);assert.equal(base.getItem(NATIVE_SETUP),null);
  prepareNativeSetup(base,secret,{passkey:record,created:123});
- assert.ok(reconcileNativeSetup(base,null),'a passkey setup can still finish with its passkey');
+ assert.ok(reconcileNativeSetup(base,null,false),'a passkey setup can still finish with its passkey');
+});
+
+test('a reused setup keeps its birthday but takes its lock from the setup reusing it',()=>{
+ const base=memory();prepareNativeSetup(base,secret,{created:123,lock:{words:12}});
+ assert.equal(prepareNativeSetup(base,secret,{}).lock,undefined);
+ assert.equal(pendingNativeSetup(base)?.lock,undefined,'a restore with its phrase is no lock setup');assert.equal(pendingNativeSetup(base)?.created,123);
+ assert.throws(()=>prepareNativeSetup(base,other,{}),/pending/);
+});
+
+test('reconcile sets the lock marker only for a locked vault, and drops it for a plain one',()=>{
+ const base=memory();prepareNativeSetup(base,secret,{created:123,lock:{words:24}});
+ reconcileNativeSetup(base,secret,false);assert.equal(base.getItem(NATIVE_LOCK),null,'a lock journal over a plain vault');assert.equal(base.getItem(CREATED),'123');
+ base.setItem(NATIVE_LOCK,JSON.stringify({version:1,words:12}));reconcileNativeSetup(base,secret,false);
+ assert.equal(base.getItem(NATIVE_LOCK),null,'a stale marker with no journal');
+ prepareNativeSetup(base,secret,{created:123,lock:{words:24}});reconcileNativeSetup(base,secret,true);
+ assert.deepEqual(JSON.parse(base.getItem(NATIVE_LOCK)!),{version:1,words:24});
 });

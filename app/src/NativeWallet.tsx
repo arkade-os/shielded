@@ -162,17 +162,18 @@ export default function NativeWallet(){
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    setPhase(mode==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
     const generationGuard=()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
+   const read:{locked?:boolean}={};
    const opened=await openNativeVault(async()=>{
     const status=await nativeNetwork.start(mode);
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
-   },()=>readNativeSecret(getSecret,lockedSecret,unlockHeld,localStorage),generationGuard,{mode,current:generationGuard});
+   },()=>readNativeSecret(getSecret,lockedSecret,unlockHeld,localStorage,read),generationGuard,{mode,current:generationGuard});
    if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    if(!opened||healthExpired.current)throw new Error('The connection changed while opening the wallet. Reconnect to try again.');
    const {secret,status}=opened;
-   const pending=reconcileNativeSetup(localStorage,secret);setSetupIntent(pending);
+   const pending=reconcileNativeSetup(localStorage,secret,!!read.locked);setSetupIntent(pending);
    if(secret===null){
     if(resume||localStorage.getItem('shielded-native-wallet')==='1')throw new Error('The native wallet secret is unavailable. Keep the app data and restore access to its vault.');
     connectionPending.current=false;setupAllowed.current=true;setSetup(true);setPhase('Create or restore your wallet');return;

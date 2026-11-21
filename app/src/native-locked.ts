@@ -44,9 +44,11 @@ const UNLOCK:Record<string,string>={
 export const unlockError=(cause:unknown):Error&{gone:boolean}=>cause instanceof Error&&cause.name==='NativeUnlock'?cause as Error&{gone:boolean}
  :Object.assign(new Error(typeof cause==='string'&&UNLOCK[cause]||(cause instanceof Error?cause.message:String(cause))),{name:'NativeUnlock',gone:cause==='lock-gone'});
 /** The plain entry wins, as in the vault. A locked one prompts only when the cache is empty, and after a refusal only once the user asks again. */
-export async function readNativeSecret(plain:()=>Promise<string|null>,cache:LockedSecretCache,hold:{current?:Error},storage:Storage){
+export async function readNativeSecret(plain:()=>Promise<string|null>,cache:LockedSecretCache,hold:{current?:Error},storage:Storage,read:{locked?:boolean}={}){
  const secret=await plain();
  if(secret!==null||await vaultKind()!=='locked')return secret;
+ read.locked=true;
+ // The read also drops a non-lock setup record, which can no longer complete while the vault is locked.
  dropStaleSetup(storage);
  const entropy=await cache.read(()=>hold.current?Promise.reject(hold.current):lockedSecretGet()).catch(cause=>{throw hold.current=unlockError(cause);});
  setNativeLock(storage,{words:entropy.length===32?12:24});
