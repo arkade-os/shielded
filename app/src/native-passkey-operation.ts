@@ -33,7 +33,7 @@ export async function commitNativeSetup(o:{expected:NativeStatus;status:()=>Prom
   if(existing===null)await o.write(o.secret);
   // A fresh random seed has no recovery phrase yet; missing birth metadata after a lost acknowledgement safely triggers a full scan.
   if(!recordBeforeWrite)prepareNativeSetup(o.storage,o.secret,o.metadata);
-  reconcileNativeSetup(o.storage,existing??o.secret);
+  reconcileNativeSetup(o.storage,existing??o.secret,o.metadata.lock!==undefined);
  })();
  o.onWrite?.(writing);await writing;
 }

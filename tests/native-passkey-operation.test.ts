@@ -120,5 +120,5 @@ test('the tracked random write includes a failed metadata commit and keeps its a
  const storage:Storage={get length(){return source.length;},key:i=>source.key(i),getItem:key=>source.getItem(key),removeItem:key=>source.removeItem(key),clear:()=>source.clear(),setItem(key,value){if(key==='shielded-rollup-wallet-created-v1'&&fail){fail=false;throw new Error('metadata unavailable');}source.setItem(key,value);}};
  await assert.rejects(commitNativeSetup({expected,status:async()=>expected,current(){},foreground:()=>true,storage,secret,metadata:{created:123},recordBeforeWrite:false,read:async()=>null,write:async value=>{vault=value;},onWrite:promise=>{tracked=promise;}}),/metadata unavailable/);
  await assert.rejects(tracked!,/metadata unavailable/);assert.equal(vault,secret);assert.ok(pendingNativeSetup(storage));
- reconcileNativeSetup(storage,vault);assert.equal(pendingNativeSetup(storage),undefined);assert.equal(storage.getItem('shielded-rollup-wallet-created-v1'),'123');
+ reconcileNativeSetup(storage,vault,false);assert.equal(pendingNativeSetup(storage),undefined);assert.equal(storage.getItem('shielded-rollup-wallet-created-v1'),'123');
 });

@@ -10,6 +10,8 @@ import {deriveWalletKeyMaterial,recoveryPhraseOf} from '../../packages/protocol/
 import {passkeyFailure,passkeyRpId,type PasskeyFallback,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
 import {nativePasskeys} from './native-passkeys.ts';
 import {waitNativePasskeyForeground} from './native-passkey-operation.ts';
+import {lockedPhrase} from './native-locked.ts';
+import {nativeLockOf} from './native-setup-journal.ts';
 import {createPasskeyRevealOwner} from './passkey-reveal.ts';
 import {IndexedDBShieldedNoteRepository} from '../../src/shielded/repository.ts';
 import type {StepState} from '../../src/shielded/handle.ts';
@@ -103,7 +105,7 @@ const titled=(name:string)=>name[0]!.toUpperCase()+name.slice(1);
 // What a neighbouring sheet shows while a swipe brings it in; its real content renders only once the swipe lands.
 const PEEK={activity:Array<string>(9).fill('row'),receive:['pill','qr','line','line','button'],send:['label','field','label','field','text','text','text','bar','chip']} as const;
 export type WalletConnection={problem:string;busy:boolean;reconnect:()=>void};
-export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onConnection,onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,onResumeSnapshot,onScannerIntentChange,resumeScanner,onResumeScannerHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false,headerControls}:{storage?:Storage;reload?:()=>void;onConnection?:(connection:WalletConnection|undefined)=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;resumeScanner?:number;onResumeScannerHandled?:(token:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean;headerControls?:ReactNode}={}){
+export default function RollupWallet({storage=globalThis.localStorage,reload=()=>location.reload(),onConnection,onShutdown,onReady,onStartupFailure,onStartupStage,onClearWallet,nativeHost=INJECTED_NATIVE,paymentRequest,onPaymentRequestHandled,onResumeSnapshot,onScannerIntentChange,resumeScanner,onResumeScannerHandled,animateEntrance=true,suspended=false,viewActive=true,hidden=false,headerControls,setupPhrase}:{storage?:Storage;reload?:()=>void;onConnection?:(connection:WalletConnection|undefined)=>void;onShutdown?:(shutdown:(()=>Promise<void>)|undefined)=>void;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;onClearWallet?:()=>Promise<void>;nativeHost?:boolean;paymentRequest?:IncomingPayment;onPaymentRequestHandled?:(id:number)=>void;onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;resumeScanner?:number;onResumeScannerHandled?:(token:number)=>void;animateEntrance?:boolean;suspended?:boolean;viewActive?:boolean;hidden?:boolean;headerControls?:ReactNode;setupPhrase?:string}={}){
  const [sessionFetch]=useState(()=>nativeHost?nativeSessionFetch():undefined);
  const [sessionGuard]=useState(()=>nativeHost?nativeSessionGuard():undefined);
  const [pool,setPool]=useState<RollupPoolStatus>(),[poolError,setPoolError]=useState(''),[journalError,setJournalError]=useState('');
@@ -112,7 +114,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [startupStage,setStartupStage]=useState('Preparing your private wallet');
  const [initialPool,setInitialPool]=useState<RollupPoolStatus>();
  const [secret,setSecret]=useState(()=>storage.getItem(SECRET)??''),[lockName]=useState(()=>!nativeHost&&revealSource(storage)==='locked'?passkeyUserName(Number(storage.getItem(CREATED))):''),[early,setEarly]=useState<{secret:string;address:string;ark?:string}>(),[backedUp,setBackedUp]=useState(()=>storage.getItem(BACKED_UP)==='1'),[reveal,setReveal]=useState(false),[restore,setRestore]=useState('');
- const [prf,setPrf]=useState<'yes'|'no'|'unknown'>(),[passkeyOff,setPasskeyOff]=useState(false),[fallbackName,setFallbackName]=useState(''),fallback=useRef<PasskeyFallback|undefined>(undefined),[passkeyPhrase,setPasskeyPhrase]=useState(''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
+ const [prf,setPrf]=useState<'yes'|'no'|'unknown'>(),[passkeyOff,setPasskeyOff]=useState(false),[fallbackName,setFallbackName]=useState(''),fallback=useRef<PasskeyFallback|undefined>(undefined),[passkeyPhrase,setPasskeyPhrase]=useState(setupPhrase??''),[revealError,setRevealError]=useState(''),revealing=useRef(false);
  const phrasePrompt=useRef(createPasskeyRevealOwner()),phraseForeground=useRef(!document.hidden),phraseActive=useRef(true),phraseCurrent=useRef(true);
  // Committed state, never a discarded render, and a layout effect because the reveal reads it in the same tick a click or a publish arrives.
  useLayoutEffect(()=>{phraseCurrent.current=!suspended&&viewActive&&!hidden;},[suspended,viewActive,hidden]);
@@ -707,8 +709,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   // A return while the view is inactive or suspended has no sync yet; it runs once the effect above installs one.
   if(pageVisible&&!was){if(syncRef.current)void syncRef.current().catch(()=>{});else pendingForeground.current=true;}
  },[pageVisible]);
- const source=useMemo(()=>secret?revealSource(storage):undefined,[secret,storage]),phraseWords=useMemo(()=>(source==='locked'?lockedRecordOf(storage):source&&passkeyRecordOf(storage))?.words??24,[secret,source,storage]);
- const phrase=phraseWords===12?passkeyPhrase:source==='locked'?passkeyPhrase:secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
+ const source=useMemo(()=>secret?revealSource(storage):undefined,[secret,storage]),nativeLock=useMemo(()=>nativeHost&&secret?nativeLockOf(storage):undefined,[nativeHost,secret,storage]),phraseWords=useMemo(()=>(nativeLock??(source==='locked'?lockedRecordOf(storage):source&&passkeyRecordOf(storage)))?.words??24,[secret,source,storage,nativeLock]);
+ const phrase=phraseWords===12?passkeyPhrase:source==='locked'||nativeLock?passkeyPhrase:secret?recoveryPhraseOf(secret):'',created=Number(storage.getItem(CREATED))||0;
  useEffect(()=>{if(!reveal&&backedUp)setPasskeyPhrase('');},[reveal,backedUp]);
  const showPhrase=()=>{
   if(!mounted.current||!phraseCurrent.current||document.hidden||!phraseForeground.current||nativeHost&&!phraseActive.current)return;
@@ -724,7 +726,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    const expected=nativeHost?await nativeNetwork.status():undefined;check();
    const foreground=()=>phraseForeground.current&&phraseActive.current&&!document.hidden;
    const before=expected?()=>waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground):undefined;
-   const words=revealSource(storage)==='locked'?await unlockPageWallet(storage,{rpId:PASSKEY_RP_ID}).then(opened=>{if(opened.secret!==secret)throw new Error('That passkey does not open this wallet.');return opened.words;}):await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
+   const words=revealSource(storage)==='locked'?await unlockPageWallet(storage,{rpId:PASSKEY_RP_ID}).then(opened=>{if(opened.secret!==secret)throw new Error('That passkey does not open this wallet.');return opened.words;}):nativeLock?await lockedPhrase(secret,before):await passkeyWords(storage,{rpId:PASSKEY_RP_ID,...nativeHost?{client:nativePasskeys(undefined,{signal:request.signal,current:check,before,foreground})}:{}});check();
    if(expected)do{await waitNativePasskeyForeground(expected,nativeNetwork.status,check,foreground);}while(!foreground());
    request.publish(foreground,()=>{check();setPasskeyPhrase(words);setReveal(true);});
   })().catch(error=>{if(!request.signal.aborted&&mounted.current)setRevealError(source==='locked'?`${errorText(error)} Use the passkey “${passkeyUserName(created)}”.`:errorText(error));}).finally(()=>{request.finish();revealing.current=false;});

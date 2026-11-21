@@ -26,7 +26,7 @@ export interface WalletOnboardingProps {
  passkey?:{onCreate:(words:PasskeyWordCount)=>void;onRestore:()=>void};
  passkeyUnavailable?:string;
  pendingSetup?:boolean;
- unlock?:{label:string;onUnlock():void;onUsePhrase():void};
+ unlock?:{label:string;gone?:boolean;onUnlock():void;onUsePhrase():void};
  children?:ReactNode;
 }
 
@@ -100,7 +100,7 @@ export default function WalletOnboarding({transport,setup,busy,opening=false,pha
     </form>:<div className="wallet-onboarding-actions">
      {/* Keyed, so the confirmation replaces the focused button instead of relabelling it for a second Enter. */}
      {setup&&unlock?(confirming?<Fragment key="confirm"><p className="wallet-onboarding-description">This replaces the locked wallet on this device. Your funds are safe if this is its recovery phrase.</p><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setConfirming(false);setRestoring(true);unlock.onUsePhrase();}}}>Enter recovery phrase</button><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>setConfirming(false)}>Back</button></Fragment>
-      :<Fragment key="unlock"><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled)unlock.onUnlock();}}>{busy?'Unlocking…':native?'Unlock':'Unlock with passkey'}</button><button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setConfirming(true);}}>Use recovery phrase instead</button></Fragment>)
+      :<Fragment key="unlock"><button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled)unlock.onUnlock();}}>{busy?'Unlocking…':native?'Unlock':'Unlock with passkey'}</button><button className="wallet-onboarding-secondary" type="button" autoFocus={unlock.gone} disabled={disabled} onClick={()=>{if(!disabled)setConfirming(true);}}>Use recovery phrase instead</button></Fragment>)
      :setup?<>{!pendingSetup&&<button className="wallet-onboarding-primary" type="button" disabled={disabled} onClick={()=>{if(!disabled){setPasskeyAction(undefined);onCreate();}}}>{busy&&!passkeyAction?'Creating wallet…':'Create wallet'}</button>}<button className="wallet-onboarding-secondary" type="button" disabled={disabled} onClick={()=>{if(!disabled)setRestoring(true);}}>{pendingSetup?'Finish with recovery phrase':'Restore a wallet'}</button>
       {pendingSetup&&<p className="wallet-onboarding-description">A wallet setup is pending. Finish it with the same passkey or recovery phrase to confirm its vault storage.</p>}
       {passkeys&&<div className="wallet-onboarding-passkey" role="group" aria-labelledby={passkeyId}>

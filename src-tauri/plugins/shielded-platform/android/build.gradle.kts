@@ -35,5 +35,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.7.0")
     implementation("androidx.credentials:credentials:1.6.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    implementation("androidx.biometric:biometric:1.1.0")
     testImplementation("junit:junit:4.13.2")
 }

@@ -13,10 +13,17 @@ pub fn allowed_origin(
 }
 
 pub fn valid_seed(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    value.len() == 64 && lowercase_hex(value)
+}
+
+pub fn valid_entropy(value: &str) -> bool {
+    matches!(value.len(), 32 | 64) && lowercase_hex(value)
+}
+
+fn lowercase_hex(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -64,6 +71,22 @@ mod tests {
             format!("{}\0", "a".repeat(63)),
         ] {
             assert!(!valid_seed(&seed));
+        }
+    }
+
+    #[test]
+    fn entropy_records_are_16_or_32_byte_lowercase_hex() {
+        assert!(valid_entropy(&"ab".repeat(16)));
+        assert!(valid_entropy(&"ab".repeat(32)));
+        for entropy in [
+            String::new(),
+            "a".repeat(31),
+            "a".repeat(48),
+            "a".repeat(65),
+            "AB".repeat(16),
+            "gg".repeat(16),
+        ] {
+            assert!(!valid_entropy(&entropy));
         }
     }
 }
