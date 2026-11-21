@@ -15,6 +15,9 @@ export function nativeLockOf(base:Pick<Storage,'getItem'>):Lock|undefined{
  let words:unknown;try{words=JSON.parse(raw)?.words;}catch{}
  return {words:words===12?12:24};
 }
+export const setNativeLock=(base:Pick<Storage,'setItem'>,lock:Lock)=>base.setItem(NATIVE_LOCK,JSON.stringify({version:1,words:lock.words}));
+/** For a vault holding only the locked entry: any other setup writes the plain entry, so one still pending never landed. */
+export function dropStaleSetup(base:Pick<Storage,'getItem'|'removeItem'>){if(!pendingNativeSetup(base)?.lock)base.removeItem(NATIVE_SETUP);}
 export function pendingNativeSetup(base:Pick<Storage,'getItem'>):Setup|undefined{
  const raw=base.getItem(NATIVE_SETUP);if(raw===null)return;
  try{
@@ -37,7 +40,7 @@ export function reconcileNativeSetup(base:Storage,secret:string|null):Setup|unde
  if(pending.tag!==tag(secret))throw new Error('The vault secret does not match the pending setup. Keep the app data.');
  for(let i=base.length-1;i>=0;i--){const key=base.key(i);if(key&&(key.startsWith(BORN)||key===CREATED||key===SENT||key===PASSKEY||key===NATIVE_LOCK))base.removeItem(key);}
  savePasskey(base,pending.passkey);
- if(pending.lock)base.setItem(NATIVE_LOCK,JSON.stringify({version:1,words:pending.lock.words}));
+ if(pending.lock)setNativeLock(base,pending.lock);
  if(pending.created!==undefined){base.setItem(BORN,'new');base.setItem(CREATED,String(pending.created));}
  base.setItem('shielded-native-wallet','1');base.removeItem(NATIVE_SETUP);
 }

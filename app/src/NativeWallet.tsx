@@ -166,7 +166,7 @@ export default function NativeWallet(){
     const status=await nativeNetwork.start(mode);
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
-   },()=>readNativeSecret(getSecret,lockedSecret,unlockHeld),generationGuard,{mode,current:generationGuard});
+   },()=>readNativeSecret(getSecret,lockedSecret,unlockHeld,localStorage),generationGuard,{mode,current:generationGuard});
    if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
