@@ -52,7 +52,8 @@ export async function readNativeSecret(plain:()=>Promise<string|null>,cache:Lock
  // The read also drops a non-lock setup record, which can no longer complete while the vault is locked.
  dropStaleSetup(storage);
  const entropy=await cache.read(()=>hold.current?Promise.reject(hold.current):lockedSecretGet()).catch(cause=>{throw hold.current=unlockError(cause);});
- setNativeLock(storage,{words:entropy.length===32?12:24});
+ // The locked entry, not the journal, proves a wallet lives here, so a later empty vault stops instead of offering setup.
+ setNativeLock(storage,{words:entropy.length===32?12:24});storage.setItem('shielded-native-wallet','1');
  return masterOfEntropy(entropy);
 }
 /** Native never uses a fallback's user handle, so it is wiped whether or not the device lock can take over. */

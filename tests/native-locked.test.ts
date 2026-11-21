@@ -11,7 +11,7 @@ import {createPasskeySeed,type PasskeyFallback} from '../packages/protocol/src/p
 import {parseMasterSecret} from '../packages/protocol/src/wallet-keys.ts';
 import {nativePasskeys} from '../app/src/native-passkeys.ts';
 import {commitNativeSetup} from '../app/src/native-passkey-operation.ts';
-import {NATIVE_LOCK,NATIVE_SETUP,nativeLockOf,pendingNativeSetup,reconcileNativeSetup} from '../app/src/native-setup-journal.ts';
+import {NATIVE_LOCK,NATIVE_SETUP,nativeLockOf,pendingNativeSetup,prepareNativeSetup,reconcileNativeSetup} from '../app/src/native-setup-journal.ts';
 import {PASSKEY} from '../app/src/passkey-record.ts';
 import {passkeyFailureView,passkeyUserName} from '../app/src/shielded-page.ts';
 import {deviceLockFallback,lockedPhrase,lockedReadBack,lockedSecretCache,lockedSecretCreate,masterOfEntropy,newLockedSecret,readNativeSecret,restoreOverLock} from '../app/src/native-locked.ts';
@@ -90,6 +90,14 @@ test('a weak biometric that cannot release the key asks for the screen-lock cred
  const made=newLockedSecret(12),cache=lockedSecretCache(),hold:{current?:Error}={};use({locked:made.entropy,weak:1});
  await assert.rejects(open(cache,hold),{name:'NativeUnlock',gone:false,message:'This phone’s fingerprint or face unlock cannot open the lock. Use your screen-lock PIN, pattern or password.'});
  hold.current=undefined;assert.equal(await open(cache,hold),made.master,'a retry with the screen-lock credential opens it');assert.equal(vault.prompts,2);
+});
+
+test('a locked open marks a wallet as here even after it drops a setup record that never landed',async()=>{
+ const made=newLockedSecret(12),storage=memory();use({locked:made.entropy});
+ prepareNativeSetup(storage,made.master,{created:123});
+ assert.equal(await open(undefined,undefined,storage),made.master);
+ assert.equal(pendingNativeSetup(storage),undefined);
+ assert.equal(storage.getItem('shielded-native-wallet'),'1');assert.deepEqual(nativeLockOf(storage),{words:12});
 });
 
 test('the fallback setup journal never holds the entropy or the master',async()=>{
