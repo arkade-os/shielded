@@ -4,7 +4,7 @@ import {getCurrent,onOpenUrl} from '@tauri-apps/plugin-deep-link';
 import {bytesToHex} from '@noble/hashes/utils.js';
 import {base64urlnopad} from '@scure/base';
 import {parseMasterSecret} from '../../packages/protocol/src/wallet-keys.ts';
-import {createPasskeySeed,passkeyRpId,restorePasskeySeed,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
+import {createPasskeySeed,passkeyRpId,restorePasskeySeed,type PasskeyFallback,type PasskeyWordCount} from '../../packages/protocol/src/passkey.ts';
 import {installNativeTransport,nativeNetwork,type NativeMode,type NativeStatus} from '../../src/native/index.ts';
 import {createNativeStorage} from './native-storage.ts';
 import {createNativeCleanup} from './native-cleanup.ts';
@@ -15,7 +15,9 @@ import {commitNativeSetup,waitNativePasskeyForeground} from './native-passkey-op
 import {nativePasskeys,nativePasskeySupport,type NativePasskeySupport} from './native-passkeys.ts';
 import {passkeyRecord} from './passkey-record.ts';
 import {pendingNativeSetup,reconcileNativeSetup} from './native-setup-journal.ts';
-import {passkeyFailureView} from './shielded-page.ts';
+import {passkeyFailureView,passkeyUserName} from './shielded-page.ts';
+import {deviceLockFallback,lockedReadBack,lockedSecretCache,lockedSecretCreate,newLockedSecret,readNativeSecret,restoreOverLock,unlockError} from './native-locked.ts';
+import PasskeyFallbackSheet,{deviceLockName} from './PasskeyFallbackSheet.tsx';
 import {clearNativeWalletData,RESET_PENDING} from './native-reset.ts';
 import NativeConnectionWarning,{NativeExternalLink} from './NativeConnectionWarning.tsx';
 import {createNativeTorMonitor,type NativeTorHealthState} from './native-tor-monitor.ts';
@@ -38,8 +40,10 @@ const getSecret=()=>invoke<string|null>('plugin:shielded-platform|secret_get');
 const putSecret=(value:string)=>invoke<void>('plugin:shielded-platform|secret_set',{value});
 const createSecret=(value:string)=>invoke<void>('plugin:shielded-platform|secret_create',{value});
 const clearSecret=()=>invoke<void>('plugin:shielded-platform|secret_clear');
+const lockedSecret=lockedSecretCache();
+const LOCK_PLATFORM=typeof __NATIVE_PLATFORM__==='string'&&__NATIVE_PLATFORM__.startsWith('windows')?'windows':'android';
 const PASSKEY_RP_ID=passkeyRpId(globalThis.__SHIELDED_NATIVE__!.poolOrigin,location.hostname);
-type Session={onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;onResumeScannerHandled?:(token:number)=>void;generation:number;cache:ReturnType<typeof createNativeStorage>;resumed:boolean;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void};
+type Session={onResumeSnapshot?:(snapshot:NativeResumeSnapshot)=>void;onScannerIntentChange?:(requested:boolean)=>void;onResumeScannerHandled?:(token:number)=>void;generation:number;cache:ReturnType<typeof createNativeStorage>;resumed:boolean;onReady?:()=>void;onStartupFailure?:(message:string)=>void;onStartupStage?:(message:string)=>void;words?:string};
 const clearTransientDocument=()=>clearNativeTransientDocument(document.documentElement,[...document.querySelectorAll('[inert]')]);
 
 export default function NativeWallet(){
@@ -53,6 +57,7 @@ export default function NativeWallet(){
  const [confirmDirect,setConfirmDirect]=useState(false),[switching,setSwitching]=useState(false),[saving,setSaving]=useState(false);
  const [resetPending,setResetPending]=useState(()=>localStorage.getItem(RESET_PENDING)==='1');
  const [passkeySupport,setPasskeySupport]=useState<NativePasskeySupport>(),[setupIntent,setSetupIntent]=useState<ReturnType<typeof pendingNativeSetup>>();
+ const [fallbackName,setFallbackName]=useState(''),[unlock,setUnlock]=useState<{gone:boolean}>(),fallback=useRef<PasskeyFallback|undefined>(undefined),setupWords=useRef<string|undefined>(undefined),unlockHeld=useRef<Error|undefined>(undefined);
  const selectedMode=useRef<NativeMode|undefined>(undefined),transition=useRef(false),clearing=useRef(false),creating=useRef<Promise<void>|undefined>(undefined);
  const setupOperation=useRef<{controller:AbortController;expected:NativeStatus}|undefined>(undefined);
  const cancelSetup=useCallback(()=>{const operation=setupOperation.current;if(!operation)return;setupOperation.current=undefined;operation.controller.abort();setSaving(!!creating.current);},[]);
@@ -93,7 +98,7 @@ export default function NativeWallet(){
   ++attempt.current;
   connectionPending.current=true;setReconnecting(false);
   setupAllowed.current=false;setSetup(false);
-  const previous=active.current;active.current=undefined;
+  const previous=active.current;active.current=undefined;setupWords.current=undefined;if(previous)previous.words=undefined;
   const retiring=handoff.current.retire(false);setViews(handoff.current.snapshot);
   const pending=openingOperation.current;setBusy(false);setPhase('Private connection paused');
   // An ambiguous vault write must settle before a new open reconciles its metadata.
@@ -119,12 +124,12 @@ export default function NativeWallet(){
  useEffect(()=>{let live=true;void nativePasskeySupport().then(support=>{if(live)setPasskeySupport(support);},()=>{if(live)setPasskeySupport({available:false,reason:'Passkeys are unavailable on this device. Use a recovery phrase to create or restore a wallet.'});});return()=>{live=false;};},[]);
  useEffect(()=>registerAndroidInstallPreparation(async()=>{
   if(clearing.current||localStorage.getItem(RESET_PENDING)==='1')throw new Error('The wallet is being cleared. Finish that operation before installing an update.');
-  manualLock.current=true;setConfirmDirect(false);await pause();
+  manualLock.current=true;setConfirmDirect(false);try{await pause();}finally{lockedSecret.forget();}
   if(clearing.current||localStorage.getItem(RESET_PENDING)==='1')throw new Error('The wallet is being cleared. Finish that operation before installing an update.');
  }),[pause]);
  const finishReset=useCallback(()=>{
   if(openingOperation.current)return openingOperation.current;
-  clearing.current=true;setResetPending(true);setBusy(true);setError('');setPhase('Finishing wallet reset');
+  lockedSecret.forget();clearing.current=true;setResetPending(true);setBusy(true);setError('');setPhase('Finishing wallet reset');
   const run=(async()=>{
    try{
     await nativeNetwork.pause();
@@ -146,7 +151,7 @@ export default function NativeWallet(){
   const resume=active.current;
   const run=(async()=>{
    healthExpired.current=false;
-   const mine=++attempt.current;connectionPending.current=true;setupAllowed.current=false;setSetup(false);setBusy(!resume);setReconnecting(!!resume);setError('');
+   const mine=++attempt.current;connectionPending.current=true;setupAllowed.current=false;setSetup(false);setUnlock(undefined);setBusy(!resume);setReconnecting(!!resume);setError('');
    void loadWallet().catch(()=>{});
   try{
    setPhase(resume?'Closing previous wallet operations':'Starting your private connection');
@@ -157,24 +162,25 @@ export default function NativeWallet(){
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    setPhase(mode==='tor'?(resume?'Checking Tor readiness':'Connecting to Tor'):'Opening direct connection');
     const generationGuard=()=>mine===attempt.current&&pageForeground()&&nativeForeground.current&&!manualLock.current&&!clearing.current&&!healthExpired.current;
+   const read:{locked?:boolean}={};
    const opened=await openNativeVault(async()=>{
     const status=await nativeNetwork.start(mode);
     if(status.phase==='ready')openingGeneration.current=status.generation;
     return status;
-   },getSecret,generationGuard,{mode,current:generationGuard});
+   },()=>readNativeSecret(getSecret,lockedSecret,unlockHeld,localStorage,read),generationGuard,{mode,current:generationGuard});
    if(opened&&opened.secret!==null)await loadWallet();
    openingGeneration.current=undefined;
     if(mine!==attempt.current||!pageForeground()||!nativeForeground.current||manualLock.current||clearing.current)return;
    if(!opened||healthExpired.current)throw new Error('The connection changed while opening the wallet. Reconnect to try again.');
    const {secret,status}=opened;
-   const pending=reconcileNativeSetup(localStorage,secret);setSetupIntent(pending);
+   const pending=reconcileNativeSetup(localStorage,secret,!!read.locked);setSetupIntent(pending);
    if(secret===null){
     if(resume||localStorage.getItem('shielded-native-wallet')==='1')throw new Error('The native wallet secret is unavailable. Keep the app data and restore access to its vault.');
     connectionPending.current=false;setupAllowed.current=true;setSetup(true);setPhase('Create or restore your wallet');return;
    }
    if(resume&&resume.cache.storage.getItem('shielded-rollup-wallet-secret-v1')!==secret)throw new Error('The native vault changed. Lock and reopen the wallet before continuing.');
    setSetup(false);const cache=resume?.cache??createNativeStorage(secret,localStorage,putSecret);
-   manualLock.current=false;const next:Session={generation:status.generation,cache,resumed:!!resume};active.current=next;
+   manualLock.current=false;const next:Session={generation:status.generation,cache,resumed:!!resume,words:setupWords.current};setupWords.current=undefined;active.current=next;
    const view=handoff.current.stage(next,{awaitReady:true}),candidate=handoff.current.snapshot.candidate===view;
    next.onResumeSnapshot=snapshot=>{if(active.current===next&&!view.retired)resumeMemory.current.remember(snapshot);};
    next.onScannerIntentChange=requested=>{if(active.current===next&&!view.retired&&(!requested||!paymentRequestPending.current))resumeMemory.current.scanner(requested);};
@@ -199,14 +205,14 @@ export default function NativeWallet(){
     };
    }
    setViews(handoff.current.snapshot);connectionPending.current=false;setReconnecting(candidate);setPhase(candidate?'Opening your private wallet':status.mode==='direct'?'Tor off · Direct connection':'Tor connected');
-  }catch(cause){if(mine===attempt.current)fail(cause);}
+  }catch(cause){if(mine===attempt.current){if(cause instanceof Error&&cause.name==='NativeUnlock'){connectionPending.current=false;setupAllowed.current=true;setSetup(true);setUnlock({gone:unlockError(cause).gone});}fail(cause);}}
   finally{if(mine===attempt.current){setBusy(false);openingGeneration.current=undefined;}}
   })();
   openingOperation.current=run.finally(()=>{openingOperation.current=undefined;});return openingOperation.current;
  },[finishReset,suspend,clearResume,pageForeground]);
  const clearWallet=useCallback(async()=>{
   if(transition.current||creating.current)throw new Error('Wait for the current wallet operation to finish before clearing it.');
-  transition.current=true;clearing.current=true;setResetPending(true);localStorage.setItem(RESET_PENDING,'1');setBusy(true);setSaving(true);setError('');setPhase('Clearing wallet');
+  lockedSecret.forget();transition.current=true;clearing.current=true;setResetPending(true);localStorage.setItem(RESET_PENDING,'1');setBusy(true);setSaving(true);setError('');setPhase('Clearing wallet');
   try{
    await pause();
    await clearNativeWalletData(clearSecret,{onBlocked:()=>setPhase('Waiting for wallet data to close')});
@@ -215,7 +221,7 @@ export default function NativeWallet(){
    transition.current=false;clearing.current=false;setSaving(false);setBusy(false);fail(cause);throw cause;
   }
  },[pause]);
- const create=async(restore:boolean,withPasskey=false,wordCount:PasskeyWordCount=12)=>{
+ const create=async(restore:boolean,withPasskey=false,wordCount:PasskeyWordCount=12,offer?:PasskeyFallback)=>{
   if(setupOperation.current||creating.current||transition.current||manualLock.current||!setupAllowed.current)return;
   const operation={controller:new AbortController(),expected:torHealth.status};setupOperation.current=operation;
   const mine=attempt.current;setBusy(true);setSaving(true);setError('');
@@ -223,7 +229,7 @@ export default function NativeWallet(){
   const current=()=>setupOperation.current===operation&&!operation.controller.signal.aborted&&mine===attempt.current&&!manualLock.current&&!transition.current&&!clearing.current&&!healthExpired.current&&(operation.expected.mode??'tor')===selectedMode.current;
   const check=()=>{if(!current())throw new Error('The wallet setup was cancelled. Reopen the wallet before continuing.');};
   const foreground=()=>pageForeground()&&nativeForeground.current;
-  let metadata:Parameters<typeof commitNativeSetup>[0]['metadata']={};
+  let metadata:Parameters<typeof commitNativeSetup>[0]['metadata']={},locked:ReturnType<typeof newLockedSecret>|undefined;
   try{
    const pending=pendingNativeSetup(localStorage);
    if(pending&&!restore)throw new Error('Finish the pending setup with the same passkey or recovery phrase before creating another wallet.');
@@ -233,17 +239,20 @@ export default function NativeWallet(){
    if(existing!==null){setupOperation.current=undefined;setSaving(false);setPhrase('');await open();return;}
    await saveNativeSetup(operation.expected,nativeNetwork.status,current,async()=>{
     await waitNativePasskeyForeground(operation.expected,nativeNetwork.status,check,foreground);
+    if(offer){const made=newLockedSecret(offer.wordCount);locked=made;metadata={created:offer.createdAt,lock:{words:offer.wordCount}};return made.master;}
     if(withPasskey){
      setPhase('Waiting for your passkey');
      const client=nativePasskeys(undefined,{signal:operation.controller.signal,current:check,foreground,before:()=>waitNativePasskeyForeground(operation.expected,nativeNetwork.status,check,foreground)});
-     const seed=await (restore?restorePasskeySeed({rpId:PASSKEY_RP_ID,credentialId:pending?.passkey&&base64urlnopad.decode(pending.passkey.credentialId),wordCount:pending?.passkey?.words,client}):createPasskeySeed({rpId:PASSKEY_RP_ID,userName:`Shielded wallet · ${new Date().toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}`,wordCount,client}));
+     const at=Date.now(),seed=await (restore?restorePasskeySeed({rpId:PASSKEY_RP_ID,credentialId:pending?.passkey&&base64urlnopad.decode(pending.passkey.credentialId),wordCount:pending?.passkey?.words,client}):createPasskeySeed({rpId:PASSKEY_RP_ID,userName:passkeyUserName(at),createdAt:at,wordCount,client}));
      try{check();metadata={passkey:passkeyRecord(seed),...restore?{}:{created:Date.now()}};return bytesToHex(seed.master);}finally{seed.master.fill(0);}
     }
     const master=restore?parseMasterSecret(phrase):crypto.getRandomValues(new Uint8Array(32));
     try{metadata=restore?{}:{created:Date.now()};return bytesToHex(master);}finally{master.fill(0);}
-   },secret=>commitNativeSetup({expected:operation.expected,status:nativeNetwork.status,current:check,foreground,storage:localStorage,secret,metadata,recordBeforeWrite:restore||withPasskey,read:getSecret,write:value=>{
+   },secret=>commitNativeSetup({expected:operation.expected,status:nativeNetwork.status,current:check,foreground,storage:localStorage,secret,metadata,recordBeforeWrite:restore||withPasskey||!!offer,read:locked?()=>lockedReadBack(secret):getSecret,write:value=>{
     check();if(!foreground())throw new Error('Wait until the wallet is active before confirming secure storage.');setupAllowed.current=false;setSetup(false);setPhase('Confirming secure wallet storage');
-    return createSecret(value);
+    if(!locked)return restore?restoreOverLock(()=>createSecret(value)):createSecret(value);
+    // Cached as soon as it is stored: if the prompt sent the app to the background, the next open still asks no second time.
+    const made=locked;return lockedSecretCreate(made.entropy).then(()=>{void lockedSecret.read(async()=>made.entropy);setupWords.current=made.words;});
    },onWrite:writing=>{
     creating.current=writing;
     const settled=()=>{if(creating.current===writing){creating.current=undefined;if(setupOperation.current!==operation)setSaving(false);}};
@@ -251,8 +260,24 @@ export default function NativeWallet(){
    }}));
    check();setupOperation.current=undefined;setSaving(false);setPhrase('');await open();
   // An unconfirmed credential is not retried implicitly; the SDK may already have created it.
-  }catch(cause){if(current()){const view=passkeyFailureView(cause,restore?'restore':'create');setError(view.message??(cause instanceof Error?cause.message:String(cause)));if(view.disablePasskeys)setPasskeySupport({available:false,reason:view.message!});try{setSetupIntent(pendingNativeSetup(localStorage));}catch(error){fail(error);setupAllowed.current=false;setSetup(false);}setBusy(false);}}
-  finally{if(setupOperation.current===operation){setupOperation.current=undefined;setSaving(false);}}
+  }catch(cause){
+   const lockOffer=restore||offer?undefined:await deviceLockFallback(cause);
+   if(current()){
+    if(lockOffer){fallback.current=lockOffer;setFallbackName(lockOffer.userName);}
+    else{
+     const view=offer?{message:`${unlockError(cause).message} You can delete the passkey “${offer.userName}” in your passkey settings.`,disablePasskeys:true}:passkeyFailureView(cause,restore?'restore':'create');
+     setError(view.message??(cause instanceof Error?cause.message:String(cause)));if(view.disablePasskeys)setPasskeySupport({available:false,reason:view.message!});
+     if(offer){setupAllowed.current=false;setSetup(false);}
+     try{setSetupIntent(pendingNativeSetup(localStorage));}catch(error){fail(error);setupAllowed.current=false;setSetup(false);}
+    }
+    setBusy(false);
+   }
+  }
+  finally{if(setupOperation.current===operation){setupOperation.current=undefined;setSaving(false);}if(offer&&fallback.current===offer){fallback.current=undefined;setFallbackName('');}}
+ };
+ const cancelFallback=()=>{
+  const offer=fallback.current;if(!offer||setupOperation.current)return;
+  fallback.current=undefined;setFallbackName('');const view=passkeyFailureView(offer,'create');setError(view.message!);setPasskeySupport({available:false,reason:view.message!});
  };
  const switchMode=async(mode:NativeMode)=>{
   if(transition.current||creating.current||manualLock.current)return;
@@ -328,12 +353,12 @@ export default function NativeWallet(){
  const opening=candidateOpening||reconnectOpening;
  const frozen=resumeMemory.current.snapshot;
  const showOpening=presentation.showOpening&&!frozen;
- const controls=<div className="native-wallet-controls"><NativeTorHealth health={torHealth} compact onToggleTor={toggleTor} onReconnect={walletConnection?.reconnect} reconnectBusy={walletConnection?.busy} problem={walletConnection?.problem} transportBusy={switching||saving}/><button className="native-wallet-lock" type="button" aria-label="Lock wallet" onClick={()=>{manualLock.current=true;setConfirmDirect(false);void pause();}}><Icon name="lock" size={19}/></button></div>;
+ const controls=<div className="native-wallet-controls"><NativeTorHealth health={torHealth} compact onToggleTor={toggleTor} onReconnect={walletConnection?.reconnect} reconnectBusy={walletConnection?.busy} problem={walletConnection?.problem} transportBusy={switching||saving}/><button className="native-wallet-lock" type="button" aria-label="Lock wallet" onClick={()=>{manualLock.current=true;lockedSecret.forget();setConfirmDirect(false);void pause().finally(()=>lockedSecret.forget()).catch(()=>{});}}><Icon name="lock" size={19}/></button></div>;
  return <>
   {confirmDirect&&<NativeConnectionWarning onCancel={()=>setConfirmDirect(false)} onConfirm={()=>void switchMode('direct')}/>}
   {externalLink&&<NativeExternalLink url={externalLink} onClose={()=>setExternalLink('')}/>}
     {frozen&&<NativeResumePresentation snapshot={frozen} phase={phase} error={error} controls={<div className="app-header-status">{controls}<AppUpdateNotice/></div>}/>}
-    {presentation.views.map(({view,visible})=>{const viewActive=isNativeWalletViewActive(view,visible);return <Suspense key={view.session.generation} fallback={visible?<p role="status">Opening wallet</p>:null}><Wallet nativeHost onResumeSnapshot={view.session.onResumeSnapshot} onScannerIntentChange={view.session.onScannerIntentChange} resumeScanner={viewActive&&!paymentRequestPending.current?resumeMemory.current.delivery():undefined} onResumeScannerHandled={view.session.onResumeScannerHandled} storage={view.session.cache.storage} reload={reload} onConnection={setWalletConnection} onShutdown={view.onShutdown} onClearWallet={clearWallet} onReady={view.session.onReady} onStartupFailure={view.session.onStartupFailure} onStartupStage={view.session.onStartupStage} paymentRequest={paymentRequest} onPaymentRequestHandled={id=>{if(id===paymentRequestRevision.current)paymentRequestPending.current=false;setPaymentRequest(current=>current?.id===id?undefined:current);}} animateEntrance={!view.session.resumed&&viewActive} suspended={view.retired} viewActive={viewActive} hidden={!viewActive} headerControls={controls}/></Suspense>;})}
-    {showOpening&&<WalletOnboarding transport="tor" setup={setup||opening} opening={opening} busy={busy||switching||saving||opening} phase={phase} error={error} phrase={phrase} torHealth={torHealth} onToggleTor={manualLock.current||opening?undefined:toggleTor} transportBusy={switching||saving} reconnectLabel={resetPending?'Retry wallet reset':undefined} onPhraseChange={setPhrase} onCreate={()=>void create(false)} onRestore={()=>void create(true)} pendingSetup={!!setupIntent} passkey={passkeySupport?.available&&(!setupIntent||setupIntent.passkey)?{onCreate:words=>void create(false,true,words),onRestore:()=>void create(true,true)}:undefined} passkeyUnavailable={passkeySupport&&!passkeySupport.available?passkeySupport.reason:undefined} onReconnect={()=>{if(transition.current||creating.current||setupOperation.current)return;manualLock.current=false;void (resetPending?finishReset():open());}}/>}
+    {presentation.views.map(({view,visible})=>{const viewActive=isNativeWalletViewActive(view,visible);return <Suspense key={view.session.generation} fallback={visible?<p role="status">Opening wallet</p>:null}><Wallet nativeHost onResumeSnapshot={view.session.onResumeSnapshot} onScannerIntentChange={view.session.onScannerIntentChange} resumeScanner={viewActive&&!paymentRequestPending.current?resumeMemory.current.delivery():undefined} onResumeScannerHandled={view.session.onResumeScannerHandled} storage={view.session.cache.storage} reload={reload} onConnection={setWalletConnection} onShutdown={view.onShutdown} onClearWallet={clearWallet} onReady={view.session.onReady} onStartupFailure={view.session.onStartupFailure} onStartupStage={view.session.onStartupStage} paymentRequest={paymentRequest} onPaymentRequestHandled={id=>{if(id===paymentRequestRevision.current)paymentRequestPending.current=false;setPaymentRequest(current=>current?.id===id?undefined:current);}} animateEntrance={!view.session.resumed&&viewActive} suspended={view.retired} viewActive={viewActive} hidden={!viewActive} headerControls={controls} setupPhrase={view.session.words}/></Suspense>;})}
+    {showOpening&&<WalletOnboarding transport="tor" setup={setup||opening} opening={opening} busy={busy||switching||saving||opening} phase={phase} error={error} phrase={phrase} torHealth={torHealth} onToggleTor={manualLock.current||opening?undefined:toggleTor} transportBusy={switching||saving} reconnectLabel={resetPending?'Retry wallet reset':undefined} onPhraseChange={setPhrase} onCreate={()=>void create(false)} onRestore={()=>void create(true)} pendingSetup={!!setupIntent} passkey={passkeySupport?.available&&(!setupIntent||setupIntent.passkey)?{onCreate:words=>void create(false,true,words),onRestore:()=>void create(true,true)}:undefined} passkeyUnavailable={passkeySupport&&!passkeySupport.available?passkeySupport.reason:undefined} onReconnect={()=>{if(transition.current||creating.current||setupOperation.current)return;manualLock.current=false;void (resetPending?finishReset():open());}} unlock={unlock?{label:deviceLockName(LOCK_PLATFORM),gone:unlock.gone,onUnlock:()=>{unlockHeld.current=undefined;void open();},onUsePhrase:()=>setError('')}:undefined}>{setup&&fallbackName&&<PasskeyFallbackSheet platform={LOCK_PLATFORM} windowsWarning={false} passkeyName={fallbackName} busy={busy||saving} onContinue={()=>{const offer=fallback.current;if(offer)void create(false,false,offer.wordCount,offer);}} onCancel={cancelFallback}/>}</WalletOnboarding>}
  </>;
 }
