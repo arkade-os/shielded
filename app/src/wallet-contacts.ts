@@ -23,7 +23,7 @@ export const contactAddress=(raw:string)=>{
 
 const unescape=(s:string)=>{try{return decodeURIComponent(s);}catch{return s;}};
 /** The legs of a canonical `bitcoin:` URI, read as `payTarget` does: keys lowercased, values decoded. A repeated key keeps every value, and a second `?` splits legs like `&`, so nothing can hide an invoice. */
-function uriLegs(text:string):{path:string;legs:Map<string,string[]>}|undefined{
+function uriLegs(text:string):{path:string;legs:Map<string,string[]>;ambiguous:boolean}|undefined{
  if(!/^bitcoin:/i.test(text))return undefined;
  const rest=text.slice(8),at0=rest.indexOf('?'),path=at0<0?rest:rest.slice(0,at0),legs=new Map<string,string[]>();
  for(const pair of at0<0?[]:rest.slice(at0+1).split(/[&?]/)){
@@ -31,7 +31,7 @@ function uriLegs(text:string):{path:string;legs:Map<string,string[]>}|undefined{
   const at=pair.indexOf('='),key=(at<0?pair:pair.slice(0,at)).toLowerCase();
   legs.set(key,[...legs.get(key)??[],unescape(at<0?'':pair.slice(at+1))]);
  }
- return {path:unescape(path),legs};
+ return {path:unescape(path),legs,ambiguous:at0>=0&&rest.indexOf('?',at0+1)>=0||[...legs.values()].some(v=>v.length>1)};
 }
 const isInvoice=(v:string)=>isLightningInvoice(v.toLowerCase());
 // Base58 is case-sensitive: folding it would let a near-miss address borrow a contact's name.
@@ -49,6 +49,7 @@ export function contactAddressError(raw:string):string|undefined{
  const uri=uriLegs(text),lightning=uri?uri.legs.get('lightning')??[]:[text];
  if(isInvoice(text)||lightning.some(isInvoice))return CONTACT_INVOICE;
  if(uri&&[...uri.legs.keys()].some(key=>key==='amount'||key==='assetid'||key.startsWith('req-')))return CONTACT_REQUEST;
+ if(uri?.ambiguous)return CONTACT_UNKNOWN;
  const ark=uri?uri.legs.get('ark')??[]:[text],btc=uri?uri.path:text;
  const reusable=shieldedTargetOf(text)!==undefined
   ||ark.some(v=>isValidArkAddress(v.toLowerCase()))
