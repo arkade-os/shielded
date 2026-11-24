@@ -16,6 +16,7 @@ export const CONTACT_ADDRESS_MISSING='Enter an address for this contact.';
 export const CONTACT_INVOICE='A Lightning invoice can be paid only once, so it cannot be saved as a contact.';
 export const CONTACT_REQUEST='This payment link asks for an amount or an asset. Save the address without them.';
 export const CONTACT_UNKNOWN='This wallet cannot pay this address. Use a shielded, Arkade, Bitcoin or Lightning address, or an LNURL.';
+export const CONTACT_LIGHTNING_LINK='Save the Lightning address on its own. Kept in a link, its server would see the link\'s other addresses.';
 export const contactDuplicate=(name:string)=>`This address is already saved as “${name}”.`;
 export const CONTACT_FULL='This device keeps up to 200 contacts. Delete one to add another.';
 export const CONTACT_NOT_SAVED='This device did not save the change. Try again.';
@@ -55,11 +56,12 @@ export function contactAddressError(raw:string):string|undefined{
  if(isInvoice(text)||lightning.some(isInvoice))return CONTACT_INVOICE;
  if(uri&&[...uri.legs.keys()].some(key=>key==='amount'||key==='assetid'||key.startsWith('req-')))return CONTACT_REQUEST;
  if(uri?.ambiguous)return CONTACT_UNKNOWN;
+ if(uri?.legs.has('lightning'))return CONTACT_LIGHTNING_LINK;
  const ark=uri?uri.legs.get('ark')??[]:[text],btc=uri?uri.path:text;
  const reusable=shieldedTargetOf(text)!==undefined
-  ||ark.some(v=>isValidArkAddress(v.toLowerCase()))
+  ||ark.some(v=>isValidArkAddress(v))
   ||lightning.some(v=>isLnurl(v.toLowerCase()))
-  ||(!!btc&&(isBtcAddress(btc)||isBtcAddress(btc.toLowerCase())));
+  ||(!!btc&&isBtcAddress(btc));
  return reusable?undefined:CONTACT_UNKNOWN;
 }
 
@@ -109,7 +111,7 @@ export function saveContact(storage:S,input:{name:string;address:string},previou
  const address=contactAddress(input.address),keys=contactKeys(address),others=readContacts(storage).filter(c=>c.address!==previous);
  const clash=others.find(c=>overlaps(new Set(keys),contactKeys(c.address)));
  if(clash)return contactDuplicate(clash.name);
- if(previous===undefined&&others.length>=MAX_CONTACTS)return CONTACT_FULL;
+ if(others.length>=MAX_CONTACTS)return CONTACT_FULL;
  return write(storage,CONTACTS_KEY,[...others,{address,name,at:now}])?undefined:CONTACT_NOT_SAVED;
 }
 

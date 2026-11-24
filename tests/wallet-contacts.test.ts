@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {isBtcAddress,isLightningInvoice,isLnurl,isValidArkAddress} from '@arkade-os/sdk';
 import {shieldedTargetOf} from '../src/shielded/rails.ts';
-import {CONTACTS_KEY,CONTACT_FULL,CONTACT_NOT_SAVED,MAX_CONTACTS,RECENTS_KEY,RECENTS_ON_KEY,contactDuplicate,deleteContact,readContacts,readRecents,recentsOn,recordRecent,saveContact,setRecentsOn,clearRecents,CONTACT_NAME_MISSING,CONTACT_ADDRESS_MISSING,CONTACT_INVOICE,CONTACT_REQUEST,CONTACT_UNKNOWN,contactAddress,contactAddressError,contactKeys,contactName,contactNameOf,contactNames} from '../app/src/wallet-contacts.ts';
+import {CONTACTS_KEY,CONTACT_FULL,CONTACT_NOT_SAVED,MAX_CONTACTS,RECENTS_KEY,RECENTS_ON_KEY,contactDuplicate,deleteContact,readContacts,readRecents,recentsOn,recordRecent,saveContact,setRecentsOn,clearRecents,CONTACT_NAME_MISSING,CONTACT_ADDRESS_MISSING,CONTACT_INVOICE,CONTACT_LIGHTNING_LINK,CONTACT_REQUEST,CONTACT_UNKNOWN,contactAddress,contactAddressError,contactKeys,contactName,contactNameOf,contactNames} from '../app/src/wallet-contacts.ts';
 
 const SH='shrol21fwljy697marav7lxj5uspcpncmusg35wxjzf4l3s2fzs5cy0yqzyg8a6jqchj66k4jvtdvg0dez79z4memfsu4m36d8e9nxcpgsuc6clprr5h';
 const ARK='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf85wps4nhxlv3uxq3ez3gszlwfe62xcpa4tfv0rehdws8ww0g8utrwk48tu0';
@@ -35,6 +35,20 @@ test('single-use codes and requests are refused with their reason',()=>{
  for(const bad of [`bitcoin:?label=x?lightning=${LN}`,`bitcoin:?ark=${ARK}&ark=junk`,`bitcoin:?ark=${ARK}&ark=${ARK}`])assert.equal(contactAddressError(bad),CONTACT_UNKNOWN,bad);
  assert.equal(contactAddressError(''),CONTACT_ADDRESS_MISSING);
  for(const bad of ['hello','bitcoin:?label=x'])assert.equal(contactAddressError(bad),CONTACT_UNKNOWN,bad);
+});
+
+test('a link with a Lightning leg is refused, so that server never sees its other addresses',()=>{
+ assert.equal(CONTACT_LIGHTNING_LINK,'Save the Lightning address on its own. Kept in a link, its server would see the link\'s other addresses.');
+ for(const bad of [`bitcoin:?shielded=${SH}&lightning=${LN}`,`bitcoin:${TB}?lightning=${LN}`,`bitcoin:?LIGHTNING=${LN}`])assert.equal(contactAddressError(bad),CONTACT_LIGHTNING_LINK,bad);
+ assert.equal(contactAddressError(LN),undefined);
+ assert.equal(contactAddressError(`bitcoin:?shielded=${SH}&lightning=${INVOICE}`),CONTACT_INVOICE);
+ assert.deepEqual(contactKeys(`bitcoin:?shielded=${SH}&lightning=${LN}`),[SH,LN],'the leg still names a row');
+});
+
+test('a mixed-case address the payer refuses is refused, and an all-caps one still validates',()=>{
+ const mixed=(v:string)=>v[0]!.toUpperCase()+v.slice(1);
+ for(const bad of [mixed(ARK),mixed(TB),`bitcoin:?ark=${mixed(ARK)}`,`bitcoin:${mixed(TB)}`])assert.equal(contactAddressError(bad),CONTACT_UNKNOWN,bad);
+ for(const good of [`bitcoin:?ark=${ARK.toUpperCase()}`,`bitcoin:${TB.toUpperCase()}`,ARK.toUpperCase(),TB.toUpperCase()])assert.equal(contactAddressError(good),undefined,good);
 });
 
 test('keys match exactly, folding case only where the address ignores it',()=>{
@@ -97,6 +111,13 @@ test('the 201st contact is refused, but an edit at the cap is allowed',()=>{
  assert.equal(saveContact(s,{name:'new',address:LN}),CONTACT_FULL);
  assert.equal(saveContact(s,{name:'renamed',address:ln(0)},ln(0)),undefined);
  assert.equal(readContacts(s).length,MAX_CONTACTS);
+});
+
+test('an edit at the cap is refused once another tab deleted the contact it edits',()=>{
+ const s=stub();
+ s.m.set(CONTACTS_KEY,JSON.stringify(Array.from({length:MAX_CONTACTS},(_,i)=>({address:ln(i),name:`n${i}`,at:i}))));
+ assert.equal(saveContact(s,{name:'edited',address:LN},'gone@pay.example'),CONTACT_FULL);
+ assert.equal(JSON.parse(s.m.get(CONTACTS_KEY)!).length,MAX_CONTACTS);
 });
 
 test('corrupt storage reads as the valid part',()=>{
