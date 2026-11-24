@@ -47,7 +47,7 @@ export function pageActivityHistory(history:Activity[],lightning:Activity[]){
  const rows=history.map(row=>{
   const candidates=receipts.filter(receipt=>matches(row,receipt));
   if(candidates.length!==1||history.filter(item=>matches(item,candidates[0]!)).length!==1)return row;
-  const paid=candidates[0]!.intent!;return {...row,intent:{...paid,metadata:{...row.intent!.metadata,...paid.metadata}}};
+  const paid=candidates[0]!.intent!,{to:_swap,...own}=row.intent!.metadata??{};return {...row,intent:{...paid,metadata:{...own,...paid.metadata}}};
  });
  return [...rows,...lightning.filter(row=>row.intent?.kind!=='lightning-send')].sort((a,b)=>b.createdAt-a.createdAt);
 }

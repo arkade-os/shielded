@@ -99,6 +99,13 @@ test('a withdrawal that paid a Lightning address shows as sent to that address, 
   [['lnurl-arkade','Sent to a Lightning address','alice@pay.example',3],['unshield','Withdrawn from the pool',undefined,3],['shielded-send','Sent privately',undefined,3]]);
 });
 
+test('a private send and a pool withdrawal carry the address they paid; a claim link never does',()=>{
+ const ARK='tark1dest',entries=[entry({kind:'send',spent:[9n],slots:[0]}),entry({kind:'withdraw',destination:3n,spent:[8n],slots:[1]}),entry({kind:'send',spent:[10n],slots:[2]})],index=indexOf(entries,1n);
+ const paid=new Map<bigint,string>([[9n,THEM],[8n,ARK],[10n,'shrol21link']]);
+ const resolver=shieldedActivityResolver({index,entries:()=>entries,isPoolBatch:()=>false,isListing:()=>false,isLink:e=>e.spent[0]===10n,sentTo:e=>paid.get(e.spent[0]!)});
+ assert.deepEqual(index.rows().map(r=>{const i=resolver.resolve(r)![0]!;return [i.kind,i.metadata?.to];}),[['shielded-send',THEM],['unshield',ARK],['claim-link',undefined]]);
+});
+
 test('each synthetic row resolves to its own entry even when a batch holds three of them',async()=>{
  const entries=[entry({kind:'send',slots:[0]}),entry({kind:'receive',spent:[],created:[note(400n,9n)],amounts:[{asset:0n,amount:400n}],slots:[1]}),entry({kind:'merge',amounts:[],created:[note(900n,11n)],slots:[2]})];
  const index=indexOf(entries);

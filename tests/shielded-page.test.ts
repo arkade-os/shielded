@@ -523,6 +523,15 @@ test('a paid Lightning receipt enriches exactly one matching withdrawal without 
  const ambiguous=page.pageActivityHistory([withdrawal,{...withdrawal,id:'another'}],[receipt]);assert.equal(ambiguous.length,2);assert.ok(ambiguous.every(row=>row.intent?.label==='Withdrawn from the pool'));
 });
 
+test('a Lightning receipt merged with its pool withdrawal never shows the swap address',()=>{
+ const tx={key:{arkTxid:'funding',boardingTxid:'',commitmentTxid:''},type:TxType.TxSent,amount:2113,settled:true,createdAt:100};
+ const withdrawal:Activity={id:'pool-row',amount:-2113,createdAt:100,settled:true,txs:[tx],intent:{kind:'unshield',label:'Withdrawn from the pool',metadata:{batch:146,to:'tark1swap'}}};
+ const receipt=(extra:object):Activity=>({id:'receipt',amount:-2113,createdAt:200,settled:true,txs:[tx],intent:{kind:'lightning-send',label:'Sent over Lightning',outcome:'paid',metadata:{fundingTxid:'funding',...extra}}});
+ const merged=page.pageActivityHistory([withdrawal],[receipt({})])[0]!.intent!.metadata!;
+ assert.equal(Object.hasOwn(merged,'to'),false);assert.equal(merged.batch,146);
+ assert.equal(page.pageActivityHistory([withdrawal],[receipt({to:'alice@pay.example'})])[0]!.intent!.metadata!.to,'alice@pay.example');
+});
+
 test('same-funds pool, watchdog and quote-read notifications preserve one slow quote and its explicit confirmation',async()=>{
  let routes=0,sends=0;const quotes=pageQuotes(()=>{}),pending=deferred<RouteQuote>();
  const snapshot={token:'pool',batch:1,notes:[{nullifier:1n,asset:0n,amount:1000n}],inFlight:new Set<bigint>()};

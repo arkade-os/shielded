@@ -222,7 +222,7 @@ export class ShieldedWallet extends Wallet {
    await wallet.load(wallet.networkPrivacy?config.pool.status:undefined);
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())),nullifier=>wallet.sentOf(nullifier));
-   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>wallet.sentOf(e.spent[0]!)?.lightning,
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>wallet.sentOf(e.spent[0]!)?.lightning,sentTo:e=>wallet.sentOf(e.spent[0]!)?.to,
     exitOf:e=>{const sent=wallet.sentOf(e.spent[0]!);return sent?.onchainTxid?{to:sent.to,txid:sent.onchainTxid,...(sent.onchainSats===undefined?{}:{sats:sent.onchainSats})}:undefined;}}));
    await wallet.start();
    return wallet;
