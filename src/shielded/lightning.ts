@@ -80,8 +80,8 @@ export function lightningRails(wallet:ShieldedWallet,swaps:SwapRailClient&Pick<S
  // A hand-over from the private route lands on a public one, and the quote's copy says so before anything is sent.
  const lnurlShielded:PaymentRail={...shielded,quote:async(req,ctx)=>{try{return await shielded.quote(req,ctx);}catch(error){return handOver(error,req,ctx,lnurlArkade,viaLightning);}}};
  // isLnurl matches a whole payment link whenever any of its parameters holds an @, which would resolve the link, its
- // shielded address and the payer's IP at that parameter's domain.
- const link=(req:PaymentRequest)=>/^(?:bitcoin|arkade):/i.test(req.raw.trim());
+ // shielded address and the payer's IP at that parameter's domain. It reads through a lightning: prefix, so this must too.
+ const link=(req:PaymentRequest)=>/^(?:lightning:)?(?:bitcoin|arkade):/i.test(req.raw.trim());
  const addresses=[lnurlArkade,viaLightning,lnurlShielded].map(rail=>({...rail,match:(req:PaymentRequest,ctx:RouterContext)=>!link(req)&&rail.match(req,ctx)}));
  if(!isSealedFetch(fetcher??globalThis.fetch))return [lightning,...addresses];
  // Sealed, the gateway reaches one Lightning address service: an address elsewhere gets this rail alone, which refuses it before any request.

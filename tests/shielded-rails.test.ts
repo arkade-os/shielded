@@ -510,7 +510,7 @@ test('no Lightning-address rail claims a payment link, so none is resolved at a 
  assert.deepEqual(service.urls,[],'the link and its shielded address reached no host');
  for(const raw of [ALICE,`lightning:${ALICE}`,`LIGHTNING:${ALICE}`,'LNURL1DP68GURN8GHJ7'])
   assert.deepEqual(matching(rails,req(raw,1000),c),['lnurl-arkade','lnurl-lightning','lnurl-shielded'],raw);
- for(const raw of [LINK.toUpperCase(),`arkade:?shielded=${SHROL}&label=a@b.example`,'lightning:LNURL1DP68GURN8GHJ7',INVOICE])
+ for(const raw of [LINK.toUpperCase(),`arkade:?shielded=${SHROL}&label=a@b.example`,`lightning:${LINK}`,`lightning:${LINK}`.toUpperCase(),`lightning:arkade:?shielded=${SHROL}&label=a@b.example`,'lightning:LNURL1DP68GURN8GHJ7',INVOICE])
   assert.deepEqual(matching(rails,req(raw,1000),c).filter(id=>id.startsWith('lnurl-')),[],raw);
 });
 
