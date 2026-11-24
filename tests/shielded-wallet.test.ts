@@ -12,7 +12,7 @@ import type {RollupEpochRecord} from '../packages/protocol/src/rollup/epoch-reco
 import {assetFieldOfId,destinationFieldOf,noteOf} from '../packages/protocol/src/rollup/notes.ts';
 import {openRollupNotes,parseRollupAddress} from '../packages/protocol/src/rollup/wallet.ts';
 import {shieldedHandle,type ShieldedPaymentHandle} from '../src/shielded/handle.ts';
-import {InMemoryShieldedNoteRepository} from '../src/shielded/repository.ts';
+import {InMemoryShieldedNoteRepository,type SentRecord} from '../src/shielded/repository.ts';
 import {ShieldedWallet,programOf,shieldedKeysOf,shieldedSteps,type ShieldedProver} from '../src/shielded/wallet.ts';
 import {WATCHDOG_MS,epochCatchUp} from '../src/shielded/epoch-sync.ts';
 import {epochFreshAccount,epochMatchesPool} from '../src/shielded/epoch-checkpoint.ts';
@@ -21,6 +21,9 @@ import type {SubmitMember} from '../src/shielded/submit.ts';
 import type {PoolApi,RollupPoolStatus} from '../src/shielded/pool.ts';
 import {epochLeafPool,epochPool,fromBody,posted,type PoolSpend} from './fixtures/epoch-pool.ts';
 import {historyDirection,pageActivityHistory,pageActivityNotice,pageSheet} from '../app/src/shielded-page.ts';
+import {createLnurlClient} from '@arkade-os/lnurl-client';
+import {lnurlShieldedRail} from '../src/shielded/lightning.ts';
+import {contactNameOf,contactNames} from '../app/src/wallet-contacts.ts';
 import {PAUSED_ERROR} from '../app/src/rollup-client.ts';
 import type {SyncProgressObserver} from '../src/shielded/sync-progress.ts';
 
@@ -1483,6 +1486,61 @@ test('a pool withdrawal recorded for a Lightning address is one row, sent to tha
   await (await wallet.withdraw(to,400n,{record:{to,lightning:'alice@pay.example'}})).settled();
   const rows=pageActivityHistory(await wallet.getActivityHistory(),[]);
   assert.deepEqual(rows.map(row=>[row.intent?.kind,row.intent?.label,row.intent?.metadata?.to,row.amount,historyDirection(row)]),[['lnurl-arkade','Sent to a Lightning address','alice@pay.example',-400,'out']]);
+ }finally{await wallet.dispose();}
+});
+
+test('an on-chain exit names where it went only once it paid out, so a failed one names no one',async()=>{
+ const pool=sharedPool(),wallet=await open(),decoded=ArkAddress.decode(POOL_ADDRESS),fresh=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();wallet.api=pool.api;
+ const record:SentRecord={to:'tb1qdest',onchainSats:990},rows=async()=>(await wallet.getActivityHistory()).map(row=>[row.intent?.kind,row.intent?.label,row.intent?.metadata?.to,row.intent?.metadata?.onchainTxid,row.intent?.metadata?.onchainSats]);
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  await (await wallet.withdraw(fresh,400n,{record})).settled();
+  assert.deepEqual(await rows(),[['unshield','Withdrawn from the pool',undefined,undefined,undefined]]);
+  record.onchainTxid='ef'.repeat(32);
+  assert.deepEqual(await rows(),[['onchain-exit','Sent on-chain','tb1qdest','ef'.repeat(32),990]]);
+ }finally{await wallet.dispose();}
+});
+
+test('a private payment to a Lightning address records that address, so History names its contact',async()=>{
+ const pool=sharedPool(),wallet=await open(),bob=shieldedKeysOf(hash,'22'.repeat(32)).address;wallet.api=pool.api;
+ const fetchImpl=async(input:string|URL)=>Response.json(new URL(String(input)).pathname.endsWith('/bob')
+  ?{tag:'payRequest',callback:'https://pay.example/cb',minSendable:1000,maxSendable:100_000_000,metadata:'[["text/plain","bob"]]',paymentOptions:[{id:'registered:shielded',type:'shielded'}]}
+  :{status:'OK',paymentOption:'registered:shielded',paymentDestination:bob});
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  const quote=await lnurlShieldedRail(wallet,createLnurlClient({fetchImpl})).quote({raw:'bob@pay.example',amount:50},{} as never);
+  await (await quote.send()).settled();
+  const sent=wallet.sentOf(wallet.shieldedHistory().at(-1)!.spent[0]!),rows=(await wallet.getActivityHistory()).map(row=>[row.intent?.kind,row.intent?.metadata?.to]);
+  assert.deepEqual([sent?.to,sent?.lightning],[bob,'bob@pay.example'],'the record still names the shielded address the note paid');
+  assert.deepEqual(rows,[['shielded-send','bob@pay.example']]);
+  assert.equal(contactNameOf(contactNames([{address:'bob@pay.example',name:'Bob',at:1}]),String(rows[0]![1])),'Bob');
+ }finally{await wallet.dispose();}
+});
+
+test('a withdrawal never takes its payee from a private payment record left on the note it spent',async()=>{
+ const pool=sharedPool(),wallet=await open(),decoded=ArkAddress.decode(POOL_ADDRESS),to=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();wallet.api=pool.api;
+ const rows=async()=>(await wallet.getActivityHistory()).map(row=>[row.intent?.kind,row.intent?.metadata?.to]);
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  await (await wallet.withdraw(to,400n)).settled();
+  assert.deepEqual(await rows(),[['unshield',to]]);
+  wallet.recordSent([[wallet.shieldedHistory().at(-1)!.spent[0]!,{to:shieldedKeysOf(hash,'22'.repeat(32)).address,lightning:'bob@pay.example',note:{amount:'50',asset:'0',rho:'1'}}]]);
+  assert.deepEqual(await rows(),[['unshield',undefined]],'a failed payment\'s record, as when its note later funds a Lightning swap');
+ }finally{await wallet.dispose();}
+});
+
+test('a withdrawal to another destination ignores a stale withdraw record left on the note it spent',async()=>{
+ const pool=sharedPool(),wallet=await open(),decoded=ArkAddress.decode(POOL_ADDRESS),addr=(b:number)=>new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(b),decoded.hrp).encode(),a=addr(7),b=addr(9);wallet.api=pool.api;
+ const rows=async()=>(await wallet.getActivityHistory()).map(row=>[row.intent?.kind,row.intent?.metadata?.to]);
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  await (await wallet.withdraw(a,400n,{record:{to:a}})).settled();
+  assert.deepEqual(await rows(),[['unshield',a]],'a withdrawal to A still names A');
+  const spent=wallet.shieldedHistory().at(-1)!.spent[0]!;
+  wallet.recordSent([[spent,{to:b}]]);
+  assert.deepEqual(await rows(),[['unshield',undefined]],'a record naming another destination');
+  wallet.recordSent([[spent,{to:b,lightning:'alice@pay.example'}]]);
+  assert.deepEqual(await rows(),[['unshield',undefined]],'a stale Lightning record is not lnurl-arkade');
  }finally{await wallet.dispose();}
 });
 

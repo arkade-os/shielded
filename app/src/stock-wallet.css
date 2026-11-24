@@ -144,6 +144,7 @@
 @keyframes stock-fade{from{opacity:0}}
 .stock-qr{display:block;width:min(100%,240px);height:auto;margin:2px auto 4px;box-shadow:0 0 0 1px var(--gilt)}
 .stock-to{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:end;gap:8px}
+.stock-to.has-contacts select{grid-column:1/-1}
 .stock-card .stock-to .icon-button{min-height:46px}
 .stock-scan{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:0;border:0;overflow:hidden;background:#05121d;color:var(--paper)}
 .stock-scan[open]{display:grid;place-items:center}
