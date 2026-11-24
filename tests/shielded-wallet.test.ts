@@ -1517,6 +1517,18 @@ test('a private payment to a Lightning address records that address, so History 
  }finally{await wallet.dispose();}
 });
 
+test('a withdrawal never takes its payee from a private payment record left on the note it spent',async()=>{
+ const pool=sharedPool(),wallet=await open(),decoded=ArkAddress.decode(POOL_ADDRESS),to=new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(7),decoded.hrp).encode();wallet.api=pool.api;
+ const rows=async()=>(await wallet.getActivityHistory()).map(row=>[row.intent?.kind,row.intent?.metadata?.to]);
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  await (await wallet.withdraw(to,400n)).settled();
+  assert.deepEqual(await rows(),[['unshield',to]]);
+  wallet.recordSent([[wallet.shieldedHistory().at(-1)!.spent[0]!,{to:shieldedKeysOf(hash,'22'.repeat(32)).address,lightning:'bob@pay.example',note:{amount:'50',asset:'0',rho:'1'}}]]);
+  assert.deepEqual(await rows(),[['unshield',undefined]],'a failed payment\'s record, as when its note later funds a Lightning swap');
+ }finally{await wallet.dispose();}
+});
+
 test('a wallet started from a checkpoint watches for links in the batches it catches up while loading',async t=>{
  const world=epochLeafPool(hash,EPOCH_LEN,70);
  const fetcher=(async(url:string)=>{

@@ -222,7 +222,9 @@ export class ShieldedWallet extends Wallet {
    await wallet.load(wallet.networkPrivacy?config.pool.status:undefined);
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())),nullifier=>wallet.sentOf(nullifier));
-   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>wallet.sentOf(e.spent[0]!)?.lightning,sentTo:e=>{const s=wallet.sentOf(e.spent[0]!);return s&&s.onchainSats===undefined?s.lightning??s.to:undefined;},
+   // Only pay() writes a note, and a failed payment leaves its record on a note a later withdrawal (a Lightning swap's funding) may spend.
+   const recordOf=(e:EpochHistoryEntry)=>{const s=wallet.sentOf(e.spent[0]!);return e.kind==='withdraw'&&s?.note?undefined:s;};
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>recordOf(e)?.lightning,sentTo:e=>{const s=recordOf(e);return s&&s.onchainSats===undefined?s.lightning??s.to:undefined;},
     exitOf:e=>{const sent=wallet.sentOf(e.spent[0]!);return sent?.onchainTxid?{to:sent.to,txid:sent.onchainTxid,...(sent.onchainSats===undefined?{}:{sats:sent.onchainSats})}:undefined;}}));
    await wallet.start();
    return wallet;
