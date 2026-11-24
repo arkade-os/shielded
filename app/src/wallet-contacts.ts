@@ -5,6 +5,11 @@ export interface Contact{address:string;name:string;at:number}
 export interface Recent{address:string;at:number}
 
 export const MAX_CONTACT_NAME=40;
+export const MAX_CONTACTS=200;
+export const MAX_RECENTS=10;
+export const CONTACTS_KEY='shielded-contacts-v1';
+export const RECENTS_KEY='shielded-recents-v1';
+export const RECENTS_ON_KEY='shielded-recents-on-v1';
 export const CONTACT_PRIVACY='Contacts stay on this device. They are never sent to the pool or to any server.';
 export const CONTACT_NAME_MISSING='Enter a name for this contact.';
 export const CONTACT_ADDRESS_MISSING='Enter an address for this contact.';
@@ -71,3 +76,71 @@ export function contactNameOf(names:ReadonlyMap<string,string>,to:string|undefin
  for(const key of contactKeys(to)){const name=names.get(key);if(name!==undefined)return name;}
  return undefined;
 }
+
+type S=Pick<Storage,'getItem'|'setItem'|'removeItem'>;
+
+function readList(storage:S,key:string):unknown[]{
+ try{const v=JSON.parse(storage.getItem(key)??'null');return Array.isArray(v)?v:[];}catch{return [];}
+}
+const write=(storage:S,key:string,value:unknown)=>{try{storage.setItem(key,JSON.stringify(value));return true;}catch{return false;}};
+const remove=(storage:S,...keys:string[])=>{try{for(const key of keys)storage.removeItem(key);return true;}catch{return false;}};
+const isObj=(v:unknown):v is Record<string,unknown>=>typeof v==='object'&&v!==null;
+const validAddress=(v:unknown):v is string=>typeof v==='string'&&contactAddress(v)===v&&contactAddressError(v)===undefined;
+const overlaps=(taken:ReadonlySet<string>,keys:readonly string[])=>keys.some(k=>taken.has(k));
+
+export function readContacts(storage:S):Contact[]{
+ const out:Contact[]=[],taken=new Set<string>();
+ for(const e of readList(storage,CONTACTS_KEY)){
+  if(out.length>=MAX_CONTACTS)break;
+  if(!isObj(e)||!validAddress(e.address)||typeof e.name!=='string'||typeof e.at!=='number'||!Number.isFinite(e.at))continue;
+  const name=contactName(e.name),keys=contactKeys(e.address);
+  if(!name||overlaps(taken,keys))continue;
+  keys.forEach(k=>taken.add(k));
+  out.push({address:e.address,name,at:e.at});
+ }
+ return out.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'})||(a.address<b.address?-1:a.address>b.address?1:0));
+}
+
+export function saveContact(storage:S,input:{name:string;address:string},previous?:string,now=Date.now()):string|undefined{
+ const name=contactName(input.name);
+ if(!name)return CONTACT_NAME_MISSING;
+ const error=contactAddressError(input.address);
+ if(error)return error;
+ const address=contactAddress(input.address),keys=contactKeys(address),others=readContacts(storage).filter(c=>c.address!==previous);
+ const clash=others.find(c=>overlaps(new Set(keys),contactKeys(c.address)));
+ if(clash)return contactDuplicate(clash.name);
+ if(previous===undefined&&others.length>=MAX_CONTACTS)return CONTACT_FULL;
+ return write(storage,CONTACTS_KEY,[...others,{address,name,at:now}])?undefined:CONTACT_NOT_SAVED;
+}
+
+export function deleteContact(storage:S,address:string):boolean{
+ return write(storage,CONTACTS_KEY,readContacts(storage).filter(c=>c.address!==address));
+}
+
+export function recentsOn(storage:S):boolean{
+ try{return storage.getItem(RECENTS_ON_KEY)==='1';}catch{return false;}
+}
+
+export function setRecentsOn(storage:S,on:boolean):boolean{
+ if(!on)return remove(storage,RECENTS_KEY,RECENTS_ON_KEY);
+ try{storage.setItem(RECENTS_ON_KEY,'1');return true;}catch{return false;}
+}
+
+export function readRecents(storage:S):Recent[]{
+ const out:Recent[]=[],seen=new Set<string>();
+ for(const e of readList(storage,RECENTS_KEY)){
+  if(out.length>=MAX_RECENTS)break;
+  if(!isObj(e)||!validAddress(e.address)||typeof e.at!=='number'||!Number.isFinite(e.at)||seen.has(e.address))continue;
+  seen.add(e.address);
+  out.push({address:e.address,at:e.at});
+ }
+ return out;
+}
+
+export function recordRecent(storage:S,address:string,now=Date.now()):void{
+ if(!recentsOn(storage)||contactAddressError(address))return;
+ const canonical=contactAddress(address);
+ write(storage,RECENTS_KEY,[{address:canonical,at:now},...readRecents(storage).filter(r=>r.address!==canonical)].slice(0,MAX_RECENTS));
+}
+
+export const clearRecents=(storage:S):boolean=>remove(storage,RECENTS_KEY);

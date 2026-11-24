@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {isBtcAddress,isLightningInvoice,isLnurl,isValidArkAddress} from '@arkade-os/sdk';
 import {shieldedTargetOf} from '../src/shielded/rails.ts';
-import {CONTACT_ADDRESS_MISSING,CONTACT_INVOICE,CONTACT_REQUEST,CONTACT_UNKNOWN,contactAddress,contactAddressError,contactKeys,contactName,contactNameOf,contactNames} from '../app/src/wallet-contacts.ts';
+import {CONTACTS_KEY,CONTACT_FULL,CONTACT_NOT_SAVED,MAX_CONTACTS,RECENTS_KEY,RECENTS_ON_KEY,contactDuplicate,deleteContact,readContacts,readRecents,recentsOn,recordRecent,saveContact,setRecentsOn,clearRecents,CONTACT_NAME_MISSING,CONTACT_ADDRESS_MISSING,CONTACT_INVOICE,CONTACT_REQUEST,CONTACT_UNKNOWN,contactAddress,contactAddressError,contactKeys,contactName,contactNameOf,contactNames} from '../app/src/wallet-contacts.ts';
 
 const SH='shrol21fwljy697marav7lxj5uspcpncmusg35wxjzf4l3s2fzs5cy0yqzyg8a6jqchj66k4jvtdvg0dez79z4memfsu4m36d8e9nxcpgsuc6clprr5h';
 const ARK='tark1qqcpq7yq3e8hhsx6ml3fud93m7827qggaurtzu3zwsr4a0qs0gf85wps4nhxlv3uxq3ez3gszlwfe62xcpa4tfv0rehdws8ww0g8utrwk48tu0';
@@ -62,4 +62,92 @@ test('names lose control characters and are cut to 40 code points',()=>{
  assert.equal(contactName(' Al\u0000ice​ '),'Alice');
  assert.equal([...contactName('😀'.repeat(50))].length,40);
  assert.equal(contactName(' ​ '),'');
+});
+
+const stub=()=>{const m=new Map<string,string>();return {m,getItem:(k:string)=>m.get(k)??null,setItem:(k:string,v:string)=>{m.set(k,v);},removeItem:(k:string)=>{m.delete(k);}};};
+const locked=(m:Map<string,string>)=>({getItem:(k:string)=>m.get(k)??null,setItem:()=>{throw new Error('locked');},removeItem:()=>{throw new Error('locked');}});
+const ln=(i:number)=>`u${i}@pay.example`;
+
+test('a saved contact reads back canonical, and an edit replaces it',()=>{
+ const s=stub();
+ assert.equal(saveContact(s,{name:' Bob ',address:`lightning:${LN}`},undefined,5),undefined);
+ assert.deepEqual(readContacts(s),[{address:LN,name:'Bob',at:5}]);
+ assert.equal(saveContact(s,{name:'Robert',address:ARK},LN,7),undefined);
+ assert.deepEqual(readContacts(s),[{address:ARK,name:'Robert',at:7}]);
+});
+
+test('an address already saved under another name is refused',()=>{
+ const s=stub();
+ saveContact(s,{name:'Bob',address:UNIFIED});
+ assert.equal(saveContact(s,{name:'Eve',address:SH}),contactDuplicate('Bob'));
+ assert.equal(saveContact(s,{name:'Bobby',address:UNIFIED},UNIFIED),undefined);
+ assert.equal(readContacts(s)[0].name,'Bobby');
+});
+
+test('validation order is name, address, duplicate, cap',()=>{
+ const s=stub();
+ assert.equal(saveContact(s,{name:'​',address:''}),CONTACT_NAME_MISSING);
+ assert.equal(saveContact(s,{name:'x',address:INVOICE}),CONTACT_INVOICE);
+ assert.equal(s.m.size,0);
+});
+
+test('the 201st contact is refused, but an edit at the cap is allowed',()=>{
+ const s=stub();
+ s.m.set(CONTACTS_KEY,JSON.stringify(Array.from({length:MAX_CONTACTS},(_,i)=>({address:ln(i),name:`n${i}`,at:i}))));
+ assert.equal(saveContact(s,{name:'new',address:LN}),CONTACT_FULL);
+ assert.equal(saveContact(s,{name:'renamed',address:ln(0)},ln(0)),undefined);
+ assert.equal(readContacts(s).length,MAX_CONTACTS);
+});
+
+test('corrupt storage reads as the valid part',()=>{
+ const s=stub();
+ for(const raw of ['{','7','null']){s.m.set(CONTACTS_KEY,raw);assert.deepEqual(readContacts(s),[]);}
+ const a={address:UNIFIED,name:'a',at:1},b={address:TB,name:'b',at:2};
+ s.m.set(CONTACTS_KEY,JSON.stringify([{address:5},{address:INVOICE,name:'x',at:1},{address:LN,name:'​',at:1},a,{address:SH,name:'dup',at:3},b]));
+ assert.deepEqual(readContacts(s),[a,b]);
+ s.m.set(CONTACTS_KEY,JSON.stringify(Array.from({length:10000},(_,i)=>({address:ln(i),name:`n${i}`,at:i}))));
+ assert.ok(readContacts(s).length<=MAX_CONTACTS);
+ assert.deepEqual(readContacts({getItem:()=>{throw new Error('x');},setItem(){},removeItem(){}}),[]);
+});
+
+test('contacts sort by name ignoring case, then address',()=>{
+ const s=stub();
+ s.m.set(CONTACTS_KEY,JSON.stringify([{address:TB,name:'bob',at:1},{address:LN,name:'Bob',at:2},{address:ARK,name:'alice',at:3}]));
+ assert.deepEqual(readContacts(s).map(c=>c.address),[ARK,LN,TB]);
+});
+
+test('a refused write keeps the stored list',()=>{
+ const s=stub();
+ saveContact(s,{name:'Bob',address:LN},undefined,1);
+ const before=readContacts(s),l=locked(s.m);
+ assert.equal(saveContact(l,{name:'Eve',address:ARK}),CONTACT_NOT_SAVED);
+ assert.equal(deleteContact(l,LN),false);
+ assert.deepEqual(readContacts(s),before);
+ assert.equal(deleteContact(s,LN),true);
+ assert.deepEqual(readContacts(s),[]);
+});
+
+test('recents stay off until turned on, and turning them off deletes them',()=>{
+ const s=stub();
+ recordRecent(s,LN,1);
+ assert.equal(s.m.size,0);
+ assert.equal(recentsOn(s),false);
+ assert.equal(setRecentsOn(s,true),true);
+ for(let i=0;i<11;i++)recordRecent(s,ln(i),i);
+ const kept=readRecents(s);
+ assert.equal(kept.length,10);
+ assert.deepEqual(kept.map(r=>r.address),Array.from({length:10},(_,i)=>ln(10-i)));
+ recordRecent(s,`lightning:${ln(5)}`,50);
+ assert.deepEqual(readRecents(s)[0],{address:ln(5),at:50});
+ assert.equal(readRecents(s).filter(r=>r.address===ln(5)).length,1);
+ recordRecent(s,INVOICE,60);
+ assert.equal(readRecents(s).length,10);
+ assert.equal(clearRecents(s),true);
+ assert.equal(s.m.has(RECENTS_KEY),false);
+ assert.equal(s.m.get(RECENTS_ON_KEY),'1');
+ recordRecent(s,LN,1);
+ assert.equal(setRecentsOn(s,false),true);
+ assert.equal(s.m.has(RECENTS_KEY),false);
+ assert.equal(s.m.has(RECENTS_ON_KEY),false);
+ assert.equal(setRecentsOn(locked(s.m),true),false);
 });
