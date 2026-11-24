@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -36,6 +37,20 @@ test('the picker offers saved contacts, then recents',()=>{
  assert.ok(html.includes(`<optgroup label="Saved"><option value="${SH}">Bob · ${shortValue(SH)}</option>`));
  assert.ok(html.includes(`<optgroup label="Recent"><option value="${ARK}">${shortValue(ARK)}</option>`));
  assert.equal(renderToStaticMarkup(createElement(ContactPicker,{contacts:[],recents:[],onPick:()=>{}})),'');
+});
+
+test('the picker fills To on each change, so arrow keys walk it, and resets when focus arrives or leaves',()=>{
+ const picked:string[]=[],target={value:''},select=ContactPicker({contacts:[{address:SH,name:'Bob',at:1}],recents:[{address:ARK,at:2}],onPick:a=>picked.push(a)})!;
+ for(const value of [SH,ARK]){target.value=value;select.props.onChange({target});}
+ assert.deepEqual([picked,target.value],[[SH,ARK],ARK]);
+ select.props.onBlur({target});assert.equal(target.value,'');
+ target.value=SH;select.props.onFocus({target});assert.equal(target.value,'','so the same contact can be picked again');
+});
+
+test('the picker takes its own row under To, so it never narrows the field',()=>{
+ const css=readFileSync(new URL('../app/src/stock-wallet.css',import.meta.url),'utf8');
+ assert.ok(css.includes('.stock-to.has-contacts select{grid-column:1/-1}'));
+ assert.doesNotMatch(css,/\.stock-to\.has-contacts\{/,'no fourth column beside To');
 });
 
 test('the offer names the address it would save',()=>{

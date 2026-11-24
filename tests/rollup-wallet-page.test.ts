@@ -672,6 +672,19 @@ test('the save offer shows only while To still holds the paid address',()=>{
  assert.match(walletPage(),/offer&&offer===to\.trim\(\)&&<SaveContactOffer/);
 });
 
+test('the save offer shows under Send, and on Home once a docked send has closed its sheet',()=>{
+ const page=walletPage(),form=page.slice(page.indexOf(':<><form className="stock-send"'),page.indexOf('</form>{saveOffer}</>}'));
+ assert.ok(form.length>0,'right after the send form, inside the Send branch');
+ assert.doesNotMatch(form,/saveOffer|<SaveContactOffer/,'never inside the form');
+ assert.match(page,/\{docked&&<>\{!sheetOpen&&saveOffer&&<section className="stock-card">\{saveOffer\}<\/section>\}\{balanceCard\(\)\}\{recentPreview\}<\/>\}/);
+ assert.equal(page.match(/<SaveContactOffer/g)?.length,1);
+ assert.equal(page.match(/\{saveOffer\}/g)?.length,2,'so never under Receive');
+});
+
+test('Clear wallet says it also deletes saved contacts and recent payees',()=>{
+ assert.ok(walletPage().includes('<strong>This removes the wallet and its recovery secret from this device, and deletes saved contacts and recent payees.</strong>'));
+});
+
 test('a History row shows its contact name and one To row',()=>{
  const page=walletPage(),rows=page.slice(page.indexOf('const historyItems='),page.indexOf('const historyContent='));
  assert.match(rows,/contactNameOf\(names,/);

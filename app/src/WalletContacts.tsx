@@ -39,7 +39,8 @@ export function ContactsCard({storage,contacts,recents,recentsOn,onChange}:{stor
 
 export function ContactPicker({contacts,recents,onPick}:{contacts:Contact[];recents:Recent[];onPick:(address:string)=>void}){
  if(contacts.length===0&&recents.length===0)return null;
- return <select aria-label="Pay a contact" defaultValue="" onChange={e=>{onPick(e.target.value);e.target.value='';}}>
+ const reset=({target}:{target:HTMLSelectElement})=>{target.value='';};
+ return <select aria-label="Pay a contact" defaultValue="" onChange={e=>onPick(e.target.value)} onFocus={reset} onBlur={reset}>
   <option value="" disabled>Contacts</option>
   {contacts.length>0&&<optgroup label="Saved">{contacts.map(c=><option key={c.address} value={c.address}>{c.name} · {shortValue(c.address)}</option>)}</optgroup>}
   {recents.length>0&&<optgroup label="Recent">{recents.map(r=><option key={r.address} value={r.address}>{shortValue(r.address)}</option>)}</optgroup>}
