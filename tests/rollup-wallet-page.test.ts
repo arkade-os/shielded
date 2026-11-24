@@ -645,3 +645,36 @@ test('the bounds are the amounts swap\'s own route resolution takes: the Arkade 
  assert.deepEqual(invoiceBounds([marketOf(solver,snapshot.ref,'mutinynet')],(await resolve()).resolution),span(1000,50000));
  for(const [amount,eligible] of [[500n,0],[999n,0],[1000n,1],[50000n,1],[50001n,0]] as const)assert.equal((await resolve(amount)).resolution.eligible,eligible,`${amount} sats`);
 });
+
+test('contacts are read from this device and refreshed after a change',()=>{
+ const page=walletPage();
+ assert.match(page,/useMemo\(\(\)=>readContacts\(storage\),\[storage,contactsRevision\]\)/);
+ assert.match(page,/useMemo\(\(\)=>readRecents\(storage\),\[storage,contactsRevision\]\)/);
+ assert.match(page,/useMemo\(\(\)=>recentsOn\(storage\),\[storage,contactsRevision\]\)/);
+ assert.ok(page.indexOf('readContacts(storage)')<page.indexOf('if(!secret||!wallet)return'),'hooks sit above the early return');
+});
+
+test('a picked contact fills To as typed, not through fill',()=>{
+ const page=walletPage();
+ assert.match(page,/onPick=\{address=>\{setTo\(address\);setCodeError\(''\);setPendingLink\(undefined\);\}\}/);
+ assert.doesNotMatch(page,/onPick=\{[^}]*fill\(/);
+});
+
+test('only a settled send records a recent or offers to save',()=>{
+ const page=walletPage(),submit=page.slice(page.indexOf('const submit=()=>'),page.indexOf('const fill=('));
+ assert.match(submit,/const dest=to\.trim\(\);[\s\S]*void run\(/);
+ assert.match(submit,/\.then\(ok=>\{if\(!ok\)return;[\s\S]*recordRecent\(storage,dest\)/);
+ assert.match(submit,/contactAddressError\(dest\)===undefined&&contactNameOf\(names,dest\)===undefined/);
+ assert.equal(submit.indexOf('recordRecent(')>submit.indexOf('.then(ok=>'),true);
+});
+
+test('the save offer shows only while To still holds the paid address',()=>{
+ assert.match(walletPage(),/offer&&offer===to\.trim\(\)&&<SaveContactOffer/);
+});
+
+test('a History row shows its contact name and one To row',()=>{
+ const page=walletPage(),rows=page.slice(page.indexOf('const historyItems='),page.indexOf('const historyContent='));
+ assert.match(rows,/contactNameOf\(names,/);
+ assert.equal(rows.match(/<dt>To<\/dt>/g)?.length,1);
+ assert.match(rows,/typeof item\.intent\?\.metadata\?\.to==='string'&&<><dt>To<\/dt><dd>\{name&&<strong>\{name\}<\/strong>\}<Copyable value=\{item\.intent\.metadata\.to\}\/><\/dd><\/>/);
+});

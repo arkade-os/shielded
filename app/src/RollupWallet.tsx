@@ -42,6 +42,8 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount,typedAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
+import {contactAddressError,contactNameOf,contactNames,readContacts,readRecents,recentsOn,recordRecent} from './wallet-contacts.ts';
+import {ContactPicker,ContactsCard,SaveContactOffer} from './WalletContacts.tsx';
 import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS,type TransientWalletDismissal} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
 import {bindPullToRefresh,bindSheetBack,bindSheetGestures,bindSwipeGesture,type PullToRefreshState} from './wallet-gestures.ts';
@@ -146,6 +148,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const invoiceTried=useRef<bigint|undefined>(undefined),[invoiceBusy,setInvoiceBusy]=useState(false),[invoiceError,setInvoiceError]=useState(''),[privateNotice,setPrivateNotice]=useState('');
  const [,setQuoteRevision]=useState(0);
  const [assetRevision,setAssetRevision]=useState(0);
+ const [contactsRevision,setContactsRevision]=useState(0),[offer,setOffer]=useState('');
+ const contacts=useMemo(()=>readContacts(storage),[storage,contactsRevision]),recents=useMemo(()=>readRecents(storage),[storage,contactsRevision]),recentsEnabled=useMemo(()=>recentsOn(storage),[storage,contactsRevision]),names=useMemo(()=>contactNames(contacts),[contacts]);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
  if(!quoteRef.current)quoteRef.current=pageQuotes(()=>setQuoteRevision(v=>v+1));
@@ -739,7 +743,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    :<button type="button" className="stock-ghost stock-mini" onClick={()=>setRevealed(r=>({...r,[item.id]:link}))}>Create a reveal link</button>}</dd></>;
  };
 
- const submit=()=>{if(quote){void run(async()=>{
+ const submit=()=>{if(quote){const dest=to.trim();void run(async()=>{
   // The sheet and its spinning button stay until the payment exists; until then nothing else shows it started.
   try{
    const funds=fundsRef.current;if(!funds||funds.wallet!==wallet)throw new Error('The wallet changed. Review its route again.');
@@ -747,7 +751,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    if(!mounted.current||restoring.current||fundsRef.current!==funds)throw new Error('The wallet changed. Review its route again.');
    return await quotes.send({...quoteContext,revision:funds.watch.update(currentCoins)},quote);
   }finally{if(mounted.current)setSheetOpen(false);}
- },routeCopy(quote.railId).title);}else getQuote();};
+ },routeCopy(quote.railId).title).then(ok=>{if(!ok)return;recordRecent(storage,dest);setContactsRevision(n=>n+1);if(contactAddressError(dest)===undefined&&contactNameOf(names,dest)===undefined)setOffer(dest);});}else getQuote();};
 
  const fill=(code:string,replace=false)=>{
   let target:ReturnType<typeof payTarget>,linked:ReturnType<typeof assetLinkFill>;
@@ -832,21 +836,22 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
   const label=item.intent?.label??(received?'Arkade funding':'Arkade payment');
   const status=kind==='lightning-receive'?LIGHTNING_STATUS[item.intent?.outcome??'received']:kind==='lightning-send'&&item.intent?.outcome==='paid'?'Paid':item.settled?'Settled':'Preconfirmed';
   const tx=txOf(newest.key),asset=newest.assets?.[0];
+  const sentTo=item.intent?.metadata?.to,name=typeof sentTo==='string'?contactNameOf(names,sentTo):undefined;
   const feePaid=wallet&&kind==='shield'?shieldFeeOfTx(wallet.shieldedHistory(),item.intent?.metadata?.txid):wallet&&kind==='lightning-receive'?lightningShieldFeeOf(wallet.shieldedHistory(),item.intent?.metadata?.shieldTxid,item.amount):undefined;
   const amount=`${direction==='in'?'+':direction==='out'?'−':''}${asset?assetText(asset.amount<0n?-asset.amount:asset.amount,asset.assetId,metadata?.get(asset.assetId)):`${sats(Math.abs(item.amount))} sats`}`;
   const open=(view:Pick<TxView,'kind'|'value'|'explorer'>)=>setTxView({...view,title:label,facts:[['Amount',amount],...(asset?[['Asset',asset.assetId] as const]:[]),['Status',status],['Time',when(item.createdAt)]]});
   const txLink=(kind:TxKind,txid:string)=>{const explorer=PRIVATE?undefined:explorerUrl(kind,txid);return <ActivityLink value={txid} copy={explorer??txid} onOpen={()=>open({kind,value:txid,explorer})}/>;};
-  return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{kind==='lightning-receive'&&<> · {status}</>}</span>
+  return <li key={item.id}><details><summary><span className={'stock-kind '+(kind?SWATCH[kind]??'arkade':'arkade')}>{label}{name&&<> · {name}</>}{kind==='lightning-receive'&&<> · {status}</>}</span>
     <b className={direction==='own'?undefined:direction}>{amount}</b><time>{when(item.createdAt)}</time></summary>
    <dl>
     <dt>Where</dt><dd>{whereOf(kind,received)}</dd>
     {typeof item.intent?.metadata?.batch==='number'&&<><dt>Batch</dt><dd>#{String(item.intent.metadata.batch)}</dd></>}
     {tx&&<><dt>{tx.kind==='bitcoin'?'Bitcoin transaction':'Transaction'}</dt><dd>{txLink(tx.kind,tx.txid)}</dd></>}
     {feePaid!==undefined&&feePaid>0n&&<><dt>Deposit fee</dt><dd>{satsText(feePaid)}</dd></>}
-    {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<><dt>To</dt><dd><Copyable value={String(item.intent.metadata.to)}/></dd>
+    {typeof item.intent?.metadata?.to==='string'&&<><dt>To</dt><dd>{name&&<strong>{name}</strong>}<Copyable value={item.intent.metadata.to}/></dd></>}
+    {kind==='onchain-exit'&&typeof item.intent?.metadata?.onchainTxid==='string'&&<>
      {typeof item.intent.metadata.onchainSats==='number'&&<><dt>On-chain</dt><dd>{sats(item.intent.metadata.onchainSats)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.onchainSats)}-sat fee</dd></>}
      <dt>Bitcoin transaction</dt><dd>{txLink('bitcoin',item.intent.metadata.onchainTxid)}</dd></>}
-    {(kind==='lnurl-arkade'||kind==='lightning-send')&&typeof item.intent?.metadata?.to==='string'&&<><dt>To</dt><dd><Copyable value={item.intent.metadata.to}/></dd></>}
     {kind==='lightning-send'&&typeof item.intent?.metadata?.description==='string'&&<><dt>Description</dt><dd>{item.intent.metadata.description}</dd></>}
     {kind==='lightning-send'&&typeof item.intent?.metadata?.delivered==='number'&&<><dt>Delivered</dt><dd>{sats(item.intent.metadata.delivered)} sats, after a {sats(Math.abs(item.amount)-item.intent.metadata.delivered)}-sat swap fee</dd></>}
     <dt>Status</dt><dd>{status}</dd>
@@ -931,8 +936,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
        :<><p className="stock-muted">Not in the pool yet. Listing it sends 1 unit and {DUST} sats to the pool, after which anyone can shield it.</p><button className="stock-ghost stock-mini" disabled={busy||restoring.current||!wallet} onClick={()=>void listAsset(a.assetId)}>List in the pool</button></>}{!a.payout&&listingError?.id===a.assetId&&<p className="stock-blocked" role="alert">{listingError.message}</p>}</div>;})}
     </div>:<form className="stock-send" onSubmit={e=>{e.preventDefault();submit();}}>
      {held.length>0&&<label>Asset<select value={assetId} onChange={e=>{setAssetId(e.target.value);setAmount('');setPendingLink(undefined);setCodeError(c=>c===ASSET_DETAILS_PENDING?'':c);}}><option value="">Bitcoin</option>{held.map(h=>{const meta=metadata?.get(h.assetId);return <option key={h.assetId} value={h.assetId}>{assetTitle(h.assetId,meta)} · {UNVERIFIED}</option>;})}</select></label>}
-     <div className="stock-to"><label>To<input ref={recipientNode} id="stock-to" value={to} onChange={e=>{setTo(e.target.value);setCodeError('');setPendingLink(undefined);}} placeholder={lightningOn?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'} autoComplete="off" spellCheck={false}/></label>
-      <button type="button" className="icon-button" aria-label="Scan a payment code" disabled={suspended||!viewActive||!pageVisible||hidden} onClick={()=>{if(!suspended&&viewActive&&pageVisible&&!hidden){onScannerIntentChange?.(true);setScanning(true);}}}><Icon name="scan"/></button><button type="button" className="icon-button" aria-label="Paste" onClick={()=>void paste()}><Icon name="paste"/></button></div>
+     <div className={'stock-to'+(contacts.length||recents.length?' has-contacts':'')}><label>To<input ref={recipientNode} id="stock-to" value={to} onChange={e=>{setTo(e.target.value);setCodeError('');setPendingLink(undefined);}} placeholder={lightningOn?'shrol21…, tark1…, a Lightning invoice or address':'shrol21… or tark1…'} autoComplete="off" spellCheck={false}/></label>
+      <button type="button" className="icon-button" aria-label="Scan a payment code" disabled={suspended||!viewActive||!pageVisible||hidden} onClick={()=>{if(!suspended&&viewActive&&pageVisible&&!hidden){onScannerIntentChange?.(true);setScanning(true);}}}><Icon name="scan"/></button><button type="button" className="icon-button" aria-label="Paste" onClick={()=>void paste()}><Icon name="paste"/></button><ContactPicker contacts={contacts} recents={recents} onPick={address=>{setTo(address);setCodeError('');setPendingLink(undefined);}}/></div>
      {codeError&&<p className="stock-blocked" role="alert">{codeError}</p>}
      {recipientError&&<p className="stock-blocked" role="alert">{recipientError}</p>}
      <label>Amount ({unit})<input inputMode={decimals>0?'decimal':'numeric'} value={amount} placeholder={invoiceCarriesAmount(to)?'From the invoice':undefined} onChange={e=>setAmount(assetId?e.target.value:e.target.value.replace(/\D/g,''))}/></label>
@@ -947,7 +952,8 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
      {!to.trim()&&sendAsset?.shielded!==0n&&<button type="button" className="stock-ghost" disabled={busy||restoring.current||!synced||!amount||sendBlocked} onClick={()=>void mintLink()}>Create a claim link</button>}
      {mintedLink?.state==='unclaimed'&&<div className="stock-address"><small>CLAIM LINK</small><Copyable value={claimUrl(POOL_ORIGIN||location.origin,minted)} qr={claimUrl(POOL_ORIGIN||location.origin,minted)} label="QR code of the claim link"/>
       <p className="stock-muted">Anyone with this link can claim it until it is claimed; you can take it back before then.</p></div>}
-     </form>}</>}</div>
+     </form>}
+     {offer&&offer===to.trim()&&<SaveContactOffer address={offer} storage={storage} onSaved={()=>{setContactsRevision(n=>n+1);setOffer('');}} onDismiss={()=>setOffer('')}/>}</>}</div>
      {docked&&sheetOpen&&(['previous','next'] as const).map(side=>{const name=DOCK[(DOCK as readonly string[]).indexOf(tab)+(side==='next'?1:-1)];return name&&<div key={side} className={'stock-panel-peek is-'+side} data-sheet-page={side} aria-hidden="true"><h2>{titled(name)}</h2><div className={'is-'+name}>{PEEK[name].map((shape,i)=><i key={i} className={'is-'+shape}/>)}</div></div>;})}
     </section></div>
     {(docked||tab==='home')&&links.length>0&&<div className="stock-col"><section className="stock-card"><h2>Your claim links</h2><div className="stock-notes">
@@ -956,6 +962,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
     </div></section></div>}</div>
   </>}
     {(!ready||docked||tab==='home')&&settled&&!backedUp&&secret&&<WalletBackupCard words={phraseWords} phrase={phrase} reveal={reveal} error={revealError} onReveal={showPhrase} onSaved={()=>{phrasePrompt.current.cancel();setPasskeyPhrase('');storage.setItem(BACKED_UP,'1');setBackedUp(true);setReveal(false);}}/>}
+    {(docked||tab==='home')&&settled&&<ContactsCard storage={storage} contacts={contacts} recents={recents} recentsOn={recentsEnabled} onChange={()=>setContactsRevision(n=>n+1)}/>}
     {(!ready||docked||tab==='home')&&settled&&<details ref={securityRef} className="stock-card stock-advanced stock-security" onToggle={e=>{if(!e.currentTarget.open)leaveSecurity();}}><summary>Security &amp; recovery</summary>
      {!securityView?<WalletSecurityMenu canReveal={backedUp||!secret} canClear={!!onClearWallet} onOpen={openSecurity}/>:<div className="stock-security-subview"><button type="button" className="stock-security-back" onClick={leaveSecurity}>← Back</button><h3 tabIndex={-1}>{securityView==='phrase'?'Recovery phrase':securityView==='viewing'?'Viewing access':'Clear wallet'}</h3>
      {securityView==='phrase'&&<><p className="stock-muted">These {phraseWords} words restore your pool notes and Arkade keys. Anyone with them can spend your funds. Keep this browser&apos;s data while Lightning swaps or payouts are pending: the phrase alone does not restore every outstanding swap. A fresh browser recovers your Lightning address on its own; direct swaps also need their stored recovery records.</p>
