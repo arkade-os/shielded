@@ -222,7 +222,7 @@ export class ShieldedWallet extends Wallet {
    await wallet.load(wallet.networkPrivacy?config.pool.status:undefined);
    await wallet.restoreLightningSpends(config.lightningSpendStore);
    wallet.rows=shieldedRows(()=>wallet.account.history,field=>wallet.assetIdOf(field),destinationFieldOf(programOf(await wallet.getAddress())),nullifier=>wallet.sentOf(nullifier));
-   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>wallet.sentOf(e.spent[0]!)?.lightning,sentTo:e=>wallet.sentOf(e.spent[0]!)?.to,
+   wallet.activity.use(shieldedActivityResolver({index:wallet.rows,entries:()=>wallet.account.history,isPoolBatch:txid=>wallet.account.txids.has(txid),isListing:txid=>wallet.listings.has(txid),isLink:e=>wallet.linkRecords.has(String(e.spent[0])),lightningOf:e=>wallet.sentOf(e.spent[0]!)?.lightning,sentTo:e=>{const s=wallet.sentOf(e.spent[0]!);return s&&s.onchainSats===undefined?s.lightning??s.to:undefined;},
     exitOf:e=>{const sent=wallet.sentOf(e.spent[0]!);return sent?.onchainTxid?{to:sent.to,txid:sent.onchainTxid,...(sent.onchainSats===undefined?{}:{sats:sent.onchainSats})}:undefined;}}));
    await wallet.start();
    return wallet;
@@ -824,7 +824,7 @@ export class ShieldedWallet extends Wallet {
    return coversWithdrawal(this.account.spendableNotes(field),this.account.spendableNotes(BTC_ASSET),amount,this.inFlight,!!opts.asset,opts.sats??BigInt(DUST));
   }catch{return false;}
  }
- async pay(to:string,amount:bigint,asset?:string):Promise<ShieldedPaymentHandle>{
+ async pay(to:string,amount:bigint,asset?:string,opts?:{lightning?:string}):Promise<ShieldedPaymentHandle>{
   const held:bigint[]=[];
   const handle=shieldedHandle({title:'Sending privately',steps:shieldedSteps.send,railId:'shielded'},async step=>{
    step(0);this.assertOpen();
@@ -832,7 +832,7 @@ export class ShieldedWallet extends Wallet {
    const legs=(inFlight:ReadonlySet<bigint>)=>this.account.pay(recipient,amount,this.self,inFlight,field,{join:this.prover.joinReady?.()??false});
    // A rebuilt leg pays with a new rho, so its sent record is written again.
    const recorded=async({spends}:{spends:EpochBuiltSpend[]})=>{
-    this.recordSent(spends.map(s=>{const note=sentNoteOf(this.hash,s);return [s.witness.slot.nullifiers[0]!,{to,note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}] as [bigint,SentRecord];}));
+    this.recordSent(spends.map(s=>{const note=sentNoteOf(this.hash,s);return [s.witness.slot.nullifiers[0]!,{to,...(opts?.lightning?{lightning:opts.lightning}:{}),note:{amount:String(note.amount),asset:String(note.asset),rho:String(note.rho)}}] as [bigint,SentRecord];}));
     await this.persist();
     return spends.map(built=>({built}));
    };

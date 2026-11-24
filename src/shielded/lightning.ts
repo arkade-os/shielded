@@ -48,7 +48,8 @@ export function lnurlShieldedRail(wallet:ShieldedWallet,client:LnurlClient):Paym
    if(answer.paymentDestinationTag!==undefined)throw new LnurlError(`${id}: the callback requires a memo, which this wallet cannot attach`);
    const to=shieldedTargetOf(answer.paymentDestination??'');
    if(!to)throw new LnurlError(`${id}: the callback returned no shielded address to pay`);
-   return {...await inner.quote({...req,raw:to},ctx),railId:id};
+   const quote=await inner.quote({...req,raw:to},ctx);
+   return {...quote,railId:id,send:()=>wallet.pay(to,BigInt(quote.amount),undefined,{lightning:req.raw.trim()})};
   },
  };
 }
