@@ -127,11 +127,13 @@ export function setRecentsOn(storage:S,on:boolean):boolean{
 }
 
 export function readRecents(storage:S):Recent[]{
- const out:Recent[]=[],seen=new Set<string>();
+ const out:Recent[]=[],taken=new Set<string>();
  for(const e of readList(storage,RECENTS_KEY)){
   if(out.length>=MAX_RECENTS)break;
-  if(!isObj(e)||!validAddress(e.address)||typeof e.at!=='number'||!Number.isFinite(e.at)||seen.has(e.address))continue;
-  seen.add(e.address);
+  if(!isObj(e)||!validAddress(e.address)||typeof e.at!=='number'||!Number.isFinite(e.at))continue;
+  const keys=contactKeys(e.address);
+  if(overlaps(taken,keys))continue;
+  keys.forEach(k=>taken.add(k));
   out.push({address:e.address,at:e.at});
  }
  return out;
@@ -139,8 +141,8 @@ export function readRecents(storage:S):Recent[]{
 
 export function recordRecent(storage:S,address:string,now=Date.now()):void{
  if(!recentsOn(storage)||contactAddressError(address))return;
- const canonical=contactAddress(address);
- write(storage,RECENTS_KEY,[{address:canonical,at:now},...readRecents(storage).filter(r=>r.address!==canonical)].slice(0,MAX_RECENTS));
+ const canonical=contactAddress(address),keys=new Set(contactKeys(canonical));
+ write(storage,RECENTS_KEY,[{address:canonical,at:now},...readRecents(storage).filter(r=>!overlaps(keys,contactKeys(r.address)))].slice(0,MAX_RECENTS));
 }
 
 export const clearRecents=(storage:S):boolean=>remove(storage,RECENTS_KEY);

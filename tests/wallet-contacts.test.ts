@@ -151,3 +151,17 @@ test('recents stay off until turned on, and turning them off deletes them',()=>{
  assert.equal(s.m.has(RECENTS_ON_KEY),false);
  assert.equal(setRecentsOn(locked(s.m),true),false);
 });
+
+test('a recent payee counts once whatever form its address took',()=>{
+ const s=stub();
+ setRecentsOn(s,true);
+ recordRecent(s,'Alice@pay.example',1);
+ recordRecent(s,'alice@pay.example',2);
+ assert.deepEqual(readRecents(s),[{address:'alice@pay.example',at:2}]);
+ clearRecents(s);
+ recordRecent(s,SH,1);
+ recordRecent(s,UNIFIED,2);
+ assert.deepEqual(readRecents(s),[{address:UNIFIED,at:2}]);
+ s.m.set(RECENTS_KEY,JSON.stringify([{address:UNIFIED,at:2},{address:SH,at:1}]));
+ assert.equal(readRecents(s).length,1);
+});
