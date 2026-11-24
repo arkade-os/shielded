@@ -42,7 +42,7 @@ import {QrCode,Scanner} from './wallet-qr.tsx';
 import {ReceivePortal,amountQrValue,keptInvoice,needsInvoice,receiveAmount,invoiceRequestAmount,typedAmount,type ReceiveMode} from './wallet-receive.tsx';
 import {LightningRecoveryQuote} from './lightning-recovery.tsx';
 import {Soundbar,soundbarItem,useMedia} from './wallet-soundbar.tsx';
-import {contactAddressError,contactNameOf,contactNames,readContacts,readRecents,recentsOn,recordRecent} from './wallet-contacts.ts';
+import {CONTACTS_KEY,RECENTS_KEY,RECENTS_ON_KEY,contactAddressError,contactNameOf,contactNames,readContacts,readRecents,recentsOn,recordRecent} from './wallet-contacts.ts';
 import {ContactPicker,ContactsCard,SaveContactOffer} from './WalletContacts.tsx';
 import {claimPrivateReceiveRestart,clearPrivateReceiveRestart,createProgressWatchdog,dismissTransientWalletViews,privateReceiveStageLabel,restartWhenVisible,shouldAutoDismissPaymentResult,PRIVATE_RECEIVE_STALL_MS,type TransientWalletDismissal} from './wallet-recovery.ts';
 import {GlassRefraction} from './wallet-glass-surface.tsx';
@@ -149,6 +149,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
  const [,setQuoteRevision]=useState(0);
  const [assetRevision,setAssetRevision]=useState(0);
  const [contactsRevision,setContactsRevision]=useState(0),[offer,setOffer]=useState('');
+ useEffect(()=>{const onStorage=(e:StorageEvent)=>{if(e.key===null||e.key===CONTACTS_KEY||e.key===RECENTS_KEY||e.key===RECENTS_ON_KEY)setContactsRevision(n=>n+1);};window.addEventListener('storage',onStorage);return()=>window.removeEventListener('storage',onStorage);},[]);
  const contacts=useMemo(()=>readContacts(storage),[storage,contactsRevision]),recents=useMemo(()=>readRecents(storage),[storage,contactsRevision]),recentsEnabled=useMemo(()=>recentsOn(storage),[storage,contactsRevision]),names=useMemo(()=>contactNames(contacts),[contacts]);
  const quoteRef=useRef<ReturnType<typeof pageQuotes>|undefined>(undefined);
  const fundsRef=useRef<{wallet:ShieldedWallet;watch:ReturnType<typeof pageQuoteFunds>}|undefined>(undefined);
@@ -875,7 +876,7 @@ export default function RollupWallet({storage=globalThis.localStorage,reload=()=
    {held.map(h=>{const meta=metadata?.get(h.assetId);return <div key={h.assetId}><small>{assetTitle(h.assetId,meta)} · {KIND_TEXT[holdingKind(h)]} · {UNVERIFIED}</small><b>{formatAssetAmount(h.shielded+h.unshielded,meta?.decimals??0)} {markedUnit(meta)}</b></div>;})}</div>}
   </section>;
   const recentPreview=<section className="stock-card stock-history stock-history-preview"><div className="stock-recent-head"><h2>Recent activity</h2><button type="button" onClick={()=>docked?openPanel('activity'):selectTab('activity')}>See all</button></div>{historyContent(historyItems.slice(0,3))}</section>;
-  const saveOffer=offer&&offer===to.trim()&&<SaveContactOffer address={offer} storage={storage} onSaved={()=>{setContactsRevision(n=>n+1);setOffer('');}} onDismiss={()=>setOffer('')}/>;
+  const saveOffer=offer&&offer===to.trim()&&contactNameOf(names,offer)===undefined&&<SaveContactOffer address={offer} storage={storage} onSaved={()=>{setContactsRevision(n=>n+1);setOffer('');}} onDismiss={()=>setOffer('')}/>;
 
   const inactive=hidden||suspended||!viewActive;
   if(!secret||!wallet)return <div hidden={inactive} style={inactive?{display:'none'}:undefined} inert={suspended||!viewActive}><WalletOnboarding transport={nativeHost?'tor':'browser'} setup={!secret&&!restoring.current} opening={opening} busy={busy||restoreStarted||opening} phase={opening?startupStage:startupFailure?'Wallet could not open':restoring.current?'Reload to continue restoring your wallet.':'Create or restore your wallet'} error={restoreError||startupError||startupFailure} phrase={restore} onPhraseChange={setRestore} onCreate={createWallet} onRestore={()=>void restoreWallet()} onReconnect={reload} passkey={offersPasskeys(prf)&&!passkeyOff?{onCreate:wordCount=>void createWithPasskey(wordCount),onRestore:()=>void restoreWallet(true)}:undefined} unlock={lockName&&!secret?{label:lockName,onUnlock:()=>void unlockWallet(),onUsePhrase:()=>setRestoreError('')}:undefined}>{fallbackName&&<PasskeyFallbackSheet platform="browser" windowsWarning={isWindowsBrowser()} passkeyName={fallbackName} busy={busy} onContinue={()=>void continueFallback()} onCancel={cancelFallback}/>}</WalletOnboarding></div>;

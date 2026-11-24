@@ -669,7 +669,14 @@ test('only a settled send records a recent or offers to save',()=>{
 });
 
 test('the save offer shows only while To still holds the paid address',()=>{
- assert.match(walletPage(),/offer&&offer===to\.trim\(\)&&<SaveContactOffer/);
+ assert.match(walletPage(),/offer&&offer===to\.trim\(\)&&contactNameOf\(names,offer\)===undefined&&<SaveContactOffer/,'hidden once the address is saved as a contact');
+});
+
+test('a contact changed in another tab refreshes this one, from above the onboarding return',()=>{
+ const page=walletPage(),effect=page.indexOf("window.addEventListener('storage',onStorage)");
+ assert.ok(effect>0&&effect<page.indexOf('if(!secret||!wallet)return'));
+ assert.match(page,/e\.key===null\|\|e\.key===CONTACTS_KEY\|\|e\.key===RECENTS_KEY\|\|e\.key===RECENTS_ON_KEY\)setContactsRevision\(n=>n\+1\)/);
+ assert.match(page,/return\(\)=>window\.removeEventListener\('storage',onStorage\)/);
 });
 
 test('the save offer shows under Send, and on Home once a docked send has closed its sheet',()=>{
