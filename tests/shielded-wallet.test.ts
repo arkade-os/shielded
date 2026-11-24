@@ -1529,6 +1529,21 @@ test('a withdrawal never takes its payee from a private payment record left on t
  }finally{await wallet.dispose();}
 });
 
+test('a withdrawal to another destination ignores a stale withdraw record left on the note it spent',async()=>{
+ const pool=sharedPool(),wallet=await open(),decoded=ArkAddress.decode(POOL_ADDRESS),addr=(b:number)=>new ArkAddress(decoded.serverPubKey,new Uint8Array(32).fill(b),decoded.hrp).encode(),a=addr(7),b=addr(9);wallet.api=pool.api;
+ const rows=async()=>(await wallet.getActivityHistory()).map(row=>[row.intent?.kind,row.intent?.metadata?.to]);
+ try{
+  await pool.fund(wallet,[{amount:1000n}]);
+  await (await wallet.withdraw(a,400n,{record:{to:a}})).settled();
+  assert.deepEqual(await rows(),[['unshield',a]],'a withdrawal to A still names A');
+  const spent=wallet.shieldedHistory().at(-1)!.spent[0]!;
+  wallet.recordSent([[spent,{to:b}]]);
+  assert.deepEqual(await rows(),[['unshield',undefined]],'a record naming another destination');
+  wallet.recordSent([[spent,{to:b,lightning:'alice@pay.example'}]]);
+  assert.deepEqual(await rows(),[['unshield',undefined]],'a stale Lightning record is not lnurl-arkade');
+ }finally{await wallet.dispose();}
+});
+
 test('a wallet started from a checkpoint watches for links in the batches it catches up while loading',async t=>{
  const world=epochLeafPool(hash,EPOCH_LEN,70);
  const fetcher=(async(url:string)=>{
